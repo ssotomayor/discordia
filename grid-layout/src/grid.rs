@@ -2,7 +2,7 @@
 
 use dioxus::prelude::*;
 
-use crate::drag::DragState;
+use crate::drag::Interaction;
 use crate::layout::GridPosition;
 use crate::store::LayoutStore;
 
@@ -17,7 +17,7 @@ pub fn GridLayout(
     store: Option<LayoutStore>,
     children: Element,
 ) -> Element {
-    let drag = use_signal::<Option<DragState>>(|| None);
+    let drag = use_signal::<Option<Interaction>>(|| None);
     let container_width = use_signal::<Option<f64>>(|| None);
 
     use_context_provider(|| GridContext {
@@ -103,7 +103,7 @@ pub(crate) struct GridContext {
     pub row_height: f64,
     pub gap: f64,
     pub editable: bool,
-    pub drag: Signal<Option<DragState>>,
+    pub drag: Signal<Option<Interaction>>,
     pub container_width: Signal<Option<f64>>,
 }
 

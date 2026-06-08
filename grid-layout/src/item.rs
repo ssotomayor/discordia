@@ -3,13 +3,13 @@
 use dioxus::prelude::*;
 use dioxus_elements::input_data::MouseButton;
 
-use crate::drag::DragState;
+use crate::drag::{Interaction, InteractionKind};
 use crate::grid::GridContext;
 use crate::layout::GridPosition;
 
 /// Positions a child element at `(x, y)` and gives it `w` columns × `h` rows.
 ///
-/// When the parent `GridLayout` has a `store`, drag/resize interactions
+/// When the parent `GridLayout` has a `store`, drag and resize interactions
 /// mutate the store and re-render the item at its new position. Without a
 /// store the props are used directly (static render).
 #[component]
@@ -28,8 +28,8 @@ pub fn GridItem(
     let ctx: Option<GridContext> = try_consume_context();
     let pos = resolve_pos(&id, ctx, GridPosition { x, y, w, h });
 
-    let style = format!(
-        "grid-column: {col} / span {w}; grid-row: {row} / span {h};",
+    let cell_style = format!(
+        "grid-column: {col} / span {w}; grid-row: {row} / span {h}; position: relative;",
         col = pos.x + 1,
         row = pos.y + 1,
         w = pos.w,
@@ -37,30 +37,28 @@ pub fn GridItem(
     );
     let pinned_class = if pinned { " grid-item-pinned" } else { "" };
     let editable = ctx.map(|c| c.editable).unwrap_or(false);
-    let cursor_style = if editable && !pinned { " cursor: grab;" } else { "" };
-    let _ = (min_w, min_h); // reserved for resize logic in commit 3
+    let interactive = editable && !pinned;
+    let drag_cursor = if interactive { " cursor: grab;" } else { "" };
 
-    let item_id_for_handler = id.clone();
-    let onpointerdown = move |evt: PointerEvent| {
+    let item_id_for_drag = id.clone();
+    let onpointerdown_drag = move |evt: PointerEvent| {
         let Some(ctx) = ctx else { return };
-        if pinned || !ctx.editable {
+        if !interactive {
             return;
         }
-        // Only respond to primary button presses (left mouse / single finger).
         if !evt.held_buttons().contains(MouseButton::Primary) {
             return;
         }
-        // Cell pixel size relies on the container measurement landing —
-        // skip the drag if we haven't measured yet (very early frame).
         let Some(cell_w) = ctx.cell_w_px() else { return };
 
         let current = ctx
             .store
-            .and_then(|s| s.get(&item_id_for_handler))
+            .and_then(|s| s.get(&item_id_for_drag))
             .unwrap_or(GridPosition { x, y, w, h });
 
-        let state = DragState {
-            item_id: item_id_for_handler.clone(),
+        let state = Interaction {
+            kind: InteractionKind::Drag,
+            item_id: item_id_for_drag.clone(),
             start_pos: current,
             pointer_start_x: evt.client_coordinates().x,
             pointer_start_y: evt.client_coordinates().y,
@@ -68,6 +66,42 @@ pub fn GridItem(
             cell_h_px: ctx.row_height,
             gap_px: ctx.gap,
             cols: ctx.cols,
+            min_w,
+            min_h,
+        };
+        let mut drag = ctx.drag;
+        drag.set(Some(state));
+    };
+
+    let item_id_for_resize = id.clone();
+    let onpointerdown_resize = move |evt: PointerEvent| {
+        let Some(ctx) = ctx else { return };
+        if !interactive {
+            return;
+        }
+        if !evt.held_buttons().contains(MouseButton::Primary) {
+            return;
+        }
+        evt.stop_propagation();
+        let Some(cell_w) = ctx.cell_w_px() else { return };
+
+        let current = ctx
+            .store
+            .and_then(|s| s.get(&item_id_for_resize))
+            .unwrap_or(GridPosition { x, y, w, h });
+
+        let state = Interaction {
+            kind: InteractionKind::Resize,
+            item_id: item_id_for_resize.clone(),
+            start_pos: current,
+            pointer_start_x: evt.client_coordinates().x,
+            pointer_start_y: evt.client_coordinates().y,
+            cell_w_px: cell_w,
+            cell_h_px: ctx.row_height,
+            gap_px: ctx.gap,
+            cols: ctx.cols,
+            min_w,
+            min_h,
         };
         let mut drag = ctx.drag;
         drag.set(Some(state));
@@ -77,9 +111,20 @@ pub fn GridItem(
         div {
             class: "dioxus-grid-item{pinned_class} {class}",
             "data-id": "{id}",
-            style: "{style}{cursor_style}",
-            onpointerdown,
+            style: "{cell_style}{drag_cursor}",
+            onpointerdown: onpointerdown_drag,
             {children}
+            if interactive {
+                div {
+                    class: "dioxus-grid-resize-handle",
+                    style: "position: absolute; right: 0; bottom: 0; \
+                            width: 14px; height: 14px; \
+                            cursor: nwse-resize; \
+                            background: linear-gradient(135deg, transparent 0%, transparent 50%, rgba(255,255,255,0.45) 50%, rgba(255,255,255,0.45) 100%); \
+                            border-bottom-right-radius: inherit;",
+                    onpointerdown: onpointerdown_resize,
+                }
+            }
         }
     }
 }
@@ -90,8 +135,6 @@ fn resolve_pos(id: &str, ctx: Option<GridContext>, fallback: GridPosition) -> Gr
         Some(mut store) => match store.get(id) {
             Some(p) => p,
             None => {
-                // Seed the store with this item's initial position on first
-                // render. Subsequent renders read the live store value.
                 store.set(id.to_string(), fallback);
                 fallback
             }
