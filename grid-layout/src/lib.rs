@@ -35,6 +35,7 @@
 //! }
 //! ```
 
+mod drag;
 mod grid;
 mod item;
 mod layout;
