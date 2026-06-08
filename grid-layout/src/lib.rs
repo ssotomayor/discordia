@@ -35,6 +35,7 @@
 //! }
 //! ```
 
+mod collision;
 mod drag;
 mod grid;
 mod item;

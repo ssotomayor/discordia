@@ -2,6 +2,7 @@
 
 use dioxus::prelude::*;
 
+use crate::collision::compact_vertical;
 use crate::drag::{Interaction, InteractionKind};
 use crate::layout::GridPosition;
 use crate::store::LayoutStore;
@@ -140,18 +141,60 @@ fn DragOverlay() -> Element {
                             item_id, dx, dy,
                         );
                         let _ = document::eval(&js);
+
+                        // Collision resolution: pretend the active item is
+                        // at its projected snap cell, recompute non-active
+                        // positions, push results back into the store.
+                        if let Some(store) = store {
+                            settle_layout(store, &item_id, projected);
+                        }
                     }
                     InteractionKind::Resize => {
-                        // Resize stays stepwise — feels right and avoids
-                        // fighting CSS grid sizing.
                         if let Some(mut s) = store {
-                            s.set(item_id, projected);
+                            s.set(item_id.clone(), projected);
+                        }
+                        // After resize commit, also let neighbours reflow.
+                        if let Some(store) = store {
+                            settle_layout(store, &item_id, projected);
                         }
                     }
                 }
             },
             onpointerup: move |_| { commit_and_clear(&mut drag, store); },
             onpointercancel: move |_| { commit_and_clear(&mut drag, store); },
+        }
+    }
+}
+
+/// Recompute non-active item positions given the active item's intended
+/// position, then write any changed positions back to the store.
+fn settle_layout(mut store: LayoutStore, active_id: &str, active_pos: GridPosition) {
+    let mut layout = store.snapshot();
+    // Replace active item's position with the projected one for collision
+    // checks. If it wasn't tracked yet (e.g. seeded but unread), append it.
+    let mut found = false;
+    for (id, p) in layout.iter_mut() {
+        if id == active_id {
+            *p = active_pos;
+            found = true;
+            break;
+        }
+    }
+    if !found {
+        layout.push((active_id.to_string(), active_pos));
+    }
+
+    compact_vertical(&mut layout, active_id);
+
+    // Push the new positions back. Skip the active item — its visual
+    // position is being driven by the CSS transform; the store commit happens
+    // in commit_and_clear on pointerup.
+    for (id, new_pos) in layout {
+        if id == active_id {
+            continue;
+        }
+        if store.get(&id) != Some(new_pos) {
+            store.set(id, new_pos);
         }
     }
 }
