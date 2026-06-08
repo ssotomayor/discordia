@@ -26,6 +26,26 @@ pub fn GridItem(
     children: Element,
 ) -> Element {
     let ctx: Option<GridContext> = try_consume_context();
+
+    // Keep the GridContext-level pinned set in sync with this item's prop.
+    if let Some(ctx) = ctx {
+        let id_for_effect = id.clone();
+        use_effect(move || {
+            let mut ids = ctx.pinned_ids;
+            let present = ids.read().contains(&id_for_effect);
+            if pinned && !present {
+                ids.write().insert(id_for_effect.clone());
+            } else if !pinned && present {
+                ids.write().remove(&id_for_effect);
+            }
+        });
+        let id_for_drop = id.clone();
+        let mut pinned_ids_for_drop = ctx.pinned_ids;
+        use_drop(move || {
+            pinned_ids_for_drop.write().remove(&id_for_drop);
+        });
+    }
+
     let pos = resolve_pos(&id, ctx, GridPosition { x, y, w, h });
 
     let cell_style = format!(

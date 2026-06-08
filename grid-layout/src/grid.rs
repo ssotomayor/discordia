@@ -1,5 +1,7 @@
 //! `GridLayout` — the container component.
 
+use std::collections::HashSet;
+
 use dioxus::prelude::*;
 
 use crate::collision::compact_vertical;
@@ -28,6 +30,7 @@ pub fn GridLayout(
 ) -> Element {
     let drag = use_signal::<Option<Interaction>>(|| None);
     let container_width = use_signal::<Option<f64>>(|| None);
+    let pinned_ids = use_signal::<HashSet<String>>(HashSet::new);
     let on_change_cb = use_hook(|| on_change.clone());
 
     use_context_provider(|| GridContext {
@@ -38,6 +41,7 @@ pub fn GridLayout(
         editable,
         drag,
         container_width,
+        pinned_ids,
         on_change: on_change_cb,
     });
 
@@ -156,7 +160,8 @@ fn DragOverlay() -> Element {
                         // at its projected snap cell, recompute non-active
                         // positions, push results back into the store.
                         if let Some(store) = store {
-                            settle_layout(store, &item_id, projected);
+                            let pinned = ctx.pinned_ids.read().clone();
+                            settle_layout(store, &item_id, projected, &pinned);
                         }
                     }
                     InteractionKind::Resize => {
@@ -165,7 +170,8 @@ fn DragOverlay() -> Element {
                         }
                         // After resize commit, also let neighbours reflow.
                         if let Some(store) = store {
-                            settle_layout(store, &item_id, projected);
+                            let pinned = ctx.pinned_ids.read().clone();
+                            settle_layout(store, &item_id, projected, &pinned);
                         }
                     }
                 }
@@ -178,10 +184,13 @@ fn DragOverlay() -> Element {
 
 /// Recompute non-active item positions given the active item's intended
 /// position, then write any changed positions back to the store.
-fn settle_layout(mut store: LayoutStore, active_id: &str, active_pos: GridPosition) {
+fn settle_layout(
+    mut store: LayoutStore,
+    active_id: &str,
+    active_pos: GridPosition,
+    pinned: &HashSet<String>,
+) {
     let mut layout = store.snapshot();
-    // Replace active item's position with the projected one for collision
-    // checks. If it wasn't tracked yet (e.g. seeded but unread), append it.
     let mut found = false;
     for (id, p) in layout.iter_mut() {
         if id == active_id {
@@ -194,11 +203,12 @@ fn settle_layout(mut store: LayoutStore, active_id: &str, active_pos: GridPositi
         layout.push((active_id.to_string(), active_pos));
     }
 
-    compact_vertical(&mut layout, active_id);
+    // Immovable = the active item PLUS any user-pinned items.
+    let mut immovable: HashSet<String> = pinned.clone();
+    immovable.insert(active_id.to_string());
 
-    // Push the new positions back. Skip the active item — its visual
-    // position is being driven by the CSS transform; the store commit happens
-    // in commit_and_clear on pointerup.
+    compact_vertical(&mut layout, &immovable);
+
     for (id, new_pos) in layout {
         if id == active_id {
             continue;
@@ -249,6 +259,7 @@ pub(crate) struct GridContext {
     pub editable: bool,
     pub drag: Signal<Option<Interaction>>,
     pub container_width: Signal<Option<f64>>,
+    pub pinned_ids: Signal<HashSet<String>>,
     pub on_change: Option<EventHandler<Vec<(String, GridPosition)>>>,
 }
 
