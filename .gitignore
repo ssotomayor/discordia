@@ -1,1 +1,18 @@
+# Cargo build artifacts (workspace + per-crate)
 /target
+**/target
+
+# OS noise
+.DS_Store
+Thumbs.db
+
+# Editor scratch
+*.swp
+*~
+
+# Logs / pidfiles
+*.log
+
+# Local env overrides (don't commit secrets)
+.env
+.env.local

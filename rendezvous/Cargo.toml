@@ -1,0 +1,20 @@
+[package]
+name = "dioxusfun-rendezvous"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# Rendezvous-specific.
+rand = "0.8"
+
+# Shared deps inherited from workspace.
+axum = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+tower-http = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+dashmap = { workspace = true }
+futures-util = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true }

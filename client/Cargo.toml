@@ -1,0 +1,38 @@
+[package]
+name = "dioxusfun"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# Dioxus-specific deps (not shared with server/rendezvous, no need to hoist).
+dioxus = "0.7"
+tokio-tungstenite = { workspace = true }
+url = "2"
+
+# Voice: livekit Rust SDK (wraps libwebrtc via webrtc-sys) + cpal for native
+# audio device I/O. First build downloads ~50MB of precompiled libwebrtc.
+livekit = "0.7"
+cpal = "0.15"
+parking_lot = "0.12"
+async-trait = "0.1"
+local-ip-address = "0.6"
+reqwest = { workspace = true }
+
+# Self-host mode: embed the gateway server in-process; protocol types come
+# from here so client and server can't drift.
+dioxusfun-server = { workspace = true }
+
+# Shared deps inherited from workspace.
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "process"] }
+futures-util = { workspace = true }
+tracing = { workspace = true }
+
+[features]
+default = ["desktop"]
+desktop = ["dioxus/desktop"]
+mobile = ["dioxus/mobile"]
+web = ["dioxus/web"]

@@ -1,0 +1,29 @@
+[package]
+name = "dioxusfun-server"
+version = "0.1.0"
+edition = "2024"
+build = "build.rs"
+
+[build-dependencies]
+ureq = { version = "2", default-features = false, features = ["tls"] }
+flate2 = "1"
+tar = "0.4"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[dependencies]
+# Server-specific.
+axum = { workspace = true, features = ["macros"] }
+tokio = { workspace = true, features = ["full"] }
+tower = "0.5"
+livekit-api = { version = "0.4", default-features = false, features = ["access-token"] }
+
+# Shared deps inherited from workspace.
+tower-http = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+dashmap = { workspace = true }
+futures-util = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

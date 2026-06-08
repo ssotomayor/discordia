@@ -1,38 +1,25 @@
-[package]
-name = "dioxusfun"
-version = "0.1.0"
-edition = "2024"
+[workspace]
+resolver = "2"
+members = ["client", "server", "rendezvous"]
 
-[dependencies]
-# Dioxus-specific deps (not shared with server/rendezvous, no need to hoist).
-dioxus = "0.7"
-tokio-tungstenite = { workspace = true }
-url = "2"
+# Shared dep versions — each member opts in with `{ workspace = true }` and
+# inherits version + default features from here. Add per-member features
+# at the member's Cargo.toml as needed.
+[workspace.dependencies]
+# Inter-crate path deps.
+dioxusfun-server = { path = "server" }
 
-# Voice: livekit Rust SDK (wraps libwebrtc via webrtc-sys) + cpal for native
-# audio device I/O. First build downloads ~50MB of precompiled libwebrtc.
-livekit = "0.7"
-cpal = "0.15"
-parking_lot = "0.12"
-async-trait = "0.1"
-local-ip-address = "0.6"
-reqwest = { workspace = true }
-
-# Self-host mode: embed the gateway server in-process; protocol types come
-# from here so client and server can't drift.
-dioxusfun-server = { workspace = true }
-
-# Shared deps inherited from workspace.
-serde = { workspace = true }
-serde_json = { workspace = true }
-uuid = { workspace = true }
-chrono = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "process"] }
-futures-util = { workspace = true }
-tracing = { workspace = true }
-
-[features]
-default = ["desktop"]
-desktop = ["dioxus/desktop"]
-mobile = ["dioxus/mobile"]
-web = ["dioxus/web"]
+# Common third-party deps used by ≥2 crates.
+axum = { version = "0.7", features = ["ws"] }
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+tokio = { version = "1" }
+tokio-tungstenite = "0.24"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+dashmap = "6"
+futures-util = "0.3"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
