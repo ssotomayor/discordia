@@ -11,8 +11,8 @@ pub(crate) enum InteractionKind {
 }
 
 /// In-flight pointer interaction: which item, the layout snapshot at start,
-/// the pointer's start coordinates, the cached cell pixel geometry, plus
-/// item bounds (min_w/min_h) for resize clamping.
+/// the pointer's start + current coordinates, the cached cell pixel
+/// geometry, plus item bounds (min_w/min_h) for resize clamping.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Interaction {
     pub kind: InteractionKind,
@@ -20,6 +20,10 @@ pub(crate) struct Interaction {
     pub start_pos: GridPosition,
     pub pointer_start_x: f64,
     pub pointer_start_y: f64,
+    /// Current pointer position. Updated every pointermove. Used for
+    /// snap-target projection and the smooth-drag transform.
+    pub pointer_current_x: f64,
+    pub pointer_current_y: f64,
     pub cell_w_px: f64,
     pub cell_h_px: f64,
     pub gap_px: f64,
@@ -76,6 +80,8 @@ mod tests {
             start_pos: start,
             pointer_start_x: 0.0,
             pointer_start_y: 0.0,
+            pointer_current_x: 0.0,
+            pointer_current_y: 0.0,
             cell_w_px: 50.0,
             cell_h_px: 50.0,
             gap_px: 10.0,

@@ -2,7 +2,7 @@
 
 use dioxus::prelude::*;
 
-use crate::drag::Interaction;
+use crate::drag::{Interaction, InteractionKind};
 use crate::layout::GridPosition;
 use crate::store::LayoutStore;
 
@@ -47,8 +47,6 @@ pub fn GridLayout(
             class: "dioxus-grid-layout{editable_class} {class}",
             style,
             onmounted: move |evt| {
-                // Measure container width once for cell-px math. Re-running
-                // on resize is a follow-up commit.
                 let data = evt.data();
                 let mut cw = container_width;
                 spawn(async move {
@@ -58,14 +56,43 @@ pub fn GridLayout(
                 });
             },
             {children}
+            DragPlaceholder {}
         }
         DragOverlay {}
     }
 }
 
-/// Renders an invisible fixed-position overlay over the entire viewport
-/// while a drag is active, so global `pointermove`/`pointerup` flow even when
-/// the cursor moves outside the originating item.
+/// Translucent box showing where the active drag will snap to. Only renders
+/// during a Drag-kind interaction.
+#[component]
+fn DragPlaceholder() -> Element {
+    let ctx: GridContext = use_context();
+    let snap = ctx.drag.read().as_ref().and_then(|state| {
+        if state.kind != InteractionKind::Drag {
+            return None;
+        }
+        Some(state.project(state.pointer_current_x, state.pointer_current_y))
+    });
+    let Some(p) = snap else {
+        return rsx! { Fragment {} };
+    };
+
+    let style = format!(
+        "grid-column: {col} / span {w}; grid-row: {row} / span {h}; \
+         background: rgba(99, 102, 241, 0.18); \
+         border: 1.5px dashed rgba(99, 102, 241, 0.7); \
+         border-radius: 8px; \
+         pointer-events: none;",
+        col = p.x + 1,
+        row = p.y + 1,
+        w = p.w,
+        h = p.h,
+    );
+    rsx! { div { class: "dioxus-grid-placeholder", style } }
+}
+
+/// Viewport-covering overlay that survives the cursor leaving any
+/// individual item. Translates pointer events into store mutations.
 #[component]
 fn DragOverlay() -> Element {
     let ctx: GridContext = use_context();
@@ -82,20 +109,75 @@ fn DragOverlay() -> Element {
             style: "position: fixed; inset: 0; cursor: grabbing; z-index: 9999; touch-action: none;",
             onpointermove: move |evt| {
                 let (cx, cy) = (evt.client_coordinates().x, evt.client_coordinates().y);
-                let Some(state) = drag.read().clone() else { return };
-                let projected = state.project(cx, cy);
-                if let Some(mut s) = store {
-                    s.set(state.item_id.clone(), projected);
+
+                // Snapshot kind + id + delta so we can release the read lock
+                // before reaching for write.
+                let (kind, item_id, dx, dy, projected) = {
+                    let Some(state) = drag.read().clone() else { return };
+                    let dx = cx - state.pointer_start_x;
+                    let dy = cy - state.pointer_start_y;
+                    let projected = state.project(cx, cy);
+                    (state.kind, state.item_id, dx, dy, projected)
+                };
+
+                // Always keep current pointer up to date so placeholder snaps.
+                drag.with_mut(|d| {
+                    if let Some(s) = d.as_mut() {
+                        s.pointer_current_x = cx;
+                        s.pointer_current_y = cy;
+                    }
+                });
+
+                match kind {
+                    InteractionKind::Drag => {
+                        // Smooth: move the item directly via CSS transform,
+                        // bypassing Dioxus's render. Layout commit happens on
+                        // pointerup.
+                        let js = format!(
+                            "var el=document.querySelector('[data-id=\"{}\"]');\
+                             if(el){{el.style.transform='translate({:.2}px,{:.2}px)';\
+                             el.style.zIndex='1000';}}",
+                            item_id, dx, dy,
+                        );
+                        let _ = document::eval(&js);
+                    }
+                    InteractionKind::Resize => {
+                        // Resize stays stepwise — feels right and avoids
+                        // fighting CSS grid sizing.
+                        if let Some(mut s) = store {
+                            s.set(item_id, projected);
+                        }
+                    }
                 }
             },
-            onpointerup: move |_| { drag.set(None); },
-            onpointercancel: move |_| { drag.set(None); },
+            onpointerup: move |_| { commit_and_clear(&mut drag, store); },
+            onpointercancel: move |_| { commit_and_clear(&mut drag, store); },
         }
     }
 }
 
-/// Internal: GridLayout settings + shared drag state, exposed to GridItem
-/// via Dioxus context.
+fn commit_and_clear(drag: &mut Signal<Option<Interaction>>, store: Option<LayoutStore>) {
+    let Some(state) = drag.read().clone() else { return };
+    // Clear smooth-drag transform / z-index regardless of kind.
+    let js = format!(
+        "var el=document.querySelector('[data-id=\"{}\"]');\
+         if(el){{el.style.transform='';el.style.zIndex='';}}",
+        state.item_id,
+    );
+    let _ = document::eval(&js);
+
+    // Commit the snapped position (drag) — resize already committed live.
+    if matches!(state.kind, InteractionKind::Drag) {
+        if let Some(mut s) = store {
+            let projected = state.project(state.pointer_current_x, state.pointer_current_y);
+            s.set(state.item_id.clone(), projected);
+        }
+    }
+    drag.set(None);
+}
+
+/// Internal: GridLayout settings + shared interaction state, exposed to
+/// GridItem via Dioxus context.
 #[derive(Clone, Copy)]
 pub(crate) struct GridContext {
     pub store: Option<LayoutStore>,
@@ -108,8 +190,6 @@ pub(crate) struct GridContext {
 }
 
 impl GridContext {
-    /// Width of one column in CSS pixels, given the measured container width.
-    /// Returns None until the first `onmounted` measurement has landed.
     pub fn cell_w_px(&self) -> Option<f64> {
         let total = self.container_width.read().as_ref().copied()?;
         let inner_gap = self.gap * (self.cols.saturating_sub(1) as f64);
@@ -118,7 +198,7 @@ impl GridContext {
     }
 }
 
-#[allow(dead_code)] // grid context re-exported for test scaffolding in later commits
+#[allow(dead_code)]
 pub(crate) fn _initial_position(x: u32, y: u32, w: u32, h: u32) -> GridPosition {
     GridPosition::new(x, y, w, h)
 }
