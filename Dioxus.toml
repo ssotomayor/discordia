@@ -1,0 +1,12 @@
+[application]
+name = "dioxusfun"
+
+[web.app]
+title = "Discordia"
+
+[desktop]
+enable_dev_tools = true
+
+[bundle]
+identifier = "com.discordia.app"
+publisher = "TehSoTo"

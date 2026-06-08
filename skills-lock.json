@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "skills": {
+    "dioxus-knowledge-patch": {
+      "source": "Nevaberry/nevaberry-plugins",
+      "sourceType": "github",
+      "computedHash": "0f61946058a0839d811f43ecc6e52505fdd2d62d5575ea1a474fb459fe9e9691"
+    }
+  }
+}
