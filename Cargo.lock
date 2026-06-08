@@ -1746,6 +1746,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "dioxus-grid-layout"
+version = "0.0.1"
+dependencies = [
+ "dioxus",
+ "serde",
+]
+
+[[package]]
 name = "dioxus-history"
 version = "0.7.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"

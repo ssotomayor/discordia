@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["client", "server", "rendezvous"]
+members = ["client", "server", "rendezvous", "grid-layout"]
 
 # Shared dep versions — each member opts in with `{ workspace = true }` and
 # inherits version + default features from here. Add per-member features
@@ -10,6 +10,7 @@ members = ["client", "server", "rendezvous"]
 dioxusfun-server = { path = "server" }
 
 # Common third-party deps used by ≥2 crates.
+dioxus = "0.7"
 axum = { version = "0.7", features = ["ws"] }
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 tokio = { version = "1" }

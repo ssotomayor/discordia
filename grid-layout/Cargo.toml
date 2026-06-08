@@ -1,0 +1,17 @@
+[package]
+name = "dioxus-grid-layout"
+version = "0.0.1"
+edition = "2024"
+description = "A draggable, resizable grid layout for Dioxus — equivalent to react-grid-layout."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/tehsoto/dioxusfun-monorepo"
+keywords = ["dioxus", "grid", "layout", "dashboard", "drag-and-drop"]
+categories = ["gui"]
+
+[dependencies]
+dioxus = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+# Playground / examples need a real platform to render.
+dioxus = { version = "0.7", features = ["desktop"] }
