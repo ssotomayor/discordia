@@ -7,7 +7,7 @@
 //! ```
 
 use dioxus::prelude::*;
-use dioxus_grid_layout::{GridItem, GridLayout, GridPosition, use_layout_store};
+use dioxus_grid_layout::{GridItem, GridLayout, GridPosition, NoDrag, use_layout_store};
 
 fn main() {
     dioxus::launch(app);
@@ -17,9 +17,12 @@ const STYLE: &str = "
     html, body { margin: 0; height: 100%; background: #0f1115; color: #e5e7eb;
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
     .dioxus-grid-layout { padding: 16px; }
-    .widget { border-radius: 8px; padding: 12px; display: flex; flex-direction: column; }
-    .widget h2 { margin: 0 0 8px; font-size: 14px; font-weight: 600; opacity: 0.85; }
+    .widget { border-radius: 8px; padding: 12px; display: flex; flex-direction: column; gap: 6px; }
+    .widget h2 { margin: 0; font-size: 14px; font-weight: 600; opacity: 0.85; }
     .widget p { margin: 0; font-size: 12px; opacity: 0.7; }
+    .widget button { background: rgba(255,255,255,0.12); border: 1px solid rgba(255,255,255,0.2);
+        color: inherit; border-radius: 4px; padding: 4px 8px; cursor: pointer; align-self: flex-start; }
+    .widget button:hover { background: rgba(255,255,255,0.2); }
     .w-a { background: #1e293b; border: 1px solid #334155; }
     .w-b { background: #3b1a4a; border: 1px solid #6b2580; }
     .w-c { background: #1e3a3a; border: 1px solid #2d6363; }
@@ -37,24 +40,29 @@ fn app() -> Element {
         ]
     });
 
+    let mut click_count = use_signal(|| 0u32);
+
     rsx! {
         document::Style { {STYLE} }
         GridLayout {
             cols: 12, row_height: 60.0, gap: 12.0,
             store: store, editable: true,
-            on_change: move |snapshot: Vec<(String, dioxus_grid_layout::GridPosition)>| {
+            on_change: move |snapshot: Vec<(String, GridPosition)>| {
                 eprintln!("[playground] layout changed: {:?}", snapshot);
             },
-            // Without explicit x/y/w/h here the store-driven path takes over.
-            // Props still required (the v0.0.1 fallback), so pass placeholders
-            // matching the initial store values.
             GridItem { id: "a", x: 0, y: 0, w: 4, h: 4, class: "widget w-a",
                 h2 { "Widget A" }
-                p { "drag me" }
+                p { "drag me anywhere" }
             }
             GridItem { id: "b", x: 4, y: 0, w: 8, h: 2, class: "widget w-b",
                 h2 { "Widget B" }
-                p { "wide header" }
+                p { "drag header — button below uses NoDrag" }
+                NoDrag {
+                    button {
+                        onclick: move |_| click_count += 1,
+                        "Clicked {click_count} time(s)"
+                    }
+                }
             }
             GridItem { id: "c", x: 4, y: 2, w: 4, h: 2, class: "widget w-c",
                 h2 { "Widget C" }
@@ -62,7 +70,7 @@ fn app() -> Element {
             }
             GridItem { id: "d", x: 8, y: 2, w: 4, h: 4, pinned: true, class: "widget w-d",
                 h2 { "Widget D" }
-                p { "pinned (commit 2 will lock me)" }
+                p { "pinned: never moves, even when others displace" }
             }
         }
     }

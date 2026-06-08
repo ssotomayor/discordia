@@ -40,9 +40,11 @@ mod drag;
 mod grid;
 mod item;
 mod layout;
+mod nodrag;
 mod store;
 
 pub use grid::GridLayout;
 pub use item::GridItem;
 pub use layout::{GridPosition, LayoutSpec};
+pub use nodrag::NoDrag;
 pub use store::{LayoutStore, use_layout_store};
