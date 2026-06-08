@@ -8,6 +8,13 @@ use crate::layout::GridPosition;
 use crate::store::LayoutStore;
 
 /// Container that positions its `GridItem` children on a CSS grid.
+///
+/// # Props
+/// - `cols`, `row_height`, `gap`: CSS grid configuration
+/// - `editable`: when false, drag/resize are disabled regardless of `store`
+/// - `store`: optional [`LayoutStore`] (positions stored + mutated reactively)
+/// - `on_change`: fired with the full layout snapshot after each user-driven
+///   commit (drag end, resize end). Use it to persist the layout.
 #[component]
 pub fn GridLayout(
     #[props(default = 12)] cols: u32,
@@ -16,10 +23,12 @@ pub fn GridLayout(
     #[props(default = String::new())] class: String,
     #[props(default = false)] editable: bool,
     store: Option<LayoutStore>,
+    on_change: Option<EventHandler<Vec<(String, GridPosition)>>>,
     children: Element,
 ) -> Element {
     let drag = use_signal::<Option<Interaction>>(|| None);
     let container_width = use_signal::<Option<f64>>(|| None);
+    let on_change_cb = use_hook(|| on_change.clone());
 
     use_context_provider(|| GridContext {
         store,
@@ -29,6 +38,7 @@ pub fn GridLayout(
         editable,
         drag,
         container_width,
+        on_change: on_change_cb,
     });
 
     let style = format!(
@@ -160,8 +170,8 @@ fn DragOverlay() -> Element {
                     }
                 }
             },
-            onpointerup: move |_| { commit_and_clear(&mut drag, store); },
-            onpointercancel: move |_| { commit_and_clear(&mut drag, store); },
+            onpointerup: move |_| { commit_and_clear(&mut drag, store, ctx.on_change); },
+            onpointercancel: move |_| { commit_and_clear(&mut drag, store, ctx.on_change); },
         }
     }
 }
@@ -199,7 +209,11 @@ fn settle_layout(mut store: LayoutStore, active_id: &str, active_pos: GridPositi
     }
 }
 
-fn commit_and_clear(drag: &mut Signal<Option<Interaction>>, store: Option<LayoutStore>) {
+fn commit_and_clear(
+    drag: &mut Signal<Option<Interaction>>,
+    store: Option<LayoutStore>,
+    on_change: Option<EventHandler<Vec<(String, GridPosition)>>>,
+) {
     let Some(state) = drag.read().clone() else { return };
     // Clear smooth-drag transform / z-index regardless of kind.
     let js = format!(
@@ -217,6 +231,11 @@ fn commit_and_clear(drag: &mut Signal<Option<Interaction>>, store: Option<Layout
         }
     }
     drag.set(None);
+
+    // Fire on_change with the final settled snapshot.
+    if let (Some(handler), Some(s)) = (on_change, store) {
+        handler.call(s.snapshot());
+    }
 }
 
 /// Internal: GridLayout settings + shared interaction state, exposed to
@@ -230,6 +249,7 @@ pub(crate) struct GridContext {
     pub editable: bool,
     pub drag: Signal<Option<Interaction>>,
     pub container_width: Signal<Option<f64>>,
+    pub on_change: Option<EventHandler<Vec<(String, GridPosition)>>>,
 }
 
 impl GridContext {

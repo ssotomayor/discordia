@@ -39,7 +39,12 @@ fn app() -> Element {
 
     rsx! {
         document::Style { {STYLE} }
-        GridLayout { cols: 12, row_height: 60.0, gap: 12.0, store: store, editable: true,
+        GridLayout {
+            cols: 12, row_height: 60.0, gap: 12.0,
+            store: store, editable: true,
+            on_change: move |snapshot: Vec<(String, dioxus_grid_layout::GridPosition)>| {
+                eprintln!("[playground] layout changed: {:?}", snapshot);
+            },
             // Without explicit x/y/w/h here the store-driven path takes over.
             // Props still required (the v0.0.1 fallback), so pass placeholders
             // matching the initial store values.
