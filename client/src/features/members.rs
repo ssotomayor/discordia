@@ -25,7 +25,7 @@ pub fn MembersPanel() -> Element {
     let offline_count = members.len() - online_count;
 
     rsx! {
-        aside { class: "w-56 shrink-0 bg-[var(--panel)] border border-[var(--border)] rounded-lg flex flex-col overflow-hidden",
+        aside { class: "w-full h-full bg-[var(--panel)] border border-[var(--border)] rounded-lg flex flex-col overflow-hidden",
             div { class: "flex-1 overflow-y-auto py-3 space-y-3",
                 if online_count > 0 {
                     Section {

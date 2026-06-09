@@ -4,7 +4,7 @@ use crate::features::voice::{VoiceCmd, use_voice_tx};
 use crate::protocol::{Channel, ChannelKind, ClientMessage, Id, VoiceState};
 use crate::state::{AppState, GatewayTx, VoicePhase, use_app_state, use_gateway};
 
-const PANEL: &str = "w-60 shrink-0 bg-[var(--panel)] border border-[var(--border)] rounded-lg flex flex-col overflow-hidden";
+const PANEL: &str = "w-full h-full bg-[var(--panel)] border border-[var(--border)] rounded-lg flex flex-col overflow-hidden";
 const HEADER: &str = "h-11 px-3 flex items-center border-b border-[var(--border)]";
 const SECTION_LABEL: &str = "px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]";
 
