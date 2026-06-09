@@ -21,6 +21,7 @@ reqwest = { workspace = true }
 # Self-host mode: embed the gateway server in-process; protocol types come
 # from here so client and server can't drift.
 dioxusfun-server = { workspace = true }
+dioxus-grid-layout = { path = "../grid-layout" }
 
 # Shared deps inherited from workspace.
 serde = { workspace = true }

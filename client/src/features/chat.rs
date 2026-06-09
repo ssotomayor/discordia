@@ -1,4 +1,5 @@
 use dioxus::prelude::*;
+use dioxus_grid_layout::NoDrag;
 
 use crate::protocol::{ClientMessage, Id, Message};
 use crate::state::{use_app_state, use_gateway};
@@ -23,33 +24,32 @@ pub fn ChatView() -> Element {
     let channel_topic = channel_meta.as_ref().and_then(|c| c.topic.clone());
 
     rsx! {
-        div { class: "flex flex-col h-full bg-[#313338] min-h-0",
-            // Channel header
-            header { class: "h-12 px-4 flex items-center gap-3 border-b border-black/30 shadow-sm shrink-0",
-                span { class: "text-xl text-gray-400 font-bold", "#" }
-                span { class: "font-bold text-white", "{channel_name}" }
+        div { class: "flex flex-col h-full min-h-0",
+            header { class: "h-11 px-3 flex items-center gap-3 border-b border-[var(--border)] shrink-0",
+                span { class: "text-[var(--text-dim)] font-medium", "#" }
+                span { class: "text-sm text-[var(--accent)] font-medium", "{channel_name}" }
                 if let Some(topic) = channel_topic {
-                    div { class: "border-l border-white/10 h-5 mx-1" }
-                    span { class: "text-sm text-gray-400 truncate", "{topic}" }
+                    span { class: "text-[var(--text-dim)]", "·" }
+                    span { class: "text-xs text-[var(--text-muted)] truncate", "{topic}" }
                 }
             }
 
-            // Message list
-            div { class: "flex-1 overflow-y-auto px-4 py-4 space-y-3 min-h-0",
-                if messages.is_empty() && selected_channel.is_some() {
-                    div { class: "h-full flex items-center justify-center text-gray-500 text-sm",
-                        "No messages yet. Say something."
-                    }
-                } else {
-                    for msg in messages.iter() {
-                        MessageRow { key: "{msg.id}", message: msg.clone() }
+            NoDrag {
+                div { class: "flex-1 overflow-y-auto px-4 py-4 space-y-2 min-h-0",
+                    if messages.is_empty() && selected_channel.is_some() {
+                        div { class: "h-full flex items-center justify-center text-[var(--text-dim)] text-xs",
+                            "No messages yet."
+                        }
+                    } else {
+                        for msg in messages.iter() {
+                            MessageRow { key: "{msg.id}", message: msg.clone() }
+                        }
                     }
                 }
-            }
 
-            // Composer
-            if let Some(channel_id) = selected_channel {
-                Composer { channel_id, channel_name }
+                if let Some(channel_id) = selected_channel {
+                    Composer { channel_id, channel_name }
+                }
             }
         }
     }
@@ -67,16 +67,16 @@ fn MessageRow(message: Message) -> Element {
     let timestamp = message.created_at.format("%H:%M").to_string();
 
     rsx! {
-        div { class: "flex gap-3 hover:bg-white/[0.02] -mx-4 px-4 py-1 group",
-            div { class: "w-10 h-10 rounded-full bg-indigo-600 flex items-center justify-center text-sm font-bold text-white shrink-0 mt-0.5",
+        div { class: "flex gap-3 -mx-4 px-4 py-1 hover:bg-white/[0.02]",
+            div { class: "w-8 h-8 rounded-md border border-[var(--border)] flex items-center justify-center text-xs text-[var(--accent)] font-medium shrink-0 mt-0.5",
                 "{initial}"
             }
             div { class: "flex-1 min-w-0",
                 div { class: "flex items-baseline gap-2",
-                    span { class: "font-semibold text-white", "{message.author.username}" }
-                    span { class: "text-xs text-gray-500", "{timestamp}" }
+                    span { class: "text-sm text-[var(--text)] font-medium", "{message.author.username}" }
+                    span { class: "text-[10px] text-[var(--text-dim)]", "{timestamp}" }
                 }
-                div { class: "text-gray-200 break-words whitespace-pre-wrap", "{message.content}" }
+                div { class: "text-sm text-[var(--text)] break-words whitespace-pre-wrap leading-relaxed", "{message.content}" }
             }
         }
     }
@@ -101,18 +101,18 @@ fn Composer(channel_id: Id, channel_name: String) -> Element {
 
     rsx! {
         form {
-            class: "px-4 pb-4 shrink-0",
+            class: "px-3 pb-3 shrink-0",
             onsubmit: move |e| { e.prevent_default(); submit(); },
-            div { class: "bg-[#383a40] rounded-lg flex items-center px-4",
+            div { class: "border border-[var(--border)] rounded flex items-center px-3 focus-within:border-[var(--accent)] transition-colors",
                 input {
-                    class: "flex-1 bg-transparent py-3 text-gray-100 placeholder-gray-500 focus:outline-none",
+                    class: "flex-1 bg-transparent py-2 text-sm text-[var(--text)] focus:outline-none",
                     r#type: "text",
                     placeholder: "Message #{channel_name}",
                     value: "{draft}",
                     oninput: move |e| draft.set(e.value()),
                 }
                 button {
-                    class: "text-gray-400 hover:text-white text-sm font-semibold px-2 disabled:opacity-30",
+                    class: "text-xs text-[var(--text-muted)] hover:text-[var(--accent)] font-medium uppercase tracking-wider px-2 disabled:opacity-30 transition-colors",
                     r#type: "submit",
                     disabled: draft().trim().is_empty(),
                     "Send"

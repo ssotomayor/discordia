@@ -1,4 +1,5 @@
 use dioxus::prelude::*;
+use dioxus_grid_layout::{GridItem, GridLayout, GridPosition, use_layout_store};
 
 use crate::features::{
     channels::ChannelsColumn, chat::ChatView, guilds::GuildsSidebar, members::MembersPanel,
@@ -24,32 +25,63 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
     provide_context(crate::features::voice::VoiceTx(voice_tx.clone()));
     provide_context(state);
 
+    // Initial 4-panel dashboard layout. 12 cols × 24px row height; total
+    // height ≈ 720px which fits a default desktop window. Users can drag
+    // and resize via the corner grip.
+    let layout = use_layout_store(|| {
+        vec![
+            ("guilds".into(), GridPosition::new(0, 0, 1, 30)),
+            ("channels".into(), GridPosition::new(1, 0, 2, 30)),
+            ("chat".into(), GridPosition::new(3, 0, 7, 30)),
+            ("members".into(), GridPosition::new(10, 0, 2, 30)),
+        ]
+    });
+
+    let mut edit_mode = use_signal(|| false);
     let status = state.read().status;
 
     rsx! {
-        div { class: "h-full w-full flex flex-col",
+        div { class: "h-full w-full flex flex-col bg-[var(--bg)] p-2 gap-2",
             VoiceSounds {}
             HostBanner {}
-            div { class: "flex-1 flex min-h-0",
-                GuildsSidebar {}
-                ChannelsColumn {}
-                div { class: "flex-1 flex flex-col min-w-0",
-                    if status == ConnectionStatus::Connecting {
-                        div { class: "flex-1 flex items-center justify-center text-gray-400",
-                            "Connecting..."
+
+            div { class: "flex-1 overflow-auto min-h-0",
+                GridLayout {
+                    cols: 12, row_height: 24.0, gap: 8.0,
+                    store: layout, editable: edit_mode(),
+                    GridItem { id: "guilds", x: 0, y: 0, w: 1, h: 30, min_w: 1, min_h: 10,
+                        GuildsSidebar {}
+                    }
+                    GridItem { id: "channels", x: 1, y: 0, w: 2, h: 30, min_w: 2, min_h: 10,
+                        ChannelsColumn {}
+                    }
+                    GridItem { id: "chat", x: 3, y: 0, w: 7, h: 30, min_w: 3, min_h: 10,
+                        div { class: "w-full h-full flex flex-col bg-[var(--panel)] border border-[var(--border)] rounded-lg overflow-hidden",
+                            if status == ConnectionStatus::Connecting {
+                                div { class: "flex-1 flex items-center justify-center text-[var(--text-muted)] text-sm",
+                                    "Connecting…"
+                                }
+                            } else {
+                                ChatView {}
+                            }
                         }
-                    } else {
-                        ChatView {}
+                    }
+                    GridItem { id: "members", x: 10, y: 0, w: 2, h: 30, min_w: 2, min_h: 10,
+                        MembersPanel {}
                     }
                 }
-                MembersPanel {}
+            }
+
+            // Floating edit-mode toggle. Always visible, subtle.
+            button {
+                class: "fixed bottom-3 right-3 z-40 border border-[var(--border)] rounded px-3 py-1 text-[10px] uppercase tracking-wider bg-[var(--panel)] hover:border-[var(--accent)] text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors",
+                onclick: move |_| edit_mode.set(!edit_mode()),
+                if edit_mode() { "Done" } else { "Edit layout" }
             }
         }
     }
 }
 
-/// Hidden `<audio>` element + voice-phase watcher. Plays `assets/connect.mp3`
-/// each time the local voice phase transitions to Connected.
 #[component]
 fn VoiceSounds() -> Element {
     let state = use_app_state();
@@ -60,7 +92,6 @@ fn VoiceSounds() -> Element {
         let now = phase();
         let prev = *last_phase.peek();
         if now == VoicePhase::Connected && prev != VoicePhase::Connected {
-            // Fire-and-forget JS to trigger play on the hidden element.
             let _ = document::eval(
                 "const a = document.getElementById('voice-connect-sound'); \
                  if (a) { a.currentTime = 0; a.play().catch(() => {}); }",
@@ -90,29 +121,25 @@ fn HostBanner() -> Element {
 
     let lan_text = info.lan_url.clone();
     let shortcode = info.shortcode.clone();
-    let voice_label = if info.voice_bundled {
-        "voice ready"
+    let (voice_label, voice_color) = if info.voice_bundled {
+        ("voice ready", "text-[var(--success)]")
     } else {
-        "voice unavailable (binary not bundled)"
-    };
-    let voice_color = if info.voice_bundled {
-        "text-emerald-300"
-    } else {
-        "text-yellow-300"
+        ("voice unavailable", "text-[var(--warn)]")
     };
 
     rsx! {
-        div { class: "shrink-0 px-4 py-2 bg-[#1e1f22] border-b border-emerald-900/50 flex items-center gap-3 text-xs flex-wrap",
-            span { class: "text-emerald-300 font-bold uppercase tracking-wide", "🏠 Self-hosting" }
+        div { class: "shrink-0 px-3 py-2 bg-[var(--panel)] border border-[var(--border)] rounded-lg flex items-center gap-3 text-xs flex-wrap",
+            span { class: "text-[var(--accent)] font-medium tracking-wide", "Self-hosting" }
             if let Some(code) = shortcode {
-                span { class: "text-gray-400", "Shortcode:" }
-                code { class: "text-emerald-200 bg-emerald-900/40 px-2 py-0.5 rounded select-all font-bold",
+                span { class: "text-[var(--text-dim)]", "·" }
+                span { class: "text-[var(--text-muted)]", "Code:" }
+                code { class: "text-[var(--text)] select-all font-medium",
                     "{code}"
                 }
-                span { class: "text-gray-500", "·" }
             }
-            span { class: "text-gray-400", "LAN:" }
-            code { class: "text-gray-200 bg-white/5 px-2 py-0.5 rounded select-all",
+            span { class: "text-[var(--text-dim)]", "·" }
+            span { class: "text-[var(--text-muted)]", "LAN:" }
+            code { class: "text-[var(--text)] select-all",
                 "{lan_text}"
             }
             span { class: "flex-1" }

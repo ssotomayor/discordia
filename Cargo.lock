@@ -1944,6 +1944,7 @@ dependencies = [
  "chrono",
  "cpal",
  "dioxus",
+ "dioxus-grid-layout",
  "dioxusfun-server",
  "futures-util",
  "livekit",
