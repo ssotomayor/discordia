@@ -2,6 +2,7 @@ use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::identity::Identity;
+use crate::session::{self, SavedSession};
 use crate::state::{SessionMode, SessionParams};
 
 const DEFAULT_RENDEZVOUS_URL: &str = "ws://localhost:7700";
@@ -30,6 +31,7 @@ const LABEL: &str = "text-[10px] font-semibold uppercase tracking-wider text-[va
 pub fn ConnectView(
     identity: Identity,
     error: Option<String>,
+    last_session: Option<SavedSession>,
     on_connect: EventHandler<SessionParams>,
     on_sign_out: EventHandler<()>,
 ) -> Element {
@@ -129,6 +131,38 @@ pub fn ConnectView(
                 }
 
                 IdentityCard { identity: identity.clone(), on_sign_out }
+
+                if let Some(saved) = last_session.clone() {
+                    {
+                        let identity_for_reconnect = identity.clone();
+                        let on_connect_for_reconnect = on_connect.clone();
+                        rsx! {
+                            button {
+                                r#type: "button",
+                                class: "panel-hover w-full flex items-center gap-2 border border-[var(--border)] hover:border-[var(--accent)] rounded p-2 text-xs text-left group",
+                                onclick: move |_| {
+                                    let params = SessionParams {
+                                        mode: saved.mode.clone(),
+                                        username: saved.username.clone(),
+                                        identity: identity_for_reconnect.clone(),
+                                    };
+                                    on_connect_for_reconnect.call(params);
+                                },
+                                div { class: "flex-1 min-w-0",
+                                    div { class: "text-[10px] uppercase tracking-wider text-[var(--text-muted)]",
+                                        "Last session"
+                                    }
+                                    div { class: "text-[var(--text)] truncate group-hover:text-[var(--accent)] transition-colors",
+                                        "{session::label(&saved)}"
+                                    }
+                                }
+                                span { class: "text-[10px] text-[var(--accent)] uppercase tracking-wider font-medium",
+                                    "reconnect →"
+                                }
+                            }
+                        }
+                    }
+                }
 
                 div { class: "h-px bg-[var(--border)]" }
 
@@ -304,24 +338,36 @@ fn IdentityCard(identity: Identity, on_sign_out: EventHandler<()>) -> Element {
         .to_ascii_uppercase()
         .to_string();
     let truncated = identity.truncated_pubkey();
+    let file_path = Identity::file_path_display();
+
     rsx! {
-        div { class: "panel-hover flex items-center gap-2 border border-[var(--border)] rounded p-2 text-xs",
-            div { class: "w-7 h-7 rounded-md border border-[var(--border)] flex items-center justify-center text-[var(--accent)] font-medium",
-                "{initial}"
-            }
-            div { class: "flex flex-col flex-1 min-w-0",
-                span { class: "text-[var(--text)] truncate text-sm", "{identity.display_name}" }
-                span { class: "text-[var(--text-dim)] text-[10px] font-mono select-all",
-                    title: "{identity.pubkey}",
-                    "{truncated}"
+        div { class: "space-y-1",
+            div { class: "panel-hover flex items-center gap-2 border border-[var(--border)] rounded p-2 text-xs",
+                div { class: "w-7 h-7 rounded-md border border-[var(--border)] flex items-center justify-center text-[var(--accent)] font-medium",
+                    "{initial}"
+                }
+                div { class: "flex flex-col flex-1 min-w-0",
+                    span { class: "text-[var(--text)] truncate text-sm", "{identity.display_name}" }
+                    span { class: "text-[var(--text-dim)] text-[10px] font-mono select-all",
+                        title: "{identity.pubkey}",
+                        "{truncated}"
+                    }
+                }
+                button {
+                    r#type: "button",
+                    class: "text-[10px] text-[var(--text-muted)] hover:text-[var(--danger)] uppercase tracking-wider px-2 transition-colors",
+                    onclick: move |_| on_sign_out.call(()),
+                    title: "Wipe local identity",
+                    "sign out"
                 }
             }
-            button {
-                r#type: "button",
-                class: "text-[10px] text-[var(--text-muted)] hover:text-[var(--danger)] uppercase tracking-wider px-2",
-                onclick: move |_| on_sign_out.call(()),
-                title: "Wipe local identity",
-                "sign out"
+            details { class: "text-[10px] text-[var(--text-dim)] px-1",
+                summary { class: "cursor-pointer hover:text-[var(--text-muted)] transition-colors",
+                    "Identity file location"
+                }
+                code { class: "block mt-1 text-[var(--text-muted)] font-mono break-all select-all",
+                    "{file_path}"
+                }
             }
         }
     }

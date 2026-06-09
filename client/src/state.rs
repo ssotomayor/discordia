@@ -8,7 +8,8 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::host::HostInfo;
 use crate::protocol::{Channel, ClientMessage, Guild, Id, Member, Message, User, VoiceState};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SessionMode {
     /// Connect to a remote dioxusfun-server.
     Remote { server_url: String },

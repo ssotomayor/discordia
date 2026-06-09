@@ -4,6 +4,7 @@ use crate::features::{
     connect::ConnectView, identity_setup::IdentitySetupView, workspace::WorkspaceView,
 };
 use crate::identity::Identity;
+use crate::session::{self, SavedSession};
 use crate::state::{SessionMode, SessionParams};
 
 const BASE_CSS: &str = "
@@ -68,10 +69,10 @@ button:active:not(:disabled) { transform: scale(0.985); }
 
 #[component]
 pub fn App() -> Element {
-    // Load identity from disk on mount. None if no identity yet — first-launch.
     let mut identity = use_signal(|| Identity::load().ok().flatten());
     let mut session = use_signal(|| None::<SessionParams>);
     let mut error = use_signal(|| None::<String>);
+    let last_session = use_signal(|| session::load().ok().flatten());
 
     rsx! {
         document::Script { src: "https://unpkg.com/@tailwindcss/browser@4" }
@@ -88,12 +89,20 @@ pub fn App() -> Element {
                     ConnectView {
                         identity: id,
                         error: error(),
+                        last_session: last_session.read().clone(),
                         on_connect: move |params: SessionParams| {
                             error.set(None);
+                            // Persist for next launch's Reconnect button.
+                            let saved = SavedSession {
+                                mode: params.mode.clone(),
+                                username: params.username.clone(),
+                            };
+                            let _ = session::save(&saved);
                             session.set(Some(params));
                         },
                         on_sign_out: move |_| {
                             let _ = Identity::delete_file();
+                            let _ = session::clear();
                             session.set(None);
                             identity.set(None);
                         },

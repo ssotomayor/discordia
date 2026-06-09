@@ -5,6 +5,7 @@ mod identity;
 mod net;
 mod protocol;
 mod rendezvous;
+mod session;
 mod state;
 
 fn main() {
