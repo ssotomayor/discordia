@@ -4,6 +4,7 @@
 //! The thin `bin/dioxusfun-server` shim in `src/main.rs` is just a wrapper
 //! that wires logging + env config and calls [`serve`].
 
+pub mod auth;
 pub mod gateway;
 pub mod http;
 pub mod livekit;

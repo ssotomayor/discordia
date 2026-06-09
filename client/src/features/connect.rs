@@ -1,6 +1,7 @@
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use crate::identity::Identity;
 use crate::state::{SessionMode, SessionParams};
 
 const DEFAULT_RENDEZVOUS_URL: &str = "ws://localhost:7700";
@@ -26,14 +27,18 @@ const INPUT_SM: &str = "w-full bg-transparent border border-[var(--border)] roun
 const LABEL: &str = "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]";
 
 #[component]
-pub fn ConnectView(error: Option<String>, on_connect: EventHandler<SessionParams>) -> Element {
+pub fn ConnectView(
+    identity: Identity,
+    error: Option<String>,
+    on_connect: EventHandler<SessionParams>,
+    on_sign_out: EventHandler<()>,
+) -> Element {
     let default_rendezvous = std::env::var("DIOXUSFUN_RENDEZVOUS_URL")
         .ok()
         .unwrap_or_else(|| DEFAULT_RENDEZVOUS_URL.to_string());
 
     let mut tab = use_signal(|| Tab::Browse);
     let mut server_url = use_signal(|| "ws://localhost:9000".to_string());
-    let mut username = use_signal(String::new);
     let mut allow_lan = use_signal(|| false);
     let mut publish_to_rendezvous = use_signal(|| true);
     let mut rendezvous_url = use_signal(|| default_rendezvous.clone());
@@ -43,11 +48,9 @@ pub fn ConnectView(error: Option<String>, on_connect: EventHandler<SessionParams
     let mut description = use_signal(String::new);
     let mut publish_public = use_signal(|| false);
 
+    let identity_for_submit = identity.clone();
     let submit = move |_| {
-        let name = username().trim().to_string();
-        if name.is_empty() {
-            return;
-        }
+        let name = identity_for_submit.display_name.clone();
         let params = match tab() {
             Tab::Remote => {
                 let url = server_url().trim().to_string();
@@ -57,6 +60,7 @@ pub fn ConnectView(error: Option<String>, on_connect: EventHandler<SessionParams
                 SessionParams {
                     mode: SessionMode::Remote { server_url: url },
                     username: name,
+                    identity: identity_for_submit.clone(),
                 }
             }
             Tab::SelfHost => {
@@ -77,6 +81,7 @@ pub fn ConnectView(error: Option<String>, on_connect: EventHandler<SessionParams
                         publish_public: publish_to_rendezvous() && publish_public(),
                     },
                     username: name,
+                    identity: identity_for_submit.clone(),
                 }
             }
             Tab::ByCode | Tab::Browse => {
@@ -91,6 +96,7 @@ pub fn ConnectView(error: Option<String>, on_connect: EventHandler<SessionParams
                         code: c,
                     },
                     username: name,
+                    identity: identity_for_submit.clone(),
                 }
             }
         };
@@ -98,12 +104,10 @@ pub fn ConnectView(error: Option<String>, on_connect: EventHandler<SessionParams
     };
 
     let disabled = match tab() {
-        Tab::Remote => server_url().trim().is_empty() || username().trim().is_empty(),
-        Tab::SelfHost => username().trim().is_empty(),
+        Tab::Remote => server_url().trim().is_empty(),
+        Tab::SelfHost => false,
         Tab::ByCode | Tab::Browse => {
-            code().trim().is_empty()
-                || rendezvous_url().trim().is_empty()
-                || username().trim().is_empty()
+            code().trim().is_empty() || rendezvous_url().trim().is_empty()
         }
     };
 
@@ -119,6 +123,8 @@ pub fn ConnectView(error: Option<String>, on_connect: EventHandler<SessionParams
                         "Browse, join by code, host your own, or connect to a URL."
                     }
                 }
+
+                IdentityCard { identity: identity.clone(), on_sign_out }
 
                 div { class: "h-px bg-[var(--border)]" }
 
@@ -249,17 +255,6 @@ pub fn ConnectView(error: Option<String>, on_connect: EventHandler<SessionParams
                     },
                 }
 
-                div { class: "space-y-1",
-                    label { class: LABEL, "Display name" }
-                    input {
-                        class: INPUT,
-                        r#type: "text",
-                        placeholder: "your-handle",
-                        value: "{username}",
-                        oninput: move |e| username.set(e.value()),
-                    }
-                }
-
                 button {
                     class: "w-full bg-[var(--accent)] hover:bg-[var(--accent-strong)] text-[#0a0908] font-medium py-2 rounded transition-colors disabled:opacity-30 disabled:cursor-not-allowed text-sm",
                     r#type: "submit",
@@ -289,6 +284,39 @@ fn TabButton(active: bool, label: &'static str, onclick: EventHandler<()>) -> El
             class: "flex-1 px-2 py-1.5 border-b font-medium transition-colors {cls}",
             onclick: move |_| onclick.call(()),
             "{label}"
+        }
+    }
+}
+
+#[component]
+fn IdentityCard(identity: Identity, on_sign_out: EventHandler<()>) -> Element {
+    let initial = identity
+        .display_name
+        .chars()
+        .next()
+        .unwrap_or('?')
+        .to_ascii_uppercase()
+        .to_string();
+    let truncated = identity.truncated_pubkey();
+    rsx! {
+        div { class: "flex items-center gap-2 border border-[var(--border)] rounded p-2 text-xs",
+            div { class: "w-7 h-7 rounded-md border border-[var(--border)] flex items-center justify-center text-[var(--accent)] font-medium",
+                "{initial}"
+            }
+            div { class: "flex flex-col flex-1 min-w-0",
+                span { class: "text-[var(--text)] truncate text-sm", "{identity.display_name}" }
+                span { class: "text-[var(--text-dim)] text-[10px] font-mono select-all",
+                    title: "{identity.pubkey}",
+                    "{truncated}"
+                }
+            }
+            button {
+                r#type: "button",
+                class: "text-[10px] text-[var(--text-muted)] hover:text-[var(--danger)] uppercase tracking-wider px-2",
+                onclick: move |_| on_sign_out.call(()),
+                title: "Wipe local identity",
+                "sign out"
+            }
         }
     }
 }

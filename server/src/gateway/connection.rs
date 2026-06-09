@@ -2,9 +2,9 @@ use std::sync::Arc;
 
 use axum::extract::ws::{Message as WsMessage, WebSocket};
 use futures_util::{SinkExt, StreamExt};
-use uuid::Uuid;
 
 use crate::AppContext;
+use crate::auth;
 use crate::livekit;
 use crate::protocol::{ClientMessage, ServerMessage, User};
 
@@ -15,6 +15,16 @@ pub async fn handle_connection(
 ) {
     let (mut ws_tx, mut ws_rx) = socket.split();
     let mut hub_rx = ctx.state.hub.subscribe();
+
+    // Issue a per-connection nonce immediately so the client knows what to
+    // sign in its Identify response.
+    let nonce = auth::fresh_nonce();
+    if send(&mut ws_tx, &ServerMessage::Hello { nonce: nonce.clone() })
+        .await
+        .is_err()
+    {
+        return;
+    }
 
     let mut user: Option<User> = None;
 
@@ -36,26 +46,31 @@ pub async fn handle_connection(
                 };
 
                 match client_msg {
-                    ClientMessage::Identify { username } => {
+                    ClientMessage::Identify { username, pubkey, signature } => {
                         if user.is_some() {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "already identified".into(),
                             }).await;
                             continue;
                         }
-                        let new_user = User {
-                            id: Uuid::new_v4(),
-                            username: sanitize_username(&username),
-                        };
+                        let username = sanitize_username(&username);
+                        if let Err(e) = auth::verify_identify(&pubkey, &signature, &nonce, &username) {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: format!("identify rejected: {e}"),
+                            }).await;
+                            continue;
+                        }
+                        let new_user = User { pubkey: pubkey.clone(), username };
                         let ready = ctx.state.snapshot_for(&new_user);
                         if send(&mut ws_tx, &ready).await.is_err() {
                             break;
                         }
                         for entry in ctx.state.members.iter() {
-                            if let Some(member) = entry.value().get(&new_user.id) {
+                            if let Some(member) = entry.value().get(&new_user.pubkey) {
                                 let _ = ctx.state.hub.send(ServerMessage::MemberJoin(member.clone()));
                             }
                         }
+                        tracing::info!(user = %new_user.username, pubkey = %new_user.pubkey, "identified");
                         user = Some(new_user);
                     }
                     ClientMessage::FetchMessages { channel_id, limit } => {
@@ -112,12 +127,12 @@ pub async fn handle_connection(
                             continue;
                         };
                         let new_state =
-                            ctx.state.set_voice_channel(u.id, guild_id, Some(channel_id));
+                            ctx.state.set_voice_channel(&u.pubkey, guild_id, Some(channel_id));
                         let _ = ctx
                             .state
                             .hub
                             .send(ServerMessage::VoiceStateUpdate(new_state));
-                        match livekit::mint_token(&ctx.livekit, u.id, &u.username, channel_id) {
+                        match livekit::mint_token(&ctx.livekit, &u.pubkey, &u.username, channel_id) {
                             Ok(token) => {
                                 let livekit_url =
                                     ctx.livekit.url_for_client(client_host.as_deref());
@@ -144,19 +159,19 @@ pub async fn handle_connection(
                     }
                     ClientMessage::LeaveVoice => {
                         let Some(u) = user.as_ref() else { continue };
-                        if let Some(cleared) = ctx.state.clear_voice(u.id) {
+                        if let Some(cleared) = ctx.state.clear_voice(&u.pubkey) {
                             let _ = ctx.state.hub.send(ServerMessage::VoiceStateUpdate(cleared));
                         }
                     }
                     ClientMessage::SetVoiceMute { muted, deafened } => {
                         let Some(u) = user.as_ref() else { continue };
-                        if let Some(state) = ctx.state.update_voice_flags(u.id, muted, deafened) {
+                        if let Some(state) = ctx.state.update_voice_flags(&u.pubkey, muted, deafened) {
                             let _ = ctx.state.hub.send(ServerMessage::VoiceStateUpdate(state));
                         }
                     }
                     ClientMessage::SetSpeaking { speaking } => {
                         let Some(u) = user.as_ref() else { continue };
-                        if let Some(state) = ctx.state.update_speaking(u.id, speaking) {
+                        if let Some(state) = ctx.state.update_speaking(&u.pubkey, speaking) {
                             let _ = ctx.state.hub.send(ServerMessage::VoiceStateUpdate(state));
                         }
                     }
@@ -173,11 +188,11 @@ pub async fn handle_connection(
     }
 
     if let Some(u) = user {
-        if let Some(cleared) = ctx.state.clear_voice(u.id) {
+        if let Some(cleared) = ctx.state.clear_voice(&u.pubkey) {
             let _ = ctx.state.hub.send(ServerMessage::VoiceStateUpdate(cleared));
         }
-        for (guild_id, user_id) in ctx.state.mark_offline(u.id) {
-            let _ = ctx.state.hub.send(ServerMessage::MemberLeave { guild_id, user_id });
+        for (guild_id, user_pubkey) in ctx.state.mark_offline(&u.pubkey) {
+            let _ = ctx.state.hub.send(ServerMessage::MemberLeave { guild_id, user_pubkey });
         }
         tracing::info!(user = %u.username, "client disconnected");
     }

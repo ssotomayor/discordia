@@ -1,11 +1,11 @@
 use dioxus::prelude::*;
 
-use crate::features::{connect::ConnectView, workspace::WorkspaceView};
+use crate::features::{
+    connect::ConnectView, identity_setup::IdentitySetupView, workspace::WorkspaceView,
+};
+use crate::identity::Identity;
 use crate::state::{SessionMode, SessionParams};
 
-/// Minimalist palette — single background, subtle warm border, low-saturation
-/// accent. Re-used everywhere via `bg-[var(--bg)]` / `border-[var(--border)]`
-/// / `text-[var(--accent)]` Tailwind arbitrary values.
 const BASE_CSS: &str = "
 :root {
   --bg: #0a0908;
@@ -40,6 +40,8 @@ input::placeholder { color: var(--text-dim); }
 
 #[component]
 pub fn App() -> Element {
+    // Load identity from disk on mount. None if no identity yet — first-launch.
+    let mut identity = use_signal(|| Identity::load().ok().flatten());
     let mut session = use_signal(|| None::<SessionParams>);
     let mut error = use_signal(|| None::<String>);
 
@@ -48,17 +50,28 @@ pub fn App() -> Element {
         document::Style { {BASE_CSS} }
 
         div { class: "h-screen w-screen bg-[var(--bg)] text-[var(--text)] antialiased overflow-hidden",
-            match session() {
-                None => rsx! {
+            match (identity.read().clone(), session.read().clone()) {
+                (None, _) => rsx! {
+                    IdentitySetupView {
+                        on_done: move |new_id: Identity| identity.set(Some(new_id)),
+                    }
+                },
+                (Some(id), None) => rsx! {
                     ConnectView {
+                        identity: id,
                         error: error(),
                         on_connect: move |params: SessionParams| {
                             error.set(None);
                             session.set(Some(params));
                         },
+                        on_sign_out: move |_| {
+                            let _ = Identity::delete_file();
+                            session.set(None);
+                            identity.set(None);
+                        },
                     }
                 },
-                Some(params) => rsx! {
+                (Some(_), Some(params)) => rsx! {
                     WorkspaceView {
                         key: "{session_key(&params)}",
                         params: params.clone(),
@@ -86,5 +99,5 @@ fn session_key(p: &SessionParams) -> String {
             format!("bycode:{rendezvous_url}:{code}")
         }
     };
-    format!("{mode}|{}", p.username)
+    format!("{mode}|{}|{}", p.username, p.identity.pubkey)
 }

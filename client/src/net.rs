@@ -122,12 +122,43 @@ async fn run(
         .map_err(|e| format!("connect failed: {e}"))?;
     let (mut ws_tx, mut ws_rx) = ws_stream.split();
 
-    let hello = serde_json::to_string(&ClientMessage::Identify {
-        username: params.username.clone(),
-    })
-    .map_err(|e| e.to_string())?;
+    // Wait for the server's Hello frame so we know what nonce to sign.
+    let nonce = loop {
+        let Some(frame) = ws_rx.next().await else {
+            return Err("server closed before Hello".into());
+        };
+        let frame = frame.map_err(|e| format!("recv: {e}"))?;
+        let text = match frame {
+            WsMessage::Text(t) => t.to_string(),
+            WsMessage::Close(_) => return Err("server closed before Hello".into()),
+            _ => continue,
+        };
+        let parsed: ServerMessage = serde_json::from_str(&text)
+            .map_err(|e| format!("bad server frame before Hello: {e}"))?;
+        match parsed {
+            ServerMessage::Hello { nonce } => break nonce,
+            other => return Err(format!("expected Hello, got {other:?}")),
+        }
+    };
+
+    // Sign nonce || pubkey || username with the identity's signing key and
+    // send the Identify response.
+    let username = params.username.clone();
+    let pubkey = params.identity.pubkey.clone();
+    let mut to_sign = Vec::with_capacity(nonce.len() + pubkey.len() + username.len());
+    to_sign.extend_from_slice(nonce.as_bytes());
+    to_sign.extend_from_slice(pubkey.as_bytes());
+    to_sign.extend_from_slice(username.as_bytes());
+    let signature = params.identity.sign_base58(&to_sign);
+
+    let identify = ClientMessage::Identify {
+        username,
+        pubkey,
+        signature,
+    };
+    let json = serde_json::to_string(&identify).map_err(|e| e.to_string())?;
     ws_tx
-        .send(WsMessage::Text(hello.into()))
+        .send(WsMessage::Text(json.into()))
         .await
         .map_err(|e| format!("send identify: {e}"))?;
 
@@ -212,27 +243,24 @@ fn apply(
             s.messages.entry(m.channel_id).or_default().push(m);
         }
         ServerMessage::MemberJoin(member) => {
-            let exists = s
-                .members
-                .iter_mut()
-                .find(|m| m.guild_id == member.guild_id && m.user.id == member.user.id);
+            let exists = s.members.iter_mut().find(|m| {
+                m.guild_id == member.guild_id && m.user.pubkey == member.user.pubkey
+            });
             match exists {
                 Some(existing) => *existing = member,
                 None => s.members.push(member),
             }
         }
-        ServerMessage::MemberLeave { guild_id, user_id } => {
-            if let Some(m) = s
-                .members
-                .iter_mut()
-                .find(|m| m.guild_id == guild_id && m.user.id == user_id)
-            {
+        ServerMessage::MemberLeave { guild_id, user_pubkey } => {
+            if let Some(m) = s.members.iter_mut().find(|m| {
+                m.guild_id == guild_id && m.user.pubkey == user_pubkey
+            }) {
                 m.online = false;
             }
         }
         ServerMessage::VoiceStateUpdate(vs) => {
-            let self_id = s.self_user.as_ref().map(|u| u.id);
-            let is_self = Some(vs.user_id) == self_id;
+            let self_pubkey = s.self_user.as_ref().map(|u| u.pubkey.clone());
+            let is_self = self_pubkey.as_deref() == Some(vs.user_pubkey.as_str());
             if is_self {
                 eprintln!(
                     "[net] VoiceStateUpdate(self) channel={:?} muted={} phase={:?}",
@@ -241,19 +269,23 @@ fn apply(
             }
 
             // Mirror into roster.
-            if let Some(existing) = s
+            let existing_idx = s
                 .voice_states
-                .iter_mut()
-                .find(|v| v.user_id == vs.user_id)
-            {
-                if vs.channel_id.is_some() {
-                    *existing = vs.clone();
-                } else {
-                    let user_id = vs.user_id;
-                    s.voice_states.retain(|v| v.user_id != user_id);
+                .iter()
+                .position(|v| v.user_pubkey == vs.user_pubkey);
+            match existing_idx {
+                Some(i) => {
+                    if vs.channel_id.is_some() {
+                        s.voice_states[i] = vs.clone();
+                    } else {
+                        s.voice_states.remove(i);
+                    }
                 }
-            } else if vs.channel_id.is_some() {
-                s.voice_states.push(vs.clone());
+                None => {
+                    if vs.channel_id.is_some() {
+                        s.voice_states.push(vs.clone());
+                    }
+                }
             }
 
             // Self updates propagate to local VoiceSession.
@@ -285,6 +317,11 @@ fn apply(
         }
         ServerMessage::Error { message } => {
             tracing::warn!(server_error = %message);
+        }
+        ServerMessage::Hello { .. } => {
+            // Hello is only valid as the FIRST frame and is consumed by the
+            // handshake loop in `run()`. Anywhere else, ignore.
+            tracing::warn!("ignoring late Hello frame from server");
         }
     }
 }

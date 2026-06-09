@@ -70,10 +70,10 @@ fn Section(label: String, members: Vec<Member>, voice_states: Vec<VoiceState>) -
                 {
                     let vs = voice_states
                         .iter()
-                        .find(|v| v.user_id == m.user.id)
+                        .find(|v| v.user_pubkey == m.user.pubkey)
                         .cloned();
                     rsx! {
-                        MemberRow { key: "{m.user.id}", member: m.clone(), voice: vs }
+                        MemberRow { key: "{m.user.pubkey}", member: m.clone(), voice: vs }
                     }
                 }
             }

@@ -57,16 +57,18 @@ fn host_without_port(host: &str) -> &str {
     host.rsplit_once(':').map(|(h, _)| h).unwrap_or(host)
 }
 
-/// Build a LiveKit JWT scoped to the given voice channel room.
+/// Build a LiveKit JWT scoped to the given voice channel room. Identity is
+/// the user's Ed25519 pubkey so LiveKit's participant identifiers match
+/// dioxusfun's universal user id.
 pub fn mint_token(
     cfg: &LiveKitConfig,
-    user_id: Id,
+    user_pubkey: &str,
     username: &str,
     channel_id: Id,
 ) -> Result<String, String> {
     let room = room_name(channel_id);
     AccessToken::with_api_key(&cfg.api_key, &cfg.api_secret)
-        .with_identity(&user_id.to_string())
+        .with_identity(user_pubkey)
         .with_name(username)
         .with_grants(VideoGrants {
             room_join: true,
