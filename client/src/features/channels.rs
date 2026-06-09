@@ -4,6 +4,10 @@ use crate::features::voice::{VoiceCmd, use_voice_tx};
 use crate::protocol::{Channel, ChannelKind, ClientMessage, Id, VoiceState};
 use crate::state::{AppState, GatewayTx, VoicePhase, use_app_state, use_gateway};
 
+const PANEL: &str = "w-60 shrink-0 bg-[var(--panel)] border border-[var(--border)] rounded-lg flex flex-col overflow-hidden";
+const HEADER: &str = "h-11 px-3 flex items-center border-b border-[var(--border)]";
+const SECTION_LABEL: &str = "px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]";
+
 #[component]
 pub fn ChannelsColumn() -> Element {
     let mut state = use_app_state();
@@ -39,9 +43,9 @@ pub fn ChannelsColumn() -> Element {
         .collect();
 
     rsx! {
-        aside { class: "w-60 shrink-0 bg-[#2b2d31] flex flex-col border-r border-black/20",
-            div { class: "h-12 px-4 flex items-center border-b border-black/30 shadow-sm",
-                h2 { class: "font-bold text-white truncate",
+        aside { class: PANEL,
+            div { class: HEADER,
+                h2 { class: "text-sm text-[var(--accent)] truncate font-medium",
                     {guild.as_ref().map(|g| g.name.clone()).unwrap_or_else(|| "No server".into())}
                 }
             }
@@ -49,26 +53,24 @@ pub fn ChannelsColumn() -> Element {
             div { class: "flex-1 overflow-y-auto px-2 py-3 space-y-3",
                 if !text_channels.is_empty() {
                     div {
-                        div { class: "px-2 py-1 text-xs font-bold uppercase tracking-wide text-gray-400",
-                            "Text channels"
-                        }
+                        div { class: SECTION_LABEL, "Text channels" }
                         for channel in text_channels.iter() {
                             {
                                 let ch = (*channel).clone();
                                 let cid = ch.id;
                                 let active = selected_channel == Some(cid);
                                 let cls = if active {
-                                    "bg-white/10 text-white"
+                                    "text-[var(--accent)] bg-[var(--accent-soft)]"
                                 } else {
-                                    "text-gray-400 hover:bg-white/5 hover:text-gray-200"
+                                    "text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-white/[0.03]"
                                 };
                                 let g2 = gateway.clone();
                                 rsx! {
                                     button {
                                         key: "{cid}",
-                                        class: "w-full flex items-center gap-1.5 px-2 py-1.5 rounded text-left text-sm transition-colors {cls}",
+                                        class: "w-full flex items-center gap-1.5 px-2 py-1 rounded text-left text-sm transition-colors {cls}",
                                         onclick: move |_| select_text_channel(&mut state, &g2, cid),
-                                        span { class: "text-gray-500", "#" }
+                                        span { class: "text-[var(--text-dim)]", "#" }
                                         span { class: "truncate", "{ch.name}" }
                                     }
                                 }
@@ -79,9 +81,7 @@ pub fn ChannelsColumn() -> Element {
 
                 if !voice_channels.is_empty() {
                     div {
-                        div { class: "px-2 py-1 text-xs font-bold uppercase tracking-wide text-gray-400",
-                            "Voice channels"
-                        }
+                        div { class: SECTION_LABEL, "Voice channels" }
                         for channel in voice_channels.iter() {
                             {
                                 let ch = (*channel).clone();
@@ -117,7 +117,6 @@ pub fn ChannelsColumn() -> Element {
                 }
             }
 
-            // User panel with voice controls.
             UserPanel { self_voice: self_voice, self_username: self_user.map(|u| u.username) }
         }
     }
@@ -133,9 +132,9 @@ fn VoiceChannelRow(
     on_leave: EventHandler<()>,
 ) -> Element {
     let row_cls = if connected {
-        "text-white bg-white/5"
+        "text-[var(--accent)] bg-[var(--accent-soft)]"
     } else {
-        "text-gray-400 hover:bg-white/5 hover:text-gray-200"
+        "text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-white/[0.03]"
     };
     let state = use_app_state();
     let users_by_id = state.read();
@@ -143,14 +142,14 @@ fn VoiceChannelRow(
     rsx! {
         div { class: "rounded",
             button {
-                class: "w-full flex items-center gap-1.5 px-2 py-1.5 rounded text-left text-sm transition-colors {row_cls}",
+                class: "w-full flex items-center gap-1.5 px-2 py-1 rounded text-left text-sm transition-colors {row_cls}",
                 onclick: move |_| {
                     if connected { on_leave.call(()) } else { on_join.call(()) }
                 },
-                span { class: "text-gray-500", "🔊" }
+                span { class: "text-[var(--text-dim)] text-xs", "♪" }
                 span { class: "truncate flex-1", "{channel.name}" }
                 if connected {
-                    span { class: "text-[10px] text-emerald-400 font-semibold uppercase", "live" }
+                    span { class: "text-[9px] text-[var(--accent)] font-semibold uppercase tracking-wider", "live" }
                 }
             }
             if !occupants.is_empty() {
@@ -162,19 +161,19 @@ fn VoiceChannelRow(
                                 .map(|u| u.username.clone())
                                 .unwrap_or_else(|| short_id(vs.user_id));
                             let is_self = self_user_id == Some(vs.user_id);
-                            let dot = if vs.speaking { "bg-emerald-400" } else { "bg-white/30" };
-                            let mute_badge = if vs.muted { Some("🔇") } else { None };
+                            let dot = if vs.speaking { "bg-[var(--accent)]" } else { "bg-[var(--text-dim)]" };
+                            let mute_badge = if vs.muted { Some("muted") } else { None };
                             rsx! {
                                 div {
                                     key: "{vs.user_id}",
-                                    class: "flex items-center gap-1.5 px-2 py-0.5 text-xs text-gray-300",
+                                    class: "flex items-center gap-1.5 px-2 py-0.5 text-xs text-[var(--text-muted)]",
                                     span { class: "w-1.5 h-1.5 rounded-full {dot}" }
                                     span { class: "truncate flex-1",
                                         "{name}"
                                         if is_self { " (you)" }
                                     }
                                     if let Some(badge) = mute_badge {
-                                        span { "{badge}" }
+                                        span { class: "text-[9px] text-[var(--text-dim)] uppercase tracking-wider", "{badge}" }
                                     }
                                 }
                             }
@@ -199,62 +198,61 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
     let show_banner = !matches!(self_voice.phase, VoicePhase::Idle);
     let phase_label = match self_voice.phase {
         VoicePhase::Idle => None,
-        VoicePhase::Connecting => Some(("text-yellow-300", "connecting…")),
-        VoicePhase::Connected => Some(("text-emerald-400", "voice connected")),
-        VoicePhase::Error => Some(("text-red-300", "voice error")),
+        VoicePhase::Connecting => Some(("text-[var(--warn)]", "connecting…")),
+        VoicePhase::Connected => Some(("text-[var(--success)]", "connected")),
+        VoicePhase::Error => Some(("text-[var(--danger)]", "error")),
     };
     let voice_error = self_voice.error.clone();
 
     let muted = self_voice.muted;
-    let mute_icon = if muted { "🔇" } else { "🎙" };
+    let mute_label = if muted { "unmute" } else { "mute" };
     let g_for_mute = gateway.clone();
     let v_for_mute = voice.clone();
     let g_for_hang = gateway.clone();
     let v_for_hang = voice.clone();
 
     rsx! {
-        div { class: "border-t border-black/30",
+        div { class: "border-t border-[var(--border)]",
             if show_banner {
-                div { class: "px-3 py-2 bg-[#1e1f22] border-b border-black/20",
+                div { class: "px-3 py-2 border-b border-[var(--border)]",
                     div { class: "flex items-center gap-2",
-                        span { class: "text-emerald-400 text-xs font-bold uppercase", "Voice" }
+                        span { class: "text-[10px] text-[var(--accent)] font-semibold uppercase tracking-wider", "Voice" }
                         if let Some((cls, label)) = phase_label {
-                            span { class: "text-xs {cls}", "{label}" }
+                            span { class: "text-[10px] {cls}", "{label}" }
                         }
                         div { class: "flex-1" }
                         button {
-                            class: "text-red-300 hover:text-red-400 text-xs font-semibold",
+                            class: "text-[10px] text-[var(--danger)] hover:text-[var(--accent-strong)] font-medium uppercase tracking-wider",
                             onclick: move |_| {
                                 g_for_hang.send(ClientMessage::LeaveVoice);
                                 v_for_hang.send(VoiceCmd::Disconnect);
                             },
-                            "Disconnect"
+                            "disconnect"
                         }
                     }
                     if let Some(err) = voice_error {
-                        div { class: "text-[11px] text-red-300/90 mt-1 break-all",
+                        div { class: "text-[10px] text-[var(--danger)] mt-1 break-all",
                             "{err}"
                         }
                     }
                 }
             }
-            div { class: "h-14 bg-[#232428] px-2 flex items-center gap-2",
-                div { class: "w-8 h-8 rounded-full bg-indigo-500 flex items-center justify-center text-xs font-bold text-white",
+            div { class: "h-12 px-3 flex items-center gap-2",
+                div { class: "w-7 h-7 rounded-md border border-[var(--border)] flex items-center justify-center text-xs text-[var(--accent)] font-medium",
                     "{initial}"
                 }
                 div { class: "flex-1 min-w-0",
-                    div { class: "text-sm font-semibold text-white truncate", "{name}" }
-                    div { class: "text-xs text-gray-400", "Online" }
+                    div { class: "text-sm text-[var(--text)] truncate", "{name}" }
                 }
                 button {
-                    class: "w-8 h-8 rounded hover:bg-white/10 flex items-center justify-center text-sm",
-                    title: if muted { "Unmute" } else { "Mute" },
+                    class: "px-2 py-1 text-[10px] uppercase tracking-wider text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors",
+                    title: mute_label,
                     onclick: move |_| {
                         let new_muted = !muted;
                         g_for_mute.send(ClientMessage::SetVoiceMute { muted: new_muted, deafened: new_muted });
                         v_for_mute.send(VoiceCmd::SetMute { muted: new_muted });
                     },
-                    "{mute_icon}"
+                    "{mute_label}"
                 }
             }
         }

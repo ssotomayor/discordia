@@ -13,7 +13,7 @@ pub fn GuildsSidebar() -> Element {
     drop(snapshot);
 
     rsx! {
-        nav { class: "w-[72px] shrink-0 bg-[#1e1f22] flex flex-col items-center py-3 gap-2 overflow-y-auto",
+        nav { class: "w-14 shrink-0 bg-[var(--panel)] border border-[var(--border)] rounded-lg flex flex-col items-center py-3 gap-2 overflow-y-auto",
             for guild in guilds.iter().cloned() {
                 GuildIcon {
                     key: "{guild.id}",
@@ -44,22 +44,18 @@ fn GuildIcon(
     selected: bool,
     on_select: EventHandler<Id>,
 ) -> Element {
-    let pill_visibility = if selected { "h-10" } else { "h-2 group-hover:h-5" };
-    let icon_classes = if selected {
-        "bg-indigo-500 rounded-2xl"
+    let cls = if selected {
+        "border-[var(--accent)] text-[var(--accent)]"
     } else {
-        "bg-[#313338] rounded-[24px] hover:bg-indigo-500 hover:rounded-2xl"
+        "border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--text)] hover:border-[var(--border-strong)]"
     };
 
     rsx! {
-        div { class: "group relative w-full flex justify-center",
-            div { class: "absolute left-0 top-1/2 -translate-y-1/2 w-1 rounded-r bg-white transition-all {pill_visibility}" }
-            button {
-                class: "w-12 h-12 flex items-center justify-center text-white font-bold transition-all {icon_classes}",
-                title: "{name}",
-                onclick: move |_| on_select.call(id),
-                "{label}"
-            }
+        button {
+            class: "w-10 h-10 rounded-md border flex items-center justify-center text-xs font-medium transition-colors {cls}",
+            title: "{name}",
+            onclick: move |_| on_select.call(id),
+            "{label}"
         }
     }
 }

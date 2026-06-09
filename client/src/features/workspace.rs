@@ -27,16 +27,16 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
     let status = state.read().status;
 
     rsx! {
-        div { class: "h-full w-full flex flex-col",
+        div { class: "h-full w-full flex flex-col bg-[var(--bg)] p-2 gap-2",
             VoiceSounds {}
             HostBanner {}
-            div { class: "flex-1 flex min-h-0",
+            div { class: "flex-1 flex min-h-0 gap-2",
                 GuildsSidebar {}
                 ChannelsColumn {}
-                div { class: "flex-1 flex flex-col min-w-0",
+                div { class: "flex-1 flex flex-col min-w-0 bg-[var(--panel)] border border-[var(--border)] rounded-lg overflow-hidden",
                     if status == ConnectionStatus::Connecting {
-                        div { class: "flex-1 flex items-center justify-center text-gray-400",
-                            "Connecting..."
+                        div { class: "flex-1 flex items-center justify-center text-[var(--text-muted)] text-sm",
+                            "Connecting…"
                         }
                     } else {
                         ChatView {}
@@ -48,8 +48,7 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
     }
 }
 
-/// Hidden `<audio>` element + voice-phase watcher. Plays `assets/connect.mp3`
-/// each time the local voice phase transitions to Connected.
+/// Hidden `<audio>` element + voice-phase watcher.
 #[component]
 fn VoiceSounds() -> Element {
     let state = use_app_state();
@@ -60,7 +59,6 @@ fn VoiceSounds() -> Element {
         let now = phase();
         let prev = *last_phase.peek();
         if now == VoicePhase::Connected && prev != VoicePhase::Connected {
-            // Fire-and-forget JS to trigger play on the hidden element.
             let _ = document::eval(
                 "const a = document.getElementById('voice-connect-sound'); \
                  if (a) { a.currentTime = 0; a.play().catch(() => {}); }",
@@ -90,29 +88,25 @@ fn HostBanner() -> Element {
 
     let lan_text = info.lan_url.clone();
     let shortcode = info.shortcode.clone();
-    let voice_label = if info.voice_bundled {
-        "voice ready"
+    let (voice_label, voice_color) = if info.voice_bundled {
+        ("voice ready", "text-[var(--success)]")
     } else {
-        "voice unavailable (binary not bundled)"
-    };
-    let voice_color = if info.voice_bundled {
-        "text-emerald-300"
-    } else {
-        "text-yellow-300"
+        ("voice unavailable", "text-[var(--warn)]")
     };
 
     rsx! {
-        div { class: "shrink-0 px-4 py-2 bg-[#1e1f22] border-b border-emerald-900/50 flex items-center gap-3 text-xs flex-wrap",
-            span { class: "text-emerald-300 font-bold uppercase tracking-wide", "🏠 Self-hosting" }
+        div { class: "shrink-0 px-3 py-2 bg-[var(--panel)] border border-[var(--border)] rounded-lg flex items-center gap-3 text-xs flex-wrap",
+            span { class: "text-[var(--accent)] font-medium tracking-wide", "Self-hosting" }
             if let Some(code) = shortcode {
-                span { class: "text-gray-400", "Shortcode:" }
-                code { class: "text-emerald-200 bg-emerald-900/40 px-2 py-0.5 rounded select-all font-bold",
+                span { class: "text-[var(--text-dim)]", "·" }
+                span { class: "text-[var(--text-muted)]", "Code:" }
+                code { class: "text-[var(--text)] select-all font-medium",
                     "{code}"
                 }
-                span { class: "text-gray-500", "·" }
             }
-            span { class: "text-gray-400", "LAN:" }
-            code { class: "text-gray-200 bg-white/5 px-2 py-0.5 rounded select-all",
+            span { class: "text-[var(--text-dim)]", "·" }
+            span { class: "text-[var(--text-muted)]", "LAN:" }
+            code { class: "text-[var(--text)] select-all",
                 "{lan_text}"
             }
             span { class: "flex-1" }

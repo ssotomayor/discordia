@@ -14,19 +14,47 @@ fn main() {
 }
 
 const STYLE: &str = "
-    html, body { margin: 0; height: 100%; background: #0f1115; color: #e5e7eb;
+    :root {
+        --bg: #0a0908;
+        --panel: #0a0908;
+        --border: rgba(190, 130, 90, 0.18);
+        --border-strong: rgba(190, 130, 90, 0.35);
+        --text: #d6d6d6;
+        --text-muted: #888888;
+        --text-dim: #5a5a5a;
+        --accent: #e0a06a;
+        --accent-soft: rgba(224, 160, 106, 0.10);
+        --accent-strong: #ec8f3f;
+    }
+    html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
     .dioxus-grid-layout { padding: 16px; }
-    .widget { border-radius: 8px; padding: 12px; display: flex; flex-direction: column; gap: 6px; }
-    .widget h2 { margin: 0; font-size: 14px; font-weight: 600; opacity: 0.85; }
-    .widget p { margin: 0; font-size: 12px; opacity: 0.7; }
-    .widget button { background: rgba(255,255,255,0.12); border: 1px solid rgba(255,255,255,0.2);
-        color: inherit; border-radius: 4px; padding: 4px 8px; cursor: pointer; align-self: flex-start; }
-    .widget button:hover { background: rgba(255,255,255,0.2); }
-    .w-a { background: #1e293b; border: 1px solid #334155; }
-    .w-b { background: #3b1a4a; border: 1px solid #6b2580; }
-    .w-c { background: #1e3a3a; border: 1px solid #2d6363; }
-    .w-d { background: #3a2618; border: 1px solid #6b3c25; }
+    .widget {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        overflow: hidden;
+    }
+    .widget h2 { margin: 0; font-size: 13px; font-weight: 500; color: var(--accent); }
+    .widget p { margin: 0; font-size: 12px; color: var(--text-muted); }
+    .widget button {
+        background: transparent;
+        border: 1px solid var(--border);
+        color: var(--text);
+        border-radius: 4px;
+        padding: 4px 10px;
+        font-size: 12px;
+        cursor: pointer;
+        align-self: flex-start;
+        transition: border-color 0.15s, color 0.15s;
+    }
+    .widget button:hover { border-color: var(--accent); color: var(--accent); }
+    .pinned { border-color: var(--border-strong); }
+    .pinned h2 { color: var(--text-muted); }
 ";
 
 #[component]
@@ -50,11 +78,11 @@ fn app() -> Element {
             on_change: move |snapshot: Vec<(String, GridPosition)>| {
                 eprintln!("[playground] layout changed: {:?}", snapshot);
             },
-            GridItem { id: "a", x: 0, y: 0, w: 4, h: 4, class: "widget w-a",
+            GridItem { id: "a", x: 0, y: 0, w: 4, h: 4, class: "widget",
                 h2 { "Widget A" }
                 p { "drag me anywhere" }
             }
-            GridItem { id: "b", x: 4, y: 0, w: 8, h: 2, class: "widget w-b",
+            GridItem { id: "b", x: 4, y: 0, w: 8, h: 2, class: "widget",
                 h2 { "Widget B" }
                 p { "drag header — button below uses NoDrag" }
                 NoDrag {
@@ -64,13 +92,13 @@ fn app() -> Element {
                     }
                 }
             }
-            GridItem { id: "c", x: 4, y: 2, w: 4, h: 2, class: "widget w-c",
+            GridItem { id: "c", x: 4, y: 2, w: 4, h: 2, class: "widget",
                 h2 { "Widget C" }
                 p { "drag me" }
             }
-            GridItem { id: "d", x: 8, y: 2, w: 4, h: 4, pinned: true, class: "widget w-d",
+            GridItem { id: "d", x: 8, y: 2, w: 4, h: 4, pinned: true, class: "widget pinned",
                 h2 { "Widget D" }
-                p { "pinned: never moves, even when others displace" }
+                p { "pinned: never moves" }
             }
         }
     }

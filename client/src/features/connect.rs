@@ -3,11 +3,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::state::{SessionMode, SessionParams};
 
-// 7700 because macOS reserves 7000 for AirPlay Receiver.
 const DEFAULT_RENDEZVOUS_URL: &str = "ws://localhost:7700";
 
-/// Mirror of `dioxusfun_rendezvous::protocol::DiscoverEntry`. Re-declared
-/// locally to keep the client crate free of the rendezvous-server dep.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct DiscoverEntry {
     shortcode: String,
@@ -23,6 +20,11 @@ enum Tab {
     Remote,
 }
 
+const PANEL: &str = "bg-[var(--panel)] border border-[var(--border)] rounded-lg";
+const INPUT: &str = "w-full bg-transparent border border-[var(--border)] rounded px-3 py-2 text-sm text-[var(--text)] focus:outline-none focus:border-[var(--accent)] transition-colors";
+const INPUT_SM: &str = "w-full bg-transparent border border-[var(--border)] rounded px-2 py-1 text-xs text-[var(--text)] focus:outline-none focus:border-[var(--accent)] transition-colors";
+const LABEL: &str = "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]";
+
 #[component]
 pub fn ConnectView(error: Option<String>, on_connect: EventHandler<SessionParams>) -> Element {
     let default_rendezvous = std::env::var("DIOXUSFUN_RENDEZVOUS_URL")
@@ -37,7 +39,6 @@ pub fn ConnectView(error: Option<String>, on_connect: EventHandler<SessionParams
     let mut rendezvous_url = use_signal(|| default_rendezvous.clone());
     let mut code = use_signal(String::new);
 
-    // Self-host public listing fields
     let mut publish_name = use_signal(String::new);
     let mut description = use_signal(String::new);
     let mut publish_public = use_signal(|| false);
@@ -107,19 +108,21 @@ pub fn ConnectView(error: Option<String>, on_connect: EventHandler<SessionParams
     };
 
     rsx! {
-        div { class: "h-full w-full flex items-center justify-center bg-gradient-to-br from-[#1e1f22] via-[#2b2d31] to-[#1e1f22]",
+        div { class: "h-full w-full flex items-center justify-center bg-[var(--bg)] p-4",
             form {
-                class: "w-full max-w-md bg-[#2b2d31] border border-white/5 rounded-2xl shadow-2xl p-8 space-y-5",
+                class: "w-full max-w-md {PANEL} p-6 space-y-5",
                 onsubmit: submit,
 
-                div { class: "text-center space-y-1",
-                    h1 { class: "text-2xl font-bold text-white", "Welcome to dioxusfun" }
-                    p { class: "text-sm text-gray-400",
-                        "Browse public servers, join by code, host your own, or paste a URL."
+                div { class: "space-y-1",
+                    h1 { class: "text-lg font-semibold text-[var(--accent)]", "dioxusfun" }
+                    p { class: "text-xs text-[var(--text-muted)]",
+                        "Browse, join by code, host your own, or connect to a URL."
                     }
                 }
 
-                div { class: "flex gap-1 p-1 bg-[#1e1f22] rounded-lg text-[13px]",
+                div { class: "h-px bg-[var(--border)]" }
+
+                div { class: "flex gap-1 text-xs",
                     TabButton { active: tab() == Tab::Browse, label: "Browse", onclick: move |_| tab.set(Tab::Browse) }
                     TabButton { active: tab() == Tab::ByCode, label: "By code", onclick: move |_| tab.set(Tab::ByCode) }
                     TabButton { active: tab() == Tab::SelfHost, label: "Self-host", onclick: move |_| tab.set(Tab::SelfHost) }
@@ -127,7 +130,7 @@ pub fn ConnectView(error: Option<String>, on_connect: EventHandler<SessionParams
                 }
 
                 if let Some(err) = error {
-                    div { class: "text-sm text-red-300 bg-red-900/30 border border-red-700/40 rounded-lg px-3 py-2",
+                    div { class: "text-xs text-[var(--danger)] border border-[var(--border)] rounded px-3 py-2",
                         "{err}"
                     }
                 }
@@ -144,23 +147,21 @@ pub fn ConnectView(error: Option<String>, on_connect: EventHandler<SessionParams
                         }
                     },
                     Tab::ByCode => rsx! {
-                        div { class: "space-y-2",
+                        div { class: "space-y-3",
                             div { class: "space-y-1",
-                                label { class: "text-xs font-semibold uppercase tracking-wide text-gray-400",
-                                    "Shortcode"
-                                }
+                                label { class: LABEL, "Shortcode" }
                                 input {
-                                    class: "w-full bg-[#1e1f22] border border-white/5 rounded-md px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-400 lowercase",
+                                    class: "{INPUT} lowercase",
                                     r#type: "text",
                                     placeholder: "purple-fox-42",
                                     value: "{code}",
                                     oninput: move |e| code.set(e.value()),
                                 }
                             }
-                            details { class: "text-xs text-gray-500",
-                                summary { class: "cursor-pointer hover:text-gray-300", "Rendezvous server (advanced)" }
+                            details { class: "text-xs text-[var(--text-dim)]",
+                                summary { class: "cursor-pointer hover:text-[var(--text-muted)]", "Rendezvous server (advanced)" }
                                 input {
-                                    class: "mt-2 w-full bg-[#1e1f22] border border-white/5 rounded-md px-3 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-400",
+                                    class: "mt-2 {INPUT_SM}",
                                     r#type: "text",
                                     placeholder: "ws://localhost:7700",
                                     value: "{rendezvous_url}",
@@ -170,9 +171,11 @@ pub fn ConnectView(error: Option<String>, on_connect: EventHandler<SessionParams
                         }
                     },
                     Tab::SelfHost => rsx! {
-                        div { class: "rounded-md border border-emerald-700/40 bg-emerald-900/20 p-3 text-xs text-emerald-200 space-y-2",
-                            div { "Your machine runs the gateway, voice SFU, and (optionally) publishes a shortcode through a rendezvous so friends can join without your IP." }
-                            label { class: "flex items-center gap-2 cursor-pointer text-emerald-100/90",
+                        div { class: "border border-[var(--border)] rounded p-3 text-xs space-y-3",
+                            p { class: "text-[var(--text-muted)]",
+                                "Your machine runs the gateway, voice SFU, and (optionally) publishes a shortcode through a rendezvous so friends can join without your IP."
+                            }
+                            label { class: "flex items-center gap-2 cursor-pointer text-[var(--text)]",
                                 input {
                                     r#type: "checkbox",
                                     checked: publish_to_rendezvous(),
@@ -180,7 +183,7 @@ pub fn ConnectView(error: Option<String>, on_connect: EventHandler<SessionParams
                                 }
                                 "Publish a shortcode via rendezvous"
                             }
-                            label { class: "flex items-center gap-2 cursor-pointer text-emerald-100/90",
+                            label { class: "flex items-center gap-2 cursor-pointer text-[var(--text)]",
                                 input {
                                     r#type: "checkbox",
                                     checked: allow_lan(),
@@ -189,28 +192,28 @@ pub fn ConnectView(error: Option<String>, on_connect: EventHandler<SessionParams
                                 "Also let LAN friends connect directly"
                             }
                             if publish_to_rendezvous() {
-                                div { class: "pl-4 border-l-2 border-emerald-700/40 space-y-2 mt-2",
+                                div { class: "pl-3 border-l border-[var(--border)] space-y-2",
                                     div { class: "space-y-1",
-                                        label { class: "text-[11px] uppercase tracking-wide text-emerald-300/80", "Server name" }
+                                        label { class: LABEL, "Server name" }
                                         input {
-                                            class: "w-full bg-[#1e1f22] border border-white/5 rounded px-2 py-1 text-emerald-100 focus:outline-none focus:border-indigo-400",
+                                            class: INPUT_SM,
                                             r#type: "text",
-                                            placeholder: "My Awesome Server",
+                                            placeholder: "My Server",
                                             value: "{publish_name}",
                                             oninput: move |e| publish_name.set(e.value()),
                                         }
                                     }
                                     div { class: "space-y-1",
-                                        label { class: "text-[11px] uppercase tracking-wide text-emerald-300/80", "Description (optional)" }
+                                        label { class: LABEL, "Description (optional)" }
                                         input {
-                                            class: "w-full bg-[#1e1f22] border border-white/5 rounded px-2 py-1 text-emerald-100 focus:outline-none focus:border-indigo-400",
+                                            class: INPUT_SM,
                                             r#type: "text",
-                                            placeholder: "Friends-only Rust chat",
+                                            placeholder: "Friends-only chat",
                                             value: "{description}",
                                             oninput: move |e| description.set(e.value()),
                                         }
                                     }
-                                    label { class: "flex items-center gap-2 cursor-pointer text-emerald-100/90",
+                                    label { class: "flex items-center gap-2 cursor-pointer text-[var(--text)]",
                                         input {
                                             r#type: "checkbox",
                                             checked: publish_public(),
@@ -218,10 +221,10 @@ pub fn ConnectView(error: Option<String>, on_connect: EventHandler<SessionParams
                                         }
                                         "List this server in the public Browse tab"
                                     }
-                                    details { class: "text-[11px] text-emerald-300/80",
-                                        summary { class: "cursor-pointer", "Rendezvous URL" }
+                                    details { class: "text-[var(--text-dim)]",
+                                        summary { class: "cursor-pointer hover:text-[var(--text-muted)]", "Rendezvous URL" }
                                         input {
-                                            class: "mt-1 w-full bg-[#1e1f22] border border-emerald-700/40 rounded px-2 py-1 text-emerald-100 focus:outline-none",
+                                            class: "mt-1 {INPUT_SM}",
                                             r#type: "text",
                                             placeholder: "ws://localhost:7700",
                                             value: "{rendezvous_url}",
@@ -234,11 +237,9 @@ pub fn ConnectView(error: Option<String>, on_connect: EventHandler<SessionParams
                     },
                     Tab::Remote => rsx! {
                         div { class: "space-y-1",
-                            label { class: "text-xs font-semibold uppercase tracking-wide text-gray-400",
-                                "Server URL"
-                            }
+                            label { class: LABEL, "Server URL" }
                             input {
-                                class: "w-full bg-[#1e1f22] border border-white/5 rounded-md px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-400",
+                                class: INPUT,
                                 r#type: "text",
                                 placeholder: "ws://localhost:9000",
                                 value: "{server_url}",
@@ -249,11 +250,9 @@ pub fn ConnectView(error: Option<String>, on_connect: EventHandler<SessionParams
                 }
 
                 div { class: "space-y-1",
-                    label { class: "text-xs font-semibold uppercase tracking-wide text-gray-400",
-                        "Display name"
-                    }
+                    label { class: LABEL, "Display name" }
                     input {
-                        class: "w-full bg-[#1e1f22] border border-white/5 rounded-md px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-400",
+                        class: INPUT,
                         r#type: "text",
                         placeholder: "your-handle",
                         value: "{username}",
@@ -262,7 +261,7 @@ pub fn ConnectView(error: Option<String>, on_connect: EventHandler<SessionParams
                 }
 
                 button {
-                    class: "w-full bg-indigo-500 hover:bg-indigo-400 text-white font-semibold py-2 rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed",
+                    class: "w-full bg-[var(--accent)] hover:bg-[var(--accent-strong)] text-[#0a0908] font-medium py-2 rounded transition-colors disabled:opacity-30 disabled:cursor-not-allowed text-sm",
                     r#type: "submit",
                     disabled,
                     {match tab() {
@@ -280,14 +279,14 @@ pub fn ConnectView(error: Option<String>, on_connect: EventHandler<SessionParams
 #[component]
 fn TabButton(active: bool, label: &'static str, onclick: EventHandler<()>) -> Element {
     let cls = if active {
-        "bg-indigo-500 text-white"
+        "text-[var(--accent)] border-[var(--accent)]"
     } else {
-        "text-gray-400 hover:text-gray-200"
+        "text-[var(--text-muted)] border-transparent hover:text-[var(--text)]"
     };
     rsx! {
         button {
             r#type: "button",
-            class: "flex-1 px-3 py-1.5 rounded-md font-semibold transition-colors {cls}",
+            class: "flex-1 px-2 py-1.5 border-b font-medium transition-colors {cls}",
             onclick: move |_| onclick.call(()),
             "{label}"
         }
@@ -301,8 +300,6 @@ fn BrowseTab(
     on_pick: EventHandler<DiscoverEntry>,
     picked_shortcode: String,
 ) -> Element {
-    // Re-fetch whenever the rendezvous URL changes or we manually bump the
-    // refresh counter.
     let mut refresh_tick = use_signal(|| 0u32);
     let url_for_fetch = rendezvous_url.clone();
     let entries = use_resource(move || {
@@ -322,31 +319,29 @@ fn BrowseTab(
     });
 
     rsx! {
-        div { class: "space-y-3",
+        div { class: "space-y-2",
             div { class: "flex items-center gap-2",
-                span { class: "text-xs font-semibold uppercase tracking-wide text-gray-400 flex-1",
-                    "Public servers"
-                }
+                span { class: "{LABEL} flex-1", "Public servers" }
                 button {
                     r#type: "button",
-                    class: "text-xs text-indigo-300 hover:text-indigo-200",
+                    class: "text-[10px] text-[var(--accent)] hover:text-[var(--accent-strong)] transition-colors",
                     onclick: move |_| refresh_tick.set(refresh_tick() + 1),
                     "↻ Refresh"
                 }
             }
 
-            div { class: "max-h-72 overflow-y-auto space-y-1 bg-[#1e1f22] border border-white/5 rounded-md p-1",
+            div { class: "max-h-64 overflow-y-auto border border-[var(--border)] rounded",
                 match &*entries.read_unchecked() {
                     None => rsx! {
-                        div { class: "text-xs text-gray-500 px-3 py-4 text-center", "Loading…" }
+                        div { class: "text-xs text-[var(--text-dim)] px-3 py-4 text-center", "Loading…" }
                     },
                     Some(Err(e)) => rsx! {
-                        div { class: "text-xs text-red-300 px-3 py-4",
+                        div { class: "text-xs text-[var(--danger)] px-3 py-4",
                             "Couldn't reach rendezvous: {e}"
                         }
                     },
                     Some(Ok(list)) if list.is_empty() => rsx! {
-                        div { class: "text-xs text-gray-500 px-3 py-4 text-center",
+                        div { class: "text-xs text-[var(--text-dim)] px-3 py-4 text-center",
                             "No public servers yet. Pick Self-host and check \"List publicly\" to put one here."
                         }
                     },
@@ -356,25 +351,25 @@ fn BrowseTab(
                                 let sc = entry.shortcode.clone();
                                 let selected = picked_shortcode == sc;
                                 let row_cls = if selected {
-                                    "bg-indigo-500/20 border-indigo-400/50"
+                                    "bg-[var(--accent-soft)] border-l-2 border-[var(--accent)]"
                                 } else {
-                                    "bg-transparent border-transparent hover:bg-white/5"
+                                    "border-l-2 border-transparent hover:bg-white/[0.02]"
                                 };
                                 let entry_for_pick = entry.clone();
                                 rsx! {
                                     button {
                                         key: "{sc}",
                                         r#type: "button",
-                                        class: "w-full text-left p-3 rounded border {row_cls} transition-colors",
+                                        class: "w-full text-left px-3 py-2 {row_cls} transition-colors",
                                         onclick: move |_| on_pick.call(entry_for_pick.clone()),
                                         div { class: "flex items-baseline gap-2",
-                                            span { class: "font-semibold text-white",
+                                            span { class: "text-sm font-medium text-[var(--text)]",
                                                 {entry.name.clone().unwrap_or_else(|| entry.shortcode.clone())}
                                             }
-                                            span { class: "text-[10px] text-gray-500", "{entry.shortcode}" }
+                                            span { class: "text-[10px] text-[var(--text-dim)]", "{entry.shortcode}" }
                                         }
                                         if let Some(d) = entry.description.clone() {
-                                            div { class: "text-xs text-gray-400 mt-0.5", "{d}" }
+                                            div { class: "text-xs text-[var(--text-muted)] mt-0.5", "{d}" }
                                         }
                                     }
                                 }
@@ -384,10 +379,10 @@ fn BrowseTab(
                 }
             }
 
-            details { class: "text-xs text-gray-500",
-                summary { class: "cursor-pointer hover:text-gray-300", "Rendezvous server (advanced)" }
+            details { class: "text-xs text-[var(--text-dim)]",
+                summary { class: "cursor-pointer hover:text-[var(--text-muted)]", "Rendezvous server (advanced)" }
                 input {
-                    class: "mt-2 w-full bg-[#1e1f22] border border-white/5 rounded-md px-3 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-400",
+                    class: "mt-2 {INPUT_SM}",
                     r#type: "text",
                     placeholder: "ws://localhost:7700",
                     value: "{rendezvous_url}",

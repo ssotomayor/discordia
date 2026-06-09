@@ -25,8 +25,8 @@ pub fn MembersPanel() -> Element {
     let offline_count = members.len() - online_count;
 
     rsx! {
-        aside { class: "w-60 shrink-0 bg-[#2b2d31] border-l border-black/20 flex flex-col",
-            div { class: "flex-1 overflow-y-auto py-4 space-y-3",
+        aside { class: "w-56 shrink-0 bg-[var(--panel)] border border-[var(--border)] rounded-lg flex flex-col overflow-hidden",
+            div { class: "flex-1 overflow-y-auto py-3 space-y-3",
                 if online_count > 0 {
                     Section {
                         label: format!("Online — {online_count}"),
@@ -42,7 +42,7 @@ pub fn MembersPanel() -> Element {
                     }
                 }
                 if members.is_empty() {
-                    div { class: "px-4 text-sm text-gray-500", "No members" }
+                    div { class: "px-4 text-xs text-[var(--text-dim)]", "No members" }
                 }
             }
         }
@@ -53,7 +53,7 @@ pub fn MembersPanel() -> Element {
 fn Section(label: String, members: Vec<Member>, voice_states: Vec<VoiceState>) -> Element {
     rsx! {
         div {
-            div { class: "px-3 mb-1 text-xs font-bold uppercase tracking-wide text-gray-400",
+            div { class: "px-3 mb-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]",
                 "{label}"
             }
             for m in members.iter() {
@@ -80,21 +80,29 @@ fn MemberRow(member: Member, voice: Option<VoiceState>) -> Element {
         .next()
         .unwrap_or('?')
         .to_ascii_uppercase();
-    let avatar_opacity = if member.online { "opacity-100" } else { "opacity-50" };
-    let dot_class = if member.online { "bg-green-500" } else { "bg-gray-500" };
-    let name_class = if member.online { "text-gray-200" } else { "text-gray-500" };
+    let name_class = if member.online {
+        "text-[var(--text)]"
+    } else {
+        "text-[var(--text-dim)]"
+    };
+    let avatar_class = if member.online {
+        "text-[var(--accent)] border-[var(--border)]"
+    } else {
+        "text-[var(--text-dim)] border-[var(--border)] opacity-60"
+    };
     let speaking = voice.as_ref().map(|v| v.speaking).unwrap_or(false);
-    let speaking_ring = if speaking { "ring-2 ring-emerald-400" } else { "" };
+    let speaking_ring = if speaking {
+        "ring-1 ring-[var(--accent)]"
+    } else {
+        ""
+    };
 
     rsx! {
-        div { class: "flex items-center gap-2 px-3 py-1.5 mx-1 rounded hover:bg-white/5 cursor-pointer",
-            div { class: "relative {avatar_opacity}",
-                div { class: "w-8 h-8 rounded-full bg-indigo-600 flex items-center justify-center text-xs font-bold text-white {speaking_ring}",
-                    "{initial}"
-                }
-                span { class: "absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-[#2b2d31] {dot_class}" }
+        div { class: "flex items-center gap-2 px-3 py-1 hover:bg-white/[0.02] cursor-pointer",
+            div { class: "w-7 h-7 rounded-md border flex items-center justify-center text-xs font-medium {avatar_class} {speaking_ring}",
+                "{initial}"
             }
-            span { class: "text-sm font-medium truncate flex-1 {name_class}", "{member.user.username}" }
+            span { class: "text-sm truncate flex-1 {name_class}", "{member.user.username}" }
             if let Some(vs) = voice {
                 VoiceBadges { vs: vs }
             }
@@ -105,12 +113,12 @@ fn MemberRow(member: Member, voice: Option<VoiceState>) -> Element {
 #[component]
 fn VoiceBadges(vs: VoiceState) -> Element {
     rsx! {
-        div { class: "flex items-center gap-1 text-xs",
+        div { class: "flex items-center gap-1 text-[10px] uppercase tracking-wider",
             if vs.channel_id.is_some() {
-                span { class: "text-emerald-400", title: "In voice", "🔊" }
+                span { class: "text-[var(--accent)]", title: "In voice", "v" }
             }
             if vs.muted {
-                span { class: "text-red-300", title: "Muted", "🔇" }
+                span { class: "text-[var(--text-dim)]", title: "Muted", "m" }
             }
         }
     }
