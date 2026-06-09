@@ -25,9 +25,11 @@ pub fn IdentitySetupView(on_done: EventHandler<Identity>) -> Element {
     let mut reveal = use_signal(|| false);
     let mut restore_phrase = use_signal(|| String::new());
 
+    let step_key = format!("step-{:?}", step());
+
     rsx! {
         div { class: "h-full w-full flex items-center justify-center bg-[var(--bg)] p-4",
-            div { class: "w-full max-w-md {PANEL} p-6 space-y-5",
+            div { class: "w-full max-w-md {PANEL} p-6 space-y-5 min-h-[520px] flex flex-col",
 
                 div { class: "space-y-1",
                     h1 { class: "text-lg font-semibold text-[var(--accent)]", "Set up your identity" }
@@ -44,6 +46,7 @@ pub fn IdentitySetupView(on_done: EventHandler<Identity>) -> Element {
                     }
                 }
 
+                div { key: "{step_key}", class: "fade-in flex-1",
                 match step() {
                     Step::Choose => rsx! {
                         div { class: "space-y-2",
@@ -211,6 +214,7 @@ pub fn IdentitySetupView(on_done: EventHandler<Identity>) -> Element {
                             }
                         }
                     },
+                }
                 }
             }
         }

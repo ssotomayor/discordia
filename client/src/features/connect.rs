@@ -111,10 +111,14 @@ pub fn ConnectView(
         }
     };
 
+    let tab_key = format!("tab-{:?}", tab());
+
     rsx! {
         div { class: "h-full w-full flex items-center justify-center bg-[var(--bg)] p-4",
             form {
-                class: "w-full max-w-md {PANEL} p-6 space-y-5",
+                // min-h locks the card so tab switches don't reflow the whole
+                // form; the tab-content area absorbs the size difference.
+                class: "w-full max-w-md {PANEL} p-6 space-y-5 min-h-[600px] flex flex-col",
                 onsubmit: submit,
 
                 div { class: "space-y-1",
@@ -141,6 +145,7 @@ pub fn ConnectView(
                     }
                 }
 
+                div { key: "{tab_key}", class: "fade-in flex-1",
                 match tab() {
                     Tab::Browse => rsx! {
                         BrowseTab {
@@ -254,6 +259,7 @@ pub fn ConnectView(
                         }
                     },
                 }
+                }
 
                 button {
                     class: "w-full bg-[var(--accent)] hover:bg-[var(--accent-strong)] text-[#0a0908] font-medium py-2 rounded transition-colors disabled:opacity-30 disabled:cursor-not-allowed text-sm",
@@ -299,7 +305,7 @@ fn IdentityCard(identity: Identity, on_sign_out: EventHandler<()>) -> Element {
         .to_string();
     let truncated = identity.truncated_pubkey();
     rsx! {
-        div { class: "flex items-center gap-2 border border-[var(--border)] rounded p-2 text-xs",
+        div { class: "panel-hover flex items-center gap-2 border border-[var(--border)] rounded p-2 text-xs",
             div { class: "w-7 h-7 rounded-md border border-[var(--border)] flex items-center justify-center text-[var(--accent)] font-medium",
                 "{initial}"
             }

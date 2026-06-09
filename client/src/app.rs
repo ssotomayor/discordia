@@ -21,6 +21,7 @@ const BASE_CSS: &str = "
   --success: #8fa872;
   --warn: #d4a04f;
   --danger: #c67878;
+  --ease: cubic-bezier(0.4, 0.0, 0.2, 1);
 }
 html, body, #main { height: 100%; margin: 0; }
 body {
@@ -31,11 +32,38 @@ body {
 * { box-sizing: border-box; }
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: rgba(190, 130, 90, 0.18); border-radius: 4px; }
-::-webkit-scrollbar-thumb:hover { background: rgba(190, 130, 90, 0.3); }
+::-webkit-scrollbar-thumb { background: rgba(190, 130, 90, 0.18); border-radius: 4px; transition: background 0.2s var(--ease); }
+::-webkit-scrollbar-thumb:hover { background: rgba(190, 130, 90, 0.35); }
 button { cursor: pointer; }
 button:disabled { cursor: not-allowed; }
 input::placeholder { color: var(--text-dim); }
+
+/* Smooth color/border transitions on every interactive surface. Excluded
+   from `transform` so drag-in-progress (which is driven by transform via
+   document::eval) doesn't get interpolated. */
+button, a, input, textarea, select, summary, [role='button'] {
+  transition: color 0.15s var(--ease),
+              background-color 0.15s var(--ease),
+              border-color 0.18s var(--ease),
+              opacity 0.15s var(--ease);
+}
+button:active:not(:disabled) { transform: scale(0.985); }
+
+/* Apply to any bordered panel/widget for a subtle hover brightening. */
+.panel-hover {
+  transition: border-color 0.2s var(--ease), background-color 0.2s var(--ease);
+}
+.panel-hover:hover {
+  border-color: var(--border-strong);
+}
+
+/* Fade-in animation used on tab content / step content so switches feel
+   intentional instead of jarring snaps. */
+@keyframes dxf-fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.fade-in { animation: dxf-fade-in 0.18s var(--ease) both; }
 ";
 
 #[component]

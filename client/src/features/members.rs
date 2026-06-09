@@ -26,7 +26,7 @@ pub fn MembersPanel() -> Element {
     let offline_count = members.len() - online_count;
 
     rsx! {
-        aside { class: "w-full h-full bg-[var(--panel)] border border-[var(--border)] rounded-lg flex flex-col overflow-hidden",
+        aside { class: "panel-hover w-full h-full bg-[var(--panel)] border border-[var(--border)] rounded-lg flex flex-col overflow-hidden",
             // Header — drag surface in edit mode.
             div { class: "h-11 px-3 flex items-center border-b border-[var(--border)]",
                 h2 { class: "text-sm text-[var(--accent)] truncate font-medium", "Members" }
