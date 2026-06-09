@@ -1,4 +1,5 @@
 use dioxus::prelude::*;
+use dioxus_grid_layout::NoDrag;
 
 use crate::features::voice::{VoiceCmd, use_voice_tx};
 use crate::protocol::{Channel, ChannelKind, ClientMessage, Id, VoiceState};
@@ -50,6 +51,7 @@ pub fn ChannelsColumn() -> Element {
                 }
             }
 
+            NoDrag {
             div { class: "flex-1 overflow-y-auto px-2 py-3 space-y-3",
                 if !text_channels.is_empty() {
                     div {
@@ -118,6 +120,7 @@ pub fn ChannelsColumn() -> Element {
             }
 
             UserPanel { self_voice: self_voice, self_username: self_user.map(|u| u.username) }
+            }
         }
     }
 }

@@ -1,4 +1,5 @@
 use dioxus::prelude::*;
+use dioxus_grid_layout::NoDrag;
 
 use crate::protocol::{Id, Member, VoiceState};
 use crate::state::use_app_state;
@@ -26,23 +27,32 @@ pub fn MembersPanel() -> Element {
 
     rsx! {
         aside { class: "w-full h-full bg-[var(--panel)] border border-[var(--border)] rounded-lg flex flex-col overflow-hidden",
-            div { class: "flex-1 overflow-y-auto py-3 space-y-3",
-                if online_count > 0 {
-                    Section {
-                        label: format!("Online — {online_count}"),
-                        members: members.iter().filter(|m| m.online).cloned().collect::<Vec<_>>(),
-                        voice_states: voice_states.clone(),
-                    }
+            // Header — drag surface in edit mode.
+            div { class: "h-11 px-3 flex items-center border-b border-[var(--border)]",
+                h2 { class: "text-sm text-[var(--accent)] truncate font-medium", "Members" }
+                span { class: "ml-auto text-[10px] text-[var(--text-dim)] uppercase tracking-wider",
+                    "{online_count} online"
                 }
-                if offline_count > 0 {
-                    Section {
-                        label: format!("Offline — {offline_count}"),
-                        members: members.iter().filter(|m| !m.online).cloned().collect::<Vec<_>>(),
-                        voice_states: Vec::new(),
+            }
+            NoDrag {
+                div { class: "flex-1 overflow-y-auto py-3 space-y-3",
+                    if online_count > 0 {
+                        Section {
+                            label: format!("Online — {online_count}"),
+                            members: members.iter().filter(|m| m.online).cloned().collect::<Vec<_>>(),
+                            voice_states: voice_states.clone(),
+                        }
                     }
-                }
-                if members.is_empty() {
-                    div { class: "px-4 text-xs text-[var(--text-dim)]", "No members" }
+                    if offline_count > 0 {
+                        Section {
+                            label: format!("Offline — {offline_count}"),
+                            members: members.iter().filter(|m| !m.online).cloned().collect::<Vec<_>>(),
+                            voice_states: Vec::new(),
+                        }
+                    }
+                    if members.is_empty() {
+                        div { class: "px-4 text-xs text-[var(--text-dim)]", "No members" }
+                    }
                 }
             }
         }

@@ -33,12 +33,21 @@ pub fn GridLayout(
     let pinned_ids = use_signal::<HashSet<String>>(HashSet::new);
     let on_change_cb = use_hook(|| on_change.clone());
 
+    // `editable` is a prop that may change at runtime (host toggles it).
+    // `use_context_provider`'s initializer only runs once, so we hold the
+    // editable state in a Signal that the GridContext exposes, and sync it
+    // to the latest prop value on every render.
+    let mut editable_signal = use_signal(|| editable);
+    if *editable_signal.peek() != editable {
+        editable_signal.set(editable);
+    }
+
     use_context_provider(|| GridContext {
         store,
         cols,
         row_height,
         gap,
-        editable,
+        editable: editable_signal,
         drag,
         container_width,
         pinned_ids,
@@ -256,7 +265,9 @@ pub(crate) struct GridContext {
     pub cols: u32,
     pub row_height: f64,
     pub gap: f64,
-    pub editable: bool,
+    /// Reactive — host can toggle this at any time and GridItems see it
+    /// without remounting.
+    pub editable: Signal<bool>,
     pub drag: Signal<Option<Interaction>>,
     pub container_width: Signal<Option<f64>>,
     pub pinned_ids: Signal<HashSet<String>>,

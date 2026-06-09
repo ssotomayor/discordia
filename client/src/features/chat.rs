@@ -1,4 +1,5 @@
 use dioxus::prelude::*;
+use dioxus_grid_layout::NoDrag;
 
 use crate::protocol::{ClientMessage, Id, Message};
 use crate::state::{use_app_state, use_gateway};
@@ -33,20 +34,22 @@ pub fn ChatView() -> Element {
                 }
             }
 
-            div { class: "flex-1 overflow-y-auto px-4 py-4 space-y-2 min-h-0",
-                if messages.is_empty() && selected_channel.is_some() {
-                    div { class: "h-full flex items-center justify-center text-[var(--text-dim)] text-xs",
-                        "No messages yet."
-                    }
-                } else {
-                    for msg in messages.iter() {
-                        MessageRow { key: "{msg.id}", message: msg.clone() }
+            NoDrag {
+                div { class: "flex-1 overflow-y-auto px-4 py-4 space-y-2 min-h-0",
+                    if messages.is_empty() && selected_channel.is_some() {
+                        div { class: "h-full flex items-center justify-center text-[var(--text-dim)] text-xs",
+                            "No messages yet."
+                        }
+                    } else {
+                        for msg in messages.iter() {
+                            MessageRow { key: "{msg.id}", message: msg.clone() }
+                        }
                     }
                 }
-            }
 
-            if let Some(channel_id) = selected_channel {
-                Composer { channel_id, channel_name }
+                if let Some(channel_id) = selected_channel {
+                    Composer { channel_id, channel_name }
+                }
             }
         }
     }

@@ -1,4 +1,5 @@
 use dioxus::prelude::*;
+use dioxus_grid_layout::NoDrag;
 
 use crate::protocol::Id;
 use crate::state::use_app_state;
@@ -14,6 +15,7 @@ pub fn GuildsSidebar() -> Element {
 
     rsx! {
         nav { class: "w-full h-full bg-[var(--panel)] border border-[var(--border)] rounded-lg flex flex-col items-center py-3 gap-2 overflow-y-auto",
+            NoDrag {
             for guild in guilds.iter().cloned() {
                 GuildIcon {
                     key: "{guild.id}",
@@ -31,6 +33,7 @@ pub fn GuildsSidebar() -> Element {
                             .map(|c| c.id);
                     },
                 }
+            }
             }
         }
     }

@@ -56,20 +56,37 @@ pub fn GridItem(
         h = pos.h,
     );
     let pinned_class = if pinned { " grid-item-pinned" } else { "" };
-    let editable = ctx.map(|c| c.editable).unwrap_or(false);
+    let editable = ctx.map(|c| *c.editable.read()).unwrap_or(false);
     let interactive = editable && !pinned;
     let drag_cursor = if interactive { " cursor: grab;" } else { "" };
 
     let item_id_for_drag = id.clone();
+    let id_for_log = id.clone();
     let onpointerdown_drag = move |evt: PointerEvent| {
-        let Some(ctx) = ctx else { return };
+        let Some(ctx) = ctx else {
+            eprintln!("[grid] {id_for_log}: pointerdown but no GridContext");
+            return;
+        };
         if !interactive {
+            eprintln!(
+                "[grid] {id_for_log}: pointerdown ignored (editable={} pinned={})",
+                *ctx.editable.read(),
+                pinned
+            );
             return;
         }
         if !evt.held_buttons().contains(MouseButton::Primary) {
             return;
         }
-        let Some(cell_w) = ctx.cell_w_px() else { return };
+        let Some(cell_w) = ctx.cell_w_px() else {
+            eprintln!(
+                "[grid] {id_for_log}: pointerdown but cell width not yet measured \
+                 (container_width={:?})",
+                ctx.container_width.read()
+            );
+            return;
+        };
+        eprintln!("[grid] {id_for_log}: drag started, cell_w={cell_w:.1}px");
 
         let current = ctx
             .store
