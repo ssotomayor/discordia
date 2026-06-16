@@ -1,11 +1,12 @@
 use dioxus::prelude::*;
 
-use crate::features::{connect::ConnectView, workspace::WorkspaceView};
+use crate::features::{
+    connect::ConnectView, identity_setup::IdentitySetupView, workspace::WorkspaceView,
+};
+use crate::identity::Identity;
+use crate::session::{self, SavedSession};
 use crate::state::{SessionMode, SessionParams};
 
-/// Minimalist palette — single background, subtle warm border, low-saturation
-/// accent. Re-used everywhere via `bg-[var(--bg)]` / `border-[var(--border)]`
-/// / `text-[var(--accent)]` Tailwind arbitrary values.
 const BASE_CSS: &str = "
 :root {
   --bg: #0a0908;
@@ -21,6 +22,7 @@ const BASE_CSS: &str = "
   --success: #8fa872;
   --warn: #d4a04f;
   --danger: #c67878;
+  --ease: cubic-bezier(0.4, 0.0, 0.2, 1);
 }
 html, body, #main { height: 100%; margin: 0; }
 body {
@@ -31,34 +33,82 @@ body {
 * { box-sizing: border-box; }
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: rgba(190, 130, 90, 0.18); border-radius: 4px; }
-::-webkit-scrollbar-thumb:hover { background: rgba(190, 130, 90, 0.3); }
+::-webkit-scrollbar-thumb { background: rgba(190, 130, 90, 0.18); border-radius: 4px; transition: background 0.2s var(--ease); }
+::-webkit-scrollbar-thumb:hover { background: rgba(190, 130, 90, 0.35); }
 button { cursor: pointer; }
 button:disabled { cursor: not-allowed; }
 input::placeholder { color: var(--text-dim); }
+
+/* Smooth color/border transitions on every interactive surface. Excluded
+   from `transform` so drag-in-progress (which is driven by transform via
+   document::eval) doesn't get interpolated. */
+button, a, input, textarea, select, summary, [role='button'] {
+  transition: color 0.15s var(--ease),
+              background-color 0.15s var(--ease),
+              border-color 0.18s var(--ease),
+              opacity 0.15s var(--ease);
+}
+button:active:not(:disabled) { transform: scale(0.985); }
+
+/* Apply to any bordered panel/widget for a subtle hover brightening. */
+.panel-hover {
+  transition: border-color 0.2s var(--ease), background-color 0.2s var(--ease);
+}
+.panel-hover:hover {
+  border-color: var(--border-strong);
+}
+
+/* Fade-in animation used on tab content / step content so switches feel
+   intentional instead of jarring snaps. */
+@keyframes dxf-fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.fade-in { animation: dxf-fade-in 0.18s var(--ease) both; }
 ";
 
 #[component]
 pub fn App() -> Element {
+    let mut identity = use_signal(|| Identity::load().ok().flatten());
     let mut session = use_signal(|| None::<SessionParams>);
     let mut error = use_signal(|| None::<String>);
+    let last_session = use_signal(|| session::load().ok().flatten());
 
     rsx! {
         document::Script { src: "https://unpkg.com/@tailwindcss/browser@4" }
         document::Style { {BASE_CSS} }
 
         div { class: "h-screen w-screen bg-[var(--bg)] text-[var(--text)] antialiased overflow-hidden",
-            match session() {
-                None => rsx! {
+            match (identity.read().clone(), session.read().clone()) {
+                (None, _) => rsx! {
+                    IdentitySetupView {
+                        on_done: move |new_id: Identity| identity.set(Some(new_id)),
+                    }
+                },
+                (Some(id), None) => rsx! {
                     ConnectView {
+                        identity: id,
                         error: error(),
+                        last_session: last_session.read().clone(),
                         on_connect: move |params: SessionParams| {
                             error.set(None);
+                            // Persist for next launch's Reconnect button.
+                            let saved = SavedSession {
+                                mode: params.mode.clone(),
+                                username: params.username.clone(),
+                            };
+                            let _ = session::save(&saved);
                             session.set(Some(params));
+                        },
+                        on_sign_out: move |_| {
+                            let _ = Identity::delete_file();
+                            let _ = session::clear();
+                            session.set(None);
+                            identity.set(None);
                         },
                     }
                 },
-                Some(params) => rsx! {
+                (Some(_), Some(params)) => rsx! {
                     WorkspaceView {
                         key: "{session_key(&params)}",
                         params: params.clone(),
@@ -86,5 +136,5 @@ fn session_key(p: &SessionParams) -> String {
             format!("bycode:{rendezvous_url}:{code}")
         }
     };
-    format!("{mode}|{}", p.username)
+    format!("{mode}|{}|{}", p.username, p.identity.pubkey)
 }

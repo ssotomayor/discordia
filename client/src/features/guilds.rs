@@ -14,7 +14,7 @@ pub fn GuildsSidebar() -> Element {
     drop(snapshot);
 
     rsx! {
-        nav { class: "w-full h-full bg-[var(--panel)] border border-[var(--border)] rounded-lg flex flex-col items-center py-3 gap-2 overflow-y-auto",
+        nav { class: "panel-hover w-full h-full bg-[var(--panel)] border border-[var(--border)] rounded-lg flex flex-col items-center py-3 gap-2 overflow-y-auto",
             NoDrag {
             for guild in guilds.iter().cloned() {
                 GuildIcon {

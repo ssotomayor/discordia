@@ -5,7 +5,7 @@ use crate::features::voice::{VoiceCmd, use_voice_tx};
 use crate::protocol::{Channel, ChannelKind, ClientMessage, Id, VoiceState};
 use crate::state::{AppState, GatewayTx, VoicePhase, use_app_state, use_gateway};
 
-const PANEL: &str = "w-full h-full bg-[var(--panel)] border border-[var(--border)] rounded-lg flex flex-col overflow-hidden";
+const PANEL: &str = "panel-hover w-full h-full bg-[var(--panel)] border border-[var(--border)] rounded-lg flex flex-col overflow-hidden";
 const HEADER: &str = "h-11 px-3 flex items-center border-b border-[var(--border)]";
 const SECTION_LABEL: &str = "px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]";
 
@@ -103,7 +103,7 @@ pub fn ChannelsColumn() -> Element {
                                         channel: ch.clone(),
                                         connected: in_this,
                                         occupants: occupants,
-                                        self_user_id: self_user.as_ref().map(|u| u.id),
+                                        self_pubkey: self_user.as_ref().map(|u| u.pubkey.clone()),
                                         on_join: move |_| {
                                             g_join.send(ClientMessage::JoinVoice { channel_id: cid });
                                         },
@@ -130,7 +130,7 @@ fn VoiceChannelRow(
     channel: Channel,
     connected: bool,
     occupants: Vec<VoiceState>,
-    self_user_id: Option<Id>,
+    self_pubkey: Option<String>,
     on_join: EventHandler<()>,
     on_leave: EventHandler<()>,
 ) -> Element {
@@ -160,15 +160,15 @@ fn VoiceChannelRow(
                     for vs in occupants.iter() {
                         {
                             let name = users_by_id
-                                .user_of(vs.user_id)
+                                .user_of(&vs.user_pubkey)
                                 .map(|u| u.username.clone())
-                                .unwrap_or_else(|| short_id(vs.user_id));
-                            let is_self = self_user_id == Some(vs.user_id);
+                                .unwrap_or_else(|| crate::identity::truncate_pubkey(&vs.user_pubkey));
+                            let is_self = self_pubkey.as_deref() == Some(vs.user_pubkey.as_str());
                             let dot = if vs.speaking { "bg-[var(--accent)]" } else { "bg-[var(--text-dim)]" };
                             let mute_badge = if vs.muted { Some("muted") } else { None };
                             rsx! {
                                 div {
-                                    key: "{vs.user_id}",
+                                    key: "{vs.user_pubkey}",
                                     class: "flex items-center gap-1.5 px-2 py-0.5 text-xs text-[var(--text-muted)]",
                                     span { class: "w-1.5 h-1.5 rounded-full {dot}" }
                                     span { class: "truncate flex-1",
@@ -276,6 +276,3 @@ fn select_text_channel(state: &mut Signal<AppState>, gateway: &GatewayTx, channe
     }
 }
 
-fn short_id(id: Id) -> String {
-    id.to_string().chars().take(6).collect()
-}

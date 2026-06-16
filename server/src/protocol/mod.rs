@@ -2,11 +2,17 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+/// Server-generated identifier (guild, channel, message ids). User identity
+/// is NOT a Uuid — it's a Solana-format Ed25519 public key (see
+/// `User.pubkey`).
 pub type Id = Uuid;
 
+/// A user is identified universally by their Ed25519 public key encoded as
+/// base58 (Solana address format). Display name is a cosmetic label and may
+/// not be unique.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct User {
-    pub id: Id,
+    pub pubkey: String,
     pub username: String,
 }
 
@@ -49,11 +55,9 @@ pub struct Message {
     pub created_at: DateTime<Utc>,
 }
 
-/// Voice presence: which voice channel a user is in and their audio flags.
-/// `channel_id == None` means the user is not in any voice channel.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct VoiceState {
-    pub user_id: Id,
+    pub user_pubkey: String,
     pub guild_id: Id,
     pub channel_id: Option<Id>,
     pub muted: bool,
@@ -64,23 +68,42 @@ pub struct VoiceState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", content = "d", rename_all = "snake_case")]
 pub enum ClientMessage {
-    Identify { username: String },
-    FetchMessages { channel_id: Id, limit: u32 },
-    SendMessage { channel_id: Id, content: String },
-    /// Join a voice channel. Server replies with VoiceToken (LiveKit access
-    /// token) and broadcasts VoiceStateUpdate.
-    JoinVoice { channel_id: Id },
-    /// Leave the current voice channel.
+    /// Sent in response to a `Hello { nonce }`. Signature is base58
+    /// `ed25519(nonce || pubkey || username)`.
+    Identify {
+        username: String,
+        pubkey: String,
+        signature: String,
+    },
+    FetchMessages {
+        channel_id: Id,
+        limit: u32,
+    },
+    SendMessage {
+        channel_id: Id,
+        content: String,
+    },
+    JoinVoice {
+        channel_id: Id,
+    },
     LeaveVoice,
-    /// Update mute/deafen flags for the current voice session.
-    SetVoiceMute { muted: bool, deafened: bool },
-    /// Local VAD says we're speaking (advisory; broadcast to others).
-    SetSpeaking { speaking: bool },
+    SetVoiceMute {
+        muted: bool,
+        deafened: bool,
+    },
+    SetSpeaking {
+        speaking: bool,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", content = "d", rename_all = "snake_case")]
 pub enum ServerMessage {
+    /// First frame the server sends after the WebSocket upgrades. Carries a
+    /// random per-connection nonce the client must sign for `Identify`.
+    Hello {
+        nonce: String,
+    },
     Ready {
         user: User,
         guilds: Vec<Guild>,
@@ -96,10 +119,9 @@ pub enum ServerMessage {
     MemberJoin(Member),
     MemberLeave {
         guild_id: Id,
-        user_id: Id,
+        user_pubkey: String,
     },
     VoiceStateUpdate(VoiceState),
-    /// LiveKit room access token, sent only to the user who joined.
     VoiceToken {
         channel_id: Id,
         livekit_url: String,

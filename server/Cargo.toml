@@ -16,6 +16,9 @@ axum = { workspace = true, features = ["macros"] }
 tokio = { workspace = true, features = ["full"] }
 tower = "0.5"
 livekit-api = { version = "0.4", default-features = false, features = ["access-token"] }
+ed25519-dalek = { workspace = true }
+bs58 = { workspace = true }
+rand = "0.8"
 
 # Shared deps inherited from workspace.
 tower-http = { workspace = true }

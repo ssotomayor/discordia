@@ -56,7 +56,7 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
                         ChannelsColumn {}
                     }
                     GridItem { id: "chat", x: 3, y: 0, w: 7, h: 30, min_w: 3, min_h: 10,
-                        div { class: "w-full h-full flex flex-col bg-[var(--panel)] border border-[var(--border)] rounded-lg overflow-hidden",
+                        div { class: "panel-hover w-full h-full flex flex-col bg-[var(--panel)] border border-[var(--border)] rounded-lg overflow-hidden",
                             if status == ConnectionStatus::Connecting {
                                 div { class: "flex-1 flex items-center justify-center text-[var(--text-muted)] text-sm",
                                     "Connecting…"
@@ -128,7 +128,7 @@ fn HostBanner() -> Element {
     };
 
     rsx! {
-        div { class: "shrink-0 px-3 py-2 bg-[var(--panel)] border border-[var(--border)] rounded-lg flex items-center gap-3 text-xs flex-wrap",
+        div { class: "panel-hover shrink-0 px-3 py-2 bg-[var(--panel)] border border-[var(--border)] rounded-lg flex items-center gap-3 text-xs flex-wrap",
             span { class: "text-[var(--accent)] font-medium tracking-wide", "Self-hosting" }
             if let Some(code) = shortcode {
                 span { class: "text-[var(--text-dim)]", "·" }

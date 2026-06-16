@@ -8,7 +8,8 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::host::HostInfo;
 use crate::protocol::{Channel, ClientMessage, Guild, Id, Member, Message, User, VoiceState};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SessionMode {
     /// Connect to a remote dioxusfun-server.
     Remote { server_url: String },
@@ -38,6 +39,8 @@ pub enum SessionMode {
 pub struct SessionParams {
     pub mode: SessionMode,
     pub username: String,
+    /// Crypto identity used to sign the Identify handshake.
+    pub identity: crate::identity::Identity,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,18 +129,18 @@ impl AppState {
         v
     }
 
-    pub fn user_of(&self, user_id: Id) -> Option<&User> {
+    pub fn user_of(&self, pubkey: &str) -> Option<&User> {
         if self
             .self_user
             .as_ref()
-            .map(|u| u.id == user_id)
+            .map(|u| u.pubkey == pubkey)
             .unwrap_or(false)
         {
             return self.self_user.as_ref();
         }
         self.members
             .iter()
-            .find(|m| m.user.id == user_id)
+            .find(|m| m.user.pubkey == pubkey)
             .map(|m| &m.user)
     }
 }
