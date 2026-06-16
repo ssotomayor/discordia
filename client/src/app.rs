@@ -71,6 +71,15 @@ button:active:not(:disabled) { transform: scale(0.985); }
 }
 .fade-in { animation: dxf-fade-in 0.18s var(--ease) both; }
 
+/* Window drag regions. With macOS fullsize content view + transparent
+   titlebar, there's no OS titlebar strip — so the user needs SOME region
+   they can grab to move the window. Anything tagged .dxf-drag-region is
+   draggable; buttons / inputs inside such a region must opt out with
+   .dxf-no-drag so they remain clickable. The traffic lights stay at
+   the top-left and float over our content. */
+.dxf-drag-region { -webkit-app-region: drag; user-select: none; }
+.dxf-no-drag { -webkit-app-region: no-drag; }
+
 /* Discordia brand mark — gentle wiggle + scale + warm glow on hover.
    Two states: a slow idle drift (so it feels alive without demanding
    attention) and a stronger hover response. */

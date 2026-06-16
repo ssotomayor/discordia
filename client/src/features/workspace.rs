@@ -40,13 +40,22 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
     let mut edit_mode = use_signal(|| false);
     let status = state.read().status;
 
+    // Pad above the top row on macOS so the traffic lights (which float
+    // over our content thanks to fullsize content view) don't collide
+    // with the host banner / brand / wallet buttons. Reserve enough
+    // horizontal space at the left to fully clear them.
+    let mac_top_pad = if cfg!(target_os = "macos") { "pt-7 pl-20" } else { "" };
+
     rsx! {
-        div { class: "h-full w-full flex flex-col bg-[var(--bg)] p-2 gap-2",
+        div { class: "h-full w-full flex flex-col bg-[var(--bg)] p-2 gap-2 {mac_top_pad}",
             VoiceSounds {}
 
             // Top row: host banner (only renders when self-hosting) grows
-            // to push the brand mark + wallet button to the right.
-            div { class: "flex items-stretch gap-2",
+            // to push the brand mark + wallet button to the right. The
+            // whole row is a drag region so the empty space between
+            // elements lets the user move the window; the interactive
+            // children opt out with .dxf-no-drag.
+            div { class: "dxf-drag-region flex items-stretch gap-2",
                 HostBanner {}
                 div { class: "shrink-0 flex items-center px-2",
                     img {
@@ -56,7 +65,9 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
                         title: "Discordia",
                     }
                 }
-                WalletControls { identity: params.identity.clone() }
+                div { class: "dxf-no-drag",
+                    WalletControls { identity: params.identity.clone() }
+                }
             }
 
             div { class: "flex-1 overflow-auto min-h-0",

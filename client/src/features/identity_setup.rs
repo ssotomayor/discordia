@@ -14,7 +14,6 @@ enum Step {
     ImportKey,
 }
 
-const PANEL: &str = "panel-hover bg-[var(--panel)] border border-[var(--border)] rounded-lg";
 const INPUT: &str = "w-full bg-transparent border border-[var(--border)] rounded px-3 py-2 text-sm text-[var(--text)] focus:outline-none focus:border-[var(--accent)] transition-colors";
 const LABEL: &str = "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]";
 
@@ -29,10 +28,31 @@ pub fn IdentitySetupView(on_done: EventHandler<Identity>) -> Element {
     let mut private_key_input = use_signal(String::new);
 
     let step_key = format!("step-{:?}", step());
+    let mac_top_pad = if cfg!(target_os = "macos") { "pt-7" } else { "pt-0" };
 
     rsx! {
-        div { class: "h-full w-full flex items-center justify-center bg-[var(--bg)] p-4",
-            div { class: "w-full max-w-md {PANEL} p-6 space-y-5 min-h-[560px] flex flex-col",
+        div { class: "h-full w-full flex bg-[var(--bg)]",
+            // Brand panel matches the Connect screen so first-launch
+            // feels like the same app.
+            div {
+                class: "dxf-drag-region hidden md:flex w-1/3 min-w-[300px] max-w-[440px] flex-col items-center justify-center px-8 border-r border-[var(--border)]",
+                img {
+                    src: crate::app::DISCORDIA_LOGO,
+                    alt: "Discordia",
+                    class: "dxf-logo w-32 h-32 mb-4",
+                }
+                h1 { class: "text-2xl font-semibold text-[var(--accent)] tracking-tight",
+                    "Discordia"
+                }
+                p { class: "text-xs text-[var(--text-muted)] mt-3 text-center max-w-[260px] leading-relaxed",
+                    "Welcome. Pick or create an identity to get started."
+                }
+            }
+
+            div { class: "flex-1 flex flex-col overflow-hidden min-w-0",
+                div { class: "dxf-drag-region h-8 shrink-0 {mac_top_pad}" }
+                div { class: "flex-1 overflow-auto px-8 pb-8 dxf-no-drag",
+                    div { class: "w-full max-w-md mx-auto space-y-5",
 
                 div { class: "space-y-1",
                     h1 { class: "text-lg font-semibold text-[var(--accent)]", "Set up your identity" }
@@ -260,6 +280,8 @@ pub fn IdentitySetupView(on_done: EventHandler<Identity>) -> Element {
                         }
                     },
                 }
+                }
+                    }
                 }
             }
         }

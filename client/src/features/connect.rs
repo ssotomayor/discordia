@@ -22,7 +22,6 @@ enum Tab {
     Remote,
 }
 
-const PANEL: &str = "bg-[var(--panel)] border border-[var(--border)] rounded-lg";
 const INPUT: &str = "w-full bg-transparent border border-[var(--border)] rounded px-3 py-2 text-sm text-[var(--text)] focus:outline-none focus:border-[var(--accent)] transition-colors";
 const INPUT_SM: &str = "w-full bg-transparent border border-[var(--border)] rounded px-2 py-1 text-xs text-[var(--text)] focus:outline-none focus:border-[var(--accent)] transition-colors";
 const LABEL: &str = "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]";
@@ -116,27 +115,41 @@ pub fn ConnectView(
 
     let tab_key = format!("tab-{:?}", tab());
 
-    rsx! {
-        div { class: "h-full w-full flex items-center justify-center bg-[var(--bg)] p-4",
-            form {
-                // min-h locks the card so tab switches don't reflow the whole
-                // form; the tab-content area absorbs the size difference.
-                class: "w-full max-w-md {PANEL} p-6 space-y-5 min-h-[600px] flex flex-col",
-                onsubmit: submit,
+    // On macOS our titlebar is transparent + the content view extends to
+    // the very top, so we leave room at the top for the traffic lights
+    // (which sit at roughly y=12-32 from the window edge). Other OSes
+    // keep the system titlebar so no extra padding needed.
+    let mac_top_pad = if cfg!(target_os = "macos") { "pt-7" } else { "pt-0" };
 
-                div { class: "flex items-center gap-3",
-                    img {
-                        src: crate::app::DISCORDIA_LOGO,
-                        alt: "Discordia",
-                        class: "dxf-logo w-12 h-12 shrink-0",
-                    }
-                    div { class: "space-y-1",
-                        h1 { class: "text-lg font-semibold text-[var(--accent)]", "Discordia" }
-                        p { class: "text-xs text-[var(--text-muted)]",
-                            "Browse, join by code, host your own, or connect to a URL."
-                        }
-                    }
+    rsx! {
+        div { class: "h-full w-full flex bg-[var(--bg)]",
+            // BRAND PANEL — fills the left third of the window. The whole
+            // panel is a drag region so users can grab it anywhere to move
+            // the window (Discord's native-app feel relies on this).
+            div {
+                class: "dxf-drag-region hidden md:flex w-1/3 min-w-[300px] max-w-[440px] flex-col items-center justify-center px-8 border-r border-[var(--border)] bg-[var(--bg)]",
+                img {
+                    src: crate::app::DISCORDIA_LOGO,
+                    alt: "Discordia",
+                    class: "dxf-logo w-32 h-32 mb-4",
                 }
+                h1 { class: "text-2xl font-semibold text-[var(--accent)] tracking-tight",
+                    "Discordia"
+                }
+                p { class: "text-xs text-[var(--text-muted)] mt-3 text-center max-w-[260px] leading-relaxed",
+                    "Self-hostable chat with cryptographic identity and a built-in Solana wallet."
+                }
+            }
+
+            // FORM PANEL — fills the rest. Top strip is also a drag region
+            // (so the empty bar above the form acts like a titlebar even
+            // when the brand panel isn't visible at narrow widths).
+            div { class: "flex-1 flex flex-col overflow-hidden min-w-0",
+                div { class: "dxf-drag-region h-8 shrink-0 {mac_top_pad}" }
+                form {
+                    class: "flex-1 overflow-auto px-8 pb-8 flex flex-col items-stretch dxf-no-drag",
+                    onsubmit: submit,
+                    div { class: "w-full max-w-md mx-auto space-y-5 flex flex-col",
 
                 IdentityCard { identity: identity.clone(), on_rename, on_sign_out }
 
@@ -313,6 +326,8 @@ pub fn ConnectView(
                         Tab::Remote => "Connect",
                         Tab::SelfHost => "Launch",
                     }}
+                }
+                    }
                 }
             }
         }
