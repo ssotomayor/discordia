@@ -3,7 +3,7 @@ use dioxus_grid_layout::{GridItem, GridLayout, GridPosition, use_layout_store};
 
 use crate::features::{
     channels::ChannelsColumn, chat::ChatView, guilds::GuildsSidebar, members::MembersPanel,
-    voice::spawn_voice_service,
+    voice::spawn_voice_service, wallet::WalletControls,
 };
 use crate::net::spawn_gateway;
 use crate::state::{AppState, ConnectionStatus, SessionParams, VoicePhase, use_app_state};
@@ -43,7 +43,14 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
     rsx! {
         div { class: "h-full w-full flex flex-col bg-[var(--bg)] p-2 gap-2",
             VoiceSounds {}
-            HostBanner {}
+
+            // Top row: host banner (only renders when self-hosting) grows
+            // to push the wallet button to the right; otherwise the wallet
+            // sits alone at the top-right.
+            div { class: "flex items-stretch gap-2",
+                HostBanner {}
+                WalletControls { identity: params.identity.clone() }
+            }
 
             div { class: "flex-1 overflow-auto min-h-0",
                 GridLayout {
@@ -128,7 +135,7 @@ fn HostBanner() -> Element {
     };
 
     rsx! {
-        div { class: "panel-hover shrink-0 px-3 py-2 bg-[var(--panel)] border border-[var(--border)] rounded-lg flex items-center gap-3 text-xs flex-wrap",
+        div { class: "panel-hover flex-1 min-w-0 px-3 py-2 bg-[var(--panel)] border border-[var(--border)] rounded-lg flex items-center gap-3 text-xs flex-wrap",
             span { class: "text-[var(--accent)] font-medium tracking-wide", "Self-hosting" }
             if let Some(code) = shortcode {
                 span { class: "text-[var(--text-dim)]", "·" }

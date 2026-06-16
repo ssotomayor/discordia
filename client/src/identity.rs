@@ -144,6 +144,14 @@ impl Identity {
         bs58::encode(sig.to_bytes()).into_string()
     }
 
+    /// Clone of the underlying signing key — used by the in-app wallet to
+    /// sign Solana transactions. The clone is a separate SigningKey value
+    /// from the same secret bytes, not a reference, so callers can move it
+    /// into async tasks.
+    pub fn signing_key_clone(&self) -> SigningKey {
+        SigningKey::from_bytes(&self.signing_key.to_bytes())
+    }
+
     /// Base58 of the raw 32-byte secret key. Used by tests + the future
     /// identity drawer to let users export-as-private-key (e.g. to import
     /// into Phantom).
