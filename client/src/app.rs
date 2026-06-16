@@ -7,12 +7,17 @@ use crate::identity::Identity;
 use crate::session::{self, SavedSession};
 use crate::state::{SessionMode, SessionParams};
 
+/// App brand mark. Yellow + dark gradient stylized D-shape; renders
+/// cleanly at any size. Used in two places: the connect screen header
+/// and the workspace top bar (next to the wallet).
+pub const DISCORDIA_LOGO: Asset = asset!("/assets/discordia-logo.svg");
+
 const BASE_CSS: &str = "
 :root {
   --bg: #0a0908;
   --panel: #0a0908;
-  --border: rgba(190, 130, 90, 0.18);
-  --border-strong: rgba(190, 130, 90, 0.35);
+  --border: rgba(238, 202, 178, 0.18);
+  --border-strong: rgba(255, 209, 179, 0.35);
   --text: #d6d6d6;
   --text-muted: #888888;
   --text-dim: #5a5a5a;
@@ -65,6 +70,25 @@ button:active:not(:disabled) { transform: scale(0.985); }
   to   { opacity: 1; transform: translateY(0); }
 }
 .fade-in { animation: dxf-fade-in 0.18s var(--ease) both; }
+
+/* Discordia brand mark — gentle wiggle + scale + warm glow on hover.
+   Two states: a slow idle drift (so it feels alive without demanding
+   attention) and a stronger hover response. */
+@keyframes dxf-logo-idle {
+  0%, 100% { transform: rotate(0deg); }
+  50%      { transform: rotate(-2deg); }
+}
+.dxf-logo {
+  transition: transform 0.35s var(--ease), filter 0.35s var(--ease);
+  transform-origin: center;
+  animation: dxf-logo-idle 6s var(--ease) infinite;
+  will-change: transform, filter;
+}
+.dxf-logo:hover {
+  transform: rotate(-12deg) scale(1.12);
+  filter: drop-shadow(0 0 10px rgba(255, 210, 26, 0.55));
+  animation-play-state: paused;
+}
 ";
 
 #[component]
@@ -99,6 +123,15 @@ pub fn App() -> Element {
                             };
                             let _ = session::save(&saved);
                             session.set(Some(params));
+                        },
+                        on_rename: move |new_name: String| {
+                            // Mutate the live identity + persist to disk. The
+                            // new name takes effect on the next Connect (we
+                            // don't surgery the in-flight gateway session).
+                            let mut current = identity.write();
+                            if let Some(id) = current.as_mut() {
+                                let _ = id.set_display_name(new_name);
+                            }
                         },
                         on_sign_out: move |_| {
                             let _ = Identity::delete_file();

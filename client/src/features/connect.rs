@@ -33,6 +33,7 @@ pub fn ConnectView(
     error: Option<String>,
     last_session: Option<SavedSession>,
     on_connect: EventHandler<SessionParams>,
+    on_rename: EventHandler<String>,
     on_sign_out: EventHandler<()>,
 ) -> Element {
     let default_rendezvous = std::env::var("DIOXUSFUN_RENDEZVOUS_URL")
@@ -123,14 +124,21 @@ pub fn ConnectView(
                 class: "w-full max-w-md {PANEL} p-6 space-y-5 min-h-[600px] flex flex-col",
                 onsubmit: submit,
 
-                div { class: "space-y-1",
-                    h1 { class: "text-lg font-semibold text-[var(--accent)]", "dioxusfun" }
-                    p { class: "text-xs text-[var(--text-muted)]",
-                        "Browse, join by code, host your own, or connect to a URL."
+                div { class: "flex items-center gap-3",
+                    img {
+                        src: crate::app::DISCORDIA_LOGO,
+                        alt: "Discordia",
+                        class: "dxf-logo w-12 h-12 shrink-0",
+                    }
+                    div { class: "space-y-1",
+                        h1 { class: "text-lg font-semibold text-[var(--accent)]", "Discordia" }
+                        p { class: "text-xs text-[var(--text-muted)]",
+                            "Browse, join by code, host your own, or connect to a URL."
+                        }
                     }
                 }
 
-                IdentityCard { identity: identity.clone(), on_sign_out }
+                IdentityCard { identity: identity.clone(), on_rename, on_sign_out }
 
                 if let Some(saved) = last_session.clone() {
                     {
@@ -329,7 +337,11 @@ fn TabButton(active: bool, label: &'static str, onclick: EventHandler<()>) -> El
 }
 
 #[component]
-fn IdentityCard(identity: Identity, on_sign_out: EventHandler<()>) -> Element {
+fn IdentityCard(
+    identity: Identity,
+    on_rename: EventHandler<String>,
+    on_sign_out: EventHandler<()>,
+) -> Element {
     let initial = identity
         .display_name
         .chars()
@@ -338,7 +350,11 @@ fn IdentityCard(identity: Identity, on_sign_out: EventHandler<()>) -> Element {
         .to_ascii_uppercase()
         .to_string();
     let truncated = identity.truncated_pubkey();
+    let tag = crate::identity::discriminator(&identity.pubkey).to_string();
     let file_path = Identity::file_path_display();
+
+    let mut editing = use_signal(|| false);
+    let mut draft = use_signal(|| identity.display_name.clone());
 
     rsx! {
         div { class: "space-y-1",
@@ -347,10 +363,65 @@ fn IdentityCard(identity: Identity, on_sign_out: EventHandler<()>) -> Element {
                     "{initial}"
                 }
                 div { class: "flex flex-col flex-1 min-w-0",
-                    span { class: "text-[var(--text)] truncate text-sm", "{identity.display_name}" }
+                    if editing() {
+                        // Inline editor — Enter saves, Escape cancels.
+                        input {
+                            class: "w-full bg-transparent border border-[var(--border)] rounded px-2 py-0.5 text-sm text-[var(--text)] focus:outline-none focus:border-[var(--accent)] transition-colors",
+                            r#type: "text",
+                            value: "{draft}",
+                            autofocus: true,
+                            oninput: move |e| draft.set(e.value()),
+                            onkeydown: move |e| {
+                                let key = e.key().to_string();
+                                if key == "Enter" {
+                                    let n = draft().trim().to_string();
+                                    if !n.is_empty() {
+                                        on_rename.call(n);
+                                    }
+                                    editing.set(false);
+                                } else if key == "Escape" {
+                                    editing.set(false);
+                                }
+                            },
+                        }
+                    } else {
+                        span {
+                            class: "text-[var(--text)] truncate text-sm",
+                            title: "{identity.pubkey}",
+                            "{identity.display_name}"
+                            span { class: "text-[var(--text-dim)] font-mono text-[10px] ml-0.5",
+                                "#{tag}"
+                            }
+                        }
+                    }
                     span { class: "text-[var(--text-dim)] text-[10px] font-mono select-all",
                         title: "{identity.pubkey}",
                         "{truncated}"
+                    }
+                }
+                if editing() {
+                    button {
+                        r#type: "button",
+                        class: "text-[10px] text-[var(--accent)] hover:text-[var(--accent-strong)] uppercase tracking-wider px-2 transition-colors",
+                        onclick: move |_| {
+                            let n = draft().trim().to_string();
+                            if !n.is_empty() {
+                                on_rename.call(n);
+                            }
+                            editing.set(false);
+                        },
+                        "save"
+                    }
+                } else {
+                    button {
+                        r#type: "button",
+                        class: "text-[10px] text-[var(--text-muted)] hover:text-[var(--accent)] uppercase tracking-wider px-2 transition-colors",
+                        onclick: move |_| {
+                            draft.set(identity.display_name.clone());
+                            editing.set(true);
+                        },
+                        title: "Rename — your pubkey stays the same",
+                        "edit"
                     }
                 }
                 button {

@@ -26,6 +26,11 @@ sha2 = "0.10"
 dirs = "5"
 rand = "0.8"
 
+# Solana wallet: base64 for the sendTransaction RPC payload (encoding=base64);
+# everything else (HTTP via reqwest, ed25519 signing, base58 pubkey) is
+# already in the dep tree from the identity module.
+base64 = "0.22"
+
 # Self-host mode: embed the gateway server in-process; protocol types come
 # from here so client and server can't drift.
 dioxusfun-server = { workspace = true }
