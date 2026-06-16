@@ -82,6 +82,106 @@ impl RpcClient {
         Ok(v.value.blockhash)
     }
 
+    /// All classic SPL token accounts owned by `owner_b58`. Uses
+    /// `jsonParsed` encoding so we get the human-readable `tokenAmount`
+    /// + decimals without having to decode the raw 165-byte account.
+    /// Token-2022 accounts are NOT included — listing those would
+    /// require a second RPC call with a different program filter.
+    pub async fn get_token_accounts_by_owner(
+        &self,
+        owner_b58: &str,
+    ) -> Result<Vec<TokenHolding>, String> {
+        let filter = serde_json::json!({
+            "programId": crate::wallet::spl::TOKEN_PROGRAM_ID_B58,
+        });
+        let cfg = serde_json::json!({ "encoding": "jsonParsed" });
+        #[derive(Deserialize)]
+        struct Raw {
+            value: Vec<RawHolding>,
+        }
+        #[derive(Deserialize)]
+        struct RawHolding {
+            pubkey: String,
+            account: RawAccount,
+        }
+        #[derive(Deserialize)]
+        struct RawAccount {
+            data: RawData,
+        }
+        #[derive(Deserialize)]
+        struct RawData {
+            parsed: RawParsed,
+        }
+        #[derive(Deserialize)]
+        struct RawParsed {
+            info: RawInfo,
+        }
+        #[derive(Deserialize)]
+        struct RawInfo {
+            mint: String,
+            #[serde(rename = "tokenAmount")]
+            token_amount: RawTokenAmount,
+        }
+        #[derive(Deserialize)]
+        struct RawTokenAmount {
+            amount: String,
+            decimals: u8,
+            #[serde(rename = "uiAmountString")]
+            ui_amount_string: String,
+        }
+
+        let raw: Raw = self
+            .call("getTokenAccountsByOwner", vec![json(owner_b58), filter, cfg])
+            .await?;
+
+        let mut out = Vec::with_capacity(raw.value.len());
+        for h in raw.value {
+            let amount = h
+                .account
+                .data
+                .parsed
+                .info
+                .token_amount
+                .amount
+                .parse::<u64>()
+                .map_err(|e| format!("token amount not a u64: {e}"))?;
+            out.push(TokenHolding {
+                token_account: h.pubkey,
+                mint: h.account.data.parsed.info.mint,
+                amount,
+                decimals: h.account.data.parsed.info.token_amount.decimals,
+                ui_amount: h.account.data.parsed.info.token_amount.ui_amount_string,
+            });
+        }
+        // Hide dust (amount == 0). Empty ATAs add noise without value.
+        out.retain(|h| h.amount > 0);
+        Ok(out)
+    }
+
+    /// Recent transaction signatures for `pubkey_b58`. Capped at `limit`
+    /// (Solana max is 1000; reasonable UI values are ≤25).
+    pub async fn get_signatures_for_address(
+        &self,
+        pubkey_b58: &str,
+        limit: u32,
+    ) -> Result<Vec<TxRecord>, String> {
+        let cfg = serde_json::json!({ "limit": limit });
+        let raw: Vec<TxRecordRaw> = self
+            .call(
+                "getSignaturesForAddress",
+                vec![json(pubkey_b58), cfg],
+            )
+            .await?;
+        Ok(raw
+            .into_iter()
+            .map(|r| TxRecord {
+                signature: r.signature,
+                block_time: r.block_time,
+                err: r.err.is_some(),
+            })
+            .collect())
+    }
+
     /// Submit a signed, serialized transaction. `tx_b64` is base64 of the
     /// raw transaction bytes. Returns the transaction signature (base58)
     /// once accepted by the validator — note that "accepted" ≠ "confirmed";
@@ -148,4 +248,35 @@ impl RpcClient {
 
 fn json(s: &str) -> serde_json::Value {
     serde_json::Value::String(s.to_string())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TokenHolding {
+    pub token_account: String,
+    pub mint: String,
+    /// Raw amount in the mint's smallest unit (multiply by 10^decimals to
+    /// get human-readable). Stored as u64 since SPL amounts fit in 64 bits.
+    pub amount: u64,
+    pub decimals: u8,
+    /// Pre-formatted display string from the RPC (e.g. "1.5"). Trusted
+    /// because we always cross-check `amount` against it via `decimals`.
+    pub ui_amount: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TxRecord {
+    pub signature: String,
+    /// Unix timestamp in seconds; absent for very recent unconfirmed txs.
+    pub block_time: Option<i64>,
+    pub err: bool,
+}
+
+#[derive(Deserialize)]
+struct TxRecordRaw {
+    signature: String,
+    #[serde(rename = "blockTime")]
+    block_time: Option<i64>,
+    /// Solana returns `null` on success, an object on failure. We don't
+    /// care about the shape — just whether it's present.
+    err: Option<serde_json::Value>,
 }

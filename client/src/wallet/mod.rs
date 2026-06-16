@@ -8,10 +8,25 @@
 
 pub mod rpc;
 mod serialize;
+pub mod spl;
 pub mod tx;
 
-pub use rpc::{Network, RpcClient};
-pub use tx::send_sol;
+pub use rpc::{Network, RpcClient, TokenHolding, TxRecord};
+pub use tx::{send_sol, send_spl_token};
+
+/// Multiply a UI-level token amount (e.g. "0.5") by 10^decimals to get the
+/// raw on-chain unit, with overflow + sign + NaN checks.
+pub fn ui_amount_to_raw(ui_amount: f64, decimals: u8) -> Option<u64> {
+    if !ui_amount.is_finite() || ui_amount < 0.0 {
+        return None;
+    }
+    let scale = 10f64.powi(decimals as i32);
+    let raw = (ui_amount * scale).round();
+    if raw > u64::MAX as f64 {
+        return None;
+    }
+    Some(raw as u64)
+}
 
 /// Convert SOL (human-readable) → lamports (on-chain unit). 1 SOL = 10^9
 /// lamports.
@@ -50,6 +65,16 @@ mod tests {
         assert_eq!(sol_to_lamports(0.0), Some(0));
         assert_eq!(sol_to_lamports(-1.0), None);
         assert_eq!(sol_to_lamports(f64::NAN), None);
+    }
+
+    #[test]
+    fn ui_to_raw_scales_by_decimals() {
+        assert_eq!(ui_amount_to_raw(1.0, 6), Some(1_000_000));
+        assert_eq!(ui_amount_to_raw(0.5, 6), Some(500_000));
+        assert_eq!(ui_amount_to_raw(1.5, 9), Some(1_500_000_000));
+        assert_eq!(ui_amount_to_raw(0.0, 6), Some(0));
+        assert_eq!(ui_amount_to_raw(-1.0, 6), None);
+        assert_eq!(ui_amount_to_raw(f64::NAN, 6), None);
     }
 
     #[test]

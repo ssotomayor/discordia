@@ -45,10 +45,17 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
             VoiceSounds {}
 
             // Top row: host banner (only renders when self-hosting) grows
-            // to push the wallet button to the right; otherwise the wallet
-            // sits alone at the top-right.
+            // to push the brand mark + wallet button to the right.
             div { class: "flex items-stretch gap-2",
                 HostBanner {}
+                div { class: "shrink-0 flex items-center px-2",
+                    img {
+                        src: crate::app::DISCORDIA_LOGO,
+                        alt: "Discordia",
+                        class: "dxf-logo w-7 h-7",
+                        title: "Discordia",
+                    }
+                }
                 WalletControls { identity: params.identity.clone() }
             }
 

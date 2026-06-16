@@ -5,6 +5,7 @@ use ed25519_dalek::{Signer, SigningKey};
 
 use crate::wallet::rpc::RpcClient;
 use crate::wallet::serialize::{CompiledInstruction, Message, serialize_transaction};
+use crate::wallet::spl::{build_signed_spl_transfer, find_associated_token_address};
 
 /// All-zero pubkey of the System Program (`11111111111111111111111111111111`).
 const SYSTEM_PROGRAM_ID: [u8; 32] = [0u8; 32];
@@ -90,6 +91,53 @@ fn build_signed_transfer(
     let signature = signing_key.sign(&msg_bytes).to_bytes();
     let tx_bytes = serialize_transaction(&[signature], &msg_bytes);
     base64::engine::general_purpose::STANDARD.encode(&tx_bytes)
+}
+
+/// Send an SPL token. Derives both source and destination ATAs from the
+/// wallet pubkeys + mint, signs with the identity keypair, and submits.
+///
+/// `amount` is the raw on-chain unit (already multiplied by 10^decimals);
+/// the caller is responsible for that conversion since decimals come from
+/// the mint and are surfaced in the UI's token list.
+pub async fn send_spl_token(
+    rpc: &RpcClient,
+    signing_key: &SigningKey,
+    from_wallet_b58: &str,
+    to_wallet_b58: &str,
+    mint_b58: &str,
+    amount: u64,
+) -> Result<String, String> {
+    let from_wallet = decode_pubkey(from_wallet_b58).map_err(|e| format!("from wallet: {e}"))?;
+    let to_wallet = decode_pubkey(to_wallet_b58).map_err(|e| format!("to wallet: {e}"))?;
+    let mint = decode_pubkey(mint_b58).map_err(|e| format!("mint: {e}"))?;
+
+    if amount == 0 {
+        return Err("amount must be > 0".to_string());
+    }
+    if from_wallet == to_wallet {
+        return Err("cannot send to yourself".to_string());
+    }
+    if signing_key.verifying_key().to_bytes() != from_wallet {
+        return Err("signing key does not match from wallet".to_string());
+    }
+
+    let source_ata = find_associated_token_address(&from_wallet, &mint);
+    let destination_ata = find_associated_token_address(&to_wallet, &mint);
+
+    let blockhash_b58 = rpc.get_latest_blockhash().await?;
+    let recent_blockhash = decode_pubkey(&blockhash_b58)
+        .map_err(|e| format!("blockhash: {e}"))?;
+
+    let tx_b64 = build_signed_spl_transfer(
+        signing_key,
+        from_wallet,
+        source_ata,
+        destination_ata,
+        amount,
+        recent_blockhash,
+    );
+
+    rpc.send_transaction(&tx_b64).await
 }
 
 fn decode_pubkey(b58: &str) -> Result<[u8; 32], String> {

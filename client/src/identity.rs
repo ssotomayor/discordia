@@ -274,6 +274,26 @@ pub fn truncate_pubkey(pubkey: &str) -> String {
     format!("{}…{}", &pubkey[..4], &pubkey[pubkey.len() - 4..])
 }
 
+/// Last 4 base58 characters of a pubkey — used as a Discord-style
+/// discriminator suffix on display names. With ~58 possible characters
+/// per slot, collisions in last-4 require ~330k users sharing a single
+/// name before > 50% chance, which is plenty for a self-hosted setup.
+pub fn discriminator(pubkey: &str) -> &str {
+    if pubkey.len() <= 4 {
+        return pubkey;
+    }
+    &pubkey[pubkey.len() - 4..]
+}
+
+/// Format a display name as `alice#7xK3` for textual contexts where
+/// inline styling isn't available (logs, tooltips, copy-to-clipboard).
+/// In rsx! we usually compose the parts directly so the discriminator
+/// can be a dimmer color.
+#[allow(dead_code)]
+pub fn name_with_tag(name: &str, pubkey: &str) -> String {
+    format!("{name}#{}", discriminator(pubkey))
+}
+
 // ---------------------------------------------------------------------------
 // SLIP-0010 ed25519 derivation along Solana's standard path m/44'/501'/0'/0'.
 // ---------------------------------------------------------------------------
@@ -345,6 +365,15 @@ mod tests {
         let phantom_format = bs58::encode(&combined).into_string();
         let imported = Identity::restore_from_private_key(&phantom_format, "alice").unwrap();
         assert_eq!(original.pubkey, imported.pubkey);
+    }
+
+    #[test]
+    fn name_with_tag_appends_last_four() {
+        let pk = "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM";
+        assert_eq!(discriminator(pk), "AWWM");
+        assert_eq!(name_with_tag("alice", pk), "alice#AWWM");
+        // Short input passes through.
+        assert_eq!(discriminator("abc"), "abc");
     }
 
     #[test]

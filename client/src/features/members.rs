@@ -1,6 +1,7 @@
 use dioxus::prelude::*;
 use dioxus_grid_layout::NoDrag;
 
+use crate::identity::discriminator;
 use crate::protocol::{Id, Member, VoiceState};
 use crate::state::use_app_state;
 
@@ -112,7 +113,16 @@ fn MemberRow(member: Member, voice: Option<VoiceState>) -> Element {
             div { class: "w-7 h-7 rounded-md border flex items-center justify-center text-xs font-medium {avatar_class} {speaking_ring}",
                 "{initial}"
             }
-            span { class: "text-sm truncate flex-1 {name_class}", "{member.user.username}" }
+            // Display name with #pubkey-suffix discriminator so two users
+            // with the same chosen username are visually distinguishable.
+            span {
+                class: "text-sm truncate flex-1 {name_class}",
+                title: "{member.user.pubkey}",
+                "{member.user.username}"
+                span { class: "text-[var(--text-dim)] font-mono text-[10px] ml-0.5",
+                    "#{discriminator(&member.user.pubkey)}"
+                }
+            }
             if let Some(vs) = voice {
                 VoiceBadges { vs: vs }
             }

@@ -1,6 +1,7 @@
 use dioxus::prelude::*;
 use dioxus_grid_layout::NoDrag;
 
+use crate::identity::discriminator;
 use crate::protocol::{ClientMessage, Id, Message};
 use crate::state::{use_app_state, use_gateway};
 
@@ -73,7 +74,14 @@ fn MessageRow(message: Message) -> Element {
             }
             div { class: "flex-1 min-w-0",
                 div { class: "flex items-baseline gap-2",
-                    span { class: "text-sm text-[var(--text)] font-medium", "{message.author.username}" }
+                    span {
+                        class: "text-sm text-[var(--text)] font-medium",
+                        title: "{message.author.pubkey}",
+                        "{message.author.username}"
+                        span { class: "text-[var(--text-dim)] font-mono text-[10px] ml-0.5 font-normal",
+                            "#{discriminator(&message.author.pubkey)}"
+                        }
+                    }
                     span { class: "text-[10px] text-[var(--text-dim)]", "{timestamp}" }
                 }
                 div { class: "text-sm text-[var(--text)] break-words whitespace-pre-wrap leading-relaxed", "{message.content}" }
