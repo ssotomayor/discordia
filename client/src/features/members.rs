@@ -84,22 +84,18 @@ fn Section(label: String, members: Vec<Member>, voice_states: Vec<VoiceState>) -
 
 #[component]
 fn MemberRow(member: Member, voice: Option<VoiceState>) -> Element {
-    let initial = member
-        .user
-        .username
-        .chars()
-        .next()
-        .unwrap_or('?')
-        .to_ascii_uppercase();
+    let mut state = use_app_state();
+    let is_self = state
+        .read()
+        .self_user
+        .as_ref()
+        .map(|u| u.pubkey == member.user.pubkey)
+        .unwrap_or(false);
+
     let name_class = if member.online {
         "text-[var(--text)]"
     } else {
         "text-[var(--text-dim)]"
-    };
-    let avatar_class = if member.online {
-        "text-[var(--accent)] border-[var(--border)]"
-    } else {
-        "text-[var(--text-dim)] border-[var(--border)] opacity-60"
     };
     let speaking = voice.as_ref().map(|v| v.speaking).unwrap_or(false);
     let speaking_ring = if speaking {
@@ -108,10 +104,39 @@ fn MemberRow(member: Member, voice: Option<VoiceState>) -> Element {
         ""
     };
 
+    let dim = if member.online { "" } else { "opacity-60" };
+    let card_pubkey = member.user.pubkey.clone();
+
+    // Presence: offline trumps the self-set status; online users pulse.
+    let (dot_color, pulse) = if !member.online {
+        ("var(--text-dim)", "")
+    } else {
+        let status = state
+            .read()
+            .profile_of(&member.user.pubkey)
+            .and_then(|p| p.status.clone())
+            .unwrap_or_else(|| "online".into());
+        let pulse = if status == "online" { "dxf-dot-pulse" } else { "" };
+        (crate::features::profiles::status_color(&status), pulse)
+    };
+
     rsx! {
-        div { class: "flex items-center gap-2 px-3 py-1 hover:bg-white/[0.02] cursor-pointer",
-            div { class: "w-7 h-7 rounded-md border flex items-center justify-center text-xs font-medium {avatar_class} {speaking_ring}",
-                "{initial}"
+        div {
+            class: "flex items-center gap-2 px-3 py-1 hover:bg-white/[0.02] cursor-pointer",
+            title: if is_self { "Click to view your profile" } else { "Click to view profile" },
+            // A single click opens the profile card; DMs are started from the
+            // card's "Send Message" button.
+            onclick: move |_| state.write().profile_card = Some(card_pubkey.clone()),
+            div { class: "relative shrink-0",
+                crate::features::profiles::Avatar {
+                    pubkey: member.user.pubkey.clone(),
+                    name: member.user.username.clone(),
+                    size: "w-7 h-7 {dim} {speaking_ring}",
+                }
+                span {
+                    class: "absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-[var(--panel-solid)] {pulse}",
+                    style: "background:{dot_color}; color:{dot_color};",
+                }
             }
             // Display name with #pubkey-suffix discriminator so two users
             // with the same chosen username are visually distinguishable.

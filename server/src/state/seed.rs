@@ -13,6 +13,9 @@ pub fn populate(state: &AppState) {
         id: Uuid::new_v4(),
         name: "Lobby".into(),
         icon: Some("LB".into()),
+        // No owner — the seeded Lobby can't be deleted by anyone.
+        owner_pubkey: String::new(),
+        accent: None,
     };
     let general = Channel {
         id: Uuid::new_v4(),

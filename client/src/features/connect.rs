@@ -128,11 +128,8 @@ pub fn ConnectView(
             // the window (Discord's native-app feel relies on this).
             div {
                 class: "dxf-drag-region hidden md:flex w-1/3 min-w-[300px] max-w-[440px] flex-col items-center justify-center px-8 border-r border-[var(--border)] bg-[var(--bg)]",
-                img {
-                    src: crate::app::DISCORDIA_LOGO,
-                    alt: "Discordia",
-                    class: "dxf-logo w-32 h-32 mb-4",
-                }
+                onmousedown: move |_| crate::app::start_window_drag(),
+                crate::app::DiscordiaLogo { class: "w-32 h-32 mb-4" }
                 h1 { class: "text-2xl font-semibold text-[var(--accent)] tracking-tight",
                     "Discordia"
                 }
@@ -145,7 +142,10 @@ pub fn ConnectView(
             // (so the empty bar above the form acts like a titlebar even
             // when the brand panel isn't visible at narrow widths).
             div { class: "flex-1 flex flex-col overflow-hidden min-w-0",
-                div { class: "dxf-drag-region h-8 shrink-0 {mac_top_pad}" }
+                div {
+                    class: "dxf-drag-region h-8 shrink-0 {mac_top_pad}",
+                    onmousedown: move |_| crate::app::start_window_drag(),
+                }
                 form {
                     class: "flex-1 overflow-auto px-8 pb-8 flex flex-col items-stretch dxf-no-drag",
                     onsubmit: submit,

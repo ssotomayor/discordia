@@ -1,9 +1,11 @@
+pub mod appearance;
 pub mod channels;
 pub mod chat;
 pub mod connect;
 pub mod guilds;
 pub mod identity_setup;
 pub mod members;
+pub mod profiles;
 pub mod voice;
 pub mod wallet;
 pub mod workspace;

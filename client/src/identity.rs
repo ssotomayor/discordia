@@ -260,11 +260,24 @@ struct Stored {
     private_key: Option<String>,
 }
 
-fn identity_path() -> PathBuf {
+/// Base directory for dioxusfun's on-disk state (identity + session).
+///
+/// Honors the `DIOXUSFUN_CONFIG_DIR` environment variable, which points the app
+/// at an explicit directory — handy for running several isolated instances on
+/// one machine (e.g. `DIOXUSFUN_CONFIG_DIR=/tmp/userB ./dioxusfun`) to simulate
+/// multiple users. When unset, falls back to the OS config dir, e.g.
+/// `~/Library/Application Support/dioxusfun` on macOS.
+pub fn config_dir() -> PathBuf {
+    if let Some(dir) = std::env::var_os("DIOXUSFUN_CONFIG_DIR") {
+        return PathBuf::from(dir);
+    }
     dirs::config_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join("dioxusfun")
-        .join("identity.json")
+}
+
+fn identity_path() -> PathBuf {
+    config_dir().join("identity.json")
 }
 
 pub fn truncate_pubkey(pubkey: &str) -> String {

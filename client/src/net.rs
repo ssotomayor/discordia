@@ -10,7 +10,7 @@ use url::Url;
 
 use crate::features::voice::VoiceCmd;
 use crate::host::{HostHandle, start_self_host};
-use crate::protocol::{ClientMessage, ServerMessage};
+use crate::protocol::{ClientMessage, Id, ServerMessage};
 use crate::state::{
     AppState, ConnectionStatus, GatewayTx, SessionMode, SessionParams, VoicePhase,
 };
@@ -162,6 +162,29 @@ async fn run(
         .await
         .map_err(|e| format!("send identify: {e}"))?;
 
+    // Publish our locally-owned profile (avatar/bio) so it travels with us to
+    // this host. Sent right after Identify; the server processes frames in
+    // order, so we're identified by the time it handles this.
+    if let Some(local) = crate::profile::load() {
+        if local.avatar.is_some()
+            || local.banner.is_some()
+            || local.bio.is_some()
+            || local.status.is_some()
+            || local.custom_status.is_some()
+        {
+            let set_profile = ClientMessage::SetProfile {
+                avatar: local.avatar,
+                banner: local.banner,
+                bio: local.bio,
+                status: local.status,
+                custom_status: local.custom_status,
+            };
+            if let Ok(json) = serde_json::to_string(&set_profile) {
+                let _ = ws_tx.send(WsMessage::Text(json.into())).await;
+            }
+        }
+    }
+
     loop {
         tokio::select! {
             outbound = rx.recv() => {
@@ -208,12 +231,19 @@ fn apply(
             channels,
             members,
             voice_states,
+            dms,
+            catalog,
+            profiles,
         } => {
             s.self_user = Some(user);
             s.guilds = guilds;
             s.channels = channels;
             s.members = members;
             s.voice_states = voice_states;
+            s.dms = dms;
+            s.dm_mode = false;
+            s.catalog = catalog;
+            s.profiles = profiles.into_iter().map(|p| (p.pubkey.clone(), p)).collect();
             s.messages = BTreeMap::new();
             s.status = ConnectionStatus::Ready;
 
@@ -240,7 +270,164 @@ fn apply(
             s.messages.insert(channel_id, messages);
         }
         ServerMessage::MessageCreate(m) => {
-            s.messages.entry(m.channel_id).or_default().push(m);
+            let cid = m.channel_id;
+            // A channel we don't have as a guild channel must be a DM addressed
+            // to us (the server only delivers DM frames to participants).
+            let is_dm = !s.channels.iter().any(|c| c.id == cid);
+            // First message of a DM someone started with us — materialise the
+            // conversation from the author.
+            if is_dm && s.dm_of(cid).is_none() {
+                s.dms.push(crate::protocol::DmInfo {
+                    channel_id: cid,
+                    other: m.author.clone(),
+                });
+            }
+            let author_is_self = s
+                .self_user
+                .as_ref()
+                .map(|u| u.pubkey == m.author.pubkey)
+                .unwrap_or(false);
+            let viewing = s.selected_channel == Some(cid)
+                && (is_dm == s.dm_mode);
+            // Mention = the message names us with "@username".
+            let mentioned = s
+                .self_user
+                .as_ref()
+                .map(|u| m.content.contains(&format!("@{}", u.username)))
+                .unwrap_or(false);
+            // A new message from someone clears their typing indicator.
+            if let Some(set) = s.typing.get_mut(&cid) {
+                set.remove(&m.author.pubkey);
+            }
+            s.messages.entry(cid).or_default().push(m);
+            // Badge only on inbound DM messages for a conversation you're not
+            // currently looking at.
+            if is_dm && !author_is_self && !viewing {
+                *s.dm_unread.entry(cid).or_insert(0) += 1;
+            }
+            // Chime on an inbound DM you're not looking at, or any mention.
+            if !author_is_self && ((is_dm && !viewing) || mentioned) {
+                s.notify_tick = s.notify_tick.wrapping_add(1);
+            }
+        }
+        ServerMessage::GuildJoined { guild, channels, members } => {
+            // We created or joined this guild — add it (dedup) and jump to it.
+            let gid = guild.id;
+            if !s.guilds.iter().any(|g| g.id == gid) {
+                s.guilds.push(guild);
+            }
+            for ch in channels {
+                if !s.channels.iter().any(|c| c.id == ch.id) {
+                    s.channels.push(ch);
+                }
+            }
+            for m in members {
+                let existing = s.members.iter_mut().find(|x| {
+                    x.guild_id == m.guild_id && x.user.pubkey == m.user.pubkey
+                });
+                match existing {
+                    Some(slot) => *slot = m,
+                    None => s.members.push(m),
+                }
+            }
+            // Select the guild and its first text channel.
+            s.dm_mode = false;
+            s.selected_guild = Some(gid);
+            let first_text = s
+                .channels
+                .iter()
+                .find(|c| {
+                    c.guild_id == gid && matches!(c.kind, crate::protocol::ChannelKind::Text)
+                })
+                .map(|c| c.id);
+            s.selected_channel = first_text;
+            if let Some(channel_id) = first_text {
+                if !s.messages.contains_key(&channel_id) {
+                    let _ = tx.send(ClientMessage::FetchMessages { channel_id, limit: 50 });
+                }
+            }
+        }
+        ServerMessage::GuildCatalog { guilds } => {
+            s.catalog = guilds;
+        }
+        ServerMessage::GuildDelete { guild_id } => {
+            // Drop the guild, its channels and their message logs.
+            s.guilds.retain(|g| g.id != guild_id);
+            let removed: Vec<Id> = s
+                .channels
+                .iter()
+                .filter(|c| c.guild_id == guild_id)
+                .map(|c| c.id)
+                .collect();
+            s.channels.retain(|c| c.guild_id != guild_id);
+            s.members.retain(|m| m.guild_id != guild_id);
+            for cid in &removed {
+                s.messages.remove(cid);
+            }
+            // If we were viewing the deleted guild, fall back to another one.
+            if s.selected_guild == Some(guild_id) {
+                let next = s.guilds.first().map(|g| g.id);
+                s.selected_guild = next;
+                s.selected_channel = next.and_then(|gid| {
+                    s.channels
+                        .iter()
+                        .find(|c| {
+                            c.guild_id == gid
+                                && matches!(c.kind, crate::protocol::ChannelKind::Text)
+                        })
+                        .map(|c| c.id)
+                });
+                if let Some(channel_id) = s.selected_channel {
+                    if !s.messages.contains_key(&channel_id) {
+                        let _ = tx.send(ClientMessage::FetchMessages { channel_id, limit: 50 });
+                    }
+                }
+            }
+        }
+        ServerMessage::DmReady {
+            channel_id,
+            other,
+            messages,
+        } => {
+            // Authoritative open of a DM we initiated: list it, load history,
+            // switch to the DM view and select it.
+            if !s.dms.iter().any(|d| d.channel_id == channel_id) {
+                s.dms.push(crate::protocol::DmInfo {
+                    channel_id,
+                    other,
+                });
+            }
+            s.messages.insert(channel_id, messages);
+            s.dm_mode = true;
+            s.selected_channel = Some(channel_id);
+            s.dm_unread.remove(&channel_id);
+        }
+        ServerMessage::DmCreate(info) => {
+            // Someone opened a DM with us — add it to the sidebar if new.
+            if !s.dms.iter().any(|d| d.channel_id == info.channel_id) {
+                s.dms.push(info);
+            }
+        }
+        ServerMessage::ProfileUpdate(profile) => {
+            s.profiles.insert(profile.pubkey.clone(), profile);
+        }
+        ServerMessage::ReactionUpdate { channel_id, message_id, reactions } => {
+            if let Some(msgs) = s.messages.get_mut(&channel_id) {
+                if let Some(msg) = msgs.iter_mut().find(|m| m.id == message_id) {
+                    msg.reactions = reactions;
+                }
+            }
+        }
+        ServerMessage::TypingUpdate { channel_id, user_pubkey, username } => {
+            s.typing
+                .entry(channel_id)
+                .or_default()
+                .insert(user_pubkey, (username, std::time::Instant::now()));
+        }
+        ServerMessage::GuildUpdate(guild) => {
+            if let Some(slot) = s.guilds.iter_mut().find(|g| g.id == guild.id) {
+                *slot = guild;
+            }
         }
         ServerMessage::MemberJoin(member) => {
             let exists = s.members.iter_mut().find(|m| {

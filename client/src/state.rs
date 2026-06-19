@@ -1,12 +1,15 @@
 //! App-wide state shared via Dioxus context.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use dioxus::prelude::*;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::host::HostInfo;
-use crate::protocol::{Channel, ClientMessage, Guild, Id, Member, Message, User, VoiceState};
+use crate::protocol::{
+    Channel, ClientMessage, DmInfo, Guild, GuildSummary, Id, Member, Message, Profile, User,
+    VoiceState,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -91,6 +94,28 @@ pub struct AppState {
     pub voice: VoiceSession,
     pub selected_guild: Option<Id>,
     pub selected_channel: Option<Id>,
+    /// The user's direct-message conversations.
+    pub dms: Vec<DmInfo>,
+    /// Unread received-message counts per DM channel. Incremented when a DM
+    /// message arrives for a conversation you aren't currently viewing, and
+    /// cleared when you open it. Drives the DM-home unread badge.
+    pub dm_unread: HashMap<Id, u32>,
+    /// When true the channels column shows DM conversations instead of the
+    /// selected guild's channels (the "DM home" view).
+    pub dm_mode: bool,
+    /// Public directory of all guilds on the host (for browse-and-join).
+    pub catalog: Vec<GuildSummary>,
+    /// Known user profiles (avatar/bio) by pubkey. Looked up when rendering a
+    /// user anywhere (message author, member row, profile card).
+    pub profiles: HashMap<String, Profile>,
+    /// Pubkey of the user whose profile card is open, if any (UI state).
+    pub profile_card: Option<String>,
+    /// Who is currently typing, per channel: pubkey -> (username, last seen).
+    /// Entries are swept after a few seconds (see WorkspaceView).
+    pub typing: HashMap<Id, HashMap<String, (String, std::time::Instant)>>,
+    /// Bumped whenever an inbound DM / mention should chime. A sound component
+    /// watches this and plays a notification.
+    pub notify_tick: u64,
     /// Populated when running in self-host mode. None for remote connections.
     pub host_info: Option<HostInfo>,
 }
@@ -108,8 +133,49 @@ impl AppState {
             voice: VoiceSession::default(),
             selected_guild: None,
             selected_channel: None,
+            dms: Vec::new(),
+            dm_unread: HashMap::new(),
+            dm_mode: false,
+            catalog: Vec::new(),
+            profiles: HashMap::new(),
+            profile_card: None,
+            typing: HashMap::new(),
+            notify_tick: 0,
             host_info: None,
         }
+    }
+
+    /// Usernames currently typing in a channel (sorted, for a stable label).
+    pub fn typers_in(&self, channel_id: Id) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .typing
+            .get(&channel_id)
+            .map(|m| m.values().map(|(name, _)| name.clone()).collect())
+            .unwrap_or_default();
+        names.sort();
+        names
+    }
+
+    /// The profile for a pubkey, if we have one.
+    pub fn profile_of(&self, pubkey: &str) -> Option<&Profile> {
+        self.profiles.get(pubkey)
+    }
+
+    /// The avatar data URL for a pubkey, if set.
+    pub fn avatar_of(&self, pubkey: &str) -> Option<&str> {
+        self.profiles
+            .get(pubkey)
+            .and_then(|p| p.avatar.as_deref())
+    }
+
+    /// The DM conversation whose channel id is `channel_id`, if any.
+    pub fn dm_of(&self, channel_id: Id) -> Option<&DmInfo> {
+        self.dms.iter().find(|d| d.channel_id == channel_id)
+    }
+
+    /// Total unread DM messages across all conversations.
+    pub fn dm_unread_total(&self) -> u32 {
+        self.dm_unread.values().copied().sum()
     }
 
     pub fn members_of(&self, guild_id: Id) -> Vec<&Member> {

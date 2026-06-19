@@ -2,7 +2,8 @@ use dioxus::prelude::*;
 use dioxus_grid_layout::NoDrag;
 
 use crate::features::voice::{VoiceCmd, use_voice_tx};
-use crate::protocol::{Channel, ChannelKind, ClientMessage, Id, VoiceState};
+use crate::identity::discriminator;
+use crate::protocol::{Channel, ChannelKind, ClientMessage, DmInfo, Id, VoiceState};
 use crate::state::{AppState, GatewayTx, VoicePhase, use_app_state, use_gateway};
 
 const PANEL: &str = "panel-hover w-full h-full bg-[var(--panel)] border border-[var(--border)] rounded-lg flex flex-col overflow-hidden";
@@ -16,6 +17,8 @@ pub fn ChannelsColumn() -> Element {
     let voice = use_voice_tx();
 
     let snapshot = state.read();
+    let dm_mode = snapshot.dm_mode;
+    let dms: Vec<DmInfo> = snapshot.dms.clone();
     let selected_guild = snapshot.selected_guild;
     let selected_channel = snapshot.selected_channel;
     let guild = selected_guild.and_then(|gid| snapshot.guilds.iter().find(|g| g.id == gid).cloned());
@@ -47,11 +50,55 @@ pub fn ChannelsColumn() -> Element {
         aside { class: PANEL,
             div { class: HEADER,
                 h2 { class: "text-sm text-[var(--accent)] truncate font-medium",
-                    {guild.as_ref().map(|g| g.name.clone()).unwrap_or_else(|| "No server".into())}
+                    if dm_mode {
+                        "Direct Messages"
+                    } else {
+                        {guild.as_ref().map(|g| g.name.clone()).unwrap_or_else(|| "No server".into())}
+                    }
                 }
             }
 
             NoDrag {
+            if dm_mode {
+                div { class: "flex-1 overflow-y-auto px-2 py-3 space-y-1",
+                    if dms.is_empty() {
+                        div { class: "px-2 text-xs text-[var(--text-dim)] leading-relaxed",
+                            "No conversations yet. Click a member to start a direct message."
+                        }
+                    }
+                    for dm in dms.iter().cloned() {
+                        {
+                            let cid = dm.channel_id;
+                            let active = selected_channel == Some(cid);
+                            let cls = if active {
+                                "text-[var(--accent)] bg-[var(--accent-soft)]"
+                            } else {
+                                "text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-white/[0.03]"
+                            };
+                            let g2 = gateway.clone();
+                            let uname = dm.other.username.clone();
+                            let disc = discriminator(&dm.other.pubkey);
+                            rsx! {
+                                button {
+                                    key: "{cid}",
+                                    class: "w-full flex items-center gap-2 px-2 py-1 rounded text-left text-sm transition-colors {cls}",
+                                    onclick: move |_| select_dm(&mut state, &g2, cid),
+                                    crate::features::profiles::Avatar {
+                                        pubkey: dm.other.pubkey.clone(),
+                                        name: uname.clone(),
+                                        size: "w-6 h-6",
+                                        text: "text-[10px]",
+                                    }
+                                    span { class: "truncate flex-1",
+                                        "{uname}"
+                                        span { class: "text-[var(--text-dim)] font-mono text-[10px] ml-0.5", "#{disc}" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
             div { class: "flex-1 overflow-y-auto px-2 py-3 space-y-3",
                 if !text_channels.is_empty() {
                     div {
@@ -117,6 +164,7 @@ pub fn ChannelsColumn() -> Element {
                         }
                     }
                 }
+            }
             }
 
             UserPanel { self_voice: self_voice, self_username: self_user.map(|u| u.username) }
@@ -192,10 +240,8 @@ fn VoiceChannelRow(
 fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<String>) -> Element {
     let gateway = use_gateway();
     let voice = use_voice_tx();
-    let initial = self_username
-        .as_deref()
-        .map(|n| n.chars().next().unwrap_or('?').to_ascii_uppercase().to_string())
-        .unwrap_or_else(|| "?".into());
+    let state = use_app_state();
+    let self_pubkey = state.read().self_user.as_ref().map(|u| u.pubkey.clone());
     let name = self_username.clone().unwrap_or_else(|| "—".into());
 
     let show_banner = !matches!(self_voice.phase, VoicePhase::Idle);
@@ -241,12 +287,16 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                 }
             }
             div { class: "h-12 px-3 flex items-center gap-2",
-                div { class: "w-7 h-7 rounded-md border border-[var(--border)] flex items-center justify-center text-xs text-[var(--accent)] font-medium",
-                    "{initial}"
+                crate::features::profiles::Avatar {
+                    pubkey: self_pubkey.clone().unwrap_or_default(),
+                    name: name.clone(),
+                    size: "w-7 h-7",
                 }
                 div { class: "flex-1 min-w-0",
                     div { class: "text-sm text-[var(--text)] truncate", "{name}" }
                 }
+                crate::features::profiles::ProfileEditor {}
+                crate::features::appearance::AppearanceButton {}
                 button {
                     class: "px-2 py-1 text-[10px] uppercase tracking-wider text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors",
                     title: mute_label,
@@ -266,6 +316,22 @@ fn select_text_channel(state: &mut Signal<AppState>, gateway: &GatewayTx, channe
     let needs_fetch = {
         let mut s = state.write();
         s.selected_channel = Some(channel_id);
+        !s.messages.contains_key(&channel_id)
+    };
+    if needs_fetch {
+        gateway.send(ClientMessage::FetchMessages {
+            channel_id,
+            limit: 50,
+        });
+    }
+}
+
+fn select_dm(state: &mut Signal<AppState>, gateway: &GatewayTx, channel_id: Id) {
+    let needs_fetch = {
+        let mut s = state.write();
+        s.dm_mode = true;
+        s.selected_channel = Some(channel_id);
+        s.dm_unread.remove(&channel_id);
         !s.messages.contains_key(&channel_id)
     };
     if needs_fetch {

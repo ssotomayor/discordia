@@ -6,6 +6,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::identity::config_dir;
 use crate::state::SessionMode;
 
 const FILE_VERSION: u32 = 1;
@@ -23,10 +24,7 @@ struct Stored {
 }
 
 fn session_path() -> PathBuf {
-    dirs::config_dir()
-        .unwrap_or_else(std::env::temp_dir)
-        .join("dioxusfun")
-        .join("session.json")
+    config_dir().join("session.json")
 }
 
 pub fn save(session: &SavedSession) -> Result<(), String> {

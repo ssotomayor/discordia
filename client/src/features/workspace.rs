@@ -10,6 +10,16 @@ use crate::state::{AppState, ConnectionStatus, SessionParams, VoicePhase, use_ap
 
 const CONNECT_SOUND: Asset = asset!("/assets/connect.mp3");
 
+/// Vertical row span each panel occupies, and the gap (px) between grid
+/// rows. The on-mount measurement divides the available height by these so
+/// the panels fill the viewport without scrolling.
+const GRID_ROWS: u32 = 30;
+const GRID_GAP: f64 = 8.0;
+
+/// Power / unplug glyph for the disconnect button. Inherits `currentColor`
+/// so it picks up the button's text colour (and the danger hover state).
+const UNPLUG_ICON_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>"##;
+
 #[component]
 pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>) -> Element {
     let state = use_signal(AppState::empty);
@@ -25,62 +35,129 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
     provide_context(crate::features::voice::VoiceTx(voice_tx.clone()));
     provide_context(state);
 
-    // Initial 4-panel dashboard layout. 12 cols × 24px row height; total
-    // height ≈ 720px which fits a default desktop window. Users can drag
-    // and resize via the corner grip.
+    // Initial 4-panel dashboard layout. 12 cols, each panel spans the full
+    // GRID_ROWS height so the four columns sit side by side. The pixel row
+    // height is derived at mount from the available viewport (see below) so
+    // the panels exactly fill the window on first open instead of overflowing
+    // into a scroll. Users can still drag/resize via the corner grip.
     let layout = use_layout_store(|| {
         vec![
-            ("guilds".into(), GridPosition::new(0, 0, 1, 30)),
-            ("channels".into(), GridPosition::new(1, 0, 2, 30)),
-            ("chat".into(), GridPosition::new(3, 0, 7, 30)),
-            ("members".into(), GridPosition::new(10, 0, 2, 30)),
+            ("guilds".into(), GridPosition::new(0, 0, 1, GRID_ROWS)),
+            ("channels".into(), GridPosition::new(1, 0, 2, GRID_ROWS)),
+            ("chat".into(), GridPosition::new(3, 0, 7, GRID_ROWS)),
+            ("members".into(), GridPosition::new(10, 0, 2, GRID_ROWS)),
         ]
     });
 
     let mut edit_mode = use_signal(|| false);
+    // Row height is measured from the grid's visible area on mount so the
+    // panels fit the window exactly. Falls back to a sane default until then.
+    let mut row_height = use_signal(|| 24.0_f64);
     let status = state.read().status;
 
-    // Pad above the top row on macOS so the traffic lights (which float
-    // over our content thanks to fullsize content view) don't collide
-    // with the host banner / brand / wallet buttons. Reserve enough
-    // horizontal space at the left to fully clear them.
-    let mac_top_pad = if cfg!(target_os = "macos") { "pt-7 pl-20" } else { "" };
+    // Owner-set accent for the guild we're currently viewing (not in DM mode),
+    // layered over the user's theme/accent while it's selected.
+    let guild_accent = {
+        let s = state.read();
+        if s.dm_mode {
+            None
+        } else {
+            s.selected_guild
+                .and_then(|gid| s.guilds.iter().find(|g| g.id == gid).and_then(|g| g.accent.clone()))
+        }
+    };
+
+    // Sweep stale typing indicators (older than 5s) so they fade out. Only
+    // writes when there's something to prune, to avoid idle re-renders.
+    use_future(move || async move {
+        let mut state = state;
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+            let now = std::time::Instant::now();
+            let stale = {
+                let s = state.read();
+                s.typing
+                    .values()
+                    .any(|set| set.values().any(|(_, t)| now.duration_since(*t).as_secs() >= 5))
+            };
+            if stale {
+                let mut s = state.write();
+                for set in s.typing.values_mut() {
+                    set.retain(|_, (_, t)| now.duration_since(*t).as_secs() < 5);
+                }
+                s.typing.retain(|_, set| !set.is_empty());
+            }
+        }
+    });
+
+    // On macOS the traffic lights float over our content (fullsize content
+    // view). Only the TOP ROW needs to dodge them: `pt-7` drops it below the
+    // lights vertically and `pl-20` clears them horizontally. The padding must
+    // NOT live on the outer column, or it would shove the whole widget grid
+    // inward and leave a fat margin down the left edge.
+    let mac_top_pad = if cfg!(target_os = "macos") { "pt-5" } else { "" };
+    let mac_titlebar_clear = if cfg!(target_os = "macos") { "pt-2 pl-20" } else { "" };
 
     rsx! {
         div { class: "h-full w-full flex flex-col bg-[var(--bg)] p-2 gap-2 {mac_top_pad}",
             VoiceSounds {}
+            crate::features::profiles::ProfileCard {}
+            if let Some(a) = guild_accent {
+                document::Style { {crate::app::accent_css(&a)} }
+            }
 
             // Top row: host banner (only renders when self-hosting) grows
             // to push the brand mark + wallet button to the right. The
             // whole row is a drag region so the empty space between
             // elements lets the user move the window; the interactive
             // children opt out with .dxf-no-drag.
-            div { class: "dxf-drag-region flex items-stretch gap-2",
+            div { class: "dxf-drag-region flex items-stretch gap-2 {mac_titlebar_clear}",
+                onmousedown: move |_| crate::app::start_window_drag(),
                 HostBanner {}
                 div { class: "shrink-0 flex items-center px-2",
-                    img {
-                        src: crate::app::DISCORDIA_LOGO,
-                        alt: "Discordia",
-                        class: "dxf-logo w-7 h-7",
-                        title: "Discordia",
-                    }
+                    crate::app::DiscordiaLogo { class: "w-7 h-7" }
                 }
                 div { class: "dxf-no-drag",
+                    onmousedown: move |e| e.stop_propagation(),
                     WalletControls { identity: params.identity.clone() }
+                }
+                // Unplug / disconnect. Always present so the user can leave a
+                // server they've connected to. Empty reason → clean return to
+                // the connect screen (no error banner; see App::on_disconnect).
+                div { class: "dxf-no-drag shrink-0 flex items-center",
+                    onmousedown: move |e| e.stop_propagation(),
+                    button {
+                        class: "w-8 h-8 flex items-center justify-center rounded-md border border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--danger)] hover:border-[var(--danger)] transition-colors",
+                        title: "Disconnect",
+                        onclick: move |_| on_disconnect.call(String::new()),
+                        dangerous_inner_html: UNPLUG_ICON_SVG,
+                    }
                 }
             }
 
             div { class: "flex-1 overflow-auto min-h-0",
+                onmounted: move |evt| {
+                    // Derive the per-row pixel height from the grid's visible
+                    // area so the panels exactly fill the window on first open.
+                    let data = evt.data();
+                    spawn(async move {
+                        if let Ok(rect) = data.get_client_rect().await {
+                            let rows = GRID_ROWS as f64;
+                            let rh = (rect.size.height - GRID_GAP * (rows - 1.0)) / rows;
+                            row_height.set(rh.max(8.0));
+                        }
+                    });
+                },
                 GridLayout {
-                    cols: 12, row_height: 24.0, gap: 8.0,
+                    cols: 12, row_height: row_height(), gap: GRID_GAP,
                     store: layout, editable: edit_mode(),
-                    GridItem { id: "guilds", x: 0, y: 0, w: 1, h: 30, min_w: 1, min_h: 10,
+                    GridItem { id: "guilds", x: 0, y: 0, w: 1, h: GRID_ROWS, min_w: 1, min_h: 10,
                         GuildsSidebar {}
                     }
-                    GridItem { id: "channels", x: 1, y: 0, w: 2, h: 30, min_w: 2, min_h: 10,
+                    GridItem { id: "channels", x: 1, y: 0, w: 2, h: GRID_ROWS, min_w: 2, min_h: 10,
                         ChannelsColumn {}
                     }
-                    GridItem { id: "chat", x: 3, y: 0, w: 7, h: 30, min_w: 3, min_h: 10,
+                    GridItem { id: "chat", x: 3, y: 0, w: 7, h: GRID_ROWS, min_w: 3, min_h: 10,
                         div { class: "panel-hover w-full h-full flex flex-col bg-[var(--panel)] border border-[var(--border)] rounded-lg overflow-hidden",
                             if status == ConnectionStatus::Connecting {
                                 div { class: "flex-1 flex items-center justify-center text-[var(--text-muted)] text-sm",
@@ -91,7 +168,7 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
                             }
                         }
                     }
-                    GridItem { id: "members", x: 10, y: 0, w: 2, h: 30, min_w: 2, min_h: 10,
+                    GridItem { id: "members", x: 10, y: 0, w: 2, h: GRID_ROWS, min_w: 2, min_h: 10,
                         MembersPanel {}
                     }
                 }
@@ -123,6 +200,26 @@ fn VoiceSounds() -> Element {
             );
         }
         last_phase.set(now);
+    });
+
+    // Notification chime for inbound DMs / mentions (synthesised via Web Audio
+    // so we don't need an asset).
+    let notify = use_memo(move || state.read().notify_tick);
+    let mut last_notify = use_signal(|| 0u64);
+    use_effect(move || {
+        let now = notify();
+        if now != 0 && now != *last_notify.peek() {
+            let _ = document::eval(
+                "try{const c=new (window.AudioContext||window.webkitAudioContext)();\
+                 const o=c.createOscillator();const g=c.createGain();o.connect(g);g.connect(c.destination);\
+                 o.type='sine';o.frequency.value=660;\
+                 g.gain.setValueAtTime(0.0001,c.currentTime);\
+                 g.gain.exponentialRampToValueAtTime(0.14,c.currentTime+0.01);\
+                 g.gain.exponentialRampToValueAtTime(0.0001,c.currentTime+0.3);\
+                 o.start();o.stop(c.currentTime+0.3);}catch(e){}",
+            );
+        }
+        last_notify.set(now);
     });
 
     rsx! {
@@ -159,12 +256,14 @@ fn HostBanner() -> Element {
                 span { class: "text-[var(--text-dim)]", "·" }
                 span { class: "text-[var(--text-muted)]", "Code:" }
                 code { class: "text-[var(--text)] select-all font-medium",
+                    onmousedown: move |e| e.stop_propagation(),
                     "{code}"
                 }
             }
             span { class: "text-[var(--text-dim)]", "·" }
             span { class: "text-[var(--text-muted)]", "LAN:" }
             code { class: "text-[var(--text)] select-all",
+                onmousedown: move |e| e.stop_propagation(),
                 "{lan_text}"
             }
             span { class: "flex-1" }

@@ -3,9 +3,11 @@ mod features;
 mod host;
 mod identity;
 mod net;
+mod profile;
 mod protocol;
 mod rendezvous;
 mod session;
+mod settings;
 mod state;
 mod wallet;
 
