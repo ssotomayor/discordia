@@ -90,10 +90,10 @@ pub fn ProfileCard() -> Element {
 
     rsx! {
         div {
-            class: "fixed inset-0 z-50 flex items-center justify-center bg-black/50",
+            class: "dxf-backdrop-in fixed inset-0 z-50 flex items-center justify-center bg-black/50",
             onclick: move |_| state.write().profile_card = None,
             div {
-                class: "w-72 bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl overflow-hidden",
+                class: "dxf-modal-in w-72 bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl overflow-hidden",
                 onclick: move |e| e.stop_propagation(),
                 // Banner strip + overlapping avatar.
                 if let Some(b) = banner {
@@ -223,10 +223,10 @@ pub fn ProfileEditor() -> Element {
 
         if open() {
             div {
-                class: "fixed inset-0 z-50 flex items-center justify-center bg-black/50",
+                class: "dxf-backdrop-in fixed inset-0 z-50 flex items-center justify-center bg-black/50",
                 onclick: move |_| open.set(false),
                 div {
-                    class: "w-80 bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl p-4",
+                    class: "dxf-modal-in w-80 bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl p-4",
                     onclick: move |e| e.stop_propagation(),
                     h3 { class: "text-sm font-medium text-[var(--accent)] mb-3", "Edit profile" }
 

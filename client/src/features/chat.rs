@@ -211,7 +211,7 @@ fn MessageRow(message: Message, grouped: bool) -> Element {
                         "☺"
                     }
                     if show_react() {
-                        div { class: "absolute right-0 top-full mt-1 z-30 flex gap-1 p-1 bg-[var(--panel-solid)] border border-[var(--border)] rounded-md shadow-lg",
+                        div { class: "dxf-pop-in absolute right-0 top-full mt-1 z-30 flex gap-1 p-1 bg-[var(--panel-solid)] border border-[var(--border)] rounded-md shadow-lg",
                             for emoji in QUICK_REACTIONS.iter().copied() {
                                 {
                                     let g = gateway.clone();
@@ -334,7 +334,7 @@ fn Composer(channel_id: Id, composer_label: String) -> Element {
             // Emoji picker popover, floats above the input row.
             if show_emoji() {
                 div {
-                    class: "absolute bottom-full left-3 right-3 mb-2 p-2 bg-[var(--panel-solid)] border border-[var(--border)] rounded-md shadow-lg grid grid-cols-10 gap-1 z-30",
+                    class: "dxf-pop-in absolute bottom-full left-3 right-3 mb-2 p-2 bg-[var(--panel-solid)] border border-[var(--border)] rounded-md shadow-lg grid grid-cols-10 gap-1 z-30",
                     for emoji in EMOJIS.iter().copied() {
                         button {
                             r#type: "button",

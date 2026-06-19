@@ -174,6 +174,20 @@ button:active:not(:disabled) { transform: scale(0.985); }
 }
 .dxf-pop { animation: dxf-pop 0.18s var(--ease) both; }
 
+/* Dialogs zoom in with a little overshoot bounce; their backdrop fades. */
+@keyframes dxf-modal-in {
+  0%   { opacity: 0; transform: scale(0.92) translateY(6px); }
+  60%  { opacity: 1; transform: scale(1.02) translateY(0); }
+  100% { transform: scale(1); }
+}
+.dxf-modal-in { animation: dxf-modal-in 0.22s cubic-bezier(0.34, 1.56, 0.64, 1) both; transform-origin: center; }
+@keyframes dxf-backdrop-in { from { opacity: 0; } to { opacity: 1; } }
+.dxf-backdrop-in { animation: dxf-backdrop-in 0.15s var(--ease) both; }
+
+/* Lighter, quicker scale for small popovers/menus. */
+@keyframes dxf-pop-in { from { opacity: 0; transform: scale(0.96); } to { opacity: 1; transform: scale(1); } }
+.dxf-pop-in { animation: dxf-pop-in 0.12s var(--ease) both; }
+
 /* Online presence — a soft expanding ring. The dot sets `color` to its
    status color so the ring (currentColor) matches. */
 @keyframes dxf-dot-pulse {
