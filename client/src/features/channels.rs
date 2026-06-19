@@ -298,14 +298,18 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                 crate::features::profiles::ProfileEditor {}
                 crate::features::appearance::AppearanceButton {}
                 button {
-                    class: "px-2 py-1 text-[10px] uppercase tracking-wider text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors",
+                    class: if muted {
+                        "w-7 h-7 flex items-center justify-center rounded text-[var(--danger)] hover:text-[var(--accent-strong)] transition-colors"
+                    } else {
+                        "w-7 h-7 flex items-center justify-center rounded text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors"
+                    },
                     title: mute_label,
                     onclick: move |_| {
                         let new_muted = !muted;
                         g_for_mute.send(ClientMessage::SetVoiceMute { muted: new_muted, deafened: new_muted });
                         v_for_mute.send(VoiceCmd::SetMute { muted: new_muted });
                     },
-                    "{mute_label}"
+                    dangerous_inner_html: if muted { crate::features::icons::MIC_OFF } else { crate::features::icons::MIC },
                 }
             }
         }

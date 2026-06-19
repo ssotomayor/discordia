@@ -110,9 +110,8 @@ html, body, #main { height: 100%; margin: 0; }
 
 /* Optional local background image: two fixed layers (image + darkening
    scrim) behind a relatively-positioned app shell. When a background is set,
-   the root carries .has-bg (see theme_css) which turns the app backdrop
-   transparent and makes panels translucent + blurred so the image shows
-   through. */
+   the root's inline vars make the app backdrop transparent and panels
+   translucent (see App) so the image shows through. */
 .app-bg-layer { position: fixed; inset: 0; z-index: 0; background-size: cover; background-position: center; pointer-events: none; }
 .app-shell { position: relative; z-index: 1; height: 100%; width: 100%; }
 body {
@@ -329,27 +328,22 @@ pub const THEMES: &[ThemeDef] = &[
     },
 ];
 
-/// Optional accent-color override (a user-chosen hex). Layered after the theme.
-pub fn accent_css(accent: &str) -> String {
-    format!(
-        ":root {{ --accent: {accent}; --accent-strong: {accent}; \
-         --accent-soft: color-mix(in srgb, {accent} 14%, transparent); }}"
-    )
-}
-
-/// Build the injectable stylesheet for a theme id, including the `.has-bg`
-/// overrides that activate when a background image is set. Placed AFTER
-/// BASE_CSS so its `:root`/`.has-bg` rules win.
-pub fn theme_css(id: &str) -> String {
-    let vars = THEMES
+/// The raw CSS custom-property declarations for a theme id. Applied as an
+/// inline `style` on the app root (deterministic + reactive — far more reliable
+/// than swapping a `<style>` block, whose `:root` can lose to BASE_CSS).
+pub fn theme_vars(id: &str) -> &'static str {
+    THEMES
         .iter()
         .find(|t| t.id == id)
         .map(|t| t.vars)
-        .unwrap_or(THEMES[0].vars);
+        .unwrap_or(THEMES[0].vars)
+}
+
+/// CSS variable declarations for an accent-color override (layered on a theme).
+pub fn accent_vars(accent: &str) -> String {
     format!(
-        ":root {{ {vars} }}\n\
-         .has-bg {{ --bg: transparent; --panel: color-mix(in srgb, var(--panel-solid) 66%, transparent); }}\n\
-         .has-bg .panel-hover {{ backdrop-filter: blur(7px); -webkit-backdrop-filter: blur(7px); }}"
+        "--accent: {accent}; --accent-strong: {accent}; \
+         --accent-soft: color-mix(in srgb, {accent} 14%, transparent);"
     )
 }
 
@@ -370,17 +364,28 @@ pub fn App() -> Element {
     let background = appearance.background.clone();
     let scrim = (appearance.background_dim.min(95) as f64) / 100.0;
     drop(appearance);
-    let has_bg = if background.is_some() { "has-bg" } else { "" };
+
+    // Theme + accent + background are applied as inline CSS variables on the
+    // root element so they cascade to everything and update reactively.
+    let mut root_style = theme_vars(&theme).to_string();
+    if let Some(a) = &accent {
+        root_style.push_str(&accent_vars(a));
+    }
+    if background.is_some() {
+        // Let the background show through: transparent backdrop + translucent
+        // panels (no blur — backdrop-filter would trap fixed-position modals).
+        root_style.push_str(
+            "--bg: transparent; --panel: color-mix(in srgb, var(--panel-solid) 66%, transparent);",
+        );
+    }
 
     rsx! {
         document::Script { src: "https://unpkg.com/@tailwindcss/browser@4" }
         document::Style { {BASE_CSS} }
-        document::Style { {theme_css(&theme)} }
-        if let Some(a) = accent {
-            document::Style { {accent_css(&a)} }
-        }
 
-        div { class: "h-screen w-screen bg-[var(--bg)] text-[var(--text)] antialiased overflow-hidden {has_bg}",
+        div {
+            class: "h-screen w-screen bg-[var(--bg)] text-[var(--text)] antialiased overflow-hidden",
+            style: "{root_style}",
             if let Some(img) = background {
                 div { class: "app-bg-layer", style: "background-image: url('{img}');" }
                 div { class: "app-bg-layer", style: "background: rgba(0,0,0,{scrim});" }

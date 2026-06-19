@@ -140,7 +140,7 @@ pub fn GuildsSidebar() -> Element {
                     onclick: move |_| menu.set(None),
                     oncontextmenu: move |e| { e.prevent_default(); menu.set(None); },
                     div {
-                        class: "absolute min-w-44 bg-[var(--panel)] border border-[var(--border)] rounded-md shadow-lg p-1 text-sm",
+                        class: "absolute min-w-44 bg-[var(--panel-solid)] border border-[var(--border)] rounded-md shadow-lg p-1 text-sm",
                         style: "left: {m.x}px; top: {m.y}px;",
                         onclick: move |e| e.stop_propagation(),
                         if !m.confirming {
@@ -218,7 +218,7 @@ pub fn GuildsSidebar() -> Element {
                     class: "fixed inset-0 z-50 flex items-center justify-center bg-black/50",
                     onclick: move |_| show_browse.set(false),
                     div {
-                        class: "w-80 max-h-[70vh] flex flex-col bg-[var(--panel)] border border-[var(--border)] rounded-lg shadow-xl overflow-hidden",
+                        class: "w-80 max-h-[70vh] flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl overflow-hidden",
                         onclick: move |e| e.stop_propagation(),
                         div { class: "px-4 py-3 border-b border-[var(--border)] flex items-center",
                             h3 { class: "text-sm font-medium text-[var(--accent)] flex-1", "Browse guilds" }

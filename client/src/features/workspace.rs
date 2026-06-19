@@ -56,15 +56,17 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
     let status = state.read().status;
 
     // Owner-set accent for the guild we're currently viewing (not in DM mode),
-    // layered over the user's theme/accent while it's selected.
-    let guild_accent = {
+    // layered over the user's theme/accent while it's selected. Applied inline
+    // on this subtree so it overrides the app-level accent.
+    let guild_accent_style = {
         let s = state.read();
-        if s.dm_mode {
+        let accent = if s.dm_mode {
             None
         } else {
             s.selected_guild
                 .and_then(|gid| s.guilds.iter().find(|g| g.id == gid).and_then(|g| g.accent.clone()))
-        }
+        };
+        accent.map(|a| crate::app::accent_vars(&a)).unwrap_or_default()
     };
 
     // Sweep stale typing indicators (older than 5s) so they fade out. Only
@@ -100,11 +102,9 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
 
     rsx! {
         div { class: "h-full w-full flex flex-col bg-[var(--bg)] p-2 gap-2 {mac_top_pad}",
+            style: "{guild_accent_style}",
             VoiceSounds {}
             crate::features::profiles::ProfileCard {}
-            if let Some(a) = guild_accent {
-                document::Style { {crate::app::accent_css(&a)} }
-            }
 
             // Top row: host banner (only renders when self-hosting) grows
             // to push the brand mark + wallet button to the right. The

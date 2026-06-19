@@ -31,10 +31,10 @@ pub fn AppearanceButton() -> Element {
 
     rsx! {
         button {
-            class: "px-2 py-1 text-[10px] uppercase tracking-wider text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors",
+            class: "w-7 h-7 flex items-center justify-center rounded text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors",
             title: "Appearance",
             onclick: move |_| { err.set(None); open.set(true); },
-            "theme"
+            dangerous_inner_html: crate::features::icons::SLIDERS,
         }
 
         if open() {
