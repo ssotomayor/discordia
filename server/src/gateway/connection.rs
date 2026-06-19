@@ -401,6 +401,18 @@ pub async fn handle_connection(
                             }
                         }
                     }
+                    ClientMessage::SetScreenShare { channel_id, sharing } => {
+                        let Some(u) = user.as_ref() else { continue };
+                        let sharers = ctx.state.set_screen_share(channel_id, &u.pubkey, sharing);
+                        // Tell the channel's guild who's live.
+                        if let Some(gid) = ctx.state.channel_guild(channel_id) {
+                            let targets = ctx.state.guild_member_pubkeys(gid);
+                            ctx.state.deliver(
+                                targets,
+                                ServerMessage::ScreenShareState { channel_id, sharers },
+                            );
+                        }
+                    }
                     ClientMessage::JoinVoice { channel_id } => {
                         let Some(u) = user.as_ref() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
@@ -474,6 +486,7 @@ pub async fn handle_connection(
                             let targets = ctx.state.guild_member_pubkeys(cleared.guild_id);
                             ctx.state.deliver(targets, ServerMessage::VoiceStateUpdate(cleared));
                         }
+                        broadcast_screen_clear(&ctx.state, &u.pubkey);
                     }
                     ClientMessage::SetVoiceMute { muted, deafened } => {
                         let Some(u) = user.as_ref() else { continue };
@@ -517,6 +530,7 @@ pub async fn handle_connection(
             let targets = ctx.state.guild_member_pubkeys(cleared.guild_id);
             ctx.state.deliver(targets, ServerMessage::VoiceStateUpdate(cleared));
         }
+        broadcast_screen_clear(&ctx.state, &u.pubkey);
         for (guild_id, user_pubkey) in ctx.state.mark_offline(&u.pubkey) {
             // Only the members of that guild should see the leave.
             let targets = ctx.state.guild_member_pubkeys(guild_id);
@@ -532,6 +546,17 @@ where
 {
     let json = serde_json::to_string(msg).expect("serializable");
     tx.send(WsMessage::Text(json.into())).await
+}
+
+/// Drop a user from every screen-share set and tell each affected channel's
+/// guild members the updated sharer list.
+fn broadcast_screen_clear(state: &crate::state::AppState, pubkey: &str) {
+    for (channel_id, sharers) in state.clear_user_screen_shares(pubkey) {
+        if let Some(gid) = state.channel_guild(channel_id) {
+            let targets = state.guild_member_pubkeys(gid);
+            state.deliver(targets, ServerMessage::ScreenShareState { channel_id, sharers });
+        }
+    }
 }
 
 /// The set of pubkeys allowed to see activity in a channel: a guild's members

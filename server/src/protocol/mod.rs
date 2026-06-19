@@ -201,6 +201,12 @@ pub enum ClientMessage {
         #[serde(default)]
         accent: Option<String>,
     },
+    /// Announce that the sender started/stopped sharing their screen in a
+    /// (voice) channel, so others can show a LIVE badge.
+    SetScreenShare {
+        channel_id: Id,
+        sharing: bool,
+    },
     JoinVoice {
         channel_id: Id,
     },
@@ -295,6 +301,11 @@ pub enum ServerMessage {
     },
     /// A guild's metadata changed (e.g. its accent). Delivered to members.
     GuildUpdate(Guild),
+    /// Current set of users sharing their screen in a channel.
+    ScreenShareState {
+        channel_id: Id,
+        sharers: Vec<String>,
+    },
     VoiceStateUpdate(VoiceState),
     VoiceToken {
         channel_id: Id,

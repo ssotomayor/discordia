@@ -54,6 +54,8 @@ pub struct AppState {
     /// Voice state per user pubkey (global; a user can only be in one voice
     /// channel at a time across all guilds, same as Discord).
     pub voice_states: DashMap<String, VoiceState>,
+    /// Pubkeys currently screen-sharing, per channel.
+    pub screen_shares: DashMap<Id, std::collections::HashSet<String>>,
     pub hub: broadcast::Sender<Envelope>,
 }
 
@@ -68,6 +70,7 @@ impl AppState {
             members: DashMap::new(),
             users: DashMap::new(),
             profiles: DashMap::new(),
+            screen_shares: DashMap::new(),
             dms: DashMap::new(),
             dm_index: DashMap::new(),
             voice_states: DashMap::new(),
@@ -160,6 +163,35 @@ impl AppState {
         }
         guild.accent = accent;
         Ok(guild.clone())
+    }
+
+    /// Mark a user sharing (or not) in a channel; returns the channel's current
+    /// sorted sharer list.
+    pub fn set_screen_share(&self, channel_id: Id, pubkey: &str, sharing: bool) -> Vec<String> {
+        let mut set = self.screen_shares.entry(channel_id).or_default();
+        if sharing {
+            set.insert(pubkey.to_string());
+        } else {
+            set.remove(pubkey);
+        }
+        let mut list: Vec<String> = set.iter().cloned().collect();
+        list.sort();
+        list
+    }
+
+    /// Remove a user from every screen-share set (on leave/disconnect).
+    /// Returns the affected `(channel, new sorted list)` pairs to broadcast.
+    pub fn clear_user_screen_shares(&self, pubkey: &str) -> Vec<(Id, Vec<String>)> {
+        let mut affected = Vec::new();
+        for mut entry in self.screen_shares.iter_mut() {
+            if entry.value_mut().remove(pubkey) {
+                let cid = *entry.key();
+                let mut list: Vec<String> = entry.value().iter().cloned().collect();
+                list.sort();
+                affected.push((cid, list));
+            }
+        }
+        affected
     }
 
     /// Snapshot of all known profiles.

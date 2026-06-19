@@ -105,6 +105,7 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
             style: "{guild_accent_style}",
             VoiceSounds {}
             crate::features::screenshare::ScreenShareBridge {}
+            crate::features::screenshare::ScreenViewer {}
             crate::features::profiles::ProfileCard {}
 
             // Top row: host banner (only renders when self-hosting) grows

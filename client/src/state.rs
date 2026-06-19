@@ -121,6 +121,10 @@ pub struct AppState {
     pub screen_token: Option<(String, String)>,
     /// Whether we're currently sharing our screen (UI state).
     pub screen_sharing: bool,
+    /// Pubkeys currently screen-sharing, per channel (from the server).
+    pub screen_shares: HashMap<Id, Vec<String>>,
+    /// Pubkey whose screen we're viewing in the big viewer dialog, if any.
+    pub screen_viewing: Option<String>,
     /// Populated when running in self-host mode. None for remote connections.
     pub host_info: Option<HostInfo>,
 }
@@ -148,8 +152,15 @@ impl AppState {
             notify_tick: 0,
             screen_token: None,
             screen_sharing: false,
+            screen_shares: HashMap::new(),
+            screen_viewing: None,
             host_info: None,
         }
+    }
+
+    /// Pubkeys sharing their screen in a channel.
+    pub fn screen_sharers_in(&self, channel_id: Id) -> &[String] {
+        self.screen_shares.get(&channel_id).map(|v| v.as_slice()).unwrap_or(&[])
     }
 
     /// Usernames currently typing in a channel (sorted, for a stable label).

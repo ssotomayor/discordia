@@ -187,8 +187,9 @@ fn VoiceChannelRow(
     } else {
         "text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-white/[0.03]"
     };
-    let state = use_app_state();
+    let mut state = use_app_state();
     let users_by_id = state.read();
+    let sharers: Vec<String> = users_by_id.screen_sharers_in(channel.id).to_vec();
 
     rsx! {
         div { class: "rounded",
@@ -214,6 +215,11 @@ fn VoiceChannelRow(
                             let is_self = self_pubkey.as_deref() == Some(vs.user_pubkey.as_str());
                             let dot = if vs.speaking { "bg-[var(--accent)]" } else { "bg-[var(--text-dim)]" };
                             let mute_badge = if vs.muted { Some("muted") } else { None };
+                            let is_sharing = sharers.iter().any(|p| p == &vs.user_pubkey);
+                            // Clickable to watch only when you're in the channel
+                            // (so the JS room is connected) and it's not yourself.
+                            let can_watch = is_sharing && connected && !is_self;
+                            let watch_pk = vs.user_pubkey.clone();
                             rsx! {
                                 div {
                                     key: "{vs.user_pubkey}",
@@ -225,6 +231,20 @@ fn VoiceChannelRow(
                                     }
                                     if let Some(badge) = mute_badge {
                                         span { class: "text-[9px] text-[var(--text-dim)] uppercase tracking-wider", "{badge}" }
+                                    }
+                                    if is_sharing {
+                                        button {
+                                            class: "flex items-center gap-1 text-[9px] uppercase tracking-wider text-[var(--danger)] font-semibold disabled:opacity-70 disabled:cursor-default",
+                                            disabled: !can_watch,
+                                            title: if can_watch { "Watch screen" } else { "Sharing screen" },
+                                            onclick: move |_| {
+                                                if can_watch {
+                                                    state.write().screen_viewing = Some(watch_pk.clone());
+                                                }
+                                            },
+                                            span { class: "w-1.5 h-1.5 rounded-full bg-[var(--danger)] dxf-dot-pulse", style: "color:var(--danger);" }
+                                            "live"
+                                        }
                                     }
                                 }
                             }
@@ -260,6 +280,8 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
     let v_for_mute = voice.clone();
     let g_for_hang = gateway.clone();
     let v_for_hang = voice.clone();
+    let g_for_share = gateway.clone();
+    let voice_channel = self_voice.channel_id;
 
     rsx! {
         div { class: "border-t border-[var(--border)]",
@@ -284,6 +306,9 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                 let now = !sharing;
                                 state.write().screen_sharing = now;
                                 let _ = document::eval(&crate::features::screenshare::share_js(now));
+                                if let Some(cid) = voice_channel {
+                                    g_for_share.send(ClientMessage::SetScreenShare { channel_id: cid, sharing: now });
+                                }
                             },
                             span { dangerous_inner_html: crate::features::icons::SCREEN }
                             if sharing { "stop" } else { "share" }

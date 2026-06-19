@@ -245,6 +245,8 @@ fn apply(
             s.catalog = catalog;
             s.profiles = profiles.into_iter().map(|p| (p.pubkey.clone(), p)).collect();
             s.messages = BTreeMap::new();
+            s.screen_shares = std::collections::HashMap::new();
+            s.screen_viewing = None;
             s.status = ConnectionStatus::Ready;
 
             if let Some(first) = s.guilds.first().map(|g| g.id) {
@@ -429,6 +431,19 @@ fn apply(
                 *slot = guild;
             }
         }
+        ServerMessage::ScreenShareState { channel_id, sharers } => {
+            if sharers.is_empty() {
+                s.screen_shares.remove(&channel_id);
+            } else {
+                s.screen_shares.insert(channel_id, sharers);
+            }
+            // Close the viewer if the person we're watching stopped sharing.
+            if let Some(pk) = s.screen_viewing.clone() {
+                if !s.screen_shares.values().any(|v| v.contains(&pk)) {
+                    s.screen_viewing = None;
+                }
+            }
+        }
         ServerMessage::MemberJoin(member) => {
             let exists = s.members.iter_mut().find(|m| {
                 m.guild_id == member.guild_id && m.user.pubkey == member.user.pubkey
@@ -487,6 +502,7 @@ fn apply(
                     // Leaving voice also tears down the screen-share room.
                     s.screen_token = None;
                     s.screen_sharing = false;
+                    s.screen_viewing = None;
                 }
             }
         }
