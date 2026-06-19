@@ -240,8 +240,9 @@ fn VoiceChannelRow(
 fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<String>) -> Element {
     let gateway = use_gateway();
     let voice = use_voice_tx();
-    let state = use_app_state();
+    let mut state = use_app_state();
     let self_pubkey = state.read().self_user.as_ref().map(|u| u.pubkey.clone());
+    let sharing = state.read().screen_sharing;
     let name = self_username.clone().unwrap_or_else(|| "—".into());
 
     let show_banner = !matches!(self_voice.phase, VoicePhase::Idle);
@@ -270,6 +271,23 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                             span { class: "text-[10px] {cls}", "{label}" }
                         }
                         div { class: "flex-1" }
+                        // Screen share toggle. Calls getDisplayMedia inside this
+                        // click gesture (must not be deferred to an effect).
+                        button {
+                            class: if sharing {
+                                "flex items-center gap-1 text-[10px] text-[var(--accent)] font-medium uppercase tracking-wider"
+                            } else {
+                                "flex items-center gap-1 text-[10px] text-[var(--text-muted)] hover:text-[var(--accent)] font-medium uppercase tracking-wider"
+                            },
+                            title: if sharing { "Stop sharing your screen" } else { "Share your screen" },
+                            onclick: move |_| {
+                                let now = !sharing;
+                                state.write().screen_sharing = now;
+                                let _ = document::eval(&crate::features::screenshare::share_js(now));
+                            },
+                            span { dangerous_inner_html: crate::features::icons::SCREEN }
+                            if sharing { "stop" } else { "share" }
+                        }
                         button {
                             class: "text-[10px] text-[var(--danger)] hover:text-[var(--accent-strong)] font-medium uppercase tracking-wider",
                             onclick: move |_| {

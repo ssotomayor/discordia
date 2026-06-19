@@ -484,6 +484,9 @@ fn apply(
                     s.voice.phase = VoicePhase::Idle;
                     s.voice.channel_id = None;
                     let _ = voice_tx.send(VoiceCmd::Disconnect);
+                    // Leaving voice also tears down the screen-share room.
+                    s.screen_token = None;
+                    s.screen_sharing = false;
                 }
             }
         }
@@ -501,6 +504,14 @@ fn apply(
                 token,
                 channel_id,
             });
+        }
+        ServerMessage::ScreenToken {
+            livekit_url,
+            token,
+            ..
+        } => {
+            // Hand the JS screen bridge what it needs to join the screen room.
+            s.screen_token = Some((livekit_url, token));
         }
         ServerMessage::Error { message } => {
             tracing::warn!(server_error = %message);

@@ -86,6 +86,38 @@ pub fn room_name(channel_id: Id) -> String {
     format!("voice-{channel_id}")
 }
 
+/// Screen sharing rides in a SEPARATE room from voice so native-audio clients
+/// (in `voice-…`) never auto-subscribe to — and waste bandwidth decoding — the
+/// screen video, which only the webview JS clients render.
+pub fn screen_room_name(channel_id: Id) -> String {
+    format!("screen-{channel_id}")
+}
+
+/// Mint a token for the webview JS client to join the screen-share room. The
+/// identity stays the user's pubkey (fine — it's a different room from the
+/// native-audio one, and identities only need to be unique per room).
+pub fn mint_screen_token(
+    cfg: &LiveKitConfig,
+    user_pubkey: &str,
+    username: &str,
+    channel_id: Id,
+) -> Result<String, String> {
+    let room = screen_room_name(channel_id);
+    AccessToken::with_api_key(&cfg.api_key, &cfg.api_secret)
+        .with_identity(user_pubkey)
+        .with_name(username)
+        .with_grants(VideoGrants {
+            room_join: true,
+            room,
+            can_publish: true,
+            can_subscribe: true,
+            can_publish_data: true,
+            ..Default::default()
+        })
+        .to_jwt()
+        .map_err(|e| format!("livekit screen token: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

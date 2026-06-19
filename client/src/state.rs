@@ -116,6 +116,11 @@ pub struct AppState {
     /// Bumped whenever an inbound DM / mention should chime. A sound component
     /// watches this and plays a notification.
     pub notify_tick: u64,
+    /// (livekit_url, token) for the webview JS screen-share room — set while in
+    /// a voice channel. The screen bridge connects when this is Some.
+    pub screen_token: Option<(String, String)>,
+    /// Whether we're currently sharing our screen (UI state).
+    pub screen_sharing: bool,
     /// Populated when running in self-host mode. None for remote connections.
     pub host_info: Option<HostInfo>,
 }
@@ -141,6 +146,8 @@ impl AppState {
             profile_card: None,
             typing: HashMap::new(),
             notify_tick: 0,
+            screen_token: None,
+            screen_sharing: false,
             host_info: None,
         }
     }

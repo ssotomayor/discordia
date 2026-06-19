@@ -104,6 +104,7 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
         div { class: "h-full w-full flex flex-col bg-[var(--bg)] p-2 gap-2 {mac_top_pad}",
             style: "{guild_accent_style}",
             VoiceSounds {}
+            crate::features::screenshare::ScreenShareBridge {}
             crate::features::profiles::ProfileCard {}
 
             // Top row: host banner (only renders when self-hosting) grows

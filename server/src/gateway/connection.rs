@@ -432,11 +432,30 @@ pub async fn handle_connection(
                                     &mut ws_tx,
                                     &ServerMessage::VoiceToken {
                                         channel_id,
-                                        livekit_url,
+                                        livekit_url: livekit_url.clone(),
                                         token,
                                     },
                                 )
                                 .await;
+                                // Also hand over a screen-share token (separate
+                                // room) for the webview JS client.
+                                let screen_name = format!("{} (screen)", u.username);
+                                if let Ok(screen_token) = livekit::mint_screen_token(
+                                    &ctx.livekit,
+                                    &u.pubkey,
+                                    &screen_name,
+                                    channel_id,
+                                ) {
+                                    let _ = send(
+                                        &mut ws_tx,
+                                        &ServerMessage::ScreenToken {
+                                            channel_id,
+                                            livekit_url,
+                                            token: screen_token,
+                                        },
+                                    )
+                                    .await;
+                                }
                             }
                             Err(err) => {
                                 let _ = send(

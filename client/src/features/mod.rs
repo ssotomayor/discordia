@@ -7,6 +7,7 @@ pub mod icons;
 pub mod identity_setup;
 pub mod members;
 pub mod profiles;
+pub mod screenshare;
 pub mod voice;
 pub mod wallet;
 pub mod workspace;

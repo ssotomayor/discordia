@@ -301,6 +301,14 @@ pub enum ServerMessage {
         livekit_url: String,
         token: String,
     },
+    /// Token for the webview JS client to join the screen-share room for a
+    /// channel (sent alongside `VoiceToken` on join). Used to publish/view
+    /// screen shares; never touches the native-audio path.
+    ScreenToken {
+        channel_id: Id,
+        livekit_url: String,
+        token: String,
+    },
     Error {
         message: String,
     },
