@@ -396,7 +396,9 @@ pub fn App() -> Element {
     rsx! {
         document::Script { src: "https://unpkg.com/@tailwindcss/browser@4" }
         // LiveKit JS SDK — powers webview-side screen sharing (capture + render).
-        document::Script { src: "https://cdn.jsdelivr.net/npm/livekit-client@2/dist/livekit-client.umd.min.js" }
+        // NB: the UMD build is `…umd.js` (there is no `.umd.min.js`); a wrong
+        // path 404s silently and the lib never loads.
+        document::Script { src: "https://cdn.jsdelivr.net/npm/livekit-client@2.19.2/dist/livekit-client.umd.js" }
         document::Style { {BASE_CSS} }
 
         div {

@@ -46,6 +46,21 @@ window.dxScreen = window.dxScreen || (function () {
       const v = viewer();
       if (v && v.getAttribute('data-identity') === participant.identity) v.querySelectorAll('video').forEach(function (e) { e.remove(); });
     });
+    // Local screen track — so the sharer gets a self-preview in the viewer.
+    room.on(lk.RoomEvent.LocalTrackPublished, function (pub) {
+      if (!pub.track || pub.track.kind !== 'video') return;
+      const id = room.localParticipant.identity;
+      tracks[id] = pub.track;
+      const v = viewer();
+      if (v && v.getAttribute('data-identity') === id) attachInto(pub.track, v);
+    });
+    room.on(lk.RoomEvent.LocalTrackUnpublished, function (pub) {
+      if (!pub.track || pub.track.kind !== 'video') return;
+      const id = room.localParticipant.identity;
+      delete tracks[id];
+      const v = viewer();
+      if (v && v.getAttribute('data-identity') === id) v.querySelectorAll('video').forEach(function (e) { e.remove(); });
+    });
     try { await room.connect(url, token); } catch (e) { console.warn('[dxScreen] connect failed', e); room = null; }
   }
   function attach(identity) {

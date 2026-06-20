@@ -266,12 +266,15 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
     let name = self_username.clone().unwrap_or_else(|| "—".into());
 
     let show_banner = !matches!(self_voice.phase, VoicePhase::Idle);
-    let phase_label = match self_voice.phase {
-        VoicePhase::Idle => None,
-        VoicePhase::Connecting => Some(("text-[var(--warn)]", "connecting…")),
-        VoicePhase::Connected => Some(("text-[var(--success)]", "connected")),
-        VoicePhase::Error => Some(("text-[var(--danger)]", "error")),
+    // Compact status: a colored dot (green = connected, pulsing) replaces the
+    // old "VOICE connected" text so the row doesn't overflow the narrow column.
+    let (dot_color, phase_text) = match self_voice.phase {
+        VoicePhase::Idle => ("var(--text-dim)", "voice idle"),
+        VoicePhase::Connecting => ("var(--warn)", "connecting…"),
+        VoicePhase::Connected => ("var(--success)", "voice connected"),
+        VoicePhase::Error => ("var(--danger)", "voice error"),
     };
+    let dot_pulse = if matches!(self_voice.phase, VoicePhase::Connected) { "dxf-dot-pulse" } else { "" };
     let voice_error = self_voice.error.clone();
 
     let muted = self_voice.muted;
@@ -282,44 +285,56 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
     let v_for_hang = voice.clone();
     let g_for_share = gateway.clone();
     let voice_channel = self_voice.channel_id;
+    let self_share_pk = self_pubkey.clone();
 
     rsx! {
         div { class: "border-t border-[var(--border)]",
             if show_banner {
                 div { class: "px-3 py-2 border-b border-[var(--border)]",
                     div { class: "flex items-center gap-2",
-                        span { class: "text-[10px] text-[var(--accent)] font-semibold uppercase tracking-wider", "Voice" }
-                        if let Some((cls, label)) = phase_label {
-                            span { class: "text-[10px] {cls}", "{label}" }
+                        span {
+                            class: "w-2.5 h-2.5 rounded-full shrink-0 {dot_pulse}",
+                            style: "background:{dot_color}; color:{dot_color};",
+                            title: "{phase_text}",
                         }
                         div { class: "flex-1" }
                         // Screen share toggle. Calls getDisplayMedia inside this
                         // click gesture (must not be deferred to an effect).
                         button {
                             class: if sharing {
-                                "flex items-center gap-1 text-[10px] text-[var(--accent)] font-medium uppercase tracking-wider"
+                                "w-7 h-7 flex items-center justify-center rounded text-[var(--accent)] transition-colors"
                             } else {
-                                "flex items-center gap-1 text-[10px] text-[var(--text-muted)] hover:text-[var(--accent)] font-medium uppercase tracking-wider"
+                                "w-7 h-7 flex items-center justify-center rounded text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors"
                             },
                             title: if sharing { "Stop sharing your screen" } else { "Share your screen" },
                             onclick: move |_| {
                                 let now = !sharing;
-                                state.write().screen_sharing = now;
+                                {
+                                    let mut s = state.write();
+                                    s.screen_sharing = now;
+                                    // Open the viewer on our own stream while sharing
+                                    // (self-preview); close it when we stop.
+                                    if now {
+                                        s.screen_viewing = self_share_pk.clone();
+                                    } else if s.screen_viewing == self_share_pk {
+                                        s.screen_viewing = None;
+                                    }
+                                }
                                 let _ = document::eval(&crate::features::screenshare::share_js(now));
                                 if let Some(cid) = voice_channel {
                                     g_for_share.send(ClientMessage::SetScreenShare { channel_id: cid, sharing: now });
                                 }
                             },
-                            span { dangerous_inner_html: crate::features::icons::SCREEN }
-                            if sharing { "stop" } else { "share" }
+                            dangerous_inner_html: crate::features::icons::SCREEN,
                         }
                         button {
-                            class: "text-[10px] text-[var(--danger)] hover:text-[var(--accent-strong)] font-medium uppercase tracking-wider",
+                            class: "w-7 h-7 flex items-center justify-center rounded text-[var(--danger)] hover:text-[var(--accent-strong)] transition-colors",
+                            title: "Leave voice",
                             onclick: move |_| {
                                 g_for_hang.send(ClientMessage::LeaveVoice);
                                 v_for_hang.send(VoiceCmd::Disconnect);
                             },
-                            "disconnect"
+                            dangerous_inner_html: crate::features::icons::PHONE_OFF,
                         }
                     }
                     if let Some(err) = voice_error {
