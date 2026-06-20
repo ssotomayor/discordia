@@ -274,7 +274,6 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
         VoicePhase::Connected => ("var(--success)", "voice connected"),
         VoicePhase::Error => ("var(--danger)", "voice error"),
     };
-    let dot_pulse = if matches!(self_voice.phase, VoicePhase::Connected) { "dxf-dot-pulse" } else { "" };
     let voice_error = self_voice.error.clone();
 
     let muted = self_voice.muted;
@@ -285,7 +284,6 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
     let v_for_hang = voice.clone();
     let g_for_share = gateway.clone();
     let voice_channel = self_voice.channel_id;
-    let self_share_pk = self_pubkey.clone();
 
     rsx! {
         div { class: "border-t border-[var(--border)]",
@@ -293,8 +291,8 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                 div { class: "px-3 py-2 border-b border-[var(--border)]",
                     div { class: "flex items-center gap-2",
                         span {
-                            class: "w-2.5 h-2.5 rounded-full shrink-0 {dot_pulse}",
-                            style: "background:{dot_color}; color:{dot_color};",
+                            class: "w-2.5 h-2.5 rounded-full shrink-0",
+                            style: "background:{dot_color};",
                             title: "{phase_text}",
                         }
                         div { class: "flex-1" }
@@ -309,17 +307,7 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                             title: if sharing { "Stop sharing your screen" } else { "Share your screen" },
                             onclick: move |_| {
                                 let now = !sharing;
-                                {
-                                    let mut s = state.write();
-                                    s.screen_sharing = now;
-                                    // Open the viewer on our own stream while sharing
-                                    // (self-preview); close it when we stop.
-                                    if now {
-                                        s.screen_viewing = self_share_pk.clone();
-                                    } else if s.screen_viewing == self_share_pk {
-                                        s.screen_viewing = None;
-                                    }
-                                }
+                                state.write().screen_sharing = now;
                                 let _ = document::eval(&crate::features::screenshare::share_js(now));
                                 if let Some(cid) = voice_channel {
                                     g_for_share.send(ClientMessage::SetScreenShare { channel_id: cid, sharing: now });
