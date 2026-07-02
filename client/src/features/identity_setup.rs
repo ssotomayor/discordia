@@ -75,7 +75,7 @@ pub fn IdentitySetupView(on_done: EventHandler<Identity>) -> Element {
                         div { class: "space-y-2",
                             ChooseOption {
                                 title: "Create new identity",
-                                blurb: "Generate a fresh Solana-format keypair. You'll get a 12-word recovery phrase to save.",
+                                blurb: "Generate a fresh Nostr keypair. You'll get a 12-word recovery phrase to save.",
                                 onclick: move |_| {
                                     error.set(None);
                                     match Identity::create(default_name()) {
@@ -90,7 +90,7 @@ pub fn IdentitySetupView(on_done: EventHandler<Identity>) -> Element {
                             }
                             ChooseOption {
                                 title: "Restore from seed phrase",
-                                blurb: "Paste a 12-word BIP39 phrase. Works with Phantom, Solflare, etc.",
+                                blurb: "Paste a 12-word BIP39 phrase. Works with any NIP-06 Nostr wallet.",
                                 onclick: move |_| {
                                     error.set(None);
                                     step.set(Step::RestorePhrase);
@@ -98,7 +98,7 @@ pub fn IdentitySetupView(on_done: EventHandler<Identity>) -> Element {
                             }
                             ChooseOption {
                                 title: "Import private key",
-                                blurb: "Paste a raw Ed25519 secret key (base58, 32 or 64 bytes — Phantom export works).",
+                                blurb: "Paste an nsec (bech32) or a 64-char hex secret key.",
                                 onclick: move |_| {
                                     error.set(None);
                                     step.set(Step::ImportKey);
@@ -229,15 +229,15 @@ pub fn IdentitySetupView(on_done: EventHandler<Identity>) -> Element {
                     Step::ImportKey => rsx! {
                         div { class: "space-y-3",
                             div { class: "space-y-1",
-                                label { class: LABEL, "Private key (base58)" }
+                                label { class: LABEL, "Private key (nsec or hex)" }
                                 textarea {
                                     class: "{INPUT} resize-none h-20 font-mono text-[11px]",
-                                    placeholder: "5VJqJ...",
+                                    placeholder: "nsec1… or 64-char hex",
                                     value: "{private_key_input}",
                                     oninput: move |e| private_key_input.set(e.value()),
                                 }
                                 p { class: "text-[10px] text-[var(--text-dim)]",
-                                    "Accepts 32-byte secret or 64-byte secret||pubkey (Phantom 'Show Private Key' format)."
+                                    "Accepts an nsec (bech32) or a raw 32-byte secret as 64 hex chars."
                                 }
                             }
                             div { class: "space-y-1",

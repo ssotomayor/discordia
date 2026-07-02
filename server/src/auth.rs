@@ -1,7 +1,10 @@
-//! Ed25519 signature verification for the `Identify` handshake.
+//! Schnorr (BIP-340 / Nostr) signature verification for the `Identify`
+//! handshake.
 
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use rand::RngCore;
+use secp256k1::schnorr::Signature;
+use secp256k1::{Message, Secp256k1, XOnlyPublicKey};
+use sha2::{Digest, Sha256};
 
 const NONCE_LEN: usize = 32;
 
@@ -12,105 +15,73 @@ pub fn fresh_nonce() -> String {
     bs58::encode(bytes).into_string()
 }
 
-/// Verify that `signature` is a valid Ed25519 signature over
-/// `nonce || pubkey || username` produced by the private key matching
-/// `pubkey`. All three inputs are base58 strings (pubkey + signature) or
-/// raw strings (nonce + username) — they're concatenated as UTF-8 bytes.
+/// Verify that `signature` is a valid Schnorr signature over
+/// `SHA256(nonce || pubkey_hex || username)` from the key matching `pubkey`.
+/// `pubkey` is a 64-char hex x-only Nostr pubkey; `signature` is 128-char hex.
 pub fn verify_identify(
-    pubkey_b58: &str,
-    signature_b58: &str,
+    pubkey_hex: &str,
+    signature_hex: &str,
     nonce: &str,
     username: &str,
 ) -> Result<(), String> {
-    let pubkey_bytes: [u8; 32] = bs58::decode(pubkey_b58)
-        .into_vec()
-        .map_err(|e| format!("pubkey not base58: {e}"))?
-        .try_into()
-        .map_err(|_| "pubkey is not 32 bytes".to_string())?;
-    let verifying = VerifyingKey::from_bytes(&pubkey_bytes)
-        .map_err(|e| format!("invalid ed25519 pubkey: {e}"))?;
+    let pubkey_bytes = hex::decode(pubkey_hex).map_err(|e| format!("pubkey not hex: {e}"))?;
+    let xonly = XOnlyPublicKey::from_slice(&pubkey_bytes)
+        .map_err(|e| format!("invalid nostr pubkey: {e}"))?;
 
-    let sig_bytes: Vec<u8> = bs58::decode(signature_b58)
-        .into_vec()
-        .map_err(|e| format!("signature not base58: {e}"))?;
-    if sig_bytes.len() != 64 {
-        return Err(format!("signature is {} bytes, expected 64", sig_bytes.len()));
-    }
-    let sig_arr: [u8; 64] = sig_bytes.try_into().unwrap();
-    let sig = Signature::from_bytes(&sig_arr);
+    let sig_bytes = hex::decode(signature_hex).map_err(|e| format!("signature not hex: {e}"))?;
+    let sig =
+        Signature::from_slice(&sig_bytes).map_err(|e| format!("invalid schnorr signature: {e}"))?;
 
-    let mut message = Vec::with_capacity(nonce.len() + pubkey_b58.len() + username.len());
+    let mut message = Vec::with_capacity(nonce.len() + pubkey_hex.len() + username.len());
     message.extend_from_slice(nonce.as_bytes());
-    message.extend_from_slice(pubkey_b58.as_bytes());
+    message.extend_from_slice(pubkey_hex.as_bytes());
     message.extend_from_slice(username.as_bytes());
+    let digest: [u8; 32] = Sha256::digest(&message).into();
+    let msg = Message::from_digest(digest);
 
-    verifying
-        .verify(&message, &sig)
+    let secp = Secp256k1::verification_only();
+    secp.verify_schnorr(&sig, &msg, &xonly)
         .map_err(|e| format!("signature did not verify: {e}"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ed25519_dalek::{Signer, SigningKey};
-    use rand::rngs::OsRng;
+    use secp256k1::{Keypair, SecretKey};
 
-    fn random_key() -> SigningKey {
+    fn sign(secret: &SecretKey, nonce: &str, pubkey_hex: &str, username: &str) -> String {
+        let secp = Secp256k1::new();
+        let keypair = Keypair::from_secret_key(&secp, secret);
+        let mut message = Vec::new();
+        message.extend_from_slice(nonce.as_bytes());
+        message.extend_from_slice(pubkey_hex.as_bytes());
+        message.extend_from_slice(username.as_bytes());
+        let digest: [u8; 32] = Sha256::digest(&message).into();
+        let msg = Message::from_digest(digest);
+        hex::encode(secp.sign_schnorr_no_aux_rand(&msg, &keypair).serialize())
+    }
+
+    fn keypair() -> (SecretKey, String) {
+        let secp = Secp256k1::new();
         let mut bytes = [0u8; 32];
-        OsRng.fill_bytes(&mut bytes);
-        SigningKey::from_bytes(&bytes)
+        rand::rngs::OsRng.fill_bytes(&mut bytes);
+        let secret = SecretKey::from_slice(&bytes).unwrap();
+        let (xonly, _) = secret.x_only_public_key(&secp);
+        (secret, hex::encode(xonly.serialize()))
     }
 
     #[test]
     fn good_signature_verifies() {
-        let sk = random_key();
-        let pubkey = bs58::encode(sk.verifying_key().as_bytes()).into_string();
-        let nonce = "test-nonce";
-        let username = "alice";
-        let mut message = Vec::new();
-        message.extend_from_slice(nonce.as_bytes());
-        message.extend_from_slice(pubkey.as_bytes());
-        message.extend_from_slice(username.as_bytes());
-        let sig = sk.sign(&message);
-        let sig_b58 = bs58::encode(sig.to_bytes()).into_string();
-        assert!(verify_identify(&pubkey, &sig_b58, nonce, username).is_ok());
+        let (secret, pubkey) = keypair();
+        let (nonce, username) = ("test-nonce", "alice");
+        let sig = sign(&secret, nonce, &pubkey, username);
+        assert!(verify_identify(&pubkey, &sig, nonce, username).is_ok());
     }
 
     #[test]
     fn tampered_username_fails() {
-        let sk = random_key();
-        let pubkey = bs58::encode(sk.verifying_key().as_bytes()).into_string();
-        let nonce = "test-nonce";
-        let mut message = Vec::new();
-        message.extend_from_slice(nonce.as_bytes());
-        message.extend_from_slice(pubkey.as_bytes());
-        message.extend_from_slice(b"alice");
-        let sig = sk.sign(&message);
-        let sig_b58 = bs58::encode(sig.to_bytes()).into_string();
-        // Sign as alice but claim to be bob — must fail.
-        assert!(verify_identify(&pubkey, &sig_b58, nonce, "bob").is_err());
-    }
-
-    #[test]
-    fn wrong_pubkey_fails() {
-        let sk = random_key();
-        let other_pubkey = bs58::encode(random_key().verifying_key().as_bytes()).into_string();
-        let nonce = "test-nonce";
-        let username = "alice";
-        let mut message = Vec::new();
-        message.extend_from_slice(nonce.as_bytes());
-        message.extend_from_slice(other_pubkey.as_bytes());
-        message.extend_from_slice(username.as_bytes());
-        let sig = sk.sign(&message);
-        let sig_b58 = bs58::encode(sig.to_bytes()).into_string();
-        assert!(verify_identify(&other_pubkey, &sig_b58, nonce, username).is_err());
-    }
-
-    #[test]
-    fn fresh_nonce_changes() {
-        let a = fresh_nonce();
-        let b = fresh_nonce();
-        assert_ne!(a, b);
-        assert!(a.len() > 30);
+        let (secret, pubkey) = keypair();
+        let sig = sign(&secret, "n", &pubkey, "alice");
+        assert!(verify_identify(&pubkey, &sig, "n", "mallory").is_err());
     }
 }

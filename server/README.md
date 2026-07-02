@@ -76,5 +76,25 @@ runs centrally.
 
 ## Protocol
 
-`src/protocol/mod.rs` is duplicated at `dioxusfun/src/protocol/mod.rs`. Keep
-both in sync until extracted into a shared crate.
+The wire protocol lives in the standalone **`dioxusfun-protocol`** crate. The
+server (and the desktop client, and the bot SDK) all re-export it, so there is
+a single source of truth — no duplication to keep in sync.
+
+## Bots (Tier 1)
+
+A bot is an external WS client identified by an Ed25519 pubkey — the same
+identity primitive users have, so there's no bearer token to leak. The guild
+**owner** installs a bot by its pubkey (`InstallBot`), granting:
+
+- **Permissions** — what it may *do*: `send_messages`, `read_message_history`,
+  `add_reactions`.
+- **Intents** — what events it *receives*. `guild_messages` delivers message
+  events; `message_content` (privileged) is required to receive the actual
+  text — otherwise it's blanked. `members` (privileged) delivers the roster /
+  join-leave events.
+
+The gateway enforces both: a bot connection only receives events for its
+installed guilds, filtered by intent, and its actions are permission-checked.
+All connections are rate-limited. Write bots with the `dioxusfun-bot` crate
+(`cargo run -p dioxusfun-bot --example ping`). See `tests/bots.rs` for the
+end-to-end behavior.

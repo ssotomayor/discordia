@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["client", "server", "rendezvous", "grid-layout"]
+members = ["client", "server", "rendezvous", "grid-layout", "protocol", "bot-sdk"]
 
 # Shared dep versions — each member opts in with `{ workspace = true }` and
 # inherits version + default features from here. Add per-member features
@@ -8,6 +8,7 @@ members = ["client", "server", "rendezvous", "grid-layout"]
 [workspace.dependencies]
 # Inter-crate path deps.
 dioxusfun-server = { path = "server" }
+dioxusfun-protocol = { path = "protocol" }
 
 # Common third-party deps used by ≥2 crates.
 dioxus = "0.7"
@@ -24,5 +25,9 @@ futures-util = "0.3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-ed25519-dalek = { version = "2", default-features = false, features = ["std", "rand_core"] }
 bs58 = "0.5"
+# Nostr identity: secp256k1 Schnorr (BIP-340) keys; NIP-06 derivation is done
+# in client/src/identity.rs on top of this. `hex` for wire encoding of
+# pubkeys/signatures.
+secp256k1 = { version = "0.29", default-features = false, features = ["std", "rand-std"] }
+hex = "0.4"

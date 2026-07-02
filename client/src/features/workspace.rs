@@ -3,7 +3,7 @@ use dioxus_grid_layout::{GridItem, GridLayout, GridPosition, use_layout_store};
 
 use crate::features::{
     channels::ChannelsColumn, chat::ChatView, guilds::GuildsSidebar, members::MembersPanel,
-    voice::spawn_voice_service, wallet::WalletControls,
+    voice::spawn_voice_service,
 };
 use crate::net::spawn_gateway;
 use crate::state::{AppState, ConnectionStatus, SessionParams, VoicePhase, use_app_state};
@@ -104,6 +104,7 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
         div { class: "h-full w-full flex flex-col bg-[var(--bg)] p-2 gap-2 {mac_top_pad}",
             style: "{guild_accent_style}",
             VoiceSounds {}
+            crate::features::activities::ActivityHost {}
             crate::features::screenshare::ScreenShareBridge {}
             crate::features::screenshare::ScreenSelfPreview {}
             crate::features::screenshare::ScreenWatchWindow {}
@@ -119,10 +120,6 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
                 HostBanner {}
                 div { class: "shrink-0 flex items-center px-2",
                     crate::app::DiscordiaLogo { class: "w-7 h-7" }
-                }
-                div { class: "dxf-no-drag",
-                    onmousedown: move |e| e.stop_propagation(),
-                    WalletControls { identity: params.identity.clone() }
                 }
                 // Unplug / disconnect. Always present so the user can leave a
                 // server they've connected to. Empty reason → clean return to

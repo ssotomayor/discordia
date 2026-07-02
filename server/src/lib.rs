@@ -9,8 +9,11 @@ pub mod gateway;
 pub mod http;
 pub mod livekit;
 pub mod livekit_bundle;
-pub mod protocol;
 pub mod state;
+
+/// Wire protocol — re-exported from the shared `dioxusfun-protocol` crate so
+/// `crate::protocol::…` paths throughout the server keep working unchanged.
+pub use dioxusfun_protocol as protocol;
 
 use std::net::SocketAddr;
 use std::sync::Arc;

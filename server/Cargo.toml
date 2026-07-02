@@ -10,17 +10,26 @@ flate2 = "1"
 tar = "0.4"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
+[dev-dependencies]
+# Drive both human and bot sides of the gateway in integration tests.
+dioxusfun-bot = { path = "../bot-sdk" }
+tokio = { workspace = true, features = ["full"] }
+
 [dependencies]
 # Server-specific.
 axum = { workspace = true, features = ["macros"] }
 tokio = { workspace = true, features = ["full"] }
 tower = "0.5"
 livekit-api = { version = "0.4", default-features = false, features = ["access-token"] }
-ed25519-dalek = { workspace = true }
+# Nostr identity verification: secp256k1 Schnorr (BIP-340).
+secp256k1 = { workspace = true }
+hex = { workspace = true }
+sha2 = "0.10"
 bs58 = { workspace = true }
 rand = "0.8"
 
 # Shared deps inherited from workspace.
+dioxusfun-protocol = { workspace = true }
 tower-http = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

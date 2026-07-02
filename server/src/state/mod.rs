@@ -7,7 +7,8 @@ use tokio::sync::broadcast;
 use uuid::Uuid;
 
 use crate::protocol::{
-    Channel, DmInfo, Guild, Id, Member, Message, Profile, ServerMessage, User, VoiceState,
+    BotInstall, Channel, DmInfo, Guild, Id, Intent, Member, Message, Permission, Profile,
+    ServerMessage, User, VoiceState,
 };
 
 const BROADCAST_CAPACITY: usize = 256;
@@ -56,6 +57,11 @@ pub struct AppState {
     pub voice_states: DashMap<String, VoiceState>,
     /// Pubkeys currently screen-sharing, per channel.
     pub screen_shares: DashMap<Id, std::collections::HashSet<String>>,
+    /// Installed bots, indexed by bot pubkey then guild. A pubkey present here
+    /// with ≥1 guild is treated as an installed application ("bot") when it
+    /// connects: its gateway connection is intent-filtered and its actions are
+    /// permission-gated per the `BotInstall` grants. Owner grants the install.
+    pub bot_installs: DashMap<String, DashMap<Id, BotInstall>>,
     pub hub: broadcast::Sender<Envelope>,
 }
 
@@ -71,6 +77,7 @@ impl AppState {
             users: DashMap::new(),
             profiles: DashMap::new(),
             screen_shares: DashMap::new(),
+            bot_installs: DashMap::new(),
             dms: DashMap::new(),
             dm_index: DashMap::new(),
             voice_states: DashMap::new(),
@@ -249,6 +256,7 @@ impl AppState {
             user: creator.clone(),
             guild_id: guild.id,
             online: true,
+            bot: false,
         };
         self.members
             .entry(guild.id)
@@ -342,6 +350,7 @@ impl AppState {
             user: user.clone(),
             guild_id,
             online: true,
+            bot: false,
         };
         guild_members.insert(user.pubkey.clone(), member.clone());
         member
@@ -634,6 +643,204 @@ impl AppState {
             ..prev
         })
     }
+
+    // ----- Bot platform (Tier 1) -------------------------------------------
+
+    /// True if `pubkey` is an installed bot in at least one guild.
+    pub fn is_bot(&self, pubkey: &str) -> bool {
+        self.bot_installs
+            .get(pubkey)
+            .map(|g| !g.is_empty())
+            .unwrap_or(false)
+    }
+
+    /// The grants a bot has in a specific guild, if installed there.
+    pub fn bot_install(&self, guild_id: Id, bot_pubkey: &str) -> Option<BotInstall> {
+        self.bot_installs
+            .get(bot_pubkey)
+            .and_then(|g| g.get(&guild_id).map(|i| i.clone()))
+    }
+
+    /// Every guild a bot is installed in, with its grants. Used to scope a bot
+    /// connection's `Ready` and its inbound event stream.
+    pub fn bot_guilds(&self, bot_pubkey: &str) -> Vec<BotInstall> {
+        self.bot_installs
+            .get(bot_pubkey)
+            .map(|g| g.iter().map(|e| e.value().clone()).collect())
+            .unwrap_or_default()
+    }
+
+    /// All bot installs in a guild (for the owner's Integrations panel).
+    pub fn guild_installs(&self, guild_id: Id) -> Vec<BotInstall> {
+        self.bot_installs
+            .iter()
+            .filter_map(|e| e.value().get(&guild_id).map(|i| i.clone()))
+            .collect()
+    }
+
+    /// Owner-only: install (or update the grants of) a bot in a guild. Adds the
+    /// bot as a `bot: true` guild member so it shows in the roster. Returns the
+    /// stored install and the bot's membership for broadcasting.
+    pub fn install_bot(
+        &self,
+        guild_id: Id,
+        bot_pubkey: &str,
+        name: &str,
+        permissions: Vec<Permission>,
+        intents: Vec<Intent>,
+        by_pubkey: &str,
+    ) -> Result<(BotInstall, Member), String> {
+        let owner = self
+            .guilds
+            .get(&guild_id)
+            .map(|g| g.owner_pubkey.clone())
+            .ok_or_else(|| "unknown guild".to_string())?;
+        if owner.is_empty() || owner != by_pubkey {
+            return Err("only the owner can manage this guild's integrations".into());
+        }
+        if bot_pubkey.trim().is_empty() {
+            return Err("bot pubkey is required".into());
+        }
+        if bot_pubkey == by_pubkey {
+            return Err("a bot must have its own identity, distinct from yours".into());
+        }
+        let name = {
+            let n = name.trim();
+            if n.is_empty() {
+                "Bot".to_string()
+            } else {
+                n.chars().take(32).collect()
+            }
+        };
+        let install = BotInstall {
+            guild_id,
+            bot_pubkey: bot_pubkey.to_string(),
+            name: name.clone(),
+            permissions: unique(permissions),
+            intents: unique(intents),
+        };
+        self.bot_installs
+            .entry(bot_pubkey.to_string())
+            .or_default()
+            .insert(guild_id, install.clone());
+
+        // Surface the bot in the roster. Keep an already-connected bot's online
+        // flag; a fresh install starts offline until the bot process connects.
+        let guild_members = self.members.entry(guild_id).or_insert_with(DashMap::new);
+        let member = if let Some(mut existing) = guild_members.get_mut(bot_pubkey) {
+            existing.bot = true;
+            existing.user.username = name;
+            existing.clone()
+        } else {
+            let member = Member {
+                user: User {
+                    pubkey: bot_pubkey.to_string(),
+                    username: name,
+                },
+                guild_id,
+                online: false,
+                bot: true,
+            };
+            guild_members.insert(bot_pubkey.to_string(), member.clone());
+            member
+        };
+        Ok((install, member))
+    }
+
+    /// Owner-only: remove a bot from a guild (drops its grants and roster row).
+    pub fn uninstall_bot(
+        &self,
+        guild_id: Id,
+        bot_pubkey: &str,
+        by_pubkey: &str,
+    ) -> Result<(), String> {
+        let owner = self
+            .guilds
+            .get(&guild_id)
+            .map(|g| g.owner_pubkey.clone())
+            .ok_or_else(|| "unknown guild".to_string())?;
+        if owner.is_empty() || owner != by_pubkey {
+            return Err("only the owner can manage this guild's integrations".into());
+        }
+        // Drop the per-guild grant; if it was the bot's last install, forget the
+        // bot entirely so `is_bot` flips false.
+        let now_empty = if let Some(g) = self.bot_installs.get(bot_pubkey) {
+            g.remove(&guild_id);
+            g.is_empty()
+        } else {
+            false
+        };
+        if now_empty {
+            self.bot_installs.remove(bot_pubkey);
+        }
+        if let Some(gm) = self.members.get(&guild_id) {
+            gm.remove(bot_pubkey);
+        }
+        Ok(())
+    }
+
+    /// Scoped `Ready` for a bot connection: only the guilds it's installed in,
+    /// their channels, and — gated behind the `Members` intent — their rosters.
+    /// No DMs, no profiles, no public catalog (a bot doesn't browse).
+    pub fn snapshot_for_bot(&self, bot: &User) -> ServerMessage {
+        let installs = self.bot_guilds(&bot.pubkey);
+        let my_guild_ids: Vec<Id> = installs.iter().map(|i| i.guild_id).collect();
+
+        // Flip the bot online in each installed guild.
+        for gid in &my_guild_ids {
+            if let Some(gm) = self.members.get(gid) {
+                if let Some(mut m) = gm.get_mut(&bot.pubkey) {
+                    m.online = true;
+                }
+            }
+        }
+
+        let guilds: Vec<Guild> = my_guild_ids
+            .iter()
+            .filter_map(|id| self.guilds.get(id).map(|g| g.clone()))
+            .collect();
+        let channels: Vec<Channel> = self
+            .channels
+            .iter()
+            .filter(|c| my_guild_ids.contains(&c.guild_id))
+            .map(|c| c.clone())
+            .collect();
+        // Roster is sensitive: only hand it over for guilds the bot was granted
+        // the Members intent in.
+        let mut members: Vec<Member> = Vec::new();
+        for install in &installs {
+            if !install.has_intent(Intent::Members) {
+                continue;
+            }
+            if let Some(gm) = self.members.get(&install.guild_id) {
+                for m in gm.iter() {
+                    members.push(m.value().clone());
+                }
+            }
+        }
+
+        ServerMessage::Ready {
+            user: bot.clone(),
+            guilds,
+            channels,
+            members,
+            voice_states: Vec::new(),
+            dms: Vec::new(),
+            catalog: Vec::new(),
+            profiles: Vec::new(),
+        }
+    }
+}
+
+/// Order-preserving dedup for small grant vectors.
+fn unique<T: PartialEq>(items: Vec<T>) -> Vec<T> {
+    let mut out: Vec<T> = Vec::with_capacity(items.len());
+    for item in items {
+        if !out.contains(&item) {
+            out.push(item);
+        }
+    }
+    out
 }
 
 /// Derive a short (≤2 char) uppercase icon label from a guild name.

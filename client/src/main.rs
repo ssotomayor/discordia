@@ -9,7 +9,6 @@ mod rendezvous;
 mod session;
 mod settings;
 mod state;
-mod wallet;
 
 use dioxus::LaunchBuilder;
 use dioxus::desktop::{Config, WindowBuilder, tao::dpi::LogicalSize};

@@ -1,3 +1,4 @@
+pub mod activities;
 pub mod appearance;
 pub mod channels;
 pub mod chat;
@@ -5,9 +6,9 @@ pub mod connect;
 pub mod guilds;
 pub mod icons;
 pub mod identity_setup;
+pub mod integrations;
 pub mod members;
 pub mod profiles;
 pub mod screenshare;
 pub mod voice;
-pub mod wallet;
 pub mod workspace;

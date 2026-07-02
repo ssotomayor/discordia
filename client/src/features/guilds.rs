@@ -39,6 +39,8 @@ pub fn GuildsSidebar() -> Element {
 
     let mut menu = use_signal::<Option<GuildMenu>>(|| None);
     let mut show_browse = use_signal(|| false);
+    // Guild whose Integrations (bots) dialog is open, if any.
+    let mut integrations_for = use_signal::<Option<Id>>(|| None);
 
     rsx! {
         nav { class: "panel-hover w-full h-full bg-[var(--panel)] border border-[var(--border)] rounded-lg flex flex-col overflow-hidden",
@@ -177,6 +179,14 @@ pub fn GuildsSidebar() -> Element {
                                 }
                             }
                             button {
+                                class: "w-full text-left px-3 py-1.5 rounded text-[var(--text)] hover:bg-white/[0.04] transition-colors",
+                                onclick: move |_| {
+                                    integrations_for.set(Some(m.guild_id));
+                                    menu.set(None);
+                                },
+                                "Integrations"
+                            }
+                            button {
                                 class: "w-full text-left px-3 py-1.5 rounded text-[var(--danger)] hover:bg-[var(--danger)]/10 transition-colors",
                                 onclick: move |_| {
                                     if let Some(cur) = menu.write().as_mut() {
@@ -209,6 +219,14 @@ pub fn GuildsSidebar() -> Element {
                             }
                         }
                     }
+                }
+            }
+
+            // Owner-only Integrations (bots) dialog.
+            if let Some(gid) = integrations_for() {
+                crate::features::integrations::IntegrationsDialog {
+                    guild_id: gid,
+                    on_close: move |_| integrations_for.set(None),
                 }
             }
 

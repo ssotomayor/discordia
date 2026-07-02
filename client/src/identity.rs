@@ -1,46 +1,37 @@
-//! Cryptographic identity.
+//! Cryptographic identity — **Nostr** keys (secp256k1 / Schnorr, BIP-340).
 //!
-//! Each user has an Ed25519 keypair. There are two ways to create one:
+//! Each user is a secp256k1 keypair; the public key (x-only, 32 bytes) is the
+//! universal user id, encoded as 64-char hex on the wire and shown as `npub…`
+//! (NIP-19 bech32). Two ways to create one:
 //!
-//! 1. **BIP39 seed phrase** — generated at first launch, derived along the
-//!    Solana SLIP-0010 path `m/44'/501'/0'/0'`. The 12-word phrase is the
-//!    recovery format and is interchangeable with Phantom/Solflare.
-//! 2. **Raw private key import** — paste a base58-encoded 32-byte secret
-//!    (or a 64-byte `secret||pubkey` keypair, the format Phantom exports).
-//!    No seed phrase is available for keys imported this way.
+//! 1. **BIP39 seed phrase** — generated at first launch and derived via
+//!    **NIP-06** (`m/44'/1237'/0'/0/0`). The 12-word phrase is the recovery
+//!    format and is interchangeable with other NIP-06 wallets.
+//! 2. **Key import** — paste an `nsec1…` (bech32) or a raw 64-char hex secret.
 //!
-//! Persisted to the OS-appropriate config dir as `dioxusfun/identity.json`:
-//!
-//! - macOS:   `~/Library/Application Support/dioxusfun/identity.json`
-//! - Linux:   `~/.config/dioxusfun/identity.json`
-//! - Windows: `%APPDATA%\dioxusfun\identity.json`
-//!
-//! Mode `0600` on Unix. Plaintext key — fine for friends-only; move into
-//! OS keychain for anything serious.
+//! Persisted to `dioxusfun/identity.json` in the config dir, mode 0600 on Unix.
 
 use std::path::PathBuf;
 
+use bech32::{Bech32, Hrp};
 use bip39::{Language, Mnemonic};
-use ed25519_dalek::{Signer, SigningKey};
 use hmac::{Hmac, Mac};
+use secp256k1::{Keypair, Message, PublicKey, Scalar, Secp256k1, SecretKey};
 use serde::{Deserialize, Serialize};
-use sha2::Sha512;
+use sha2::{Digest, Sha256, Sha512};
 
 const FILE_VERSION: u32 = 1;
 
-/// Where the identity came from. Determines what kind of recovery info we
-/// can show the user.
+/// Where the identity came from, so recovery UI knows what to show.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IdentitySource {
-    /// 12-word BIP39 mnemonic. Compatible with Phantom/Solflare.
+    /// 12-word BIP39 mnemonic (NIP-06 derivable).
     Phrase(String),
-    /// Base58-encoded 32-byte Ed25519 secret. No seed phrase available.
-    PrivateKey(String),
+    /// An `nsec1…` bech32 secret. No seed phrase available.
+    Nsec(String),
 }
 
 impl IdentitySource {
-    /// Used by the future identity drawer to decide between showing the
-    /// 12-word recovery phrase or the raw private key.
     #[allow(dead_code)]
     pub fn is_phrase(&self) -> bool {
         matches!(self, IdentitySource::Phrase(_))
@@ -49,10 +40,11 @@ impl IdentitySource {
 
 #[derive(Clone)]
 pub struct Identity {
+    /// x-only public key as 64-char hex — the universal user id.
     pub pubkey: String,
     pub display_name: String,
     pub source: IdentitySource,
-    signing_key: SigningKey,
+    secret: SecretKey,
 }
 
 impl PartialEq for Identity {
@@ -81,10 +73,10 @@ impl Identity {
         rand::rngs::OsRng.fill_bytes(&mut entropy);
         let mnemonic = Mnemonic::from_entropy_in(Language::English, &entropy)
             .map_err(|e: bip39::Error| e.to_string())?;
-        Ok(Self::from_mnemonic(mnemonic, display_name.into()))
+        Self::from_mnemonic(mnemonic, display_name.into())
     }
 
-    /// Restore from a 12- or 24-word BIP39 phrase.
+    /// Restore from a 12- or 24-word BIP39 phrase (NIP-06).
     pub fn restore_from_phrase(
         seed_phrase: impl AsRef<str>,
         display_name: impl Into<String>,
@@ -92,72 +84,79 @@ impl Identity {
         let mnemonic =
             Mnemonic::parse_in_normalized(Language::English, seed_phrase.as_ref().trim())
                 .map_err(|e: bip39::Error| format!("invalid recovery phrase: {e}"))?;
-        Ok(Self::from_mnemonic(mnemonic, display_name.into()))
+        Self::from_mnemonic(mnemonic, display_name.into())
     }
 
-    /// Import from a raw private key (base58, 32 or 64 bytes). 64-byte input
-    /// is Phantom/Solflare's standard export — `secret_key || pubkey`. We
-    /// take the first 32 bytes (the secret) and derive the pubkey from it.
+    /// Import from an `nsec1…` bech32 secret or a raw 64-char hex secret.
     pub fn restore_from_private_key(
-        private_key_b58: impl AsRef<str>,
+        input: impl AsRef<str>,
         display_name: impl Into<String>,
     ) -> Result<Self, String> {
-        let raw = bs58::decode(private_key_b58.as_ref().trim())
-            .into_vec()
-            .map_err(|e| format!("private key is not valid base58: {e}"))?;
-        let secret: [u8; 32] = match raw.len() {
-            32 => raw.try_into().unwrap(),
-            64 => raw[..32].try_into().unwrap(),
-            n => {
-                return Err(format!(
-                    "private key must be 32 or 64 bytes (got {n}); export from Phantom is 64"
-                ));
+        let raw = input.as_ref().trim();
+        let secret_bytes: [u8; 32] = if raw.starts_with("nsec") {
+            let (hrp, data) =
+                bech32::decode(raw).map_err(|e| format!("invalid nsec: {e}"))?;
+            if hrp.as_str() != "nsec" {
+                return Err(format!("expected an nsec key, got '{}'", hrp.as_str()));
             }
+            data.try_into().map_err(|_| "nsec is not 32 bytes".to_string())?
+        } else {
+            let bytes = hex::decode(raw).map_err(|e| format!("private key is not hex or nsec: {e}"))?;
+            bytes
+                .try_into()
+                .map_err(|_| "hex private key must be 32 bytes (64 chars)".to_string())?
         };
-        let signing_key = SigningKey::from_bytes(&secret);
-        let pubkey = bs58::encode(signing_key.verifying_key().as_bytes()).into_string();
-        let stored_secret = bs58::encode(secret).into_string();
-        Ok(Self {
-            pubkey,
-            display_name: display_name.into(),
-            source: IdentitySource::PrivateKey(stored_secret),
-            signing_key,
-        })
+        let secret =
+            SecretKey::from_slice(&secret_bytes).map_err(|e| format!("invalid secret key: {e}"))?;
+        let nsec = to_bech32("nsec", &secret_bytes);
+        Ok(Self::from_secret(secret, display_name.into(), IdentitySource::Nsec(nsec)))
     }
 
-    fn from_mnemonic(mnemonic: Mnemonic, display_name: String) -> Self {
+    fn from_mnemonic(mnemonic: Mnemonic, display_name: String) -> Result<Self, String> {
         let seed: [u8; 64] = mnemonic.to_seed("");
-        let signing_key = derive_solana(&seed);
-        let pubkey = bs58::encode(signing_key.verifying_key().as_bytes()).into_string();
+        let secret = derive_nip06(&seed)?;
         let phrase = mnemonic.to_string();
+        Ok(Self::from_secret(
+            secret,
+            display_name,
+            IdentitySource::Phrase(phrase),
+        ))
+    }
+
+    fn from_secret(secret: SecretKey, display_name: String, source: IdentitySource) -> Self {
+        let secp = Secp256k1::new();
+        let (xonly, _parity) = secret.x_only_public_key(&secp);
+        let pubkey = hex::encode(xonly.serialize());
         Self {
             pubkey,
             display_name,
-            source: IdentitySource::Phrase(phrase),
-            signing_key,
+            source,
+            secret,
         }
     }
 
-    /// Sign an arbitrary message; returns base58.
-    pub fn sign_base58(&self, message: &[u8]) -> String {
-        let sig = self.signing_key.sign(message);
-        bs58::encode(sig.to_bytes()).into_string()
+    /// Schnorr-sign a message (hashed to 32 bytes with SHA-256); returns hex.
+    /// The server hashes identically and verifies.
+    pub fn sign_hex(&self, message: &[u8]) -> String {
+        let secp = Secp256k1::new();
+        let keypair = Keypair::from_secret_key(&secp, &self.secret);
+        let digest: [u8; 32] = Sha256::digest(message).into();
+        let msg = Message::from_digest(digest);
+        let sig = secp.sign_schnorr_no_aux_rand(&msg, &keypair);
+        hex::encode(sig.serialize())
     }
 
-    /// Clone of the underlying signing key — used by the in-app wallet to
-    /// sign Solana transactions. The clone is a separate SigningKey value
-    /// from the same secret bytes, not a reference, so callers can move it
-    /// into async tasks.
-    pub fn signing_key_clone(&self) -> SigningKey {
-        SigningKey::from_bytes(&self.signing_key.to_bytes())
+    /// NIP-19 `npub…` for display.
+    pub fn npub(&self) -> String {
+        // pubkey is valid hex of 32 bytes by construction.
+        let bytes = hex::decode(&self.pubkey).unwrap_or_default();
+        to_bech32("npub", &bytes)
     }
 
-    /// Base58 of the raw 32-byte secret key. Used by tests + the future
-    /// identity drawer to let users export-as-private-key (e.g. to import
-    /// into Phantom).
+    /// NIP-19 `nsec…` for export/backup.
     #[allow(dead_code)]
-    pub fn export_private_key_b58(&self) -> String {
-        bs58::encode(self.signing_key.to_bytes()).into_string()
+    pub fn export_nsec(&self) -> String {
+        to_bech32("nsec", &self.secret.secret_bytes())
     }
 
     pub fn save(&self) -> Result<(), String> {
@@ -171,11 +170,11 @@ impl Identity {
             display_name: self.display_name.clone(),
             pubkey: self.pubkey.clone(),
             seed_phrase: None,
-            private_key: None,
+            nsec: None,
         };
         match &self.source {
             IdentitySource::Phrase(p) => stored.seed_phrase = Some(p.clone()),
-            IdentitySource::PrivateKey(k) => stored.private_key = Some(k.clone()),
+            IdentitySource::Nsec(k) => stored.nsec = Some(k.clone()),
         }
         let content = serde_json::to_string_pretty(&stored)
             .map_err(|e| format!("serialize identity: {e}"))?;
@@ -207,25 +206,21 @@ impl Identity {
                 stored.version, FILE_VERSION
             ));
         }
-        // Prefer seed_phrase over private_key when both are somehow present
-        // (e.g. user edited the file by hand) — phrase is richer.
         let identity = if let Some(phrase) = stored.seed_phrase {
             Self::restore_from_phrase(&phrase, stored.display_name)?
-        } else if let Some(pk) = stored.private_key {
-            Self::restore_from_private_key(&pk, stored.display_name)?
+        } else if let Some(nsec) = stored.nsec {
+            Self::restore_from_private_key(&nsec, stored.display_name)?
         } else {
-            return Err("identity file has neither seed_phrase nor private_key".into());
+            return Err("identity file has neither seed_phrase nor nsec".into());
         };
         Ok(Some(identity))
     }
 
-    /// Path the identity file lives at — used by tests + UI affordances.
     #[allow(dead_code)]
     pub fn file_path() -> PathBuf {
         identity_path()
     }
 
-    /// File-system path as a UTF-8 string for display purposes.
     pub fn file_path_display() -> String {
         identity_path().display().to_string()
     }
@@ -238,14 +233,14 @@ impl Identity {
         Ok(())
     }
 
-    #[allow(dead_code)] // exposed for the future "edit identity" drawer
+    #[allow(dead_code)]
     pub fn set_display_name(&mut self, name: impl Into<String>) -> Result<(), String> {
         self.display_name = name.into();
         self.save()
     }
 
     pub fn truncated_pubkey(&self) -> String {
-        truncate_pubkey(&self.pubkey)
+        truncate_pubkey(&self.npub())
     }
 }
 
@@ -257,15 +252,18 @@ struct Stored {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     seed_phrase: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    private_key: Option<String>,
+    nsec: Option<String>,
+}
+
+fn to_bech32(hrp: &str, data: &[u8]) -> String {
+    let hrp = Hrp::parse(hrp).expect("valid hrp");
+    bech32::encode::<Bech32>(hrp, data).expect("bech32 encode")
 }
 
 /// Base directory for dioxusfun's on-disk state (identity + session).
 ///
-/// Honors the `DIOXUSFUN_CONFIG_DIR` environment variable, which points the app
-/// at an explicit directory — handy for running several isolated instances on
-/// one machine (e.g. `DIOXUSFUN_CONFIG_DIR=/tmp/userB ./dioxusfun`) to simulate
-/// multiple users. When unset, falls back to the OS config dir, e.g.
+/// Honors `DIOXUSFUN_CONFIG_DIR` (handy for running several isolated instances
+/// on one machine). Otherwise the OS config dir, e.g.
 /// `~/Library/Application Support/dioxusfun` on macOS.
 pub fn config_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os("DIOXUSFUN_CONFIG_DIR") {
@@ -281,16 +279,13 @@ fn identity_path() -> PathBuf {
 }
 
 pub fn truncate_pubkey(pubkey: &str) -> String {
-    if pubkey.len() <= 10 {
+    if pubkey.len() <= 12 {
         return pubkey.to_string();
     }
-    format!("{}…{}", &pubkey[..4], &pubkey[pubkey.len() - 4..])
+    format!("{}…{}", &pubkey[..8], &pubkey[pubkey.len() - 4..])
 }
 
-/// Last 4 base58 characters of a pubkey — used as a Discord-style
-/// discriminator suffix on display names. With ~58 possible characters
-/// per slot, collisions in last-4 require ~330k users sharing a single
-/// name before > 50% chance, which is plenty for a self-hosted setup.
+/// Last 4 characters of the pubkey — a Discord-style discriminator suffix.
 pub fn discriminator(pubkey: &str) -> &str {
     if pubkey.len() <= 4 {
         return pubkey;
@@ -298,53 +293,63 @@ pub fn discriminator(pubkey: &str) -> &str {
     &pubkey[pubkey.len() - 4..]
 }
 
-/// Format a display name as `alice#7xK3` for textual contexts where
-/// inline styling isn't available (logs, tooltips, copy-to-clipboard).
-/// In rsx! we usually compose the parts directly so the discriminator
-/// can be a dimmer color.
 #[allow(dead_code)]
 pub fn name_with_tag(name: &str, pubkey: &str) -> String {
     format!("{name}#{}", discriminator(pubkey))
 }
 
 // ---------------------------------------------------------------------------
-// SLIP-0010 ed25519 derivation along Solana's standard path m/44'/501'/0'/0'.
+// NIP-06 key derivation: BIP-32 over secp256k1 along `m/44'/1237'/0'/0/0`.
+// Implemented with secp256k1's `add_tweak` (child = parent + IL mod n).
 // ---------------------------------------------------------------------------
 
-const SOLANA_PATH: [u32; 4] = [
-    44 | 0x8000_0000,
-    501 | 0x8000_0000,
-    0 | 0x8000_0000,
-    0 | 0x8000_0000,
+const HARDENED: u32 = 0x8000_0000;
+const NIP06_PATH: [u32; 5] = [
+    44 | HARDENED,
+    1237 | HARDENED,
+    0 | HARDENED,
+    0,
+    0,
 ];
 
-fn derive_solana(seed: &[u8]) -> SigningKey {
-    let mut mac =
-        <Hmac<Sha512> as Mac>::new_from_slice(b"ed25519 seed").expect("hmac key length");
+fn derive_nip06(seed: &[u8]) -> Result<SecretKey, String> {
+    let secp = Secp256k1::new();
+
+    // Master key: HMAC-SHA512("Bitcoin seed", seed).
+    let mut mac = <Hmac<Sha512> as Mac>::new_from_slice(b"Bitcoin seed").expect("hmac key length");
     mac.update(seed);
     let master = mac.finalize().into_bytes();
-
-    let mut key = [0u8; 32];
+    let mut key = SecretKey::from_slice(&master[..32]).map_err(|e| format!("master key: {e}"))?;
     let mut chain = [0u8; 32];
-    key.copy_from_slice(&master[..32]);
     chain.copy_from_slice(&master[32..]);
 
-    for &index in &SOLANA_PATH {
-        let mut mac = <Hmac<Sha512> as Mac>::new_from_slice(&chain).expect("hmac key length");
-        mac.update(&[0]);
-        mac.update(&key);
+    for &index in &NIP06_PATH {
+        let mut mac =
+            <Hmac<Sha512> as Mac>::new_from_slice(&chain).expect("hmac key length");
+        if index & HARDENED != 0 {
+            // Hardened: 0x00 || ser256(k_par) || ser32(i)
+            mac.update(&[0u8]);
+            mac.update(&key.secret_bytes());
+        } else {
+            // Normal: serP(point(k_par)) || ser32(i)  (compressed pubkey)
+            let pk = PublicKey::from_secret_key(&secp, &key);
+            mac.update(&pk.serialize());
+        }
         mac.update(&index.to_be_bytes());
-        let result = mac.finalize().into_bytes();
-        key.copy_from_slice(&result[..32]);
-        chain.copy_from_slice(&result[32..]);
+        let i = mac.finalize().into_bytes();
+        let il: [u8; 32] = i[..32].try_into().unwrap();
+        let tweak = Scalar::from_be_bytes(il).map_err(|_| "derived tweak out of range".to_string())?;
+        key = key.add_tweak(&tweak).map_err(|e| format!("child key: {e}"))?;
+        chain.copy_from_slice(&i[32..]);
     }
 
-    SigningKey::from_bytes(&key)
+    Ok(key)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use secp256k1::XOnlyPublicKey;
 
     #[test]
     fn create_and_restore_phrase_yield_same_pubkey() {
@@ -358,72 +363,50 @@ mod tests {
     }
 
     #[test]
-    fn import_32_byte_private_key() {
+    fn import_nsec_round_trips() {
         let original = Identity::create("alice").unwrap();
-        let pk_b58 = original.export_private_key_b58();
-        let imported = Identity::restore_from_private_key(&pk_b58, "alice").unwrap();
+        let nsec = original.export_nsec();
+        let imported = Identity::restore_from_private_key(&nsec, "alice").unwrap();
         assert_eq!(original.pubkey, imported.pubkey);
-        assert!(matches!(imported.source, IdentitySource::PrivateKey(_)));
+        assert!(matches!(imported.source, IdentitySource::Nsec(_)));
     }
 
     #[test]
-    fn import_64_byte_keypair_phantom_style() {
+    fn import_hex_secret() {
         let original = Identity::create("alice").unwrap();
-        // Phantom export: 32 bytes secret + 32 bytes pubkey, both base58 of
-        // the 64-byte concat.
-        let secret_bytes = bs58::decode(original.export_private_key_b58()).into_vec().unwrap();
-        let pubkey_bytes = bs58::decode(&original.pubkey).into_vec().unwrap();
-        let mut combined = secret_bytes;
-        combined.extend(pubkey_bytes);
-        let phantom_format = bs58::encode(&combined).into_string();
-        let imported = Identity::restore_from_private_key(&phantom_format, "alice").unwrap();
+        let hex_secret = hex::encode(original.secret.secret_bytes());
+        let imported = Identity::restore_from_private_key(&hex_secret, "alice").unwrap();
         assert_eq!(original.pubkey, imported.pubkey);
     }
 
     #[test]
-    fn name_with_tag_appends_last_four() {
-        let pk = "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM";
-        assert_eq!(discriminator(pk), "AWWM");
-        assert_eq!(name_with_tag("alice", pk), "alice#AWWM");
-        // Short input passes through.
-        assert_eq!(discriminator("abc"), "abc");
-    }
-
-    #[test]
-    fn pubkey_is_solana_format_base58() {
+    fn pubkey_is_64_hex_and_npub() {
         let id = Identity::create("alice").unwrap();
-        assert!(id.pubkey.len() >= 32 && id.pubkey.len() <= 44);
-        assert!(!id.pubkey.contains(['0', 'O', 'I', 'l']));
+        assert_eq!(id.pubkey.len(), 64);
+        assert!(id.pubkey.chars().all(|c| c.is_ascii_hexdigit()));
+        assert!(id.npub().starts_with("npub1"));
     }
 
     #[test]
     fn signing_round_trips() {
-        use ed25519_dalek::{Signature, Verifier, VerifyingKey};
         let id = Identity::create("alice").unwrap();
         let msg = b"hello dioxusfun";
-        let sig_b58 = id.sign_base58(msg);
+        let sig_hex = id.sign_hex(msg);
 
-        let pubkey_bytes: [u8; 32] = bs58::decode(&id.pubkey)
-            .into_vec()
-            .unwrap()
-            .try_into()
-            .unwrap();
-        let vk = VerifyingKey::from_bytes(&pubkey_bytes).unwrap();
-        let sig_bytes: [u8; 64] = bs58::decode(&sig_b58).into_vec().unwrap().try_into().unwrap();
-        let sig = Signature::from_bytes(&sig_bytes);
-        assert!(vk.verify(msg, &sig).is_ok());
+        let secp = Secp256k1::new();
+        let pk_bytes: [u8; 32] = hex::decode(&id.pubkey).unwrap().try_into().unwrap();
+        let xonly = XOnlyPublicKey::from_slice(&pk_bytes).unwrap();
+        let digest: [u8; 32] = Sha256::digest(msg).into();
+        let m = Message::from_digest(digest);
+        let sig_bytes: [u8; 64] = hex::decode(&sig_hex).unwrap().try_into().unwrap();
+        let sig = secp256k1::schnorr::Signature::from_slice(&sig_bytes).unwrap();
+        assert!(secp.verify_schnorr(&sig, &m, &xonly).is_ok());
     }
 
     #[test]
-    fn truncate_pubkey_format() {
-        let s = "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU";
-        assert_eq!(truncate_pubkey(s), "7xKX…gAsU");
-    }
-
-    #[test]
-    fn rejects_wrong_length_private_key() {
-        // 16 random bytes — wrong length.
-        let bad = bs58::encode([0u8; 16]).into_string();
-        assert!(Identity::restore_from_private_key(&bad, "alice").is_err());
+    fn discriminator_last_four() {
+        let pk = "abcdef0123456789";
+        assert_eq!(discriminator(pk), "6789");
+        assert_eq!(discriminator("abc"), "abc");
     }
 }

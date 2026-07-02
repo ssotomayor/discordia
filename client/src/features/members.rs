@@ -144,8 +144,16 @@ fn MemberRow(member: Member, voice: Option<VoiceState>) -> Element {
                 class: "text-sm truncate flex-1 {name_class}",
                 title: "{member.user.pubkey}",
                 "{member.user.username}"
-                span { class: "text-[var(--text-dim)] font-mono text-[10px] ml-0.5",
-                    "#{discriminator(&member.user.pubkey)}"
+                if member.bot {
+                    span {
+                        class: "dxf-pop ml-1 px-1 py-px rounded bg-[var(--accent-soft)] text-[var(--accent)] text-[8px] font-bold uppercase tracking-wider align-middle",
+                        title: "Installed bot",
+                        "Bot"
+                    }
+                } else {
+                    span { class: "text-[var(--text-dim)] font-mono text-[10px] ml-0.5",
+                        "#{discriminator(&member.user.pubkey)}"
+                    }
                 }
             }
             if let Some(vs) = voice {

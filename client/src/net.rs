@@ -141,7 +141,7 @@ async fn run(
         }
     };
 
-    // Sign nonce || pubkey || username with the identity's signing key and
+    // Schnorr-sign nonce || pubkey || username with the Nostr identity key and
     // send the Identify response.
     let username = params.username.clone();
     let pubkey = params.identity.pubkey.clone();
@@ -149,7 +149,7 @@ async fn run(
     to_sign.extend_from_slice(nonce.as_bytes());
     to_sign.extend_from_slice(pubkey.as_bytes());
     to_sign.extend_from_slice(username.as_bytes());
-    let signature = params.identity.sign_base58(&to_sign);
+    let signature = params.identity.sign_hex(&to_sign);
 
     let identify = ClientMessage::Identify {
         username,
@@ -431,6 +431,9 @@ fn apply(
                 *slot = guild;
             }
         }
+        ServerMessage::GuildIntegrations { guild_id, bots } => {
+            s.integrations.insert(guild_id, bots);
+        }
         ServerMessage::ScreenShareState { channel_id, sharers } => {
             if sharers.is_empty() {
                 s.screen_shares.remove(&channel_id);
@@ -454,7 +457,18 @@ fn apply(
             }
         }
         ServerMessage::MemberLeave { guild_id, user_pubkey } => {
-            if let Some(m) = s.members.iter_mut().find(|m| {
+            // A leaving human just goes offline (greyed in the roster). A bot's
+            // leave means it was uninstalled, so drop it from the roster entirely.
+            let is_bot = s
+                .members
+                .iter()
+                .find(|m| m.guild_id == guild_id && m.user.pubkey == user_pubkey)
+                .map(|m| m.bot)
+                .unwrap_or(false);
+            if is_bot {
+                s.members
+                    .retain(|m| !(m.guild_id == guild_id && m.user.pubkey == user_pubkey));
+            } else if let Some(m) = s.members.iter_mut().find(|m| {
                 m.guild_id == guild_id && m.user.pubkey == user_pubkey
             }) {
                 m.online = false;

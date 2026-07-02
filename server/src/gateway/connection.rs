@@ -1,4 +1,6 @@
+use std::collections::VecDeque;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use axum::extract::ws::{Message as WsMessage, WebSocket};
 use futures_util::{SinkExt, StreamExt};
@@ -6,7 +8,7 @@ use futures_util::{SinkExt, StreamExt};
 use crate::AppContext;
 use crate::auth;
 use crate::livekit;
-use crate::protocol::{ClientMessage, Member, ServerMessage, User};
+use crate::protocol::{ClientMessage, Intent, Member, Permission, ServerMessage, User};
 
 pub async fn handle_connection(
     socket: WebSocket,
@@ -27,6 +29,12 @@ pub async fn handle_connection(
     }
 
     let mut user: Option<User> = None;
+    // Set once the identified pubkey turns out to be an installed bot. Bots get
+    // an intent-filtered event stream and a narrow action surface.
+    let mut is_bot = false;
+    // Throttles message-producing actions (protects against a runaway or
+    // malicious client; the main reason bots get rate-limited like Discord's).
+    let mut limiter = RateLimiter::new();
 
     loop {
         tokio::select! {
@@ -45,6 +53,25 @@ pub async fn handle_connection(
                     continue;
                 };
 
+                // Bots have a deliberately narrow action surface: fetch history,
+                // post, and react (each still subject to per-guild permissions
+                // below). Creating guilds, voice, DMs, profiles and managing
+                // integrations are human-only. (Identify is handled before this
+                // flag is ever set, so it's never gated here.)
+                if is_bot
+                    && !matches!(
+                        client_msg,
+                        ClientMessage::FetchMessages { .. }
+                            | ClientMessage::SendMessage { .. }
+                            | ClientMessage::React { .. }
+                    )
+                {
+                    let _ = send(&mut ws_tx, &ServerMessage::Error {
+                        message: "bots may only fetch history, send messages, and react".into(),
+                    }).await;
+                    continue;
+                }
+
                 match client_msg {
                     ClientMessage::Identify { username, pubkey, signature } => {
                         if user.is_some() {
@@ -62,7 +89,14 @@ pub async fn handle_connection(
                         }
                         let new_user = User { pubkey: pubkey.clone(), username };
                         ctx.state.remember_user(&new_user);
-                        let ready = ctx.state.snapshot_for(&new_user);
+                        // An identity that's been installed as a bot somewhere
+                        // gets the scoped, intent-filtered treatment.
+                        is_bot = ctx.state.is_bot(&new_user.pubkey);
+                        let ready = if is_bot {
+                            ctx.state.snapshot_for_bot(&new_user)
+                        } else {
+                            ctx.state.snapshot_for(&new_user)
+                        };
                         if send(&mut ws_tx, &ready).await.is_err() {
                             break;
                         }
@@ -109,6 +143,12 @@ pub async fn handle_connection(
                             }).await;
                             continue;
                         }
+                        if is_bot && !bot_can(&ctx.state, channel_id, &u.pubkey, Permission::ReadMessageHistory) {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "bot lacks the read_message_history permission here".into(),
+                            }).await;
+                            continue;
+                        }
                         let history = ctx.state.history(channel_id, limit.max(1).min(200));
                         if send(&mut ws_tx, &ServerMessage::MessageHistory {
                             channel_id,
@@ -124,6 +164,12 @@ pub async fn handle_connection(
                             }).await;
                             continue;
                         };
+                        if !limiter.allow() {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "rate limited: too many messages, slow down".into(),
+                            }).await;
+                            continue;
+                        }
                         let content = content.trim().to_string();
                         if let Some(img) = &image {
                             if !img.starts_with("data:image/")
@@ -151,6 +197,18 @@ pub async fn handle_connection(
                             if !ctx.state.is_guild_member(gid, &author.pubkey) {
                                 let _ = send(&mut ws_tx, &ServerMessage::Error {
                                     message: "you're not a member of this guild".into(),
+                                }).await;
+                                continue;
+                            }
+                            if is_bot
+                                && !ctx
+                                    .state
+                                    .bot_install(gid, &author.pubkey)
+                                    .map(|i| i.has_permission(Permission::SendMessages))
+                                    .unwrap_or(false)
+                            {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                    message: "bot lacks the send_messages permission here".into(),
                                 }).await;
                                 continue;
                             }
@@ -235,6 +293,7 @@ pub async fn handle_connection(
                                         user: joiner.clone(),
                                         guild_id,
                                         online: true,
+                                        bot: false,
                                     }),
                                 );
                                 if send(&mut ws_tx, &ServerMessage::GuildJoined {
@@ -352,6 +411,15 @@ pub async fn handle_connection(
                         if !audience.iter().any(|p| p == &u.pubkey) {
                             continue; // not allowed in this channel
                         }
+                        if is_bot && !bot_can(&ctx.state, channel_id, &u.pubkey, Permission::AddReactions) {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "bot lacks the add_reactions permission here".into(),
+                            }).await;
+                            continue;
+                        }
+                        if !limiter.allow() {
+                            continue;
+                        }
                         // Keep the emoji short to avoid abuse.
                         let emoji: String = emoji.chars().take(8).collect();
                         if let Some(reactions) =
@@ -400,6 +468,84 @@ pub async fn handle_connection(
                                 let _ = send(&mut ws_tx, &ServerMessage::Error { message: e }).await;
                             }
                         }
+                    }
+                    ClientMessage::InstallBot { guild_id, bot_pubkey, name, permissions, intents } => {
+                        let Some(u) = user.as_ref() else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "identify first".into(),
+                            }).await;
+                            continue;
+                        };
+                        match ctx.state.install_bot(
+                            guild_id, &bot_pubkey, &name, permissions, intents, &u.pubkey,
+                        ) {
+                            Ok((install, member)) => {
+                                tracing::info!(%guild_id, bot = %bot_pubkey, by = %u.username, "bot installed");
+                                // Surface the bot in every member's roster.
+                                let targets = ctx.state.guild_member_pubkeys(guild_id);
+                                ctx.state.deliver(targets, ServerMessage::MemberJoin(member));
+                                // Refresh the owner's Integrations panel.
+                                let _ = send(&mut ws_tx, &ServerMessage::GuildIntegrations {
+                                    guild_id,
+                                    bots: ctx.state.guild_installs(guild_id),
+                                }).await;
+                                tracing::debug!(perms = ?install.permissions, intents = ?install.intents, "install grants");
+                            }
+                            Err(e) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message: e }).await;
+                            }
+                        }
+                    }
+                    ClientMessage::UninstallBot { guild_id, bot_pubkey } => {
+                        let Some(u) = user.as_ref() else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "identify first".into(),
+                            }).await;
+                            continue;
+                        };
+                        // Capture recipients before removal drops the bot from
+                        // the roster.
+                        let targets = ctx.state.guild_member_pubkeys(guild_id);
+                        match ctx.state.uninstall_bot(guild_id, &bot_pubkey, &u.pubkey) {
+                            Ok(()) => {
+                                tracing::info!(%guild_id, bot = %bot_pubkey, by = %u.username, "bot uninstalled");
+                                ctx.state.deliver(
+                                    targets,
+                                    ServerMessage::MemberLeave { guild_id, user_pubkey: bot_pubkey },
+                                );
+                                let _ = send(&mut ws_tx, &ServerMessage::GuildIntegrations {
+                                    guild_id,
+                                    bots: ctx.state.guild_installs(guild_id),
+                                }).await;
+                            }
+                            Err(e) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message: e }).await;
+                            }
+                        }
+                    }
+                    ClientMessage::FetchIntegrations { guild_id } => {
+                        let Some(u) = user.as_ref() else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "identify first".into(),
+                            }).await;
+                            continue;
+                        };
+                        let is_owner = ctx
+                            .state
+                            .guilds
+                            .get(&guild_id)
+                            .map(|g| !g.owner_pubkey.is_empty() && g.owner_pubkey == u.pubkey)
+                            .unwrap_or(false);
+                        if !is_owner {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "only the owner can view this guild's integrations".into(),
+                            }).await;
+                            continue;
+                        }
+                        let _ = send(&mut ws_tx, &ServerMessage::GuildIntegrations {
+                            guild_id,
+                            bots: ctx.state.guild_installs(guild_id),
+                        }).await;
                     }
                     ClientMessage::SetScreenShare { channel_id, sharing } => {
                         let Some(u) = user.as_ref() else { continue };
@@ -518,7 +664,20 @@ pub async fn handle_connection(
                         continue;
                     }
                 }
-                if send(&mut ws_tx, &env.msg).await.is_err() {
+                // Bots see a filtered stream: only events for guilds they're
+                // installed in, only the intents they were granted, and message
+                // content withheld unless the privileged MessageContent intent
+                // is present.
+                let out = if is_bot {
+                    let Some(u) = user.as_ref() else { continue };
+                    match filter_for_bot(&ctx.state, &u.pubkey, &env.msg) {
+                        Some(m) => m,
+                        None => continue,
+                    }
+                } else {
+                    env.msg
+                };
+                if send(&mut ws_tx, &out).await.is_err() {
                     break;
                 }
             }
@@ -582,4 +741,100 @@ fn sanitize_username(raw: &str) -> String {
         return "anonymous".into();
     }
     trimmed.chars().take(32).collect()
+}
+
+/// True if `bot_pubkey` is installed in `channel_id`'s guild with `perm`. DM
+/// channels (no guild) never grant a bot anything.
+fn bot_can(
+    state: &crate::state::AppState,
+    channel_id: crate::protocol::Id,
+    bot_pubkey: &str,
+    perm: Permission,
+) -> bool {
+    state
+        .channel_guild(channel_id)
+        .and_then(|gid| state.bot_install(gid, bot_pubkey))
+        .map(|i| i.has_permission(perm))
+        .unwrap_or(false)
+}
+
+/// Adapt an outbound frame for a bot connection. Returns `None` to drop the
+/// frame (outside the bot's installed/intent-granted scope), or the (possibly
+/// content-stripped) frame to deliver. This is the data-minimization boundary:
+/// by default a bot learns that a message happened, not what it said.
+fn filter_for_bot(
+    state: &crate::state::AppState,
+    bot_pubkey: &str,
+    msg: &ServerMessage,
+) -> Option<ServerMessage> {
+    match msg {
+        ServerMessage::MessageCreate(m) => {
+            // DMs have no guild — bots never receive them.
+            let gid = state.channel_guild(m.channel_id)?;
+            let install = state.bot_install(gid, bot_pubkey)?;
+            if !install.has_intent(Intent::GuildMessages) {
+                return None;
+            }
+            let mut m = m.clone();
+            if !install.has_intent(Intent::MessageContent) {
+                m.content = String::new();
+                m.image = None;
+            }
+            Some(ServerMessage::MessageCreate(m))
+        }
+        ServerMessage::ReactionUpdate { channel_id, .. } => {
+            let gid = state.channel_guild(*channel_id)?;
+            let install = state.bot_install(gid, bot_pubkey)?;
+            install.has_intent(Intent::Reactions).then(|| msg.clone())
+        }
+        ServerMessage::MemberJoin(member) => {
+            let install = state.bot_install(member.guild_id, bot_pubkey)?;
+            install.has_intent(Intent::Members).then(|| msg.clone())
+        }
+        ServerMessage::MemberLeave { guild_id, .. } => {
+            let install = state.bot_install(*guild_id, bot_pubkey)?;
+            install.has_intent(Intent::Members).then(|| msg.clone())
+        }
+        // Errors are useful feedback for a bot (e.g. permission denied).
+        ServerMessage::Error { .. } => Some(msg.clone()),
+        // Everything else (typing, voice, screen share, profiles, the public
+        // catalog, guild metadata, DMs, integrations) is outside a bot's event
+        // surface — never delivered.
+        _ => None,
+    }
+}
+
+/// Sliding-window limiter for message-producing actions. Bounds how fast any
+/// one connection can append/broadcast, which is the practical defense against
+/// a spammy or compromised bot.
+struct RateLimiter {
+    hits: VecDeque<Instant>,
+}
+
+impl RateLimiter {
+    const WINDOW: Duration = Duration::from_secs(10);
+    const LIMIT: usize = 30;
+
+    fn new() -> Self {
+        Self {
+            hits: VecDeque::new(),
+        }
+    }
+
+    /// Record an action; returns false if the window is already full.
+    fn allow(&mut self) -> bool {
+        let now = Instant::now();
+        while let Some(front) = self.hits.front() {
+            if now.duration_since(*front) > Self::WINDOW {
+                self.hits.pop_front();
+            } else {
+                break;
+            }
+        }
+        if self.hits.len() >= Self::LIMIT {
+            return false;
+        }
+        self.hits.push_back(now);
+        true
+    }
 }

@@ -7,8 +7,8 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::host::HostInfo;
 use crate::protocol::{
-    Channel, ClientMessage, DmInfo, Guild, GuildSummary, Id, Member, Message, Profile, User,
-    VoiceState,
+    BotInstall, Channel, ClientMessage, DmInfo, Guild, GuildSummary, Id, Member, Message, Profile,
+    User, VoiceState,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -127,6 +127,10 @@ pub struct AppState {
     pub screen_viewing: Option<String>,
     /// Populated when running in self-host mode. None for remote connections.
     pub host_info: Option<HostInfo>,
+    /// Bot installs per guild, for the owner's Integrations dialog. Populated by
+    /// `GuildIntegrations` (owner-only) in response to `FetchIntegrations` and
+    /// after each install/uninstall.
+    pub integrations: HashMap<Id, Vec<BotInstall>>,
 }
 
 impl AppState {
@@ -155,6 +159,7 @@ impl AppState {
             screen_shares: HashMap::new(),
             screen_viewing: None,
             host_info: None,
+            integrations: HashMap::new(),
         }
     }
 
