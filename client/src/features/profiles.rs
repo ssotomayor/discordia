@@ -19,28 +19,42 @@ pub fn status_color(status: &str) -> &'static str {
     }
 }
 
-/// Upload caps. Kept under the server's base64 limit so the fallback (embed as
-/// a data URL when Blossom is unreachable) still fits.
-const MAX_AVATAR_BYTES: usize = 1_000_000;
-const MAX_BANNER_BYTES: usize = 2_000_000;
+/// Sanity ceiling on how big a file we'll even read for upload.
+const MAX_UPLOAD_BYTES: usize = 15_000_000;
+/// Largest image we'll embed as a data URL when Blossom is unavailable (kept
+/// under the server's data-URL cap).
+const EMBED_MAX_BYTES: usize = 2_000_000;
 
 /// Upload an image to Blossom, returning `(value, note)`: on success the value
-/// is the Blossom URL; on failure it falls back to an embedded data URL and a
-/// note explaining what happened.
+/// is the Blossom URL; on failure it falls back to an embedded data URL (if it
+/// fits) and a note explaining what happened.
 async fn image_to_ref(
     server: String,
     identity: crate::identity::Identity,
     bytes: Vec<u8>,
     mime: String,
 ) -> (Option<String>, Option<String>) {
+    let n = bytes.len();
+    eprintln!("[blossom] uploading {n} bytes ({mime}) to {server}");
     match crate::blossom::upload_blob(&server, bytes.clone(), &mime, &identity).await {
-        Ok(url) => (Some(url), None),
+        Ok(url) => {
+            eprintln!("[blossom] upload ok -> {url}");
+            (Some(url), None)
+        }
         Err(e) => {
-            let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-            (
-                Some(format!("data:{mime};base64,{b64}")),
-                Some(format!("Blossom upload failed ({e}); embedded the image instead.")),
-            )
+            eprintln!("[blossom] upload failed: {e}");
+            if n > EMBED_MAX_BYTES {
+                (
+                    None,
+                    Some(format!("Blossom upload failed ({e}); image too large to embed.")),
+                )
+            } else {
+                let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                (
+                    Some(format!("data:{mime};base64,{b64}")),
+                    Some(format!("Blossom upload failed ({e}); embedded the image instead.")),
+                )
+            }
         }
     }
 }
@@ -226,6 +240,16 @@ pub fn ProfileEditor() -> Element {
             status: status_opt.clone(),
             custom_status: custom_opt.clone(),
         };
+        let kind = |v: &Option<String>| match v {
+            None => "none".to_string(),
+            Some(s) if s.starts_with("data:") => format!("data-url ({} chars)", s.len()),
+            Some(s) => format!("url {s}"),
+        };
+        eprintln!(
+            "[profile] save avatar={} banner={}",
+            kind(&avatar()),
+            kind(&banner())
+        );
         let _ = crate::profile::save(&local);
         gateway.send(ClientMessage::SetProfile {
             avatar: avatar(),
@@ -281,8 +305,8 @@ pub fn ProfileEditor() -> Element {
                                             let Some(file) = files.into_iter().next() else { return };
                                             match file.read_bytes().await {
                                                 Ok(bytes) => {
-                                                    if bytes.len() > MAX_AVATAR_BYTES {
-                                                        err.set(Some("Image too large (max 1 MB).".into()));
+                                                    if bytes.len() > MAX_UPLOAD_BYTES {
+                                                        err.set(Some("Image too large (max 15 MB).".into()));
                                                         return;
                                                     }
                                                     let mime = file
@@ -339,8 +363,8 @@ pub fn ProfileEditor() -> Element {
                                             let Some(file) = files.into_iter().next() else { return };
                                             match file.read_bytes().await {
                                                 Ok(bytes) => {
-                                                    if bytes.len() > MAX_BANNER_BYTES {
-                                                        err.set(Some("Banner too large (max 2 MB).".into()));
+                                                    if bytes.len() > MAX_UPLOAD_BYTES {
+                                                        err.set(Some("Banner too large (max 15 MB).".into()));
                                                         return;
                                                     }
                                                     let mime = file

@@ -388,11 +388,28 @@ pub async fn handle_connection(
                                 img.starts_with("data:image/") && img.len() <= crate::state::MAX_IMAGE_LEN;
                             is_url || is_data
                         };
-                        if avatar.as_ref().is_some_and(|i| !valid_image(i))
-                            || banner.as_ref().is_some_and(|i| !valid_image(i))
-                        {
+                        let field_kind = |v: &Option<String>| match v {
+                            None => "none".to_string(),
+                            Some(s) if s.starts_with("data:") => format!("data-url({})", s.len()),
+                            Some(s) => format!("url({}..)", &s[..s.len().min(24)]),
+                        };
+                        eprintln!(
+                            "[profile] SetProfile from {} avatar={} banner={}",
+                            &u.pubkey[..u.pubkey.len().min(8)],
+                            field_kind(&avatar),
+                            field_kind(&banner),
+                        );
+                        if avatar.as_ref().is_some_and(|i| !valid_image(i)) {
+                            eprintln!("[profile] REJECTED: avatar invalid");
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
-                                message: "profile images must be data:image/* URLs under the size limit".into(),
+                                message: "avatar must be an http(s) or data:image URL under the size limit".into(),
+                            }).await;
+                            continue;
+                        }
+                        if banner.as_ref().is_some_and(|i| !valid_image(i)) {
+                            eprintln!("[profile] REJECTED: banner invalid");
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "banner must be an http(s) or data:image URL under the size limit".into(),
                             }).await;
                             continue;
                         }

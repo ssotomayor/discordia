@@ -411,6 +411,12 @@ fn apply(
             }
         }
         ServerMessage::ProfileUpdate(profile) => {
+            eprintln!(
+                "[profile] ProfileUpdate pubkey={} avatar={} banner={}",
+                &profile.pubkey[..profile.pubkey.len().min(8)],
+                profile.avatar.is_some(),
+                profile.banner.is_some()
+            );
             s.profiles.insert(profile.pubkey.clone(), profile);
         }
         ServerMessage::ReactionUpdate { channel_id, message_id, reactions } => {
