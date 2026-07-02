@@ -116,12 +116,10 @@ pub fn ProfileCard() -> Element {
             div {
                 class: "dxf-modal-in w-72 bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl overflow-hidden",
                 onclick: move |e| e.stop_propagation(),
-                // Banner strip + overlapping avatar.
+                // Banner strip + overlapping avatar. Rendered as an <img> (not a
+                // CSS background) so both https and data: URLs display reliably.
                 if let Some(b) = banner {
-                    div {
-                        class: "h-20 bg-cover bg-center",
-                        style: "background-image: url({b});",
-                    }
+                    img { class: "h-20 w-full object-cover block", src: "{b}", alt: "banner" }
                 } else {
                     div { class: "h-16 bg-[var(--accent-soft)]" }
                 }

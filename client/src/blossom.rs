@@ -64,7 +64,11 @@ pub async fn upload_blob(
         .encode(serde_json::to_string(&event).map_err(|e| e.to_string())?);
 
     let endpoint = format!("{}/upload", server.trim_end_matches('/'));
-    let resp = reqwest::Client::new()
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| format!("http client: {e}"))?;
+    let resp = client
         .put(&endpoint)
         .header("Authorization", format!("Nostr {auth_b64}"))
         .header("Content-Type", mime)
