@@ -173,6 +173,22 @@ pub fn AppearanceButton() -> Element {
                         }
                     }
 
+                    // Blossom media server — where profile images are uploaded.
+                    div { class: "mt-4 text-[10px] uppercase tracking-wider text-[var(--text-muted)] mb-1.5", "Blossom media server" }
+                    input {
+                        r#type: "text",
+                        class: "w-full bg-transparent border border-[var(--border)] focus:border-[var(--accent)] rounded px-2 py-1.5 text-xs font-mono text-[var(--text)] outline-none transition-colors",
+                        placeholder: "https://blossom.band",
+                        value: "{current.blossom_server}",
+                        oninput: move |e| {
+                            let v = e.value();
+                            update(&move |s| s.blossom_server = v.clone());
+                        },
+                    }
+                    div { class: "mt-1 text-[10px] text-[var(--text-dim)]",
+                        "Hosts your avatar/banner so they have a URL. Falls back to embedding the image if upload fails."
+                    }
+
                     if let Some(e) = err() {
                         div { class: "mt-2 text-[10px] text-[var(--danger)]", "{e}" }
                     }

@@ -380,7 +380,13 @@ pub async fn handle_connection(
                             continue;
                         };
                         let valid_image = |img: &String| {
-                            img.starts_with("data:image/") && img.len() <= crate::state::MAX_IMAGE_LEN
+                            // A Blossom (or any http) URL, or an inline data URL
+                            // under the size cap (fallback when Blossom is down).
+                            let is_url = (img.starts_with("https://") || img.starts_with("http://"))
+                                && img.len() <= 2048;
+                            let is_data =
+                                img.starts_with("data:image/") && img.len() <= crate::state::MAX_IMAGE_LEN;
+                            is_url || is_data
                         };
                         if avatar.as_ref().is_some_and(|i| !valid_image(i))
                             || banner.as_ref().is_some_and(|i| !valid_image(i))

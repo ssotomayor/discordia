@@ -34,6 +34,8 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
     provide_context(gateway_tx.clone());
     provide_context(crate::features::voice::VoiceTx(voice_tx.clone()));
     provide_context(state);
+    // The Nostr identity (with signing key) — used to authorize Blossom uploads.
+    provide_context(params.identity.clone());
 
     // Initial 4-panel dashboard layout. 12 cols, each panel spans the full
     // GRID_ROWS height so the four columns sit side by side. The pixel row

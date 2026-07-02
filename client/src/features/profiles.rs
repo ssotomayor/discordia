@@ -19,10 +19,31 @@ pub fn status_color(status: &str) -> &'static str {
     }
 }
 
-/// Avatars are capped well below the server limit so frames stay small.
-const MAX_AVATAR_BYTES: usize = 512_000;
-/// Banners are wider, so a slightly larger cap.
-const MAX_BANNER_BYTES: usize = 1_500_000;
+/// Upload caps. Kept under the server's base64 limit so the fallback (embed as
+/// a data URL when Blossom is unreachable) still fits.
+const MAX_AVATAR_BYTES: usize = 1_000_000;
+const MAX_BANNER_BYTES: usize = 2_000_000;
+
+/// Upload an image to Blossom, returning `(value, note)`: on success the value
+/// is the Blossom URL; on failure it falls back to an embedded data URL and a
+/// note explaining what happened.
+async fn image_to_ref(
+    server: String,
+    identity: crate::identity::Identity,
+    bytes: Vec<u8>,
+    mime: String,
+) -> (Option<String>, Option<String>) {
+    match crate::blossom::upload_blob(&server, bytes.clone(), &mime, &identity).await {
+        Ok(url) => (Some(url), None),
+        Err(e) => {
+            let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+            (
+                Some(format!("data:{mime};base64,{b64}")),
+                Some(format!("Blossom upload failed ({e}); embedded the image instead.")),
+            )
+        }
+    }
+}
 
 /// Renders a user's avatar (looked up by pubkey) or, failing that, the first
 /// letter of their name in a bordered box. `size` carries the Tailwind sizing
@@ -150,6 +171,11 @@ pub fn ProfileCard() -> Element {
 pub fn ProfileEditor() -> Element {
     let state = use_app_state();
     let gateway = use_gateway();
+    let identity = use_context::<crate::identity::Identity>();
+    let settings = use_context::<Signal<crate::settings::ClientSettings>>();
+    // Separate clones for the two file pickers (Identity isn't Copy).
+    let id_avatar = identity.clone();
+    let id_banner = identity.clone();
 
     let mut open = use_signal(|| false);
     let mut avatar = use_signal::<Option<String>>(|| None);
@@ -251,22 +277,24 @@ pub fn ProfileEditor() -> Element {
                                         let files = evt.files();
                                         let mut avatar = avatar;
                                         let mut err = err;
+                                        let identity = id_avatar.clone();
+                                        let server = settings.read().blossom_server.clone();
                                         spawn(async move {
                                             let Some(file) = files.into_iter().next() else { return };
                                             match file.read_bytes().await {
                                                 Ok(bytes) => {
                                                     if bytes.len() > MAX_AVATAR_BYTES {
-                                                        err.set(Some("Image too large (max 512 KB).".into()));
+                                                        err.set(Some("Image too large (max 1 MB).".into()));
                                                         return;
                                                     }
                                                     let mime = file
                                                         .content_type()
                                                         .filter(|m| m.starts_with("image/"))
                                                         .unwrap_or_else(|| "image/png".to_string());
-                                                    let b64 = base64::engine::general_purpose::STANDARD
-                                                        .encode(&bytes);
-                                                    err.set(None);
-                                                    avatar.set(Some(format!("data:{mime};base64,{b64}")));
+                                                    let (val, note) =
+                                                        image_to_ref(server, identity, bytes.to_vec(), mime).await;
+                                                    err.set(note);
+                                                    avatar.set(val);
                                                 }
                                                 Err(_) => err.set(Some("Couldn't read that file.".into())),
                                             }
@@ -307,22 +335,24 @@ pub fn ProfileEditor() -> Element {
                                         let files = evt.files();
                                         let mut banner = banner;
                                         let mut err = err;
+                                        let identity = id_banner.clone();
+                                        let server = settings.read().blossom_server.clone();
                                         spawn(async move {
                                             let Some(file) = files.into_iter().next() else { return };
                                             match file.read_bytes().await {
                                                 Ok(bytes) => {
                                                     if bytes.len() > MAX_BANNER_BYTES {
-                                                        err.set(Some("Banner too large (max 1.5 MB).".into()));
+                                                        err.set(Some("Banner too large (max 2 MB).".into()));
                                                         return;
                                                     }
                                                     let mime = file
                                                         .content_type()
                                                         .filter(|m| m.starts_with("image/"))
                                                         .unwrap_or_else(|| "image/png".to_string());
-                                                    let b64 = base64::engine::general_purpose::STANDARD
-                                                        .encode(&bytes);
-                                                    err.set(None);
-                                                    banner.set(Some(format!("data:{mime};base64,{b64}")));
+                                                    let (val, note) =
+                                                        image_to_ref(server, identity, bytes.to_vec(), mime).await;
+                                                    err.set(note);
+                                                    banner.set(val);
                                                 }
                                                 Err(_) => err.set(Some("Couldn't read that file.".into())),
                                             }

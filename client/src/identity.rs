@@ -146,6 +146,16 @@ impl Identity {
         hex::encode(sig.serialize())
     }
 
+    /// Schnorr-sign a 32-byte Nostr event id directly (NO extra hashing — the
+    /// id is already `sha256` of the serialized event). Returns hex. Used for
+    /// signing Nostr events like Blossom's `kind:24242` auth.
+    pub fn nostr_sign_id(&self, id: &[u8; 32]) -> String {
+        let secp = Secp256k1::new();
+        let keypair = Keypair::from_secret_key(&secp, &self.secret);
+        let msg = Message::from_digest(*id);
+        hex::encode(secp.sign_schnorr_no_aux_rand(&msg, &keypair).serialize())
+    }
+
     /// NIP-19 `npub…` for display.
     pub fn npub(&self) -> String {
         // pubkey is valid hex of 32 bytes by construction.

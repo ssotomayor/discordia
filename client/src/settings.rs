@@ -19,6 +19,13 @@ pub struct ClientSettings {
     pub background: Option<String>,
     /// Darkening scrim over the background, 0..=90 (percent opacity of black).
     pub background_dim: u8,
+    /// Blossom media server used to host profile images (avatar/banner).
+    #[serde(default = "default_blossom_server")]
+    pub blossom_server: String,
+}
+
+fn default_blossom_server() -> String {
+    "https://blossom.band".into()
 }
 
 impl Default for ClientSettings {
@@ -28,6 +35,7 @@ impl Default for ClientSettings {
             accent: None,
             background: None,
             background_dim: 55,
+            blossom_server: default_blossom_server(),
         }
     }
 }
