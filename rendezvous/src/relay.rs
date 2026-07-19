@@ -9,23 +9,35 @@ use uuid::Uuid;
 
 use crate::Config;
 use crate::protocol::{HostToRendezvous, RendezvousToHost};
-use crate::registry::{HostEntry, Registry};
+use crate::registry::{ClaimError, HostEntry, Registry, validate_name};
 use crate::shortcode;
+use crate::verify;
 
 const MAX_CLAIM_ATTEMPTS: usize = 10;
 
 pub async fn handle_host_control(socket: WebSocket, registry: Arc<Registry>, cfg: Arc<Config>) {
     let (mut tx, mut rx) = socket.split();
 
+    // Issue an ownership challenge up front. A host claiming a persistent name
+    // must sign this nonce; anonymous hosts (no name) can ignore it.
+    let nonce = verify::fresh_nonce();
+    if send_msg(&mut tx, &RendezvousToHost::Challenge { nonce: nonce.clone() })
+        .await
+        .is_err()
+    {
+        return;
+    }
+
     // First frame must be a Register.
     let register = match rx.next().await {
         Some(Ok(Message::Text(t))) => match serde_json::from_str::<HostToRendezvous>(&t) {
             Ok(HostToRendezvous::Register {
                 name,
-                preferred,
+                pubkey,
+                signature,
                 publish_public,
                 description,
-            }) => (name, preferred, publish_public, description),
+            }) => (name, pubkey, signature, publish_public, description),
             Err(e) => {
                 send_err(&mut tx, &format!("invalid register frame: {e}")).await;
                 return;
@@ -41,28 +53,62 @@ pub async fn handle_host_control(socket: WebSocket, registry: Arc<Registry>, cfg
         }
         None => return,
     };
-    let (name, preferred, publish_public, description) = register;
+    let (name, pubkey, signature, publish_public, description) = register;
 
-    // Claim a shortcode.
-    let shortcode = match claim_shortcode(&registry, preferred, &name).await {
-        Some(c) => c,
-        None => {
-            send_err(&mut tx, "could not claim a shortcode").await;
-            return;
+    // Resolve a shortcode. A claimed name goes through the signed-ownership +
+    // uniqueness path; no name falls back to an anonymous random shortcode.
+    let (shortcode, display_name) = match &name {
+        Some(raw) => {
+            let slug = match validate_name(raw) {
+                Ok(s) => s,
+                Err(e) => {
+                    send_err(&mut tx, &e).await;
+                    return;
+                }
+            };
+            let (Some(pubkey), Some(signature)) = (pubkey.as_ref(), signature.as_ref()) else {
+                send_err(&mut tx, "claiming a name requires a pubkey and signature").await;
+                return;
+            };
+            // Prove control of the key the name is bound to (signature over the
+            // name as sent, against the challenge nonce).
+            if let Err(e) = verify::verify_ownership(pubkey, signature, &nonce, raw) {
+                send_err(&mut tx, &format!("name ownership rejected: {e}")).await;
+                return;
+            }
+            match registry.claim_name(&slug, raw, pubkey, description.clone(), publish_public) {
+                Ok(()) => {}
+                Err(ClaimError::Taken) => {
+                    send_err(&mut tx, &format!("the name '{slug}' is already taken")).await;
+                    return;
+                }
+                Err(ClaimError::LiveElsewhere) => {
+                    send_err(&mut tx, &format!("'{slug}' is currently in use by another session")).await;
+                    return;
+                }
+            }
+            (slug, Some(raw.clone()))
         }
+        None => match claim_anonymous_shortcode(&registry).await {
+            Some(c) => (c, None),
+            None => {
+                send_err(&mut tx, "could not claim a shortcode").await;
+                return;
+            }
+        },
     };
-    tracing::info!(%shortcode, host = ?name, public = publish_public, "host registered");
+    tracing::info!(%shortcode, host = ?display_name, public = publish_public, "host registered");
 
     let (control_tx, mut control_rx) =
         tokio::sync::mpsc::unbounded_channel::<RendezvousToHost>();
     let host_entry = HostEntry {
-        name: name.clone(),
+        name: display_name,
         description,
         public: publish_public,
         control_tx,
     };
-    // We already verified the shortcode is free in claim_shortcode, but
-    // re-check race conditions just in case.
+    // The live slot may momentarily race a same-slug reconnect; claim_name
+    // already rejected a live-elsewhere claim, but re-check for anonymous.
     if !registry.try_claim(&shortcode, host_entry) {
         send_err(&mut tx, "shortcode collision").await;
         return;
@@ -108,35 +154,23 @@ pub async fn handle_host_control(socket: WebSocket, registry: Arc<Registry>, cfg
     tracing::info!(%shortcode, "host unregistered");
 }
 
-async fn claim_shortcode(
-    registry: &Registry,
-    preferred: Option<String>,
-    _name: &Option<String>,
-) -> Option<String> {
-    if let Some(p) = preferred.as_ref().filter(|s| valid_shortcode(s)) {
-        if !registry.hosts.contains_key(p) {
-            return Some(p.clone());
-        }
-    }
+/// Pick a free random shortcode for an anonymous (unnamed) host.
+async fn claim_anonymous_shortcode(registry: &Registry) -> Option<String> {
     for _ in 0..MAX_CLAIM_ATTEMPTS {
         let candidate = shortcode::generate();
-        if !registry.hosts.contains_key(&candidate) {
+        if !registry.hosts.contains_key(&candidate) && registry.reservation_owner(&candidate).is_none() {
             return Some(candidate);
         }
     }
     None
 }
 
-fn valid_shortcode(s: &str) -> bool {
-    !s.is_empty()
-        && s.len() <= 64
-        && s.chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-}
-
 pub async fn handle_friend_join(socket: WebSocket, registry: Arc<Registry>, code: String) {
     let (mut friend_tx, mut friend_rx) = socket.split();
 
+    // Join codes (named or anonymous) are matched case-insensitively — the slug
+    // is the canonical lowercased form.
+    let code = code.to_lowercase();
     let Some(host) = registry.hosts.get(&code).map(|h| h.value().clone()) else {
         send_err(&mut friend_tx, &format!("no host registered with code '{code}'")).await;
         return;
@@ -213,6 +247,15 @@ pub async fn handle_host_proxy(socket: WebSocket, registry: Arc<Registry>, sessi
         tracing::warn!(%session_id, "no waiting friend for proxy connection");
         // Socket is dropped; friend side has already timed out or moved on.
     }
+}
+
+/// Send any control frame to the host; returns Err if the socket is gone.
+async fn send_msg<S>(tx: &mut S, msg: &RendezvousToHost) -> Result<(), ()>
+where
+    S: SinkExt<Message> + Unpin,
+{
+    let json = serde_json::to_string(msg).map_err(|_| ())?;
+    tx.send(Message::Text(json.into())).await.map_err(|_| ())
 }
 
 async fn send_err<S>(tx: &mut S, message: &str)

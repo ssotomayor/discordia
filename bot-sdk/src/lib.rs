@@ -2,9 +2,9 @@
 //!
 //! A thin async client for writing **Tier 1 bots** — external programs that
 //! connect to a dioxusfun gateway over WebSocket and react to events, exactly
-//! like Discord bots. A bot is just an Ed25519 keypair; there is no bearer
-//! token to leak. A guild owner installs your bot by its public key and grants
-//! it permissions + intents; the server enforces both.
+//! like Discord bots. A bot is just a Nostr-style secp256k1 keypair; there is
+//! no bearer token to leak. A guild owner installs your bot by its public key
+//! (64 hex chars) and grants it permissions + intents; the server enforces both.
 //!
 //! ```no_run
 //! use dioxusfun_bot::{Bot, BotIdentity};
@@ -156,10 +156,31 @@ pub struct Bot {
 }
 
 impl Bot {
-    /// Connect to a gateway and complete the `Hello`/`Identify` handshake.
+    /// Connect to a gateway and complete the `Hello`/`Identify` handshake,
+    /// self-declaring as a bot (scoped Ready, intent-filtered events).
     /// `url` may be a bare host (`localhost:9000`), an `http(s)://` URL, or a
     /// `ws(s)://` URL; the `/gateway` path is appended automatically.
     pub async fn connect(url: &str, identity: &BotIdentity, username: &str) -> Result<Bot> {
+        Self::connect_declaring(url, identity, username, true).await
+    }
+
+    /// Connect as a regular (human) session — full Ready, unfiltered events,
+    /// whole ClientMessage surface. Useful for integration tests and tooling
+    /// that drive a user account through the same SDK.
+    pub async fn connect_as_user(
+        url: &str,
+        identity: &BotIdentity,
+        username: &str,
+    ) -> Result<Bot> {
+        Self::connect_declaring(url, identity, username, false).await
+    }
+
+    async fn connect_declaring(
+        url: &str,
+        identity: &BotIdentity,
+        username: &str,
+        bot: bool,
+    ) -> Result<Bot> {
         let ws_url = normalize_gateway_url(url)?;
         let (stream, _) = tokio_tungstenite::connect_async(&ws_url)
             .await
@@ -194,10 +215,14 @@ impl Bot {
         };
 
         let signature = identity.sign_identify(&nonce, username);
+        // For bot connections this self-declaration is what triggers the
+        // server's scoped Ready + intent filtering; installs alone never
+        // bot-gate an identity.
         let identify = ClientMessage::Identify {
             username: username.to_string(),
             pubkey: identity.pubkey().to_string(),
             signature,
+            bot,
         };
         let mut bot = Bot {
             write,
@@ -254,7 +279,7 @@ impl Bot {
     /// Request recent history for a channel (delivered as a `MessageHistory`
     /// event). Requires the `ReadMessageHistory` permission.
     pub async fn fetch_messages(&mut self, channel_id: Id, limit: u32) -> Result<()> {
-        self.send(&ClientMessage::FetchMessages { channel_id, limit })
+        self.send(&ClientMessage::FetchMessages { channel_id, limit, before_ms: None })
             .await
     }
 

@@ -6,6 +6,12 @@ edition = "2024"
 [dependencies]
 # Rendezvous-specific.
 rand = "0.8"
+# Ownership proof for claimed names: Schnorr (BIP-340 / Nostr), same scheme as
+# the server's Identify handshake.
+secp256k1 = { workspace = true }
+sha2 = "0.10"
+hex = { workspace = true }
+bs58 = { workspace = true }
 
 # Shared deps inherited from workspace.
 axum = { workspace = true }
@@ -18,3 +24,7 @@ futures-util = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 uuid = { workspace = true }
+
+[dev-dependencies]
+tokio-tungstenite = { workspace = true }
+secp256k1 = { workspace = true }

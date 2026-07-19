@@ -1,0 +1,10 @@
+[package]
+name = "dioxusfun-protocol"
+version = "0.1.0"
+edition = "2024"
+description = "Shared wire protocol for dioxusfun (client, server, and the bot SDK)."
+
+[dependencies]
+serde = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }

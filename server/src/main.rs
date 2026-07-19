@@ -8,6 +8,15 @@ async fn main() {
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .init();
 
+    // Subcommands for guild graduation (Phase 6). Anything else falls through
+    // to the normal serve path.
+    let args: Vec<String> = std::env::args().collect();
+    match args.get(1).map(String::as_str) {
+        Some("export") => return run_export(&args[2..]).await,
+        Some("import") => return run_import(&args[2..]).await,
+        _ => {}
+    }
+
     let addr: SocketAddr = std::env::var("DIOXUSFUN_ADDR")
         .unwrap_or_else(|_| "0.0.0.0:9000".into())
         .parse()
@@ -47,7 +56,31 @@ async fn main() {
         "livekit configured (URLs handed to clients are derived per-connection unless explicit_url is set)"
     );
 
-    let serve_fut = dioxusfun_server::serve(addr, livekit_cfg);
+    // Operators own system guilds (the seeded Lobby) so it can be moderated.
+    // Comma-separated hex pubkeys; empty leaves the Lobby unmanaged.
+    let operators: std::collections::HashSet<String> = std::env::var("DIOXUSFUN_OPERATORS")
+        .unwrap_or_default()
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if !operators.is_empty() {
+        tracing::info!(count = operators.len(), "operators configured for system guilds");
+    }
+
+    // Durable data root: SQLite DB + media blobs. Default keeps everything in
+    // one directory an operator can back up by copying.
+    let data_dir: std::path::PathBuf = std::env::var("DIOXUSFUN_DATA_DIR")
+        .unwrap_or_else(|_| "./discordia-data".into())
+        .into();
+    tracing::info!(data_dir = %data_dir.display(), "durable data directory");
+
+    let cfg = dioxusfun_server::ServerConfig {
+        livekit: livekit_cfg,
+        operators,
+        data_dir,
+    };
+    let serve_fut = dioxusfun_server::serve(addr, cfg);
     tokio::select! {
         result = serve_fut => {
             if let Err(e) = result {
@@ -60,4 +93,99 @@ async fn main() {
         }
     }
     // _livekit_handle drops here, killing the subprocess.
+}
+
+/// The durable data root the CLI operates on (same default as the server).
+fn cli_data_dir() -> std::path::PathBuf {
+    std::env::var("DIOXUSFUN_DATA_DIR")
+        .unwrap_or_else(|_| "./discordia-data".into())
+        .into()
+}
+
+async fn open_store() -> dioxusfun_server::store::Store {
+    let dir = cli_data_dir();
+    dioxusfun_server::store::Store::open(&dir.join("db.sqlite"))
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("error: cannot open store at {}: {e}", dir.display());
+            std::process::exit(1);
+        })
+}
+
+/// `discordia export --guild <uuid> <out.json>` | `--all <out-dir>`
+async fn run_export(args: &[String]) {
+    let store = open_store().await;
+    match args.first().map(String::as_str) {
+        Some("--guild") => {
+            let (Some(id_str), Some(out)) = (args.get(1), args.get(2)) else {
+                eprintln!("usage: discordia export --guild <uuid> <out.json>");
+                std::process::exit(2);
+            };
+            let guild_id = id_str.parse().unwrap_or_else(|_| {
+                eprintln!("error: '{id_str}' is not a valid guild id");
+                std::process::exit(2);
+            });
+            let archive = store.export_guild(guild_id).await.unwrap_or_else(|e| {
+                eprintln!("export failed: {e}");
+                std::process::exit(1);
+            });
+            let Some(archive) = archive else {
+                eprintln!("error: no guild {guild_id}");
+                std::process::exit(1);
+            };
+            let json = serde_json::to_string_pretty(&archive).unwrap();
+            std::fs::write(out, json).unwrap_or_else(|e| {
+                eprintln!("error: cannot write {out}: {e}");
+                std::process::exit(1);
+            });
+            println!("exported guild '{}' → {out}", archive.guild.name);
+        }
+        Some("--all") => {
+            let Some(dir) = args.get(1) else {
+                eprintln!("usage: discordia export --all <out-dir>");
+                std::process::exit(2);
+            };
+            std::fs::create_dir_all(dir).ok();
+            let loaded = store.load_all().await.unwrap();
+            let mut n = 0;
+            for g in &loaded.guilds {
+                if let Ok(Some(archive)) = store.export_guild(g.id).await {
+                    let path = format!("{dir}/{}.json", g.id);
+                    let json = serde_json::to_string_pretty(&archive).unwrap();
+                    if std::fs::write(&path, json).is_ok() {
+                        n += 1;
+                    }
+                }
+            }
+            println!("exported {n} guild(s) → {dir}/");
+        }
+        _ => {
+            eprintln!("usage: discordia export --guild <uuid> <out.json> | --all <out-dir>");
+            std::process::exit(2);
+        }
+    }
+}
+
+/// `discordia import <archive.json>` — writes the guild in under fresh ids.
+async fn run_import(args: &[String]) {
+    let store = open_store().await;
+    let Some(path) = args.first() else {
+        eprintln!("usage: discordia import <archive.json>");
+        std::process::exit(2);
+    };
+    let json = std::fs::read_to_string(path).unwrap_or_else(|e| {
+        eprintln!("error: cannot read {path}: {e}");
+        std::process::exit(1);
+    });
+    let archive: dioxusfun_server::archive::GuildArchive =
+        serde_json::from_str(&json).unwrap_or_else(|e| {
+            eprintln!("error: {path} is not a valid guild archive: {e}");
+            std::process::exit(1);
+        });
+    let name = archive.guild.name.clone();
+    let new_id = store.import_guild(&archive).await.unwrap_or_else(|e| {
+        eprintln!("import failed: {e}");
+        std::process::exit(1);
+    });
+    println!("imported guild '{name}' as {new_id}");
 }

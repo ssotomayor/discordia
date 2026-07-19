@@ -18,7 +18,8 @@ use tokio_tungstenite::tungstenite::Message as WsMessage;
 enum HostToRendezvous {
     Register {
         name: Option<String>,
-        preferred: Option<String>,
+        pubkey: Option<String>,
+        signature: Option<String>,
         publish_public: bool,
         description: Option<String>,
     },
@@ -27,6 +28,9 @@ enum HostToRendezvous {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "op", content = "d", rename_all = "snake_case")]
 enum RendezvousToHost {
+    Challenge {
+        nonce: String,
+    },
     Registered {
         shortcode: String,
         livekit_url: Option<String>,
@@ -55,9 +59,13 @@ pub struct PublishOptions {
 
 /// Connect to rendezvous, register, and return the published info.
 /// The caller then runs [`run_adapter`] to handle ongoing NewFriend events.
+///
+/// `identity` signs the ownership proof when a name is claimed (`publish_name`
+/// set) — the rendezvous binds the name to this key and persists the claim.
 pub async fn register(
     rendezvous_url: &str,
     options: PublishOptions,
+    identity: &crate::identity::Identity,
 ) -> Result<(PublishInfo, ControlStream), String> {
     let base = rendezvous_url.trim_end_matches('/').to_string();
     let control_url = format!("{base}/control");
@@ -66,9 +74,41 @@ pub async fn register(
         .await
         .map_err(|e| format!("rendezvous control connect: {e}"))?;
 
+    // The rendezvous opens with a Challenge nonce we sign to prove name
+    // ownership. Wait for it before registering.
+    let nonce = loop {
+        let frame = ws
+            .next()
+            .await
+            .ok_or_else(|| "rendezvous closed before challenge".to_string())?
+            .map_err(|e| format!("rendezvous recv: {e}"))?;
+        if let WsMessage::Text(t) = frame {
+            match serde_json::from_str::<RendezvousToHost>(&t) {
+                Ok(RendezvousToHost::Challenge { nonce }) => break nonce,
+                Ok(RendezvousToHost::Error { message }) => return Err(message),
+                _ => continue,
+            }
+        }
+    };
+
+    // If we're claiming a name, sign SHA256(nonce || pubkey || name) so the
+    // rendezvous can verify we control the key the name is bound to.
+    let (pubkey, signature) = match options.publish_name.as_deref() {
+        Some(name) => {
+            let pubkey = identity.pubkey.clone();
+            let mut msg = Vec::new();
+            msg.extend_from_slice(nonce.as_bytes());
+            msg.extend_from_slice(pubkey.as_bytes());
+            msg.extend_from_slice(name.as_bytes());
+            (Some(pubkey), Some(identity.sign_hex(&msg)))
+        }
+        None => (None, None),
+    };
+
     let hello = HostToRendezvous::Register {
         name: options.publish_name,
-        preferred: None,
+        pubkey,
+        signature,
         publish_public: options.publish_public,
         description: options.description,
     };
@@ -102,7 +142,7 @@ pub async fn register(
                 return Ok((info, ControlStream { ws }));
             }
             RendezvousToHost::Error { message } => return Err(message),
-            RendezvousToHost::NewFriend { .. } => continue,
+            RendezvousToHost::NewFriend { .. } | RendezvousToHost::Challenge { .. } => continue,
         }
     }
 }

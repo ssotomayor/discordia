@@ -50,7 +50,12 @@ pub async fn start_self_host(
     allow_lan: bool,
     rendezvous_url: Option<String>,
     publish: crate::rendezvous::PublishOptions,
+    // The host's own identity: its pubkey becomes the operator of the seeded
+    // Lobby (so the person running the server can moderate it — it's their
+    // machine), and it signs the rendezvous name-ownership proof.
+    identity: crate::identity::Identity,
 ) -> Result<HostHandle, String> {
+    let operator_pubkey = identity.pubkey.clone();
     let (livekit, voice_bundled) = match livekit_bundle::spawn_livekit().await {
         Ok(child) => {
             eprintln!("[host] livekit ready at ws://127.0.0.1:{DEFAULT_LIVEKIT_PORT}");
@@ -68,7 +73,7 @@ pub async fn start_self_host(
     // URL takes precedence over our local subprocess.
     let mut rendezvous_state: Option<(crate::rendezvous::ControlStream, crate::rendezvous::PublishInfo)> = None;
     if let Some(url) = rendezvous_url {
-        match crate::rendezvous::register(&url, publish).await {
+        match crate::rendezvous::register(&url, publish, &identity).await {
             Ok((info, control)) => {
                 eprintln!(
                     "[host] rendezvous registered: shortcode={} livekit_url={:?}",
@@ -101,7 +106,15 @@ pub async fn start_self_host(
     };
     let preferred = SocketAddr::new(bind_ip, 9000);
 
-    let gateway = dioxusfun_server::spawn(preferred, 20, livekit_cfg)
+    let operators = std::collections::HashSet::from([operator_pubkey]);
+    // Durable self-host data lives next to the identity/settings files, so a
+    // relaunched host keeps its guilds, members, and message history.
+    let cfg = dioxusfun_server::ServerConfig {
+        livekit: livekit_cfg,
+        operators,
+        data_dir: crate::identity::config_dir().join("host-data"),
+    };
+    let gateway = dioxusfun_server::spawn(preferred, 20, cfg)
         .await
         .map_err(|e| format!("embedded server: {e}"))?;
     let gateway_addr = gateway.addr;

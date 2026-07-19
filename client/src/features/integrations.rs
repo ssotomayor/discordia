@@ -1,7 +1,8 @@
-//! Owner-only "Integrations" dialog: install/uninstall bots in a guild.
+//! "Integrations" dialog (requires `ManageGuild`): install/uninstall bots.
 //!
-//! A bot is installed by its Ed25519 **pubkey** — the same identity primitive
-//! users have. The owner grants it a set of **permissions** (what it may do)
+//! A bot is installed by its secp256k1 **pubkey** (64 hex chars, Nostr
+//! format) — the same identity primitive users have. The installer grants it
+//! a set of **permissions** (what it may do)
 //! and **intents** (what events it receives). Privileged intents — message
 //! *content* and the member roster — are flagged distinctly, mirroring
 //! Discord's privileged-intents design: by default a bot learns that a message
@@ -158,7 +159,7 @@ fn InstallForm(guild_id: Id) -> Element {
             div { class: "space-y-2",
                 input {
                     class: "w-full bg-transparent border border-[var(--border)] focus:border-[var(--accent)] rounded px-2 py-1 text-xs font-mono text-[var(--text)] outline-none transition-colors",
-                    placeholder: "Bot public key (base58)",
+                    placeholder: "Bot public key (64 hex chars)",
                     value: "{pubkey}",
                     oninput: move |e| pubkey.set(e.value()),
                 }
@@ -170,9 +171,11 @@ fn InstallForm(guild_id: Id) -> Element {
                     oninput: move |e| name.set(e.value()),
                 }
 
-                // Permissions.
+                // Permissions — only the bot-installable subset; management
+                // permissions are human-only (ManageMessages is the exception:
+                // it lets announcement bots post in read-only channels).
                 div { class: "text-[10px] uppercase tracking-wider text-[var(--text-dim)] pt-1", "Permissions" }
-                for p in Permission::ALL.iter().copied() {
+                for p in Permission::BOT_INSTALLABLE.iter().copied() {
                     label { class: "flex items-center gap-2 text-xs text-[var(--text)] cursor-pointer select-none",
                         input {
                             r#type: "checkbox",

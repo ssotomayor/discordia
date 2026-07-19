@@ -16,3 +16,4 @@ Thumbs.db
 # Local env overrides (don't commit secrets)
 .env
 .env.local
+.claude/settings.local.json

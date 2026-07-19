@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  # CI never needs the bundled LiveKit binary (voice is exercised only in
+  # manual runs); skipping saves a ~50MB download per job.
+  LIVEKIT_BUNDLE_SKIP: "1"
+
+jobs:
+  test:
+    name: fmt · clippy · test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+
+      # The desktop client needs system GTK/WebKit to compile; CI covers the
+      # server-side crates (protocol, server, bot SDK) where all the tests
+      # live. The client is checked in the desktop-build job below.
+      - name: Format
+        run: cargo fmt --all --check
+        continue-on-error: true # not yet formatted repo-wide; informational
+
+      - name: Clippy (server crates)
+        run: cargo clippy -p dioxusfun-protocol -p dioxusfun-server -p dioxusfun-bot --tests -- -D warnings
+        continue-on-error: true # informational until the lint debt is paid
+
+      - name: Tests (protocol + server + bot SDK)
+        run: cargo test -p dioxusfun-protocol -p dioxusfun-server -p dioxusfun-bot
+
+  desktop-build:
+    name: client compiles (linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: System deps (wry/GTK)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libxdo-dev \
+            libasound2-dev libssl-dev pkg-config
+      - name: Check client
+        run: cargo check -p dioxusfun

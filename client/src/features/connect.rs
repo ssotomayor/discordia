@@ -127,14 +127,30 @@ pub fn ConnectView(
             // panel is a drag region so users can grab it anywhere to move
             // the window (Discord's native-app feel relies on this).
             div {
-                class: "dxf-drag-region hidden md:flex w-1/3 min-w-[300px] max-w-[440px] flex-col items-center justify-center px-8 border-r border-[var(--border)] bg-[var(--bg)]",
+                class: "dxf-drag-region hidden md:flex w-2/5 min-w-[340px] max-w-[520px] flex-col items-center justify-center px-10 bg-[var(--bg)]",
                 onmousedown: move |_| crate::app::start_window_drag(),
-                crate::app::DiscordiaLogo { class: "w-32 h-32 mb-4" }
-                h1 { class: "text-2xl font-semibold text-[var(--accent)] tracking-tight",
+                // Logo in a glowing rounded tile (comp 1).
+                div {
+                    class: "w-28 h-28 rounded-3xl flex items-center justify-center mb-8",
+                    style: "background: linear-gradient(160deg, var(--panel2), var(--bg2)); \
+                            border: 1px solid var(--edge); \
+                            box-shadow: 0 0 60px -12px color-mix(in srgb, var(--accent) 45%, transparent);",
+                    crate::app::DiscordiaLogo { class: "w-16 h-16" }
+                }
+                h1 { class: "dxf-display dxf-wordmark text-6xl font-extrabold tracking-tight",
                     "Discordia"
                 }
-                p { class: "text-xs text-[var(--text-muted)] mt-3 text-center max-w-[260px] leading-relaxed",
-                    "Self-hostable chat with cryptographic identity and a built-in Solana wallet."
+                p { class: "text-[15px] text-[var(--text-muted)] mt-5 text-center max-w-[320px] leading-relaxed",
+                    "Chat you actually own. Self-hosted, cryptographic identity, and a room you rearrange like furniture."
+                }
+                div { class: "flex flex-wrap items-center justify-center gap-2 mt-7",
+                    span { class: "flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-[var(--edge)] text-xs text-[var(--accent)]",
+                        style: "background: var(--accent-soft);", "🔑 Nostr identity"
+                    }
+                    span { class: "flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-[var(--edge)] text-xs",
+                        style: "background: color-mix(in srgb, var(--up) 10%, transparent); color: var(--up);",
+                        "⌂ Self-hosted"
+                    }
                 }
             }
 
@@ -264,9 +280,12 @@ pub fn ConnectView(
                                         input {
                                             class: INPUT_SM,
                                             r#type: "text",
-                                            placeholder: "My Server",
+                                            placeholder: "my-server",
                                             value: "{publish_name}",
                                             oninput: move |e| publish_name.set(e.value()),
+                                        }
+                                        div { class: "text-[10px] text-[var(--text-dim)]",
+                                            "Unique on this rendezvous — becomes your join code. Letters, digits, '-', '_', '.'. Reserved to your key."
                                         }
                                     }
                                     div { class: "space-y-1",
@@ -317,14 +336,14 @@ pub fn ConnectView(
                 }
 
                 button {
-                    class: "w-full bg-[var(--accent)] hover:bg-[var(--accent-strong)] text-[#0a0908] font-medium py-2 rounded transition-colors disabled:opacity-30 disabled:cursor-not-allowed text-sm",
+                    class: "dxf-cta w-full py-2.5 rounded-xl transition-all disabled:opacity-30 disabled:cursor-not-allowed text-sm",
                     r#type: "submit",
                     disabled,
                     {match tab() {
-                        Tab::Browse => "Join selected",
-                        Tab::ByCode => "Join",
-                        Tab::Remote => "Connect",
-                        Tab::SelfHost => "Launch",
+                        Tab::Browse => "Jump back in  →",
+                        Tab::ByCode => "Join  →",
+                        Tab::Remote => "Connect  →",
+                        Tab::SelfHost => "Launch  →",
                     }}
                 }
                     }
@@ -364,17 +383,19 @@ fn IdentityCard(
         .unwrap_or('?')
         .to_ascii_uppercase()
         .to_string();
-    let truncated = identity.truncated_pubkey();
     let tag = crate::identity::discriminator(&identity.pubkey).to_string();
     let file_path = Identity::file_path_display();
 
     let mut editing = use_signal(|| false);
     let mut draft = use_signal(|| identity.display_name.clone());
+    let signature = crate::identity::color_signature(&identity.pubkey, 16);
+    let npub = identity.npub();
 
     rsx! {
-        div { class: "space-y-1",
-            div { class: "panel-hover flex items-center gap-2 border border-[var(--border)] rounded p-2 text-xs",
-                div { class: "w-7 h-7 rounded-md border border-[var(--border)] flex items-center justify-center text-[var(--accent)] font-medium",
+        div { class: "rounded-2xl border border-[var(--edge)] bg-[var(--panel2)] p-4 space-y-3",
+            div { class: "flex items-center gap-3 text-xs",
+                div { class: "w-11 h-11 rounded-xl border border-[var(--edge)] flex items-center justify-center text-[var(--accent)] font-semibold text-lg shrink-0",
+                    style: "background: var(--bg2);",
                     "{initial}"
                 }
                 div { class: "flex flex-col flex-1 min-w-0",
@@ -401,23 +422,24 @@ fn IdentityCard(
                         }
                     } else {
                         span {
-                            class: "text-[var(--text)] truncate text-sm",
+                            class: "text-[var(--text)] truncate text-base font-semibold flex items-center gap-1.5",
                             title: "{identity.pubkey}",
                             "{identity.display_name}"
-                            span { class: "text-[var(--text-dim)] font-mono text-[10px] ml-0.5",
+                            span { class: "text-[var(--text-dim)] font-mono text-xs font-normal",
                                 "#{tag}"
                             }
+                            span { class: "text-[var(--up)] text-sm", title: "Key verified", "✓" }
                         }
                     }
-                    span { class: "text-[var(--text-dim)] text-[10px] font-mono select-all",
+                    span { class: "text-[var(--text-dim)] text-[11px] font-mono select-all truncate",
                         title: "{identity.pubkey}",
-                        "{truncated}"
+                        "{npub}"
                     }
                 }
                 if editing() {
                     button {
                         r#type: "button",
-                        class: "text-[10px] text-[var(--accent)] hover:text-[var(--accent-strong)] uppercase tracking-wider px-2 transition-colors",
+                        class: "text-[10px] text-[var(--accent)] hover:text-[var(--accent-strong)] uppercase tracking-wider border border-[var(--edge)] rounded-md px-2.5 py-1 transition-colors",
                         onclick: move |_| {
                             let n = draft().trim().to_string();
                             if !n.is_empty() {
@@ -430,7 +452,7 @@ fn IdentityCard(
                 } else {
                     button {
                         r#type: "button",
-                        class: "text-[10px] text-[var(--text-muted)] hover:text-[var(--accent)] uppercase tracking-wider px-2 transition-colors",
+                        class: "text-[10px] text-[var(--text-muted)] hover:text-[var(--accent)] uppercase tracking-wider border border-[var(--edge)] rounded-md px-2.5 py-1 transition-colors",
                         onclick: move |_| {
                             draft.set(identity.display_name.clone());
                             editing.set(true);
@@ -441,13 +463,22 @@ fn IdentityCard(
                 }
                 button {
                     r#type: "button",
-                    class: "text-[10px] text-[var(--text-muted)] hover:text-[var(--danger)] uppercase tracking-wider px-2 transition-colors",
+                    class: "text-[10px] text-[var(--text-muted)] hover:text-[var(--danger)] uppercase tracking-wider border border-[var(--edge)] rounded-md px-2.5 py-1 transition-colors",
                     onclick: move |_| on_sign_out.call(()),
                     title: "Wipe local identity",
                     "sign out"
                 }
             }
-            details { class: "text-[10px] text-[var(--text-dim)] px-1",
+            // Color signature derived from the pubkey.
+            div { class: "flex gap-1",
+                for c in signature.iter() {
+                    div { class: "h-2 flex-1 rounded-full", style: "background: {c};" }
+                }
+            }
+            div { class: "text-[11px] text-[var(--text-dim)]",
+                "This color signature is derived from your public key. Nobody else has it."
+            }
+            details { class: "text-[10px] text-[var(--text-dim)]",
                 summary { class: "cursor-pointer hover:text-[var(--text-muted)] transition-colors",
                     "Identity file location"
                 }

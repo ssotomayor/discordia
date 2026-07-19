@@ -27,8 +27,9 @@ const EMBED_MAX_BYTES: usize = 2_000_000;
 
 /// Upload an image to Blossom, returning `(value, note)`: on success the value
 /// is the Blossom URL; on failure it falls back to an embedded data URL (if it
-/// fits) and a note explaining what happened.
-async fn image_to_ref(
+/// fits) and a note explaining what happened. Shared with the guild-branding
+/// editor (`guild_settings.rs`).
+pub(crate) async fn image_to_ref(
     server: String,
     identity: crate::identity::Identity,
     bytes: Vec<u8>,
@@ -122,52 +123,90 @@ pub fn ProfileCard() -> Element {
 
     let disc = discriminator(&pubkey);
     let dm_pubkey = pubkey.clone();
+    let signature = crate::identity::color_signature(&pubkey, 15);
+    let accent = crate::identity::signature_accent(&pubkey);
+    let xp = state.read().profile_of(&pubkey).map(|p| p.xp).unwrap_or(0);
+    let (level, into, span) = crate::protocol::level_progress(xp);
+    let xp_pct = (into as f64 / span.max(1) as f64 * 100.0) as u32;
+    let copy_pubkey = pubkey.clone();
 
     rsx! {
         div {
             class: "dxf-backdrop-in fixed inset-0 z-50 flex items-center justify-center bg-black/50",
             onclick: move |_| state.write().profile_card = None,
             div {
-                class: "dxf-modal-in w-72 bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl overflow-hidden",
+                class: "dxf-modal-in w-[22rem] bg-[var(--panel2)] border border-[var(--edge)] rounded-2xl shadow-2xl overflow-hidden",
                 onclick: move |e| e.stop_propagation(),
-                // Banner strip + overlapping avatar. Rendered as an <img> (not a
-                // CSS background) so both https and data: URLs display reliably.
+                // Banner tinted by the user's signature accent (or their image).
                 if let Some(b) = banner {
-                    img { class: "h-20 w-full object-cover block", src: "{b}", alt: "banner" }
+                    img { class: "h-24 w-full object-cover block", src: "{b}", alt: "banner" }
                 } else {
-                    div { class: "h-16 bg-[var(--accent-soft)]" }
-                }
-                div { class: "px-4 pb-4 -mt-8",
-                    Avatar {
-                        pubkey: pubkey.clone(),
-                        name: name.clone(),
-                        size: "w-16 h-16 ring-2 ring-[var(--panel)]",
-                        text: "text-xl",
+                    div { class: "h-24 w-full",
+                        style: "background: linear-gradient(150deg, {accent}, transparent 80%), var(--bg2);"
                     }
-                    div { class: "mt-2 flex items-center gap-1.5",
+                }
+                div { class: "px-5 pb-5 -mt-10",
+                    div { class: "inline-block rounded-2xl p-1", style: "background: var(--panel2);",
+                        Avatar {
+                            pubkey: pubkey.clone(),
+                            name: name.clone(),
+                            size: "w-20 h-20 rounded-xl",
+                            text: "text-2xl",
+                        }
+                    }
+                    div { class: "mt-3 flex items-center gap-2 flex-wrap",
                         span { class: "w-2.5 h-2.5 rounded-full shrink-0", style: "background:{status_color(&status)};", title: "{status}" }
-                        span { class: "text-base text-[var(--text)] font-medium",
+                        span { class: "dxf-display text-2xl font-bold", style: "color: {accent};",
                             "{name}"
-                            span { class: "text-[var(--text-dim)] font-mono text-xs ml-1 font-normal", "#{disc}" }
+                        }
+                        span { class: "text-[var(--text-dim)] font-mono text-sm", "#{disc}" }
+                        span { class: "flex items-center gap-1 px-2 py-0.5 rounded-md text-xs",
+                            style: "background: color-mix(in srgb, var(--up) 12%, transparent); color: var(--up);",
+                            "✓ Key verified"
                         }
                     }
                     if let Some(cs) = custom_status {
-                        div { class: "mt-0.5 text-xs text-[var(--text-muted)] italic", "{cs}" }
+                        div { class: "mt-1 text-sm text-[var(--text-muted)] italic", "{cs}" }
                     }
-                    div { class: "mt-0.5 text-[10px] text-[var(--text-dim)] font-mono break-all", "{pubkey}" }
-                    if let Some(bio) = bio {
-                        div { class: "mt-3 pt-3 border-t border-[var(--border)] text-sm text-[var(--text-muted)] whitespace-pre-wrap break-words",
-                            "{bio}"
+                    // Public-key block with copy + color signature.
+                    div { class: "mt-3 rounded-xl border border-[var(--edge)] p-3", style: "background: var(--bg2);",
+                        div { class: "flex items-center justify-between mb-1.5",
+                            span { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]", "Nostr public key" }
+                            button {
+                                class: "text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--edge)] rounded-md px-2 py-0.5 hover:border-[var(--accent)] transition-colors",
+                                onclick: move |_| {
+                                    let js = format!("navigator.clipboard && navigator.clipboard.writeText('{copy_pubkey}');");
+                                    let _ = document::eval(&js);
+                                },
+                                "Copy"
+                            }
                         }
+                        div { class: "font-mono text-xs text-[var(--text-muted)] break-all leading-relaxed", "{pubkey}" }
+                        div { class: "flex gap-1 mt-2.5",
+                            for c in signature.iter() {
+                                div { class: "h-2 flex-1 rounded-full", style: "background: {c};" }
+                            }
+                        }
+                    }
+                    if let Some(bio) = bio {
+                        div { class: "mt-3 text-sm text-[var(--text-muted)] whitespace-pre-wrap break-words", "{bio}" }
+                    }
+                    // Level + XP bar.
+                    div { class: "mt-4 flex items-center gap-3",
+                        span { class: "dxf-display text-sm font-bold text-[var(--accent)] shrink-0", "Lv {level}" }
+                        div { class: "flex-1 h-2 rounded-full overflow-hidden", style: "background: var(--bg2);",
+                            div { class: "h-full rounded-full", style: "width: {xp_pct}%; background: linear-gradient(90deg, #8fb0ff, var(--accent));" }
+                        }
+                        span { class: "text-[10px] text-[var(--text-dim)] shrink-0", "{into}/{span}" }
                     }
                     if !is_self {
                         button {
-                            class: "mt-4 w-full py-2 rounded text-xs uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors",
+                            class: "dxf-cta mt-4 w-full py-2.5 rounded-xl text-sm transition-all",
                             onclick: move |_| {
                                 gateway.send(ClientMessage::OpenDm { user_pubkey: dm_pubkey.clone() });
                                 state.write().profile_card = None;
                             },
-                            "Send Message"
+                            "Message"
                         }
                     }
                 }

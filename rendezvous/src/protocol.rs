@@ -13,10 +13,22 @@ use serde::{Deserialize, Serialize};
 #[serde(tag = "op", content = "d", rename_all = "snake_case")]
 pub enum HostToRendezvous {
     Register {
-        /// Optional friendly name shown in the public listing.
+        /// Claimed unique name (URL-safe: letters, digits, `-`, `_`, `.`). It
+        /// doubles as the join code (`/join/{name}`) and is compared
+        /// case-insensitively for uniqueness. When set it must be accompanied
+        /// by `pubkey` + `signature` proving ownership, and the reservation is
+        /// persisted. When `None` the rendezvous assigns a random shortcode
+        /// (ephemeral, anonymous — the previous default).
         name: Option<String>,
-        /// Hint for desired shortcode; rendezvous may reject and assign one.
-        preferred: Option<String>,
+        /// x-only Nostr pubkey (64-char hex) that owns the claimed name.
+        /// Required iff `name` is set.
+        #[serde(default)]
+        pubkey: Option<String>,
+        /// Schnorr signature over `SHA256(nonce || pubkey || name)` where
+        /// `nonce` is the one from the preceding `Challenge`. Required iff
+        /// `name` is set.
+        #[serde(default)]
+        signature: Option<String>,
         /// If true, this host appears in `GET /discover` and is browseable.
         #[serde(default)]
         publish_public: bool,
@@ -38,6 +50,11 @@ pub struct DiscoverEntry {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "op", content = "d", rename_all = "snake_case")]
 pub enum RendezvousToHost {
+    /// First frame the rendezvous sends on `/control`: a nonce the host signs
+    /// (together with its pubkey + claimed name) to prove name ownership.
+    Challenge {
+        nonce: String,
+    },
     Registered {
         shortcode: String,
         /// LiveKit URL the host should hand to clients in JoinVoice responses.

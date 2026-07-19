@@ -7,8 +7,8 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::host::HostInfo;
 use crate::protocol::{
-    BotInstall, Channel, ClientMessage, DmInfo, Guild, GuildSummary, Id, Member, Message, Profile,
-    User, VoiceState,
+    BotInstall, Channel, ClientMessage, DmInfo, Guild, GuildSummary, Id, Member, Message,
+    Permission, Profile, Role, User, VoiceState,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -103,8 +103,13 @@ pub struct AppState {
     /// When true the channels column shows DM conversations instead of the
     /// selected guild's channels (the "DM home" view).
     pub dm_mode: bool,
-    /// Public directory of all guilds on the host (for browse-and-join).
+    /// Public directory of guilds on the host we've fetched so far (paginated,
+    /// browse-and-join). May be a prefix of the whole directory — see
+    /// `catalog_total`.
     pub catalog: Vec<GuildSummary>,
+    /// Total public guilds on the host (from the last `GuildCatalog` page), so
+    /// the browse UI knows whether more pages remain.
+    pub catalog_total: u32,
     /// Known user profiles (avatar/bio) by pubkey. Looked up when rendering a
     /// user anywhere (message author, member row, profile card).
     pub profiles: HashMap<String, Profile>,
@@ -131,6 +136,22 @@ pub struct AppState {
     /// `GuildIntegrations` (owner-only) in response to `FetchIntegrations` and
     /// after each install/uninstall.
     pub integrations: HashMap<Id, Vec<BotInstall>>,
+    /// Roles per guild. Arrives in `Ready`/`GuildJoined` and stays live via
+    /// `GuildRoles` pushes.
+    pub roles: HashMap<Id, Vec<Role>>,
+    /// Ban lists per guild (moderators only; reply to `FetchBans`).
+    pub bans: HashMap<Id, Vec<User>>,
+    /// Invite codes per guild (reply to `CreateInvite`).
+    pub invites: HashMap<Id, String>,
+    /// Latest server error to surface as a toast (management-op rejections
+    /// would otherwise be invisible). Cleared on dismiss.
+    pub error_toast: Option<String>,
+    /// True if we're a configured operator — owner of system guilds (the
+    /// Lobby) for permission purposes. Mirrors the server so the UI surfaces
+    /// management controls there. Set from `Ready`.
+    pub is_operator: bool,
+    /// Moderation audit log per guild (reply to `FetchAuditLog`).
+    pub audit_logs: HashMap<Id, Vec<crate::protocol::AuditEntry>>,
 }
 
 impl AppState {
@@ -150,6 +171,7 @@ impl AppState {
             dm_unread: HashMap::new(),
             dm_mode: false,
             catalog: Vec::new(),
+            catalog_total: 0,
             profiles: HashMap::new(),
             profile_card: None,
             typing: HashMap::new(),
@@ -160,7 +182,67 @@ impl AppState {
             screen_viewing: None,
             host_info: None,
             integrations: HashMap::new(),
+            roles: HashMap::new(),
+            bans: HashMap::new(),
+            invites: HashMap::new(),
+            error_toast: None,
+            is_operator: false,
+            audit_logs: HashMap::new(),
         }
+    }
+
+    /// True if the current user owns `guild_id` for permission purposes.
+    /// Mirrors the server's `is_owner`: a normal guild → the literal owner; a
+    /// system guild (empty owner, e.g. the Lobby) → whether we're an operator.
+    pub fn is_owner(&self, guild_id: Id) -> bool {
+        let Some(me) = self.self_user.as_ref() else {
+            return false;
+        };
+        self.guilds
+            .iter()
+            .find(|g| g.id == guild_id)
+            .map(|g| {
+                if g.owner_pubkey.is_empty() {
+                    self.is_operator
+                } else {
+                    g.owner_pubkey == me.pubkey
+                }
+            })
+            .unwrap_or(false)
+    }
+
+    /// Whether the current user holds `perm` in `guild_id` — mirrors the
+    /// server's rule: owner ⇒ everything, system guild ⇒ nothing, otherwise
+    /// the union over the member's assigned roles. Advisory only (drives UI
+    /// affordances); the server re-checks every action.
+    pub fn can(&self, guild_id: Id, perm: Permission) -> bool {
+        if self.is_owner(guild_id) {
+            return true;
+        }
+        let Some(me) = self.self_user.as_ref() else {
+            return false;
+        };
+        let Some(member) = self
+            .members
+            .iter()
+            .find(|m| m.guild_id == guild_id && m.user.pubkey == me.pubkey)
+        else {
+            return false;
+        };
+        let Some(roles) = self.roles.get(&guild_id) else {
+            return false;
+        };
+        member.roles.iter().any(|rid| {
+            roles
+                .iter()
+                .find(|r| r.id == *rid)
+                .is_some_and(|r| r.permissions.contains(&perm))
+        })
+    }
+
+    /// The roles of a guild (empty slice if none).
+    pub fn roles_of(&self, guild_id: Id) -> &[Role] {
+        self.roles.get(&guild_id).map(|v| v.as_slice()).unwrap_or(&[])
     }
 
     /// Pubkeys sharing their screen in a channel.

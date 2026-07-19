@@ -28,6 +28,7 @@ const GROUP_WINDOW_SECS: i64 = 300;
 #[component]
 pub fn ChatView() -> Element {
     let state = use_app_state();
+    let gateway = use_gateway();
 
     let snapshot = state.read();
     let selected_channel = snapshot.selected_channel;
@@ -73,6 +74,35 @@ pub fn ChatView() -> Element {
                             if is_dm { "No messages yet. Say hi 👋" } else { "No messages yet." }
                         }
                     } else {
+                        // Page back through older history. Shown when the loaded
+                        // set is at least a full page (likely more behind it);
+                        // fetches the slice before the oldest message we hold,
+                        // which the net layer merges in chronological order.
+                        if messages.len() >= PAGE_SIZE {
+                            if let (Some(channel_id), Some(oldest)) =
+                                (selected_channel, messages.first())
+                            {
+                                {
+                                    let before_ms = oldest.created_at.timestamp_millis();
+                                    let gw = gateway.clone();
+                                    rsx! {
+                                        div { class: "flex justify-center pb-3",
+                                            button {
+                                                class: "text-[11px] uppercase tracking-wider text-[var(--text-muted)] border border-[var(--border)] rounded px-3 py-1 hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors",
+                                                onclick: move |_| {
+                                                    gw.send(ClientMessage::FetchMessages {
+                                                        channel_id,
+                                                        limit: PAGE_SIZE as u32,
+                                                        before_ms: Some(before_ms),
+                                                    });
+                                                },
+                                                "Load earlier messages"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         for (i, msg) in messages.iter().enumerate() {
                             {
                                 let grouped = i > 0 && groups_with(&messages[i - 1], msg);
@@ -97,6 +127,11 @@ pub fn ChatView() -> Element {
     }
 }
 
+/// The initial history page size (mirrors the server default). When a channel
+/// holds at least this many messages there is probably older history to page
+/// back through, so we surface the "load earlier" affordance.
+const PAGE_SIZE: usize = 50;
+
 /// Whether `cur` should render compactly under `prev` (same author, close in time).
 fn groups_with(prev: &Message, cur: &Message) -> bool {
     prev.author.pubkey == cur.author.pubkey
@@ -117,6 +152,7 @@ fn MessageRow(message: Message, grouped: bool) -> Element {
     let mut state = use_app_state();
     let gateway = use_gateway();
     let mut show_react = use_signal(|| false);
+    let mut confirm_delete = use_signal(|| false);
 
     let self_pubkey = state.read().self_user.as_ref().map(|u| u.pubkey.clone());
     let timestamp = message.created_at.format("%H:%M").to_string();
@@ -124,6 +160,18 @@ fn MessageRow(message: Message, grouped: bool) -> Element {
     let author_pubkey = message.author.pubkey.clone();
     let channel_id = message.channel_id;
     let message_id = message.id;
+
+    // Delete affordance: your own messages always; others' need ManageMessages
+    // in the channel's guild (DMs: author-only). Server re-checks.
+    let can_delete = {
+        let s = state.read();
+        let is_author = self_pubkey.as_deref() == Some(message.author.pubkey.as_str());
+        let guild_of_channel = s.channels.iter().find(|c| c.id == channel_id).map(|c| c.guild_id);
+        is_author
+            || guild_of_channel
+                .map(|gid| s.can(gid, crate::protocol::Permission::ManageMessages))
+                .unwrap_or(false)
+    };
 
     rsx! {
         div { class: "group relative flex gap-3 -mx-4 px-4 py-0.5 hover:bg-white/[0.02] dxf-msg-in",
@@ -150,13 +198,15 @@ fn MessageRow(message: Message, grouped: bool) -> Element {
                 if !grouped {
                     div { class: "flex items-baseline gap-2",
                         span {
-                            class: "text-sm text-[var(--text)] font-medium",
+                            class: "text-sm font-semibold",
+                            style: "color: {crate::identity::signature_accent(&message.author.pubkey)};",
                             title: "{message.author.pubkey}",
                             "{message.author.username}"
                             span { class: "text-[var(--text-dim)] font-mono text-[10px] ml-0.5 font-normal",
                                 "#{discriminator(&message.author.pubkey)}"
                             }
                         }
+                        span { class: "text-[var(--up)] text-[10px]", title: "Key verified", "✓" }
                         span { class: "text-[10px] text-[var(--text-dim)]", "{timestamp}" }
                     }
                 }
@@ -201,14 +251,43 @@ fn MessageRow(message: Message, grouped: bool) -> Element {
                 }
             }
 
-            // Hover action bar: add a reaction.
+            // Hover action bar: add a reaction / delete.
             div { class: "absolute -top-2 right-3 opacity-0 group-hover:opacity-100 transition-opacity",
-                div { class: "relative",
+                div { class: "relative flex gap-1",
                     button {
                         class: "w-7 h-7 rounded-md border border-[var(--border)] bg-[var(--panel-solid)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] text-sm leading-none transition-colors",
                         title: "Add reaction",
                         onclick: move |_| show_react.set(!show_react()),
                         "☺"
+                    }
+                    if can_delete {
+                        button {
+                            class: "w-7 h-7 rounded-md border border-[var(--border)] bg-[var(--panel-solid)] text-[var(--text-muted)] hover:text-[var(--danger)] hover:border-[var(--danger)] text-sm leading-none transition-colors",
+                            title: "Delete message",
+                            onclick: move |_| confirm_delete.set(!confirm_delete()),
+                            "🗑"
+                        }
+                    }
+                    if confirm_delete() {
+                        div { class: "dxf-pop-in absolute right-0 top-full mt-1 z-30 flex items-center gap-1 p-1 bg-[var(--panel-solid)] border border-[var(--border)] rounded-md shadow-lg",
+                            span { class: "text-[10px] text-[var(--text-muted)] px-1", "Delete?" }
+                            button {
+                                class: "px-2 h-6 rounded text-[10px] uppercase tracking-wider text-[var(--danger)] border border-[var(--danger)]/40 hover:bg-[var(--danger)]/10 transition-colors",
+                                onclick: {
+                                    let g = gateway.clone();
+                                    move |_| {
+                                        g.send(ClientMessage::DeleteMessage { channel_id, message_id });
+                                        confirm_delete.set(false);
+                                    }
+                                },
+                                "Yes"
+                            }
+                            button {
+                                class: "px-2 h-6 rounded text-[10px] uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--text-muted)] transition-colors",
+                                onclick: move |_| confirm_delete.set(false),
+                                "No"
+                            }
+                        }
                     }
                     if show_react() {
                         div { class: "dxf-pop-in absolute right-0 top-full mt-1 z-30 flex gap-1 p-1 bg-[var(--panel-solid)] border border-[var(--border)] rounded-md shadow-lg",
@@ -297,6 +376,32 @@ fn Composer(channel_id: Id, composer_label: String) -> Element {
     let mut last_typing = use_signal::<Option<std::time::Instant>>(|| None);
     let gateway = use_gateway();
     let gateway_submit = gateway.clone();
+
+    // Read-only channels: swap the composer for a lock notice unless the user
+    // holds ManageMessages/ManageChannels there (mirrors the server gate).
+    let locked = {
+        let state = use_app_state();
+        let s = state.read();
+        s.channels
+            .iter()
+            .find(|c| c.id == channel_id)
+            .filter(|c| c.read_only)
+            .map(|c| {
+                !(s.can(c.guild_id, crate::protocol::Permission::ManageMessages)
+                    || s.can(c.guild_id, crate::protocol::Permission::ManageChannels))
+            })
+            .unwrap_or(false)
+    };
+    if locked {
+        return rsx! {
+            div { class: "px-3 pb-3 shrink-0",
+                div { class: "flex items-center gap-2 border border-[var(--border)] rounded-lg px-3 py-2 text-xs text-[var(--text-dim)]",
+                    span { "🔒" }
+                    span { "This channel is read-only." }
+                }
+            }
+        };
+    }
 
     let mut submit = move || {
         let content = draft().trim().to_string();
@@ -427,7 +532,7 @@ fn Composer(channel_id: Id, composer_label: String) -> Element {
                         oninput: move |e| { draft.set(e.value()); notify_typing(); },
                     }
                     button {
-                        class: "text-xs text-[var(--text-muted)] hover:text-[var(--accent)] font-medium uppercase tracking-wider px-2 disabled:opacity-30 transition-colors",
+                        class: "dxf-cta text-xs font-semibold uppercase tracking-wider px-4 py-1.5 rounded-lg disabled:opacity-30 transition-all",
                         r#type: "submit",
                         disabled: draft().trim().is_empty() && pending_image().is_none(),
                         "Send"

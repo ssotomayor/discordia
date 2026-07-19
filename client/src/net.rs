@@ -15,6 +15,33 @@ use crate::state::{
     AppState, ConnectionStatus, GatewayTx, SessionMode, SessionParams, VoicePhase,
 };
 
+/// Find a nonce such that SHA-256(challenge ++ nonce) has ≥ `bits` leading zero
+/// bits (the `Pow` join gate). Mirrors the server's `pow_ok`.
+fn solve_pow(challenge: &str, bits: u32) -> String {
+    use sha2::{Digest, Sha256};
+    let mut n: u64 = 0;
+    loop {
+        let nonce = n.to_string();
+        let mut h = Sha256::new();
+        h.update(challenge.as_bytes());
+        h.update(nonce.as_bytes());
+        let digest = h.finalize();
+        let mut seen = 0u32;
+        for byte in digest {
+            if byte == 0 {
+                seen += 8;
+                continue;
+            }
+            seen += byte.leading_zeros();
+            break;
+        }
+        if seen >= bits {
+            return nonce;
+        }
+        n += 1;
+    }
+}
+
 fn normalize_url(raw: &str) -> Result<String, String> {
     let trimmed = raw.trim().trim_end_matches('/');
     if trimmed.is_empty() {
@@ -58,6 +85,7 @@ pub fn spawn_gateway(
 
 async fn resolve_session(
     mode: SessionMode,
+    identity: crate::identity::Identity,
     state: &mut Signal<AppState>,
 ) -> Result<(String, Option<HostHandle>), String> {
     match mode {
@@ -77,7 +105,8 @@ async fn resolve_session(
                 description,
                 publish_public,
             };
-            let handle = start_self_host(allow_lan, rendezvous_url, publish).await?;
+            // We're hosting, so we own our Lobby.
+            let handle = start_self_host(allow_lan, rendezvous_url, publish, identity).await?;
             let url = normalize_url(&handle.info.local_url)?;
             state.write().host_info = Some(handle.info.clone());
             Ok((url, Some(handle)))
@@ -114,7 +143,8 @@ async fn run(
 ) -> Result<(), String> {
     // For self-host, brings up the embedded server first and binds its
     // shutdown to this task by holding the HostHandle in scope.
-    let (url, _host_handle) = resolve_session(params.mode.clone(), &mut state).await?;
+    let (url, _host_handle) =
+        resolve_session(params.mode.clone(), params.identity.clone(), &mut state).await?;
     eprintln!("[dioxusfun] connecting to {url}");
 
     let (ws_stream, _) = tokio_tungstenite::connect_async(&url)
@@ -155,6 +185,8 @@ async fn run(
         username,
         pubkey,
         signature,
+        // Human client — never bot-gated (bots self-declare via the SDK).
+        bot: false,
     };
     let json = serde_json::to_string(&identify).map_err(|e| e.to_string())?;
     ws_tx
@@ -234,8 +266,11 @@ fn apply(
             dms,
             catalog,
             profiles,
+            roles,
+            operator,
         } => {
             s.self_user = Some(user);
+            s.is_operator = operator;
             s.guilds = guilds;
             s.channels = channels;
             s.members = members;
@@ -244,6 +279,15 @@ fn apply(
             s.dm_mode = false;
             s.catalog = catalog;
             s.profiles = profiles.into_iter().map(|p| (p.pubkey.clone(), p)).collect();
+            // Group the flattened role list by guild.
+            s.roles = {
+                let mut map: std::collections::HashMap<Id, Vec<crate::protocol::Role>> =
+                    std::collections::HashMap::new();
+                for role in roles {
+                    map.entry(role.guild_id).or_default().push(role);
+                }
+                map
+            };
             s.messages = BTreeMap::new();
             s.screen_shares = std::collections::HashMap::new();
             s.screen_viewing = None;
@@ -264,12 +308,24 @@ fn apply(
                     let _ = tx.send(ClientMessage::FetchMessages {
                         channel_id,
                         limit: 50,
+                        before_ms: None,
                     });
                 }
             }
         }
         ServerMessage::MessageHistory { channel_id, messages } => {
-            s.messages.insert(channel_id, messages);
+            // Merge rather than replace: an initial load starts from empty, but
+            // an older page (infinite scroll) must fold into what's already
+            // there without dropping live messages. Dedupe by id, keep
+            // chronological order.
+            let combined = s.messages.entry(channel_id).or_default();
+            let existing: std::collections::HashSet<_> = combined.iter().map(|m| m.id).collect();
+            for m in messages {
+                if !existing.contains(&m.id) {
+                    combined.push(m);
+                }
+            }
+            combined.sort_by(|a, b| a.created_at.cmp(&b.created_at));
         }
         ServerMessage::MessageCreate(m) => {
             let cid = m.channel_id;
@@ -312,12 +368,13 @@ fn apply(
                 s.notify_tick = s.notify_tick.wrapping_add(1);
             }
         }
-        ServerMessage::GuildJoined { guild, channels, members } => {
+        ServerMessage::GuildJoined { guild, channels, members, roles } => {
             // We created or joined this guild — add it (dedup) and jump to it.
             let gid = guild.id;
             if !s.guilds.iter().any(|g| g.id == gid) {
                 s.guilds.push(guild);
             }
+            s.roles.insert(gid, roles);
             for ch in channels {
                 if !s.channels.iter().any(|c| c.id == ch.id) {
                     s.channels.push(ch);
@@ -345,12 +402,19 @@ fn apply(
             s.selected_channel = first_text;
             if let Some(channel_id) = first_text {
                 if !s.messages.contains_key(&channel_id) {
-                    let _ = tx.send(ClientMessage::FetchMessages { channel_id, limit: 50 });
+                    let _ = tx.send(ClientMessage::FetchMessages { channel_id, limit: 50, before_ms: None });
                 }
             }
         }
-        ServerMessage::GuildCatalog { guilds } => {
-            s.catalog = guilds;
+        ServerMessage::GuildCatalog { guilds, offset, total } => {
+            // Page 0 replaces the directory; later pages append (infinite
+            // scroll). The catalog is now pull-based (FetchCatalog on browse).
+            if offset == 0 {
+                s.catalog = guilds;
+            } else {
+                s.catalog.extend(guilds);
+            }
+            s.catalog_total = total;
         }
         ServerMessage::GuildDelete { guild_id } => {
             // Drop the guild, its channels and their message logs.
@@ -363,6 +427,10 @@ fn apply(
                 .collect();
             s.channels.retain(|c| c.guild_id != guild_id);
             s.members.retain(|m| m.guild_id != guild_id);
+            s.roles.remove(&guild_id);
+            s.bans.remove(&guild_id);
+            s.invites.remove(&guild_id);
+            s.integrations.remove(&guild_id);
             for cid in &removed {
                 s.messages.remove(cid);
             }
@@ -381,7 +449,7 @@ fn apply(
                 });
                 if let Some(channel_id) = s.selected_channel {
                     if !s.messages.contains_key(&channel_id) {
-                        let _ = tx.send(ClientMessage::FetchMessages { channel_id, limit: 50 });
+                        let _ = tx.send(ClientMessage::FetchMessages { channel_id, limit: 50, before_ms: None });
                     }
                 }
             }
@@ -440,6 +508,115 @@ fn apply(
         ServerMessage::GuildIntegrations { guild_id, bots } => {
             s.integrations.insert(guild_id, bots);
         }
+        ServerMessage::GuildRoles { guild_id, roles } => {
+            s.roles.insert(guild_id, roles);
+        }
+        ServerMessage::MemberUpdate(member) => {
+            // Role set (or other member metadata) changed — upsert the row.
+            let existing = s.members.iter_mut().find(|x| {
+                x.guild_id == member.guild_id && x.user.pubkey == member.user.pubkey
+            });
+            match existing {
+                Some(slot) => *slot = member,
+                None => s.members.push(member),
+            }
+        }
+        ServerMessage::MemberRemove { guild_id, user_pubkey } => {
+            // Gone from the guild (kicked/banned/left/uninstalled) — drop the
+            // roster row. (If WE were the one removed, the server also sends
+            // us a targeted GuildDelete, which tears down the whole guild.)
+            s.members
+                .retain(|m| !(m.guild_id == guild_id && m.user.pubkey == user_pubkey));
+        }
+        ServerMessage::GuildInvite { guild_id, code } => {
+            s.invites.insert(guild_id, code);
+        }
+        ServerMessage::GuildBans { guild_id, users } => {
+            s.bans.insert(guild_id, users);
+        }
+        ServerMessage::AuditLog { guild_id, entries } => {
+            s.audit_logs.insert(guild_id, entries);
+        }
+        ServerMessage::JoinChallenge {
+            guild_id,
+            gate,
+            pow_challenge,
+            pow_difficulty,
+            invite_code,
+            ..
+        } => {
+            // Auto-satisfy the join gate and retry. (Rules are auto-accepted
+            // for now; a read-and-accept dialog is a follow-up. PoW is solved
+            // off-thread so the UI never stalls.)
+            use crate::protocol::JoinGate;
+            let tx = tx.clone();
+            let resend = move |accept: bool, pow_nonce: Option<String>| {
+                let msg = match &invite_code {
+                    Some(code) => ClientMessage::JoinByInvite {
+                        code: code.clone(),
+                        accept,
+                        pow_nonce,
+                    },
+                    None => ClientMessage::JoinGuild {
+                        guild_id,
+                        accept,
+                        pow_nonce,
+                    },
+                };
+                let _ = tx.send(msg);
+            };
+            match gate {
+                JoinGate::Open => resend(false, None),
+                JoinGate::Rules => resend(true, None),
+                JoinGate::Pow => {
+                    if let (Some(challenge), Some(bits)) = (pow_challenge, pow_difficulty) {
+                        spawn(async move {
+                            let nonce = solve_pow(&challenge, bits);
+                            resend(false, Some(nonce));
+                        });
+                    }
+                }
+            }
+        }
+        ServerMessage::ChannelCreate(ch) => {
+            if !s.channels.iter().any(|c| c.id == ch.id) {
+                s.channels.push(ch);
+            }
+        }
+        ServerMessage::ChannelUpdate(ch) => {
+            if let Some(slot) = s.channels.iter_mut().find(|c| c.id == ch.id) {
+                *slot = ch;
+            }
+        }
+        ServerMessage::ChannelDelete { guild_id, channel_id } => {
+            s.channels.retain(|c| c.id != channel_id);
+            s.messages.remove(&channel_id);
+            s.typing.remove(&channel_id);
+            s.screen_shares.remove(&channel_id);
+            // If we were looking at it, fall back to the guild's first text
+            // channel (mirrors the GuildDelete reselect).
+            if s.selected_channel == Some(channel_id) {
+                let next = s
+                    .channels
+                    .iter()
+                    .find(|c| {
+                        c.guild_id == guild_id
+                            && matches!(c.kind, crate::protocol::ChannelKind::Text)
+                    })
+                    .map(|c| c.id);
+                s.selected_channel = next;
+                if let Some(cid) = next {
+                    if !s.messages.contains_key(&cid) {
+                        let _ = tx.send(ClientMessage::FetchMessages { channel_id: cid, limit: 50, before_ms: None });
+                    }
+                }
+            }
+        }
+        ServerMessage::MessageDelete { channel_id, message_id } => {
+            if let Some(msgs) = s.messages.get_mut(&channel_id) {
+                msgs.retain(|m| m.id != message_id);
+            }
+        }
         ServerMessage::ScreenShareState { channel_id, sharers } => {
             if sharers.is_empty() {
                 s.screen_shares.remove(&channel_id);
@@ -463,18 +640,9 @@ fn apply(
             }
         }
         ServerMessage::MemberLeave { guild_id, user_pubkey } => {
-            // A leaving human just goes offline (greyed in the roster). A bot's
-            // leave means it was uninstalled, so drop it from the roster entirely.
-            let is_bot = s
-                .members
-                .iter()
-                .find(|m| m.guild_id == guild_id && m.user.pubkey == user_pubkey)
-                .map(|m| m.bot)
-                .unwrap_or(false);
-            if is_bot {
-                s.members
-                    .retain(|m| !(m.guild_id == guild_id && m.user.pubkey == user_pubkey));
-            } else if let Some(m) = s.members.iter_mut().find(|m| {
+            // Presence only: the member went offline. Actual removals
+            // (kick/ban/leave/uninstall) arrive as MemberRemove.
+            if let Some(m) = s.members.iter_mut().find(|m| {
                 m.guild_id == guild_id && m.user.pubkey == user_pubkey
             }) {
                 m.online = false;
@@ -551,6 +719,9 @@ fn apply(
         }
         ServerMessage::Error { message } => {
             tracing::warn!(server_error = %message);
+            // Surface as a toast — permission/moderation rejections would
+            // otherwise be invisible to the user.
+            s.error_toast = Some(message);
         }
         ServerMessage::Hello { .. } => {
             // Hello is only valid as the FIRST frame and is consumed by the

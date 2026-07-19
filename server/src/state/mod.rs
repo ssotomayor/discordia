@@ -1,30 +1,40 @@
-mod seed;
-
-use std::sync::RwLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use dashmap::DashMap;
-use tokio::sync::broadcast;
+use tokio::sync::mpsc;
 use uuid::Uuid;
 
+use crate::media::MediaStore;
 use crate::protocol::{
-    BotInstall, Channel, DmInfo, Guild, Id, Intent, Member, Message, Permission, Profile,
-    ServerMessage, User, VoiceState,
+    BotInstall, Channel, DmInfo, Guild, GuildVisibility, Id, Intent, Member, Message, Permission,
+    Profile, Role, ServerMessage, User, VoiceState,
 };
+use crate::store::Store;
 
-const BROADCAST_CAPACITY: usize = 256;
+/// Log-and-continue for write-through persistence. Memory is authoritative on
+/// this (single-writer) node; a failed DB write means the mutation survives
+/// the session but not a restart — loud in the logs, never a user-facing error.
+fn persist(res: Result<(), sqlx::Error>, what: &str) {
+    if let Err(e) = res {
+        tracing::error!(error = %e, what, "write-through persist FAILED — state will regress on restart");
+    }
+}
+
+/// Per-connection outbound queue depth. A connection whose queue fills (a
+/// consumer too slow to keep up) is dropped; the client reconnects and gets a
+/// fresh snapshot — the bounded-and-drop successor to the old lag→resync.
+const CONN_QUEUE_CAP: usize = 256;
 
 /// Max length of an inline image data URL (~2.2 MB of raw bytes once base64
 /// is accounted for). Keeps a single broadcast frame from getting absurd.
 pub const MAX_IMAGE_LEN: usize = 3_000_000;
 
-/// A hub payload plus optional addressing. `to == None` is a normal broadcast
-/// to every connected client; `to == Some(pubkeys)` is delivered only to the
-/// connections whose identified user is in the set (used for direct messages
-/// so DM frames never reach non-participants).
-#[derive(Clone)]
-pub struct Envelope {
-    pub msg: ServerMessage,
-    pub to: Option<Vec<String>>,
+/// A registered connection's outbound handle. The connection's own task drains
+/// the matching receiver and writes to its websocket (applying bot-intent
+/// filtering on the way out). Routing to this handle is what makes `deliver`
+/// cost O(recipients) instead of O(all connections).
+struct Conn {
+    tx: mpsc::Sender<ServerMessage>,
 }
 
 /// A one-to-one direct-message channel. Participants are stored as sorted
@@ -36,10 +46,15 @@ pub struct DmChannel {
 }
 
 pub struct AppState {
+    /// Durable persistence (SQLite). Messages live ONLY there; the metadata
+    /// maps below are the in-memory authority, written through on mutation and
+    /// rehydrated at boot.
+    pub store: Store,
+    /// Content-addressed blob storage for message images.
+    pub media: MediaStore,
     pub guilds: DashMap<Id, Guild>,
     pub channels: DashMap<Id, Channel>,
     pub channels_by_guild: DashMap<Id, Vec<Id>>,
-    pub messages: DashMap<Id, RwLock<Vec<Message>>>,
     /// Members per guild, by user pubkey.
     pub members: DashMap<Id, DashMap<String, Member>>,
     /// Every user we've ever seen identify, by pubkey. Lets us resolve a
@@ -57,53 +72,281 @@ pub struct AppState {
     pub voice_states: DashMap<String, VoiceState>,
     /// Pubkeys currently screen-sharing, per channel.
     pub screen_shares: DashMap<Id, std::collections::HashSet<String>>,
-    /// Installed bots, indexed by bot pubkey then guild. A pubkey present here
-    /// with ≥1 guild is treated as an installed application ("bot") when it
-    /// connects: its gateway connection is intent-filtered and its actions are
-    /// permission-gated per the `BotInstall` grants. Owner grants the install.
+    /// Installed bots, indexed by bot pubkey then guild. Grants apply to
+    /// connections that self-declare as bots (`Identify { bot: true }`); an
+    /// install alone never restricts a human connection. Managed via
+    /// `ManageGuild`.
     pub bot_installs: DashMap<String, DashMap<Id, BotInstall>>,
-    pub hub: broadcast::Sender<Envelope>,
+    /// Guild roles, by guild. A member's effective permissions are the union
+    /// over their assigned roles (see `effective_permissions`).
+    pub roles: DashMap<Id, Vec<Role>>,
+    /// Invite codes: code -> guild. High-entropy random strings — invites are
+    /// a ban-evasion surface, so guessability matters.
+    pub invites: DashMap<String, Id>,
+    /// The (single, rotating) invite code per guild, reverse index.
+    pub invite_by_guild: DashMap<Id, String>,
+    /// Banned pubkeys per guild. Checked FIRST on every join path.
+    pub bans: DashMap<Id, std::collections::HashSet<String>>,
+    /// Last-post instant per (channel, pubkey), for slowmode. Ephemeral.
+    pub last_post: DashMap<(Id, String), std::time::Instant>,
+    /// Recent join instants per guild, for mass-join (raid) detection.
+    /// Ephemeral; trimmed on each join.
+    pub recent_joins: DashMap<Id, Vec<std::time::Instant>>,
+    /// Server-authoritative message-XP per pubkey (drives the level display).
+    /// Kept separate from `profiles` so the client-owned profile data stays
+    /// clean; XP is injected onto profiles on emit (`with_xp`).
+    pub xp: DashMap<String, u64>,
+    /// Pubkeys treated as owners of SYSTEM guilds (empty `owner_pubkey`, e.g.
+    /// the seeded Lobby) — the escape hatch that makes the shared landing
+    /// space moderatable. Self-host sets this to the host's own pubkey; a
+    /// central deployment reads it from `DIOXUSFUN_OPERATORS`. Operators get
+    /// full permissions in system guilds but those guilds stay undeletable and
+    /// non-transferable (see `delete_guild` / `transfer_ownership`).
+    pub operators: std::collections::HashSet<String>,
+    /// Registered connections by id → outbound handle. The routing table that
+    /// replaced the single broadcast-everything hub.
+    conns: DashMap<u64, Conn>,
+    /// Identified connections indexed by user pubkey (a user may hold several —
+    /// multiple devices/tabs). Lets `deliver` find exactly the target sockets.
+    conn_ids_by_pubkey: DashMap<String, std::collections::HashSet<u64>>,
+    /// Monotonic source of connection ids.
+    next_conn_id: AtomicU64,
 }
 
 impl AppState {
-    pub fn seeded() -> Self {
-        let (hub, _) = broadcast::channel(BROADCAST_CAPACITY);
+    /// Rehydrate from the store, or seed a fresh instance (the system Lobby)
+    /// if the database is empty. `operators` are owners of system guilds.
+    pub async fn load_or_seed(
+        store: Store,
+        media: MediaStore,
+        operators: std::collections::HashSet<String>,
+    ) -> Result<Self, sqlx::Error> {
         let state = Self {
+            store,
+            media,
             guilds: DashMap::new(),
             channels: DashMap::new(),
             channels_by_guild: DashMap::new(),
-            messages: DashMap::new(),
             members: DashMap::new(),
             users: DashMap::new(),
             profiles: DashMap::new(),
             screen_shares: DashMap::new(),
             bot_installs: DashMap::new(),
+            roles: DashMap::new(),
+            invites: DashMap::new(),
+            invite_by_guild: DashMap::new(),
+            bans: DashMap::new(),
+            last_post: DashMap::new(),
+            recent_joins: DashMap::new(),
+            xp: DashMap::new(),
             dms: DashMap::new(),
             dm_index: DashMap::new(),
             voice_states: DashMap::new(),
-            hub,
+            operators,
+            conns: DashMap::new(),
+            conn_ids_by_pubkey: DashMap::new(),
+            next_conn_id: AtomicU64::new(1),
         };
-        seed::populate(&state);
-        state
+
+        let loaded = state.store.load_all().await?;
+        let fresh = loaded.guilds.is_empty();
+
+        for u in loaded.users {
+            state.users.insert(u.pubkey.clone(), u);
+        }
+        for p in loaded.profiles {
+            state.profiles.insert(p.pubkey.clone(), p);
+        }
+        for (pk, xp) in loaded.xp {
+            state.xp.insert(pk, xp);
+        }
+        for g in loaded.guilds {
+            state.channels_by_guild.entry(g.id).or_default();
+            state.guilds.insert(g.id, g);
+        }
+        for c in loaded.channels {
+            state.channels_by_guild.entry(c.guild_id).or_default().push(c.id);
+            state.channels.insert(c.id, c);
+        }
+        for (gid, pubkey, username, bot, role_ids) in loaded.members {
+            state.members.entry(gid).or_insert_with(DashMap::new).insert(
+                pubkey.clone(),
+                Member {
+                    user: User { pubkey, username },
+                    guild_id: gid,
+                    // Presence is ephemeral: everyone starts offline.
+                    online: false,
+                    bot,
+                    roles: role_ids,
+                },
+            );
+        }
+        for r in loaded.roles {
+            state.roles.entry(r.guild_id).or_default().push(r);
+        }
+        for (id, a, b) in loaded.dms {
+            state.dm_index.insert(Self::dm_key(&a, &b), id);
+            state.dms.insert(id, DmChannel { id, participants: [a, b] });
+        }
+        for (gid, pk) in loaded.bans {
+            state.bans.entry(gid).or_default().insert(pk);
+        }
+        for (code, gid) in loaded.invites {
+            state.invites.insert(code.clone(), gid);
+            state.invite_by_guild.insert(gid, code);
+        }
+        for i in loaded.bot_installs {
+            state
+                .bot_installs
+                .entry(i.bot_pubkey.clone())
+                .or_default()
+                .insert(i.guild_id, i);
+        }
+
+        if fresh {
+            state.seed_lobby().await;
+        }
+        Ok(state)
     }
 
-    /// Broadcast a message to every connected client.
+    /// Seed the default system guild (empty owner: undeletable, auto-joined,
+    /// manageable only by operators) with a text + voice channel.
+    async fn seed_lobby(&self) {
+        let lobby = Guild {
+            id: Uuid::new_v4(),
+            name: "Lobby".into(),
+            icon: Some("LB".into()),
+            owner_pubkey: String::new(),
+            accent: None,
+            visibility: GuildVisibility::Public,
+            description: None,
+            icon_image: None,
+            banner: None,
+            retention_days: None,
+            join_gate: crate::protocol::JoinGate::Open,
+            rules: None,
+            panic_mode: false,
+        };
+        let general = Channel {
+            id: Uuid::new_v4(),
+            guild_id: lobby.id,
+            name: "general".into(),
+            kind: crate::protocol::ChannelKind::Text,
+            topic: None,
+            read_only: false,
+            slowmode_secs: 0,
+            position: 0,
+        };
+        let voice = Channel {
+            id: Uuid::new_v4(),
+            guild_id: lobby.id,
+            name: "General Voice".into(),
+            kind: crate::protocol::ChannelKind::Voice,
+            topic: None,
+            read_only: false,
+            slowmode_secs: 0,
+            position: 1,
+        };
+        persist(self.store.upsert_guild(&lobby).await, "seed guild");
+        persist(self.store.upsert_channel(&general).await, "seed channel");
+        persist(self.store.upsert_channel(&voice).await, "seed channel");
+        self.channels_by_guild.insert(lobby.id, vec![general.id, voice.id]);
+        for ch in [general, voice] {
+            self.channels.insert(ch.id, ch);
+        }
+        self.guilds.insert(lobby.id, lobby);
+    }
+
+    /// Register a fresh connection. Returns its id and the receiver its task
+    /// drains. The connection joins `conns` immediately (so `broadcast` reaches
+    /// it) but is not yet resolvable by pubkey until `identify_conn`.
+    pub fn register_conn(&self) -> (u64, mpsc::Receiver<ServerMessage>) {
+        let id = self.next_conn_id.fetch_add(1, Ordering::Relaxed);
+        let (tx, rx) = mpsc::channel(CONN_QUEUE_CAP);
+        self.conns.insert(id, Conn { tx });
+        (id, rx)
+    }
+
+    /// Associate a registered connection with its identified user so targeted
+    /// delivery (`deliver`) can find it. Call this BEFORE sending the identify
+    /// snapshot so no concurrently-delivered frame is lost in the gap.
+    pub fn identify_conn(&self, conn_id: u64, pubkey: &str) {
+        self.conn_ids_by_pubkey
+            .entry(pubkey.to_string())
+            .or_default()
+            .insert(conn_id);
+    }
+
+    /// Tear a connection down on disconnect (or when it's dropped for being too
+    /// slow). Idempotent.
+    pub fn unregister_conn(&self, conn_id: u64, pubkey: Option<&str>) {
+        self.conns.remove(&conn_id);
+        if let Some(pk) = pubkey {
+            let now_empty = if let Some(mut set) = self.conn_ids_by_pubkey.get_mut(pk) {
+                set.remove(&conn_id);
+                set.is_empty()
+            } else {
+                false
+            };
+            if now_empty {
+                // Only remove if still empty (a racing reconnect may have
+                // re-added the pubkey under a new conn id).
+                self.conn_ids_by_pubkey.remove_if(pk, |_, set| set.is_empty());
+            }
+        }
+    }
+
+    /// Enqueue `msg` for one connection. A full queue means the consumer can't
+    /// keep up: drop the connection (its task ends, the client reconnects and
+    /// resnapshots) rather than block every other recipient.
+    fn route(&self, conn_id: u64, msg: &ServerMessage) {
+        // Clone the sender out so the DashMap shard guard is released before we
+        // ever call `remove` (removing while holding a ref to the same shard
+        // would deadlock).
+        let tx = match self.conns.get(&conn_id) {
+            Some(c) => c.tx.clone(),
+            None => return,
+        };
+        if tx.try_send(msg.clone()).is_err() {
+            self.conns.remove(&conn_id);
+        }
+    }
+
+    /// Send a message to every connected client. Now rare — only truly global
+    /// frames (a profile/level update that could show anywhere) use this; guild
+    /// and DM traffic goes through `deliver`.
     pub fn broadcast(&self, msg: ServerMessage) {
-        let _ = self.hub.send(Envelope { msg, to: None });
+        let ids: Vec<u64> = self.conns.iter().map(|e| *e.key()).collect();
+        for id in ids {
+            self.route(id, &msg);
+        }
     }
 
-    /// Deliver a message only to the connections whose user is in `to`.
+    /// Deliver a message only to the connections whose user is in `to`
+    /// (deduplicated across a user's multiple devices). O(recipient
+    /// connections), not O(all connections).
     pub fn deliver(&self, to: Vec<String>, msg: ServerMessage) {
-        let _ = self.hub.send(Envelope { msg, to: Some(to) });
+        let mut ids: Vec<u64> = Vec::new();
+        for pk in &to {
+            if let Some(set) = self.conn_ids_by_pubkey.get(pk) {
+                ids.extend(set.iter().copied());
+            }
+        }
+        ids.sort_unstable();
+        ids.dedup();
+        for id in ids {
+            self.route(id, &msg);
+        }
     }
 
     /// Record (or refresh) a user in the global directory.
-    pub fn remember_user(&self, user: &User) {
+    pub async fn remember_user(&self, user: &User) {
         self.users.insert(user.pubkey.clone(), user.clone());
+        persist(self.store.upsert_user(user).await, "user");
     }
 
     /// Store/overwrite a user's profile and return it.
-    pub fn set_profile(
+    pub async fn set_profile(
         &self,
         pubkey: &str,
         avatar: Option<String>,
@@ -119,57 +362,161 @@ impl AppState {
             bio,
             status,
             custom_status,
+            // Storage never holds XP (it's server-authoritative in `xp`);
+            // it's injected on emit via `with_xp`.
+            xp: 0,
         };
         self.profiles.insert(pubkey.to_string(), profile.clone());
+        persist(self.store.upsert_profile(&profile).await, "profile");
+        self.with_xp(profile)
+    }
+
+    /// Stamp a profile with the user's authoritative XP (used on every emit —
+    /// `Ready`, `ProfileUpdate` — since storage keeps XP at 0).
+    fn with_xp(&self, mut profile: Profile) -> Profile {
+        profile.xp = self.xp.get(&profile.pubkey).map(|v| *v).unwrap_or(0);
         profile
     }
 
+    /// Increment a user's message-XP by one. Returns `Some(profile)` — stamped
+    /// with the new XP — only when the derived level changed, so callers
+    /// broadcast a `ProfileUpdate` on level-up (rare) rather than per message.
+    pub async fn add_xp(&self, pubkey: &str) -> Option<Profile> {
+        let new_xp = {
+            let mut e = self.xp.entry(pubkey.to_string()).or_insert(0);
+            *e += 1;
+            *e
+        };
+        persist(self.store.upsert_xp(pubkey, new_xp).await, "xp");
+        if crate::protocol::level_progress(new_xp).0
+            == crate::protocol::level_progress(new_xp - 1).0
+        {
+            return None;
+        }
+        // Level changed — surface a profile (materializing a bare one if the
+        // user never set avatar/bio) so the new level is visible everywhere.
+        let base = self
+            .profiles
+            .get(pubkey)
+            .map(|p| p.clone())
+            .unwrap_or_else(|| Profile {
+                pubkey: pubkey.to_string(),
+                ..Default::default()
+            });
+        Some(self.with_xp(base))
+    }
+
     /// Toggle a user's emoji reaction on a message. Returns the message's full
-    /// reaction set afterwards (and whether the message was found).
-    pub fn toggle_reaction(
+    /// reaction set afterwards, or None if the message doesn't exist.
+    pub async fn toggle_reaction(
         &self,
         channel_id: Id,
         message_id: Id,
         emoji: &str,
         pubkey: &str,
     ) -> Option<Vec<crate::protocol::Reaction>> {
-        let entry = self.messages.get(&channel_id)?;
-        let mut guard = entry.write().unwrap();
-        let msg = guard.iter_mut().find(|m| m.id == message_id)?;
-        if let Some(reaction) = msg.reactions.iter_mut().find(|r| r.emoji == emoji) {
-            if let Some(pos) = reaction.users.iter().position(|u| u == pubkey) {
-                reaction.users.remove(pos);
-            } else {
-                reaction.users.push(pubkey.to_string());
+        match self.store.toggle_reaction(channel_id, message_id, emoji, pubkey).await {
+            Ok(res) => res,
+            Err(e) => {
+                tracing::error!(error = %e, "toggle_reaction store error");
+                None
             }
-        } else {
-            msg.reactions.push(crate::protocol::Reaction {
-                emoji: emoji.to_string(),
-                users: vec![pubkey.to_string()],
-            });
         }
-        // Drop any emoji that no longer has users.
-        msg.reactions.retain(|r| !r.users.is_empty());
-        Some(msg.reactions.clone())
     }
 
-    /// Owner-only: set/clear a guild's accent. Returns the updated guild on
-    /// success, or `Err` if the guild is unknown or the user isn't the owner.
-    pub fn set_guild_accent(
+    // ----- Permission engine -----------------------------------------------
+
+    /// True if `pubkey` is the effective owner of `guild_id` for PERMISSION
+    /// purposes. A normal guild: the literal `owner_pubkey`. A system guild
+    /// (empty owner, e.g. the Lobby): a configured operator. Note this is not
+    /// consulted by `delete_guild` / `transfer_ownership`, which guard on the
+    /// literal empty owner so system guilds stay undeletable + non-transferable.
+    pub fn is_owner(&self, guild_id: Id, pubkey: &str) -> bool {
+        match self.guilds.get(&guild_id) {
+            Some(g) if !g.owner_pubkey.is_empty() => g.owner_pubkey == pubkey,
+            Some(_) => self.operators.contains(pubkey),
+            None => false,
+        }
+    }
+
+    /// A member's effective permission set: owner ⇒ everything; otherwise the
+    /// union over their assigned roles (dangling role ids are ignored). This
+    /// is the HUMAN grant path — bot connections derive per-guild powers from
+    /// `bot_install` only, never from roles. System guilds have no owner and
+    /// can never mint roles, so this returns empty there by construction.
+    pub fn effective_permissions(
+        &self,
+        guild_id: Id,
+        pubkey: &str,
+    ) -> std::collections::HashSet<Permission> {
+        if self.is_owner(guild_id, pubkey) {
+            return Permission::ALL.iter().copied().collect();
+        }
+        let Some(guild_members) = self.members.get(&guild_id) else {
+            return Default::default();
+        };
+        let Some(member) = guild_members.get(pubkey) else {
+            return Default::default();
+        };
+        let assigned = member.roles.clone();
+        drop(member);
+        drop(guild_members);
+        let Some(roles) = self.roles.get(&guild_id) else {
+            return Default::default();
+        };
+        assigned
+            .iter()
+            .filter_map(|rid| roles.iter().find(|r| r.id == *rid))
+            .flat_map(|r| r.permissions.iter().copied())
+            .collect()
+    }
+
+    /// Whether `pubkey` holds `perm` in `guild_id` (owner ⇒ always).
+    pub fn has_permission(&self, guild_id: Id, pubkey: &str, perm: Permission) -> bool {
+        self.effective_permissions(guild_id, pubkey).contains(&perm)
+    }
+
+    /// Gate helper: `Err` with a uniform message when `perm` is missing.
+    pub fn require_permission(
+        &self,
+        guild_id: Id,
+        pubkey: &str,
+        perm: Permission,
+    ) -> Result<(), String> {
+        if !self.guilds.contains_key(&guild_id) {
+            return Err("unknown guild".into());
+        }
+        if self.has_permission(guild_id, pubkey, perm) {
+            Ok(())
+        } else {
+            Err(format!(
+                "you need the {} permission to do that here",
+                serde_variant_name(perm)
+            ))
+        }
+    }
+
+    /// Requires `ManageGuild`: set/clear a guild's accent. Returns the updated
+    /// guild on success.
+    pub async fn set_guild_accent(
         &self,
         guild_id: Id,
         accent: Option<String>,
         by_pubkey: &str,
     ) -> Result<Guild, String> {
-        let mut guild = self
-            .guilds
-            .get_mut(&guild_id)
-            .ok_or_else(|| "unknown guild".to_string())?;
-        if guild.owner_pubkey.is_empty() || guild.owner_pubkey != by_pubkey {
-            return Err("only the owner can restyle this guild".into());
-        }
-        guild.accent = accent;
-        Ok(guild.clone())
+        // Check BEFORE taking the entry guard — require_permission reads the
+        // same map.
+        self.require_permission(guild_id, by_pubkey, Permission::ManageGuild)?;
+        let updated = {
+            let mut guild = self
+                .guilds
+                .get_mut(&guild_id)
+                .ok_or_else(|| "unknown guild".to_string())?;
+            guild.accent = accent;
+            guild.clone()
+        };
+        persist(self.store.upsert_guild(&updated).await, "guild accent");
+        Ok(updated)
     }
 
     /// Mark a user sharing (or not) in a channel; returns the channel's current
@@ -184,6 +531,29 @@ impl AppState {
         let mut list: Vec<String> = set.iter().cloned().collect();
         list.sort();
         list
+    }
+
+    /// Remove a user from the screen-share sets of ONE guild's channels (on
+    /// kick/ban/leave — their shares elsewhere are untouched). Returns the
+    /// affected `(channel, new sorted list)` pairs to broadcast.
+    pub fn clear_user_screen_shares_in_guild(
+        &self,
+        guild_id: Id,
+        pubkey: &str,
+    ) -> Vec<(Id, Vec<String>)> {
+        let mut affected = Vec::new();
+        for mut entry in self.screen_shares.iter_mut() {
+            let cid = *entry.key();
+            if self.channels.get(&cid).map(|c| c.guild_id) != Some(guild_id) {
+                continue;
+            }
+            if entry.value_mut().remove(pubkey) {
+                let mut list: Vec<String> = entry.value().iter().cloned().collect();
+                list.sort();
+                affected.push((cid, list));
+            }
+        }
+        affected
     }
 
     /// Remove a user from every screen-share set (on leave/disconnect).
@@ -201,9 +571,12 @@ impl AppState {
         affected
     }
 
-    /// Snapshot of all known profiles.
+    /// Snapshot of all known profiles, each stamped with its owner's XP.
     pub fn profiles_snapshot(&self) -> Vec<Profile> {
-        self.profiles.iter().map(|p| p.value().clone()).collect()
+        self.profiles
+            .iter()
+            .map(|p| self.with_xp(p.value().clone()))
+            .collect()
     }
 
     /// Resolve a display `User` for a pubkey, falling back to a truncated
@@ -218,55 +591,96 @@ impl AppState {
             })
     }
 
-    /// Create a new guild seeded with a default text + voice channel and make
-    /// `creator` its first (online) member. Returns the guild, its channels,
-    /// and the creator's membership so the caller can broadcast them.
-    pub fn create_guild(&self, name: &str, creator: &User) -> (Guild, Vec<Channel>, Member) {
+    /// Create a new guild from a community `template` and make `creator` its
+    /// first (online) member. Returns the guild, its channels, and the
+    /// creator's membership so the caller can broadcast them. The returned
+    /// roles are broadcast separately by the caller.
+    pub async fn create_guild(
+        &self,
+        name: &str,
+        template: Option<&str>,
+        creator: &User,
+    ) -> (Guild, Vec<Channel>, Member, Vec<Role>) {
+        let spec = GuildTemplate::resolve(template);
+        let gid = Uuid::new_v4();
         let guild = Guild {
-            id: Uuid::new_v4(),
+            id: gid,
             name: name.to_string(),
             icon: Some(guild_initials(name)),
             owner_pubkey: creator.pubkey.clone(),
             accent: None,
-        };
-        let general = Channel {
-            id: Uuid::new_v4(),
-            guild_id: guild.id,
-            name: "general".into(),
-            kind: crate::protocol::ChannelKind::Text,
-            topic: None,
-        };
-        let voice = Channel {
-            id: Uuid::new_v4(),
-            guild_id: guild.id,
-            name: "General Voice".into(),
-            kind: crate::protocol::ChannelKind::Voice,
-            topic: None,
+            visibility: spec.visibility,
+            description: None,
+            icon_image: None,
+            banner: None,
+            retention_days: None,
+            join_gate: spec.join_gate,
+            rules: None,
+            panic_mode: false,
         };
 
-        self.guilds.insert(guild.id, guild.clone());
+        // Channels from the template.
+        let mut channels = Vec::new();
+        for (pos, (cname, kind, read_only)) in spec.channels.iter().enumerate() {
+            channels.push(Channel {
+                id: Uuid::new_v4(),
+                guild_id: gid,
+                name: (*cname).into(),
+                kind: *kind,
+                topic: None,
+                read_only: *read_only,
+                slowmode_secs: 0,
+                position: pos as u32,
+            });
+        }
+        // Roles from the template.
+        let mut roles = Vec::new();
+        for (pos, (rname, perms)) in spec.roles.iter().enumerate() {
+            roles.push(Role {
+                id: Uuid::new_v4(),
+                guild_id: gid,
+                name: (*rname).into(),
+                color: None,
+                permissions: perms.to_vec(),
+                position: pos as u32,
+            });
+        }
+
+        self.guilds.insert(gid, guild.clone());
         self.channels_by_guild
-            .insert(guild.id, vec![general.id, voice.id]);
-        for ch in [&general, &voice] {
+            .insert(gid, channels.iter().map(|c| c.id).collect());
+        for ch in &channels {
             self.channels.insert(ch.id, ch.clone());
-            self.messages.insert(ch.id, RwLock::new(Vec::new()));
+        }
+        if !roles.is_empty() {
+            self.roles.insert(gid, roles.clone());
         }
 
         let member = Member {
             user: creator.clone(),
-            guild_id: guild.id,
+            guild_id: gid,
             online: true,
             bot: false,
+            roles: Vec::new(),
         };
         self.members
-            .entry(guild.id)
+            .entry(gid)
             .or_insert_with(DashMap::new)
             .insert(creator.pubkey.clone(), member.clone());
 
-        (guild, vec![general, voice], member)
+        persist(self.store.upsert_guild(&guild).await, "guild create");
+        for ch in &channels {
+            persist(self.store.upsert_channel(ch).await, "channel create");
+        }
+        for r in &roles {
+            persist(self.store.upsert_role(r).await, "role create");
+        }
+        persist(self.store.upsert_member(&member).await, "member create");
+
+        (guild, channels, member, roles)
     }
 
-    pub fn snapshot_for(&self, user: &User) -> ServerMessage {
+    pub async fn snapshot_for(&self, user: &User) -> ServerMessage {
         // Everyone belongs to the shared system guild(s) (empty owner, e.g. the
         // seeded Lobby) — a landing space so a fresh user isn't staring at an
         // empty rail. All other guilds are private and joined explicitly.
@@ -277,7 +691,7 @@ impl AppState {
             .map(|g| g.id)
             .collect();
         for gid in system_guilds {
-            self.add_member(gid, user);
+            self.add_member(gid, user).await;
         }
 
         // Mark the user online in every guild they belong to, and collect the
@@ -325,6 +739,7 @@ impl AppState {
         let dms = self.dms_for(&user.pubkey);
         let catalog = self.guild_catalog();
         let profiles = self.profiles_snapshot();
+        let roles = self.roles_for_guilds(&my_guild_ids);
 
         ServerMessage::Ready {
             user: user.clone(),
@@ -335,24 +750,238 @@ impl AppState {
             dms,
             catalog,
             profiles,
+            roles,
+            operator: self.operators.contains(&user.pubkey),
         }
+    }
+
+    /// Roles of the given guilds, flattened (for `Ready`).
+    pub fn roles_for_guilds(&self, guild_ids: &[Id]) -> Vec<crate::protocol::Role> {
+        guild_ids
+            .iter()
+            .flat_map(|gid| self.guild_roles(*gid))
+            .collect()
+    }
+
+    /// A guild's roles (empty if none defined).
+    pub fn guild_roles(&self, guild_id: Id) -> Vec<crate::protocol::Role> {
+        self.roles
+            .get(&guild_id)
+            .map(|r| r.clone())
+            .unwrap_or_default()
+    }
+
+    // ----- Role CRUD (grant-subset rule; see protocol::Role docs) ----------
+
+    const MAX_ROLES_PER_GUILD: usize = 50;
+
+    /// The anti-escalation gate every role mutation runs: the actor must hold
+    /// `ManageRoles`, may only touch roles whose permissions they hold
+    /// themselves (the subset rule), and roles carrying `ManageRoles` /
+    /// `ManageGuild` are owner-touch-only (kills demotion wars between equal
+    /// moderators). `role_perms` is every permission set involved — a role's
+    /// current set, its updated set, or both.
+    fn authorize_role_touch(
+        &self,
+        guild_id: Id,
+        by_pubkey: &str,
+        role_perms: &[&[Permission]],
+    ) -> Result<(), String> {
+        self.require_permission(guild_id, by_pubkey, Permission::ManageRoles)?;
+        if self.is_owner(guild_id, by_pubkey) {
+            return Ok(());
+        }
+        let mine = self.effective_permissions(guild_id, by_pubkey);
+        for perms in role_perms {
+            if perms
+                .iter()
+                .any(|p| matches!(p, Permission::ManageRoles | Permission::ManageGuild))
+            {
+                return Err(
+                    "roles carrying manage_roles or manage_guild are owner-only".into(),
+                );
+            }
+            if let Some(missing) = perms.iter().find(|p| !mine.contains(p)) {
+                return Err(format!(
+                    "you can't grant {} — you don't hold it yourself",
+                    serde_variant_name(*missing)
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Validate + normalize a role name/color. Shared by create/update.
+    fn sanitize_role(name: &str, color: Option<String>) -> Result<(String, Option<String>), String> {
+        let name = name.trim();
+        if name.is_empty() || name.chars().count() > 32 {
+            return Err("role name must be 1..=32 chars".into());
+        }
+        let color = color.filter(|c| is_hex_color(c));
+        Ok((name.to_string(), color))
+    }
+
+    /// Create a role. Returns it on success.
+    pub async fn create_role(
+        &self,
+        guild_id: Id,
+        name: &str,
+        color: Option<String>,
+        permissions: Vec<Permission>,
+        by_pubkey: &str,
+    ) -> Result<Role, String> {
+        let permissions = unique(permissions);
+        self.authorize_role_touch(guild_id, by_pubkey, &[&permissions])?;
+        let (name, color) = Self::sanitize_role(name, color)?;
+        let role = {
+            let mut roles = self.roles.entry(guild_id).or_default();
+            if roles.len() >= Self::MAX_ROLES_PER_GUILD {
+                return Err("role limit reached for this guild".into());
+            }
+            let role = Role {
+                id: Uuid::new_v4(),
+                guild_id,
+                name,
+                color,
+                permissions,
+                position: roles.len() as u32,
+            };
+            roles.push(role.clone());
+            role
+        };
+        persist(self.store.upsert_role(&role).await, "role create");
+        Ok(role)
+    }
+
+    /// Full-replace a role's name/color/permissions.
+    pub async fn update_role(
+        &self,
+        guild_id: Id,
+        role_id: Id,
+        name: &str,
+        color: Option<String>,
+        permissions: Vec<Permission>,
+        by_pubkey: &str,
+    ) -> Result<Role, String> {
+        let permissions = unique(permissions);
+        // Subset rule applies to what the role IS and what it WOULD BECOME —
+        // otherwise a moderator could hollow out (or repurpose) a senior role.
+        let current = self
+            .roles
+            .get(&guild_id)
+            .and_then(|r| r.iter().find(|r| r.id == role_id).map(|r| r.permissions.clone()))
+            .ok_or_else(|| "unknown role".to_string())?;
+        self.authorize_role_touch(guild_id, by_pubkey, &[&current, &permissions])?;
+        let (name, color) = Self::sanitize_role(name, color)?;
+        let updated = {
+            let mut roles = self.roles.get_mut(&guild_id).ok_or("unknown role")?;
+            let role = roles
+                .iter_mut()
+                .find(|r| r.id == role_id)
+                .ok_or("unknown role")?;
+            role.name = name;
+            role.color = color;
+            role.permissions = permissions;
+            role.clone()
+        };
+        persist(self.store.upsert_role(&updated).await, "role update");
+        Ok(updated)
+    }
+
+    /// Delete a role, stripping it from every member. Returns the members
+    /// whose role set changed (for `MemberUpdate` broadcasts).
+    pub async fn delete_role(
+        &self,
+        guild_id: Id,
+        role_id: Id,
+        by_pubkey: &str,
+    ) -> Result<Vec<Member>, String> {
+        let current = self
+            .roles
+            .get(&guild_id)
+            .and_then(|r| r.iter().find(|r| r.id == role_id).map(|r| r.permissions.clone()))
+            .ok_or_else(|| "unknown role".to_string())?;
+        self.authorize_role_touch(guild_id, by_pubkey, &[&current])?;
+        if let Some(mut roles) = self.roles.get_mut(&guild_id) {
+            roles.retain(|r| r.id != role_id);
+        }
+        let mut changed = Vec::new();
+        if let Some(guild_members) = self.members.get(&guild_id) {
+            for mut m in guild_members.iter_mut() {
+                if m.roles.contains(&role_id) {
+                    m.roles.retain(|r| *r != role_id);
+                    changed.push(m.clone());
+                }
+            }
+        }
+        persist(self.store.delete_role(role_id).await, "role delete");
+        for m in &changed {
+            persist(self.store.upsert_member(m).await, "member role strip");
+        }
+        Ok(changed)
+    }
+
+    /// Grant (or revoke, for `assign = false`) a role on a member. Returns the
+    /// updated member. Roles never apply to bots — assignment is rejected.
+    pub async fn set_member_role(
+        &self,
+        guild_id: Id,
+        role_id: Id,
+        target_pubkey: &str,
+        assign: bool,
+        by_pubkey: &str,
+    ) -> Result<Member, String> {
+        let role_perms = self
+            .roles
+            .get(&guild_id)
+            .and_then(|r| r.iter().find(|r| r.id == role_id).map(|r| r.permissions.clone()))
+            .ok_or_else(|| "unknown role".to_string())?;
+        self.authorize_role_touch(guild_id, by_pubkey, &[&role_perms])?;
+        let updated = {
+            let guild_members = self
+                .members
+                .get(&guild_id)
+                .ok_or_else(|| "unknown guild".to_string())?;
+            let mut member = guild_members
+                .get_mut(target_pubkey)
+                .ok_or_else(|| "that user isn't a member of this guild".to_string())?;
+            if member.bot {
+                return Err("roles don't apply to bots — edit the install's grants instead".into());
+            }
+            if assign {
+                if !member.roles.contains(&role_id) {
+                    member.roles.push(role_id);
+                }
+            } else {
+                member.roles.retain(|r| *r != role_id);
+            }
+            member.clone()
+        };
+        persist(self.store.upsert_member(&updated).await, "member role");
+        Ok(updated)
     }
 
     /// Insert `user` as an online member of `guild_id` if not already present;
     /// otherwise just flip them online. Returns the resulting membership.
-    pub fn add_member(&self, guild_id: Id, user: &User) -> Member {
-        let guild_members = self.members.entry(guild_id).or_insert_with(DashMap::new);
-        if let Some(mut existing) = guild_members.get_mut(&user.pubkey) {
-            existing.online = true;
-            return existing.clone();
-        }
-        let member = Member {
-            user: user.clone(),
-            guild_id,
-            online: true,
-            bot: false,
+    /// (Presence isn't persisted — only NEW memberships hit the store.)
+    pub async fn add_member(&self, guild_id: Id, user: &User) -> Member {
+        let member = {
+            let guild_members = self.members.entry(guild_id).or_insert_with(DashMap::new);
+            if let Some(mut existing) = guild_members.get_mut(&user.pubkey) {
+                existing.online = true;
+                return existing.clone();
+            }
+            let member = Member {
+                user: user.clone(),
+                guild_id,
+                online: true,
+                bot: false,
+                roles: Vec::new(),
+            };
+            guild_members.insert(user.pubkey.clone(), member.clone());
+            member
         };
-        guild_members.insert(user.pubkey.clone(), member.clone());
+        persist(self.store.upsert_member(&member).await, "member add");
         member
     }
 
@@ -376,10 +1005,12 @@ impl AppState {
         self.channels.get(&channel_id).map(|c| c.guild_id)
     }
 
-    /// Snapshot of all guilds for the public directory.
+    /// Snapshot of PUBLIC guilds for the browse directory (private guilds are
+    /// invite-only and never listed).
     pub fn guild_catalog(&self) -> Vec<crate::protocol::GuildSummary> {
         self.guilds
             .iter()
+            .filter(|g| matches!(g.visibility, crate::protocol::GuildVisibility::Public))
             .map(|g| crate::protocol::GuildSummary {
                 id: g.id,
                 name: g.name.clone(),
@@ -393,12 +1024,87 @@ impl AppState {
             .collect()
     }
 
-    /// Add `user` to an existing guild. Returns the guild, its channels, and
-    /// its full member list (after the join) so the joiner's client can render
-    /// it. `None` if the guild doesn't exist.
-    pub fn join_guild(&self, guild_id: Id, user: &User) -> Option<(Guild, Vec<Channel>, Vec<Member>)> {
-        let guild = self.guilds.get(&guild_id).map(|g| g.clone())?;
-        self.add_member(guild_id, user);
+    /// A page of the public directory: `limit` summaries starting at `offset`
+    /// (sorted by member count desc, then name, for a stable order), plus the
+    /// total public-guild count. Backs the on-demand `FetchCatalog`.
+    pub fn guild_catalog_page(&self, offset: u32, limit: u32) -> (Vec<crate::protocol::GuildSummary>, u32) {
+        let mut all = self.guild_catalog();
+        all.sort_by(|a, b| {
+            b.member_count
+                .cmp(&a.member_count)
+                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        });
+        let total = all.len() as u32;
+        let page = all
+            .into_iter()
+            .skip(offset as usize)
+            .take(limit as usize)
+            .collect();
+        (page, total)
+    }
+
+    /// True if `pubkey` is banned from `guild_id`.
+    pub fn is_banned(&self, guild_id: Id, pubkey: &str) -> bool {
+        self.bans
+            .get(&guild_id)
+            .map(|b| b.contains(pubkey))
+            .unwrap_or(false)
+    }
+
+    /// Add `user` to an existing PUBLIC guild from the directory. Returns the
+    /// guild, its channels, members, and roles so the joiner's client can
+    /// render it. Bans are checked before anything else.
+    pub async fn join_guild(
+        &self,
+        guild_id: Id,
+        user: &User,
+    ) -> Result<(Guild, Vec<Channel>, Vec<Member>, Vec<Role>), String> {
+        let guild = self
+            .guilds
+            .get(&guild_id)
+            .map(|g| g.clone())
+            .ok_or_else(|| "unknown guild".to_string())?;
+        if self.is_banned(guild_id, &user.pubkey) {
+            return Err("you are banned from this guild".into());
+        }
+        if matches!(guild.visibility, crate::protocol::GuildVisibility::Private)
+            && !self.is_guild_member(guild_id, &user.pubkey)
+        {
+            return Err("this guild is invite-only".into());
+        }
+        Ok(self.admit_member(guild, user).await)
+    }
+
+    /// Redeem an invite code. Everything is validated at redemption time (the
+    /// server is the sole oracle): the code must exist, map to a live guild,
+    /// and the redeemer must not be banned. Works for private guilds — that's
+    /// the point of invites.
+    pub async fn join_by_invite(
+        &self,
+        code: &str,
+        user: &User,
+    ) -> Result<(Guild, Vec<Channel>, Vec<Member>, Vec<Role>), String> {
+        let guild_id = self
+            .invites
+            .get(code.trim())
+            .map(|g| *g)
+            .ok_or_else(|| "unknown or expired invite code".to_string())?;
+        let guild = self
+            .guilds
+            .get(&guild_id)
+            .map(|g| g.clone())
+            .ok_or_else(|| "unknown or expired invite code".to_string())?;
+        if self.is_banned(guild_id, &user.pubkey) {
+            return Err("you are banned from this guild".into());
+        }
+        Ok(self.admit_member(guild, user).await)
+    }
+
+    /// Shared tail of both join paths: add the member and snapshot the guild
+    /// bundle for `GuildJoined`.
+    async fn admit_member(&self, guild: Guild, user: &User) -> (Guild, Vec<Channel>, Vec<Member>, Vec<Role>) {
+        let guild_id = guild.id;
+        self.add_member(guild_id, user).await;
         let channels: Vec<Channel> = self
             .channels
             .iter()
@@ -410,7 +1116,646 @@ impl AppState {
             .get(&guild_id)
             .map(|m| m.iter().map(|e| e.value().clone()).collect())
             .unwrap_or_default();
-        Some((guild, channels, members))
+        let roles = self.guild_roles(guild_id);
+        (guild, channels, members, roles)
+    }
+
+    // ----- Membership control (invites, kick/ban, leave) --------------------
+
+    /// Requires `ManageGuild`: flip a guild between public and private.
+    pub async fn set_guild_visibility(
+        &self,
+        guild_id: Id,
+        visibility: crate::protocol::GuildVisibility,
+        by_pubkey: &str,
+    ) -> Result<Guild, String> {
+        self.require_permission(guild_id, by_pubkey, Permission::ManageGuild)?;
+        let updated = {
+            let mut guild = self
+                .guilds
+                .get_mut(&guild_id)
+                .ok_or_else(|| "unknown guild".to_string())?;
+            guild.visibility = visibility;
+            guild.clone()
+        };
+        persist(self.store.upsert_guild(&updated).await, "guild visibility");
+        Ok(updated)
+    }
+
+    /// Requires `CreateInvite` or `ManageGuild`: return the guild's invite
+    /// code, minting one if absent. `rotate` replaces (and invalidates) the
+    /// current code.
+    pub async fn get_or_create_invite(
+        &self,
+        guild_id: Id,
+        rotate: bool,
+        by_pubkey: &str,
+    ) -> Result<String, String> {
+        if self
+            .require_permission(guild_id, by_pubkey, Permission::CreateInvite)
+            .is_err()
+        {
+            self.require_permission(guild_id, by_pubkey, Permission::ManageGuild)?;
+        }
+        if !rotate {
+            if let Some(existing) = self.invite_by_guild.get(&guild_id) {
+                return Ok(existing.clone());
+            }
+        }
+        // Rotation invalidates the old code.
+        if let Some((_, old)) = self.invite_by_guild.remove(&guild_id) {
+            self.invites.remove(&old);
+        }
+        // 12 random alphanumerics (~62 bits) — statistically unguessable, and
+        // redemption is rate-limited on top.
+        let code = loop {
+            let candidate = random_invite_code();
+            if !self.invites.contains_key(&candidate) {
+                break candidate;
+            }
+        };
+        self.invites.insert(code.clone(), guild_id);
+        self.invite_by_guild.insert(guild_id, code.clone());
+        persist(self.store.set_invite(guild_id, &code).await, "invite");
+        Ok(code)
+    }
+
+    /// Common target validation for kick/ban ("moderator immunity"): never the
+    /// owner, never yourself, never a bot (uninstall instead), and moderators
+    /// can't moderate moderators — only the owner can.
+    fn validate_moderation_target(
+        &self,
+        guild_id: Id,
+        target_pubkey: &str,
+        by_pubkey: &str,
+    ) -> Result<(), String> {
+        if target_pubkey == by_pubkey {
+            return Err("you can't moderate yourself (leave the guild instead)".into());
+        }
+        if self.is_owner(guild_id, target_pubkey) {
+            return Err("the owner can't be kicked or banned".into());
+        }
+        let target_is_bot = self
+            .members
+            .get(&guild_id)
+            .and_then(|m| m.get(target_pubkey).map(|t| t.bot))
+            .unwrap_or(false)
+            || self.bot_install(guild_id, target_pubkey).is_some();
+        if target_is_bot {
+            return Err("bots are removed by uninstalling them, not kick/ban".into());
+        }
+        if !self.is_owner(guild_id, by_pubkey) {
+            let target_perms = self.effective_permissions(guild_id, target_pubkey);
+            let protected = [
+                Permission::KickMembers,
+                Permission::BanMembers,
+                Permission::ManageRoles,
+                Permission::ManageGuild,
+            ];
+            if protected.iter().any(|p| target_perms.contains(p)) {
+                return Err("only the owner can moderate another moderator".into());
+            }
+        }
+        Ok(())
+    }
+
+    /// Remove `target` from the guild (membership row + any voice state there).
+    /// Shared tail of kick, ban, and leave. Returns the target's cleared voice
+    /// state (if they were in voice in THIS guild) for broadcasting.
+    fn remove_membership(&self, guild_id: Id, target_pubkey: &str) -> Option<VoiceState> {
+        if let Some(gm) = self.members.get(&guild_id) {
+            gm.remove(target_pubkey);
+        }
+        // Clear voice only if it points into this guild.
+        let in_this_guild = self
+            .voice_states
+            .get(target_pubkey)
+            .map(|v| v.guild_id == guild_id)
+            .unwrap_or(false);
+        if in_this_guild { self.clear_voice(target_pubkey) } else { None }
+    }
+
+    /// Requires `KickMembers`: remove a member (they may rejoin later).
+    pub async fn kick_member(
+        &self,
+        guild_id: Id,
+        target_pubkey: &str,
+        by_pubkey: &str,
+    ) -> Result<Option<VoiceState>, String> {
+        self.require_permission(guild_id, by_pubkey, Permission::KickMembers)?;
+        self.validate_moderation_target(guild_id, target_pubkey, by_pubkey)?;
+        if !self.is_guild_member(guild_id, target_pubkey) {
+            return Err("that user isn't a member of this guild".into());
+        }
+        let cleared = self.remove_membership(guild_id, target_pubkey);
+        persist(self.store.delete_member(guild_id, target_pubkey).await, "member kick");
+        Ok(cleared)
+    }
+
+    /// Requires `BanMembers`: atomically remove membership AND record the ban
+    /// (no join-between-kick-and-ban window — the ban set is written first,
+    /// in the DB as well as in memory).
+    pub async fn ban_member(
+        &self,
+        guild_id: Id,
+        target_pubkey: &str,
+        by_pubkey: &str,
+    ) -> Result<Option<VoiceState>, String> {
+        self.require_permission(guild_id, by_pubkey, Permission::BanMembers)?;
+        self.validate_moderation_target(guild_id, target_pubkey, by_pubkey)?;
+        // DB ban row FIRST: a crash mid-ban must never restart into
+        // "membership removed but not banned" — the safe failure mode is
+        // "banned and still listed as member", which the join gates ignore.
+        persist(self.store.insert_ban(guild_id, target_pubkey).await, "ban insert");
+        self.bans
+            .entry(guild_id)
+            .or_default()
+            .insert(target_pubkey.to_string());
+        let cleared = self.remove_membership(guild_id, target_pubkey);
+        persist(self.store.delete_member(guild_id, target_pubkey).await, "member ban-remove");
+        Ok(cleared)
+    }
+
+    /// Requires `BanMembers`: lift a ban.
+    pub async fn unban_member(
+        &self,
+        guild_id: Id,
+        target_pubkey: &str,
+        by_pubkey: &str,
+    ) -> Result<(), String> {
+        self.require_permission(guild_id, by_pubkey, Permission::BanMembers)?;
+        let removed = self
+            .bans
+            .get_mut(&guild_id)
+            .map(|mut b| b.remove(target_pubkey))
+            .unwrap_or(false);
+        if removed {
+            persist(self.store.delete_ban(guild_id, target_pubkey).await, "unban");
+            Ok(())
+        } else {
+            Err("that user isn't banned here".into())
+        }
+    }
+
+    /// Requires `BanMembers`: the guild's ban list with display names resolved.
+    pub fn ban_list(&self, guild_id: Id, by_pubkey: &str) -> Result<Vec<User>, String> {
+        self.require_permission(guild_id, by_pubkey, Permission::BanMembers)?;
+        Ok(self
+            .bans
+            .get(&guild_id)
+            .map(|b| b.iter().map(|pk| self.resolve_user(pk)).collect())
+            .unwrap_or_default())
+    }
+
+    /// Voluntarily leave a guild. Rejected for system guilds (you'd be
+    /// auto-rejoined on reconnect) and for the owner (transfer or delete).
+    pub async fn leave_guild(
+        &self,
+        guild_id: Id,
+        pubkey: &str,
+    ) -> Result<Option<VoiceState>, String> {
+        let owner = self
+            .guilds
+            .get(&guild_id)
+            .map(|g| g.owner_pubkey.clone())
+            .ok_or_else(|| "unknown guild".to_string())?;
+        if owner.is_empty() {
+            return Err("you can't leave a system guild".into());
+        }
+        if owner == pubkey {
+            return Err("the owner can't leave — transfer ownership or delete the guild".into());
+        }
+        if !self.is_guild_member(guild_id, pubkey) {
+            return Err("you're not a member of this guild".into());
+        }
+        let cleared = self.remove_membership(guild_id, pubkey);
+        persist(self.store.delete_member(guild_id, pubkey).await, "member leave");
+        Ok(cleared)
+    }
+
+    // ----- Channel management + moderation (minimal) -------------------------
+
+    /// Requires `ManageChannels`: add a channel. Position appends at the end.
+    pub async fn create_channel(
+        &self,
+        guild_id: Id,
+        name: &str,
+        kind: crate::protocol::ChannelKind,
+        topic: Option<String>,
+        by_pubkey: &str,
+    ) -> Result<Channel, String> {
+        self.require_permission(guild_id, by_pubkey, Permission::ManageChannels)?;
+        let name = sanitize_channel_name(name)?;
+        let next_pos = self
+            .channels
+            .iter()
+            .filter(|c| c.guild_id == guild_id)
+            .map(|c| c.position + 1)
+            .max()
+            .unwrap_or(0);
+        let channel = Channel {
+            id: Uuid::new_v4(),
+            guild_id,
+            name,
+            kind,
+            topic: topic.filter(|t| !t.trim().is_empty()).map(|t| t.chars().take(120).collect()),
+            read_only: false,
+            slowmode_secs: 0,
+            position: next_pos,
+        };
+        self.channels.insert(channel.id, channel.clone());
+        self.channels_by_guild
+            .entry(guild_id)
+            .or_default()
+            .push(channel.id);
+        persist(self.store.upsert_channel(&channel).await, "channel create");
+        Ok(channel)
+    }
+
+    /// Requires `ManageChannels`: full-replace a channel's
+    /// name/topic/read_only/position.
+    pub async fn update_channel(
+        &self,
+        channel_id: Id,
+        name: &str,
+        topic: Option<String>,
+        read_only: bool,
+        position: u32,
+        slowmode_secs: u32,
+        by_pubkey: &str,
+    ) -> Result<Channel, String> {
+        let guild_id = self
+            .channel_guild(channel_id)
+            .ok_or_else(|| "unknown channel".to_string())?;
+        self.require_permission(guild_id, by_pubkey, Permission::ManageChannels)?;
+        let name = sanitize_channel_name(name)?;
+        let updated = {
+            let mut channel = self
+                .channels
+                .get_mut(&channel_id)
+                .ok_or_else(|| "unknown channel".to_string())?;
+            channel.name = name;
+            channel.topic =
+                topic.filter(|t| !t.trim().is_empty()).map(|t| t.chars().take(120).collect());
+            // Read-only only means something for text channels.
+            channel.read_only =
+                read_only && matches!(channel.kind, crate::protocol::ChannelKind::Text);
+            channel.slowmode_secs = slowmode_secs.min(21_600); // cap at 6h
+            channel.position = position;
+            channel.clone()
+        };
+        persist(self.store.upsert_channel(&updated).await, "channel update");
+        Ok(updated)
+    }
+
+    /// Requires `ManageChannels`: delete a channel. A guild's last text
+    /// channel is protected (clients need somewhere to land). Returns the
+    /// guild id and the voice states evicted from a deleted voice channel.
+    pub async fn delete_channel(
+        &self,
+        channel_id: Id,
+        by_pubkey: &str,
+    ) -> Result<(Id, Vec<VoiceState>), String> {
+        let (guild_id, kind) = self
+            .channels
+            .get(&channel_id)
+            .map(|c| (c.guild_id, c.kind))
+            .ok_or_else(|| "unknown channel".to_string())?;
+        self.require_permission(guild_id, by_pubkey, Permission::ManageChannels)?;
+        if matches!(kind, crate::protocol::ChannelKind::Text) {
+            let remaining_text = self
+                .channels
+                .iter()
+                .filter(|c| {
+                    c.guild_id == guild_id
+                        && matches!(c.kind, crate::protocol::ChannelKind::Text)
+                })
+                .count();
+            if remaining_text <= 1 {
+                return Err("a guild needs at least one text channel".into());
+            }
+        }
+        // Evict anyone in the (voice) channel; collect the cleared states so
+        // the caller can broadcast them.
+        let occupants: Vec<String> = self
+            .voice_states
+            .iter()
+            .filter(|v| v.channel_id == Some(channel_id))
+            .map(|v| v.user_pubkey.clone())
+            .collect();
+        let cleared: Vec<VoiceState> = occupants
+            .iter()
+            .filter_map(|pk| self.clear_voice(pk))
+            .collect();
+        self.channels.remove(&channel_id);
+        self.screen_shares.remove(&channel_id);
+        if let Some(mut ids) = self.channels_by_guild.get_mut(&guild_id) {
+            ids.retain(|c| *c != channel_id);
+        }
+        persist(self.store.delete_channel(channel_id).await, "channel delete");
+        Ok((guild_id, cleared))
+    }
+
+    // ----- Delegation + branding ---------------------------------------------
+
+    /// Owner-only: hand the guild to another member. The target must be an
+    /// existing human member (a bot can't own a guild). The old owner stays a
+    /// member but instantly loses the implicit permissions.
+    pub async fn transfer_ownership(
+        &self,
+        guild_id: Id,
+        new_owner_pubkey: &str,
+        by_pubkey: &str,
+    ) -> Result<Guild, String> {
+        // Guard on the LITERAL owner, not is_owner: a system guild (empty
+        // owner) has no transferable ownership, and an operator isn't the
+        // literal owner, so this correctly rejects both.
+        let owner = self
+            .guilds
+            .get(&guild_id)
+            .map(|g| g.owner_pubkey.clone())
+            .ok_or_else(|| "unknown guild".to_string())?;
+        if owner.is_empty() {
+            return Err("system guilds have no transferable ownership".into());
+        }
+        if owner != by_pubkey {
+            return Err("only the owner can transfer ownership".into());
+        }
+        if new_owner_pubkey == by_pubkey {
+            return Err("you already own this guild".into());
+        }
+        let target_is_bot = self
+            .members
+            .get(&guild_id)
+            .and_then(|m| m.get(new_owner_pubkey).map(|t| t.bot))
+            .unwrap_or(true); // absent member -> handled below, default safe
+        if !self.is_guild_member(guild_id, new_owner_pubkey) {
+            return Err("the new owner must already be a member".into());
+        }
+        if target_is_bot || self.bot_install(guild_id, new_owner_pubkey).is_some() {
+            return Err("a bot can't own a guild".into());
+        }
+        let updated = {
+            let mut guild = self
+                .guilds
+                .get_mut(&guild_id)
+                .ok_or_else(|| "unknown guild".to_string())?;
+            guild.owner_pubkey = new_owner_pubkey.to_string();
+            guild.clone()
+        };
+        persist(self.store.upsert_guild(&updated).await, "ownership transfer");
+        Ok(updated)
+    }
+
+    /// Requires `ManageGuild`: full-replace the guild's description and
+    /// icon/banner images (None clears). Validation mirrors `SetProfile`:
+    /// http(s) URLs (≤2048) or data:image URLs under the size cap.
+    pub async fn set_guild_profile(
+        &self,
+        guild_id: Id,
+        description: Option<String>,
+        icon_image: Option<String>,
+        banner: Option<String>,
+        by_pubkey: &str,
+    ) -> Result<Guild, String> {
+        self.require_permission(guild_id, by_pubkey, Permission::ManageGuild)?;
+        let valid_image = |img: &String| {
+            let is_url = (img.starts_with("https://") || img.starts_with("http://"))
+                && img.len() <= 2048;
+            let is_data = img.starts_with("data:image/") && img.len() <= MAX_IMAGE_LEN;
+            is_url || is_data
+        };
+        if icon_image.as_ref().is_some_and(|i| !valid_image(i))
+            || banner.as_ref().is_some_and(|i| !valid_image(i))
+        {
+            return Err("guild images must be http(s) or data:image URLs under the size limit".into());
+        }
+        let description = description
+            .map(|d| d.trim().chars().take(280).collect::<String>())
+            .filter(|d| !d.is_empty());
+        let updated = {
+            let mut guild = self
+                .guilds
+                .get_mut(&guild_id)
+                .ok_or_else(|| "unknown guild".to_string())?;
+            guild.description = description;
+            guild.icon_image = icon_image;
+            guild.banner = banner;
+            guild.clone()
+        };
+        persist(self.store.upsert_guild(&updated).await, "guild profile");
+        Ok(updated)
+    }
+
+    /// Requires `ManageGuild`: set/clear the guild's message retention (days).
+    /// Clamped to 1..=3650; the hourly sweep enforces it.
+    pub async fn set_guild_retention(
+        &self,
+        guild_id: Id,
+        days: Option<u32>,
+        by_pubkey: &str,
+    ) -> Result<Guild, String> {
+        self.require_permission(guild_id, by_pubkey, Permission::ManageGuild)?;
+        let days = days.map(|d| d.clamp(1, 3650));
+        let updated = {
+            let mut guild = self
+                .guilds
+                .get_mut(&guild_id)
+                .ok_or_else(|| "unknown guild".to_string())?;
+            guild.retention_days = days;
+            guild.clone()
+        };
+        persist(self.store.upsert_guild(&updated).await, "guild retention");
+        Ok(updated)
+    }
+
+    // ----- Community safety (gates, panic, slowmode, audit) -----------------
+
+    /// Requires `ManageGuild`: configure the join gate + rules text.
+    pub async fn set_join_gate(
+        &self,
+        guild_id: Id,
+        gate: crate::protocol::JoinGate,
+        rules: Option<String>,
+        by_pubkey: &str,
+    ) -> Result<Guild, String> {
+        self.require_permission(guild_id, by_pubkey, Permission::ManageGuild)?;
+        let updated = {
+            let mut guild = self
+                .guilds
+                .get_mut(&guild_id)
+                .ok_or_else(|| "unknown guild".to_string())?;
+            guild.join_gate = gate;
+            guild.rules = rules.map(|r| r.chars().take(4000).collect());
+            guild.clone()
+        };
+        persist(self.store.upsert_guild(&updated).await, "join gate");
+        self.audit(guild_id, by_pubkey, "set_join_gate", "", &format!("{gate:?}")).await;
+        Ok(updated)
+    }
+
+    /// Requires `ManageGuild`: toggle anti-raid lockdown.
+    pub async fn set_panic_mode(
+        &self,
+        guild_id: Id,
+        on: bool,
+        by_pubkey: &str,
+    ) -> Result<Guild, String> {
+        self.require_permission(guild_id, by_pubkey, Permission::ManageGuild)?;
+        let updated = self.set_panic_flag(guild_id, on).await?;
+        self.audit(guild_id, by_pubkey, "set_panic_mode", "", &on.to_string()).await;
+        Ok(updated)
+    }
+
+    /// Flip the panic flag without a permission check (used by auto-detection).
+    async fn set_panic_flag(&self, guild_id: Id, on: bool) -> Result<Guild, String> {
+        let updated = {
+            let mut guild = self
+                .guilds
+                .get_mut(&guild_id)
+                .ok_or_else(|| "unknown guild".to_string())?;
+            guild.panic_mode = on;
+            guild.clone()
+        };
+        persist(self.store.upsert_guild(&updated).await, "panic mode");
+        Ok(updated)
+    }
+
+    /// The guild an invite code maps to, if any (for pre-join gate checks).
+    pub fn invite_guild(&self, code: &str) -> Option<Id> {
+        self.invites.get(code.trim()).map(|g| *g)
+    }
+
+    /// The guild's current gate config (gate, rules, panic) for the join flow.
+    pub fn join_requirements(&self, guild_id: Id) -> Option<(crate::protocol::JoinGate, Option<String>, bool)> {
+        self.guilds
+            .get(&guild_id)
+            .map(|g| (g.join_gate, g.rules.clone(), g.panic_mode))
+    }
+
+    /// Record a join for raid detection; if joins-per-minute crosses the
+    /// threshold, auto-enable panic mode and return the updated guild so the
+    /// caller can broadcast it.
+    pub async fn note_join_and_maybe_panic(&self, guild_id: Id) -> Option<Guild> {
+        const WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
+        const THRESHOLD: usize = 10; // >10 joins/min → lock down
+        let now = std::time::Instant::now();
+        let count = {
+            let mut v = self.recent_joins.entry(guild_id).or_default();
+            v.retain(|t| now.duration_since(*t) < WINDOW);
+            v.push(now);
+            v.len()
+        };
+        let already = self.guilds.get(&guild_id).map(|g| g.panic_mode).unwrap_or(false);
+        if count > THRESHOLD && !already {
+            tracing::warn!(%guild_id, count, "mass-join detected — auto panic mode");
+            let g = self.set_panic_flag(guild_id, true).await.ok();
+            if let Some(g) = &g {
+                self.audit(guild_id, "", "auto_panic", "", &format!("{count} joins/min")).await;
+                return Some(g.clone());
+            }
+        }
+        None
+    }
+
+    /// Slowmode check + record. Moderators are exempt (checked by caller).
+    /// Returns Err(remaining_secs) if the user must still wait.
+    pub fn slowmode_check(&self, channel_id: Id, pubkey: &str) -> Result<(), u64> {
+        let secs = self
+            .channels
+            .get(&channel_id)
+            .map(|c| c.slowmode_secs)
+            .unwrap_or(0);
+        if secs == 0 {
+            return Ok(());
+        }
+        let now = std::time::Instant::now();
+        let key = (channel_id, pubkey.to_string());
+        if let Some(last) = self.last_post.get(&key) {
+            let elapsed = now.duration_since(*last).as_secs();
+            if elapsed < secs as u64 {
+                return Err(secs as u64 - elapsed);
+            }
+        }
+        self.last_post.insert(key, now);
+        Ok(())
+    }
+
+    /// Append a moderation action to the guild's audit log (fire-and-forget).
+    pub async fn audit(&self, guild_id: Id, actor: &str, action: &str, target: &str, detail: &str) {
+        let entry = crate::protocol::AuditEntry {
+            at_ms: chrono::Utc::now().timestamp_millis(),
+            actor_pubkey: actor.to_string(),
+            action: action.to_string(),
+            target: target.to_string(),
+            detail: detail.to_string(),
+        };
+        persist(self.store.append_audit(guild_id, &entry).await, "audit");
+    }
+
+    /// Requires `ManageGuild`: the guild's recent audit entries (newest first).
+    pub async fn audit_log(&self, guild_id: Id, by_pubkey: &str) -> Result<Vec<crate::protocol::AuditEntry>, String> {
+        self.require_permission(guild_id, by_pubkey, Permission::ManageGuild)?;
+        self.store
+            .audit_log(guild_id, 100)
+            .await
+            .map_err(|e| format!("store error: {e}"))
+    }
+
+    /// Hourly sweep: enforce per-guild message retention. Returns total rows
+    /// deleted (for logs).
+    pub async fn sweep_retention(&self) -> u64 {
+        let targets: Vec<(Id, u32)> = self
+            .guilds
+            .iter()
+            .filter_map(|g| g.retention_days.map(|d| (g.id, d)))
+            .collect();
+        let mut total = 0u64;
+        for (gid, days) in targets {
+            let cutoff = chrono::Utc::now().timestamp_millis() - (days as i64) * 86_400_000;
+            match self.store.sweep_guild_messages(gid, cutoff).await {
+                Ok(n) => total += n,
+                Err(e) => tracing::error!(error = %e, %gid, "retention sweep failed"),
+            }
+        }
+        total
+    }
+
+    /// True if a channel is flagged read-only.
+    pub fn channel_read_only(&self, channel_id: Id) -> bool {
+        self.channels
+            .get(&channel_id)
+            .map(|c| c.read_only)
+            .unwrap_or(false)
+    }
+
+    /// Delete a message. Authors always may; in guild channels `ManageMessages`
+    /// holders may delete anyone's; DM messages are author-only (your DMs are
+    /// nobody's moderation surface).
+    pub async fn delete_message(
+        &self,
+        channel_id: Id,
+        message_id: Id,
+        by_pubkey: &str,
+    ) -> Result<(), String> {
+        let author = self
+            .store
+            .message_author(channel_id, message_id)
+            .await
+            .map_err(|e| format!("store error: {e}"))?
+            .ok_or_else(|| "unknown message".to_string())?;
+        if author != by_pubkey {
+            match self.channel_guild(channel_id) {
+                Some(gid) => {
+                    self.require_permission(gid, by_pubkey, Permission::ManageMessages)?
+                }
+                None => return Err("only the author can delete a DM message".into()),
+            }
+        }
+        self.store
+            .delete_message(channel_id, message_id)
+            .await
+            .map_err(|e| format!("store error: {e}"))
     }
 
     /// The DM conversations `pubkey` participates in, each described from their
@@ -444,9 +1789,9 @@ impl AppState {
         }
     }
 
-    /// Get the existing DM channel between two users, creating it (and its
-    /// message log) if absent. Returns the channel id.
-    pub fn get_or_create_dm(&self, a: &str, b: &str) -> Id {
+    /// Get the existing DM channel between two users, creating it if absent.
+    /// Returns the channel id.
+    pub async fn get_or_create_dm(&self, a: &str, b: &str) -> Id {
         let key = Self::dm_key(a, b);
         if let Some(existing) = self.dm_index.get(&key) {
             return *existing;
@@ -454,9 +1799,12 @@ impl AppState {
         let id = Uuid::new_v4();
         let mut participants = [a.to_string(), b.to_string()];
         participants.sort();
+        persist(
+            self.store.upsert_dm(id, &participants[0], &participants[1]).await,
+            "dm create",
+        );
         self.dms.insert(id, DmChannel { id, participants });
         self.dm_index.insert(key, id);
-        self.messages.insert(id, RwLock::new(Vec::new()));
         id
     }
 
@@ -474,7 +1822,7 @@ impl AppState {
 
     /// Delete a guild and everything under it. Returns `Err` with a reason if
     /// the guild is unknown or `by_pubkey` is not its owner.
-    pub fn delete_guild(&self, guild_id: Id, by_pubkey: &str) -> Result<(), String> {
+    pub async fn delete_guild(&self, guild_id: Id, by_pubkey: &str) -> Result<(), String> {
         let owner = self
             .guilds
             .get(&guild_id)
@@ -485,31 +1833,47 @@ impl AppState {
         }
         self.guilds.remove(&guild_id);
         self.members.remove(&guild_id);
+        self.roles.remove(&guild_id);
+        self.bans.remove(&guild_id);
+        if let Some((_, code)) = self.invite_by_guild.remove(&guild_id) {
+            self.invites.remove(&code);
+        }
         if let Some((_, channel_ids)) = self.channels_by_guild.remove(&guild_id) {
             for cid in channel_ids {
                 self.channels.remove(&cid);
-                self.messages.remove(&cid);
             }
         }
+        persist(self.store.delete_guild(guild_id).await, "guild delete");
         Ok(())
     }
 
-    pub fn history(&self, channel_id: Id, limit: u32) -> Vec<Message> {
-        let Some(entry) = self.messages.get(&channel_id) else {
-            return Vec::new();
-        };
-        let guard = entry.read().unwrap();
-        let limit = limit as usize;
-        if guard.len() <= limit {
-            guard.clone()
-        } else {
-            guard[guard.len() - limit..].to_vec()
+    /// The most recent `limit` messages of a channel (oldest-first), with any
+    /// blob-stored images inlined back into data URLs for the wire.
+    pub async fn history(
+        &self,
+        channel_id: Id,
+        limit: u32,
+        before_ms: Option<i64>,
+    ) -> Vec<Message> {
+        match self.store.history(channel_id, limit, before_ms).await {
+            Ok(mut messages) => {
+                for m in &mut messages {
+                    if let Some(img) = &m.image {
+                        m.image = self.media.inline(img);
+                    }
+                }
+                messages
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "history query failed");
+                Vec::new()
+            }
         }
     }
 
     /// Append a message to a guild text channel. Returns `None` if the channel
     /// isn't a known text channel.
-    pub fn push_message(
+    pub async fn push_message(
         &self,
         channel_id: Id,
         author: User,
@@ -524,12 +1888,12 @@ impl AppState {
         if !kind_ok {
             return None;
         }
-        Some(self.append_message(channel_id, author, content, image))
+        Some(self.append_message(channel_id, author, content, image).await)
     }
 
     /// Append a message to a DM channel `author` participates in. Returns
     /// `None` if the channel isn't a DM the author belongs to.
-    pub fn push_dm_message(
+    pub async fn push_dm_message(
         &self,
         channel_id: Id,
         author: User,
@@ -539,32 +1903,39 @@ impl AppState {
         if !self.is_dm_participant(channel_id, &author.pubkey) {
             return None;
         }
-        Some(self.append_message(channel_id, author, content, image))
+        Some(self.append_message(channel_id, author, content, image).await)
     }
 
-    fn append_message(
+    /// Persist a message. Inbound data-URL images are offloaded to the blob
+    /// store (the DB row keeps a tiny `media:` sentinel); the returned message
+    /// carries the ORIGINAL image so the broadcast needs no re-read.
+    async fn append_message(
         &self,
         channel_id: Id,
         author: User,
         content: String,
         image: Option<String>,
     ) -> Message {
+        let stored_image = image.as_ref().map(|img| {
+            if img.starts_with("data:") {
+                // Unknown mime or decode failure → fall back to storing the
+                // data URL itself (still capped by MAX_IMAGE_LEN upstream).
+                self.media.store_data_url(img).unwrap_or_else(|| img.clone())
+            } else {
+                img.clone()
+            }
+        });
         let message = Message {
             id: Uuid::new_v4(),
             channel_id,
             author,
             content,
-            image,
+            image: stored_image,
             reactions: Vec::new(),
             created_at: chrono::Utc::now(),
         };
-        self.messages
-            .entry(channel_id)
-            .or_insert_with(|| RwLock::new(Vec::new()))
-            .write()
-            .unwrap()
-            .push(message.clone());
-        message
+        persist(self.store.insert_message(&message).await, "message insert");
+        Message { image, ..message }
     }
 
     /// Mark a user offline in every guild they're a member of. Returns the
@@ -678,10 +2049,11 @@ impl AppState {
             .collect()
     }
 
-    /// Owner-only: install (or update the grants of) a bot in a guild. Adds the
-    /// bot as a `bot: true` guild member so it shows in the roster. Returns the
-    /// stored install and the bot's membership for broadcasting.
-    pub fn install_bot(
+    /// Requires `ManageGuild`: install (or update the grants of) a bot in a
+    /// guild. Adds the bot as a `bot: true` guild member so it shows in the
+    /// roster. Returns the stored install and the bot's membership for
+    /// broadcasting. Only `Permission::BOT_INSTALLABLE` grants are accepted.
+    pub async fn install_bot(
         &self,
         guild_id: Id,
         bot_pubkey: &str,
@@ -690,19 +2062,21 @@ impl AppState {
         intents: Vec<Intent>,
         by_pubkey: &str,
     ) -> Result<(BotInstall, Member), String> {
-        let owner = self
-            .guilds
-            .get(&guild_id)
-            .map(|g| g.owner_pubkey.clone())
-            .ok_or_else(|| "unknown guild".to_string())?;
-        if owner.is_empty() || owner != by_pubkey {
-            return Err("only the owner can manage this guild's integrations".into());
-        }
+        self.require_permission(guild_id, by_pubkey, Permission::ManageGuild)?;
         if bot_pubkey.trim().is_empty() {
             return Err("bot pubkey is required".into());
         }
         if bot_pubkey == by_pubkey {
             return Err("a bot must have its own identity, distinct from yours".into());
+        }
+        if let Some(bad) = permissions
+            .iter()
+            .find(|p| !Permission::BOT_INSTALLABLE.contains(p))
+        {
+            return Err(format!(
+                "{} isn't grantable to bots",
+                serde_variant_name(*bad)
+            ));
         }
         let name = {
             let n = name.trim();
@@ -726,42 +2100,41 @@ impl AppState {
 
         // Surface the bot in the roster. Keep an already-connected bot's online
         // flag; a fresh install starts offline until the bot process connects.
-        let guild_members = self.members.entry(guild_id).or_insert_with(DashMap::new);
-        let member = if let Some(mut existing) = guild_members.get_mut(bot_pubkey) {
-            existing.bot = true;
-            existing.user.username = name;
-            existing.clone()
-        } else {
-            let member = Member {
-                user: User {
-                    pubkey: bot_pubkey.to_string(),
-                    username: name,
-                },
-                guild_id,
-                online: false,
-                bot: true,
-            };
-            guild_members.insert(bot_pubkey.to_string(), member.clone());
-            member
+        let member = {
+            let guild_members = self.members.entry(guild_id).or_insert_with(DashMap::new);
+            if let Some(mut existing) = guild_members.get_mut(bot_pubkey) {
+                existing.bot = true;
+                existing.user.username = name;
+                existing.clone()
+            } else {
+                let member = Member {
+                    user: User {
+                        pubkey: bot_pubkey.to_string(),
+                        username: name,
+                    },
+                    guild_id,
+                    online: false,
+                    bot: true,
+                    roles: Vec::new(),
+                };
+                guild_members.insert(bot_pubkey.to_string(), member.clone());
+                member
+            }
         };
+        persist(self.store.upsert_bot_install(&install).await, "bot install");
+        persist(self.store.upsert_member(&member).await, "bot member");
         Ok((install, member))
     }
 
-    /// Owner-only: remove a bot from a guild (drops its grants and roster row).
-    pub fn uninstall_bot(
+    /// Requires `ManageGuild`: remove a bot from a guild (drops its grants and
+    /// roster row).
+    pub async fn uninstall_bot(
         &self,
         guild_id: Id,
         bot_pubkey: &str,
         by_pubkey: &str,
     ) -> Result<(), String> {
-        let owner = self
-            .guilds
-            .get(&guild_id)
-            .map(|g| g.owner_pubkey.clone())
-            .ok_or_else(|| "unknown guild".to_string())?;
-        if owner.is_empty() || owner != by_pubkey {
-            return Err("only the owner can manage this guild's integrations".into());
-        }
+        self.require_permission(guild_id, by_pubkey, Permission::ManageGuild)?;
         // Drop the per-guild grant; if it was the bot's last install, forget the
         // bot entirely so `is_bot` flips false.
         let now_empty = if let Some(g) = self.bot_installs.get(bot_pubkey) {
@@ -776,6 +2149,8 @@ impl AppState {
         if let Some(gm) = self.members.get(&guild_id) {
             gm.remove(bot_pubkey);
         }
+        persist(self.store.delete_bot_install(guild_id, bot_pubkey).await, "bot uninstall");
+        persist(self.store.delete_member(guild_id, bot_pubkey).await, "bot member remove");
         Ok(())
     }
 
@@ -828,8 +2203,121 @@ impl AppState {
             dms: Vec::new(),
             catalog: Vec::new(),
             profiles: Vec::new(),
+            // Roles never apply to bot connections — don't leak them.
+            roles: Vec::new(),
+            // Bots are never operators.
+            operator: false,
         }
     }
+}
+
+/// A community preset applied at guild creation: channel layout, role presets,
+/// default visibility + join gate. Two choices at creation, not a hundred
+/// toggles (roadmap Phase 4).
+struct GuildTemplate {
+    channels: Vec<(&'static str, crate::protocol::ChannelKind, bool)>, // (name, kind, read_only)
+    roles: Vec<(&'static str, Vec<Permission>)>,
+    visibility: crate::protocol::GuildVisibility,
+    join_gate: crate::protocol::JoinGate,
+}
+
+impl GuildTemplate {
+    fn resolve(template: Option<&str>) -> GuildTemplate {
+        use crate::protocol::ChannelKind::{Text, Voice};
+        use crate::protocol::GuildVisibility::{Private, Public};
+        use crate::protocol::JoinGate;
+        use crate::protocol::Permission::*;
+        match template {
+            Some("foss") => GuildTemplate {
+                channels: vec![
+                    ("announcements", Text, true),
+                    ("general", Text, false),
+                    ("dev", Text, false),
+                    ("support", Text, false),
+                    ("Voice", Voice, false),
+                ],
+                roles: vec![
+                    (
+                        "Maintainer",
+                        vec![
+                            ManageChannels, ManageMessages, KickMembers, BanMembers,
+                            ManageRoles, ManageGuild,
+                        ],
+                    ),
+                    ("Contributor", vec![]),
+                ],
+                visibility: Public,
+                join_gate: JoinGate::Open,
+            },
+            Some("community") => GuildTemplate {
+                channels: vec![
+                    ("rules", Text, true),
+                    ("announcements", Text, true),
+                    ("general", Text, false),
+                    ("off-topic", Text, false),
+                    ("Lounge", Voice, false),
+                ],
+                roles: vec![
+                    (
+                        "Admin",
+                        vec![
+                            ManageChannels, ManageMessages, KickMembers, BanMembers,
+                            ManageRoles, ManageGuild, CreateInvite,
+                        ],
+                    ),
+                    ("Moderator", vec![ManageMessages, KickMembers, BanMembers]),
+                ],
+                // Public communities start private + rules-gated so the owner
+                // can set up before opening the doors.
+                visibility: Private,
+                join_gate: JoinGate::Rules,
+            },
+            // "friend" and default: minimal + open.
+            _ => GuildTemplate {
+                channels: vec![("general", Text, false), ("General Voice", Voice, false)],
+                roles: vec![],
+                visibility: Public,
+                join_gate: JoinGate::Open,
+            },
+        }
+    }
+}
+
+/// Channel names mirror guild-name rules: trimmed, 1..=64 chars.
+fn sanitize_channel_name(raw: &str) -> Result<String, String> {
+    let name = raw.trim();
+    if name.is_empty() || name.chars().count() > 64 {
+        return Err("channel name must be 1..=64 chars".into());
+    }
+    Ok(name.to_string())
+}
+
+/// 12 random alphanumerics from the OS RNG (~62 bits of entropy). Invite codes
+/// gate private guilds and ban evasion, so they must be unguessable — the cute
+/// `adj-animal-NN` rendezvous format (~17 bits) is not enough here.
+pub(crate) fn random_invite_code() -> String {
+    use rand::Rng;
+    const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    let mut rng = rand::rngs::OsRng;
+    (0..12)
+        .map(|_| ALPHABET[rng.gen_range(0..ALPHABET.len())] as char)
+        .collect()
+}
+
+/// Accept only short `#rrggbb`/`#rgb` hex colors (guild accents, role colors).
+pub fn is_hex_color(s: &str) -> bool {
+    let s = s.trim();
+    let Some(hex) = s.strip_prefix('#') else { return false };
+    (hex.len() == 3 || hex.len() == 6) && hex.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// The wire (snake_case) name of a unit enum variant, for error messages that
+/// match what API users see in JSON (e.g. `manage_guild`).
+fn serde_variant_name<T: serde::Serialize>(v: T) -> String {
+    serde_json::to_string(&v)
+        .unwrap_or_default()
+        .trim_matches('"')
+        .to_string()
 }
 
 /// Order-preserving dedup for small grant vectors.

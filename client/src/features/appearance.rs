@@ -12,6 +12,17 @@ use crate::settings::{self, ClientSettings};
 /// Backgrounds are local-only but still kept reasonable in size.
 const MAX_BACKGROUND_BYTES: usize = 4_000_000;
 
+/// `(id, label, preview-inline-style)` for the procedural background tiles.
+/// Previews are miniatures of the real `.app-bg-*` rules from `app.rs`.
+const BACKGROUND_TILES: &[(&str, &str, &str)] = &[
+    ("grid", "Grid", "background-color:#0e0b08;background-image:linear-gradient(var(--edge) 1px,transparent 1px),linear-gradient(90deg,var(--edge) 1px,transparent 1px);background-size:12px 12px;"),
+    ("dots", "Dots", "background-color:#0e0b08;background-image:radial-gradient(var(--edge) 1.4px,transparent 1.4px);background-size:10px 10px;"),
+    ("aurora", "Aurora", "background:radial-gradient(circle at 25% 30%,color-mix(in srgb,var(--accent) 30%,transparent),transparent 55%),radial-gradient(circle at 75% 70%,color-mix(in srgb,var(--violet) 24%,transparent),transparent 55%),#0e0b08;"),
+    ("mesh", "Mesh", "background:#0e0b08,radial-gradient(circle at 20% 20%,var(--accent-soft),transparent 45%),radial-gradient(circle at 85% 80%,color-mix(in srgb,var(--violet) 14%,transparent),transparent 45%);"),
+    ("sunset", "Sunset", "background:linear-gradient(160deg,color-mix(in srgb,var(--accent) 16%,#0e0b08),#0e0b08 60%),radial-gradient(circle at 70% 15%,color-mix(in srgb,var(--accent) 32%,transparent),transparent 45%);"),
+    ("none", "None", "background:#0e0b08;"),
+];
+
 /// A small "theme" button that opens the appearance modal.
 #[component]
 pub fn AppearanceButton() -> Element {
@@ -46,14 +57,18 @@ pub fn AppearanceButton() -> Element {
                     onclick: move |e| e.stop_propagation(),
                     h3 { class: "text-sm font-medium text-[var(--accent)] mb-3", "Appearance" }
 
-                    // Theme swatches.
+                    // Theme swatches — gradient tiles (comp 4).
                     div { class: "text-[10px] uppercase tracking-wider text-[var(--text-muted)] mb-1.5", "Theme" }
                     div { class: "grid grid-cols-5 gap-2 mb-4",
                         for theme in THEMES.iter() {
                             {
                                 let id = theme.id;
                                 let selected = current.theme == id;
-                                let ring = if selected { "ring-2 ring-[var(--accent)]" } else { "" };
+                                let ring = if selected {
+                                    "ring-2 ring-[var(--accent)] ring-offset-2 ring-offset-[var(--panel-solid)]"
+                                } else {
+                                    "border border-[var(--edge)]"
+                                };
                                 rsx! {
                                     button {
                                         key: "{id}",
@@ -61,12 +76,37 @@ pub fn AppearanceButton() -> Element {
                                         title: "{theme.label}",
                                         onclick: move |_| update(&|s| s.theme = id.to_string()),
                                         span {
-                                            class: "w-9 h-9 rounded-md border border-[var(--border)] {ring}",
-                                            style: "background-color: {theme.swatch};",
+                                            class: "w-full h-11 rounded-lg {ring}",
+                                            style: "background: linear-gradient(150deg, {theme.swatch}, transparent 78%), #12100e;",
                                         }
                                         span { class: "text-[9px] text-[var(--text-dim)] group-hover:text-[var(--text-muted)]",
                                             "{theme.label}"
                                         }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Procedural background picker (comp 4).
+                    div { class: "text-[10px] uppercase tracking-wider text-[var(--text-muted)] mb-1.5", "Background" }
+                    div { class: "grid grid-cols-3 gap-2 mb-4",
+                        for (id, label, preview) in BACKGROUND_TILES.iter().copied() {
+                            {
+                                let selected = current.pattern == id && current.background.is_none();
+                                let ring = if selected {
+                                    "ring-2 ring-[var(--accent)] ring-offset-2 ring-offset-[var(--panel-solid)]"
+                                } else {
+                                    "border border-[var(--edge)] hover:border-[var(--border-strong)]"
+                                };
+                                rsx! {
+                                    button {
+                                        key: "{id}",
+                                        // Choosing a pattern clears any custom image.
+                                        class: "h-14 rounded-lg flex items-center justify-center text-xs font-medium text-[var(--text)] {ring}",
+                                        style: "{preview}",
+                                        onclick: move |_| update(&|s| { s.pattern = id.to_string(); s.background = None; }),
+                                        "{label}"
                                     }
                                 }
                             }
@@ -97,8 +137,8 @@ pub fn AppearanceButton() -> Element {
                         }
                     }
 
-                    // Background image.
-                    div { class: "text-[10px] uppercase tracking-wider text-[var(--text-muted)] mb-1.5", "Background" }
+                    // Custom background image (overrides the pattern above).
+                    div { class: "text-[10px] uppercase tracking-wider text-[var(--text-muted)] mb-1.5", "Custom image" }
                     div { class: "h-20 rounded-md border border-[var(--border)] overflow-hidden bg-[var(--accent-soft)] flex items-center justify-center text-[var(--text-dim)] text-xs mb-2",
                         if let Some(url) = current.background.clone() {
                             img { class: "w-full h-full object-cover", src: "{url}", alt: "background preview" }
@@ -193,9 +233,13 @@ pub fn AppearanceButton() -> Element {
                         div { class: "mt-2 text-[10px] text-[var(--danger)]", "{e}" }
                     }
 
+                    div { class: "mt-4 pt-3 border-t border-[var(--edge)] text-[11px] text-[var(--text-dim)] leading-relaxed",
+                        "Tip: drag panel headers to move, corners to resize. Toggle Edit layout for snap presets."
+                    }
+
                     div { class: "mt-3 flex justify-end",
                         button {
-                            class: "px-3 py-1.5 rounded text-xs uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors",
+                            class: "px-3 py-1.5 rounded-lg text-xs uppercase tracking-wider text-[var(--accent)] border border-[var(--edge)] hover:border-[var(--accent)] transition-colors",
                             onclick: move |_| open.set(false),
                             "Done"
                         }

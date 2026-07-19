@@ -15,6 +15,11 @@ pub struct ClientSettings {
     /// Optional accent-color override (hex), layered on top of the theme.
     #[serde(default)]
     pub accent: Option<String>,
+    /// Procedural app background: "grid" | "dots" | "aurora" | "mesh" |
+    /// "sunset" | "none". A user-supplied `background` image (below) overrides
+    /// this when set.
+    #[serde(default = "default_pattern")]
+    pub pattern: String,
     /// Optional background image as a `data:image/...;base64,...` URL.
     pub background: Option<String>,
     /// Darkening scrim over the background, 0..=90 (percent opacity of black).
@@ -28,11 +33,16 @@ fn default_blossom_server() -> String {
     "https://blossom.band".into()
 }
 
+fn default_pattern() -> String {
+    "dots".into()
+}
+
 impl Default for ClientSettings {
     fn default() -> Self {
         Self {
             theme: "ember".into(),
             accent: None,
+            pattern: default_pattern(),
             background: None,
             background_dim: 55,
             blossom_server: default_blossom_server(),

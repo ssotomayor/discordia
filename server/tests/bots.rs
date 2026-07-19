@@ -19,10 +19,29 @@ async fn next_timeout(bot: &mut Bot) -> ServerMessage {
         .expect("connection closed unexpectedly")
 }
 
+
+/// Per-test ServerConfig: unique temp data dir (SQLite + media) so tests are
+/// hermetic and parallel-safe.
+fn test_config(operators: std::collections::HashSet<String>) -> dioxusfun_server::ServerConfig {
+    let dir = std::env::temp_dir().join(format!(
+        "dioxusfun-test-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    dioxusfun_server::ServerConfig {
+        livekit: LiveKitConfig::from_env(),
+        operators,
+        data_dir: dir,
+    }
+}
+
 /// Spawn a gateway on a free port and return its `ws://` URL plus the handle.
 async fn spawn_gateway() -> (String, dioxusfun_server::ServerHandle) {
     let preferred: SocketAddr = "127.0.0.1:19000".parse().unwrap();
-    let handle = dioxusfun_server::spawn(preferred, 100, LiveKitConfig::from_env())
+    let handle = dioxusfun_server::spawn(preferred, 100, test_config(Default::default()))
         .await
         .expect("spawn server");
     let url = format!("ws://{}", handle.addr);
@@ -32,7 +51,7 @@ async fn spawn_gateway() -> (String, dioxusfun_server::ServerHandle) {
 /// Owner creates a guild; returns (guild_id, first text channel id).
 async fn create_guild(owner: &mut Bot, name: &str) -> (Id, Id) {
     owner
-        .send(&ClientMessage::CreateGuild { name: name.into() })
+        .send(&ClientMessage::CreateGuild { name: name.into(), template: None })
         .await
         .unwrap();
     loop {
@@ -53,7 +72,7 @@ async fn bot_install_and_ping_roundtrip() {
 
     // Human owner connects and lands on a Ready.
     let owner_id = BotIdentity::generate();
-    let mut owner = Bot::connect(&url, &owner_id, "Owner").await.unwrap();
+    let mut owner = Bot::connect_as_user(&url, &owner_id, "Owner").await.unwrap();
     assert!(matches!(next_timeout(&mut owner).await, ServerMessage::Ready { .. }));
 
     let (guild_id, text_channel) = create_guild(&mut owner, "Test Guild").await;
@@ -117,7 +136,7 @@ async fn intents_and_permissions_are_enforced() {
     let (url, handle) = spawn_gateway().await;
 
     let owner_id = BotIdentity::generate();
-    let mut owner = Bot::connect(&url, &owner_id, "Owner").await.unwrap();
+    let mut owner = Bot::connect_as_user(&url, &owner_id, "Owner").await.unwrap();
     assert!(matches!(next_timeout(&mut owner).await, ServerMessage::Ready { .. }));
 
     let (guild_id, text_channel) = create_guild(&mut owner, "Locked Down").await;

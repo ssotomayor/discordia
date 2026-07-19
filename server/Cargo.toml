@@ -28,6 +28,14 @@ sha2 = "0.10"
 bs58 = { workspace = true }
 rand = "0.8"
 
+# Persistence (Phase 1): SQLite via sqlx. Postgres lands behind the same
+# Store seam in a later phase (see docs/ROADMAP.md).
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "macros"] }
+# Media blob store: decode data-URLs into content-addressed files.
+base64 = "0.22"
+# Error type for guild export/import (bridges sqlx + validation errors).
+anyhow = "1"
+
 # Shared deps inherited from workspace.
 dioxusfun-protocol = { workspace = true }
 tower-http = { workspace = true }

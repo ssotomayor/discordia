@@ -90,20 +90,20 @@ pub fn DiscordiaLogo(#[props(into)] class: String) -> Element {
 }
 
 const BASE_CSS: &str = "
+/* Default (ember) palette. Per-theme overrides are applied inline on the app
+   root by `theme_vars()`. The existing variable *names* are kept as the
+   styling interface so components need no churn; the design's richer palette
+   (bg2/panel2/up/violet/amber) is layered on as additional vars. */
 :root {
-  --bg: #0a0908;
-  --panel: #0a0908;
-  --border: rgba(228, 105, 23, 0.41);
-  --border-strong: rgba(255, 209, 179, 0.35);
-  --text: #d6d6d6;
-  --text-muted: #888888;
-  --text-dim: #5a5a5a;
-  --accent: #e0a06a;
-  --accent-soft: rgba(224, 160, 106, 0.10);
-  --accent-strong: #ec8f3f;
-  --success: #8fa872;
-  --warn: #d4a04f;
-  --danger: #c67878;
+  --bg: #0e0b08; --bg2: #171017;
+  --panel-solid: #17110c; --panel: #17110c; --panel2: #1e160f;
+  --edge: rgba(255,158,61,.15); --edge-strong: rgba(255,158,61,.42);
+  --border: rgba(255,158,61,.15); --border-strong: rgba(255,158,61,.42);
+  --text: #f4ece2; --text-muted: #a8988a; --text-dim: #6c5f53;
+  --accent: #ff9e3d; --accent-soft: rgba(255,158,61,.13); --accent-strong: #ffb26b;
+  --up: #5fe0a8; --success: #5fe0a8;
+  --violet: #b98cff; --amber: #ffc46b; --warn: #ffc46b;
+  --danger: #f2777a;
   --ease: cubic-bezier(0.4, 0.0, 0.2, 1);
 }
 html, body, #main { height: 100%; margin: 0; }
@@ -117,16 +117,66 @@ html, body, #main { height: 100%; margin: 0; }
 body {
   background: var(--bg);
   color: var(--text);
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-family: 'Space Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
 }
+/* Display face for the wordmark + headings; mono face for keys/codes. */
+.dxf-display { font-family: 'Bricolage Grotesque', 'Space Grotesk', sans-serif; letter-spacing: -0.015em; }
+code, kbd, .dxf-mono, .font-mono { font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; }
 * { box-sizing: border-box; }
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: rgba(190, 130, 90, 0.18); border-radius: 4px; transition: background 0.2s var(--ease); }
-::-webkit-scrollbar-thumb:hover { background: rgba(190, 130, 90, 0.35); }
+::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--accent) 20%, transparent); border-radius: 4px; transition: background 0.2s var(--ease); }
+::-webkit-scrollbar-thumb:hover { background: color-mix(in srgb, var(--accent) 38%, transparent); }
 button { cursor: pointer; }
 button:disabled { cursor: not-allowed; }
 input::placeholder { color: var(--text-dim); }
+
+/* Gradient CTA (blue→accent, the primary action buttons in the design) and the
+   gradient wordmark treatment. */
+.dxf-cta {
+  background-image: linear-gradient(100deg, #8fb0ff, var(--accent));
+  color: #0e0b08; font-weight: 600; border: none;
+  box-shadow: 0 0 24px -6px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+.dxf-cta:hover { filter: brightness(1.06); }
+.dxf-wordmark {
+  background-image: linear-gradient(105deg, #f4ece2 0%, #e9d9c2 30%, #8fb0ff 62%, var(--accent) 100%);
+  -webkit-background-clip: text; background-clip: text;
+  -webkit-text-fill-color: transparent; color: transparent;
+}
+
+/* Procedural app backgrounds (selectable in the theme popover). The layer
+   sits behind .app-shell (z-0). Only one is active at a time via a class on
+   .app-bg-pattern. */
+.app-bg-pattern { position: fixed; inset: 0; z-index: 0; pointer-events: none; }
+.app-bg-grid {
+  background-color: var(--bg);
+  background-image: linear-gradient(var(--edge) 1px, transparent 1px),
+                    linear-gradient(90deg, var(--edge) 1px, transparent 1px);
+  background-size: 28px 28px;
+}
+.app-bg-dots {
+  background-color: var(--bg);
+  background-image: radial-gradient(var(--edge) 1.4px, transparent 1.4px);
+  background-size: 22px 22px;
+}
+.app-bg-aurora {
+  background:
+    radial-gradient(circle at 25% 30%, color-mix(in srgb, var(--accent) 22%, transparent), transparent 50%),
+    radial-gradient(circle at 75% 70%, color-mix(in srgb, var(--violet) 18%, transparent), transparent 50%),
+    var(--bg);
+}
+.app-bg-mesh {
+  background:
+    var(--bg),
+    radial-gradient(circle at 20% 20%, var(--accent-soft), transparent 45%),
+    radial-gradient(circle at 85% 80%, color-mix(in srgb, var(--violet) 10%, transparent), transparent 45%);
+}
+.app-bg-sunset {
+  background:
+    linear-gradient(160deg, color-mix(in srgb, var(--accent) 12%, var(--bg)), var(--bg) 60%),
+    radial-gradient(circle at 70% 15%, color-mix(in srgb, var(--accent) 26%, transparent), transparent 45%);
+}
 
 /* Smooth color/border transitions on every interactive surface. Excluded
    from `transform` so drag-in-progress (which is driven by transform via
@@ -278,67 +328,66 @@ pub struct ThemeDef {
     vars: &'static str,
 }
 
-/// Available themes. The first ("ember") matches the original look.
+/// Available themes (the five from the Discordia design). Each sets the full
+/// variable set: the legacy names components already consume, plus the design's
+/// extras (`--bg2/--panel2/--up/--violet/--amber`). `--panel` and
+/// `--panel-solid` share a value; the background-image path makes `--panel`
+/// translucent at runtime (see `App`).
 pub const THEMES: &[ThemeDef] = &[
     ThemeDef {
         id: "ember",
         label: "Ember",
-        swatch: "#e0a06a",
-        vars: "--bg:#0a0908; --panel-solid:#0a0908; --panel:var(--panel-solid); \
-               --border:rgba(228,105,23,0.41); --border-strong:rgba(255,209,179,0.35); \
-               --text:#d6d6d6; --text-muted:#888888; --text-dim:#5a5a5a; \
-               --accent:#e0a06a; --accent-soft:rgba(224,160,106,0.10); --accent-strong:#ec8f3f; \
-               --success:#8fa872; --warn:#d4a04f; --danger:#c67878;",
+        swatch: "#ff9e3d",
+        vars: "--bg:#0e0b08; --bg2:#171017; --panel-solid:#17110c; --panel:#17110c; --panel2:#1e160f; \
+               --edge:rgba(255,158,61,.15); --edge-strong:rgba(255,158,61,.42); \
+               --border:rgba(255,158,61,.15); --border-strong:rgba(255,158,61,.42); \
+               --text:#f4ece2; --text-muted:#a8988a; --text-dim:#6c5f53; \
+               --accent:#ff9e3d; --accent-soft:rgba(255,158,61,.13); --accent-strong:#ffb26b; \
+               --up:#5fe0a8; --success:#5fe0a8; --violet:#b98cff; --amber:#ffc46b; --warn:#ffc46b; --danger:#f2777a;",
     },
     ThemeDef {
         id: "midnight",
         label: "Midnight",
-        swatch: "#6c8cff",
-        vars: "--bg:#0a0e1a; --panel-solid:#0c1120; --panel:var(--panel-solid); \
-               --border:rgba(108,140,255,0.34); --border-strong:rgba(170,190,255,0.40); \
-               --text:#d8def0; --text-muted:#8590ad; --text-dim:#586079; \
-               --accent:#6c8cff; --accent-soft:rgba(108,140,255,0.12); --accent-strong:#5a7cff; \
-               --success:#7fb0a0; --warn:#d4b25a; --danger:#d07a8a;",
+        swatch: "#6ea8ff",
+        vars: "--bg:#080b12; --bg2:#0d1220; --panel-solid:#0c111c; --panel:#0c111c; --panel2:#111827; \
+               --edge:rgba(110,168,255,.16); --edge-strong:rgba(110,168,255,.45); \
+               --border:rgba(110,168,255,.16); --border-strong:rgba(110,168,255,.45); \
+               --text:#e8eefc; --text-muted:#8b98b5; --text-dim:#586179; \
+               --accent:#6ea8ff; --accent-soft:rgba(110,168,255,.13); --accent-strong:#9cc2ff; \
+               --up:#5fe0c0; --success:#5fe0c0; --violet:#a99bff; --amber:#ffcf7a; --warn:#ffcf7a; --danger:#f2777a;",
+    },
+    ThemeDef {
+        id: "violet",
+        label: "Violet",
+        swatch: "#c084fc",
+        vars: "--bg:#100a16; --bg2:#180f22; --panel-solid:#160f1e; --panel:#160f1e; --panel2:#1d1428; \
+               --edge:rgba(192,132,252,.16); --edge-strong:rgba(192,132,252,.45); \
+               --border:rgba(192,132,252,.16); --border-strong:rgba(192,132,252,.45); \
+               --text:#f2e9fb; --text-muted:#a495b8; --text-dim:#6a5c7c; \
+               --accent:#c084fc; --accent-soft:rgba(192,132,252,.13); --accent-strong:#d3a6ff; \
+               --up:#6ee7b7; --success:#6ee7b7; --violet:#ff9ed8; --amber:#ffc46b; --warn:#ffc46b; --danger:#f2777a;",
     },
     ThemeDef {
         id: "forest",
         label: "Forest",
-        swatch: "#6fbf8a",
-        vars: "--bg:#0a0f0c; --panel-solid:#0c130e; --panel:var(--panel-solid); \
-               --border:rgba(111,191,138,0.32); --border-strong:rgba(180,230,200,0.38); \
-               --text:#d6e0d8; --text-muted:#82917f; --text-dim:#566054; \
-               --accent:#6fbf8a; --accent-soft:rgba(111,191,138,0.12); --accent-strong:#57b277; \
-               --success:#8fc89a; --warn:#cdb45c; --danger:#c98080;",
-    },
-    ThemeDef {
-        id: "rose",
-        label: "Rose",
-        swatch: "#e08ab0",
-        vars: "--bg:#140a10; --panel-solid:#180b14; --panel:var(--panel-solid); \
-               --border:rgba(224,138,176,0.33); --border-strong:rgba(255,200,224,0.40); \
-               --text:#ecd9e3; --text-muted:#a3899a; --text-dim:#6e5a66; \
-               --accent:#e08ab0; --accent-soft:rgba(224,138,176,0.12); --accent-strong:#ec79a8; \
-               --success:#9fc090; --warn:#d6ab5e; --danger:#e0788a;",
-    },
-    ThemeDef {
-        id: "mono",
-        label: "Mono",
-        swatch: "#c8c8cc",
-        vars: "--bg:#0c0c0d; --panel-solid:#101012; --panel:var(--panel-solid); \
-               --border:rgba(200,200,210,0.22); --border-strong:rgba(230,230,240,0.34); \
-               --text:#dcdce0; --text-muted:#86868c; --text-dim:#56565c; \
-               --accent:#c8c8cc; --accent-soft:rgba(200,200,210,0.08); --accent-strong:#e6e6ea; \
-               --success:#9bb89b; --warn:#ccb96a; --danger:#cc8a8a;",
+        swatch: "#7bd88f",
+        vars: "--bg:#0a0f0b; --bg2:#0f160f; --panel-solid:#0d130d; --panel:#0d130d; --panel2:#121a12; \
+               --edge:rgba(123,216,143,.16); --edge-strong:rgba(123,216,143,.42); \
+               --border:rgba(123,216,143,.16); --border-strong:rgba(123,216,143,.42); \
+               --text:#e9f4ea; --text-muted:#93a894; --text-dim:#5c6b5d; \
+               --accent:#7bd88f; --accent-soft:rgba(123,216,143,.13); --accent-strong:#a6e8b4; \
+               --up:#7bd88f; --success:#7bd88f; --violet:#b98cff; --amber:#ffc46b; --warn:#ffc46b; --danger:#f2777a;",
     },
     ThemeDef {
         id: "daylight",
-        label: "Daylight",
-        swatch: "#c2703a",
-        vars: "--bg:#f4f2ee; --panel-solid:#ffffff; --panel:var(--panel-solid); \
-               --border:rgba(180,120,60,0.30); --border-strong:rgba(120,80,40,0.42); \
-               --text:#2a2724; --text-muted:#6b665f; --text-dim:#a39c92; \
-               --accent:#c2703a; --accent-soft:rgba(194,112,58,0.12); --accent-strong:#a85a28; \
-               --success:#5a8a4a; --warn:#b07a20; --danger:#b85040;",
+        label: "Day",
+        swatch: "#e8730a",
+        vars: "--bg:#f3ede2; --bg2:#ffffff; --panel-solid:#ffffff; --panel:#ffffff; --panel2:#f7f1e8; \
+               --edge:rgba(180,120,60,.22); --edge-strong:rgba(120,80,40,.42); \
+               --border:rgba(180,120,60,.22); --border-strong:rgba(120,80,40,.42); \
+               --text:#2a2320; --text-muted:#6b615a; --text-dim:#a99e92; \
+               --accent:#e8730a; --accent-soft:rgba(232,115,10,.12); --accent-strong:#c65f00; \
+               --up:#2f9e6a; --success:#2f9e6a; --violet:#8b5cf6; --amber:#c77d1a; --warn:#c77d1a; --danger:#c0392b;",
     },
 ];
 
@@ -361,6 +410,41 @@ pub fn accent_vars(accent: &str) -> String {
     )
 }
 
+/// The three bundled variable fonts (latin subset). Declared as `@font-face`
+/// at runtime because the asset URLs are only known then (see `font_face_css`).
+const FONT_SPACE_GROTESK: Asset = asset!("/assets/fonts/spacegrotesk.woff2");
+const FONT_BRICOLAGE: Asset = asset!("/assets/fonts/bricolage.woff2");
+const FONT_JETBRAINS_MONO: Asset = asset!("/assets/fonts/jetbrainsmono.woff2");
+
+/// Build the `@font-face` block pointing at the bundled woff2 assets. They're
+/// variable fonts, so one file covers the whole weight range per family.
+fn font_face_css() -> String {
+    format!(
+        "@font-face{{font-family:'Space Grotesk';font-style:normal;font-weight:300 700;\
+           font-display:swap;src:url({sg}) format('woff2');}}\
+         @font-face{{font-family:'Bricolage Grotesque';font-style:normal;font-weight:400 800;\
+           font-display:swap;src:url({br}) format('woff2');}}\
+         @font-face{{font-family:'JetBrains Mono';font-style:normal;font-weight:400 700;\
+           font-display:swap;src:url({jb}) format('woff2');}}",
+        sg = FONT_SPACE_GROTESK,
+        br = FONT_BRICOLAGE,
+        jb = FONT_JETBRAINS_MONO,
+    )
+}
+
+/// The CSS class for a procedural background pattern id (empty for "none" or
+/// when a user background image is set).
+fn background_pattern_class(pattern: &str) -> &'static str {
+    match pattern {
+        "grid" => "app-bg-pattern app-bg-grid",
+        "dots" => "app-bg-pattern app-bg-dots",
+        "aurora" => "app-bg-pattern app-bg-aurora",
+        "mesh" => "app-bg-pattern app-bg-mesh",
+        "sunset" => "app-bg-pattern app-bg-sunset",
+        _ => "",
+    }
+}
+
 #[component]
 pub fn App() -> Element {
     let mut identity = use_signal(|| Identity::load().ok().flatten());
@@ -376,8 +460,15 @@ pub fn App() -> Element {
     let theme = appearance.theme.clone();
     let accent = appearance.accent.clone();
     let background = appearance.background.clone();
+    let pattern = appearance.pattern.clone();
     let scrim = (appearance.background_dim.min(95) as f64) / 100.0;
     drop(appearance);
+    // A user image wins over the procedural pattern.
+    let pattern_class = if background.is_some() {
+        ""
+    } else {
+        background_pattern_class(&pattern)
+    };
 
     // Theme + accent + background are applied as inline CSS variables on the
     // root element so they cascade to everything and update reactively.
@@ -399,11 +490,15 @@ pub fn App() -> Element {
         // NB: the UMD build is `…umd.js` (there is no `.umd.min.js`); a wrong
         // path 404s silently and the lib never loads.
         document::Script { src: "https://cdn.jsdelivr.net/npm/livekit-client@2.19.2/dist/livekit-client.umd.js" }
+        document::Style { {font_face_css()} }
         document::Style { {BASE_CSS} }
 
         div {
             class: "h-screen w-screen bg-[var(--bg)] text-[var(--text)] antialiased overflow-hidden",
             style: "{root_style}",
+            if !pattern_class.is_empty() {
+                div { class: "{pattern_class}" }
+            }
             if let Some(img) = background {
                 div { class: "app-bg-layer", style: "background-image: url('{img}');" }
                 div { class: "app-bg-layer", style: "background: rgba(0,0,0,{scrim});" }

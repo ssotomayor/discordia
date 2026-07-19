@@ -21,9 +21,30 @@ pub fn router(ctx: Arc<AppContext>) -> Router {
     Router::new()
         .route("/", get(root))
         .route("/gateway", get(gateway_upgrade))
+        .route("/media/{name}", get(serve_media))
         .with_state(ctx)
         .layer(middleware::from_fn(log_request))
         .layer(cors)
+}
+
+/// Serve a content-addressed media blob (`/media/<sha256>.<ext>`). Immutable
+/// by construction, so cache hard.
+async fn serve_media(
+    axum::extract::Path(name): axum::extract::Path<String>,
+    State(ctx): State<Arc<AppContext>>,
+) -> axum::response::Response {
+    use axum::http::{StatusCode, header};
+    match ctx.state.media.read(&name) {
+        Some((bytes, mime)) => (
+            [
+                (header::CONTENT_TYPE, mime.to_string()),
+                (header::CACHE_CONTROL, "public, max-age=31536000, immutable".to_string()),
+            ],
+            bytes,
+        )
+            .into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
 }
 
 async fn log_request(req: Request<axum::body::Body>, next: Next) -> impl IntoResponse {

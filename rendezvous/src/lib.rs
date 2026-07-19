@@ -2,6 +2,7 @@ pub mod protocol;
 pub mod registry;
 pub mod relay;
 pub mod shortcode;
+pub mod verify;
 
 use std::sync::Arc;
 

@@ -21,8 +21,15 @@ async fn main() {
     };
     tracing::info!(?config.livekit_url, "rendezvous configured");
 
+    // Persist name reservations under a data dir an operator can back up.
+    let data_dir: std::path::PathBuf = std::env::var("DIOXUSFUN_RENDEZVOUS_DATA_DIR")
+        .unwrap_or_else(|_| "./rendezvous-data".into())
+        .into();
+    let reservations_path = data_dir.join("reservations.json");
+    tracing::info!(path = %reservations_path.display(), "reservations persistence");
+
     let ctx = AppCtx {
-        registry: Arc::new(Registry::new()),
+        registry: Arc::new(Registry::load(reservations_path)),
         config: Arc::new(config),
     };
 

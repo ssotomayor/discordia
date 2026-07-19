@@ -106,6 +106,7 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
         div { class: "h-full w-full flex flex-col bg-[var(--bg)] p-2 gap-2 {mac_top_pad}",
             style: "{guild_accent_style}",
             VoiceSounds {}
+            ErrorToast {}
             crate::features::activities::ActivityHost {}
             crate::features::screenshare::ScreenShareBridge {}
             crate::features::screenshare::ScreenSelfPreview {}
@@ -117,12 +118,13 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
             // whole row is a drag region so the empty space between
             // elements lets the user move the window; the interactive
             // children opt out with .dxf-no-drag.
-            div { class: "dxf-drag-region flex items-stretch gap-2 {mac_titlebar_clear}",
+            div { class: "dxf-drag-region flex items-center gap-2 {mac_titlebar_clear}",
                 onmousedown: move |_| crate::app::start_window_drag(),
-                HostBanner {}
-                div { class: "shrink-0 flex items-center px-2",
-                    crate::app::DiscordiaLogo { class: "w-7 h-7" }
+                div { class: "shrink-0 flex items-center gap-2 px-1",
+                    crate::app::DiscordiaLogo { class: "w-6 h-6" }
+                    span { class: "dxf-display dxf-wordmark text-lg font-bold tracking-tight", "Discordia" }
                 }
+                HostBanner {}
                 // Unplug / disconnect. Always present so the user can leave a
                 // server they've connected to. Empty reason → clean return to
                 // the connect screen (no error banner; see App::on_disconnect).
@@ -181,6 +183,43 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
                 class: "fixed bottom-3 right-3 z-40 border border-[var(--border)] rounded px-3 py-1 text-[10px] uppercase tracking-wider bg-[var(--panel)] hover:border-[var(--accent)] text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors",
                 onclick: move |_| edit_mode.set(!edit_mode()),
                 if edit_mode() { "Done" } else { "Edit layout" }
+            }
+        }
+    }
+}
+
+/// Bottom-center toast for `ServerMessage::Error` frames — permission and
+/// moderation rejections must be visible, not just logged. Auto-dismisses
+/// after a few seconds; click ✕ to dismiss sooner.
+#[component]
+fn ErrorToast() -> Element {
+    let mut state = use_app_state();
+    let message = use_memo(move || state.read().error_toast.clone());
+
+    // Auto-clear ~6s after the latest error appears (unless it changed again).
+    use_effect(move || {
+        let Some(current) = message() else { return };
+        spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(6)).await;
+            let mut s = state.write();
+            if s.error_toast.as_deref() == Some(current.as_str()) {
+                s.error_toast = None;
+            }
+        });
+    });
+
+    let Some(msg) = message() else {
+        return rsx! { Fragment {} };
+    };
+
+    rsx! {
+        div { class: "dxf-pop-in fixed bottom-12 left-1/2 -translate-x-1/2 z-50 max-w-md flex items-center gap-2 px-3 py-2 rounded-lg border border-[var(--danger)]/50 bg-[var(--panel-solid)] shadow-xl",
+            span { class: "w-2 h-2 rounded-full shrink-0", style: "background: var(--danger);" }
+            span { class: "text-xs text-[var(--text)] flex-1", "{msg}" }
+            button {
+                class: "text-[var(--text-dim)] hover:text-[var(--text)] text-sm leading-none",
+                onclick: move |_| state.write().error_toast = None,
+                "✕"
             }
         }
     }

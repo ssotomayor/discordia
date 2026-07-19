@@ -303,6 +303,37 @@ pub fn discriminator(pubkey: &str) -> &str {
     &pubkey[pubkey.len() - 4..]
 }
 
+/// A deterministic "color signature" for a pubkey: `n` vivid HSL colors derived
+/// by hashing the key. Purely presentational (the row of colored bars on the
+/// identity/profile card) — same key always yields the same signature, and no
+/// two keys share one. Mirrors the design's `h=(h*31+c)>>>0` seed hash.
+pub fn color_signature(pubkey: &str, n: usize) -> Vec<String> {
+    let mut h: u32 = 0;
+    for b in pubkey.bytes() {
+        h = h.wrapping_mul(31).wrapping_add(b as u32);
+    }
+    (0..n)
+        .map(|i| {
+            // Advance the hash per bar so hues spread across the wheel.
+            h = h.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let hue = h % 360;
+            let sat = 62 + (h >> 9) % 24; // 62–86%
+            let light = 56 + (h >> 17) % 12; // 56–68%
+            let _ = i;
+            format!("hsl({hue}, {sat}%, {light}%)")
+        })
+        .collect()
+}
+
+/// The single accent hue for a pubkey (first signature color) — used to tint
+/// usernames and profile banners.
+pub fn signature_accent(pubkey: &str) -> String {
+    color_signature(pubkey, 1)
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| "hsl(30, 70%, 60%)".into())
+}
+
 #[allow(dead_code)]
 pub fn name_with_tag(name: &str, pubkey: &str) -> String {
     format!("{name}#{}", discriminator(pubkey))

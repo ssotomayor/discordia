@@ -1,20 +1,28 @@
 use dioxus::prelude::*;
 use dioxus_grid_layout::NoDrag;
 
-use crate::protocol::{ClientMessage, GuildSummary, Id};
+use crate::protocol::{ClientMessage, GuildSummary, Id, Permission};
 use crate::state::{use_app_state, use_gateway};
 
 const HEADER: &str = "h-11 px-2 flex items-center justify-center border-b border-[var(--border)] shrink-0";
 
-/// Right-click menu anchored over a guild the current user owns.
+/// Right-click menu anchored over a guild the current user can manage (or at
+/// least leave).
 #[derive(Clone, PartialEq)]
 struct GuildMenu {
     guild_id: Id,
     name: String,
     x: f64,
     y: f64,
-    /// Once the user picks "Delete", we show an inline confirm step.
-    confirming: bool,
+    /// Inline confirm step for a destructive action.
+    confirming: Option<ConfirmAction>,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum ConfirmAction {
+    Delete,
+    Leave,
+    Transfer,
 }
 
 #[component]
@@ -27,7 +35,7 @@ pub fn GuildsSidebar() -> Element {
     let selected = snapshot.selected_guild;
     let dm_mode = snapshot.dm_mode;
     let dm_unread = snapshot.dm_unread_total() as usize;
-    let self_pubkey = snapshot.self_user.as_ref().map(|u| u.pubkey.clone());
+    let is_operator = snapshot.is_operator;
     // Guilds in the directory we haven't joined yet.
     let available: Vec<GuildSummary> = snapshot
         .catalog
@@ -35,12 +43,18 @@ pub fn GuildsSidebar() -> Element {
         .filter(|c| !snapshot.guilds.iter().any(|g| g.id == c.id))
         .cloned()
         .collect();
+    // How many directory rows we've fetched vs how many exist — drives the
+    // paginated "load more" button in the browse modal.
+    let catalog_len = snapshot.catalog.len();
+    let catalog_total = snapshot.catalog_total as usize;
     drop(snapshot);
 
     let mut menu = use_signal::<Option<GuildMenu>>(|| None);
     let mut show_browse = use_signal(|| false);
-    // Guild whose Integrations (bots) dialog is open, if any.
+    // Guild whose Integrations (bots) / Roles / Settings dialog is open.
     let mut integrations_for = use_signal::<Option<Id>>(|| None);
+    let mut roles_for = use_signal::<Option<Id>>(|| None);
+    let mut settings_for = use_signal::<Option<Id>>(|| None);
 
     rsx! {
         nav { class: "panel-hover w-full h-full bg-[var(--panel)] border border-[var(--border)] rounded-lg flex flex-col overflow-hidden",
@@ -80,10 +94,11 @@ pub fn GuildsSidebar() -> Element {
 
                 for guild in guilds.iter().cloned() {
                     {
-                        let owned = self_pubkey
-                            .as_deref()
-                            .map(|pk| !guild.owner_pubkey.is_empty() && guild.owner_pubkey == pk)
-                            .unwrap_or(false);
+                        // Any manageable-or-leavable guild gets the context
+                        // menu; individual entries are permission-gated inside.
+                        // System guilds (empty owner) get one only for an
+                        // operator — nobody else can manage or leave them.
+                        let has_menu = !guild.owner_pubkey.is_empty() || is_operator;
                         let gname = guild.name.clone();
                         rsx! {
                             GuildIcon {
@@ -92,7 +107,7 @@ pub fn GuildsSidebar() -> Element {
                                 label: guild.icon.clone().unwrap_or_else(|| initials(&guild.name)),
                                 name: guild.name.clone(),
                                 selected: !dm_mode && selected == Some(guild.id),
-                                owned,
+                                has_menu,
                                 on_select: move |gid: Id| {
                                     let mut s = state.write();
                                     s.dm_mode = false;
@@ -109,7 +124,7 @@ pub fn GuildsSidebar() -> Element {
                                         name: gname.clone(),
                                         x,
                                         y,
-                                        confirming: false,
+                                        confirming: None,
                                     }));
                                 },
                             }
@@ -123,7 +138,15 @@ pub fn GuildsSidebar() -> Element {
                 button {
                     class: "relative w-10 h-10 rounded-md border border-dashed border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] flex items-center justify-center text-base leading-none transition-colors",
                     title: "Browse guilds to join",
-                    onclick: move |_| show_browse.set(true),
+                    onclick: {
+                        let gateway = gateway.clone();
+                        move |_| {
+                            // Pull the latest directory on open — the server no
+                            // longer pushes catalog updates to everyone.
+                            gateway.send(ClientMessage::FetchCatalog { offset: 0, limit: 0 });
+                            show_browse.set(true);
+                        }
+                    },
                     "🔍"
                     if !available.is_empty() {
                         span { class: "dxf-pop absolute -top-1 -right-1 min-w-4 h-4 px-1 rounded-full bg-[var(--accent)] text-[var(--bg)] text-[9px] font-bold flex items-center justify-center",
@@ -145,76 +168,165 @@ pub fn GuildsSidebar() -> Element {
                         class: "dxf-pop-in absolute min-w-44 bg-[var(--panel-solid)] border border-[var(--border)] rounded-md shadow-lg p-1 text-sm",
                         style: "left: {m.x}px; top: {m.y}px;",
                         onclick: move |e| e.stop_propagation(),
-                        if !m.confirming {
-                            // Accent control (owner restyles the guild live).
-                            {
-                                let cur_accent = state
-                                    .read()
-                                    .guilds
-                                    .iter()
-                                    .find(|g| g.id == m.guild_id)
-                                    .and_then(|g| g.accent.clone());
-                                let gid = m.guild_id;
-                                let gw_set = gateway.clone();
-                                let gw_clear = gateway.clone();
-                                rsx! {
-                                    div { class: "flex items-center gap-2 px-3 py-1.5",
-                                        span { class: "text-xs text-[var(--text-muted)] flex-1", "Guild accent" }
-                                        input {
-                                            r#type: "color",
-                                            class: "w-7 h-7 rounded border border-[var(--border)] bg-transparent cursor-pointer",
-                                            value: "{cur_accent.clone().unwrap_or_else(|| \"#e0a06a\".into())}",
-                                            oninput: move |e| {
-                                                gw_set.send(ClientMessage::SetGuildAccent { guild_id: gid, accent: Some(e.value()) });
-                                            },
-                                        }
-                                        if cur_accent.is_some() {
+                        {
+                            // Per-entry permission gates (server re-checks all
+                            // of these — the menu just hides dead ends).
+                            let s = state.read();
+                            let gid = m.guild_id;
+                            let is_owner = s.is_owner(gid);
+                            let can_manage = s.can(gid, Permission::ManageGuild);
+                            let can_roles = s.can(gid, Permission::ManageRoles);
+                            // System guilds (the Lobby) can't be deleted, left,
+                            // or transferred — even by an operator — so those
+                            // entries are hidden there.
+                            let is_system = s
+                                .guilds
+                                .iter()
+                                .find(|g| g.id == gid)
+                                .map(|g| g.owner_pubkey.is_empty())
+                                .unwrap_or(false);
+                            let cur_accent = s
+                                .guilds
+                                .iter()
+                                .find(|g| g.id == gid)
+                                .and_then(|g| g.accent.clone());
+                            drop(s);
+                            let gw_set = gateway.clone();
+                            let gw_clear = gateway.clone();
+                            rsx! {
+                                match m.confirming {
+                                    None => rsx! {
+                                        if can_manage {
+                                            div { class: "flex items-center gap-2 px-3 py-1.5",
+                                                span { class: "text-xs text-[var(--text-muted)] flex-1", "Guild accent" }
+                                                input {
+                                                    r#type: "color",
+                                                    class: "w-7 h-7 rounded border border-[var(--border)] bg-transparent cursor-pointer",
+                                                    value: "{cur_accent.clone().unwrap_or_else(|| \"#e0a06a\".into())}",
+                                                    oninput: move |e| {
+                                                        gw_set.send(ClientMessage::SetGuildAccent { guild_id: gid, accent: Some(e.value()) });
+                                                    },
+                                                }
+                                                if cur_accent.is_some() {
+                                                    button {
+                                                        class: "text-[10px] uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--text-muted)]",
+                                                        onclick: move |_| gw_clear.send(ClientMessage::SetGuildAccent { guild_id: gid, accent: None }),
+                                                        "clear"
+                                                    }
+                                                }
+                                            }
                                             button {
-                                                class: "text-[10px] uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--text-muted)]",
-                                                onclick: move |_| gw_clear.send(ClientMessage::SetGuildAccent { guild_id: gid, accent: None }),
-                                                "clear"
+                                                class: "w-full text-left px-3 py-1.5 rounded text-[var(--text)] hover:bg-white/[0.04] transition-colors",
+                                                onclick: move |_| {
+                                                    settings_for.set(Some(gid));
+                                                    menu.set(None);
+                                                },
+                                                "Server settings"
+                                            }
+                                            button {
+                                                class: "w-full text-left px-3 py-1.5 rounded text-[var(--text)] hover:bg-white/[0.04] transition-colors",
+                                                onclick: move |_| {
+                                                    integrations_for.set(Some(gid));
+                                                    menu.set(None);
+                                                },
+                                                "Integrations"
                                             }
                                         }
-                                    }
-                                }
-                            }
-                            button {
-                                class: "w-full text-left px-3 py-1.5 rounded text-[var(--text)] hover:bg-white/[0.04] transition-colors",
-                                onclick: move |_| {
-                                    integrations_for.set(Some(m.guild_id));
-                                    menu.set(None);
-                                },
-                                "Integrations"
-                            }
-                            button {
-                                class: "w-full text-left px-3 py-1.5 rounded text-[var(--danger)] hover:bg-[var(--danger)]/10 transition-colors",
-                                onclick: move |_| {
-                                    if let Some(cur) = menu.write().as_mut() {
-                                        cur.confirming = true;
-                                    }
-                                },
-                                "Delete server"
-                            }
-                        } else {
-                            div { class: "px-3 py-1.5 text-xs text-[var(--text-muted)]",
-                                "Delete \"{m.name}\"? This can't be undone."
-                            }
-                            div { class: "flex gap-1 px-1 pb-0.5",
-                                button {
-                                    class: "flex-1 px-2 py-1 rounded text-xs uppercase tracking-wider text-[var(--danger)] border border-[var(--danger)]/40 hover:bg-[var(--danger)]/10 transition-colors",
-                                    onclick: {
-                                        let gw = gateway.clone();
-                                        move |_| {
-                                            gw.send(ClientMessage::DeleteGuild { guild_id: m.guild_id });
-                                            menu.set(None);
+                                        if can_roles {
+                                            button {
+                                                class: "w-full text-left px-3 py-1.5 rounded text-[var(--text)] hover:bg-white/[0.04] transition-colors",
+                                                onclick: move |_| {
+                                                    roles_for.set(Some(gid));
+                                                    menu.set(None);
+                                                },
+                                                "Roles"
+                                            }
+                                        }
+                                        if !is_system {
+                                            if is_owner {
+                                                button {
+                                                    class: "w-full text-left px-3 py-1.5 rounded text-[var(--warn)] hover:bg-[var(--warn)]/10 transition-colors",
+                                                    onclick: move |_| {
+                                                        if let Some(cur) = menu.write().as_mut() {
+                                                            cur.confirming = Some(ConfirmAction::Transfer);
+                                                        }
+                                                    },
+                                                    "Transfer ownership"
+                                                }
+                                                button {
+                                                    class: "w-full text-left px-3 py-1.5 rounded text-[var(--danger)] hover:bg-[var(--danger)]/10 transition-colors",
+                                                    onclick: move |_| {
+                                                        if let Some(cur) = menu.write().as_mut() {
+                                                            cur.confirming = Some(ConfirmAction::Delete);
+                                                        }
+                                                    },
+                                                    "Delete server"
+                                                }
+                                            } else {
+                                                button {
+                                                    class: "w-full text-left px-3 py-1.5 rounded text-[var(--danger)] hover:bg-[var(--danger)]/10 transition-colors",
+                                                    onclick: move |_| {
+                                                        if let Some(cur) = menu.write().as_mut() {
+                                                            cur.confirming = Some(ConfirmAction::Leave);
+                                                        }
+                                                    },
+                                                    "Leave server"
+                                                }
+                                            }
                                         }
                                     },
-                                    "Delete"
-                                }
-                                button {
-                                    class: "flex-1 px-2 py-1 rounded text-xs uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--text-muted)] transition-colors",
-                                    onclick: move |_| menu.set(None),
-                                    "Cancel"
+                                    Some(ConfirmAction::Delete) => rsx! {
+                                        div { class: "px-3 py-1.5 text-xs text-[var(--text-muted)]",
+                                            "Delete \"{m.name}\"? This can't be undone."
+                                        }
+                                        div { class: "flex gap-1 px-1 pb-0.5",
+                                            button {
+                                                class: "flex-1 px-2 py-1 rounded text-xs uppercase tracking-wider text-[var(--danger)] border border-[var(--danger)]/40 hover:bg-[var(--danger)]/10 transition-colors",
+                                                onclick: {
+                                                    let gw = gateway.clone();
+                                                    move |_| {
+                                                        gw.send(ClientMessage::DeleteGuild { guild_id: gid });
+                                                        menu.set(None);
+                                                    }
+                                                },
+                                                "Delete"
+                                            }
+                                            button {
+                                                class: "flex-1 px-2 py-1 rounded text-xs uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--text-muted)] transition-colors",
+                                                onclick: move |_| menu.set(None),
+                                                "Cancel"
+                                            }
+                                        }
+                                    },
+                                    Some(ConfirmAction::Leave) => rsx! {
+                                        div { class: "px-3 py-1.5 text-xs text-[var(--text-muted)]",
+                                            "Leave \"{m.name}\"? You can rejoin later if it's public (or with an invite)."
+                                        }
+                                        div { class: "flex gap-1 px-1 pb-0.5",
+                                            button {
+                                                class: "flex-1 px-2 py-1 rounded text-xs uppercase tracking-wider text-[var(--danger)] border border-[var(--danger)]/40 hover:bg-[var(--danger)]/10 transition-colors",
+                                                onclick: {
+                                                    let gw = gateway.clone();
+                                                    move |_| {
+                                                        gw.send(ClientMessage::LeaveGuild { guild_id: gid });
+                                                        menu.set(None);
+                                                    }
+                                                },
+                                                "Leave"
+                                            }
+                                            button {
+                                                class: "flex-1 px-2 py-1 rounded text-xs uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--text-muted)] transition-colors",
+                                                onclick: move |_| menu.set(None),
+                                                "Cancel"
+                                            }
+                                        }
+                                    },
+                                    Some(ConfirmAction::Transfer) => rsx! {
+                                        TransferPicker {
+                                            guild_id: gid,
+                                            on_done: move |_| menu.set(None),
+                                        }
+                                    },
                                 }
                             }
                         }
@@ -222,11 +334,23 @@ pub fn GuildsSidebar() -> Element {
                 }
             }
 
-            // Owner-only Integrations (bots) dialog.
+            // Management dialogs (each opens from the context menu).
             if let Some(gid) = integrations_for() {
                 crate::features::integrations::IntegrationsDialog {
                     guild_id: gid,
                     on_close: move |_| integrations_for.set(None),
+                }
+            }
+            if let Some(gid) = roles_for() {
+                crate::features::roles::RolesDialog {
+                    guild_id: gid,
+                    on_close: move |_| roles_for.set(None),
+                }
+            }
+            if let Some(gid) = settings_for() {
+                crate::features::guild_settings::GuildSettingsDialog {
+                    guild_id: gid,
+                    on_close: move |_| settings_for.set(None),
                 }
             }
 
@@ -272,16 +396,75 @@ pub fn GuildsSidebar() -> Element {
                                             }
                                             button {
                                                 class: "px-3 py-1 rounded text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors",
-                                                onclick: move |_| gw.send(ClientMessage::JoinGuild { guild_id: gid }),
+                                                onclick: move |_| gw.send(ClientMessage::JoinGuild { guild_id: gid, accept: false, pow_nonce: None }),
                                                 "Join"
                                             }
                                         }
                                     }
                                 }
                             }
+                            // More of the directory remains — fetch the next page.
+                            if catalog_len < catalog_total {
+                                {
+                                    let gw = gateway.clone();
+                                    rsx! {
+                                        div { class: "flex justify-center py-2",
+                                            button {
+                                                class: "text-[11px] uppercase tracking-wider text-[var(--text-muted)] border border-[var(--border)] rounded px-3 py-1 hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors",
+                                                onclick: move |_| {
+                                                    gw.send(ClientMessage::FetchCatalog {
+                                                        offset: catalog_len as u32,
+                                                        limit: 0,
+                                                    });
+                                                },
+                                                "Load more"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
+                        // Private guilds don't appear above — they're joined
+                        // with an invite code instead.
+                        InviteJoinRow { on_joined: move |_| show_browse.set(false) }
                     }
                 }
+            }
+        }
+    }
+}
+
+/// "Have an invite code?" input at the bottom of the browse modal. The server
+/// replies `GuildJoined` (which auto-selects the guild) or an `Error` toast.
+#[component]
+fn InviteJoinRow(on_joined: EventHandler<()>) -> Element {
+    let gateway = use_gateway();
+    let mut code = use_signal(String::new);
+
+    let mut submit = move || {
+        let c = code().trim().to_string();
+        if c.is_empty() {
+            return;
+        }
+        gateway.send(ClientMessage::JoinByInvite { code: c, accept: false, pow_nonce: None });
+        code.set(String::new());
+        on_joined.call(());
+    };
+
+    rsx! {
+        form {
+            class: "border-t border-[var(--border)] p-2 flex items-center gap-2",
+            onsubmit: move |_| submit(),
+            input {
+                class: "flex-1 bg-transparent border border-[var(--border)] focus:border-[var(--accent)] rounded px-2 py-1 text-xs font-mono text-[var(--text)] outline-none transition-colors",
+                placeholder: "Have an invite code?",
+                value: "{code}",
+                oninput: move |e| code.set(e.value()),
+            }
+            button {
+                r#type: "submit",
+                class: "px-3 py-1 rounded text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors",
+                "Join"
             }
         }
     }
@@ -322,7 +505,7 @@ fn CreateGuild() -> Element {
     let mut submit = move || {
         let trimmed = name().trim().to_string();
         if !trimmed.is_empty() {
-            gateway.send(ClientMessage::CreateGuild { name: trimmed });
+            gateway.send(ClientMessage::CreateGuild { name: trimmed, template: None });
         }
         name.set(String::new());
         open.set(false);
@@ -383,10 +566,11 @@ fn GuildIcon(
     label: String,
     name: String,
     selected: bool,
-    /// Whether the current user owns this guild (and so may delete it).
-    owned: bool,
+    /// Whether right-clicking opens the management/leave menu (false only for
+    /// system guilds, which can be neither managed nor left).
+    has_menu: bool,
     on_select: EventHandler<Id>,
-    /// Fired on right-click for owned guilds, with (guild_id, x, y).
+    /// Fired on right-click when `has_menu`, with (guild_id, x, y).
     on_context: EventHandler<(Id, f64, f64)>,
 ) -> Element {
     let cls = if selected {
@@ -398,17 +582,86 @@ fn GuildIcon(
     rsx! {
         button {
             class: "w-10 h-10 rounded-md border flex items-center justify-center text-xs font-medium transition-colors {cls}",
-            title: if owned { "{name} (right-click for options)" } else { "{name}" },
+            title: if has_menu { "{name} (right-click for options)" } else { "{name}" },
             onclick: move |_| on_select.call(id),
             oncontextmenu: move |e: MouseEvent| {
-                // Only owners get a menu; otherwise let the default through.
-                if owned {
+                if has_menu {
                     e.prevent_default();
                     let c = e.client_coordinates();
                     on_context.call((id, c.x, c.y));
                 }
             },
             "{label}"
+        }
+    }
+}
+
+/// Inline member picker for the "Transfer ownership" confirm step. Lists the
+/// guild's human members (excluding yourself); clicking one arms a final
+/// confirm button.
+#[component]
+fn TransferPicker(guild_id: Id, on_done: EventHandler<()>) -> Element {
+    let state = use_app_state();
+    let gateway = use_gateway();
+    let mut chosen = use_signal(|| None::<(String, String)>); // (pubkey, name)
+
+    let candidates: Vec<(String, String)> = {
+        let s = state.read();
+        let me = s.self_user.as_ref().map(|u| u.pubkey.clone()).unwrap_or_default();
+        s.members
+            .iter()
+            .filter(|m| m.guild_id == guild_id && !m.bot && m.user.pubkey != me)
+            .map(|m| (m.user.pubkey.clone(), m.user.username.clone()))
+            .collect()
+    };
+
+    rsx! {
+        div { class: "px-3 py-1.5 text-xs text-[var(--text-muted)]",
+            "Hand this server to… (you keep membership, they get the crown)"
+        }
+        if candidates.is_empty() {
+            div { class: "px-3 pb-1.5 text-xs text-[var(--text-dim)]", "No other members yet." }
+        }
+        div { class: "max-h-40 overflow-y-auto",
+            for (pk, name) in candidates {
+                {
+                    let selected = chosen().map(|(c, _)| c == pk).unwrap_or(false);
+                    let pk2 = pk.clone();
+                    let name2 = name.clone();
+                    let row_cls = if selected { "text-[var(--warn)]" } else { "text-[var(--text)]" };
+                    rsx! {
+                        button {
+                            key: "{pk}",
+                            class: "w-full text-left px-3 py-1 rounded {row_cls} hover:bg-white/[0.04] transition-colors text-xs truncate",
+                            onclick: move |_| chosen.set(Some((pk2.clone(), name2.clone()))),
+                            "{name}"
+                        }
+                    }
+                }
+            }
+        }
+        if let Some((pk, name)) = chosen() {
+            div { class: "flex gap-1 px-1 py-1 border-t border-[var(--border)] mt-1",
+                button {
+                    class: "flex-1 px-2 py-1 rounded text-xs uppercase tracking-wider text-[var(--warn)] border border-[var(--warn)]/40 hover:bg-[var(--warn)]/10 transition-colors",
+                    onclick: {
+                        let gw = gateway.clone();
+                        move |_| {
+                            gw.send(ClientMessage::TransferOwnership {
+                                guild_id,
+                                new_owner_pubkey: pk.clone(),
+                            });
+                            on_done.call(());
+                        }
+                    },
+                    "Transfer to {name}"
+                }
+                button {
+                    class: "px-2 py-1 rounded text-xs uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--text-muted)] transition-colors",
+                    onclick: move |_| on_done.call(()),
+                    "Cancel"
+                }
+            }
         }
     }
 }

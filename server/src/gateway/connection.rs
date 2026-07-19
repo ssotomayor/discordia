@@ -16,7 +16,10 @@ pub async fn handle_connection(
     client_host: Option<String>,
 ) {
     let (mut ws_tx, mut ws_rx) = socket.split();
-    let mut hub_rx = ctx.state.hub.subscribe();
+    // Register on the routing table immediately so any frame broadcast between
+    // now and identify still reaches us; `outbound_rx` is this connection's
+    // private queue drained in the select loop below.
+    let (conn_id, mut outbound_rx) = ctx.state.register_conn();
 
     // Issue a per-connection nonce immediately so the client knows what to
     // sign in its Identify response.
@@ -73,7 +76,7 @@ pub async fn handle_connection(
                 }
 
                 match client_msg {
-                    ClientMessage::Identify { username, pubkey, signature } => {
+                    ClientMessage::Identify { username, pubkey, signature, bot } => {
                         if user.is_some() {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "already identified".into(),
@@ -88,14 +91,23 @@ pub async fn handle_connection(
                             continue;
                         }
                         let new_user = User { pubkey: pubkey.clone(), username };
-                        ctx.state.remember_user(&new_user);
-                        // An identity that's been installed as a bot somewhere
-                        // gets the scoped, intent-filtered treatment.
-                        is_bot = ctx.state.is_bot(&new_user.pubkey);
+                        ctx.state.remember_user(&new_user).await;
+                        // Bot-ness is SELF-DECLARED, not inferred from installs:
+                        // if a mere install flipped a pubkey to "bot", anyone
+                        // could strip a victim's human abilities by installing
+                        // their pubkey in a throwaway guild. A declared bot gets
+                        // the scoped, intent-filtered treatment; its per-guild
+                        // powers still come only from actual installs.
+                        is_bot = bot;
+                        // Map this connection to its pubkey BEFORE snapshotting,
+                        // so a frame delivered concurrently with identify queues
+                        // for us rather than falling into a gap (a benign dup
+                        // with the snapshot is fine; a lost frame is not).
+                        ctx.state.identify_conn(conn_id, &new_user.pubkey);
                         let ready = if is_bot {
                             ctx.state.snapshot_for_bot(&new_user)
                         } else {
-                            ctx.state.snapshot_for(&new_user)
+                            ctx.state.snapshot_for(&new_user).await
                         };
                         if send(&mut ws_tx, &ready).await.is_err() {
                             break;
@@ -121,7 +133,7 @@ pub async fn handle_connection(
                         tracing::info!(user = %new_user.username, pubkey = %new_user.pubkey, "identified");
                         user = Some(new_user);
                     }
-                    ClientMessage::FetchMessages { channel_id, limit } => {
+                    ClientMessage::FetchMessages { channel_id, limit, before_ms } => {
                         let Some(u) = user.as_ref() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
@@ -149,7 +161,7 @@ pub async fn handle_connection(
                             }).await;
                             continue;
                         }
-                        let history = ctx.state.history(channel_id, limit.max(1).min(200));
+                        let history = ctx.state.history(channel_id, limit.max(1).min(200), before_ms).await;
                         if send(&mut ws_tx, &ServerMessage::MessageHistory {
                             channel_id,
                             messages: history,
@@ -212,10 +224,56 @@ pub async fn handle_connection(
                                 }).await;
                                 continue;
                             }
-                            match ctx.state.push_message(channel_id, author, content, image) {
+                            // Read-only channels: one predicate, two grant
+                            // paths — humans via roles, bots via their install.
+                            if ctx.state.channel_read_only(channel_id) {
+                                let allowed = if is_bot {
+                                    ctx.state
+                                        .bot_install(gid, &author.pubkey)
+                                        .map(|i| {
+                                            i.has_permission(Permission::ManageMessages)
+                                                || i.has_permission(Permission::ManageChannels)
+                                        })
+                                        .unwrap_or(false)
+                                } else {
+                                    let perms =
+                                        ctx.state.effective_permissions(gid, &author.pubkey);
+                                    perms.contains(&Permission::ManageMessages)
+                                        || perms.contains(&Permission::ManageChannels)
+                                };
+                                if !allowed {
+                                    let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                        message: "this channel is read-only".into(),
+                                    }).await;
+                                    continue;
+                                }
+                            }
+                            // Slowmode — moderators (ManageMessages/ManageChannels)
+                            // and bots are exempt; everyone else waits their turn.
+                            let mod_exempt = {
+                                let perms = ctx.state.effective_permissions(gid, &author.pubkey);
+                                is_bot
+                                    || perms.contains(&Permission::ManageMessages)
+                                    || perms.contains(&Permission::ManageChannels)
+                            };
+                            if !mod_exempt {
+                                if let Err(wait) = ctx.state.slowmode_check(channel_id, &author.pubkey) {
+                                    let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                        message: format!("slowmode: wait {wait}s before posting again"),
+                                    }).await;
+                                    continue;
+                                }
+                            }
+                            match ctx.state.push_message(channel_id, author, content, image).await {
                                 Some(msg) => {
+                                    let author_pk = msg.author.pubkey.clone();
                                     let targets = ctx.state.guild_member_pubkeys(gid);
                                     ctx.state.deliver(targets, ServerMessage::MessageCreate(msg));
+                                    // Award message-XP; broadcast a profile only
+                                    // on level-up.
+                                    if let Some(profile) = ctx.state.add_xp(&author_pk).await {
+                                        ctx.state.broadcast(ServerMessage::ProfileUpdate(profile));
+                                    }
                                 }
                                 None => {
                                     let _ = send(&mut ws_tx, &ServerMessage::Error {
@@ -226,12 +284,16 @@ pub async fn handle_connection(
                         } else if let Some(participants) = ctx.state.dm_participants(channel_id) {
                             if participants.iter().any(|p| p == &author.pubkey) {
                                 if let Some(msg) =
-                                    ctx.state.push_dm_message(channel_id, author, content, image)
+                                    ctx.state.push_dm_message(channel_id, author, content, image).await
                                 {
+                                    let author_pk = msg.author.pubkey.clone();
                                     ctx.state.deliver(
                                         participants.to_vec(),
                                         ServerMessage::MessageCreate(msg),
                                     );
+                                    if let Some(profile) = ctx.state.add_xp(&author_pk).await {
+                                        ctx.state.broadcast(ServerMessage::ProfileUpdate(profile));
+                                    }
                                 }
                             } else {
                                 let _ = send(&mut ws_tx, &ServerMessage::Error {
@@ -244,7 +306,7 @@ pub async fn handle_connection(
                             }).await;
                         }
                     }
-                    ClientMessage::CreateGuild { name } => {
+                    ClientMessage::CreateGuild { name, template } => {
                         let Some(creator) = user.clone() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
@@ -258,59 +320,99 @@ pub async fn handle_connection(
                             }).await;
                             continue;
                         }
-                        let (guild, channels, member) = ctx.state.create_guild(&name, &creator);
+                        let (guild, channels, member, roles) =
+                            ctx.state.create_guild(&name, template.as_deref(), &creator).await;
                         tracing::info!(guild = %guild.name, by = %creator.username, "guild created");
-                        // The creator is the only member — hand the guild to
-                        // them directly, then refresh everyone's directory.
+                        // The creator is the only member — hand the guild
+                        // (channels + any template roles) to them directly. The
+                        // public directory is fetched on demand (FetchCatalog),
+                        // so no catalog push here.
                         if send(&mut ws_tx, &ServerMessage::GuildJoined {
                             guild,
                             channels,
                             members: vec![member],
+                            roles,
                         }).await.is_err() {
                             break;
                         }
-                        ctx.state.broadcast(ServerMessage::GuildCatalog {
-                            guilds: ctx.state.guild_catalog(),
-                        });
                     }
-                    ClientMessage::JoinGuild { guild_id } => {
+                    ClientMessage::JoinGuild { guild_id, accept, pow_nonce } => {
                         let Some(joiner) = user.clone() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
                             continue;
                         };
-                        match ctx.state.join_guild(guild_id, &joiner) {
-                            Some((guild, channels, members)) => {
-                                tracing::info!(%guild_id, by = %joiner.username, "guild joined");
-                                // Notify the EXISTING members (exclude the
-                                // joiner, who gets the full roster below).
-                                let mut targets = ctx.state.guild_member_pubkeys(guild_id);
-                                targets.retain(|p| p != &joiner.pubkey);
-                                ctx.state.deliver(
-                                    targets,
-                                    ServerMessage::MemberJoin(Member {
-                                        user: joiner.clone(),
-                                        guild_id,
-                                        online: true,
-                                        bot: false,
-                                    }),
-                                );
-                                if send(&mut ws_tx, &ServerMessage::GuildJoined {
-                                    guild,
-                                    channels,
-                                    members,
-                                }).await.is_err() {
+                        if !limiter.allow() {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "rate limited: slow down".into(),
+                            }).await;
+                            continue;
+                        }
+                        match check_join_gate(&ctx.state, guild_id, &joiner.pubkey, accept, pow_nonce.as_deref(), None) {
+                            Gate::Reject(msg) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message: msg }).await;
+                                continue;
+                            }
+                            Gate::Challenge(ch) => {
+                                let _ = send(&mut ws_tx, &ch).await;
+                                continue;
+                            }
+                            Gate::Proceed => {}
+                        }
+                        match ctx.state.join_guild(guild_id, &joiner).await {
+                            Ok(bundle) => {
+                                if deliver_join(&ctx.state, &mut ws_tx, &joiner, bundle).await.is_err() {
                                     break;
                                 }
-                                ctx.state.broadcast(ServerMessage::GuildCatalog {
-                                    guilds: ctx.state.guild_catalog(),
-                                });
                             }
-                            None => {
-                                let _ = send(&mut ws_tx, &ServerMessage::Error {
-                                    message: "unknown guild".into(),
-                                }).await;
+                            Err(e) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message: e }).await;
+                            }
+                        }
+                    }
+                    ClientMessage::JoinByInvite { code, accept, pow_nonce } => {
+                        let Some(joiner) = user.clone() else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "identify first".into(),
+                            }).await;
+                            continue;
+                        };
+                        // Rate-limited: codes are high-entropy, but nobody gets
+                        // to free-spin guesses either.
+                        if !limiter.allow() {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "rate limited: slow down".into(),
+                            }).await;
+                            continue;
+                        }
+                        // Resolve the invite to a guild so we can gate-check it
+                        // (the gate lives on the guild, not the code).
+                        let Some(guild_id) = ctx.state.invite_guild(&code) else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "unknown or expired invite code".into(),
+                            }).await;
+                            continue;
+                        };
+                        match check_join_gate(&ctx.state, guild_id, &joiner.pubkey, accept, pow_nonce.as_deref(), Some(code.clone())) {
+                            Gate::Reject(msg) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message: msg }).await;
+                                continue;
+                            }
+                            Gate::Challenge(ch) => {
+                                let _ = send(&mut ws_tx, &ch).await;
+                                continue;
+                            }
+                            Gate::Proceed => {}
+                        }
+                        match ctx.state.join_by_invite(&code, &joiner).await {
+                            Ok(bundle) => {
+                                if deliver_join(&ctx.state, &mut ws_tx, &joiner, bundle).await.is_err() {
+                                    break;
+                                }
+                            }
+                            Err(e) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message: e }).await;
                             }
                         }
                     }
@@ -323,13 +425,10 @@ pub async fn handle_connection(
                         };
                         // Capture members BEFORE deletion removes them.
                         let targets = ctx.state.guild_member_pubkeys(guild_id);
-                        match ctx.state.delete_guild(guild_id, &u.pubkey) {
+                        match ctx.state.delete_guild(guild_id, &u.pubkey).await {
                             Ok(()) => {
                                 tracing::info!(%guild_id, by = %u.username, "guild deleted");
                                 ctx.state.deliver(targets, ServerMessage::GuildDelete { guild_id });
-                                ctx.state.broadcast(ServerMessage::GuildCatalog {
-                                    guilds: ctx.state.guild_catalog(),
-                                });
                             }
                             Err(e) => {
                                 let _ = send(&mut ws_tx, &ServerMessage::Error { message: e }).await;
@@ -349,7 +448,7 @@ pub async fn handle_connection(
                             }).await;
                             continue;
                         }
-                        let channel_id = ctx.state.get_or_create_dm(&me.pubkey, &user_pubkey);
+                        let channel_id = ctx.state.get_or_create_dm(&me.pubkey, &user_pubkey).await;
                         let other = ctx
                             .state
                             .users
@@ -359,7 +458,7 @@ pub async fn handle_connection(
                                 pubkey: user_pubkey.clone(),
                                 username: user_pubkey.chars().take(6).collect(),
                             });
-                        let messages = ctx.state.history(channel_id, 50);
+                        let messages = ctx.state.history(channel_id, 50, None).await;
                         // Reply to the requester only. The other participant
                         // learns of the conversation when the first message
                         // actually arrives — opening a DM window doesn't ping
@@ -417,7 +516,7 @@ pub async fn handle_connection(
                         let custom_status = custom_status.map(|c| c.chars().take(80).collect::<String>());
                         let profile = ctx.state.set_profile(
                             &u.pubkey, avatar, banner, bio, status, custom_status,
-                        );
+                        ).await;
                         // Profiles are public — everyone gets the update.
                         ctx.state.broadcast(ServerMessage::ProfileUpdate(profile));
                     }
@@ -446,7 +545,7 @@ pub async fn handle_connection(
                         // Keep the emoji short to avoid abuse.
                         let emoji: String = emoji.chars().take(8).collect();
                         if let Some(reactions) =
-                            ctx.state.toggle_reaction(channel_id, message_id, &emoji, &u.pubkey)
+                            ctx.state.toggle_reaction(channel_id, message_id, &emoji, &u.pubkey).await
                         {
                             ctx.state.deliver(
                                 audience,
@@ -482,7 +581,7 @@ pub async fn handle_connection(
                         };
                         // Sanitise to a hex color if present.
                         let accent = accent.filter(|a| is_hex_color(a));
-                        match ctx.state.set_guild_accent(guild_id, accent, &u.pubkey) {
+                        match ctx.state.set_guild_accent(guild_id, accent, &u.pubkey).await {
                             Ok(guild) => {
                                 let targets = ctx.state.guild_member_pubkeys(guild_id);
                                 ctx.state.deliver(targets, ServerMessage::GuildUpdate(guild));
@@ -501,7 +600,7 @@ pub async fn handle_connection(
                         };
                         match ctx.state.install_bot(
                             guild_id, &bot_pubkey, &name, permissions, intents, &u.pubkey,
-                        ) {
+                        ).await {
                             Ok((install, member)) => {
                                 tracing::info!(%guild_id, bot = %bot_pubkey, by = %u.username, "bot installed");
                                 // Surface the bot in every member's roster.
@@ -529,12 +628,13 @@ pub async fn handle_connection(
                         // Capture recipients before removal drops the bot from
                         // the roster.
                         let targets = ctx.state.guild_member_pubkeys(guild_id);
-                        match ctx.state.uninstall_bot(guild_id, &bot_pubkey, &u.pubkey) {
+                        match ctx.state.uninstall_bot(guild_id, &bot_pubkey, &u.pubkey).await {
                             Ok(()) => {
                                 tracing::info!(%guild_id, bot = %bot_pubkey, by = %u.username, "bot uninstalled");
+                                // Removal, not offline — clients drop the row.
                                 ctx.state.deliver(
                                     targets,
-                                    ServerMessage::MemberLeave { guild_id, user_pubkey: bot_pubkey },
+                                    ServerMessage::MemberRemove { guild_id, user_pubkey: bot_pubkey },
                                 );
                                 let _ = send(&mut ws_tx, &ServerMessage::GuildIntegrations {
                                     guild_id,
@@ -553,16 +653,12 @@ pub async fn handle_connection(
                             }).await;
                             continue;
                         };
-                        let is_owner = ctx
-                            .state
-                            .guilds
-                            .get(&guild_id)
-                            .map(|g| !g.owner_pubkey.is_empty() && g.owner_pubkey == u.pubkey)
-                            .unwrap_or(false);
-                        if !is_owner {
-                            let _ = send(&mut ws_tx, &ServerMessage::Error {
-                                message: "only the owner can view this guild's integrations".into(),
-                            }).await;
+                        if let Err(e) = ctx.state.require_permission(
+                            guild_id,
+                            &u.pubkey,
+                            Permission::ManageGuild,
+                        ) {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error { message: e }).await;
                             continue;
                         }
                         let _ = send(&mut ws_tx, &ServerMessage::GuildIntegrations {
@@ -572,15 +668,19 @@ pub async fn handle_connection(
                     }
                     ClientMessage::SetScreenShare { channel_id, sharing } => {
                         let Some(u) = user.as_ref() else { continue };
+                        // Members only — otherwise any connected user could flip
+                        // LIVE badges in guilds they don't belong to.
+                        let Some(gid) = ctx.state.channel_guild(channel_id) else { continue };
+                        if !ctx.state.is_guild_member(gid, &u.pubkey) {
+                            continue;
+                        }
                         let sharers = ctx.state.set_screen_share(channel_id, &u.pubkey, sharing);
                         // Tell the channel's guild who's live.
-                        if let Some(gid) = ctx.state.channel_guild(channel_id) {
-                            let targets = ctx.state.guild_member_pubkeys(gid);
-                            ctx.state.deliver(
-                                targets,
-                                ServerMessage::ScreenShareState { channel_id, sharers },
-                            );
-                        }
+                        let targets = ctx.state.guild_member_pubkeys(gid);
+                        ctx.state.deliver(
+                            targets,
+                            ServerMessage::ScreenShareState { channel_id, sharers },
+                        );
                     }
                     ClientMessage::JoinVoice { channel_id } => {
                         let Some(u) = user.as_ref() else {
@@ -671,34 +771,516 @@ pub async fn handle_connection(
                             ctx.state.deliver(targets, ServerMessage::VoiceStateUpdate(state));
                         }
                     }
+                    ClientMessage::CreateRole { guild_id, name, color, permissions } => {
+                        let Some(u) = user.as_ref() else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "identify first".into(),
+                            }).await;
+                            continue;
+                        };
+                        if !limiter.allow() {
+                            continue;
+                        }
+                        match ctx.state.create_role(guild_id, &name, color, permissions, &u.pubkey).await {
+                            Ok(role) => {
+                                tracing::info!(%guild_id, role = %role.name, by = %u.username, "role created");
+                                let targets = ctx.state.guild_member_pubkeys(guild_id);
+                                ctx.state.deliver(targets, ServerMessage::GuildRoles {
+                                    guild_id,
+                                    roles: ctx.state.guild_roles(guild_id),
+                                });
+                            }
+                            Err(e) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message: e }).await;
+                            }
+                        }
+                    }
+                    ClientMessage::UpdateRole { guild_id, role_id, name, color, permissions } => {
+                        let Some(u) = user.as_ref() else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "identify first".into(),
+                            }).await;
+                            continue;
+                        };
+                        if !limiter.allow() {
+                            continue;
+                        }
+                        match ctx.state.update_role(guild_id, role_id, &name, color, permissions, &u.pubkey).await {
+                            Ok(_) => {
+                                let targets = ctx.state.guild_member_pubkeys(guild_id);
+                                ctx.state.deliver(targets, ServerMessage::GuildRoles {
+                                    guild_id,
+                                    roles: ctx.state.guild_roles(guild_id),
+                                });
+                            }
+                            Err(e) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message: e }).await;
+                            }
+                        }
+                    }
+                    ClientMessage::DeleteRole { guild_id, role_id } => {
+                        let Some(u) = user.as_ref() else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "identify first".into(),
+                            }).await;
+                            continue;
+                        };
+                        if !limiter.allow() {
+                            continue;
+                        }
+                        match ctx.state.delete_role(guild_id, role_id, &u.pubkey).await {
+                            Ok(changed_members) => {
+                                let targets = ctx.state.guild_member_pubkeys(guild_id);
+                                ctx.state.deliver(targets.clone(), ServerMessage::GuildRoles {
+                                    guild_id,
+                                    roles: ctx.state.guild_roles(guild_id),
+                                });
+                                // Everyone re-renders the members whose role
+                                // set just lost the deleted role.
+                                for member in changed_members {
+                                    ctx.state.deliver(
+                                        targets.clone(),
+                                        ServerMessage::MemberUpdate(member),
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message: e }).await;
+                            }
+                        }
+                    }
+                    ClientMessage::AssignRole { guild_id, role_id, user_pubkey } => {
+                        let Some(u) = user.as_ref() else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "identify first".into(),
+                            }).await;
+                            continue;
+                        };
+                        if !limiter.allow() {
+                            continue;
+                        }
+                        match ctx.state.set_member_role(guild_id, role_id, &user_pubkey, true, &u.pubkey).await {
+                            Ok(member) => {
+                                let targets = ctx.state.guild_member_pubkeys(guild_id);
+                                ctx.state.deliver(targets, ServerMessage::MemberUpdate(member));
+                            }
+                            Err(e) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message: e }).await;
+                            }
+                        }
+                    }
+                    ClientMessage::UnassignRole { guild_id, role_id, user_pubkey } => {
+                        let Some(u) = user.as_ref() else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "identify first".into(),
+                            }).await;
+                            continue;
+                        };
+                        if !limiter.allow() {
+                            continue;
+                        }
+                        match ctx.state.set_member_role(guild_id, role_id, &user_pubkey, false, &u.pubkey).await {
+                            Ok(member) => {
+                                let targets = ctx.state.guild_member_pubkeys(guild_id);
+                                ctx.state.deliver(targets, ServerMessage::MemberUpdate(member));
+                            }
+                            Err(e) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message: e }).await;
+                            }
+                        }
+                    }
+                    ClientMessage::SetGuildVisibility { guild_id, visibility } => {
+                        let Some(u) = user.as_ref() else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "identify first".into(),
+                            }).await;
+                            continue;
+                        };
+                        match ctx.state.set_guild_visibility(guild_id, visibility, &u.pubkey).await {
+                            Ok(guild) => {
+                                tracing::info!(%guild_id, ?visibility, by = %u.username, "guild visibility set");
+                                let targets = ctx.state.guild_member_pubkeys(guild_id);
+                                ctx.state.deliver(targets, ServerMessage::GuildUpdate(guild));
+                                // Visibility changes show up in the directory on
+                                // the next FetchCatalog.
+                            }
+                            Err(e) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message: e }).await;
+                            }
+                        }
+                    }
+                    ClientMessage::CreateInvite { guild_id, rotate } => {
+                        let Some(u) = user.as_ref() else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "identify first".into(),
+                            }).await;
+                            continue;
+                        };
+                        if !limiter.allow() {
+                            continue;
+                        }
+                        match ctx.state.get_or_create_invite(guild_id, rotate, &u.pubkey).await {
+                            Ok(code) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::GuildInvite {
+                                    guild_id,
+                                    code,
+                                }).await;
+                            }
+                            Err(e) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message: e }).await;
+                            }
+                        }
+                    }
+                    ClientMessage::KickMember { guild_id, user_pubkey } => {
+                        let Some(u) = user.as_ref() else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "identify first".into(),
+                            }).await;
+                            continue;
+                        };
+                        if !limiter.allow() {
+                            continue;
+                        }
+                        match ctx.state.kick_member(guild_id, &user_pubkey, &u.pubkey).await {
+                            Ok(cleared_voice) => {
+                                tracing::info!(%guild_id, target = %user_pubkey, by = %u.username, "member kicked");
+                                ctx.state.audit(guild_id, &u.pubkey, "kick", &user_pubkey, "").await;
+                                removal_broadcasts(&ctx.state, guild_id, &user_pubkey, true, cleared_voice);
+                            }
+                            Err(e) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message: e }).await;
+                            }
+                        }
+                    }
+                    ClientMessage::BanMember { guild_id, user_pubkey } => {
+                        let Some(u) = user.as_ref() else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "identify first".into(),
+                            }).await;
+                            continue;
+                        };
+                        if !limiter.allow() {
+                            continue;
+                        }
+                        let was_member = ctx.state.is_guild_member(guild_id, &user_pubkey);
+                        match ctx.state.ban_member(guild_id, &user_pubkey, &u.pubkey).await {
+                            Ok(cleared_voice) => {
+                                tracing::info!(%guild_id, target = %user_pubkey, by = %u.username, "member banned");
+                                ctx.state.audit(guild_id, &u.pubkey, "ban", &user_pubkey, "").await;
+                                removal_broadcasts(&ctx.state, guild_id, &user_pubkey, was_member, cleared_voice);
+                                // Refresh the moderator's ban panel.
+                                if let Ok(users) = ctx.state.ban_list(guild_id, &u.pubkey) {
+                                    let _ = send(&mut ws_tx, &ServerMessage::GuildBans {
+                                        guild_id,
+                                        users,
+                                    }).await;
+                                }
+                            }
+                            Err(e) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message: e }).await;
+                            }
+                        }
+                    }
+                    ClientMessage::UnbanMember { guild_id, user_pubkey } => {
+                        let Some(u) = user.as_ref() else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "identify first".into(),
+                            }).await;
+                            continue;
+                        };
+                        match ctx.state.unban_member(guild_id, &user_pubkey, &u.pubkey).await {
+                            Ok(()) => {
+                                ctx.state.audit(guild_id, &u.pubkey, "unban", &user_pubkey, "").await;
+                                if let Ok(users) = ctx.state.ban_list(guild_id, &u.pubkey) {
+                                    let _ = send(&mut ws_tx, &ServerMessage::GuildBans {
+                                        guild_id,
+                                        users,
+                                    }).await;
+                                }
+                            }
+                            Err(e) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message: e }).await;
+                            }
+                        }
+                    }
+                    ClientMessage::FetchBans { guild_id } => {
+                        let Some(u) = user.as_ref() else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "identify first".into(),
+                            }).await;
+                            continue;
+                        };
+                        match ctx.state.ban_list(guild_id, &u.pubkey) {
+                            Ok(users) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::GuildBans {
+                                    guild_id,
+                                    users,
+                                }).await;
+                            }
+                            Err(e) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message: e }).await;
+                            }
+                        }
+                    }
+                    ClientMessage::LeaveGuild { guild_id } => {
+                        let Some(u) = user.as_ref() else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "identify first".into(),
+                            }).await;
+                            continue;
+                        };
+                        match ctx.state.leave_guild(guild_id, &u.pubkey).await {
+                            Ok(cleared_voice) => {
+                                tracing::info!(%guild_id, by = %u.username, "left guild");
+                                removal_broadcasts(&ctx.state, guild_id, &u.pubkey, true, cleared_voice);
+                            }
+                            Err(e) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message: e }).await;
+                            }
+                        }
+                    }
+                    ClientMessage::CreateChannel { guild_id, name, kind, topic } => {
+                        let Some(u) = user.as_ref() else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "identify first".into(),
+                            }).await;
+                            continue;
+                        };
+                        if !limiter.allow() {
+                            continue;
+                        }
+                        match ctx.state.create_channel(guild_id, &name, kind, topic, &u.pubkey).await {
+                            Ok(channel) => {
+                                tracing::info!(%guild_id, channel = %channel.name, by = %u.username, "channel created");
+                                let targets = ctx.state.guild_member_pubkeys(guild_id);
+                                ctx.state.deliver(targets, ServerMessage::ChannelCreate(channel));
+                            }
+                            Err(e) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message: e }).await;
+                            }
+                        }
+                    }
+                    ClientMessage::UpdateChannel { channel_id, name, topic, read_only, position, slowmode_secs } => {
+                        let Some(u) = user.as_ref() else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "identify first".into(),
+                            }).await;
+                            continue;
+                        };
+                        if !limiter.allow() {
+                            continue;
+                        }
+                        match ctx.state.update_channel(channel_id, &name, topic, read_only, position, slowmode_secs, &u.pubkey).await {
+                            Ok(channel) => {
+                                let targets = ctx.state.guild_member_pubkeys(channel.guild_id);
+                                ctx.state.deliver(targets, ServerMessage::ChannelUpdate(channel));
+                            }
+                            Err(e) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message: e }).await;
+                            }
+                        }
+                    }
+                    ClientMessage::DeleteChannel { channel_id } => {
+                        let Some(u) = user.as_ref() else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "identify first".into(),
+                            }).await;
+                            continue;
+                        };
+                        if !limiter.allow() {
+                            continue;
+                        }
+                        match ctx.state.delete_channel(channel_id, &u.pubkey).await {
+                            Ok((guild_id, evicted)) => {
+                                tracing::info!(%guild_id, %channel_id, by = %u.username, "channel deleted");
+                                let targets = ctx.state.guild_member_pubkeys(guild_id);
+                                ctx.state.deliver(
+                                    targets.clone(),
+                                    ServerMessage::ChannelDelete { guild_id, channel_id },
+                                );
+                                // Anyone who was in the deleted voice channel
+                                // is forced idle on every roster.
+                                for vs in evicted {
+                                    ctx.state.deliver(
+                                        targets.clone(),
+                                        ServerMessage::VoiceStateUpdate(vs),
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message: e }).await;
+                            }
+                        }
+                    }
+                    ClientMessage::DeleteMessage { channel_id, message_id } => {
+                        let Some(u) = user.as_ref() else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "identify first".into(),
+                            }).await;
+                            continue;
+                        };
+                        if !limiter.allow() {
+                            continue;
+                        }
+                        match ctx.state.delete_message(channel_id, message_id, &u.pubkey).await {
+                            Ok(()) => {
+                                // Works for guild channels AND DMs — the
+                                // audience helper covers both.
+                                if let Some(audience) = channel_audience(&ctx.state, channel_id) {
+                                    ctx.state.deliver(
+                                        audience,
+                                        ServerMessage::MessageDelete { channel_id, message_id },
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message: e }).await;
+                            }
+                        }
+                    }
+                    ClientMessage::TransferOwnership { guild_id, new_owner_pubkey } => {
+                        let Some(u) = user.as_ref() else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "identify first".into(),
+                            }).await;
+                            continue;
+                        };
+                        match ctx.state.transfer_ownership(guild_id, &new_owner_pubkey, &u.pubkey).await {
+                            Ok(guild) => {
+                                tracing::info!(%guild_id, to = %new_owner_pubkey, by = %u.username, "ownership transferred");
+                                // Clients re-derive the crown/menus from the
+                                // updated owner_pubkey — no extra frame needed.
+                                let targets = ctx.state.guild_member_pubkeys(guild_id);
+                                ctx.state.deliver(targets, ServerMessage::GuildUpdate(guild));
+                            }
+                            Err(e) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message: e }).await;
+                            }
+                        }
+                    }
+                    ClientMessage::SetGuildProfile { guild_id, description, icon_image, banner } => {
+                        let Some(u) = user.as_ref() else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "identify first".into(),
+                            }).await;
+                            continue;
+                        };
+                        if !limiter.allow() {
+                            continue;
+                        }
+                        match ctx.state.set_guild_profile(guild_id, description, icon_image, banner, &u.pubkey).await {
+                            Ok(guild) => {
+                                let targets = ctx.state.guild_member_pubkeys(guild_id);
+                                ctx.state.deliver(targets, ServerMessage::GuildUpdate(guild));
+                                // Branding refreshes in the directory on the next
+                                // FetchCatalog.
+                            }
+                            Err(e) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message: e }).await;
+                            }
+                        }
+                    }
+                    ClientMessage::SetGuildRetention { guild_id, days } => {
+                        let Some(u) = user.as_ref() else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "identify first".into(),
+                            }).await;
+                            continue;
+                        };
+                        match ctx.state.set_guild_retention(guild_id, days, &u.pubkey).await {
+                            Ok(guild) => {
+                                tracing::info!(%guild_id, ?days, by = %u.username, "guild retention set");
+                                let targets = ctx.state.guild_member_pubkeys(guild_id);
+                                ctx.state.deliver(targets, ServerMessage::GuildUpdate(guild));
+                            }
+                            Err(e) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message: e }).await;
+                            }
+                        }
+                    }
+                    ClientMessage::SetJoinGate { guild_id, gate, rules } => {
+                        let Some(u) = user.as_ref() else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "identify first".into(),
+                            }).await;
+                            continue;
+                        };
+                        match ctx.state.set_join_gate(guild_id, gate, rules, &u.pubkey).await {
+                            Ok(guild) => {
+                                let targets = ctx.state.guild_member_pubkeys(guild_id);
+                                ctx.state.deliver(targets, ServerMessage::GuildUpdate(guild));
+                            }
+                            Err(e) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message: e }).await;
+                            }
+                        }
+                    }
+                    ClientMessage::SetPanicMode { guild_id, on } => {
+                        let Some(u) = user.as_ref() else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "identify first".into(),
+                            }).await;
+                            continue;
+                        };
+                        match ctx.state.set_panic_mode(guild_id, on, &u.pubkey).await {
+                            Ok(guild) => {
+                                tracing::info!(%guild_id, on, by = %u.username, "panic mode set");
+                                let targets = ctx.state.guild_member_pubkeys(guild_id);
+                                ctx.state.deliver(targets, ServerMessage::GuildUpdate(guild));
+                            }
+                            Err(e) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message: e }).await;
+                            }
+                        }
+                    }
+                    ClientMessage::FetchAuditLog { guild_id } => {
+                        let Some(u) = user.as_ref() else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "identify first".into(),
+                            }).await;
+                            continue;
+                        };
+                        match ctx.state.audit_log(guild_id, &u.pubkey).await {
+                            Ok(entries) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::AuditLog { guild_id, entries }).await;
+                            }
+                            Err(e) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message: e }).await;
+                            }
+                        }
+                    }
+                    ClientMessage::FetchCatalog { offset, limit } => {
+                        // On-demand public directory (replaces the old
+                        // broadcast-to-everyone). Requester only; open to any
+                        // connection so the browse dialog works pre-join.
+                        const DEFAULT_PAGE: u32 = 100;
+                        const MAX_PAGE: u32 = 500;
+                        let limit = if limit == 0 { DEFAULT_PAGE } else { limit.min(MAX_PAGE) };
+                        let (guilds, total) = ctx.state.guild_catalog_page(offset, limit);
+                        let _ = send(&mut ws_tx, &ServerMessage::GuildCatalog { guilds, offset, total }).await;
+                    }
                 }
             }
 
-            broadcast = hub_rx.recv() => {
-                let Ok(env) = broadcast else { continue };
-                // Targeted (DM) frames are delivered only to participants;
-                // an unidentified or non-matching connection skips them.
-                if let Some(targets) = &env.to {
-                    let deliver = user
-                        .as_ref()
-                        .map(|u| targets.iter().any(|p| p == &u.pubkey))
-                        .unwrap_or(false);
-                    if !deliver {
-                        continue;
-                    }
-                }
+            outbound = outbound_rx.recv() => {
+                // Routing already guaranteed this frame was meant for us
+                // (targeted delivery / broadcast), so there's no per-frame
+                // address check. `None` means our sender was dropped — the
+                // registry shed us for being too slow, or the server is going
+                // away; either way we close and the client reconnects.
+                let Some(msg) = outbound else { break };
                 // Bots see a filtered stream: only events for guilds they're
                 // installed in, only the intents they were granted, and message
                 // content withheld unless the privileged MessageContent intent
                 // is present.
                 let out = if is_bot {
                     let Some(u) = user.as_ref() else { continue };
-                    match filter_for_bot(&ctx.state, &u.pubkey, &env.msg) {
+                    match filter_for_bot(&ctx.state, &u.pubkey, &msg) {
                         Some(m) => m,
                         None => continue,
                     }
                 } else {
-                    env.msg
+                    msg
                 };
                 if send(&mut ws_tx, &out).await.is_err() {
                     break;
@@ -706,6 +1288,10 @@ pub async fn handle_connection(
             }
         }
     }
+
+    // Drop this connection from the routing table first, so nothing is routed
+    // to a socket we're tearing down.
+    ctx.state.unregister_conn(conn_id, user.as_ref().map(|u| u.pubkey.as_str()));
 
     if let Some(u) = user {
         if let Some(cleared) = ctx.state.clear_voice(&u.pubkey) {
@@ -730,6 +1316,50 @@ where
     tx.send(WsMessage::Text(json.into())).await
 }
 
+/// The delivery recipe after a membership removal (kick/ban/leave): the
+/// removed user gets a targeted `GuildDelete` (their client already tears the
+/// guild down cleanly and reselects), the remaining members drop the roster
+/// row, any voice/screen presence in that guild is broadcast clear, and the
+/// public catalog refreshes (member count changed).
+fn removal_broadcasts(
+    state: &crate::state::AppState,
+    guild_id: crate::protocol::Id,
+    target: &str,
+    was_member: bool,
+    cleared_voice: Option<crate::protocol::VoiceState>,
+) {
+    // Compute the remaining audience AFTER removal so the target never
+    // receives the roster frames meant for members.
+    let rest = state.guild_member_pubkeys(guild_id);
+    if was_member {
+        state.deliver(
+            vec![target.to_string()],
+            ServerMessage::GuildDelete { guild_id },
+        );
+        state.deliver(
+            rest.clone(),
+            ServerMessage::MemberRemove {
+                guild_id,
+                user_pubkey: target.to_string(),
+            },
+        );
+    }
+    if let Some(vs) = cleared_voice {
+        // Include the removed user: their client sees channel_id=None for self
+        // and force-idles its live voice session (net.rs handles this), which
+        // is what actually hangs up their audio.
+        let mut vs_targets = rest.clone();
+        vs_targets.push(target.to_string());
+        state.deliver(vs_targets, ServerMessage::VoiceStateUpdate(vs));
+    }
+    for (channel_id, sharers) in state.clear_user_screen_shares_in_guild(guild_id, target) {
+        state.deliver(
+            rest.clone(),
+            ServerMessage::ScreenShareState { channel_id, sharers },
+        );
+    }
+}
+
 /// Drop a user from every screen-share set and tell each affected channel's
 /// guild members the updated sharer list.
 fn broadcast_screen_clear(state: &crate::state::AppState, pubkey: &str) {
@@ -751,12 +1381,8 @@ fn channel_audience(state: &crate::state::AppState, channel_id: crate::protocol:
     }
 }
 
-/// Accept only short `#rrggbb`/`#rgb` hex colors for guild accents.
-fn is_hex_color(s: &str) -> bool {
-    let s = s.trim();
-    let Some(hex) = s.strip_prefix('#') else { return false };
-    (hex.len() == 3 || hex.len() == 6) && hex.chars().all(|c| c.is_ascii_hexdigit())
-}
+// Hex-color validation lives in `state::is_hex_color` (shared with role colors).
+use crate::state::is_hex_color;
 
 fn sanitize_username(raw: &str) -> String {
     let trimmed = raw.trim();
@@ -818,12 +1444,174 @@ fn filter_for_bot(
             let install = state.bot_install(*guild_id, bot_pubkey)?;
             install.has_intent(Intent::Members).then(|| msg.clone())
         }
+        ServerMessage::MemberUpdate(member) => {
+            let install = state.bot_install(member.guild_id, bot_pubkey)?;
+            install.has_intent(Intent::Members).then(|| msg.clone())
+        }
+        ServerMessage::MemberRemove { guild_id, .. } => {
+            let install = state.bot_install(*guild_id, bot_pubkey)?;
+            install.has_intent(Intent::Members).then(|| msg.clone())
+        }
+        ServerMessage::MessageDelete { channel_id, .. } => {
+            let gid = state.channel_guild(*channel_id)?;
+            let install = state.bot_install(gid, bot_pubkey)?;
+            install.has_intent(Intent::GuildMessages).then(|| msg.clone())
+        }
+        // Channel topology matters to any installed bot (it's in Ready too) —
+        // no intent needed, just an install in that guild.
+        ServerMessage::ChannelCreate(ch) | ServerMessage::ChannelUpdate(ch) => {
+            state.bot_install(ch.guild_id, bot_pubkey).map(|_| msg.clone())
+        }
+        ServerMessage::ChannelDelete { guild_id, .. } => {
+            state.bot_install(*guild_id, bot_pubkey).map(|_| msg.clone())
+        }
         // Errors are useful feedback for a bot (e.g. permission denied).
         ServerMessage::Error { .. } => Some(msg.clone()),
         // Everything else (typing, voice, screen share, profiles, the public
         // catalog, guild metadata, DMs, integrations) is outside a bot's event
         // surface — never delivered.
         _ => None,
+    }
+}
+
+/// Common tail of both successful join paths: announce the new member to the
+/// existing roster, hand the joiner their `GuildJoined` bundle, refresh the
+/// public catalog, and run mass-join (raid) detection — auto-locking the guild
+/// and broadcasting the change if a raid is underway. `Err(())` = the joiner's
+/// socket closed (caller should break).
+async fn deliver_join<S>(
+    state: &crate::state::AppState,
+    ws_tx: &mut S,
+    joiner: &User,
+    bundle: (crate::protocol::Guild, Vec<crate::protocol::Channel>, Vec<Member>, Vec<crate::protocol::Role>),
+) -> Result<(), ()>
+where
+    S: SinkExt<WsMessage, Error = axum::Error> + Unpin,
+{
+    let (guild, channels, members, roles) = bundle;
+    let guild_id = guild.id;
+    tracing::info!(%guild_id, by = %joiner.username, "guild joined");
+
+    let mut targets = state.guild_member_pubkeys(guild_id);
+    targets.retain(|p| p != &joiner.pubkey);
+    state.deliver(
+        targets,
+        ServerMessage::MemberJoin(Member {
+            user: joiner.clone(),
+            guild_id,
+            online: true,
+            bot: false,
+            roles: Vec::new(),
+        }),
+    );
+    if send(ws_tx, &ServerMessage::GuildJoined { guild, channels, members, roles })
+        .await
+        .is_err()
+    {
+        return Err(());
+    }
+    // Raid detection: if this join tips the guild over the rate threshold,
+    // panic mode engages and everyone sees the guild update.
+    if let Some(updated) = state.note_join_and_maybe_panic(guild_id).await {
+        let members = state.guild_member_pubkeys(guild_id);
+        state.deliver(members, ServerMessage::GuildUpdate(updated));
+    }
+    Ok(())
+}
+
+/// Proof-of-work difficulty (leading zero BITS) for the `Pow` join gate.
+/// ~2^16 hashes ≈ sub-second for one joiner, brutal for a keygen raid.
+const POW_BITS: u32 = 16;
+
+/// Deterministic per-(guild,user) PoW challenge string. Includes both ids so a
+/// solution can't be reused across guilds or by a different keypair — each
+/// raid identity must redo the work.
+fn pow_challenge(guild_id: crate::protocol::Id, pubkey: &str) -> String {
+    format!("{guild_id}:{pubkey}")
+}
+
+/// True if SHA-256(challenge ++ nonce) has ≥ `bits` leading zero bits.
+fn pow_ok(challenge: &str, nonce: &str, bits: u32) -> bool {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(challenge.as_bytes());
+    h.update(nonce.as_bytes());
+    let digest = h.finalize();
+    let mut seen = 0u32;
+    for byte in digest {
+        if byte == 0 {
+            seen += 8;
+            continue;
+        }
+        seen += byte.leading_zeros();
+        break;
+    }
+    seen >= bits
+}
+
+/// Outcome of the join-gate check.
+enum Gate {
+    Proceed,
+    Challenge(ServerMessage),
+    Reject(String),
+}
+
+/// Evaluate a guild's join gate for a would-be joiner. Members (incl. the
+/// owner) bypass; panic mode rejects everyone; otherwise Rules/Pow must be
+/// satisfied by `accept`/`pow_nonce`.
+fn check_join_gate(
+    state: &crate::state::AppState,
+    guild_id: crate::protocol::Id,
+    pubkey: &str,
+    accept: bool,
+    pow_nonce: Option<&str>,
+    invite_code: Option<String>,
+) -> Gate {
+    use crate::protocol::JoinGate;
+    // Already a member (owner included) — no gate.
+    if state.is_guild_member(guild_id, pubkey) {
+        return Gate::Proceed;
+    }
+    let Some((gate, rules, panic)) = state.join_requirements(guild_id) else {
+        return Gate::Proceed; // unknown guild — the join call will 404
+    };
+    if panic {
+        return Gate::Reject("this server is in anti-raid lockdown — try again later".into());
+    }
+    match gate {
+        JoinGate::Open => Gate::Proceed,
+        JoinGate::Rules => {
+            if accept {
+                Gate::Proceed
+            } else {
+                Gate::Challenge(ServerMessage::JoinChallenge {
+                    guild_id,
+                    gate,
+                    rules,
+                    pow_challenge: None,
+                    pow_difficulty: None,
+                    invite_code,
+                })
+            }
+        }
+        JoinGate::Pow => {
+            let challenge = pow_challenge(guild_id, pubkey);
+            let solved = pow_nonce
+                .map(|n| pow_ok(&challenge, n, POW_BITS))
+                .unwrap_or(false);
+            if solved {
+                Gate::Proceed
+            } else {
+                Gate::Challenge(ServerMessage::JoinChallenge {
+                    guild_id,
+                    gate,
+                    rules: None,
+                    pow_challenge: Some(challenge),
+                    pow_difficulty: Some(POW_BITS),
+                    invite_code,
+                })
+            }
+        }
     }
 }
 

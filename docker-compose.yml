@@ -1,0 +1,44 @@
+# Discordia standalone deployment: gateway + LiveKit SFU on one box.
+#
+#   LIVEKIT_HOST=your.domain docker compose up -d
+#
+# Durable data (SQLite + media blobs) lives in the `discordia-data` volume —
+# back the whole server up by copying that volume. Message retention is set
+# per-guild in-app (Server settings → Message retention).
+
+services:
+  discordia:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "9000:9000"
+    environment:
+      DIOXUSFUN_ADDR: 0.0.0.0:9000
+      DIOXUSFUN_DATA_DIR: /data
+      # Voice: hand clients the LiveKit URL they can actually reach.
+      # Set LIVEKIT_HOST to your public hostname/IP (defaults to localhost
+      # for same-machine testing).
+      LIVEKIT_URL: ws://${LIVEKIT_HOST:-localhost}:7880
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-devkey}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-secret-must-be-at-least-32-chars-long}
+      # Instance operators (comma-separated hex pubkeys) may moderate the
+      # seeded Lobby. Optional.
+      DIOXUSFUN_OPERATORS: ${DIOXUSFUN_OPERATORS:-}
+    volumes:
+      - discordia-data:/data
+    depends_on:
+      - livekit
+
+  livekit:
+    image: livekit/livekit-server:latest
+    restart: unless-stopped
+    command: --dev --bind 0.0.0.0
+    environment:
+      LIVEKIT_KEYS: "${LIVEKIT_API_KEY:-devkey}: ${LIVEKIT_API_SECRET:-secret-must-be-at-least-32-chars-long}"
+    ports:
+      - "7880:7880"
+      - "7881:7881"
+      - "7882:7882/udp"
+
+volumes:
+  discordia-data:
