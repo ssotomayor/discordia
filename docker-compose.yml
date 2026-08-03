@@ -1,12 +1,23 @@
-# Discordia standalone deployment: gateway + LiveKit SFU on one box.
+# Discordia on a VPS. Two ways to use this — pick one (or run both):
 #
-#   LIVEKIT_HOST=your.domain docker compose up -d
+#   A) ALWAYS-ON SERVER (recommended, simplest)
+#      The gateway lives here; friends connect straight to it by URL, and
+#      nobody port-forwards anything at home.
+#        cp .env.example .env    # set PUBLIC_HOST + secrets
+#        docker compose up -d discordia livekit
+#      Friends use:  ws://<your-host>:9000   (the "URL" tab)
 #
-# Durable data (SQLite + media blobs) lives in the `discordia-data` volume —
-# back the whole server up by copying that volume. Message retention is set
-# per-guild in-app (Server settings → Message retention).
+#   B) RENDEZVOUS ONLY
+#      You keep hosting from your laptop; this box just makes you reachable
+#      and provides the shared SFU so voice works over the internet.
+#        docker compose up -d rendezvous livekit
+#      You + friends use:  ws://<your-host>:7700   (rendezvous picker)
+#
+# Durable data (SQLite + media blobs) lives in the named volumes — back the
+# server up by copying them. Message retention is per-guild, in-app.
 
 services:
+  # ---- A: the gateway (text, guilds, roles, bots) -------------------------
   discordia:
     build: .
     restart: unless-stopped
@@ -15,30 +26,46 @@ services:
     environment:
       DIOXUSFUN_ADDR: 0.0.0.0:9000
       DIOXUSFUN_DATA_DIR: /data
-      # Voice: hand clients the LiveKit URL they can actually reach.
-      # Set LIVEKIT_HOST to your public hostname/IP (defaults to localhost
-      # for same-machine testing).
-      LIVEKIT_URL: ws://${LIVEKIT_HOST:-localhost}:7880
+      # Hand clients a LiveKit URL they can actually reach from the internet.
+      LIVEKIT_URL: ws://${PUBLIC_HOST:?set PUBLIC_HOST in .env}:7880
       LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-devkey}
       LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-secret-must-be-at-least-32-chars-long}
-      # Instance operators (comma-separated hex pubkeys) may moderate the
-      # seeded Lobby. Optional.
+      # Comma-separated hex pubkeys allowed to moderate the seeded Lobby.
       DIOXUSFUN_OPERATORS: ${DIOXUSFUN_OPERATORS:-}
     volumes:
       - discordia-data:/data
-    depends_on:
-      - livekit
 
+  # ---- B: discovery + NAT traversal for laptop-hosted servers -------------
+  rendezvous:
+    build:
+      context: .
+      dockerfile: Dockerfile.rendezvous
+    restart: unless-stopped
+    ports:
+      - "7700:7700"
+    environment:
+      DIOXUSFUN_RENDEZVOUS_ADDR: 0.0.0.0:7700
+      DIOXUSFUN_RENDEZVOUS_DATA_DIR: /data
+      # Handed to every host that registers, so their friends use THIS shared
+      # SFU instead of the host's unreachable LAN address. This is the piece
+      # that makes voice work over the internet for laptop-hosted servers.
+      LIVEKIT_URL: ws://${PUBLIC_HOST:?set PUBLIC_HOST in .env}:7880
+    volumes:
+      - rendezvous-data:/data
+
+  # ---- shared SFU (voice + screenshare media) -----------------------------
+  # host networking: WebRTC needs a wide UDP range, and publishing 100+ ports
+  # through docker's NAT is slow and mangles ICE candidate addressing.
   livekit:
     image: livekit/livekit-server:latest
     restart: unless-stopped
-    command: --dev --bind 0.0.0.0
+    network_mode: host
+    command: --config /etc/livekit.yaml
     environment:
       LIVEKIT_KEYS: "${LIVEKIT_API_KEY:-devkey}: ${LIVEKIT_API_SECRET:-secret-must-be-at-least-32-chars-long}"
-    ports:
-      - "7880:7880"
-      - "7881:7881"
-      - "7882:7882/udp"
+    volumes:
+      - ./deploy/livekit.yaml:/etc/livekit.yaml:ro
 
 volumes:
   discordia-data:
+  rendezvous-data:

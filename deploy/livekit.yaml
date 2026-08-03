@@ -1,0 +1,19 @@
+# LiveKit SFU config for an internet-facing deployment.
+#
+# The critical line is `use_external_ip: true`: LiveKit must advertise the
+# machine's PUBLIC address in its ICE candidates. With it off (the default in
+# our bundled LAN config) it advertises a private address, clients connect to
+# signalling fine, then silently fail to exchange media.
+port: 7880
+bind_addresses:
+  - 0.0.0.0
+rtc:
+  tcp_port: 7881
+  port_range_start: 50000
+  port_range_end: 50100
+  use_external_ip: true
+keys:
+  # Override these in .env — never ship the dev credentials publicly.
+  devkey: secret-must-be-at-least-32-chars-long
+logging:
+  level: info

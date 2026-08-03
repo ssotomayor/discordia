@@ -1,0 +1,22 @@
+# Discordia rendezvous relay — discovery + NAT traversal for self-hosted
+# gateways. Tiny: no LiveKit, no database.
+#
+# Build: docker build -f Dockerfile.rendezvous -t discordia-rendezvous .
+
+FROM rust:1-bookworm AS builder
+WORKDIR /src
+COPY . .
+ENV LIVEKIT_BUNDLE_SKIP=1
+RUN cargo build --release -p dioxusfun-rendezvous
+
+FROM debian:bookworm-slim
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /src/target/release/dioxusfun-rendezvous /usr/local/bin/discordia-rendezvous
+
+ENV DIOXUSFUN_RENDEZVOUS_ADDR=0.0.0.0:7700 \
+    DIOXUSFUN_RENDEZVOUS_DATA_DIR=/data
+VOLUME /data
+EXPOSE 7700
+ENTRYPOINT ["discordia-rendezvous"]
