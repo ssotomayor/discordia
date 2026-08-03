@@ -20,6 +20,11 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # LiveKit's prebuilt libwebrtc is linked against the STATIC MSVC runtime
+  # (/MT). Rust defaults to the dynamic one (/MD), so both C++ runtimes end up
+  # in the link and collide (LNK2038 / LNK1169). Match libwebrtc by making
+  # Rust use the static CRT too.
+  RUSTFLAGS: "-C target-feature=+crt-static"
 
 jobs:
   windows-bundle:
