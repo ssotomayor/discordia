@@ -27,6 +27,11 @@ pub struct ClientSettings {
     /// Blossom media server used to host profile images (avatar/banner).
     #[serde(default = "default_blossom_server")]
     pub blossom_server: String,
+    /// Rendezvous servers the user has added, most-recently-used first. The
+    /// first entry is the active one. Kept local — a personal address book, not
+    /// something any host sees.
+    #[serde(default = "default_rendezvous_servers")]
+    pub rendezvous_servers: Vec<String>,
 }
 
 fn default_blossom_server() -> String {
@@ -35,6 +40,15 @@ fn default_blossom_server() -> String {
 
 fn default_pattern() -> String {
     "dots".into()
+}
+
+pub fn default_rendezvous_url() -> String {
+    std::env::var("DIOXUSFUN_RENDEZVOUS_URL")
+        .unwrap_or_else(|_| "ws://localhost:7700".into())
+}
+
+fn default_rendezvous_servers() -> Vec<String> {
+    vec![default_rendezvous_url()]
 }
 
 impl Default for ClientSettings {
@@ -46,6 +60,35 @@ impl Default for ClientSettings {
             background: None,
             background_dim: 55,
             blossom_server: default_blossom_server(),
+            rendezvous_servers: default_rendezvous_servers(),
+        }
+    }
+}
+
+impl ClientSettings {
+    /// The active rendezvous (first entry), falling back to the default.
+    pub fn active_rendezvous(&self) -> String {
+        self.rendezvous_servers
+            .first()
+            .cloned()
+            .unwrap_or_else(default_rendezvous_url)
+    }
+
+    /// Add (or promote) `url` to the front of the list, de-duplicated.
+    pub fn use_rendezvous(&mut self, url: &str) {
+        let url = url.trim().trim_end_matches('/').to_string();
+        if url.is_empty() {
+            return;
+        }
+        self.rendezvous_servers.retain(|s| s != &url);
+        self.rendezvous_servers.insert(0, url);
+        self.rendezvous_servers.truncate(8);
+    }
+
+    pub fn remove_rendezvous(&mut self, url: &str) {
+        self.rendezvous_servers.retain(|s| s != url);
+        if self.rendezvous_servers.is_empty() {
+            self.rendezvous_servers.push(default_rendezvous_url());
         }
     }
 }

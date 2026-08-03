@@ -58,17 +58,26 @@ impl Store {
             .members
             .into_iter()
             .filter(|(gid, ..)| *gid == guild_id)
-            .map(|(gid, pubkey, username, bot, roles)| Member {
-                user: loaded
-                    .users
+            .map(|(gid, pubkey, username, bot, roles)| {
+                let xp = loaded
+                    .guild_xp
                     .iter()
-                    .find(|u| u.pubkey == pubkey)
-                    .cloned()
-                    .unwrap_or(crate::protocol::User { pubkey, username }),
-                guild_id: gid,
-                online: false,
-                bot,
-                roles,
+                    .find(|(g, pk, _)| *g == gid && *pk == pubkey)
+                    .map(|(_, _, xp)| *xp)
+                    .unwrap_or(0);
+                Member {
+                    user: loaded
+                        .users
+                        .iter()
+                        .find(|u| u.pubkey == pubkey)
+                        .cloned()
+                        .unwrap_or(crate::protocol::User { pubkey, username }),
+                    guild_id: gid,
+                    online: false,
+                    bot,
+                    roles,
+                    xp,
+                }
             })
             .collect();
 
@@ -155,11 +164,15 @@ impl Store {
         }
 
         // Members — pubkeys unchanged; role ids remapped (unknown ids dropped).
+        // Per-guild XP rides inside Member.xp and moves with the guild.
         for m in &archive.members {
             let mut member = m.clone();
             member.guild_id = new_guild_id;
             member.roles = m.roles.iter().filter_map(|rid| role_map.get(rid).copied()).collect();
             self.upsert_member(&member).await?;
+            if m.xp > 0 {
+                self.upsert_guild_xp(new_guild_id, &m.user.pubkey, m.xp).await?;
+            }
         }
 
         // Bans.

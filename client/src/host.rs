@@ -24,6 +24,12 @@ pub struct HostInfo {
     /// Set when self-host registered with a rendezvous; friends can join
     /// with this code instead of a URL.
     pub shortcode: Option<String>,
+    /// Why rendezvous publishing failed, when it did. Surfaced in the host
+    /// banner — a silent failure looks identical to "published" and leaves
+    /// friends unable to find you.
+    pub publish_error: Option<String>,
+    /// True when the host asked to be listed in the public directory.
+    pub listed_public: bool,
 }
 
 pub struct HostHandle {
@@ -72,6 +78,8 @@ pub async fn start_self_host(
     // to clients. If the rendezvous operator runs a shared LiveKit, that
     // URL takes precedence over our local subprocess.
     let mut rendezvous_state: Option<(crate::rendezvous::ControlStream, crate::rendezvous::PublishInfo)> = None;
+    let mut publish_error: Option<String> = None;
+    let listed_public = publish.publish_public;
     if let Some(url) = rendezvous_url {
         match crate::rendezvous::register(&url, publish, &identity).await {
             Ok((info, control)) => {
@@ -84,6 +92,7 @@ pub async fn start_self_host(
             Err(e) => {
                 eprintln!("[host] rendezvous registration failed: {e}");
                 tracing::warn!(error = %e, "rendezvous publish failed");
+                publish_error = Some(e);
             }
         }
     }
@@ -97,6 +106,9 @@ pub async fn start_self_host(
         port: DEFAULT_LIVEKIT_PORT,
         api_key: DEFAULT_LIVEKIT_KEY.into(),
         api_secret: DEFAULT_LIVEKIT_SECRET.into(),
+        // Friends proxied in by the rendezvous hit our gateway on loopback;
+        // hand them our LAN address for LiveKit instead of their own machine.
+        lan_host: local_ip_address::local_ip().ok().map(|ip| ip.to_string()),
     };
 
     let bind_ip: IpAddr = if allow_lan {
@@ -147,6 +159,8 @@ pub async fn start_self_host(
             local_url,
             voice_bundled,
             shortcode,
+            publish_error,
+            listed_public,
         },
         gateway: Some(gateway),
         livekit,

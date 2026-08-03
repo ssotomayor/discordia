@@ -284,6 +284,9 @@ fn HostBanner() -> Element {
 
     let lan_text = info.lan_url.clone();
     let shortcode = info.shortcode.clone();
+    let publish_error = info.publish_error.clone();
+    let listed_public = info.listed_public;
+    let has_shortcode = info.shortcode.is_some();
     let (voice_label, voice_color) = if info.voice_bundled {
         ("voice ready", "text-[var(--success)]")
     } else {
@@ -306,6 +309,21 @@ fn HostBanner() -> Element {
             code { class: "text-[var(--text)] select-all",
                 onmousedown: move |e| e.stop_propagation(),
                 "{lan_text}"
+            }
+            // Publishing status: a failed registration used to be silent, so
+            // the host thought friends could find them when they couldn't.
+            if let Some(err) = publish_error {
+                span { class: "text-[var(--text-dim)]", "·" }
+                span { class: "text-[var(--danger)]",
+                    title: "{err}",
+                    "⚠ not published — {err}"
+                }
+            } else if has_shortcode && !listed_public {
+                span { class: "text-[var(--text-dim)]", "·" }
+                span { class: "text-[var(--text-muted)]",
+                    title: "Reachable by code, but hidden from the Browse list. Enable \"List this server publicly\" when self-hosting to appear there.",
+                    "unlisted"
+                }
             }
             span { class: "flex-1" }
             span { class: "{voice_color}", "● {voice_label}" }

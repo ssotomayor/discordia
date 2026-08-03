@@ -17,3 +17,5 @@ Thumbs.db
 .env
 .env.local
 .claude/settings.local.json
+discordia-data/
+rendezvous-data/

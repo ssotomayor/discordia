@@ -1,0 +1,63 @@
+# Build a distributable Windows client on a real Windows runner.
+#
+# Trigger it manually (Actions tab → "Windows build" → Run workflow) or by
+# pushing a `v*` tag. The result is an uploaded artifact (zip) containing the
+# bundled app — download it and send it to whoever needs it. On tag pushes the
+# bundle is also attached to a GitHub Release.
+#
+# Notes:
+# - Unlike CI, this build KEEPS the bundled livekit-server.exe (build.rs
+#   downloads the official Windows release) so self-host voice works.
+# - WebView2 (the wry backend) ships with Windows 10/11, so recipients need
+#   no extra runtime.
+
+name: Windows build
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  windows-bundle:
+    name: bundle windows client
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # binstall grabs a prebuilt dioxus-cli instead of compiling it (~minutes saved).
+      - uses: cargo-bins/cargo-binstall@main
+      - name: Install Dioxus CLI
+        run: cargo binstall dioxus-cli --no-confirm
+
+      - name: Bundle
+        working-directory: client
+        run: dx bundle --release
+
+      # dx places bundle outputs under target/dx/<app>/bundle/. Zip whatever
+      # was produced (exe folder and/or installer) so the artifact is one file.
+      - name: Zip bundle
+        shell: pwsh
+        run: |
+          $bundle = Get-ChildItem -Recurse -Directory target/dx | Where-Object { $_.Name -eq 'bundle' } | Select-Object -First 1
+          if (-not $bundle) { throw "no bundle output found under target/dx" }
+          Compress-Archive -Path "$($bundle.FullName)/*" -DestinationPath discordia-windows.zip
+          Get-ChildItem $bundle.FullName -Recurse | Select-Object FullName | Out-String | Write-Host
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: discordia-windows
+          path: discordia-windows.zip
+          retention-days: 14
+
+      # On tag pushes, also attach to a release for a shareable download link.
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: discordia-windows.zip

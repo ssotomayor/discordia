@@ -269,10 +269,11 @@ pub async fn handle_connection(
                                     let author_pk = msg.author.pubkey.clone();
                                     let targets = ctx.state.guild_member_pubkeys(gid);
                                     ctx.state.deliver(targets, ServerMessage::MessageCreate(msg));
-                                    // Award message-XP; broadcast a profile only
-                                    // on level-up.
-                                    if let Some(profile) = ctx.state.add_xp(&author_pk).await {
-                                        ctx.state.broadcast(ServerMessage::ProfileUpdate(profile));
+                                    // Award per-guild message-XP; on level-up,
+                                    // the guild's roster re-renders the member.
+                                    if let Some(member) = ctx.state.add_xp(gid, &author_pk).await {
+                                        let targets = ctx.state.guild_member_pubkeys(gid);
+                                        ctx.state.deliver(targets, ServerMessage::MemberUpdate(member));
                                     }
                                 }
                                 None => {
@@ -286,14 +287,11 @@ pub async fn handle_connection(
                                 if let Some(msg) =
                                     ctx.state.push_dm_message(channel_id, author, content, image).await
                                 {
-                                    let author_pk = msg.author.pubkey.clone();
+                                    // DMs have no guild, so no XP is earned.
                                     ctx.state.deliver(
                                         participants.to_vec(),
                                         ServerMessage::MessageCreate(msg),
                                     );
-                                    if let Some(profile) = ctx.state.add_xp(&author_pk).await {
-                                        ctx.state.broadcast(ServerMessage::ProfileUpdate(profile));
-                                    }
                                 }
                             } else {
                                 let _ = send(&mut ws_tx, &ServerMessage::Error {
@@ -1502,6 +1500,8 @@ where
             online: true,
             bot: false,
             roles: Vec::new(),
+            // Rejoining resumes the level earned here before.
+            xp: state.xp_of(guild_id, &joiner.pubkey),
         }),
     );
     if send(ws_tx, &ServerMessage::GuildJoined { guild, channels, members, roles })

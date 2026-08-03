@@ -13,6 +13,14 @@ pub struct LiveKitConfig {
     /// LiveKit WebSocket port. Used when deriving the URL from the host the
     /// client used to dial the gateway (self-host / same-machine case).
     pub port: u16,
+    /// This machine's LAN address, when self-hosting. Used INSTEAD of a
+    /// loopback-derived host: a client whose `Host` header is 127.0.0.1 is
+    /// either us (LAN IP works fine too) or — critically — a friend arriving
+    /// through the rendezvous proxy, which dials our gateway on loopback.
+    /// Handing that friend `ws://127.0.0.1:7880` points them at their OWN
+    /// machine ("Connection refused"); the LAN address is at least reachable
+    /// from the same network.
+    pub lan_host: Option<String>,
     pub api_key: String,
     pub api_secret: String,
 }
@@ -28,6 +36,7 @@ impl LiveKitConfig {
             api_key: std::env::var("LIVEKIT_API_KEY").unwrap_or_else(|_| "devkey".into()),
             api_secret: std::env::var("LIVEKIT_API_SECRET")
                 .unwrap_or_else(|_| "secret-must-be-at-least-32-chars-long".into()),
+            lan_host: None,
         }
     }
 
@@ -43,8 +52,20 @@ impl LiveKitConfig {
             return url.clone();
         }
         let host = client_host.map(host_without_port).unwrap_or("127.0.0.1");
+        // Loopback means "this connection reached us locally" — true for us,
+        // and also for anyone proxied in by the rendezvous. Prefer our LAN
+        // address so proxied friends get something they can actually dial.
+        let host = match (&self.lan_host, is_loopback(host)) {
+            (Some(lan), true) => lan.as_str(),
+            _ => host,
+        };
         format!("ws://{host}:{}", self.port)
     }
+}
+
+/// True for hosts that only resolve on the machine itself.
+fn is_loopback(host: &str) -> bool {
+    host == "localhost" || host == "127.0.0.1" || host == "[::1]" || host == "::1"
 }
 
 /// Strip the port from a HTTP `Host` header, handling IPv6 in brackets.
@@ -143,6 +164,7 @@ mod tests {
             port: 7880,
             api_key: "".into(),
             api_secret: "".into(),
+            lan_host: None,
         };
         assert_eq!(
             cfg.url_for_client(Some("192.168.0.5:9000")),
@@ -157,11 +179,33 @@ mod tests {
             port: 7880,
             api_key: "".into(),
             api_secret: "".into(),
+            lan_host: None,
         };
         assert_eq!(
             cfg.url_for_client(Some("192.168.0.5:9000")),
             "ws://192.168.0.5:7880"
         );
         assert_eq!(cfg.url_for_client(None), "ws://127.0.0.1:7880");
+    }
+
+    /// A rendezvous-proxied friend reaches the gateway on loopback; without
+    /// the LAN substitution they'd be told to dial LiveKit on their own box.
+    #[test]
+    fn loopback_client_gets_lan_host() {
+        let cfg = LiveKitConfig {
+            explicit_url: None,
+            port: 7880,
+            api_key: "".into(),
+            api_secret: "".into(),
+            lan_host: Some("192.168.0.61".into()),
+        };
+        for h in ["127.0.0.1:9000", "localhost:9000", "[::1]:9000"] {
+            assert_eq!(cfg.url_for_client(Some(h)), "ws://192.168.0.61:7880");
+        }
+        // A real LAN/remote host header is still honoured verbatim.
+        assert_eq!(
+            cfg.url_for_client(Some("192.168.0.99:9000")),
+            "ws://192.168.0.99:7880"
+        );
     }
 }

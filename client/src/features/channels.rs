@@ -537,12 +537,18 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
     let self_pubkey = state.read().self_user.as_ref().map(|u| u.pubkey.clone());
     let sharing = state.read().screen_sharing;
     let name = self_username.clone().unwrap_or_else(|| "—".into());
-    // Own level + progress from cached profile XP.
+    // Own level + progress in the CURRENTLY SELECTED guild (XP is per-guild).
     let (level, xp_pct) = {
-        let xp = self_pubkey
-            .as_ref()
-            .and_then(|pk| state.read().profile_of(pk).map(|p| p.xp))
-            .unwrap_or(0);
+        let s = state.read();
+        let xp = match (s.selected_guild, self_pubkey.as_ref()) {
+            (Some(gid), Some(pk)) => s
+                .members
+                .iter()
+                .find(|m| m.guild_id == gid && &m.user.pubkey == pk)
+                .map(|m| m.xp)
+                .unwrap_or(0),
+            _ => 0,
+        };
         let (lvl, into, span) = crate::protocol::level_progress(xp);
         (lvl, (into as f64 / span.max(1) as f64 * 100.0) as u32)
     };

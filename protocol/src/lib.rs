@@ -159,6 +159,12 @@ pub struct Member {
     /// are the union over these roles; roles never apply to bot connections.
     #[serde(default)]
     pub roles: Vec<Id>,
+    /// Server-authoritative message-XP earned IN THIS GUILD, driving the level
+    /// display. Per-guild by design: a level is standing in one community, not
+    /// a cross-guild reputation. Stamped by the server on emit; see
+    /// `level_progress`.
+    #[serde(default)]
+    pub xp: u64,
 }
 
 /// A user's public profile, keyed by pubkey and distributed independently of
@@ -182,11 +188,6 @@ pub struct Profile {
     /// Free-text custom status line shown on the profile card.
     #[serde(default)]
     pub custom_status: Option<String>,
-    /// Server-authoritative message-XP driving the level display. Populated by
-    /// the server on every emitted profile; ignored on inbound `SetProfile`
-    /// (the client can't grant itself XP). See `level_progress`.
-    #[serde(default)]
-    pub xp: u64,
 }
 
 /// Map total message-XP to `(level, xp_into_level, level_span)` for the level

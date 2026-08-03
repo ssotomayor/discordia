@@ -29,7 +29,8 @@ use crate::protocol::{
 pub struct LoadedState {
     pub users: Vec<User>,
     pub profiles: Vec<Profile>,
-    pub xp: Vec<(String, u64)>,
+    /// (guild_id, pubkey, xp) — message-XP is earned per guild.
+    pub guild_xp: Vec<(Id, String, u64)>,
     pub guilds: Vec<Guild>,
     pub channels: Vec<Channel>,
     /// (guild_id, pubkey, username, bot, role ids)
@@ -80,8 +81,12 @@ impl Store {
             "CREATE TABLE IF NOT EXISTS profiles (
                 pubkey TEXT PRIMARY KEY, avatar TEXT, banner TEXT, bio TEXT,
                 status TEXT, custom_status TEXT)",
-            "CREATE TABLE IF NOT EXISTS xp (
-                pubkey TEXT PRIMARY KEY, xp INTEGER NOT NULL DEFAULT 0)",
+            // Per-guild message-XP. (A legacy per-server `xp` table may exist
+            // in older DBs; it's simply no longer read.)
+            "CREATE TABLE IF NOT EXISTS guild_xp (
+                guild_id TEXT NOT NULL, pubkey TEXT NOT NULL,
+                xp INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (guild_id, pubkey))",
             "CREATE TABLE IF NOT EXISTS guilds (
                 id TEXT PRIMARY KEY, name TEXT NOT NULL, icon TEXT,
                 owner_pubkey TEXT NOT NULL DEFAULT '', accent TEXT,
@@ -166,12 +171,16 @@ impl Store {
                 bio: r.get(3),
                 status: r.get(4),
                 custom_status: r.get(5),
-                xp: 0,
             });
         }
-        for r in sqlx::query("SELECT pubkey, xp FROM xp").fetch_all(&self.pool).await? {
-            let xp: i64 = r.get(1);
-            out.xp.push((r.get(0), xp.max(0) as u64));
+        for r in sqlx::query("SELECT guild_id, pubkey, xp FROM guild_xp")
+            .fetch_all(&self.pool)
+            .await?
+        {
+            let gid: String = r.get(0);
+            let Ok(gid) = gid.parse::<Id>() else { continue };
+            let xp: i64 = r.get(2);
+            out.guild_xp.push((gid, r.get(1), xp.max(0) as u64));
         }
         for r in sqlx::query(
             "SELECT id, name, icon, owner_pubkey, accent, visibility, description,
@@ -303,11 +312,12 @@ impl Store {
         Ok(())
     }
 
-    pub async fn upsert_xp(&self, pubkey: &str, xp: u64) -> Result<()> {
+    pub async fn upsert_guild_xp(&self, guild_id: Id, pubkey: &str, xp: u64) -> Result<()> {
         sqlx::query(
-            "INSERT INTO xp (pubkey, xp) VALUES (?, ?)
-             ON CONFLICT(pubkey) DO UPDATE SET xp = excluded.xp",
+            "INSERT INTO guild_xp (guild_id, pubkey, xp) VALUES (?, ?, ?)
+             ON CONFLICT(guild_id, pubkey) DO UPDATE SET xp = excluded.xp",
         )
+        .bind(guild_id.to_string())
         .bind(pubkey)
         .bind(xp as i64)
         .execute(&self.pool)
@@ -358,7 +368,7 @@ impl Store {
         .bind(&gid)
         .execute(&mut *tx)
         .await?;
-        for table in ["channels", "members", "roles", "bans", "invites", "bot_installs"] {
+        for table in ["channels", "members", "roles", "bans", "invites", "bot_installs", "guild_xp"] {
             sqlx::query(&format!("DELETE FROM {table} WHERE guild_id = ?"))
                 .bind(&gid)
                 .execute(&mut *tx)

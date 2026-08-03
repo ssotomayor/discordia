@@ -125,7 +125,19 @@ pub fn ProfileCard() -> Element {
     let dm_pubkey = pubkey.clone();
     let signature = crate::identity::color_signature(&pubkey, 15);
     let accent = crate::identity::signature_accent(&pubkey);
-    let xp = state.read().profile_of(&pubkey).map(|p| p.xp).unwrap_or(0);
+    // Per-guild XP: show this member's level in the guild we're viewing.
+    let xp = state
+        .read()
+        .selected_guild
+        .and_then(|gid| {
+            state
+                .read()
+                .members
+                .iter()
+                .find(|m| m.guild_id == gid && m.user.pubkey == pubkey)
+                .map(|m| m.xp)
+        })
+        .unwrap_or(0);
     let (level, into, span) = crate::protocol::level_progress(xp);
     let xp_pct = (into as f64 / span.max(1) as f64 * 100.0) as u32;
     let copy_pubkey = pubkey.clone();

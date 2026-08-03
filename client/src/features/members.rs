@@ -344,14 +344,12 @@ fn MemberRow(
         (crate::features::profiles::status_color(&status), pulse)
     };
 
-    // Level (from message-XP) + custom-status subtitle, from the cached profile.
-    let (level, subtitle) = {
-        let s = state.read();
-        let p = s.profile_of(&member.user.pubkey);
-        let lvl = crate::protocol::level_progress(p.map(|p| p.xp).unwrap_or(0)).0;
-        let sub = p.and_then(|p| p.custom_status.clone());
-        (lvl, sub)
-    };
+    // Level from the member's per-guild XP; status subtitle from the profile.
+    let level = crate::protocol::level_progress(member.xp).0;
+    let subtitle = state
+        .read()
+        .profile_of(&member.user.pubkey)
+        .and_then(|p| p.custom_status.clone());
 
     let ctx_member = member.clone();
     rsx! {

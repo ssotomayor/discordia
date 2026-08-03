@@ -5,8 +5,6 @@ use crate::identity::Identity;
 use crate::session::{self, SavedSession};
 use crate::state::{SessionMode, SessionParams};
 
-const DEFAULT_RENDEZVOUS_URL: &str = "ws://localhost:7700";
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct DiscoverEntry {
     shortcode: String,
@@ -35,9 +33,9 @@ pub fn ConnectView(
     on_rename: EventHandler<String>,
     on_sign_out: EventHandler<()>,
 ) -> Element {
-    let default_rendezvous = std::env::var("DIOXUSFUN_RENDEZVOUS_URL")
-        .ok()
-        .unwrap_or_else(|| DEFAULT_RENDEZVOUS_URL.to_string());
+    // Rendezvous address book lives in local settings (see ClientSettings).
+    let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
+    let default_rendezvous = settings.read().active_rendezvous();
 
     let mut tab = use_signal(|| Tab::Browse);
     let mut server_url = use_signal(|| "ws://localhost:9000".to_string());
@@ -48,7 +46,7 @@ pub fn ConnectView(
 
     let mut publish_name = use_signal(String::new);
     let mut description = use_signal(String::new);
-    let mut publish_public = use_signal(|| false);
+    let mut publish_public = use_signal(|| true);
 
     let identity_for_submit = identity.clone();
     let submit = move |_| {
@@ -102,6 +100,14 @@ pub fn ConnectView(
                 }
             }
         };
+        // Remember the rendezvous we just used (most-recent-first).
+        let r = rendezvous_url().trim().to_string();
+        if !r.is_empty() {
+            let mut next = settings.read().clone();
+            next.use_rendezvous(&r);
+            settings.set(next.clone());
+            crate::settings::save(&next);
+        }
         on_connect.call(params);
     };
 
@@ -240,15 +246,9 @@ pub fn ConnectView(
                                     oninput: move |e| code.set(e.value()),
                                 }
                             }
-                            details { class: "text-xs text-[var(--text-dim)]",
-                                summary { class: "cursor-pointer hover:text-[var(--text-muted)]", "Rendezvous server (advanced)" }
-                                input {
-                                    class: "mt-2 {INPUT_SM}",
-                                    r#type: "text",
-                                    placeholder: "ws://localhost:7700",
-                                    value: "{rendezvous_url}",
-                                    oninput: move |e| rendezvous_url.set(e.value()),
-                                }
+                            RendezvousPicker {
+                                selected: rendezvous_url(),
+                                on_select: move |u: String| rendezvous_url.set(u),
                             }
                         }
                     },
@@ -304,17 +304,11 @@ pub fn ConnectView(
                                             checked: publish_public(),
                                             oninput: move |e| publish_public.set(e.value() == "true"),
                                         }
-                                        "List this server in the public Browse tab"
+                                        "List this server in the public Browse tab (others can find it by name)"
                                     }
-                                    details { class: "text-[var(--text-dim)]",
-                                        summary { class: "cursor-pointer hover:text-[var(--text-muted)]", "Rendezvous URL" }
-                                        input {
-                                            class: "mt-1 {INPUT_SM}",
-                                            r#type: "text",
-                                            placeholder: "ws://localhost:7700",
-                                            value: "{rendezvous_url}",
-                                            oninput: move |e| rendezvous_url.set(e.value()),
-                                        }
+                                    RendezvousPicker {
+                                        selected: rendezvous_url(),
+                                        on_select: move |u: String| rendezvous_url.set(u),
                                     }
                                 }
                             }
@@ -346,6 +340,109 @@ pub fn ConnectView(
                         Tab::SelfHost => "Launch  →",
                     }}
                 }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Saved rendezvous servers as a pick-list, with add/remove. Replaces the
+/// three separate "advanced" URL boxes — the address is a thing you keep, not
+/// something to retype per tab.
+#[component]
+fn RendezvousPicker(selected: String, on_select: EventHandler<String>) -> Element {
+    let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
+    let mut adding = use_signal(|| false);
+    let mut draft = use_signal(String::new);
+    let servers = settings.read().rendezvous_servers.clone();
+
+    let mut commit = move |url: String| {
+        let mut next = settings.read().clone();
+        next.use_rendezvous(&url);
+        settings.set(next.clone());
+        crate::settings::save(&next);
+        on_select.call(next.active_rendezvous());
+        draft.set(String::new());
+        adding.set(false);
+    };
+
+    rsx! {
+        div { class: "space-y-1.5",
+            div { class: "flex items-center gap-2",
+                span { class: "{LABEL} flex-1", "Rendezvous server" }
+                button {
+                    r#type: "button",
+                    class: "text-[10px] uppercase tracking-wider text-[var(--accent)] hover:text-[var(--accent-strong)] transition-colors",
+                    onclick: move |_| adding.set(!adding()),
+                    if adding() { "cancel" } else { "+ add" }
+                }
+            }
+            if adding() {
+                div { class: "flex gap-1",
+                    input {
+                        class: "{INPUT_SM} font-mono",
+                        r#type: "text",
+                        placeholder: "ws://192.168.0.61:7700",
+                        value: "{draft}",
+                        autofocus: true,
+                        oninput: move |e| draft.set(e.value()),
+                        onkeydown: move |e| {
+                            if e.key() == Key::Enter {
+                                let v = draft().trim().to_string();
+                                if !v.is_empty() { commit(v); }
+                            } else if e.key() == Key::Escape {
+                                adding.set(false);
+                            }
+                        },
+                    }
+                    button {
+                        r#type: "button",
+                        class: "px-2 rounded text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors",
+                        onclick: move |_| {
+                            let v = draft().trim().to_string();
+                            if !v.is_empty() { commit(v); }
+                        },
+                        "save"
+                    }
+                }
+            }
+            div { class: "space-y-1",
+                for url in servers.iter().cloned() {
+                    {
+                        let active = url == selected;
+                        let cls = if active {
+                            "border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)]"
+                        } else {
+                            "border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--text)] hover:border-[var(--border-strong)]"
+                        };
+                        let pick = url.clone();
+                        let drop_url = url.clone();
+                        rsx! {
+                            div {
+                                key: "{url}",
+                                class: "flex items-center gap-1",
+                                button {
+                                    r#type: "button",
+                                    class: "flex-1 text-left font-mono text-[11px] px-2 py-1 rounded border transition-colors truncate {cls}",
+                                    onclick: move |_| on_select.call(pick.clone()),
+                                    "{url}"
+                                }
+                                button {
+                                    r#type: "button",
+                                    class: "px-1.5 text-[var(--text-dim)] hover:text-[var(--danger)] text-xs transition-colors",
+                                    title: "Forget this server",
+                                    onclick: move |_| {
+                                        let mut next = settings.read().clone();
+                                        next.remove_rendezvous(&drop_url);
+                                        settings.set(next.clone());
+                                        crate::settings::save(&next);
+                                        on_select.call(next.active_rendezvous());
+                                    },
+                                    "✕"
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -576,15 +673,9 @@ fn BrowseTab(
                 }
             }
 
-            details { class: "text-xs text-[var(--text-dim)]",
-                summary { class: "cursor-pointer hover:text-[var(--text-muted)]", "Rendezvous server (advanced)" }
-                input {
-                    class: "mt-2 {INPUT_SM}",
-                    r#type: "text",
-                    placeholder: "ws://localhost:7700",
-                    value: "{rendezvous_url}",
-                    oninput: move |e| on_rendezvous_change.call(e.value()),
-                }
+            RendezvousPicker {
+                selected: rendezvous_url.clone(),
+                on_select: move |u: String| on_rendezvous_change.call(u),
             }
         }
     }

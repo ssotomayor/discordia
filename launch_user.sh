@@ -51,4 +51,4 @@ echo "  config dir: ${CONFIG_DIR}"
 # then run the prebuilt binary with the isolated config dir.
 ( cd "$REPO_DIR" && cargo build -p dioxusfun )
 
-DIOXUSFUN_CONFIG_DIR="$CONFIG_DIR" exec "$REPO_DIR/target/debug/dioxusfun" "$@"
+DIOXUSFUN_CONFIG_DIR="$CONFIG_DIR" exec "$REPO_DIR/target/debug/Discordia" "$@"

@@ -94,8 +94,10 @@ pub struct AppState {
     pub recent_joins: DashMap<Id, Vec<std::time::Instant>>,
     /// Server-authoritative message-XP per pubkey (drives the level display).
     /// Kept separate from `profiles` so the client-owned profile data stays
-    /// clean; XP is injected onto profiles on emit (`with_xp`).
-    pub xp: DashMap<String, u64>,
+    /// clean; XP is injected onto members on emit (`stamp_xp`). Keyed
+    /// guild → pubkey: levels are standing in ONE community, not a cross-guild
+    /// reputation, and they survive leave/kick/rejoin.
+    pub xp: DashMap<Id, DashMap<String, u64>>,
     /// Pubkeys treated as owners of SYSTEM guilds (empty `owner_pubkey`, e.g.
     /// the seeded Lobby) — the escape hatch that makes the shared landing
     /// space moderatable. Self-host sets this to the host's own pubkey; a
@@ -157,8 +159,8 @@ impl AppState {
         for p in loaded.profiles {
             state.profiles.insert(p.pubkey.clone(), p);
         }
-        for (pk, xp) in loaded.xp {
-            state.xp.insert(pk, xp);
+        for (gid, pk, xp) in loaded.guild_xp {
+            state.xp.entry(gid).or_default().insert(pk, xp);
         }
         for g in loaded.guilds {
             state.channels_by_guild.entry(g.id).or_default();
@@ -178,6 +180,9 @@ impl AppState {
                     online: false,
                     bot,
                     roles: role_ids,
+                    // Stored rows keep xp at 0 — the xp map is the truth,
+                    // stamped at emit (`stamp_xp`).
+                    xp: 0,
                 },
             );
         }
@@ -362,48 +367,54 @@ impl AppState {
             bio,
             status,
             custom_status,
-            // Storage never holds XP (it's server-authoritative in `xp`);
-            // it's injected on emit via `with_xp`.
-            xp: 0,
         };
         self.profiles.insert(pubkey.to_string(), profile.clone());
         persist(self.store.upsert_profile(&profile).await, "profile");
-        self.with_xp(profile)
-    }
-
-    /// Stamp a profile with the user's authoritative XP (used on every emit —
-    /// `Ready`, `ProfileUpdate` — since storage keeps XP at 0).
-    fn with_xp(&self, mut profile: Profile) -> Profile {
-        profile.xp = self.xp.get(&profile.pubkey).map(|v| *v).unwrap_or(0);
         profile
     }
 
-    /// Increment a user's message-XP by one. Returns `Some(profile)` — stamped
-    /// with the new XP — only when the derived level changed, so callers
-    /// broadcast a `ProfileUpdate` on level-up (rare) rather than per message.
-    pub async fn add_xp(&self, pubkey: &str) -> Option<Profile> {
+    /// A member's message-XP in a guild (0 if they've never posted there).
+    pub fn xp_of(&self, guild_id: Id, pubkey: &str) -> u64 {
+        self.xp
+            .get(&guild_id)
+            .and_then(|g| g.get(pubkey).map(|v| *v))
+            .unwrap_or(0)
+    }
+
+    /// Stamp a member with their authoritative per-guild XP. Called at every
+    /// member emit point (stored rows keep xp at 0 — the map is the truth).
+    pub fn stamp_xp(&self, mut member: Member) -> Member {
+        member.xp = self.xp_of(member.guild_id, &member.user.pubkey);
+        member
+    }
+
+    /// Increment a member's message-XP in a guild by one. Returns
+    /// `Some(member)` — stamped with the new XP — only when the derived level
+    /// changed, so callers deliver a `MemberUpdate` to that guild on level-up
+    /// (rare) rather than per message.
+    pub async fn add_xp(&self, guild_id: Id, pubkey: &str) -> Option<Member> {
         let new_xp = {
-            let mut e = self.xp.entry(pubkey.to_string()).or_insert(0);
+            let guild = self.xp.entry(guild_id).or_default();
+            let mut e = guild.entry(pubkey.to_string()).or_insert(0);
             *e += 1;
             *e
         };
-        persist(self.store.upsert_xp(pubkey, new_xp).await, "xp");
+        persist(
+            self.store.upsert_guild_xp(guild_id, pubkey, new_xp).await,
+            "xp",
+        );
         if crate::protocol::level_progress(new_xp).0
             == crate::protocol::level_progress(new_xp - 1).0
         {
             return None;
         }
-        // Level changed — surface a profile (materializing a bare one if the
-        // user never set avatar/bio) so the new level is visible everywhere.
-        let base = self
-            .profiles
-            .get(pubkey)
-            .map(|p| p.clone())
-            .unwrap_or_else(|| Profile {
-                pubkey: pubkey.to_string(),
-                ..Default::default()
-            });
-        Some(self.with_xp(base))
+        // Level changed — surface the member row so the new level renders in
+        // that guild's rosters.
+        let member = self
+            .members
+            .get(&guild_id)
+            .and_then(|gm| gm.get(pubkey).map(|m| m.clone()))?;
+        Some(self.stamp_xp(member))
     }
 
     /// Toggle a user's emoji reaction on a message. Returns the message's full
@@ -571,12 +582,9 @@ impl AppState {
         affected
     }
 
-    /// Snapshot of all known profiles, each stamped with its owner's XP.
+    /// Snapshot of all known profiles.
     pub fn profiles_snapshot(&self) -> Vec<Profile> {
-        self.profiles
-            .iter()
-            .map(|p| self.with_xp(p.value().clone()))
-            .collect()
+        self.profiles.iter().map(|p| p.value().clone()).collect()
     }
 
     /// Resolve a display `User` for a pubkey, falling back to a truncated
@@ -662,6 +670,7 @@ impl AppState {
             online: true,
             bot: false,
             roles: Vec::new(),
+            xp: 0,
         };
         self.members
             .entry(gid)
@@ -724,7 +733,7 @@ impl AppState {
         for gid in &my_guild_ids {
             if let Some(guild_members) = self.members.get(gid) {
                 for m in guild_members.iter() {
-                    members.push(m.value().clone());
+                    members.push(self.stamp_xp(m.value().clone()));
                 }
             }
         }
@@ -910,7 +919,7 @@ impl AppState {
             for mut m in guild_members.iter_mut() {
                 if m.roles.contains(&role_id) {
                     m.roles.retain(|r| *r != role_id);
-                    changed.push(m.clone());
+                    changed.push(self.stamp_xp(m.clone()));
                 }
             }
         }
@@ -958,31 +967,36 @@ impl AppState {
             member.clone()
         };
         persist(self.store.upsert_member(&updated).await, "member role");
-        Ok(updated)
+        Ok(self.stamp_xp(updated))
     }
 
     /// Insert `user` as an online member of `guild_id` if not already present;
     /// otherwise just flip them online. Returns the resulting membership.
     /// (Presence isn't persisted — only NEW memberships hit the store.)
     pub async fn add_member(&self, guild_id: Id, user: &User) -> Member {
-        let member = {
+        let (member, is_new) = {
             let guild_members = self.members.entry(guild_id).or_insert_with(DashMap::new);
             if let Some(mut existing) = guild_members.get_mut(&user.pubkey) {
                 existing.online = true;
-                return existing.clone();
+                (existing.clone(), false)
+            } else {
+                let member = Member {
+                    user: user.clone(),
+                    guild_id,
+                    online: true,
+                    bot: false,
+                    roles: Vec::new(),
+                    xp: 0,
+                };
+                guild_members.insert(user.pubkey.clone(), member.clone());
+                (member, true)
             }
-            let member = Member {
-                user: user.clone(),
-                guild_id,
-                online: true,
-                bot: false,
-                roles: Vec::new(),
-            };
-            guild_members.insert(user.pubkey.clone(), member.clone());
-            member
         };
-        persist(self.store.upsert_member(&member).await, "member add");
-        member
+        if is_new {
+            persist(self.store.upsert_member(&member).await, "member add");
+        }
+        // Rejoining resumes any level earned in this guild before.
+        self.stamp_xp(member)
     }
 
     /// Pubkeys of every member of a guild (for member-scoped delivery).
@@ -1114,7 +1128,7 @@ impl AppState {
         let members: Vec<Member> = self
             .members
             .get(&guild_id)
-            .map(|m| m.iter().map(|e| e.value().clone()).collect())
+            .map(|m| m.iter().map(|e| self.stamp_xp(e.value().clone())).collect())
             .unwrap_or_default();
         let roles = self.guild_roles(guild_id);
         (guild, channels, members, roles)
@@ -2116,6 +2130,7 @@ impl AppState {
                     online: false,
                     bot: true,
                     roles: Vec::new(),
+                    xp: 0,
                 };
                 guild_members.insert(bot_pubkey.to_string(), member.clone());
                 member
@@ -2189,7 +2204,7 @@ impl AppState {
             }
             if let Some(gm) = self.members.get(&install.guild_id) {
                 for m in gm.iter() {
-                    members.push(m.value().clone());
+                    members.push(self.stamp_xp(m.value().clone()));
                 }
             }
         }

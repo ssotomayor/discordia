@@ -8,5 +8,9 @@ title = "Discordia"
 enable_dev_tools = true
 
 [bundle]
+display_name = "Discordia"
 identifier = "com.discordia.app"
 publisher = "TehSoTo"
+# App icon: icns for macOS, png fallback for other bundlers. Regenerate from
+# assets/icon.svg (qlmanage → sips → iconutil) if the logo changes.
+icon = ["assets/icon.icns", "assets/icon-1024.png"]

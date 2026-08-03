@@ -52,3 +52,9 @@ default = ["desktop"]
 desktop = ["dioxus/desktop"]
 mobile = ["dioxus/mobile"]
 web = ["dioxus/web"]
+
+# The executable (and therefore the .app / installer name) is "Discordia";
+# the crate keeps its workspace name.
+[[bin]]
+name = "Discordia"
+path = "src/main.rs"

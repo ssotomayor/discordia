@@ -1266,32 +1266,52 @@ async fn operator_can_moderate_system_guild() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn message_xp_levels_up() {
+async fn message_xp_levels_up_per_guild() {
     let (url, handle) = spawn_gateway().await;
 
     let owner_id = BotIdentity::generate();
     let (mut owner, _) = connect_user(&url, &owner_id, "Grinder").await;
-    let (_guild_id, text) = create_guild(&mut owner, "XP Farm").await;
+    let (guild_id, text) = create_guild(&mut owner, "XP Farm").await;
 
     // Level 1 spans 10 XP; the 10th message rolls the author into level 2 and
-    // triggers a ProfileUpdate carrying the new XP.
+    // triggers a MemberUpdate (targeted at this guild) carrying the new XP.
     for i in 0..10 {
         owner.send_message(text, &format!("msg {i}")).await.unwrap();
     }
 
-    let profile = loop {
-        if let ServerMessage::ProfileUpdate(p) = next_timeout(&mut owner).await {
-            if p.pubkey == owner_id.pubkey() {
-                break p;
+    let member = loop {
+        if let ServerMessage::MemberUpdate(m) = next_timeout(&mut owner).await {
+            if m.user.pubkey == owner_id.pubkey() && m.guild_id == guild_id {
+                break m;
             }
         }
     };
-    assert!(profile.xp >= 10, "xp should have accrued, got {}", profile.xp);
+    assert!(member.xp >= 10, "xp should have accrued, got {}", member.xp);
     assert_eq!(
-        dioxusfun_server::protocol::level_progress(profile.xp).0,
+        dioxusfun_server::protocol::level_progress(member.xp).0,
         2,
         "10 messages → level 2"
     );
+
+    // XP is per-guild: a fresh guild starts the same user back at 0. Verify
+    // both values via a second session's Ready roster (which stamps XP).
+    let (guild2, _) = create_guild(&mut owner, "Fresh Start").await;
+    let mut second = Bot::connect_as_user(&url, &owner_id, "Grinder").await.unwrap();
+    let members = loop {
+        if let ServerMessage::Ready { members, .. } = next_timeout(&mut second).await {
+            break members;
+        }
+    };
+    let in_farm = members
+        .iter()
+        .find(|m| m.guild_id == guild_id && m.user.pubkey == owner_id.pubkey())
+        .expect("member of XP Farm");
+    let in_fresh = members
+        .iter()
+        .find(|m| m.guild_id == guild2 && m.user.pubkey == owner_id.pubkey())
+        .expect("member of Fresh Start");
+    assert!(in_farm.xp >= 10, "farm xp persisted on the member row");
+    assert_eq!(in_fresh.xp, 0, "new guild starts at level 1 / 0 xp");
 
     handle.abort();
 }
