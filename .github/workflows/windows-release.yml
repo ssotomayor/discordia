@@ -44,20 +44,33 @@ jobs:
         working-directory: client
         run: dx bundle --release
 
-      # dx places bundle outputs under target/dx/<app>/bundle/. Zip whatever
-      # was produced (exe folder and/or installer) so the artifact is one file.
-      - name: Zip bundle
+      # dx emits the app three times (standalone exe, NSIS installer, and the
+      # installer's staging copy). Publish two lean things instead of zipping
+      # the whole tree: a portable zip (exe + its assets, which live beside the
+      # exe — not embedded in it) and the installer on its own.
+      - name: Package
         shell: pwsh
         run: |
-          $bundle = Get-ChildItem -Recurse -Directory target/dx | Where-Object { $_.Name -eq 'bundle' } | Select-Object -First 1
-          if (-not $bundle) { throw "no bundle output found under target/dx" }
-          Compress-Archive -Path "$($bundle.FullName)/*" -DestinationPath discordia-windows.zip
-          Get-ChildItem $bundle.FullName -Recurse | Select-Object FullName | Out-String | Write-Host
+          $root = Get-ChildItem -Recurse -Directory target/dx |
+                  Where-Object { $_.Name -eq 'windows' } | Select-Object -First 1
+          if (-not $root) { throw "no windows bundle output found under target/dx" }
+          Get-ChildItem $root.FullName -Recurse | Select-Object FullName | Out-String | Write-Host
+
+          New-Item -ItemType Directory -Force -Path portable | Out-Null
+          Copy-Item "$($root.FullName)/Discordia.exe" portable/
+          $assets = Join-Path $root.FullName 'nsis/_staging/assets'
+          if (Test-Path $assets) { Copy-Item $assets portable/assets -Recurse }
+          Compress-Archive -Path portable/* -DestinationPath Discordia-windows-portable.zip
+
+          $setup = Get-ChildItem -Recurse -Filter '*-setup.exe' $root.FullName | Select-Object -First 1
+          if ($setup) { Copy-Item $setup.FullName Discordia-windows-setup.exe }
 
       - uses: actions/upload-artifact@v4
         with:
           name: discordia-windows
-          path: discordia-windows.zip
+          path: |
+            Discordia-windows-portable.zip
+            Discordia-windows-setup.exe
           retention-days: 14
 
       # On tag pushes, also attach to a release for a shareable download link.
@@ -65,4 +78,6 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: discordia-windows.zip
+          files: |
+            Discordia-windows-portable.zip
+            Discordia-windows-setup.exe
