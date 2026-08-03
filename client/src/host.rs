@@ -104,18 +104,20 @@ pub async fn start_self_host(
             .as_ref()
             .and_then(|(_, info)| info.livekit_url.clone()),
         port: DEFAULT_LIVEKIT_PORT,
-        // When the rendezvous runs a shared SFU it also hands us its
-        // credentials — we must sign voice tokens with those or that SFU
-        // rejects them ("token signature is invalid"). Falls back to the
-        // bundled subprocess's dev credentials for local/LAN hosting.
-        api_key: rendezvous_state
-            .as_ref()
-            .and_then(|(_, info)| info.livekit_api_key.clone())
-            .unwrap_or_else(|| DEFAULT_LIVEKIT_KEY.into()),
-        api_secret: rendezvous_state
-            .as_ref()
-            .and_then(|(_, info)| info.livekit_api_secret.clone())
-            .unwrap_or_else(|| DEFAULT_LIVEKIT_SECRET.into()),
+        // Local credentials only ever sign for our own bundled subprocess.
+        api_key: DEFAULT_LIVEKIT_KEY.into(),
+        api_secret: DEFAULT_LIVEKIT_SECRET.into(),
+        // When the rendezvous runs a shared SFU, it mints tokens for us — we
+        // hold a session grant, never its signing secret (a public relay can't
+        // hand that out: any host could then mint into any other host's rooms).
+        minter: rendezvous_state.as_ref().and_then(|(_, info)| {
+            info.voice_token_grant.as_ref().map(|grant| {
+                std::sync::Arc::new(crate::rendezvous::RendezvousMinter::new(
+                    &info.rendezvous_base,
+                    grant.clone(),
+                )) as std::sync::Arc<dyn dioxusfun_server::livekit::VoiceTokenMinter>
+            })
+        }),
         // Friends proxied in by the rendezvous hit our gateway on loopback;
         // hand them our LAN address for LiveKit instead of their own machine.
         lan_host: local_ip_address::local_ip().ok().map(|ip| ip.to_string()),

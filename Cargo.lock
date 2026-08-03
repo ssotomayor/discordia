@@ -2088,6 +2088,7 @@ dependencies = [
  "dashmap",
  "futures-util",
  "hex",
+ "livekit-api 0.4.24",
  "rand 0.8.6",
  "secp256k1",
  "serde",

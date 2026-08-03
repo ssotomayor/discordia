@@ -50,9 +50,9 @@ services:
       # SFU instead of the host's unreachable LAN address. This is the piece
       # that makes voice work over the internet for laptop-hosted servers.
       LIVEKIT_URL: ws://${PUBLIC_HOST:?set PUBLIC_HOST in .env}:7880
-      # Handed to registering hosts too: a host signs its own voice tokens, so
-      # without these it uses its built-in dev credentials and this SFU
-      # rejects them ("token signature is invalid").
+      # The SFU signing credentials stay HERE. Hosts never receive them — they
+      # get a per-session grant and ask us to mint (POST /voice-token), so no
+      # host on this relay can mint tokens into another host's rooms.
       LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-devkey}
       LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-secret-must-be-at-least-32-chars-long}
     volumes:

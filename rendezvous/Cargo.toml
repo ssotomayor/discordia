@@ -6,6 +6,9 @@ edition = "2024"
 [dependencies]
 # Rendezvous-specific.
 rand = "0.8"
+# Minting LiveKit access tokens for hosts that use our shared SFU (the secret
+# never leaves this process).
+livekit-api = { version = "0.4", default-features = false, features = ["access-token"] }
 # Ownership proof for claimed names: Schnorr (BIP-340 / Nostr), same scheme as
 # the server's Identify handshake.
 secp256k1 = { workspace = true }

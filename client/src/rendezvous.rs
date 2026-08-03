@@ -34,10 +34,10 @@ enum RendezvousToHost {
     Registered {
         shortcode: String,
         livekit_url: Option<String>,
+        /// Per-session grant for `POST /voice-token`. Not a signing secret —
+        /// see `RendezvousMinter`.
         #[serde(default)]
-        livekit_api_key: Option<String>,
-        #[serde(default)]
-        livekit_api_secret: Option<String>,
+        voice_token_grant: Option<String>,
     },
     NewFriend {
         session_id: String,
@@ -51,11 +51,73 @@ enum RendezvousToHost {
 pub struct PublishInfo {
     pub shortcode: String,
     pub livekit_url: Option<String>,
-    /// Credentials for the rendezvous operator's shared LiveKit, when it runs
-    /// one. We must sign JoinVoice tokens with these or that SFU rejects them.
-    pub livekit_api_key: Option<String>,
-    pub livekit_api_secret: Option<String>,
+    /// Grant letting us ask the rendezvous to mint voice tokens for its shared
+    /// SFU. We never receive its signing secret.
+    pub voice_token_grant: Option<String>,
     pub rendezvous_base: String,
+}
+
+/// Asks the rendezvous to mint LiveKit tokens for us.
+///
+/// A public rendezvous can't hand out its SFU signing secret — any host holding
+/// it could mint tokens into any other host's rooms. So we send the room and
+/// identity along with our session grant, and the operator signs a token scoped
+/// to a room namespaced under our shortcode.
+pub struct RendezvousMinter {
+    endpoint: String,
+    grant: String,
+}
+
+impl RendezvousMinter {
+    pub fn new(rendezvous_base: &str, grant: String) -> Self {
+        // The control socket is ws(s)://…; the mint endpoint is the http(s) twin.
+        let http = if let Some(rest) = rendezvous_base.strip_prefix("wss://") {
+            format!("https://{rest}")
+        } else if let Some(rest) = rendezvous_base.strip_prefix("ws://") {
+            format!("http://{rest}")
+        } else {
+            rendezvous_base.to_string()
+        };
+        Self {
+            endpoint: format!("{}/voice-token", http.trim_end_matches('/')),
+            grant,
+        }
+    }
+}
+
+impl dioxusfun_server::livekit::VoiceTokenMinter for RendezvousMinter {
+    fn mint<'a>(
+        &'a self,
+        req: dioxusfun_server::livekit::MintRequest,
+    ) -> dioxusfun_server::livekit::BoxFuture<'a, Result<String, String>> {
+        Box::pin(async move {
+            #[derive(serde::Deserialize)]
+            struct Resp {
+                token: String,
+            }
+            let res = reqwest::Client::new()
+                .post(&self.endpoint)
+                .json(&serde_json::json!({
+                    "grant": self.grant,
+                    "room": req.room,
+                    "identity": req.identity,
+                    "name": req.name,
+                }))
+                .send()
+                .await
+                .map_err(|e| format!("rendezvous mint request: {e}"))?;
+            if !res.status().is_success() {
+                let code = res.status();
+                let body = res.text().await.unwrap_or_default();
+                return Err(format!("rendezvous mint rejected ({code}): {body}"));
+            }
+            Ok(res
+                .json::<Resp>()
+                .await
+                .map_err(|e| format!("rendezvous mint response: {e}"))?
+                .token)
+        })
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -141,14 +203,12 @@ pub async fn register(
             RendezvousToHost::Registered {
                 shortcode,
                 livekit_url,
-                livekit_api_key,
-                livekit_api_secret,
+                voice_token_grant,
             } => {
                 let info = PublishInfo {
                     shortcode,
                     livekit_url,
-                    livekit_api_key,
-                    livekit_api_secret,
+                    voice_token_grant,
                     rendezvous_base: base.clone(),
                 };
                 return Ok((info, ControlStream { ws }));

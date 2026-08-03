@@ -703,7 +703,7 @@ pub async fn handle_connection(
                             ctx.state.set_voice_channel(&u.pubkey, guild_id, Some(channel_id));
                         let targets = ctx.state.guild_member_pubkeys(guild_id);
                         ctx.state.deliver(targets, ServerMessage::VoiceStateUpdate(new_state));
-                        match livekit::mint_token(&ctx.livekit, &u.pubkey, &u.username, channel_id) {
+                        match livekit::voice_token(&ctx.livekit, &u.pubkey, &u.username, channel_id).await {
                             Ok(token) => {
                                 let livekit_url =
                                     ctx.livekit.url_for_client(client_host.as_deref());
@@ -719,12 +719,14 @@ pub async fn handle_connection(
                                 // Also hand over a screen-share token (separate
                                 // room) for the webview JS client.
                                 let screen_name = format!("{} (screen)", u.username);
-                                if let Ok(screen_token) = livekit::mint_screen_token(
+                                if let Ok(screen_token) = livekit::screen_token(
                                     &ctx.livekit,
                                     &u.pubkey,
                                     &screen_name,
                                     channel_id,
-                                ) {
+                                )
+                                .await
+                                {
                                     let _ = send(
                                         &mut ws_tx,
                                         &ServerMessage::ScreenToken {

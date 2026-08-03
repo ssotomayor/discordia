@@ -4,6 +4,28 @@ use livekit_api::access_token::{AccessToken, VideoGrants};
 
 use crate::protocol::Id;
 
+/// A voice-token request. Rooms are named by the gateway; a delegated minter
+/// may namespace them further (see the rendezvous).
+#[derive(Debug, Clone)]
+pub struct MintRequest {
+    pub room: String,
+    pub identity: String,
+    pub name: String,
+}
+
+pub type BoxFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
+
+/// Something that can sign LiveKit tokens on our behalf.
+///
+/// When a self-hosting gateway uses a *shared* SFU it doesn't own (e.g. the one
+/// a public rendezvous operates), it must not hold that SFU's signing secret —
+/// otherwise every host on that relay could mint tokens for every other host's
+/// rooms. Instead the gateway asks the operator to mint, and the operator scopes
+/// the room to this host. See `client::rendezvous::RendezvousMinter`.
+pub trait VoiceTokenMinter: Send + Sync {
+    fn mint<'a>(&'a self, req: MintRequest) -> BoxFuture<'a, Result<String, String>>;
+}
+
 #[derive(Clone)]
 pub struct LiveKitConfig {
     /// Explicit URL that overrides per-connection resolution. Set this when
@@ -23,6 +45,9 @@ pub struct LiveKitConfig {
     pub lan_host: Option<String>,
     pub api_key: String,
     pub api_secret: String,
+    /// When set, tokens are minted by this delegate instead of signed locally
+    /// (we don't hold the shared SFU's secret).
+    pub minter: Option<std::sync::Arc<dyn VoiceTokenMinter>>,
 }
 
 impl LiveKitConfig {
@@ -36,6 +61,7 @@ impl LiveKitConfig {
             api_key: std::env::var("LIVEKIT_API_KEY").unwrap_or_else(|_| "devkey".into()),
             api_secret: std::env::var("LIVEKIT_API_SECRET")
                 .unwrap_or_else(|_| "secret-must-be-at-least-32-chars-long".into()),
+            minter: None,
             lan_host: None,
         }
     }
@@ -103,6 +129,46 @@ pub fn mint_token(
         .map_err(|e| format!("livekit token: {e}"))
 }
 
+/// Mint a voice token, delegating to `cfg.minter` when one is configured.
+pub async fn voice_token(
+    cfg: &LiveKitConfig,
+    user_pubkey: &str,
+    username: &str,
+    channel_id: Id,
+) -> Result<String, String> {
+    match &cfg.minter {
+        Some(m) => {
+            m.mint(MintRequest {
+                room: room_name(channel_id),
+                identity: user_pubkey.to_string(),
+                name: username.to_string(),
+            })
+            .await
+        }
+        None => mint_token(cfg, user_pubkey, username, channel_id),
+    }
+}
+
+/// Mint a screen-share token, delegating like `voice_token`.
+pub async fn screen_token(
+    cfg: &LiveKitConfig,
+    user_pubkey: &str,
+    username: &str,
+    channel_id: Id,
+) -> Result<String, String> {
+    match &cfg.minter {
+        Some(m) => {
+            m.mint(MintRequest {
+                room: screen_room_name(channel_id),
+                identity: user_pubkey.to_string(),
+                name: username.to_string(),
+            })
+            .await
+        }
+        None => mint_screen_token(cfg, user_pubkey, username, channel_id),
+    }
+}
+
 pub fn room_name(channel_id: Id) -> String {
     format!("voice-{channel_id}")
 }
@@ -164,6 +230,7 @@ mod tests {
             port: 7880,
             api_key: "".into(),
             api_secret: "".into(),
+            minter: None,
             lan_host: None,
         };
         assert_eq!(
@@ -179,6 +246,7 @@ mod tests {
             port: 7880,
             api_key: "".into(),
             api_secret: "".into(),
+            minter: None,
             lan_host: None,
         };
         assert_eq!(
@@ -197,6 +265,7 @@ mod tests {
             port: 7880,
             api_key: "".into(),
             api_secret: "".into(),
+            minter: None,
             lan_host: Some("192.168.0.61".into()),
         };
         for h in ["127.0.0.1:9000", "localhost:9000", "[::1]:9000"] {

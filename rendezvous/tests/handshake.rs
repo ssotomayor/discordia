@@ -14,7 +14,11 @@ use tokio_tungstenite::tungstenite::Message;
 async fn spawn() -> String {
     let ctx = AppCtx {
         registry: Arc::new(Registry::new()),
-        config: Arc::new(Config { livekit_url: None }),
+        config: Arc::new(Config {
+            livekit_url: None,
+            livekit_api_key: None,
+            livekit_api_secret: None,
+        }),
     };
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

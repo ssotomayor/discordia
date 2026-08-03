@@ -114,12 +114,16 @@ pub async fn handle_host_control(socket: WebSocket, registry: Arc<Registry>, cfg
         return;
     }
 
-    // Send the assigned shortcode + livekit_url.
+    // Send the assigned shortcode + livekit_url, plus a per-session grant the
+    // host uses to ask US to mint voice tokens. The signing secret stays here.
+    let voice_token_grant = cfg
+        .livekit_api_secret
+        .is_some()
+        .then(|| registry.issue_voice_grant(&shortcode));
     let registered = RendezvousToHost::Registered {
         shortcode: shortcode.clone(),
         livekit_url: cfg.livekit_url.clone(),
-        livekit_api_key: cfg.livekit_api_key.clone(),
-        livekit_api_secret: cfg.livekit_api_secret.clone(),
+        voice_token_grant,
     };
     if let Ok(json) = serde_json::to_string(&registered) {
         if tx.send(Message::Text(json.into())).await.is_err() {

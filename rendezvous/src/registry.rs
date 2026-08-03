@@ -58,6 +58,8 @@ pub struct PendingPairing {
 }
 
 pub struct Registry {
+    /// voice-token grant -> shortcode it authorises (see issue_voice_grant)
+    voice_grants: DashMap<String, String>,
     /// slug/shortcode -> live registered host
     pub hosts: DashMap<String, Arc<HostEntry>>,
     /// slug -> persistent name reservation (survives restart)
@@ -91,6 +93,7 @@ impl Registry {
     pub fn new() -> Self {
         Self {
             hosts: DashMap::new(),
+            voice_grants: DashMap::new(),
             reservations: DashMap::new(),
             pending: DashMap::new(),
             store_path: None,
@@ -115,6 +118,7 @@ impl Registry {
         }
         Self {
             hosts: DashMap::new(),
+            voice_grants: DashMap::new(),
             reservations,
             pending: DashMap::new(),
             store_path: Some(path),
@@ -177,6 +181,19 @@ impl Registry {
         self.reservations.get(slug).map(|r| r.owner_pubkey.clone())
     }
 
+    /// Issue a per-session grant that authorises `POST /voice-token` for this
+    /// host only. Returned to the host in `Registered`; revoked on release.
+    pub fn issue_voice_grant(&self, shortcode: &str) -> String {
+        let grant = uuid::Uuid::new_v4().to_string();
+        self.voice_grants.insert(grant.clone(), shortcode.to_string());
+        grant
+    }
+
+    /// The shortcode a voice grant belongs to, if the grant is live.
+    pub fn voice_grant_owner(&self, grant: &str) -> Option<String> {
+        self.voice_grants.get(grant).map(|s| s.clone())
+    }
+
     /// Try to claim a live slot for a shortcode; false if already live.
     pub fn try_claim(&self, shortcode: &str, entry: HostEntry) -> bool {
         if self.hosts.contains_key(shortcode) {
@@ -190,6 +207,8 @@ impl Registry {
     /// reservation — a named host going offline keeps its name.
     pub fn release(&self, shortcode: &str) {
         self.hosts.remove(shortcode);
+        // A grant must not outlive the session that owns it.
+        self.voice_grants.retain(|_, sc| sc != shortcode);
     }
 
     /// Register a new pending pairing slot; friend handler awaits the oneshot.

@@ -57,15 +57,14 @@ pub enum RendezvousToHost {
     },
     Registered {
         shortcode: String,
-        /// API key/secret for the shared LiveKit above. A host must sign its
-        /// own JoinVoice tokens, so without these it would sign with its
-        /// built-in dev credentials and the shared SFU would reject them
-        /// ("token signature is invalid"). Only sent when the operator
-        /// configured a shared SFU.
+        /// Bearer credential for `POST /voice-token`, letting this host ask us
+        /// to mint LiveKit tokens for the shared SFU. Deliberately NOT the
+        /// signing secret: on a public relay any host holding that could mint
+        /// tokens into any other host's rooms. This grant is per-session,
+        /// scoped to rooms we namespace for this host, and dies with the
+        /// control connection.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        livekit_api_key: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        livekit_api_secret: Option<String>,
+        voice_token_grant: Option<String>,
         /// LiveKit URL the host should hand to clients in JoinVoice responses.
         /// Provided when the rendezvous operator runs a shared LiveKit alongside.
         livekit_url: Option<String>,
