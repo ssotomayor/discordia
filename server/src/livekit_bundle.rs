@@ -12,6 +12,12 @@ use std::time::Duration;
 
 use tokio::process::{Child, Command};
 
+// The embedded bytes must match the filename `build.rs` wrote, which carries
+// the `.exe` suffix on Windows. (These two were out of sync and broke the
+// Windows build with "couldn't read .../out/livekit-server".)
+#[cfg(target_os = "windows")]
+const LIVEKIT_BIN: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/livekit-server.exe"));
+#[cfg(not(target_os = "windows"))]
 const LIVEKIT_BIN: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/livekit-server"));
 
 #[cfg(target_os = "windows")]
