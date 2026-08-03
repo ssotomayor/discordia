@@ -18,13 +18,10 @@ fn main() {
     let window = WindowBuilder::new()
         .with_title("Discordia")
         .with_inner_size(LogicalSize::new(1280.0, 800.0))
-        // Dioxus desktop dev builds default this to true. Turn it off so the
-        // window behaves like any other window.
         .with_always_on_top(false);
     let window = mac_window(window);
-
     LaunchBuilder::new()
-        .with_cfg(Config::new().with_window(window))
+        .with_cfg(Config::new().with_window(window).with_menu(None))
         .launch(app::App);
 }
 
