@@ -37,8 +37,14 @@ jobs:
 
       # binstall grabs a prebuilt dioxus-cli instead of compiling it (~minutes saved).
       - uses: cargo-bins/cargo-binstall@main
+      # --force is required: rust-cache restores ~/.cargo metadata, so binstall
+      # sees dioxus-cli as "already installed" and skips it — while the actual
+      # dx.exe isn't in the restored cache. Without this the build fails on
+      # every run after the first with "the term 'dx' is not recognized".
       - name: Install Dioxus CLI
-        run: cargo binstall dioxus-cli --no-confirm
+        run: cargo binstall dioxus-cli --no-confirm --force
+      - name: Verify dx
+        run: dx --version
 
       - name: Bundle
         working-directory: client
