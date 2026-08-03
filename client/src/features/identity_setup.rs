@@ -14,7 +14,7 @@ enum Step {
     ImportKey,
 }
 
-const INPUT: &str = "w-full bg-transparent border border-[var(--border)] rounded px-3 py-2 text-sm text-[var(--text)] focus:outline-none focus:border-[var(--accent)] transition-colors";
+const INPUT: &str = "w-full bg-transparent border border-[var(--edge)] rounded-lg px-3 py-2 text-sm text-[var(--text)] focus:outline-none focus:border-[var(--accent)] transition-colors";
 const LABEL: &str = "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]";
 
 #[component]
@@ -35,14 +35,29 @@ pub fn IdentitySetupView(on_done: EventHandler<Identity>) -> Element {
             // Brand panel matches the Connect screen so first-launch
             // feels like the same app.
             div {
-                class: "dxf-drag-region hidden md:flex w-1/3 min-w-[300px] max-w-[440px] flex-col items-center justify-center px-8 border-r border-[var(--border)]",
+                class: "dxf-drag-region hidden md:flex w-2/5 min-w-[340px] max-w-[520px] flex-col items-center justify-center px-10 bg-[var(--bg)]",
                 onmousedown: move |_| crate::app::start_window_drag(),
-                crate::app::DiscordiaLogo { class: "w-32 h-32 mb-4" }
-                h1 { class: "text-2xl font-semibold text-[var(--accent)] tracking-tight",
+                div {
+                    class: "w-28 h-28 rounded-3xl flex items-center justify-center mb-8",
+                    style: "background: linear-gradient(160deg, var(--panel2), var(--bg2)); \
+                            border: 1px solid var(--edge); \
+                            box-shadow: 0 0 60px -12px color-mix(in srgb, var(--accent) 45%, transparent);",
+                    crate::app::DiscordiaLogo { class: "w-16 h-16" }
+                }
+                h1 { class: "dxf-display dxf-wordmark text-6xl font-extrabold tracking-tight",
                     "Discordia"
                 }
-                p { class: "text-xs text-[var(--text-muted)] mt-3 text-center max-w-[260px] leading-relaxed",
-                    "Welcome. Pick or create an identity to get started."
+                p { class: "text-[15px] text-[var(--text-muted)] mt-5 text-center max-w-[320px] leading-relaxed",
+                    "Your keys are your account. No email, no phone number, no company in the middle."
+                }
+                div { class: "flex flex-wrap items-center justify-center gap-2 mt-7",
+                    span { class: "flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-[var(--edge)] text-xs text-[var(--accent)]",
+                        style: "background: var(--accent-soft);", "🔑 Nostr identity"
+                    }
+                    span { class: "flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-[var(--edge)] text-xs",
+                        style: "background: color-mix(in srgb, var(--up) 10%, transparent); color: var(--up);",
+                        "⌂ Self-hosted"
+                    }
                 }
             }
 
@@ -55,16 +70,16 @@ pub fn IdentitySetupView(on_done: EventHandler<Identity>) -> Element {
                     div { class: "w-full max-w-md mx-auto space-y-5",
 
                 div { class: "space-y-1",
-                    h1 { class: "text-lg font-semibold text-[var(--accent)]", "Set up your identity" }
-                    p { class: "text-xs text-[var(--text-muted)]",
-                        "Your identity is universal — same address across every server you join."
+                    h1 { class: "dxf-display text-2xl font-bold text-[var(--text)]", "Set up your identity" }
+                    p { class: "text-sm text-[var(--text-muted)]",
+                        "Your identity is universal — the same account on every server you join."
                     }
                 }
 
-                div { class: "h-px bg-[var(--border)]" }
+                div { class: "h-px bg-[var(--edge)]" }
 
                 if let Some(err) = error.read().clone() {
-                    div { class: "text-xs text-[var(--danger)] border border-[var(--border)] rounded px-3 py-2",
+                    div { class: "text-xs text-[var(--danger)] border border-[var(--danger)]/40 rounded-lg px-3 py-2",
                         "{err}"
                     }
                 }
@@ -119,8 +134,17 @@ pub fn IdentitySetupView(on_done: EventHandler<Identity>) -> Element {
                             div { class: "space-y-3",
                                 div { class: "space-y-1",
                                     div { class: LABEL, "Your pubkey" }
-                                    code { class: "block text-xs text-[var(--text)] bg-[var(--bg)] border border-[var(--border)] rounded p-2 break-all select-all",
+                                    code { class: "block text-xs font-mono text-[var(--text-muted)] border border-[var(--edge)] rounded-xl p-3 break-all select-all leading-relaxed",
+                                        style: "background: var(--bg2);",
                                         "{pubkey}"
+                                    }
+                                    // Same colour signature the profile card
+                                    // shows — the key becomes recognisable at
+                                    // the moment it's created.
+                                    div { class: "flex gap-1 pt-1",
+                                        for c in crate::identity::color_signature(&pubkey, 16) {
+                                            div { class: "h-2 flex-1 rounded-full", style: "background: {c};" }
+                                        }
                                     }
                                 }
 
@@ -135,7 +159,8 @@ pub fn IdentitySetupView(on_done: EventHandler<Identity>) -> Element {
                                             if reveal() { "Hide" } else { "Reveal" }
                                         }
                                     }
-                                    div { class: "text-xs text-[var(--text)] bg-[var(--bg)] border border-[var(--border)] rounded p-3 leading-relaxed select-all break-words",
+                                    div { class: "text-sm font-mono text-[var(--text)] border border-[var(--edge)] rounded-xl p-3 leading-relaxed select-all break-words",
+                                        style: "background: var(--bg2);",
                                         "{phrase_display}"
                                     }
                                     p { class: "text-[10px] text-[var(--warn)]",
@@ -250,7 +275,7 @@ pub fn IdentitySetupView(on_done: EventHandler<Identity>) -> Element {
                                     oninput: move |e| display_name.set(e.value()),
                                 }
                             }
-                            div { class: "text-[10px] text-[var(--warn)] border border-[var(--border)] rounded p-2",
+                            div { class: "text-[10px] text-[var(--warn)] border border-[var(--edge)] rounded-lg p-2.5 leading-relaxed",
                                 "Keys imported this way have no seed phrase. Back up the key string itself if you want to restore later."
                             }
                             button {
@@ -288,19 +313,20 @@ pub fn IdentitySetupView(on_done: EventHandler<Identity>) -> Element {
     }
 }
 
-const PRIMARY_BUTTON: &str = "w-full bg-[var(--accent)] hover:bg-[var(--accent-strong)] text-[#0a0908] font-medium py-2 rounded text-sm transition-colors disabled:opacity-30 disabled:cursor-not-allowed";
+const PRIMARY_BUTTON: &str = "dxf-cta w-full py-2.5 rounded-xl text-sm transition-all disabled:opacity-30 disabled:cursor-not-allowed";
 
 #[component]
 fn ChooseOption(title: &'static str, blurb: &'static str, onclick: EventHandler<()>) -> Element {
     rsx! {
         button {
             r#type: "button",
-            class: "panel-hover w-full text-left border border-[var(--border)] hover:border-[var(--accent)] rounded p-3 group",
+            class: "panel-hover w-full text-left border border-[var(--edge)] hover:border-[var(--accent)] rounded-xl p-4 group",
+            style: "background: var(--panel2);",
             onclick: move |_| onclick.call(()),
-            div { class: "text-sm text-[var(--text)] group-hover:text-[var(--accent)] transition-colors",
+            div { class: "text-sm font-medium text-[var(--text)] group-hover:text-[var(--accent)] transition-colors",
                 "{title}"
             }
-            div { class: "text-xs text-[var(--text-muted)] mt-1", "{blurb}" }
+            div { class: "text-xs text-[var(--text-muted)] mt-1 leading-relaxed", "{blurb}" }
         }
     }
 }
