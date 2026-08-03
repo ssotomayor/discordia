@@ -34,6 +34,10 @@ enum RendezvousToHost {
     Registered {
         shortcode: String,
         livekit_url: Option<String>,
+        #[serde(default)]
+        livekit_api_key: Option<String>,
+        #[serde(default)]
+        livekit_api_secret: Option<String>,
     },
     NewFriend {
         session_id: String,
@@ -47,6 +51,10 @@ enum RendezvousToHost {
 pub struct PublishInfo {
     pub shortcode: String,
     pub livekit_url: Option<String>,
+    /// Credentials for the rendezvous operator's shared LiveKit, when it runs
+    /// one. We must sign JoinVoice tokens with these or that SFU rejects them.
+    pub livekit_api_key: Option<String>,
+    pub livekit_api_secret: Option<String>,
     pub rendezvous_base: String,
 }
 
@@ -133,10 +141,14 @@ pub async fn register(
             RendezvousToHost::Registered {
                 shortcode,
                 livekit_url,
+                livekit_api_key,
+                livekit_api_secret,
             } => {
                 let info = PublishInfo {
                     shortcode,
                     livekit_url,
+                    livekit_api_key,
+                    livekit_api_secret,
                     rendezvous_base: base.clone(),
                 };
                 return Ok((info, ControlStream { ws }));

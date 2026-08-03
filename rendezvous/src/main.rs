@@ -18,8 +18,17 @@ async fn main() {
 
     let config = Config {
         livekit_url: std::env::var("LIVEKIT_URL").ok(),
+        // Handed to hosts so the voice tokens they mint validate against the
+        // shared SFU. Without them a host signs with its built-in dev
+        // credentials and clients get "token signature is invalid".
+        livekit_api_key: std::env::var("LIVEKIT_API_KEY").ok(),
+        livekit_api_secret: std::env::var("LIVEKIT_API_SECRET").ok(),
     };
-    tracing::info!(?config.livekit_url, "rendezvous configured");
+    tracing::info!(
+        ?config.livekit_url,
+        shared_credentials = config.livekit_api_secret.is_some(),
+        "rendezvous configured"
+    );
 
     // Persist name reservations under a data dir an operator can back up.
     let data_dir: std::path::PathBuf = std::env::var("DIOXUSFUN_RENDEZVOUS_DATA_DIR")

@@ -21,6 +21,10 @@ use crate::registry::Registry;
 #[derive(Clone)]
 pub struct Config {
     pub livekit_url: Option<String>,
+    /// Credentials for the shared LiveKit, handed to registering hosts so the
+    /// tokens they mint are accepted by it.
+    pub livekit_api_key: Option<String>,
+    pub livekit_api_secret: Option<String>,
 }
 
 #[derive(Clone)]

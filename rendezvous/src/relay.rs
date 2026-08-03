@@ -118,6 +118,8 @@ pub async fn handle_host_control(socket: WebSocket, registry: Arc<Registry>, cfg
     let registered = RendezvousToHost::Registered {
         shortcode: shortcode.clone(),
         livekit_url: cfg.livekit_url.clone(),
+        livekit_api_key: cfg.livekit_api_key.clone(),
+        livekit_api_secret: cfg.livekit_api_secret.clone(),
     };
     if let Ok(json) = serde_json::to_string(&registered) {
         if tx.send(Message::Text(json.into())).await.is_err() {
