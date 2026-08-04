@@ -533,6 +533,7 @@ fn naive_resample(input: &[f32], from: u32, to: u32) -> Vec<f32> {
 #[derive(Clone)]
 struct PlaybackHandle {
     buffer: Arc<Mutex<std::collections::VecDeque<f32>>>,
+    device_rate: u32,
 }
 
 struct PlaybackMixer {
@@ -636,7 +637,7 @@ impl PlaybackMixer {
 
         Ok(Self {
             _stream: stream,
-            handle: PlaybackHandle { buffer },
+            handle: PlaybackHandle { buffer, device_rate },
         })
     }
 
@@ -670,12 +671,13 @@ async fn consume_remote_track(mut stream: NativeAudioStream, handle: PlaybackHan
             peak_recent = frame_peak;
         }
         {
+            let f32_samples: Vec<f32> =
+                frame.data.iter().map(|s| *s as f32 / i16::MAX as f32).collect();
+            let resampled = naive_resample(&f32_samples, SAMPLE_RATE, handle.device_rate);
             let mut buf = handle.buffer.lock();
-            for s in frame.data.iter() {
-                buf.push_back(*s as f32 / i16::MAX as f32);
-            }
-            // Bound the buffer (~500 ms) to limit latency drift.
-            let cap = (SAMPLE_RATE / 2) as usize;
+            buf.extend(resampled);
+            // Bound the buffer (~500 ms) to limit latency drift, at device rate.
+            let cap = (handle.device_rate / 2) as usize;
             while buf.len() > cap {
                 buf.pop_front();
             }
