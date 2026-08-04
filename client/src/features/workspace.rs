@@ -6,7 +6,8 @@ use crate::features::{
     voice::spawn_voice_service,
 };
 use crate::net::spawn_gateway;
-use crate::state::{AppState, ConnectionStatus, SessionParams, VoicePhase, use_app_state};
+use crate::protocol::ClientMessage;
+use crate::state::{AppState, ConnectionStatus, SessionParams, VoicePhase, use_app_state, use_gateway};
 
 const CONNECT_SOUND: Asset = asset!("/assets/connect.mp3");
 
@@ -106,6 +107,7 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
         div { class: "h-full w-full flex flex-col bg-[var(--bg)] p-2 gap-2 {mac_top_pad}",
             style: "{guild_accent_style}",
             VoiceSounds {}
+            VoiceSpeakingBridge {}
             ErrorToast {}
             crate::features::activities::ActivityHost {}
             crate::features::screenshare::ScreenShareBridge {}
@@ -271,6 +273,24 @@ fn VoiceSounds() -> Element {
             style: "display:none",
         }
     }
+}
+
+#[component]
+fn VoiceSpeakingBridge() -> Element {
+    let state = use_app_state();
+    let gateway = use_gateway();
+    let speaking = use_memo(move || state.read().voice.speaking);
+    let mut last = use_signal(|| false);
+
+    use_effect(move || {
+        let now = speaking();
+        if now != *last.peek() {
+            last.set(now);
+            gateway.send(ClientMessage::SetSpeaking { speaking: now });
+        }
+    });
+
+    rsx! { Fragment {} }
 }
 
 #[component]

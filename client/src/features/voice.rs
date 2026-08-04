@@ -85,7 +85,7 @@ async fn service_loop(
                     eprintln!("[voice] shutting down previous session");
                     prev.shutdown().await;
                 }
-                match ActiveVoice::connect(&livekit_url, &token, channel_id).await {
+                match ActiveVoice::connect(&livekit_url, &token, channel_id, state).await {
                     Ok(active) => {
                         eprintln!("[voice] connected ok");
                         state.write().voice.phase = VoicePhase::Connected;
@@ -133,7 +133,7 @@ struct ActiveVoice {
 }
 
 impl ActiveVoice {
-    async fn connect(livekit_url: &str, token: &str, _channel_id: Id) -> Result<Self, String> {
+    async fn connect(livekit_url: &str, token: &str, _channel_id: Id, state: Signal<AppState>) -> Result<Self, String> {
         let (room, mut events) = Room::connect(livekit_url, token, RoomOptions::default())
             .await
             .map_err(|e| format!("livekit connect: {e}"))?;
@@ -193,7 +193,7 @@ impl ActiveVoice {
             }
             eprintln!("[voice] publish task ended after {sent} frames");
         });
-        let mic = MicCapture::start(frame_tx)?;
+        let mic = MicCapture::start(frame_tx, state)?;
 
         // Remote audio mixer.
         let playback = PlaybackMixer::start()?;
@@ -283,7 +283,7 @@ struct MicCapture {
 }
 
 impl MicCapture {
-    fn start(frame_tx: tokio::sync::mpsc::UnboundedSender<Vec<i16>>) -> Result<Self, String> {
+    fn start(frame_tx: tokio::sync::mpsc::UnboundedSender<Vec<i16>>, mut state: Signal<AppState>) -> Result<Self, String> {
         let host = cpal::default_host();
         let device = host
             .default_input_device()
@@ -304,8 +304,10 @@ impl MicCapture {
 
         let raw_peak = Arc::new(std::sync::atomic::AtomicI32::new(0));
         let raw_peak_cb = raw_peak.clone();
-        let frames_pushed = Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let frames_pushed_cb = frames_pushed.clone();
+        let frames_pushed = Arc::new(std::sync::atomic::AtomicU64::new(0)); 
+        let frames_pushed_cb = frames_pushed.clone();                    
+        let speak_peak = Arc::new(std::sync::atomic::AtomicI32::new(0));
+        let speak_peak_cb = speak_peak.clone();
 
         // Carry resampled samples across cpal callbacks so each frame we
         // hand to libwebrtc is always exactly `FRAME_SAMPLES` long.
@@ -320,6 +322,7 @@ impl MicCapture {
                     &config.into(),
                     move |data: &[f32], _| {
                         update_peak(&raw_peak_cb, data);
+                        update_peak(&speak_peak_cb, data);
                         let pushed = forward_mic(
                             &frame_tx,
                             data,
@@ -344,6 +347,7 @@ impl MicCapture {
                         let f32_buf: Vec<f32> =
                             data.iter().map(|s| *s as f32 / i16::MAX as f32).collect();
                         update_peak(&raw_peak_cb, &f32_buf);
+                        update_peak(&speak_peak_cb, &f32_buf);
                         let pushed = forward_mic(
                             &frame_tx,
                             &f32_buf,
@@ -370,6 +374,7 @@ impl MicCapture {
                             .map(|s| (*s as f32 - 32768.0) / 32768.0)
                             .collect();
                         update_peak(&raw_peak_cb, &f32_buf);
+                        update_peak(&speak_peak_cb, &f32_buf);
                         let pushed = forward_mic(
                             &frame_tx,
                             &f32_buf,
@@ -408,7 +413,28 @@ impl MicCapture {
                 prev_frames = f;
             }
         });
-
+        // Speaking indicator: sample every 150ms with a short hangover so the dot
+        // doesn't flicker between words/breaths.
+        dioxus::prelude::spawn(async move {
+        const THRESHOLD: i32 = 25; // ajustar sensibilidad acá
+        const HANGOVER_TICKS: u32 = 4; // ~600ms tras el último sonido fuerte
+        let mut hangover = 0u32;
+        let mut currently_speaking = false;
+        loop {
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        let p = speak_peak.swap(0, std::sync::atomic::Ordering::Relaxed);
+        if p > THRESHOLD {
+            hangover = HANGOVER_TICKS;
+        } else if hangover > 0 {
+            hangover -= 1;
+        }
+        let should_speak = hangover > 0;
+        if should_speak != currently_speaking {
+            currently_speaking = should_speak;
+            state.write().voice.speaking = should_speak;
+        }
+    }
+});
         Ok(Self {
             _stream: stream,
             muted,
