@@ -111,12 +111,12 @@ pub async fn start_self_host(
         // hold a session grant, never its signing secret (a public relay can't
         // hand that out: any host could then mint into any other host's rooms).
         minter: rendezvous_state.as_ref().and_then(|(_, info)| {
-            info.voice_token_grant.as_ref().map(|grant| {
-                std::sync::Arc::new(crate::rendezvous::RendezvousMinter::new(
-                    &info.rendezvous_base,
-                    grant.clone(),
-                )) as std::sync::Arc<dyn dioxusfun_server::livekit::VoiceTokenMinter>
-            })
+            match (&info.livekit_url, &info.voice_token_grant) {
+                (Some(_), Some(grant)) => Some(std::sync::Arc::new(
+                    crate::rendezvous::RendezvousMinter::new(&info.rendezvous_base, grant.clone()),
+                ) as std::sync::Arc<dyn dioxusfun_server::livekit::VoiceTokenMinter>),
+                _ => None,
+            }
         }),
         // Friends proxied in by the rendezvous hit our gateway on loopback;
         // hand them our LAN address for LiveKit instead of their own machine.
