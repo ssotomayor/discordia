@@ -67,6 +67,7 @@ pub struct VoiceSession {
     pub channel_id: Option<Id>,
     pub muted: bool,
     pub deafened: bool,
+    pub speaking: bool,
     pub error: Option<String>,
 }
 
@@ -77,6 +78,7 @@ impl Default for VoiceSession {
             channel_id: None,
             muted: false,
             deafened: false,
+            speaking: false,
             error: None,
         }
     }
