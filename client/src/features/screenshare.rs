@@ -82,6 +82,54 @@ window.dxScreen = window.dxScreen || (function () {
     if (!room) { console.warn('[dxScreen] not connected yet'); return; }
     try { await room.localParticipant.setScreenShareEnabled(true); } catch (e) { console.warn('[dxScreen] share failed', e); }
   }
+  // Helper that runs getDisplayMedia inside the user's gesture before starting
+  // the LiveKit screen-share flow. Browsers block getDisplayMedia unless it's
+  // invoked directly by a user gesture; calling this from document.eval in
+  // response to the native click ensures the prompt is allowed.
+  async function requestAndStartShare() {
+    // If the browser doesn't expose navigator.mediaDevices, fall back to
+    // directly calling startShare() and let the LiveKit SDK decide. This may
+    // still be blocked if not run inside a user gesture, but it's a useful
+    // fallback for embedded webviews without mediaDevices.
+    if (!(navigator && navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia)) {
+      console.warn('[dxScreen] navigator.mediaDevices.getDisplayMedia not available; falling back to startShare');
+      // Wait a short moment for room to exist; otherwise call startShare
+      // immediately (it may still prompt or fail depending on environment).
+      for (let i = 0; i < 20; i++) { if (room) break; await new Promise(function (r) { setTimeout(r, 100); }); }
+      try { await startShare(); } catch (e) { console.warn('[dxScreen] startShare fallback failed', e); }
+      return;
+    }
+
+    let granted = false;
+    try {
+      // Prompt for screen capture permission in the user gesture.
+      // Keep the stream open while we wait for the JS room to be ready so
+      // LiveKit can reuse the granted permission. Don't stop the tracks here.
+      const s = await navigator.mediaDevices.getDisplayMedia({ video: true });
+      granted = !!s;
+      // Keep a global marker showing user granted capture. Some browsers may
+      // not surface the permission otherwise.
+      window._dxf_display_permission_granted = true;
+      try { s.getTracks().forEach(t => t.stop()); } catch (e) {}
+    } catch (e) {
+      console.warn('[dxScreen] getDisplayMedia denied or failed', e);
+      return;
+    }
+    if (!granted) return;
+
+    // Wait briefly for the room to connect (Server should have provided a
+    // token and ScreenShareBridge will call dxScreen.connect). If the room
+    // isn't ready after a short timeout, abort so we don't leave the UI stuck.
+    for (let i = 0; i < 50; i++) {
+      if (room) break;
+      await new Promise(function (r) { setTimeout(r, 100); });
+    }
+    if (!room) { console.warn('[dxScreen] room not connected yet, cannot start share'); return; }
+
+    // Now call the normal start path — permission is already granted so any
+    // internal getDisplayMedia calls are allowed.
+    await startShare();
+  }
   async function stopShare() {
     if (!room) return;
     try { await room.localParticipant.setScreenShareEnabled(false); } catch (e) {}
@@ -91,14 +139,16 @@ window.dxScreen = window.dxScreen || (function () {
     for (const k in tracks) delete tracks[k];
     CONTAINERS.forEach(detach);
   }
-  return { connect: connect, attach: attach, detach: detach, startShare: startShare, stopShare: stopShare, disconnect: disconnect };
+  return { connect: connect, attach: attach, detach: detach, startShare: startShare, requestAndStartShare: requestAndStartShare, stopShare: stopShare, disconnect: disconnect };
 })();
 "#;
 
 /// Start/stop sharing — call from a click handler so `getDisplayMedia` runs in
 /// a user gesture.
 pub fn share_js(on: bool) -> String {
-    let call = if on { "startShare" } else { "stopShare" };
+    // When starting, call the user-gesture variant that prompts getDisplayMedia
+    // before delegating to the LiveKit flow. When stopping, just stopShare.
+    let call = if on { "requestAndStartShare" } else { "stopShare" };
     format!("{SCREEN_JS}\nwindow.dxScreen.{call}();")
 }
 
@@ -131,6 +181,42 @@ pub fn ScreenShareBridge() -> Element {
                 }
             }
             last.set(t);
+        }
+    });
+
+    // Detect whether the embedded webview exposes getDisplayMedia and record it.
+    // Use an async eval so we can `recv::<bool>().await` the JS result.
+    use_future(move || {
+        let mut s = state.clone();
+        async move {
+            let mut eval = document::eval("(() => !!(navigator && navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia))()");
+            if let Ok(v) = eval.recv::<bool>().await {
+                if v {
+                    s.write().screen_capture_available = true;
+                } else {
+                    s.write().screen_capture_available = false;
+                    s.write().error_toast = Some("Screen capture is not available in this embedded webview. Install WebView2 or use a browser to share your screen.".into());
+                }
+            } else {
+                s.write().screen_capture_available = false;
+            }
+        }
+    });
+
+    // If both a token and the user's local `screen_sharing` flag are set,
+    // initiate the user-gesture sharing flow. This ensures the room is
+    // connected (dxScreen.connect ran above) before prompting for capture.
+    let mut last_start = use_signal(|| false);
+    use_effect(move || {
+        let t = token();
+        let sharing = state.read().screen_sharing;
+        if (t.is_some() && sharing) != *last_start.peek() {
+            if t.is_some() && sharing {
+                // Trigger the user-gesture request which runs getDisplayMedia
+                // and then starts the LiveKit publish. The call is idempotent.
+                let _ = document::eval(&format!("{SCREEN_JS}\nwindow.dxScreen.requestAndStartShare();"));
+            }
+            last_start.set(t.is_some() && sharing);
         }
     });
 
