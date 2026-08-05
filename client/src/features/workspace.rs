@@ -23,6 +23,7 @@ const UNPLUG_ICON_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width=
 
 #[component]
 pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>) -> Element {
+
     let state = use_signal(AppState::empty);
 
     let (gateway_tx, voice_tx) = use_hook(|| {

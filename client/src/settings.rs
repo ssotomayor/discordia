@@ -32,6 +32,12 @@ pub struct ClientSettings {
     /// something any host sees.
     #[serde(default = "default_rendezvous_servers")]
     pub rendezvous_servers: Vec<String>,
+
+/// Persisted audio device choices (None = system default).
+#[serde(default)]
+pub selected_input_device: Option<String>,
+#[serde(default)]
+pub selected_output_device: Option<String>,
 }
 
 fn default_blossom_server() -> String {
@@ -61,6 +67,8 @@ impl Default for ClientSettings {
             background_dim: 55,
             blossom_server: default_blossom_server(),
             rendezvous_servers: default_rendezvous_servers(),
+            selected_input_device: None,
+            selected_output_device: None,
         }
     }
 }

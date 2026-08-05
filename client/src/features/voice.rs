@@ -36,6 +36,13 @@ pub enum VoiceCmd {
         channel_id: Id,
     },
     Disconnect,
+    /// Request the voice service to enumerate devices and populate AppState lists.
+    ListDevices,
+    /// Set desired devices (names). None = leave unchanged / use default.
+    SetDevices {
+        input: Option<String>,
+        output: Option<String>,
+    },
     SetMute {
         muted: bool,
     },
@@ -72,6 +79,8 @@ async fn service_loop(
     mut state: Signal<AppState>,
 ) -> Result<(), String> {
     let mut session: Option<ActiveVoice> = None;
+    // Remember last connect parameters so we can reconnect on device changes.
+    let mut last_connect: Option<(String, String, Id)> = None;
 
     while let Some(cmd) = rx.recv().await {
         match cmd {
@@ -81,11 +90,13 @@ async fn service_loop(
                 channel_id,
             } => {
                 eprintln!("[voice] Connect to {livekit_url} channel={channel_id}");
+                // store params for possible reconnects later
+                last_connect = Some((livekit_url.clone(), token.clone(), channel_id));
                 if let Some(prev) = session.take() {
                     eprintln!("[voice] shutting down previous session");
                     prev.shutdown().await;
                 }
-                match ActiveVoice::connect(&livekit_url, &token, channel_id, state).await {
+                match ActiveVoice::connect(&livekit_url, &token, channel_id, state.clone()).await {
                     Ok(active) => {
                         eprintln!("[voice] connected ok");
                         state.write().voice.phase = VoicePhase::Connected;
@@ -109,6 +120,70 @@ async fn service_loop(
                 s.voice.phase = VoicePhase::Idle;
                 s.voice.channel_id = None;
                 s.voice.error = None;
+                // clear last_connect — user intentionally disconnected
+                last_connect = None;
+            }
+            VoiceCmd::ListDevices => {
+                eprintln!("[voice] ListDevices request");
+                // Enumerate devices and populate AppState lists.
+                let host = cpal::default_host();
+                let mut inputs = Vec::new();
+                let mut outputs = Vec::new();
+                if let Ok(devs) = host.devices() {
+                    for d in devs {
+                        if let Ok(name) = d.name() {
+                            let is_input = d.default_input_config().is_ok();
+                            let is_output = d.default_output_config().is_ok();
+                            if is_input { inputs.push(name.clone()); }
+                            if is_output { outputs.push(name); }
+                        }
+                    }
+                }
+                let mut s = state.write();
+                s.available_input_devices = inputs;
+                s.available_output_devices = outputs;
+            }
+            VoiceCmd::SetDevices { input, output } => {
+                eprintln!("[voice] SetDevices input={:?} output={:?}", input, output);
+                // Update AppState selections in a tight scope so the write lock
+                // is dropped before we attempt to reconnect (which awaits).
+                {
+                    let mut s = state.write();
+                    if let Some(i) = input.clone() {
+                        s.selected_input_device = Some(i);
+                    }
+                    if let Some(o) = output.clone() {
+                        s.selected_output_device = Some(o);
+                    }
+                }
+                // If we're currently connected, restart the voice session so mic/playback
+                // are recreated using the newly selected devices.
+                if session.is_some() {
+                    if let Some((ref url, ref tok, cid)) = last_connect.clone() {
+                        eprintln!("[voice] Reconnecting to apply device changes");
+                        if let Some(prev) = session.take() {
+                            prev.shutdown().await;
+                        }
+                        match ActiveVoice::connect(url, tok, cid, state.clone()).await {
+                            Ok(active) => {
+                                eprintln!("[voice] reconnected ok");
+                                // update phase in its own small scope
+                                {
+                                    let mut s = state.write();
+                                    s.voice.phase = VoicePhase::Connected;
+                                }
+                                session = Some(active);
+                            }
+                            Err(e) => {
+                                eprintln!("[voice] reconnect FAILED: {e}");
+                                let mut s = state.write();
+                                s.voice.phase = VoicePhase::Error;
+                                s.voice.error = Some(format!("reconnect after device change: {e}"));
+                                s.voice.channel_id = None;
+                            }
+                        }
+                    }
+                }
             }
             VoiceCmd::SetMute { muted } => {
                 eprintln!("[voice] SetMute muted={muted}");
@@ -193,10 +268,10 @@ impl ActiveVoice {
             }
             eprintln!("[voice] publish task ended after {sent} frames");
         });
-        let mic = MicCapture::start(frame_tx, state)?;
+        let mic = MicCapture::start(frame_tx, state.clone())?;
 
         // Remote audio mixer.
-        let playback = PlaybackMixer::start()?;
+        let playback = PlaybackMixer::start(state.clone())?;
         let mixer_handle = playback.handle();
 
         // Event task: subscribe to room events, hook up remote tracks.
@@ -285,9 +360,26 @@ struct MicCapture {
 impl MicCapture {
     fn start(frame_tx: tokio::sync::mpsc::UnboundedSender<Vec<i16>>, mut state: Signal<AppState>) -> Result<Self, String> {
         let host = cpal::default_host();
-        let device = host
-            .default_input_device()
-            .ok_or_else(|| "no default input device".to_string())?;
+        // Prefer user-selected device (by name) if present in AppState.
+        let selected = state.read().selected_input_device.clone();
+        let device = if let Some(sel_name) = selected {
+            // Try to find a device whose name matches the selected name.
+            let mut found = None;
+            if let Ok(devs) = host.input_devices() {
+                for d in devs {
+                    if let Ok(name) = d.name() {
+                        if name == sel_name {
+                            found = Some(d);
+                            break;
+                        }
+                    }
+                }
+            }
+            found.unwrap_or_else(|| host.default_input_device().expect("no default input device"))
+        } else {
+            host.default_input_device()
+                .ok_or_else(|| "no default input device".to_string())?
+        };
         let device_name = device.name().unwrap_or_else(|_| "<unknown>".into());
         let config = device
             .default_input_config()
@@ -542,11 +634,27 @@ struct PlaybackMixer {
 }
 
 impl PlaybackMixer {
-    fn start() -> Result<Self, String> {
+    fn start(state: Signal<AppState>) -> Result<Self, String> {
         let host = cpal::default_host();
-        let device = host
-            .default_output_device()
-            .ok_or_else(|| "no default output device".to_string())?;
+        // Try to honour user-selected output device name if present.
+        let selected = state.read().selected_output_device.clone();
+        let device = if let Some(sel_name) = selected {
+            let mut found = None;
+            if let Ok(devs) = host.output_devices() {
+                for d in devs {
+                    if let Ok(name) = d.name() {
+                        if name == sel_name {
+                            found = Some(d);
+                            break;
+                        }
+                    }
+                }
+            }
+            found.unwrap_or_else(|| host.default_output_device().expect("no default output device"))
+        } else {
+            host.default_output_device()
+                .ok_or_else(|| "no default output device".to_string())?
+        };
         let device_name = device.name().unwrap_or_else(|_| "<unknown>".into());
         let config = device
             .default_output_config()
