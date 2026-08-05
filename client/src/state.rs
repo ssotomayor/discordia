@@ -132,6 +132,19 @@ pub struct AppState {
     pub screen_shares: HashMap<Id, Vec<String>>,
     /// Pubkey whose screen we're viewing in the big viewer dialog, if any.
     pub screen_viewing: Option<String>,
+    /// Whether the embedded webview supports navigator.mediaDevices.getDisplayMedia
+    /// (used for screen sharing). Populated at runtime by the ScreenShareBridge.
+    pub screen_capture_available: bool,
+
+    // Audio device preferences surfaced to the UI.
+    /// Available input device names (populated by voice service on request).
+    pub available_input_devices: Vec<String>,
+    /// Available output device names (populated by voice service on request).
+    pub available_output_devices: Vec<String>,
+    /// Selected input device name (None = use system default).
+    pub selected_input_device: Option<String>,
+    /// Selected output device name (None = use system default).
+    pub selected_output_device: Option<String>,
     /// Populated when running in self-host mode. None for remote connections.
     pub host_info: Option<HostInfo>,
     /// Bot installs per guild, for the owner's Integrations dialog. Populated by
@@ -182,6 +195,12 @@ impl AppState {
             screen_sharing: false,
             screen_shares: HashMap::new(),
             screen_viewing: None,
+            screen_capture_available: false,
+            // Audio device prefs: empty by default (discover on demand).
+            available_input_devices: Vec::new(),
+            available_output_devices: Vec::new(),
+            selected_input_device: None,
+            selected_output_device: None,
             host_info: None,
             integrations: HashMap::new(),
             roles: HashMap::new(),

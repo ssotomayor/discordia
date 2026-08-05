@@ -534,6 +534,9 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
     let gateway = use_gateway();
     let voice = use_voice_tx();
     let mut state = use_app_state();
+    let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
+    // Whether the embedded webview exposes getDisplayMedia; populated by the ScreenShareBridge.
+    let screen_capture_available = state.read().screen_capture_available;
     let self_pubkey = state.read().self_user.as_ref().map(|u| u.pubkey.clone());
     let sharing = state.read().screen_sharing;
     let name = self_username.clone().unwrap_or_else(|| "—".into());
@@ -573,6 +576,26 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
     let g_for_share = gateway.clone();
     let voice_channel = self_voice.channel_id;
 
+    // UI state for audio settings popover.
+    let mut show_audio_settings = use_signal(|| false);
+
+    // Snapshot device lists & selections so RSX body can use them without
+    // attempting inline `let` bindings inside the macro.
+    let available_input_devices = state.read().available_input_devices.clone();
+    let available_output_devices = state.read().available_output_devices.clone();
+    let selected_input_device = state.read().selected_input_device.clone();
+    let selected_output_device = state.read().selected_output_device.clone();
+
+    // Clone voice sender for each closure so move into one closure doesn't
+    // prevent reuse in others.
+    let v_for_audio_button = voice.clone();
+    let v_for_input_change = voice.clone();
+    let v_for_output_change = voice.clone();
+
+    // Snapshot current voice phase so the popover can show reconnection state.
+    let voice_phase = state.read().voice.phase;
+    let reconnecting = matches!(voice_phase, VoicePhase::Connecting);
+
     rsx! {
         div { class: "border-t border-[var(--border)]",
             if show_banner {
@@ -592,15 +615,31 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                             } else {
                                 "w-7 h-7 flex items-center justify-center rounded text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors"
                             },
-                            title: if sharing { "Stop sharing your screen" } else { "Share your screen" },
+                            // Disable the share button when the embedded webview doesn't support
+                            // getDisplayMedia and show an explanatory title.
+                            disabled: "{!screen_capture_available}",
+                            title: if !screen_capture_available {
+                                "Screen sharing unavailable in this build (embedded webview lacks screen capture). Install WebView2 or use the browser."
+                            } else if sharing { "Stop sharing your screen" } else { "Share your screen" },
                             onclick: move |_| {
                                 let now = !sharing;
                                 state.write().screen_sharing = now;
-                                let _ = document::eval(&crate::features::screenshare::share_js(now));
-                                if let Some(cid) = voice_channel {
-                                    g_for_share.send(ClientMessage::SetScreenShare { channel_id: cid, sharing: now });
-                                }
-                            },
+                                                            if let Some(cid) = voice_channel {
+                                                                g_for_share.send(ClientMessage::SetScreenShare { channel_id: cid, sharing: now });
+                                                            }
+
+                                                            if now {
+                                                                // Execute the user-gesture prompt + start helper from the
+                                                                // screenshare module. This calls requestAndStartShare()
+                                                                // which prompts for getDisplayMedia inside the click.
+                                                                // If the feature is unavailable the button is disabled and
+                                                                // this branch won't run.
+                                                                let _ = document::eval(&crate::features::screenshare::share_js(true));
+                                                            } else {
+                                                                // Turning off — stop immediately.
+                                                                let _ = document::eval(&crate::features::screenshare::share_js(false));
+                                                            }
+                                                        },
                             dangerous_inner_html: crate::features::icons::SCREEN,
                         }
                         button {
@@ -641,6 +680,101 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                 }
                 crate::features::profiles::ProfileEditor {}
                 crate::features::appearance::AppearanceButton {}
+
+                // Audio settings button — opens a small popover to pick input/output.
+                button {
+                    class: "w-7 h-7 flex items-center justify-center rounded text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors",
+                    title: "Audio settings",
+                    onclick: move |_| {
+                        let now = !show_audio_settings();
+                        show_audio_settings.set(now);
+                        // Ask voice service to refresh device lists when opening.
+                        if now {
+                            let v = v_for_audio_button.clone();
+                            v.send(crate::features::voice::VoiceCmd::ListDevices);
+                        }
+                    },
+                    dangerous_inner_html: crate::features::icons::GEAR,
+                }
+
+                // Popover (render when signal true)
+                if show_audio_settings() {
+                    div {
+                        class: "absolute right-3 top-12 z-40 bg-[var(--panel-solid)] border border-[var(--border)] rounded p-2 w-64 shadow-lg",
+
+                    // Reconnection indicator
+                    if reconnecting {
+                        div { class: "mb-2 flex items-center text-[12px] text-[var(--text-muted)]",
+                            span { class: "dx-spinner" }
+                            span { "Reconnecting audio…" }
+                        }
+                    }
+
+                    // Input device select
+                    div { class: "mb-2",
+                        span { class: "text-[11px] text-[var(--text-muted)]", "Input" }
+                        select {
+                            class: "w-full mt-1 bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)] rounded px-2 py-1 text-sm disabled:opacity-60",
+                            style: "color: var(--text); background: var(--panel-solid);",
+                            disabled: "{reconnecting}",
+                            onchange: move |e| {
+                                let val = e.value();
+                                // update AppState and ask voice service to persist selection
+                                let val_cloned = val.clone();
+                                // Persist to client settings
+                                let mut next = settings.read().clone();
+                                if val_cloned.is_empty() { next.selected_input_device = None; } else { next.selected_input_device = Some(val_cloned.clone()); }
+                                settings.set(next.clone());
+                                crate::settings::save(&next);
+
+                                let mut s = state.write();
+                                s.selected_input_device = if val_cloned.is_empty() { None } else { Some(val_cloned.clone()) };
+                                let v = v_for_input_change.clone();
+                                let _ = v.send(crate::features::voice::VoiceCmd::SetDevices { input: s.selected_input_device.clone(), output: None });
+                            },
+                            option { value: "", "System default" }
+                            for dev in available_input_devices.iter() {
+                                option { selected: selected_input_device.as_ref().map(|n| n == dev).unwrap_or(false), value: "{dev}", "{dev}" }
+                            }
+                        }
+                    }
+                    // Output device select
+                    div { class: "mb-2",
+                        span { class: "text-[11px] text-[var(--text-muted)]", "Output" }
+                        select {
+                            class: "w-full mt-1 bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)] rounded px-2 py-1 text-sm disabled:opacity-60",
+                            style: "color: var(--text); background: var(--panel-solid);",
+                            disabled: "{reconnecting}",
+                            onchange: move |e| {
+                                let val = e.value();
+                                let val_cloned = val.clone();
+                                // Persist to client settings
+                                let mut next = settings.read().clone();
+                                if val_cloned.is_empty() { next.selected_output_device = None; } else { next.selected_output_device = Some(val_cloned.clone()); }
+                                settings.set(next.clone());
+                                crate::settings::save(&next);
+
+                                let mut s = state.write();
+                                s.selected_output_device = if val_cloned.is_empty() { None } else { Some(val_cloned.clone()) };
+                                let v = v_for_output_change.clone();
+                                let _ = v.send(crate::features::voice::VoiceCmd::SetDevices { input: None, output: s.selected_output_device.clone() });
+                            },
+                            option { value: "", "System default" }
+                            for dev in available_output_devices.iter() {
+                                option { selected: selected_output_device.as_ref().map(|n| n == dev).unwrap_or(false), value: "{dev}", "{dev}" }
+                            }
+                        }
+                    }
+                    div { class: "flex justify-end mt-1",
+                        button {
+                            class: "text-[10px] uppercase tracking-wider px-2 py-1 rounded text-[var(--text-dim)] hover:text-[var(--text-muted)]",
+                            onclick: move |_| show_audio_settings.set(false),
+                            "Close"
+                        }
+                    }
+                }
+                }
+
                 button {
                     class: if muted {
                         "w-7 h-7 flex items-center justify-center rounded text-[var(--danger)] hover:text-[var(--accent-strong)] transition-colors"

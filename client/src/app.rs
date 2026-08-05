@@ -209,6 +209,10 @@ button:active:not(:disabled) { transform: scale(0.985); }
 .fade-in { animation: dxf-fade-in 0.18s var(--ease) both; }
 .dxf-fade { animation: dxf-fade-in 0.2s var(--ease) both; }
 
+/* Small spinner used in popovers for reconnection state. */
+.dx-spinner { width: 12px; height: 12px; border-radius: 50%; border: 2px solid rgba(255,255,255,0.12); border-top-color: var(--accent); display: inline-block; margin-right: 8px; animation: dxf-spin 1s linear infinite; }
+@keyframes dxf-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
 /* Message arrival — a quick fade + slide-up as each new row mounts. */
 @keyframes dxf-msg-in {
   from { opacity: 0; transform: translateY(5px); }
@@ -543,17 +547,19 @@ pub fn App() -> Element {
                     }
                 },
                 (Some(_), Some(params)) => rsx! {
-                    WorkspaceView {
-                        key: "{session_key(&params)}",
-                        params: params.clone(),
-                        on_disconnect: move |reason: String| {
-                            // An empty reason means the user deliberately
-                            // unplugged — return to the connect screen
-                            // without flagging it as an error.
-                            error.set(if reason.is_empty() { None } else { Some(reason) });
-                            session.set(None);
-                        },
-                    }
+                    Fragment {
+                        WorkspaceView {
+                            key: "{session_key(&params)}",
+                            params: params.clone(),
+                            on_disconnect: move |reason: String| {
+                                // An empty reason means the user deliberately
+                                // unplugged — return to the connect screen
+                                // without flagging it as an error.
+                                error.set(if reason.is_empty() { None } else { Some(reason) });
+                                session.set(None);
+                            },
+                        }
+                    },
                 },
             }
             }
