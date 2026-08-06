@@ -19,3 +19,9 @@ Thumbs.db
 .claude/settings.local.json
 discordia-data/
 rendezvous-data/
+
+# Node.js — only needed to regenerate Tailwind CSS, not to build.
+node_modules/
+
+# tailwind.out.css is committed — needed by asset!() at compile time.
+# Regenerate with: cd client && npx @tailwindcss/cli -i assets/tailwind.css -o assets/tailwind.out.css --minify

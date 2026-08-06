@@ -89,47 +89,12 @@ pub fn DiscordiaLogo(#[props(into)] class: String) -> Element {
     }
 }
 
-/// Inline critical CSS painted before anything else loads. Sets the dark app
-/// background immediately (no white flash) and hides `.app-shell` until the
-/// reveal script adds the `.dxf-ready` class — which happens once Tailwind's
-/// browser build has injected its generated utilities. The `--bg` value mirrors
-/// BASE_CSS's ember default; theme overrides applied later on the root element
-/// will re-paint seamlessly.
-const CRITICAL_BOOT_CSS: &str = "
-:root { --bg: #0e0b08; }
-html, body { background: var(--bg); margin: 0; }
-.app-shell { opacity: 0; transition: opacity .12s ease-out; }
-.dxf-ready .app-shell { opacity: 1; }
-";
-
-/// Inline reveal script. Polls for the `<style>` that `@tailwindcss/browser@4`
-/// injects into `<head>` (containing generated utility classes like `.flex` /
-/// `.h-screen`), then adds `.dxf-ready` on `<html>` to fade the app shell in.
-/// Safety nets: reveals after 2s regardless, or immediately on load error.
-const REVEAL_JS: &str = r#"
-(function () {
-  var revealed = false;
-  function reveal() { if (!revealed) { revealed = true; document.documentElement.classList.add('dxf-ready'); } }
-  function tailwindReady() {
-    var ss = document.querySelectorAll('style');
-    for (var i = 0; i < ss.length; i++) {
-      var t = ss[i].textContent;
-      if (t && t.indexOf('.h-screen') >= 0 && t.indexOf('.flex') >= 0) return true;
-    }
-    return false;
-  }
-  function check() {
-    if (tailwindReady()) { reveal(); return; }
-  }
-  if (document.readyState === 'complete' || document.readyState === 'interactive') check();
-  else window.addEventListener('DOMContentLoaded', check);
-  // Keep polling: Tailwind may inject its styles slightly after DOMContentLoaded.
-  var tries = 0;
-  var iv = setInterval(function () {
-    if (revealed || tailwindReady() || ++tries > 80) { clearInterval(iv); reveal(); }
-  }, 25);
-})();
-"#;
+/// Tailwind utility classes, generated at build time from `assets/tailwind.css`
+/// by `npx @tailwindcss/cli`. Bundled as a Dioxus Asset so it ships inside the
+/// binary — no CDN, no runtime compiler, no internet dependency. Replaces the
+/// old `@tailwindcss/browser@4` CDN script that caused a ~1s FOUC and broke the
+/// app offline.
+static TAILWIND_CSS: Asset = asset!("/assets/tailwind.out.css");
 
 const BASE_CSS: &str = "
 /* Default (ember) palette. Per-theme overrides are applied inline on the app
@@ -624,28 +589,21 @@ fn session_key(p: &SessionParams) -> String {
     format!("{mode}|{}|{}", p.username, p.identity.pubkey)
 }
 
-/// All `<head>` injections: critical boot CSS, the Tailwind reveal script,
-/// the Tailwind CDN, the LiveKit SDK, font faces, and the base stylesheet.
+/// All `<head>` injections: Tailwind (bundled at build time), the LiveKit SDK
+/// (CDN — to be vendored in a follow-up), font faces, and the base stylesheet.
 /// Extracted into a prop-less component so Dioxus memoizes it and never
 /// re-evaluates it — re-rendering `App` (e.g. on settings changes) no longer
 /// triggers "Changing the props of Style/Script is not supported" warnings.
 #[component]
 fn AppHead() -> Element {
     rsx! {
-        // Critical inline CSS + reveal script — injected BEFORE the Tailwind
-        // CDN script so they take effect immediately. Tailwind is loaded as a
-        // browser script (`@tailwindcss/browser@4`) which has to download,
-        // parse the DOM, and generate styles before the app looks right; that
-        // latency produced a ~1s flash of unstyled content (white background,
-        // unpositioned elements). These two inline blocks paint the dark app
-        // background right away and keep the app shell hidden until Tailwind
-        // has injected its utilities, eliminating the FOUC.
-        document::Style { {CRITICAL_BOOT_CSS} }
-        document::Script { {REVEAL_JS} }
-        document::Script { src: "https://unpkg.com/@tailwindcss/browser@4" }
+        // Tailwind utilities — bundled into the binary at build time via
+        // `asset!()`. No CDN, no runtime compiler, no FOUC, works offline.
+        document::Stylesheet { href: TAILWIND_CSS }
         // LiveKit JS SDK — powers webview-side screen sharing (capture + render).
         // NB: the UMD build is `…umd.js` (there is no `.umd.min.js`); a wrong
-        // path 404s silently and the lib never loads.
+        // path 404s silently and the lib never loads. TODO: vendor this so the
+        // app works fully offline (follow-up).
         document::Script { src: "https://cdn.jsdelivr.net/npm/livekit-client@2.19.2/dist/livekit-client.umd.js" }
         document::Style { {font_face_css()} }
         document::Style { {BASE_CSS} }
