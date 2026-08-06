@@ -615,9 +615,6 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                             } else {
                                 "w-7 h-7 flex items-center justify-center rounded text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors"
                             },
-                            // Disable the share button when the embedded webview doesn't support
-                            // getDisplayMedia and show an explanatory title.
-                            disabled: "{!screen_capture_available}",
                             title: if !screen_capture_available {
                                 "Screen sharing unavailable in this build (embedded webview lacks screen capture). Install WebView2 or use the browser."
                             } else if sharing { "Stop sharing your screen" } else { "Share your screen" },
