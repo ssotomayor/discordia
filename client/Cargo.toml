@@ -35,6 +35,11 @@ base64 = "0.22"
 # Decodes the app icon PNG into RGBA for the native window icon (taskbar).
 image = { version = "0.25", default-features = false, features = ["png"] }
 
+# High-quality audio resampler (FFT-based, pure Rust, no C deps). Replaces the
+# naive linear-interpolation resampler that caused aliasing artefacts. Works on
+# Windows (MSVC), macOS (Intel + Apple Silicon) and Linux.
+rubato = "0.16"
+
 # Shared wire protocol (client, server, bot SDK all depend on this one crate).
 dioxusfun-protocol = { workspace = true }
 # Self-host mode: embed the gateway server in-process.

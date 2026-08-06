@@ -34,7 +34,7 @@ tell application "iTerm"
   end tell
   tell clientSession
     set name to "client"
-    write text "cd '$ROOT' && ${ENV_PREFIX}cargo run -p dioxusfun"
+    write text "cd '$ROOT' && ${ENV_PREFIX}$ROOT/dev-client.sh"
   end tell
 end tell
 APPLESCRIPT
