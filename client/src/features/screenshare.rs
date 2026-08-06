@@ -87,6 +87,15 @@ window.dxScreen = window.dxScreen || (function () {
   // invoked directly by a user gesture; calling this from document.eval in
   // response to the native click ensures the prompt is allowed.
   async function requestAndStartShare() {
+    if (window._dxf_share_starting) { console.warn('[dxScreen] already starting, ignoring duplicate call'); return; }
+    window._dxf_share_starting = true;
+    try {
+      return await requestAndStartShareInner();
+    } finally {
+      window._dxf_share_starting = false;
+    }
+  }
+  async function requestAndStartShareInner() {
     // If the browser doesn't expose navigator.mediaDevices, fall back to
     // directly calling startShare() and let the LiveKit SDK decide. This may
     // still be blocked if not run inside a user gesture, but it's a useful
@@ -120,7 +129,7 @@ window.dxScreen = window.dxScreen || (function () {
     // Wait briefly for the room to connect (Server should have provided a
     // token and ScreenShareBridge will call dxScreen.connect). If the room
     // isn't ready after a short timeout, abort so we don't leave the UI stuck.
-    for (let i = 0; i < 50; i++) {
+    for (let i = 0; i < 150; i++) {
       if (room) break;
       await new Promise(function (r) { setTimeout(r, 100); });
     }
