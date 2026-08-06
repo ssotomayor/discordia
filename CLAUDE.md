@@ -201,3 +201,48 @@ client (P3, needs a browser), delta-sync resume + a 2k-connection load
 benchmark (P5a tail), the signed "guild-moved" redirect + cross-instance media
 copy (P6 tail), and cluster mode (P7, demand-gated). See `TODO.md` for the
 smaller deferred items.
+
+---
+
+## How to Contribute
+
+We welcome contributions from anyone who is interested in improving Discordia. Here are some guidelines to get you started:
+
+### Getting Started
+
+1. **Fork the Repository**: Click on the "Fork" button at the top right of this repository page.
+2. **Clone Your Fork**: Clone your forked repository to your local machine using `git clone`.
+3. **Set Up Your Environment**: Follow the instructions in the `README.md` files for setting up the development environment.
+
+### Making Changes
+
+1. **Create a New Branch**: For each new feature or bug fix, create a new branch from the main branch.
+   ```sh
+   git checkout -b my-new-feature
+   ```
+2. **Make Your Changes**: Implement your changes and ensure that they follow the coding conventions outlined in this guide.
+3. **Test Your Changes**: Run the test suite to make sure your changes do not break existing functionality.
+   ```sh
+   cargo test --workspace
+   ```
+
+### Submitting a Pull Request
+
+1. **Commit Your Changes**: Commit your changes with a descriptive commit message.
+   ```sh
+   git commit -m "Add new feature"
+   ```
+2. **Push to Your Fork**: Push your branch to your forked repository.
+   ```sh
+   git push origin my-new-feature
+   ```
+3. **Create a Pull Request**: Go to the original repository and create a pull request from your branch.
+
+### Code Review
+
+- Be prepared for feedback on your changes during code review.
+- Make any necessary adjustments based on the feedback provided.
+
+---
+
+We appreciate your contributions and look forward to working with you!
