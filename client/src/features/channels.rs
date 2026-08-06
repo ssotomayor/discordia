@@ -616,6 +616,14 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
     let mic_level_pct = (mic_level as f64 / 1000.0 * 100.0).clamp(0.0, 100.0) as u32;
     let threshold_pct = (mic_sensitivity as f64 / 1000.0 * 100.0).clamp(0.0, 100.0) as u32;
     let sensitivity_display = mic_sensitivity / 10;
+    // Screen-share preset lives only in local settings — it's a capture-side
+    // choice the server never sees.
+    let screenshare_quality = settings.read().screenshare_quality.clone();
+    let screenshare_hint = crate::features::screenshare::QUALITY_PRESETS
+        .iter()
+        .find(|(id, _, _)| *id == screenshare_quality)
+        .map(|(_, _, hint)| *hint)
+        .unwrap_or("");
 
     rsx! {
         div { class: "border-t border-[var(--border)]",
@@ -652,10 +660,11 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                                                 // which prompts for getDisplayMedia inside the click.
                                                                 // If the feature is unavailable the button is disabled and
                                                                 // this branch won't run.
-                                                                let _ = document::eval(&crate::features::screenshare::share_js(true));
+                                                                let q = settings.read().screenshare_quality.clone();
+                                                                let _ = document::eval(&crate::features::screenshare::share_js(true, &q));
                                                             } else {
                                                                 // Turning off — stop immediately.
-                                                                let _ = document::eval(&crate::features::screenshare::share_js(false));
+                                                                let _ = document::eval(&crate::features::screenshare::share_js(false, ""));
                                                             }
                                                         },
                             dangerous_inner_html: crate::features::icons::SCREEN,
@@ -896,6 +905,32 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                     for dev in available_output_devices.iter() {
                                         option { selected: selected_output_device.as_ref().map(|n| n == dev).unwrap_or(false), value: "{dev}", "{dev}" }
                                     }
+                                }
+                            }
+                            // Screen-share quality. Applies to the next share —
+                            // the encoding is fixed when the track is published,
+                            // so changing it mid-share has no effect.
+                            div { class: "mb-2",
+                                span { class: "text-[11px] text-[var(--text-muted)]", "Screen share" }
+                                select {
+                                    class: "w-full mt-1 bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)] rounded px-2 py-1 text-sm",
+                                    style: "color: var(--text); background: var(--panel-solid);",
+                                    onchange: move |e| {
+                                        let mut next = settings.read().clone();
+                                        next.screenshare_quality = e.value();
+                                        settings.set(next.clone());
+                                        crate::settings::save(&next);
+                                    },
+                                    for (id, label, _) in crate::features::screenshare::QUALITY_PRESETS.iter() {
+                                        option {
+                                            selected: screenshare_quality == *id,
+                                            value: "{id}",
+                                            "{label}"
+                                        }
+                                    }
+                                }
+                                span { class: "text-[10px] text-[var(--text-dim)] mt-0.5 block",
+                                    "{screenshare_hint}"
                                 }
                             }
                         }

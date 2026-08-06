@@ -105,16 +105,16 @@ window.dxScreen = window.dxScreen || (function () {
   // setScreenShareEnabled, outside the user gesture after awaiting the room)
   // was blocked by the browser — which is why the first share attempt failed
   // and only the second (with the room already connected) worked.
-  async function requestAndStartShare() {
+  async function requestAndStartShare(quality) {
     if (window._dxf_share_starting) { console.warn('[dxScreen] already starting, ignoring duplicate call'); return; }
     window._dxf_share_starting = true;
     try {
-      return await requestAndStartShareInner();
+      return await requestAndStartShareInner(quality || {});
     } finally {
       window._dxf_share_starting = false;
     }
   }
-  async function requestAndStartShareInner() {
+  async function requestAndStartShareInner(quality) {
     // If the browser doesn't expose navigator.mediaDevices, fall back to
     // directly calling startShare() and let the LiveKit SDK decide. This may
     // still be blocked if not run inside a user gesture, but it's a useful
@@ -132,12 +132,34 @@ window.dxScreen = window.dxScreen || (function () {
     // is kept open and published directly below — we must NOT stop its tracks
     // here, or LiveKit would have to re-prompt getDisplayMedia (outside the
     // gesture, which browsers reject).
+    // `{ video: true }` lets the capturer pick its own (low) defaults, which is
+    // what made shares look pixelated. Ask for the preset explicitly. These are
+    // `ideal`, not `exact`, so a smaller display still shares at its native
+    // size instead of failing the constraint outright.
+    const wantW = quality.width || 1920;
+    const wantH = quality.height || 1080;
+    const wantFps = quality.fps || 30;
     let stream;
     try {
-      stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+      stream = await navigator.mediaDevices.getDisplayMedia({
+        video: {
+          width: { ideal: wantW },
+          height: { ideal: wantH },
+          frameRate: { ideal: wantFps },
+        },
+        audio: false,
+      });
     } catch (e) {
-      console.warn('[dxScreen] getDisplayMedia denied or failed', e);
-      return;
+      console.warn('[dxScreen] constrained getDisplayMedia failed, retrying unconstrained', e);
+      // Some embedded webviews reject any constraints on getDisplayMedia.
+      // Falling back keeps sharing working (at default quality) rather than
+      // failing outright.
+      try {
+        stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+      } catch (e2) {
+        console.warn('[dxScreen] getDisplayMedia denied or failed', e2);
+        return;
+      }
     }
     if (!stream) return;
     window._dxf_display_permission_granted = true;
@@ -172,8 +194,33 @@ window.dxScreen = window.dxScreen || (function () {
     // so Rust learns immediately and can tear down the self-preview + notify
     // the server. LiveKit preserves this handler through publishTrack.
     vt.addEventListener('ended', function () { notifyShareEnded(); });
+    // Tell the encoder this is detail-critical content. Without a contentHint
+    // WebRTC assumes camera-style motion video and happily blurs fine detail —
+    // text turns to mush the moment anything on screen moves.
+    try { vt.contentHint = 'detail'; } catch (e) {}
+    // Re-assert the resolution on the track itself. Chromium sometimes honours
+    // applyConstraints here even when it ignored them on getDisplayMedia.
     try {
-      await room.localParticipant.publishTrack(vt, { source: lk.Track.Source.ScreenShare });
+      await vt.applyConstraints({
+        width: { ideal: wantW }, height: { ideal: wantH }, frameRate: { ideal: wantFps },
+      });
+    } catch (e) { console.warn('[dxScreen] applyConstraints ignored', e); }
+    const settings = (function () { try { return vt.getSettings(); } catch (e) { return {}; } })();
+    console.log('[dxScreen] capturing', settings.width + 'x' + settings.height, '@', settings.frameRate, 'fps');
+    try {
+      await room.localParticipant.publishTrack(vt, {
+        source: lk.Track.Source.ScreenShare,
+        // Without an explicit encoding LiveKit falls back to a conservative
+        // default bitrate that starves a full-resolution desktop capture.
+        videoEncoding: { maxBitrate: quality.bitrate || 6000000, maxFramerate: wantFps },
+        // Under bandwidth pressure, drop frames rather than pixels — the
+        // default ('maintain-framerate') scales the picture down, which is
+        // exactly the pixelation being reported.
+        degradationPreference: 'maintain-resolution',
+        // Simulcast re-encodes at reduced sizes; for screen share it mostly
+        // costs upload bandwidth that the full-resolution layer needs.
+        simulcast: false,
+      });
     } catch (e) {
       // Fallback: try the SDK's built-in path. It may re-prompt and fail on a
       // first gesture-less invocation, but costs nothing to attempt.
@@ -197,11 +244,41 @@ window.dxScreen = window.dxScreen || (function () {
 
 /// Start/stop sharing — call from a click handler so `getDisplayMedia` runs in
 /// a user gesture.
-pub fn share_js(on: bool) -> String {
+/// Screen-share quality presets, in the order the settings menu shows them.
+/// `(id, label, hint)` — the hint is the one-line explanation under the select.
+pub const QUALITY_PRESETS: &[(&str, &str, &str)] = &[
+    ("smooth", "Smooth — 720p60", "Best for video and animation"),
+    ("balanced", "Balanced — 1080p30", "Good default for most sharing"),
+    ("crisp", "Crisp — 1080p15", "Sharpest text, lower framerate"),
+    ("ultra", "Ultra — 1440p30", "High detail; needs strong upload"),
+];
+
+/// Resolve a preset id to `(width, height, fps, max_bitrate_bps)`.
+///
+/// Screen content is mostly static text, so resolution matters far more than
+/// framerate for legibility — the "crisp" preset deliberately trades fps for
+/// pixels. Bitrates are well above LiveKit's screen-share defaults because the
+/// default is tuned for slide decks, not code editors.
+fn quality_preset(id: &str) -> (u32, u32, u32, u32) {
+    match id {
+        "smooth" => (1280, 720, 60, 4_000_000),
+        "crisp" => (1920, 1080, 15, 5_000_000),
+        "ultra" => (2560, 1440, 30, 10_000_000),
+        // "balanced" and anything unrecognised (older config, typo).
+        _ => (1920, 1080, 30, 6_000_000),
+    }
+}
+
+pub fn share_js(on: bool, quality: &str) -> String {
     // When starting, call the user-gesture variant that prompts getDisplayMedia
     // before delegating to the LiveKit flow. When stopping, just stopShare.
-    let call = if on { "requestAndStartShare" } else { "stopShare" };
-    format!("{SCREEN_JS}\nwindow.dxScreen.{call}();")
+    if !on {
+        return format!("{SCREEN_JS}\nwindow.dxScreen.stopShare();");
+    }
+    let (w, h, fps, bitrate) = quality_preset(quality);
+    format!(
+        "{SCREEN_JS}\nwindow.dxScreen.requestAndStartShare({{width:{w},height:{h},fps:{fps},bitrate:{bitrate}}});"
+    )
 }
 
 fn attach_js(identity: &str, container: &str) -> String {
@@ -402,7 +479,8 @@ pub fn ScreenSelfPreview() -> Element {
                         e.stop_propagation();
                         let cid = state.read().voice.channel_id;
                         state.write().screen_sharing = false;
-                        let _ = document::eval(&share_js(false));
+                        // Quality only matters when starting a share.
+                        let _ = document::eval(&share_js(false, ""));
                         if let Some(c) = cid {
                             gateway.send(ClientMessage::SetScreenShare { channel_id: c, sharing: false });
                         }
