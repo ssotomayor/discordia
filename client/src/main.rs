@@ -12,7 +12,8 @@ mod settings;
 mod state;
 
 use dioxus::LaunchBuilder;
-use dioxus::desktop::{Config, WindowBuilder, tao::dpi::LogicalSize};
+use dioxus::desktop::tao::window::Icon;
+use dioxus::desktop::{Config, WindowBuilder, icon_from_memory, tao::dpi::LogicalSize};
 
 fn main() {
     // WebView2 (Chromium) treats our custom `dioxus://` asset origin as
@@ -26,9 +27,15 @@ fn main() {
         );
     }
 
+    // Window icon: the Discordia mark. Decoded from the bundled 1024×1024 PNG
+    // via dioxus-desktop's `icon_from_memory` (uses the `image` crate under the
+    // hood). On decode failure we fall back to dioxus's default icon (`.ok()`).
+    let icon = icon_from_memory::<Icon>(include_bytes!("../assets/icon-1024.png")).ok();
+
     let window = WindowBuilder::new()
         .with_title("Discordia")
         .with_inner_size(LogicalSize::new(1280.0, 800.0))
+        .with_window_icon(icon)
         .with_always_on_top(false);
     let window = mac_window(window);
     LaunchBuilder::new()

@@ -19,9 +19,22 @@ use crate::state::{use_app_state, use_gateway};
 const SCREEN_JS: &str = r#"
 window.dxScreen = window.dxScreen || (function () {
   let room = null;
+  let lastUrl = null;
+  let lastToken = null;
+  // Screen MediaStreamTrack captured in the user gesture but not yet published
+  // to LiveKit (held while the JS room finishes connecting). Keeping a ref
+  // also prevents the browser from GC'ing the underlying stream.
+  let pendingShareTrack = null;
   const tracks = {}; // identity -> video track
   const CONTAINERS = ['screenshare-self', 'screenshare-viewer'];
   const LK = () => window.LivekitClient || window.LiveKitClient;
+  // Resolve the LiveKit enum for the screen-share track source. Different SDK
+  // versions expose it under different shapes; fall back to the wire string.
+  function screenShareSource(lk) {
+    try { return lk.Track.Source.ScreenShare; } catch (e) {}
+    try { return lk.TrackSource.ScreenShare; } catch (e) {}
+    return 'screen_share';
+  }
   function attachInto(track, c) {
     c.innerHTML = '';
     const el = track.attach();
@@ -40,11 +53,30 @@ window.dxScreen = window.dxScreen || (function () {
     });
   }
   async function ensureLib() { for (let i = 0; i < 100 && !LK(); i++) { await new Promise(function (r) { setTimeout(r, 100); }); } return !!LK(); }
+  // Publish a screen track we already hold (from getDisplayMedia) to the live
+  // room. Safe to call once `room` is connected; clears pendingShareTrack.
+  async function publishPendingIfAny() {
+    if (!room || !pendingShareTrack) return;
+    const t = pendingShareTrack; pendingShareTrack = null;
+    try {
+      if (t.readyState === 'ended') { console.warn('[dxScreen] pending screen track ended before publish'); return; }
+      const lk = LK();
+      await room.localParticipant.publishTrack(t, { source: screenShareSource(lk) });
+    } catch (e) {
+      console.warn('[dxScreen] publishTrack failed', e);
+      try { t.stop(); } catch (_) {}
+    }
+  }
   async function connect(url, token) {
-    if (room) return;
+    // Already connected to the SAME room: nothing to do.
+    if (room && lastUrl === url && lastToken === token) return;
+    // Connected to a DIFFERENT room (e.g. user switched voice channels without
+    // LeaveVoice): tear down first so we join the new screen room cleanly.
+    if (room) { await disconnect(); }
     if (!(await ensureLib())) { console.warn('[dxScreen] livekit lib not loaded'); return; }
     const lk = LK();
     room = new lk.Room({ adaptiveStream: true, dynacast: true });
+    lastUrl = url; lastToken = token;
     room.on(lk.RoomEvent.TrackSubscribed, function (track, pub, participant) {
       if (track.kind !== 'video') return;
       tracks[participant.identity] = track;
@@ -65,7 +97,16 @@ window.dxScreen = window.dxScreen || (function () {
       delete tracks[room.localParticipant.identity];
       reattach(room.localParticipant.identity);
     });
-    try { await room.connect(url, token); } catch (e) { console.warn('[dxScreen] connect failed', e); room = null; }
+    try {
+      await room.connect(url, token);
+    } catch (e) {
+      console.warn('[dxScreen] connect failed', e);
+      room = null; lastUrl = null; lastToken = null;
+      return;
+    }
+    // If the user already granted screen capture while we were connecting,
+    // publish that track now.
+    await publishPendingIfAny();
   }
   function attach(identity, cid) {
     const c = document.getElementById(cid); if (!c) return;
@@ -78,14 +119,17 @@ window.dxScreen = window.dxScreen || (function () {
     c.removeAttribute('data-identity');
     c.querySelectorAll('video').forEach(function (e) { e.remove(); });
   }
+  // Fallback path for environments without getDisplayMedia: let LiveKit's own
+  // flow decide. May still be blocked outside a user gesture.
   async function startShare() {
     if (!room) { console.warn('[dxScreen] not connected yet'); return; }
     try { await room.localParticipant.setScreenShareEnabled(true); } catch (e) { console.warn('[dxScreen] share failed', e); }
   }
-  // Helper that runs getDisplayMedia inside the user's gesture before starting
-  // the LiveKit screen-share flow. Browsers block getDisplayMedia unless it's
-  // invoked directly by a user gesture; calling this from document.eval in
-  // response to the native click ensures the prompt is allowed.
+  // Runs getDisplayMedia inside the user gesture and publishes the captured
+  // track directly. Browsers block getDisplayMedia unless invoked from a user
+  // gesture, so we MUST capture here (in the click) and reuse the track — we
+  // never call setScreenShareEnabled (which would prompt a second time outside
+  // the gesture).
   async function requestAndStartShare() {
     if (window._dxf_share_starting) { console.warn('[dxScreen] already starting, ignoring duplicate call'); return; }
     window._dxf_share_starting = true;
@@ -96,55 +140,56 @@ window.dxScreen = window.dxScreen || (function () {
     }
   }
   async function requestAndStartShareInner() {
-    // If the browser doesn't expose navigator.mediaDevices, fall back to
-    // directly calling startShare() and let the LiveKit SDK decide. This may
-    // still be blocked if not run inside a user gesture, but it's a useful
-    // fallback for embedded webviews without mediaDevices.
+    // No getDisplayMedia: fall back to the SDK's own flow (best-effort).
     if (!(navigator && navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia)) {
       console.warn('[dxScreen] navigator.mediaDevices.getDisplayMedia not available; falling back to startShare');
-      // Wait a short moment for room to exist; otherwise call startShare
-      // immediately (it may still prompt or fail depending on environment).
       for (let i = 0; i < 20; i++) { if (room) break; await new Promise(function (r) { setTimeout(r, 100); }); }
       try { await startShare(); } catch (e) { console.warn('[dxScreen] startShare fallback failed', e); }
       return;
     }
 
-    let granted = false;
+    let stream = null;
     try {
-      // Prompt for screen capture permission in the user gesture.
-      // Keep the stream open while we wait for the JS room to be ready so
-      // LiveKit can reuse the granted permission. Don't stop the tracks here.
-      const s = await navigator.mediaDevices.getDisplayMedia({ video: true });
-      granted = !!s;
-      // Keep a global marker showing user granted capture. Some browsers may
-      // not surface the permission otherwise.
-      window._dxf_display_permission_granted = true;
-      try { s.getTracks().forEach(t => t.stop()); } catch (e) {}
+      stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
     } catch (e) {
       console.warn('[dxScreen] getDisplayMedia denied or failed', e);
       return;
     }
-    if (!granted) return;
+    if (!stream) return;
+    window._dxf_display_permission_granted = true;
 
-    // Wait briefly for the room to connect (Server should have provided a
-    // token and ScreenShareBridge will call dxScreen.connect). If the room
-    // isn't ready after a short timeout, abort so we don't leave the UI stuck.
+    const vtrack = stream.getVideoTracks()[0];
+    if (!vtrack) {
+      try { stream.getTracks().forEach(function (t) { t.stop(); }); } catch (_) {}
+      return;
+    }
+    // Hold the granted track; do NOT stop it. We publish it once the room is up.
+    pendingShareTrack = vtrack;
+
+    // Wait briefly for the room to connect (ScreenShareBridge calls
+    // dxScreen.connect when the server ships a ScreenToken). If the room is
+    // already connected this loop exits immediately and we publish right away.
     for (let i = 0; i < 150; i++) {
       if (room) break;
       await new Promise(function (r) { setTimeout(r, 100); });
     }
-    if (!room) { console.warn('[dxScreen] room not connected yet, cannot start share'); return; }
-
-    // Now call the normal start path — permission is already granted so any
-    // internal getDisplayMedia calls are allowed.
-    await startShare();
+    if (!room) {
+      console.warn('[dxScreen] room not connected yet, cannot publish share');
+      pendingShareTrack = null;
+      try { vtrack.stop(); } catch (_) {}
+      return;
+    }
+    await publishPendingIfAny();
   }
   async function stopShare() {
+    // Drop any captured-but-unpublished track first so the user sees it stop.
+    if (pendingShareTrack) { try { pendingShareTrack.stop(); } catch (_) {} pendingShareTrack = null; }
     if (!room) return;
     try { await room.localParticipant.setScreenShareEnabled(false); } catch (e) {}
   }
   async function disconnect() {
-    if (room) { try { await room.disconnect(); } catch (e) {} room = null; }
+    if (pendingShareTrack) { try { pendingShareTrack.stop(); } catch (_) {} pendingShareTrack = null; }
+    if (room) { try { await room.disconnect(); } catch (e) {} room = null; lastUrl = null; lastToken = null; }
     for (const k in tracks) delete tracks[k];
     CONTAINERS.forEach(detach);
   }
@@ -212,23 +257,6 @@ pub fn ScreenShareBridge() -> Element {
         }
     });
 
-    // If both a token and the user's local `screen_sharing` flag are set,
-    // initiate the user-gesture sharing flow. This ensures the room is
-    // connected (dxScreen.connect ran above) before prompting for capture.
-    let mut last_start = use_signal(|| false);
-    use_effect(move || {
-        let t = token();
-        let sharing = state.read().screen_sharing;
-        if (t.is_some() && sharing) != *last_start.peek() {
-            if t.is_some() && sharing {
-                // Trigger the user-gesture request which runs getDisplayMedia
-                // and then starts the LiveKit publish. The call is idempotent.
-                let _ = document::eval(&format!("{SCREEN_JS}\nwindow.dxScreen.requestAndStartShare();"));
-            }
-            last_start.set(t.is_some() && sharing);
-        }
-    });
-
     rsx! { Fragment {} }
 }
 
@@ -264,11 +292,11 @@ pub fn ScreenSelfPreview() -> Element {
         div {
             class: "fixed z-30 flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl overflow-hidden dxf-pop-in",
             style: "top: 3.5rem; right: 0.75rem; width: 300px;",
-            div { class: "h-8 px-2.5 flex items-center gap-1.5 border-b border-[var(--border)] shrink-0",
-                span { class: "w-2 h-2 rounded-full shrink-0", style: "background: var(--danger);" }
-                span { class: "text-[11px] text-[var(--text)] truncate flex-1", "Sharing your screen" }
+            div { class: "px-4 py-3 flex items-center gap-2 border-b border-[var(--border)] shrink-0",
+                span { class: "w-2 h-2 rounded-full shrink-0 dxf-dot-pulse", style: "background: var(--danger);" }
+                span { class: "text-sm font-medium text-[var(--accent)] truncate flex-1", "Sharing your screen" }
                 button {
-                    class: "text-[9px] uppercase tracking-wider text-[var(--danger)] hover:text-[var(--accent-strong)] font-semibold",
+                    class: "text-[10px] uppercase tracking-wider text-[var(--text-muted)] hover:text-[var(--danger)] transition-colors",
                     onclick: move |_| {
                         let cid = state.read().voice.channel_id;
                         state.write().screen_sharing = false;
@@ -282,7 +310,7 @@ pub fn ScreenSelfPreview() -> Element {
             }
             div {
                 id: "screenshare-self",
-                class: "bg-black flex items-center justify-center text-[var(--text-dim)] text-[10px]",
+                class: "bg-black flex items-center justify-center text-[var(--text-dim)] text-xs",
                 style: "height: 170px;",
                 "Starting…"
             }
@@ -355,17 +383,17 @@ pub fn ScreenWatchWindow() -> Element {
             }
         }
         div {
-            class: "fixed z-40 flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-2xl overflow-hidden dxf-modal-in",
+            class: "fixed z-40 flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl overflow-hidden dxf-modal-in",
             style: "left: {x}px; top: {y}px; width: {w}px; height: {h}px;",
             // Header doubles as the drag handle.
             div {
-                class: "h-9 px-3 flex items-center gap-2 border-b border-[var(--border)] shrink-0 cursor-move select-none",
+                class: "px-4 py-3 flex items-center gap-2 border-b border-[var(--border)] shrink-0 cursor-move select-none",
                 onmousedown: move |e| {
                     let c = e.client_coordinates();
                     drag.set(Some(Drag::Move { dx: c.x - x(), dy: c.y - y() }));
                 },
-                span { class: "w-2.5 h-2.5 rounded-full shrink-0", style: "background: var(--danger);" }
-                span { class: "text-sm text-[var(--text)] font-medium truncate", "{name}'s screen" }
+                span { class: "w-2.5 h-2.5 rounded-full shrink-0 dxf-dot-pulse", style: "background: var(--danger);" }
+                span { class: "text-sm font-medium text-[var(--accent)] truncate", "{name}'s screen" }
                 span { class: "text-[10px] uppercase tracking-wider text-[var(--danger)] font-semibold", "Live" }
                 div { class: "flex-1" }
                 button {
@@ -377,7 +405,7 @@ pub fn ScreenWatchWindow() -> Element {
             }
             div {
                 id: "screenshare-viewer",
-                class: "flex-1 min-h-0 bg-black flex items-center justify-center text-[var(--text-dim)] text-sm",
+                class: "flex-1 min-h-0 bg-black flex items-center justify-center text-[var(--text-dim)] text-xs",
                 "Connecting to stream…"
             }
             // Resize grip (bottom-right).
