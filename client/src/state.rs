@@ -145,6 +145,15 @@ pub struct AppState {
     pub selected_input_device: Option<String>,
     /// Selected output device name (None = use system default).
     pub selected_output_device: Option<String>,
+    /// Microphone speaking-detection threshold (1..=200). Peak values above
+    /// this count as "speaking". Driven by the audio settings slider; persists
+    /// via ClientSettings. Lower = more sensitive.
+    pub mic_sensitivity: u32,
+    /// Live microphone peak level (0..=1000, fixed-point ×1000). Sampled every
+    /// 150ms by the voice service's speaking-detection loop. Drives the VU bar
+    /// in the audio settings popover so the user can see mic input + where the
+    /// threshold sits relative to it.
+    pub mic_level: u32,
     /// Populated when running in self-host mode. None for remote connections.
     pub host_info: Option<HostInfo>,
     /// Bot installs per guild, for the owner's Integrations dialog. Populated by
@@ -201,6 +210,8 @@ impl AppState {
             available_output_devices: Vec::new(),
             selected_input_device: None,
             selected_output_device: None,
+            mic_sensitivity: 25,
+            mic_level: 0,
             host_info: None,
             integrations: HashMap::new(),
             roles: HashMap::new(),

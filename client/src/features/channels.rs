@@ -599,16 +599,23 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
     let available_output_devices = state.read().available_output_devices.clone();
     let selected_input_device = state.read().selected_input_device.clone();
     let selected_output_device = state.read().selected_output_device.clone();
+    let mic_sensitivity = state.read().mic_sensitivity;
+    let mic_level = state.read().mic_level;
 
     // Clone voice sender for each closure so move into one closure doesn't
     // prevent reuse in others.
     let v_for_audio_button = voice.clone();
     let v_for_input_change = voice.clone();
     let v_for_output_change = voice.clone();
+    let v_for_sensitivity = voice.clone();
 
     // Snapshot current voice phase so the popover can show reconnection state.
     let voice_phase = state.read().voice.phase;
     let reconnecting = matches!(voice_phase, VoicePhase::Connecting);
+    // VU bar + threshold marker percentages (peak is stored as ×1000).
+    let mic_level_pct = (mic_level as f64 / 1000.0 * 100.0).clamp(0.0, 100.0) as u32;
+    let threshold_pct = (mic_sensitivity as f64 / 1000.0 * 100.0).clamp(0.0, 100.0) as u32;
+    let sensitivity_display = mic_sensitivity / 10;
 
     rsx! {
         div { class: "border-t border-[var(--border)]",
@@ -794,6 +801,74 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                     for dev in available_input_devices.iter() {
                                         option { selected: selected_input_device.as_ref().map(|n| n == dev).unwrap_or(false), value: "{dev}", "{dev}" }
                                     }
+                                }
+                            }
+                            // VU bar — live mic level with threshold marker.
+                            // Only meaningful while a voice session is capturing;
+                            // otherwise show a hint so the user knows why it's flat.
+                            div { class: "mb-2",
+                                div { class: "flex items-center justify-between",
+                                    span { class: "text-[11px] text-[var(--text-muted)]", "Level" }
+                                    if reconnecting {
+                                        span { class: "text-[10px] text-[var(--text-dim)]", "reconnecting" }
+                                    } else if voice_phase == VoicePhase::Connected {
+                                        span { class: "text-[10px] text-[var(--text-dim)]", "{mic_level_pct}%" }
+                                    } else {
+                                        span { class: "text-[10px] text-[var(--text-dim)]", "join voice" }
+                                    }
+                                }
+                                if voice_phase == VoicePhase::Connected && !reconnecting {
+                                    div {
+                                        class: "relative w-full h-2 mt-1 rounded-full overflow-hidden",
+                                        style: "background: var(--bg2);",
+                                        div {
+                                            class: "h-full rounded-full transition-all duration-75",
+                                            style: "width: {mic_level_pct}%; background: linear-gradient(90deg, var(--up), var(--accent), var(--danger));",
+                                        }
+                                        // Threshold marker — white vertical line at the
+                                        // sensitivity position. When the fill passes it,
+                                        // the user is detected as speaking.
+                                        div {
+                                            class: "absolute top-0 bottom-0 w-0.5 bg-white/70 pointer-events-none",
+                                            style: "left: {threshold_pct}%;",
+                                        }
+                                    }
+                                } else {
+                                    div {
+                                        class: "w-full h-2 mt-1 rounded-full",
+                                        style: "background: var(--bg2);",
+                                    }
+                                }
+                            }
+                            // Mic sensitivity slider — adjusts the speaking-detection
+                            // threshold (1..=1000, matching the peak's ×1000 scale).
+                            // Lower = more sensitive (picks up quiet speech);
+                            // higher = less sensitive (ignores background noise).
+                            // Displayed as a percentage for intuitivity.
+                            div { class: "mb-2",
+                                div { class: "flex items-center justify-between",
+                                    span { class: "text-[11px] text-[var(--text-muted)]", "Sensitivity" }
+                                    span { class: "text-[10px] text-[var(--text-dim)]", "{sensitivity_display}%" }
+                                }
+                                input {
+                                    r#type: "range",
+                                    min: "1",
+                                    max: "1000",
+                                    value: "{mic_sensitivity}",
+                                    class: "w-full mt-1 accent-[var(--accent)]",
+                                    oninput: move |e| {
+                                        let val: u32 = e.value().parse().unwrap_or(25).clamp(1, 1000);
+                                        // Persist to client settings
+                                        let mut next = settings.read().clone();
+                                        next.mic_sensitivity = val;
+                                        settings.set(next.clone());
+                                        crate::settings::save(&next);
+                                        // Update AppState + tell voice service (takes effect
+                                        // on the next 150ms speaking-detection tick).
+                                        state.write().mic_sensitivity = val;
+                                        let v = v_for_sensitivity.clone();
+                                        let _ = v.send(crate::features::voice::VoiceCmd::SetSensitivity { threshold: val });
+                                    },
                                 }
                             }
                             // Output device select

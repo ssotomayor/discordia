@@ -33,11 +33,20 @@ pub struct ClientSettings {
     #[serde(default = "default_rendezvous_servers")]
     pub rendezvous_servers: Vec<String>,
 
-/// Persisted audio device choices (None = system default).
-#[serde(default)]
-pub selected_input_device: Option<String>,
-#[serde(default)]
-pub selected_output_device: Option<String>,
+    /// Persisted audio device choices (None = system default).
+    #[serde(default)]
+    pub selected_input_device: Option<String>,
+    #[serde(default)]
+    pub selected_output_device: Option<String>,
+    /// Microphone speaking-detection threshold (1..=200). Peak values above
+    /// this mark the user as "speaking" (green ring around the avatar).
+    /// Lower = more sensitive. Default 25 matches the original hardcoded value.
+    #[serde(default = "default_mic_sensitivity")]
+    pub mic_sensitivity: u32,
+}
+
+fn default_mic_sensitivity() -> u32 {
+    25
 }
 
 fn default_blossom_server() -> String {
@@ -69,6 +78,7 @@ impl Default for ClientSettings {
             rendezvous_servers: default_rendezvous_servers(),
             selected_input_device: None,
             selected_output_device: None,
+            mic_sensitivity: default_mic_sensitivity(),
         }
     }
 }
