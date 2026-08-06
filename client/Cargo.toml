@@ -32,6 +32,9 @@ rand = "0.8"
 # base64 for inline image / avatar data URLs (chat + profiles).
 base64 = "0.22"
 
+# Decodes the app icon PNG into RGBA for the native window icon (taskbar).
+image = { version = "0.25", default-features = false, features = ["png"] }
+
 # Shared wire protocol (client, server, bot SDK all depend on this one crate).
 dioxusfun-protocol = { workspace = true }
 # Self-host mode: embed the gateway server in-process.

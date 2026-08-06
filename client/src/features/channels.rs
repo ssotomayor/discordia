@@ -23,6 +23,13 @@ enum ChanMenuMode {
     ConfirmDelete,
 }
 
+/// Drag interaction for the audio settings popover. Same Move model as the
+/// floating activity/screen-share windows — no resize grip (popover is small).
+#[derive(Clone, Copy, PartialEq)]
+enum AudioDrag {
+    Move { dx: f64, dy: f64 },
+}
+
 const PANEL: &str = "panel-hover w-full h-full bg-[var(--panel)] border border-[var(--border)] rounded-lg flex flex-col overflow-hidden";
 const HEADER: &str = "h-11 px-3 flex items-center border-b border-[var(--border)]";
 const SECTION_LABEL: &str = "px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]";
@@ -576,8 +583,15 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
     let g_for_share = gateway.clone();
     let voice_channel = self_voice.channel_id;
 
-    // UI state for audio settings popover.
+    // UI state for audio settings popover. The popover is a freely-draggable
+    // floating window (not anchored to the gear button), so we track pixel
+    // position + an in-flight drag. Initial coords approximate the old
+    // `right-3 top-12` anchor in a ~1280px viewport; the user moves it from
+    // there. Position persists across open/close within the session.
     let mut show_audio_settings = use_signal(|| false);
+    let mut audio_x = use_signal(|| 1000.0_f64);
+    let mut audio_y = use_signal(|| 48.0_f64);
+    let mut audio_drag = use_signal(|| None::<AudioDrag>);
 
     // Snapshot device lists & selections so RSX body can use them without
     // attempting inline `let` bindings inside the macro.
@@ -694,82 +708,123 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                     dangerous_inner_html: crate::features::icons::GEAR,
                 }
 
-                // Popover (render when signal true)
+                // Popover (render when signal true). The popover is a freely
+                // draggable floating window: while a drag is in flight a full
+                // viewport overlay captures pointer move/up so the cursor can
+                // leave the small header without dropping the drag (same model
+                // as the activity / screen-share windows). A transparent
+                // dismiss layer (z-30) under the popover closes it on outside
+                // click without interfering with the drag overlay (z-50).
                 if show_audio_settings() {
                     div {
-                        class: "absolute right-3 top-12 z-40 bg-[var(--panel-solid)] border border-[var(--border)] rounded p-2 w-64 shadow-lg",
-
-                    // Reconnection indicator
-                    if reconnecting {
-                        div { class: "mb-2 flex items-center text-[12px] text-[var(--text-muted)]",
-                            span { class: "dx-spinner" }
-                            span { "Reconnecting audio…" }
+                        class: "fixed inset-0 z-30",
+                        onclick: move |_| show_audio_settings.set(false),
+                    }
+                    if audio_drag().is_some() {
+                        div {
+                            class: "fixed inset-0 z-50",
+                            onmousemove: move |e| {
+                                let c = e.client_coordinates();
+                                if let Some(AudioDrag::Move { dx, dy }) = audio_drag() {
+                                    audio_x.set(c.x - dx);
+                                    audio_y.set(c.y - dy);
+                                }
+                            },
+                            onmouseup: move |_| audio_drag.set(None),
                         }
                     }
+                    div {
+                        class: "fixed z-40 flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-lg overflow-hidden w-64",
+                        style: "left: {audio_x}px; top: {audio_y}px;",
+                        // Stop propagation so clicks inside the popover (selects,
+                        // close button, drag handle) don't bubble up to the
+                        // dismiss overlay and close the window prematurely.
+                        onclick: move |e| e.stop_propagation(),
 
-                    // Input device select
-                    div { class: "mb-2",
-                        span { class: "text-[11px] text-[var(--text-muted)]", "Input" }
-                        select {
-                            class: "w-full mt-1 bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)] rounded px-2 py-1 text-sm disabled:opacity-60",
-                            style: "color: var(--text); background: var(--panel-solid);",
-                            disabled: "{reconnecting}",
-                            onchange: move |e| {
-                                let val = e.value();
-                                // update AppState and ask voice service to persist selection
-                                let val_cloned = val.clone();
-                                // Persist to client settings
-                                let mut next = settings.read().clone();
-                                if val_cloned.is_empty() { next.selected_input_device = None; } else { next.selected_input_device = Some(val_cloned.clone()); }
-                                settings.set(next.clone());
-                                crate::settings::save(&next);
-
-                                let mut s = state.write();
-                                s.selected_input_device = if val_cloned.is_empty() { None } else { Some(val_cloned.clone()) };
-                                let v = v_for_input_change.clone();
-                                let _ = v.send(crate::features::voice::VoiceCmd::SetDevices { input: s.selected_input_device.clone(), output: None });
+                        // Drag handle header: grab anywhere on the bar to move
+                        // the window. The close button lives here now (the old
+                        // footer Close is gone), mirroring ActivityWindow.
+                        div {
+                            class: "h-8 px-2 flex items-center gap-2 border-b border-[var(--border)] shrink-0 cursor-move select-none",
+                            onmousedown: move |e| {
+                                let c = e.client_coordinates();
+                                audio_drag.set(Some(AudioDrag::Move { dx: c.x - audio_x(), dy: c.y - audio_y() }));
                             },
-                            option { value: "", "System default" }
-                            for dev in available_input_devices.iter() {
-                                option { selected: selected_input_device.as_ref().map(|n| n == dev).unwrap_or(false), value: "{dev}", "{dev}" }
+                            span { class: "text-[11px] font-medium text-[var(--text)] flex-1", "Audio settings" }
+                            button {
+                                class: "text-[var(--text-dim)] hover:text-[var(--text)] text-base leading-none",
+                                onmousedown: move |e| e.stop_propagation(),
+                                onclick: move |_| show_audio_settings.set(false),
+                                "✕"
+                            }
+                        }
+
+                        div { class: "p-2",
+                            // Reconnection indicator
+                            if reconnecting {
+                                div { class: "mb-2 flex items-center text-[12px] text-[var(--text-muted)]",
+                                    span { class: "dx-spinner" }
+                                    span { "Reconnecting audio…" }
+                                }
+                            }
+
+                            // Input device select
+                            div { class: "mb-2",
+                                span { class: "text-[11px] text-[var(--text-muted)]", "Input" }
+                                select {
+                                    class: "w-full mt-1 bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)] rounded px-2 py-1 text-sm disabled:opacity-60",
+                                    style: "color: var(--text); background: var(--panel-solid);",
+                                    disabled: "{reconnecting}",
+                                    onchange: move |e| {
+                                        let val = e.value();
+                                        // update AppState and ask voice service to persist selection
+                                        let val_cloned = val.clone();
+                                        // Persist to client settings
+                                        let mut next = settings.read().clone();
+                                        if val_cloned.is_empty() { next.selected_input_device = None; } else { next.selected_input_device = Some(val_cloned.clone()); }
+                                        settings.set(next.clone());
+                                        crate::settings::save(&next);
+
+                                        let mut s = state.write();
+                                        s.selected_input_device = if val_cloned.is_empty() { None } else { Some(val_cloned.clone()) };
+                                        let v = v_for_input_change.clone();
+                                        let _ = v.send(crate::features::voice::VoiceCmd::SetDevices { input: s.selected_input_device.clone(), output: None });
+                                    },
+                                    option { value: "", "System default" }
+                                    for dev in available_input_devices.iter() {
+                                        option { selected: selected_input_device.as_ref().map(|n| n == dev).unwrap_or(false), value: "{dev}", "{dev}" }
+                                    }
+                                }
+                            }
+                            // Output device select
+                            div { class: "mb-2",
+                                span { class: "text-[11px] text-[var(--text-muted)]", "Output" }
+                                select {
+                                    class: "w-full mt-1 bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)] rounded px-2 py-1 text-sm disabled:opacity-60",
+                                    style: "color: var(--text); background: var(--panel-solid);",
+                                    disabled: "{reconnecting}",
+                                    onchange: move |e| {
+                                        let val = e.value();
+                                        let val_cloned = val.clone();
+                                        // Persist to client settings
+                                        let mut next = settings.read().clone();
+                                        if val_cloned.is_empty() { next.selected_output_device = None; } else { next.selected_output_device = Some(val_cloned.clone()); }
+                                        settings.set(next.clone());
+                                        crate::settings::save(&next);
+
+                                        let mut s = state.write();
+                                        s.selected_output_device = if val_cloned.is_empty() { None } else { Some(val_cloned.clone()) };
+                                        let v = v_for_output_change.clone();
+                                        let _ = v.send(crate::features::voice::VoiceCmd::SetDevices { input: None, output: s.selected_output_device.clone() });
+                                    },
+                                    option { value: "", "System default" }
+                                    for dev in available_output_devices.iter() {
+                                        option { selected: selected_output_device.as_ref().map(|n| n == dev).unwrap_or(false), value: "{dev}", "{dev}" }
+                                    }
+                                }
                             }
                         }
                     }
-                    // Output device select
-                    div { class: "mb-2",
-                        span { class: "text-[11px] text-[var(--text-muted)]", "Output" }
-                        select {
-                            class: "w-full mt-1 bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)] rounded px-2 py-1 text-sm disabled:opacity-60",
-                            style: "color: var(--text); background: var(--panel-solid);",
-                            disabled: "{reconnecting}",
-                            onchange: move |e| {
-                                let val = e.value();
-                                let val_cloned = val.clone();
-                                // Persist to client settings
-                                let mut next = settings.read().clone();
-                                if val_cloned.is_empty() { next.selected_output_device = None; } else { next.selected_output_device = Some(val_cloned.clone()); }
-                                settings.set(next.clone());
-                                crate::settings::save(&next);
-
-                                let mut s = state.write();
-                                s.selected_output_device = if val_cloned.is_empty() { None } else { Some(val_cloned.clone()) };
-                                let v = v_for_output_change.clone();
-                                let _ = v.send(crate::features::voice::VoiceCmd::SetDevices { input: None, output: s.selected_output_device.clone() });
-                            },
-                            option { value: "", "System default" }
-                            for dev in available_output_devices.iter() {
-                                option { selected: selected_output_device.as_ref().map(|n| n == dev).unwrap_or(false), value: "{dev}", "{dev}" }
-                            }
-                        }
-                    }
-                    div { class: "flex justify-end mt-1",
-                        button {
-                            class: "text-[10px] uppercase tracking-wider px-2 py-1 rounded text-[var(--text-dim)] hover:text-[var(--text-muted)]",
-                            onclick: move |_| show_audio_settings.set(false),
-                            "Close"
-                        }
-                    }
-                }
                 }
 
                 button {

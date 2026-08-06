@@ -2037,6 +2037,7 @@ dependencies = [
  "futures-util",
  "hex",
  "hmac",
+ "image",
  "livekit",
  "local-ip-address",
  "parking_lot",
