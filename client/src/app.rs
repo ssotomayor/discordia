@@ -107,6 +107,11 @@ const BASE_CSS: &str = "
   --ease: cubic-bezier(0.4, 0.0, 0.2, 1);
 }
 html, body, #main { height: 100%; margin: 0; }
+/* Hide the app until Tailwind's CDN build has generated its classes, to
+   avoid a flash of unstyled content on startup. #app-root fades in once
+   the dxf-ready class is added (see App's mount effect). */
+#app-root { opacity: 0; }
+#app-root.dxf-ready { opacity: 1; transition: opacity 0.18s var(--ease); }
 
 /* Optional local background image: two fixed layers (image + darkening
    scrim) behind a relatively-positioned app shell. When a background is set,
@@ -487,7 +492,26 @@ pub fn App() -> Element {
             "--bg: transparent; --panel: color-mix(in srgb, var(--panel-solid) 66%, transparent);",
         );
     }
-
+    // Reveal the app once Tailwind's CDN build has generated its classes,
+    // instead of showing a flash of unstyled content. Falls back to a hard
+    // timeout so a slow/blocked CDN never leaves the app permanently hidden.
+    use_effect(|| {
+        let _ = document::eval(
+            "(function() {
+                let tries = 0;
+                function reveal() {
+                    const el = document.getElementById('app-root');
+                    if (el) el.classList.add('dxf-ready');
+                }
+                function poll() {
+                    tries++;
+                    if (window.tailwind || tries > 75) { reveal(); return; }
+                    setTimeout(poll, 20);
+                }
+                poll();
+            })();",
+        );
+    });
     rsx! {
         document::Script { src: "https://unpkg.com/@tailwindcss/browser@4" }
         // LiveKit JS SDK — powers webview-side screen sharing (capture + render).
@@ -498,6 +522,7 @@ pub fn App() -> Element {
         document::Style { {BASE_CSS} }
 
         div {
+            id: "app-root",
             class: "h-screen w-screen bg-[var(--bg)] text-[var(--text)] antialiased overflow-hidden",
             style: "{root_style}",
             if !pattern_class.is_empty() {
