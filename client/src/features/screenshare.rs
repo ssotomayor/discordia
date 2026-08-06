@@ -11,6 +11,7 @@
 //! - `#screenshare-viewer` — large draggable/resizable window for watchers.
 
 use dioxus::prelude::*;
+use serde_json::Value;
 
 use crate::protocol::ClientMessage;
 use crate::state::{use_app_state, use_gateway};
@@ -64,8 +65,24 @@ window.dxScreen = window.dxScreen || (function () {
       if (!pub.track || pub.track.kind !== 'video') return;
       delete tracks[room.localParticipant.identity];
       reattach(room.localParticipant.identity);
+      // The user may have stopped sharing from the browser's native "Stop
+      // sharing" bar (which ends the track without going through our Stop
+      // button). Notify Rust so it can flip screen_sharing off and tell the
+      // server, otherwise the self-preview stays mounted showing nothing.
+      notifyShareEnded();
     });
     try { await room.connect(url, token); } catch (e) { console.warn('[dxScreen] connect failed', e); room = null; }
+  }
+  // Notify the Rust side that local screen sharing has ended (track stopped
+  // or unpublished by the browser). We must use window.postMessage (NOT
+  // dioxus.send directly) because the ScreenShareBridge's use_future eval is
+  // the one whose recv() is awaited — it listens via window.addEventListener
+  // and re-sends into dioxus from that eval's context. Calling dioxus.send
+  // from here (the SCREEN_JS controller, evaluated by a fire-and-forget eval)
+  // goes nowhere because no one is recv-ing on that channel. Same chain as
+  // the activities bridge: postMessage → addEventListener → dioxus.send → recv.
+  function notifyShareEnded() {
+    try { window.postMessage({ __dxf: 'screen-share-ended' }, '*'); } catch (e) { console.warn('[dxScreen] notifyShareEnded failed', e); }
   }
   function attach(identity, cid) {
     const c = document.getElementById(cid); if (!c) return;
@@ -82,10 +99,12 @@ window.dxScreen = window.dxScreen || (function () {
     if (!room) { console.warn('[dxScreen] not connected yet'); return; }
     try { await room.localParticipant.setScreenShareEnabled(true); } catch (e) { console.warn('[dxScreen] share failed', e); }
   }
-  // Helper that runs getDisplayMedia inside the user's gesture before starting
-  // the LiveKit screen-share flow. Browsers block getDisplayMedia unless it's
-  // invoked directly by a user gesture; calling this from document.eval in
-  // response to the native click ensures the prompt is allowed.
+  // Helper that runs getDisplayMedia inside the user's gesture, then publishes
+  // the captured track directly via publishTrack. This avoids the previous bug
+  // where the SDK's internal getDisplayMedia call (triggered by
+  // setScreenShareEnabled, outside the user gesture after awaiting the room)
+  // was blocked by the browser — which is why the first share attempt failed
+  // and only the second (with the room already connected) worked.
   async function requestAndStartShare() {
     if (window._dxf_share_starting) { console.warn('[dxScreen] already starting, ignoring duplicate call'); return; }
     window._dxf_share_starting = true;
@@ -109,35 +128,59 @@ window.dxScreen = window.dxScreen || (function () {
       return;
     }
 
-    let granted = false;
+    // Prompt for screen capture inside the user gesture. The captured stream
+    // is kept open and published directly below — we must NOT stop its tracks
+    // here, or LiveKit would have to re-prompt getDisplayMedia (outside the
+    // gesture, which browsers reject).
+    let stream;
     try {
-      // Prompt for screen capture permission in the user gesture.
-      // Keep the stream open while we wait for the JS room to be ready so
-      // LiveKit can reuse the granted permission. Don't stop the tracks here.
-      const s = await navigator.mediaDevices.getDisplayMedia({ video: true });
-      granted = !!s;
-      // Keep a global marker showing user granted capture. Some browsers may
-      // not surface the permission otherwise.
-      window._dxf_display_permission_granted = true;
-      try { s.getTracks().forEach(t => t.stop()); } catch (e) {}
+      stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
     } catch (e) {
       console.warn('[dxScreen] getDisplayMedia denied or failed', e);
       return;
     }
-    if (!granted) return;
+    if (!stream) return;
+    window._dxf_display_permission_granted = true;
 
     // Wait briefly for the room to connect (Server should have provided a
     // token and ScreenShareBridge will call dxScreen.connect). If the room
-    // isn't ready after a short timeout, abort so we don't leave the UI stuck.
+    // isn't ready after a short timeout, abort and release the capture.
     for (let i = 0; i < 150; i++) {
       if (room) break;
       await new Promise(function (r) { setTimeout(r, 100); });
     }
-    if (!room) { console.warn('[dxScreen] room not connected yet, cannot start share'); return; }
+    if (!room) {
+      console.warn('[dxScreen] room not connected yet, cannot start share');
+      try { stream.getTracks().forEach(function (t) { t.stop(); }); } catch (e) {}
+      return;
+    }
 
-    // Now call the normal start path — permission is already granted so any
-    // internal getDisplayMedia calls are allowed.
-    await startShare();
+    // Publish the already-captured track directly. publishTrack accepts a raw
+    // MediaStreamTrack (verified against livekit-client@2.19.2 types) and does
+    // NOT re-invoke getDisplayMedia, so the user-gesture grant carries through.
+    // source: ScreenShare routes it correctly on the server and triggers the
+    // LocalTrackPublished event wired above (which attaches the self-preview).
+    const lk = LK();
+    const vt = stream.getVideoTracks()[0];
+    if (!vt) {
+      console.warn('[dxScreen] no video track in captured stream');
+      try { stream.getTracks().forEach(function (t) { t.stop(); }); } catch (e) {}
+      return;
+    }
+    // The browser fires `ended` on the MediaStreamTrack when the user closes
+    // the shared tab/window or clicks the native "Stop sharing" bar. Wire it
+    // so Rust learns immediately and can tear down the self-preview + notify
+    // the server. LiveKit preserves this handler through publishTrack.
+    vt.addEventListener('ended', function () { notifyShareEnded(); });
+    try {
+      await room.localParticipant.publishTrack(vt, { source: lk.Track.Source.ScreenShare });
+    } catch (e) {
+      // Fallback: try the SDK's built-in path. It may re-prompt and fail on a
+      // first gesture-less invocation, but costs nothing to attempt.
+      console.warn('[dxScreen] direct publishTrack failed, falling back to setScreenShareEnabled', e);
+      try { stream.getTracks().forEach(function (t) { t.stop(); }); } catch (e2) {}
+      try { await startShare(); } catch (e2) { console.warn('[dxScreen] startShare fallback failed', e2); }
+    }
   }
   async function stopShare() {
     if (!room) return;
@@ -173,6 +216,7 @@ fn detach_js(container: &str) -> String {
 #[component]
 pub fn ScreenShareBridge() -> Element {
     let state = use_app_state();
+    let gateway = use_gateway();
     let token = use_memo(move || state.read().screen_token.clone());
     let mut last = use_signal(|| None::<(String, String)>);
 
@@ -226,6 +270,50 @@ pub fn ScreenShareBridge() -> Element {
                 let _ = document::eval(&format!("{SCREEN_JS}\nwindow.dxScreen.requestAndStartShare();"));
             }
             last_start.set(t.is_some() && sharing);
+        }
+    });
+
+    // Listen for the JS-side `screen-share-ended` signal. The browser fires
+    // `ended` on the captured MediaStreamTrack when the user closes the shared
+    // tab/window or clicks the native "Stop sharing" bar; the JS controller
+    // forwards that via `dioxus.send({ __dxf: 'screen-share-ended' })`. Without
+    // this, the self-preview would stay mounted showing a frozen/black frame.
+    // Guards against double-wiring across hot reloads (same pattern as the
+    // activities bridge).
+    let gateway_end = gateway.clone();
+    use_future(move || {
+        let mut state = state.clone();
+        let gateway = gateway_end.clone();
+        async move {
+            let bridge_js = r#"
+            if (!window.__dxfShareEndWired) {
+              window.__dxfShareEndWired = true;
+              window.addEventListener('message', function (e) {
+                var d = e.data;
+                if (d && d.__dxf === 'screen-share-ended') {
+                  try { dioxus.send(d); } catch (err) {}
+                }
+              });
+            }
+            "#;
+            let mut eval = document::eval(bridge_js);
+            loop {
+                match eval.recv::<Value>().await {
+                    Ok(msg) => {
+                        if msg.get("__dxf").and_then(|v| v.as_str()) == Some("screen-share-ended") {
+                            let cid = state.read().voice.channel_id;
+                            state.write().screen_sharing = false;
+                            if let Some(c) = cid {
+                                gateway.send(ClientMessage::SetScreenShare {
+                                    channel_id: c,
+                                    sharing: false,
+                                });
+                            }
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
         }
     });
 
@@ -304,8 +392,14 @@ pub fn ScreenSelfPreview() -> Element {
                 span { class: "text-[11px] text-[var(--text)] truncate flex-1", "Sharing your screen" }
                 button {
                     class: "text-[9px] uppercase tracking-wider text-[var(--danger)] hover:text-[var(--accent-strong)] font-semibold",
-                    onmousedown: move |e| e.stop_propagation(),
-                    onclick: move |_| {
+                    // Run stop on mousedown (not click) and before the header's
+                    // drag handler can fire — stop_propagation alone wasn't
+                    // reliable in wry/WebView2, leaving the drag overlay z-50
+                    // to swallow the subsequent click. Acting on mousedown is
+                    // strictly safer: the window tears down before any drag
+                    // interaction can start.
+                    onmousedown: move |e| {
+                        e.stop_propagation();
                         let cid = state.read().voice.channel_id;
                         state.write().screen_sharing = false;
                         let _ = document::eval(&share_js(false));

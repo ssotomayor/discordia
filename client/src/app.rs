@@ -89,6 +89,48 @@ pub fn DiscordiaLogo(#[props(into)] class: String) -> Element {
     }
 }
 
+/// Inline critical CSS painted before anything else loads. Sets the dark app
+/// background immediately (no white flash) and hides `.app-shell` until the
+/// reveal script adds the `.dxf-ready` class — which happens once Tailwind's
+/// browser build has injected its generated utilities. The `--bg` value mirrors
+/// BASE_CSS's ember default; theme overrides applied later on the root element
+/// will re-paint seamlessly.
+const CRITICAL_BOOT_CSS: &str = "
+:root { --bg: #0e0b08; }
+html, body { background: var(--bg); margin: 0; }
+.app-shell { opacity: 0; transition: opacity .12s ease-out; }
+.dxf-ready .app-shell { opacity: 1; }
+";
+
+/// Inline reveal script. Polls for the `<style>` that `@tailwindcss/browser@4`
+/// injects into `<head>` (containing generated utility classes like `.flex` /
+/// `.h-screen`), then adds `.dxf-ready` on `<html>` to fade the app shell in.
+/// Safety nets: reveals after 2s regardless, or immediately on load error.
+const REVEAL_JS: &str = r#"
+(function () {
+  var revealed = false;
+  function reveal() { if (!revealed) { revealed = true; document.documentElement.classList.add('dxf-ready'); } }
+  function tailwindReady() {
+    var ss = document.querySelectorAll('style');
+    for (var i = 0; i < ss.length; i++) {
+      var t = ss[i].textContent;
+      if (t && t.indexOf('.h-screen') >= 0 && t.indexOf('.flex') >= 0) return true;
+    }
+    return false;
+  }
+  function check() {
+    if (tailwindReady()) { reveal(); return; }
+  }
+  if (document.readyState === 'complete' || document.readyState === 'interactive') check();
+  else window.addEventListener('DOMContentLoaded', check);
+  // Keep polling: Tailwind may inject its styles slightly after DOMContentLoaded.
+  var tries = 0;
+  var iv = setInterval(function () {
+    if (revealed || tailwindReady() || ++tries > 80) { clearInterval(iv); reveal(); }
+  }, 25);
+})();
+"#;
+
 const BASE_CSS: &str = "
 /* Default (ember) palette. Per-theme overrides are applied inline on the app
    root by `theme_vars()`. The existing variable *names* are kept as the
@@ -489,6 +531,16 @@ pub fn App() -> Element {
     }
 
     rsx! {
+        // Critical inline CSS + reveal script — injected BEFORE the Tailwind
+        // CDN script so they take effect immediately. Tailwind is loaded as a
+        // browser script (`@tailwindcss/browser@4`) which has to download,
+        // parse the DOM, and generate styles before the app looks right; that
+        // latency produced a ~1s flash of unstyled content (white background,
+        // unpositioned elements). These two inline blocks paint the dark app
+        // background right away and keep the app shell hidden until Tailwind
+        // has injected its utilities, eliminating the FOUC.
+        document::Style { {CRITICAL_BOOT_CSS} }
+        document::Script { {REVEAL_JS} }
         document::Script { src: "https://unpkg.com/@tailwindcss/browser@4" }
         // LiveKit JS SDK — powers webview-side screen sharing (capture + render).
         // NB: the UMD build is `…umd.js` (there is no `.umd.min.js`); a wrong
