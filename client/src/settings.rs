@@ -43,6 +43,15 @@ pub struct ClientSettings {
     /// Lower = more sensitive. Default 25 matches the original hardcoded value.
     #[serde(default = "default_mic_sensitivity")]
     pub mic_sensitivity: u32,
+    /// Screen-share quality preset id — see
+    /// `features::screenshare::quality_preset`. Trades resolution against
+    /// framerate and bitrate; "balanced" (1080p30) is the default.
+    #[serde(default = "default_screenshare_quality")]
+    pub screenshare_quality: String,
+}
+
+pub fn default_screenshare_quality() -> String {
+    "balanced".into()
 }
 
 fn default_mic_sensitivity() -> u32 {
@@ -79,6 +88,7 @@ impl Default for ClientSettings {
             selected_input_device: None,
             selected_output_device: None,
             mic_sensitivity: default_mic_sensitivity(),
+            screenshare_quality: default_screenshare_quality(),
         }
     }
 }
