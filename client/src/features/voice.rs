@@ -34,6 +34,11 @@ const FRAME_SAMPLES: usize = (SAMPLE_RATE / 1000 * FRAME_MS) as usize;
 /// for FFT efficiency. 512 is a good balance of latency (~10ms @ 48k) and CPU.
 const RESAMPLER_CHUNK: usize = 512;
 
+/// Playback jitter buffer cap, as a divisor of the device sample rate: 5 =>
+/// ~200ms. Must stay above the drift-compensation overrun threshold (150ms) so
+/// the two mechanisms don't fight — see `PlaybackMixer::new`.
+const PLAYBACK_CAP_DIVISOR: u32 = 5;
+
 pub enum VoiceCmd {
     Connect {
         livekit_url: String,
@@ -604,9 +609,12 @@ fn forward_mic(
 
     let mut pushed = 0usize;
     while buf.len() >= FRAME_SAMPLES {
+        // No dither here: these frames go straight into Opus. Dither is for the
+        // final quantization to an output device — feeding noise to a lossy
+        // encoder only costs bitrate.
         let chunk: Vec<i16> = buf
             .drain(..FRAME_SAMPLES)
-            .map(|s| dither_to_i16(s))
+            .map(|s| (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16)
             .collect();
         if frame_tx.send(chunk).is_err() {
             break;
@@ -647,19 +655,28 @@ fn update_peak(peak: &Arc<std::sync::atomic::AtomicI32>, samples: &[f32]) {
 ///
 /// rubato is pure Rust (no C deps), supports Windows MSVC + macOS (Intel &
 /// Apple Silicon) + Linux, and auto-detects SIMD (AVX/SSE/Neon) at runtime.
-/// `process_into_buffer` is allocation-free — safe for the cpal realtime
-/// callback.
+/// `process_into_buffer` itself does not allocate, but `process` below still
+/// returns a fresh `Vec` per call, so this is *not* strictly realtime-safe —
+/// the mic path calls it from cpal's callback. The internal buffers are reused
+/// to keep that to one allocation; removing it entirely needs a caller-provided
+/// output buffer on both call sites.
 ///
 /// The resampler is stateful (it keeps the anti-aliasing filter state between
-/// calls), so one instance must live for the whole voice session. Input chunks
-/// of `RESAMPLER_CHUNK` frames produce a variable number of output frames,
-/// which we accumulate in `output_accum` and drain as needed.
+/// calls), so one instance must live for the whole voice session. Input is
+/// buffered until a full `RESAMPLER_CHUNK` is available; the leftover tail
+/// stays in `input_accum` for the next call.
 struct AudioResampler {
     inner: FftFixedIn<f32>,
     /// Pending input frames not yet enough for a full resampler chunk.
     input_accum: Vec<f32>,
-    /// Resampled output waiting to be drained.
-    output_accum: Vec<f32>,
+    /// Reusable input chunk handed to rubato, so the per-chunk `drain().
+    /// collect()` doesn't allocate on the mic's realtime thread.
+    chunk_in: Vec<f32>,
+    /// Reusable output scratch. `process_into_buffer` requires this to be
+    /// pre-sized to at least `output_frames_next()` — it validates the length
+    /// (not the capacity) and refuses to write into a short buffer. Keeping it
+    /// alive across calls also avoids allocating on the mic's realtime thread.
+    scratch_out: Vec<f32>,
 }
 
 impl AudioResampler {
@@ -678,10 +695,12 @@ impl AudioResampler {
         )
         .map_err(|e| eprintln!("[voice] rubato resampler init failed: {e:?}"))
         .ok()?;
+        let max_out = inner.output_frames_max();
         Some(Self {
             inner,
             input_accum: Vec::with_capacity(RESAMPLER_CHUNK * 2),
-            output_accum: Vec::with_capacity(RESAMPLER_CHUNK * 4),
+            chunk_in: Vec::with_capacity(RESAMPLER_CHUNK),
+            scratch_out: vec![0.0; max_out],
         })
     }
 
@@ -691,38 +710,67 @@ impl AudioResampler {
     fn process(&mut self, input: &[f32]) -> Vec<f32> {
         self.input_accum.extend_from_slice(input);
 
-        // rubato wants Vec<Vec<f32>> (one Vec per channel; we're mono).
+        // Destructure so the borrow checker sees the fields as independent —
+        // `inner` is borrowed mutably while the buffers are borrowed too.
+        let Self { inner, input_accum, chunk_in, scratch_out } = self;
+
         let mut out = Vec::new();
-        while self.input_accum.len() >= RESAMPLER_CHUNK {
-            let chunk: Vec<f32> = self.input_accum.drain(..RESAMPLER_CHUNK).collect();
-            let waves_in = vec![chunk];
-            let mut waves_out = vec![Vec::new()];
-            match self.inner.process_into_buffer(&waves_in, &mut waves_out, None) {
-                Ok(_) => {
-                    out.append(&mut waves_out[0]);
-                }
-                Err(e) => {
-                    eprintln!("[voice] rubato process error: {e:?}");
-                }
+        while input_accum.len() >= RESAMPLER_CHUNK {
+            chunk_in.clear();
+            chunk_in.extend(input_accum.drain(..RESAMPLER_CHUNK));
+            // The output slice must already be `output_frames_next()` long.
+            // Handing rubato an empty Vec makes every call fail validation with
+            // `InsufficientOutputBufferSize`, which silently produced zero
+            // samples — i.e. total silence on any device not already at 48kHz.
+            let need = inner.output_frames_next();
+            if scratch_out.len() < need {
+                scratch_out.resize(need, 0.0);
+            }
+            // rubato takes one buffer per channel; we're mono.
+            let waves_in = [&chunk_in[..]];
+            let mut waves_out = [&mut scratch_out[..]];
+            match inner.process_into_buffer(&waves_in, &mut waves_out, None) {
+                Ok((_, produced)) => out.extend_from_slice(&scratch_out[..produced]),
+                Err(e) => eprintln!("[voice] rubato process error: {e:?}"),
             }
         }
-        self.output_accum.extend(out);
-
-        // Drain everything we have — the caller will buffer as needed.
-        let drained = self.output_accum.clone();
-        self.output_accum.clear();
-        drained
+        out
     }
 }
+
+/// xorshift32 — a handful of instructions, no thread-local lookup and no
+/// locking, so it is safe to call from an audio callback. `rand::random()`
+/// reaches for a thread-local `ThreadRng` on every call, which at 48kHz stereo
+/// meant ~96k of those per second inside cpal's realtime thread. Dither only
+/// needs uniform noise, not cryptographic quality.
+#[inline]
+fn xorshift32(state: &mut u32) -> f32 {
+    let mut x = *state;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    *state = x;
+    // Top 24 bits -> [0, 1). f32 has 24 bits of mantissa, so this is the most
+    // resolution the type can carry anyway.
+    (x >> 8) as f32 / (1u32 << 24) as f32
+}
+
+/// Seed for the dither RNG. Any non-zero value works; xorshift is a fixed point
+/// at zero and would emit a constant.
+const DITHER_SEED: u32 = 0x9E37_79B9;
 
 /// TPDF dither + quantization to i16. Reduces quantization distortion on
 /// quiet signals (the classic "metallic hiss" at low bit depths). TPDF
 /// (triangular probability density function) is the standard choice — it
 /// eliminates noise modulation, unlike uniform (RPDF) dither.
-fn dither_to_i16(sample: f32) -> i16 {
+///
+/// Only worth doing on the *final* conversion to the output device. Dithering
+/// audio on its way into a lossy encoder just spends bitrate on noise.
+#[inline]
+fn dither_to_i16(sample: f32, rng: &mut u32) -> i16 {
     let clamped = sample.clamp(-1.0, 1.0);
-    let r1 = rand::random::<f32>();
-    let r2 = rand::random::<f32>();
+    let r1 = xorshift32(rng);
+    let r2 = xorshift32(rng);
     // TPDF: (r1 + r2 - 1) gives a triangular distribution centered at 0.
     // Amplitude: 1 LSB peak-to-peak (2/i16::MAX).
     let dither = (r1 + r2 - 1.0) * (1.0 / i16::MAX as f32);
@@ -796,6 +844,10 @@ impl PlaybackMixer {
         let drift_counter = Arc::new(std::sync::atomic::AtomicU32::new(0));
         let drift_counter_cb = drift_counter.clone();
         let device_rate_cb = device_rate;
+        // Dither PRNG state. Moved into the i16 callback so it advances across
+        // invocations (a per-callback reseed would emit the same noise pattern
+        // every buffer, which is audible as a tone).
+        let mut dither_rng = DITHER_SEED;
 
         let err = |e| eprintln!("output stream error: {e}");
         let stream = match sample_format {
@@ -805,13 +857,19 @@ impl PlaybackMixer {
                     cb_counter_cb.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let mut buf = buffer_cb.lock();
                     let mut pulled = 0u64;
-                    let buf_len = buf.len();
                     // Drift compensation thresholds (in samples at device rate).
-                    let overrun_threshold = (device_rate_cb as f64 * 0.3) as usize;  // 300ms
+                    // The overrun mark must stay under the producer-side cap
+                    // (PLAYBACK_CAP_DIVISOR, ~200ms) or it can never be reached
+                    // and the branch is dead.
+                    let overrun_threshold = (device_rate_cb as f64 * 0.15) as usize; // 150ms
                     let underrun_threshold = (device_rate_cb as f64 * 0.05) as usize; // 50ms
                     let mut counter = drift_counter_cb.load(std::sync::atomic::Ordering::Relaxed);
                     for frame in data.chunks_mut(device_channels) {
                         counter = counter.wrapping_add(1);
+                        // Re-read the depth each frame: it shrinks as we drain,
+                        // so a value hoisted out of the loop goes stale and
+                        // keeps correcting long after the drift is gone.
+                        let buf_len = buf.len();
                         let sample = if buf_len > overrun_threshold {
                             // Buffer too full — skip every 32nd sample to shrink
                             // it smoothly without audible clicks.
@@ -843,15 +901,17 @@ impl PlaybackMixer {
             ),
             cpal::SampleFormat::I16 => device.build_output_stream(
                 &config.into(),
+                // Dither RNG state, owned by the callback — no shared state, no
+                // lock, no thread-local lookup on the realtime thread.
                 move |data: &mut [i16], _| {
                     cb_counter_cb.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let mut buf = buffer_cb.lock();
-                    let buf_len = buf.len();
-                    let overrun_threshold = (device_rate_cb as f64 * 0.3) as usize;
+                    let overrun_threshold = (device_rate_cb as f64 * 0.15) as usize;
                     let underrun_threshold = (device_rate_cb as f64 * 0.05) as usize;
                     let mut counter = drift_counter_cb.load(std::sync::atomic::Ordering::Relaxed);
                     for frame in data.chunks_mut(device_channels) {
                         counter = counter.wrapping_add(1);
+                        let buf_len = buf.len();
                         let sample = if buf_len > overrun_threshold {
                             if counter % 32 == 0 { buf.pop_front(); }
                             buf.pop_front().unwrap_or(0.0)
@@ -865,7 +925,7 @@ impl PlaybackMixer {
                             buf.pop_front().unwrap_or(0.0)
                         };
                         // TPDF dither on the f32→i16 conversion.
-                        let s16 = dither_to_i16(sample);
+                        let s16 = dither_to_i16(sample, &mut dither_rng);
                         for s in frame.iter_mut() {
                             *s = s16;
                         }
@@ -951,15 +1011,13 @@ async fn consume_remote_track(mut stream: NativeAudioStream, handle: PlaybackHan
             peak_recent = frame_peak;
         }
         {
-            // Soft limiter (tanh) — smooth-clips peaks without hard clipping
-            // clicks. Gain of 1.5 keeps normal-level audio ~linear; only
-            // peaks above ~0.6 get rounded. Output scaled to 0.9 to leave
-            // headroom for the dither quantization step.
+            // Soft limiter — smooth-clips peaks instead of hard-clipping them.
+            // tanh has unit slope at the origin, so conversational levels pass
+            // through at their original volume and only the top of the range
+            // gets rounded off (1.0 -> 0.76). The previous `(v * 1.5).tanh() *
+            // 0.9` was really a ~1.34x booster at speech levels, not a limiter.
             let f32_samples: Vec<f32> = frame.data.iter()
-                .map(|s| {
-                    let v = *s as f32 / i16::MAX as f32;
-                    (v * 1.5).tanh() * 0.9
-                })
+                .map(|s| (*s as f32 / i16::MAX as f32).tanh())
                 .collect();
             // High-quality resampling via rubato (48kHz → device_rate).
             let resampled = {
@@ -971,8 +1029,11 @@ async fn consume_remote_track(mut stream: NativeAudioStream, handle: PlaybackHan
             };
             let mut buf = handle.buffer.lock();
             buf.extend(resampled);
-            // Bound the buffer (~200 ms, down from 500ms) to limit latency drift.
-            let cap = (handle.device_rate / 5) as usize;
+            // Bound the buffer (~200 ms, down from 500ms) to limit latency
+            // drift. Keep this above the callback's overrun threshold (150ms),
+            // otherwise the buffer is hard-trimmed here before drift
+            // compensation ever sees it as too full.
+            let cap = (handle.device_rate / PLAYBACK_CAP_DIVISOR) as usize;
             while buf.len() > cap {
                 buf.pop_front();
             }
