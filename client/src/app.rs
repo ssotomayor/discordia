@@ -90,11 +90,13 @@ pub fn DiscordiaLogo(#[props(into)] class: String) -> Element {
 }
 
 /// Tailwind utility classes, generated at build time from `assets/tailwind.css`
-/// by `npx @tailwindcss/cli`. Bundled as a Dioxus Asset so it ships inside the
-/// binary — no CDN, no runtime compiler, no internet dependency. Replaces the
-/// old `@tailwindcss/browser@4` CDN script that caused a ~1s FOUC and broke the
-/// app offline.
-static TAILWIND_CSS: Asset = asset!("/assets/tailwind.out.css");
+/// by `npx @tailwindcss/cli`. Inlined into the binary via `include_str!()` so
+/// it works with both `cargo run` and `dx serve` — `asset!()` requires the `dx`
+/// CLI as a custom linker to process assets, which breaks `cargo run`. This
+/// renders a `<style>` tag with the full CSS in the `<head>`, same as
+/// `BASE_CSS` and `font_face_css()`. No CDN, no runtime compiler, no FOUC,
+/// works offline.
+const TAILWIND_CSS: &str = include_str!("../assets/tailwind.out.css");
 
 const BASE_CSS: &str = "
 /* Default (ember) palette. Per-theme overrides are applied inline on the app
@@ -597,9 +599,10 @@ fn session_key(p: &SessionParams) -> String {
 #[component]
 fn AppHead() -> Element {
     rsx! {
-        // Tailwind utilities — bundled into the binary at build time via
-        // `asset!()`. No CDN, no runtime compiler, no FOUC, works offline.
-        document::Stylesheet { href: TAILWIND_CSS }
+        // Tailwind utilities — inlined into the binary via `include_str!()`.
+        // Renders a <style> tag in <head>. No CDN, no runtime compiler, no FOUC,
+        // works offline. Same pattern as BASE_CSS and font_face_css() below.
+        document::Style { {TAILWIND_CSS} }
         // LiveKit JS SDK — powers webview-side screen sharing (capture + render).
         // NB: the UMD build is `…umd.js` (there is no `.umd.min.js`); a wrong
         // path 404s silently and the lib never loads. TODO: vendor this so the
