@@ -46,6 +46,10 @@ pub enum VoiceCmd {
     SetMute {
         muted: bool,
     },
+    /// Set the microphone speaking-detection threshold (1..=200).
+    SetSensitivity {
+        threshold: u32,
+    },
 }
 
 /// Convenience wrapper provided via Dioxus context for UI components to send
@@ -191,6 +195,10 @@ async fn service_loop(
                     active.set_muted(muted).await;
                 }
                 state.write().voice.muted = muted;
+            }
+            VoiceCmd::SetSensitivity { threshold } => {
+                eprintln!("[voice] SetSensitivity threshold={threshold}");
+                state.write().mic_sensitivity = threshold;
             }
         }
     }
@@ -506,16 +514,21 @@ impl MicCapture {
             }
         });
         // Speaking indicator: sample every 150ms with a short hangover so the dot
-        // doesn't flicker between words/breaths.
+        // doesn't flicker between words/breaths. The threshold is read live from
+        // AppState so the audio-settings slider takes effect immediately.
         dioxus::prelude::spawn(async move {
-        const THRESHOLD: i32 = 25; // ajustar sensibilidad acá
         const HANGOVER_TICKS: u32 = 4; // ~600ms tras el último sonido fuerte
         let mut hangover = 0u32;
         let mut currently_speaking = false;
         loop {
         tokio::time::sleep(std::time::Duration::from_millis(150)).await;
         let p = speak_peak.swap(0, std::sync::atomic::Ordering::Relaxed);
-        if p > THRESHOLD {
+        let threshold = state.read().mic_sensitivity as i32;
+        // Publish the live mic level so the audio-settings VU bar can render
+        // it alongside the threshold marker. Clamp to the 0..=1000 range the
+        // UI expects (peak is stored as ×1000 fixed-point).
+        state.write().mic_level = p.clamp(0, 1000) as u32;
+        if p > threshold {
             hangover = HANGOVER_TICKS;
         } else if hangover > 0 {
             hangover -= 1;

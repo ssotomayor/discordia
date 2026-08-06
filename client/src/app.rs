@@ -531,23 +531,12 @@ pub fn App() -> Element {
     }
 
     rsx! {
-        // Critical inline CSS + reveal script — injected BEFORE the Tailwind
-        // CDN script so they take effect immediately. Tailwind is loaded as a
-        // browser script (`@tailwindcss/browser@4`) which has to download,
-        // parse the DOM, and generate styles before the app looks right; that
-        // latency produced a ~1s flash of unstyled content (white background,
-        // unpositioned elements). These two inline blocks paint the dark app
-        // background right away and keep the app shell hidden until Tailwind
-        // has injected its utilities, eliminating the FOUC.
-        document::Style { {CRITICAL_BOOT_CSS} }
-        document::Script { {REVEAL_JS} }
-        document::Script { src: "https://unpkg.com/@tailwindcss/browser@4" }
-        // LiveKit JS SDK — powers webview-side screen sharing (capture + render).
-        // NB: the UMD build is `…umd.js` (there is no `.umd.min.js`); a wrong
-        // path 404s silently and the lib never loads.
-        document::Script { src: "https://cdn.jsdelivr.net/npm/livekit-client@2.19.2/dist/livekit-client.umd.js" }
-        document::Style { {font_face_css()} }
-        document::Style { {BASE_CSS} }
+        // Head elements (CSS + scripts) live in a separate prop-less component
+        // so Dioxus memoizes it and never tries to diff their props — which
+        // would log "Changing the props of Style/Script is not supported"
+        // on every re-render of App (e.g. when moving the mic sensitivity
+        // slider, which mutates the settings signal App reads).
+        AppHead {}
 
         div {
             class: "h-screen w-screen bg-[var(--bg)] text-[var(--text)] antialiased overflow-hidden",
@@ -633,4 +622,32 @@ fn session_key(p: &SessionParams) -> String {
         }
     };
     format!("{mode}|{}|{}", p.username, p.identity.pubkey)
+}
+
+/// All `<head>` injections: critical boot CSS, the Tailwind reveal script,
+/// the Tailwind CDN, the LiveKit SDK, font faces, and the base stylesheet.
+/// Extracted into a prop-less component so Dioxus memoizes it and never
+/// re-evaluates it — re-rendering `App` (e.g. on settings changes) no longer
+/// triggers "Changing the props of Style/Script is not supported" warnings.
+#[component]
+fn AppHead() -> Element {
+    rsx! {
+        // Critical inline CSS + reveal script — injected BEFORE the Tailwind
+        // CDN script so they take effect immediately. Tailwind is loaded as a
+        // browser script (`@tailwindcss/browser@4`) which has to download,
+        // parse the DOM, and generate styles before the app looks right; that
+        // latency produced a ~1s flash of unstyled content (white background,
+        // unpositioned elements). These two inline blocks paint the dark app
+        // background right away and keep the app shell hidden until Tailwind
+        // has injected its utilities, eliminating the FOUC.
+        document::Style { {CRITICAL_BOOT_CSS} }
+        document::Script { {REVEAL_JS} }
+        document::Script { src: "https://unpkg.com/@tailwindcss/browser@4" }
+        // LiveKit JS SDK — powers webview-side screen sharing (capture + render).
+        // NB: the UMD build is `…umd.js` (there is no `.umd.min.js`); a wrong
+        // path 404s silently and the lib never loads.
+        document::Script { src: "https://cdn.jsdelivr.net/npm/livekit-client@2.19.2/dist/livekit-client.umd.js" }
+        document::Style { {font_face_css()} }
+        document::Style { {BASE_CSS} }
+    }
 }
