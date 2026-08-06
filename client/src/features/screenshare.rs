@@ -7,7 +7,7 @@
 //! protocol (`ScreenShareState`), not the JS layer.
 //!
 //! Two on-screen surfaces, each a container the JS attaches a `<video>` into:
-//! - `#screenshare-self`   — small fixed self-preview for the sharer.
+//! - `#screenshare-self`   — small draggable self-preview for the sharer.
 //! - `#screenshare-viewer` — large draggable/resizable window for watchers.
 
 use dioxus::prelude::*;
@@ -232,12 +232,22 @@ pub fn ScreenShareBridge() -> Element {
     rsx! { Fragment {} }
 }
 
-/// Small, fixed top-right self-preview shown while you're sharing, with a Stop
-/// button. (You don't need to move it — it's just confirmation + control.)
+/// Small self-preview shown while you're sharing, with a Stop button. Draggable
+/// (grab the header) and resizable (bottom-right grip) so it doesn't have to
+/// pin the top-right corner — same interaction model as the watch window below.
 #[component]
 pub fn ScreenSelfPreview() -> Element {
     let mut state = use_app_state();
     let gateway = use_gateway();
+
+    // Position/size of the floating window. Defaults approximate the old
+    // `top: 3.5rem; right: 0.75rem; width: 300px` anchor in a ~1280px viewport;
+    // the user drags/resizes from there and the choice persists for the session.
+    let mut px = use_signal(|| 968.0_f64);
+    let mut py = use_signal(|| 56.0_f64);
+    let mut pw = use_signal(|| 300.0_f64);
+    let mut ph = use_signal(|| 208.0_f64);
+    let mut drag = use_signal(|| None::<Drag>);
 
     let sharing = use_memo(move || state.read().screen_sharing);
     let self_pk = use_memo(move || state.read().self_user.as_ref().map(|u| u.pubkey.clone()));
@@ -261,14 +271,40 @@ pub fn ScreenSelfPreview() -> Element {
     }
 
     rsx! {
+        // Move/resize tracking overlay — only present while dragging, so it
+        // captures the mouse even over the video. Same model as ScreenWatchWindow.
+        if drag().is_some() {
+            div {
+                class: "fixed inset-0 z-50",
+                onmousemove: move |e| {
+                    let c = e.client_coordinates();
+                    match drag() {
+                        Some(Drag::Move { dx, dy }) => { px.set(c.x - dx); py.set(c.y - dy); }
+                        Some(Drag::Resize { px: spx, py: spy, w0, h0 }) => {
+                            pw.set((w0 + (c.x - spx)).max(280.0));
+                            ph.set((h0 + (c.y - spy)).max(180.0));
+                        }
+                        None => {}
+                    }
+                },
+                onmouseup: move |_| drag.set(None),
+            }
+        }
         div {
             class: "fixed z-30 flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl overflow-hidden dxf-pop-in",
-            style: "top: 3.5rem; right: 0.75rem; width: 300px;",
-            div { class: "h-8 px-2.5 flex items-center gap-1.5 border-b border-[var(--border)] shrink-0",
+            style: "left: {px}px; top: {py}px; width: {pw}px; height: {ph}px;",
+            // Header doubles as the drag handle.
+            div {
+                class: "h-8 px-2.5 flex items-center gap-1.5 border-b border-[var(--border)] shrink-0 cursor-move select-none",
+                onmousedown: move |e| {
+                    let c = e.client_coordinates();
+                    drag.set(Some(Drag::Move { dx: c.x - px(), dy: c.y - py() }));
+                },
                 span { class: "w-2 h-2 rounded-full shrink-0", style: "background: var(--danger);" }
                 span { class: "text-[11px] text-[var(--text)] truncate flex-1", "Sharing your screen" }
                 button {
                     class: "text-[9px] uppercase tracking-wider text-[var(--danger)] hover:text-[var(--accent-strong)] font-semibold",
+                    onmousedown: move |e| e.stop_propagation(),
                     onclick: move |_| {
                         let cid = state.read().voice.channel_id;
                         state.write().screen_sharing = false;
@@ -282,9 +318,18 @@ pub fn ScreenSelfPreview() -> Element {
             }
             div {
                 id: "screenshare-self",
-                class: "bg-black flex items-center justify-center text-[var(--text-dim)] text-[10px]",
-                style: "height: 170px;",
+                class: "flex-1 min-h-0 bg-black flex items-center justify-center text-[var(--text-dim)] text-[10px]",
                 "Starting…"
+            }
+            // Resize grip (bottom-right).
+            div {
+                class: "absolute bottom-0 right-0 w-4 h-4 cursor-nwse-resize",
+                style: "background: linear-gradient(135deg, transparent 0 50%, var(--border-strong) 50% 100%);",
+                onmousedown: move |e| {
+                    e.stop_propagation();
+                    let c = e.client_coordinates();
+                    drag.set(Some(Drag::Resize { px: c.x, py: c.y, w0: pw(), h0: ph() }));
+                },
             }
         }
     }
