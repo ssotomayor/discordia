@@ -26,15 +26,27 @@ pub fn GuildSettingsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element 
             .cloned()
     });
     let invite = use_memo(move || state.read().invites.get(&guild_id).cloned());
-    let bans = use_memo(move || state.read().bans.get(&guild_id).cloned().unwrap_or_default());
-    let can_ban = state.read().can(guild_id, crate::protocol::Permission::BanMembers);
+    let bans = use_memo(move || {
+        state
+            .read()
+            .bans
+            .get(&guild_id)
+            .cloned()
+            .unwrap_or_default()
+    });
+    let can_ban = state
+        .read()
+        .can(guild_id, crate::protocol::Permission::BanMembers);
 
     // Fetch the invite + ban list once on open (fetch-on-open pattern).
     {
         let gw = gateway.clone();
         let fetch_bans = can_ban;
         use_hook(move || {
-            gw.send(ClientMessage::CreateInvite { guild_id, rotate: false });
+            gw.send(ClientMessage::CreateInvite {
+                guild_id,
+                rotate: false,
+            });
             gw.send(ClientMessage::FetchAuditLog { guild_id });
             if fetch_bans {
                 gw.send(ClientMessage::FetchBans { guild_id });
@@ -337,14 +349,24 @@ fn RetentionRow(guild_id: Id, current: Option<u32>) -> Element {
 /// and pushed on Save; panic mode toggles immediately (it's an emergency
 /// switch). The audit log is read from state (fetched on dialog open).
 #[component]
-fn SafetyControls(guild_id: Id, gate: JoinGate, rules: Option<String>, panic_mode: bool) -> Element {
+fn SafetyControls(
+    guild_id: Id,
+    gate: JoinGate,
+    rules: Option<String>,
+    panic_mode: bool,
+) -> Element {
     let state = use_app_state();
     let gateway = use_gateway();
 
     let mut gate_draft = use_signal(|| gate.clone());
     let mut rules_draft = use_signal(|| rules.clone().unwrap_or_default());
     let entries = use_memo(move || {
-        state.read().audit_logs.get(&guild_id).cloned().unwrap_or_default()
+        state
+            .read()
+            .audit_logs
+            .get(&guild_id)
+            .cloned()
+            .unwrap_or_default()
     });
 
     let gate_value = match gate_draft() {

@@ -15,11 +15,31 @@ const MAX_BACKGROUND_BYTES: usize = 4_000_000;
 /// `(id, label, preview-inline-style)` for the procedural background tiles.
 /// Previews are miniatures of the real `.app-bg-*` rules from `app.rs`.
 const BACKGROUND_TILES: &[(&str, &str, &str)] = &[
-    ("grid", "Grid", "background-color:#0e0b08;background-image:linear-gradient(var(--edge) 1px,transparent 1px),linear-gradient(90deg,var(--edge) 1px,transparent 1px);background-size:12px 12px;"),
-    ("dots", "Dots", "background-color:#0e0b08;background-image:radial-gradient(var(--edge) 1.4px,transparent 1.4px);background-size:10px 10px;"),
-    ("aurora", "Aurora", "background:radial-gradient(circle at 25% 30%,color-mix(in srgb,var(--accent) 30%,transparent),transparent 55%),radial-gradient(circle at 75% 70%,color-mix(in srgb,var(--violet) 24%,transparent),transparent 55%),#0e0b08;"),
-    ("mesh", "Mesh", "background:#0e0b08,radial-gradient(circle at 20% 20%,var(--accent-soft),transparent 45%),radial-gradient(circle at 85% 80%,color-mix(in srgb,var(--violet) 14%,transparent),transparent 45%);"),
-    ("sunset", "Sunset", "background:linear-gradient(160deg,color-mix(in srgb,var(--accent) 16%,#0e0b08),#0e0b08 60%),radial-gradient(circle at 70% 15%,color-mix(in srgb,var(--accent) 32%,transparent),transparent 45%);"),
+    (
+        "grid",
+        "Grid",
+        "background-color:#0e0b08;background-image:linear-gradient(var(--edge) 1px,transparent 1px),linear-gradient(90deg,var(--edge) 1px,transparent 1px);background-size:12px 12px;",
+    ),
+    (
+        "dots",
+        "Dots",
+        "background-color:#0e0b08;background-image:radial-gradient(var(--edge) 1.4px,transparent 1.4px);background-size:10px 10px;",
+    ),
+    (
+        "aurora",
+        "Aurora",
+        "background:radial-gradient(circle at 25% 30%,color-mix(in srgb,var(--accent) 30%,transparent),transparent 55%),radial-gradient(circle at 75% 70%,color-mix(in srgb,var(--violet) 24%,transparent),transparent 55%),#0e0b08;",
+    ),
+    (
+        "mesh",
+        "Mesh",
+        "background:#0e0b08,radial-gradient(circle at 20% 20%,var(--accent-soft),transparent 45%),radial-gradient(circle at 85% 80%,color-mix(in srgb,var(--violet) 14%,transparent),transparent 45%);",
+    ),
+    (
+        "sunset",
+        "Sunset",
+        "background:linear-gradient(160deg,color-mix(in srgb,var(--accent) 16%,#0e0b08),#0e0b08 60%),radial-gradient(circle at 70% 15%,color-mix(in srgb,var(--accent) 32%,transparent),transparent 45%);",
+    ),
     ("none", "None", "background:#0e0b08;"),
 ];
 

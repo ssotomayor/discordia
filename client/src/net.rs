@@ -11,9 +11,7 @@ use url::Url;
 use crate::features::voice::VoiceCmd;
 use crate::host::{HostHandle, start_self_host};
 use crate::protocol::{ClientMessage, Id, ServerMessage};
-use crate::state::{
-    AppState, ConnectionStatus, GatewayTx, SessionMode, SessionParams, VoicePhase,
-};
+use crate::state::{AppState, ConnectionStatus, GatewayTx, SessionMode, SessionParams, VoicePhase};
 
 /// Find a nonce such that SHA-256(challenge ++ nonce) has ≥ `bits` leading zero
 /// bits (the `Pow` join gate). Mirrors the server's `pow_ok`.
@@ -278,7 +276,10 @@ fn apply(
             s.dms = dms;
             s.dm_mode = false;
             s.catalog = catalog;
-            s.profiles = profiles.into_iter().map(|p| (p.pubkey.clone(), p)).collect();
+            s.profiles = profiles
+                .into_iter()
+                .map(|p| (p.pubkey.clone(), p))
+                .collect();
             // Group the flattened role list by guild.
             s.roles = {
                 let mut map: std::collections::HashMap<Id, Vec<crate::protocol::Role>> =
@@ -299,8 +300,7 @@ fn apply(
                     .channels
                     .iter()
                     .find(|c| {
-                        c.guild_id == first
-                            && matches!(c.kind, crate::protocol::ChannelKind::Text)
+                        c.guild_id == first && matches!(c.kind, crate::protocol::ChannelKind::Text)
                     })
                     .map(|c| c.id);
                 s.selected_channel = chan;
@@ -313,7 +313,10 @@ fn apply(
                 }
             }
         }
-        ServerMessage::MessageHistory { channel_id, messages } => {
+        ServerMessage::MessageHistory {
+            channel_id,
+            messages,
+        } => {
             // Merge rather than replace: an initial load starts from empty, but
             // an older page (infinite scroll) must fold into what's already
             // there without dropping live messages. Dedupe by id, keep
@@ -345,8 +348,7 @@ fn apply(
                 .as_ref()
                 .map(|u| u.pubkey == m.author.pubkey)
                 .unwrap_or(false);
-            let viewing = s.selected_channel == Some(cid)
-                && (is_dm == s.dm_mode);
+            let viewing = s.selected_channel == Some(cid) && (is_dm == s.dm_mode);
             // Mention = the message names us with "@username".
             let mentioned = s
                 .self_user
@@ -368,7 +370,12 @@ fn apply(
                 s.notify_tick = s.notify_tick.wrapping_add(1);
             }
         }
-        ServerMessage::GuildJoined { guild, channels, members, roles } => {
+        ServerMessage::GuildJoined {
+            guild,
+            channels,
+            members,
+            roles,
+        } => {
             // We created or joined this guild — add it (dedup) and jump to it.
             let gid = guild.id;
             if !s.guilds.iter().any(|g| g.id == gid) {
@@ -381,9 +388,10 @@ fn apply(
                 }
             }
             for m in members {
-                let existing = s.members.iter_mut().find(|x| {
-                    x.guild_id == m.guild_id && x.user.pubkey == m.user.pubkey
-                });
+                let existing = s
+                    .members
+                    .iter_mut()
+                    .find(|x| x.guild_id == m.guild_id && x.user.pubkey == m.user.pubkey);
                 match existing {
                     Some(slot) => *slot = m,
                     None => s.members.push(m),
@@ -395,18 +403,24 @@ fn apply(
             let first_text = s
                 .channels
                 .iter()
-                .find(|c| {
-                    c.guild_id == gid && matches!(c.kind, crate::protocol::ChannelKind::Text)
-                })
+                .find(|c| c.guild_id == gid && matches!(c.kind, crate::protocol::ChannelKind::Text))
                 .map(|c| c.id);
             s.selected_channel = first_text;
             if let Some(channel_id) = first_text {
                 if !s.messages.contains_key(&channel_id) {
-                    let _ = tx.send(ClientMessage::FetchMessages { channel_id, limit: 50, before_ms: None });
+                    let _ = tx.send(ClientMessage::FetchMessages {
+                        channel_id,
+                        limit: 50,
+                        before_ms: None,
+                    });
                 }
             }
         }
-        ServerMessage::GuildCatalog { guilds, offset, total } => {
+        ServerMessage::GuildCatalog {
+            guilds,
+            offset,
+            total,
+        } => {
             // Page 0 replaces the directory; later pages append (infinite
             // scroll). The catalog is now pull-based (FetchCatalog on browse).
             if offset == 0 {
@@ -449,7 +463,11 @@ fn apply(
                 });
                 if let Some(channel_id) = s.selected_channel {
                     if !s.messages.contains_key(&channel_id) {
-                        let _ = tx.send(ClientMessage::FetchMessages { channel_id, limit: 50, before_ms: None });
+                        let _ = tx.send(ClientMessage::FetchMessages {
+                            channel_id,
+                            limit: 50,
+                            before_ms: None,
+                        });
                     }
                 }
             }
@@ -462,10 +480,7 @@ fn apply(
             // Authoritative open of a DM we initiated: list it, load history,
             // switch to the DM view and select it.
             if !s.dms.iter().any(|d| d.channel_id == channel_id) {
-                s.dms.push(crate::protocol::DmInfo {
-                    channel_id,
-                    other,
-                });
+                s.dms.push(crate::protocol::DmInfo { channel_id, other });
             }
             s.messages.insert(channel_id, messages);
             s.dm_mode = true;
@@ -487,14 +502,22 @@ fn apply(
             );
             s.profiles.insert(profile.pubkey.clone(), profile);
         }
-        ServerMessage::ReactionUpdate { channel_id, message_id, reactions } => {
+        ServerMessage::ReactionUpdate {
+            channel_id,
+            message_id,
+            reactions,
+        } => {
             if let Some(msgs) = s.messages.get_mut(&channel_id) {
                 if let Some(msg) = msgs.iter_mut().find(|m| m.id == message_id) {
                     msg.reactions = reactions;
                 }
             }
         }
-        ServerMessage::TypingUpdate { channel_id, user_pubkey, username } => {
+        ServerMessage::TypingUpdate {
+            channel_id,
+            user_pubkey,
+            username,
+        } => {
             s.typing
                 .entry(channel_id)
                 .or_default()
@@ -513,15 +536,19 @@ fn apply(
         }
         ServerMessage::MemberUpdate(member) => {
             // Role set (or other member metadata) changed — upsert the row.
-            let existing = s.members.iter_mut().find(|x| {
-                x.guild_id == member.guild_id && x.user.pubkey == member.user.pubkey
-            });
+            let existing = s
+                .members
+                .iter_mut()
+                .find(|x| x.guild_id == member.guild_id && x.user.pubkey == member.user.pubkey);
             match existing {
                 Some(slot) => *slot = member,
                 None => s.members.push(member),
             }
         }
-        ServerMessage::MemberRemove { guild_id, user_pubkey } => {
+        ServerMessage::MemberRemove {
+            guild_id,
+            user_pubkey,
+        } => {
             // Gone from the guild (kicked/banned/left/uninstalled) — drop the
             // roster row. (If WE were the one removed, the server also sends
             // us a targeted GuildDelete, which tears down the whole guild.)
@@ -588,7 +615,10 @@ fn apply(
                 *slot = ch;
             }
         }
-        ServerMessage::ChannelDelete { guild_id, channel_id } => {
+        ServerMessage::ChannelDelete {
+            guild_id,
+            channel_id,
+        } => {
             s.channels.retain(|c| c.id != channel_id);
             s.messages.remove(&channel_id);
             s.typing.remove(&channel_id);
@@ -607,17 +637,27 @@ fn apply(
                 s.selected_channel = next;
                 if let Some(cid) = next {
                     if !s.messages.contains_key(&cid) {
-                        let _ = tx.send(ClientMessage::FetchMessages { channel_id: cid, limit: 50, before_ms: None });
+                        let _ = tx.send(ClientMessage::FetchMessages {
+                            channel_id: cid,
+                            limit: 50,
+                            before_ms: None,
+                        });
                     }
                 }
             }
         }
-        ServerMessage::MessageDelete { channel_id, message_id } => {
+        ServerMessage::MessageDelete {
+            channel_id,
+            message_id,
+        } => {
             if let Some(msgs) = s.messages.get_mut(&channel_id) {
                 msgs.retain(|m| m.id != message_id);
             }
         }
-        ServerMessage::ScreenShareState { channel_id, sharers } => {
+        ServerMessage::ScreenShareState {
+            channel_id,
+            sharers,
+        } => {
             if sharers.is_empty() {
                 s.screen_shares.remove(&channel_id);
             } else {
@@ -631,20 +671,26 @@ fn apply(
             }
         }
         ServerMessage::MemberJoin(member) => {
-            let exists = s.members.iter_mut().find(|m| {
-                m.guild_id == member.guild_id && m.user.pubkey == member.user.pubkey
-            });
+            let exists = s
+                .members
+                .iter_mut()
+                .find(|m| m.guild_id == member.guild_id && m.user.pubkey == member.user.pubkey);
             match exists {
                 Some(existing) => *existing = member,
                 None => s.members.push(member),
             }
         }
-        ServerMessage::MemberLeave { guild_id, user_pubkey } => {
+        ServerMessage::MemberLeave {
+            guild_id,
+            user_pubkey,
+        } => {
             // Presence only: the member went offline. Actual removals
             // (kick/ban/leave/uninstall) arrive as MemberRemove.
-            if let Some(m) = s.members.iter_mut().find(|m| {
-                m.guild_id == guild_id && m.user.pubkey == user_pubkey
-            }) {
+            if let Some(m) = s
+                .members
+                .iter_mut()
+                .find(|m| m.guild_id == guild_id && m.user.pubkey == user_pubkey)
+            {
                 m.online = false;
             }
         }
@@ -710,9 +756,7 @@ fn apply(
             });
         }
         ServerMessage::ScreenToken {
-            livekit_url,
-            token,
-            ..
+            livekit_url, token, ..
         } => {
             // Hand the JS screen bridge what it needs to join the screen room.
             s.screen_token = Some((livekit_url, token));

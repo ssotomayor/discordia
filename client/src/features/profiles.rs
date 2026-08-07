@@ -47,13 +47,17 @@ pub(crate) async fn image_to_ref(
             if n > EMBED_MAX_BYTES {
                 (
                     None,
-                    Some(format!("Blossom upload failed ({e}); image too large to embed.")),
+                    Some(format!(
+                        "Blossom upload failed ({e}); image too large to embed."
+                    )),
                 )
             } else {
                 let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
                 (
                     Some(format!("data:{mime};base64,{b64}")),
-                    Some(format!("Blossom upload failed ({e}); embedded the image instead.")),
+                    Some(format!(
+                        "Blossom upload failed ({e}); embedded the image instead."
+                    )),
                 )
             }
         }
@@ -276,12 +280,20 @@ pub fn ProfileEditor() -> Element {
         let bio_val = bio();
         let bio_opt = {
             let t = bio_val.trim();
-            if t.is_empty() { None } else { Some(t.chars().take(280).collect::<String>()) }
+            if t.is_empty() {
+                None
+            } else {
+                Some(t.chars().take(280).collect::<String>())
+            }
         };
         let custom_val = custom_status();
         let custom_opt = {
             let t = custom_val.trim();
-            if t.is_empty() { None } else { Some(t.chars().take(80).collect::<String>()) }
+            if t.is_empty() {
+                None
+            } else {
+                Some(t.chars().take(80).collect::<String>())
+            }
         };
         let status_opt = Some(status());
         let local = crate::profile::LocalProfile {

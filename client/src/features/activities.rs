@@ -79,34 +79,34 @@ pub fn ActivityHost() -> Element {
     use_future(move || {
         let gateway = gateway.clone();
         async move {
-        let mut eval = document::eval(BRIDGE_JS);
-        loop {
-            let Ok(msg) = eval.recv::<Value>().await else {
-                break;
-            };
-            // Resolve the launched activity's granted capabilities live, so a
-            // closed window can't be driven and a stale request is denied.
-            let def = launched.peek().and_then(|i| ACTIVITIES.get(i));
-            let req_id = msg.get("reqId").cloned().unwrap_or(Value::Null);
-            let method = msg.get("method").and_then(|m| m.as_str()).unwrap_or("");
-            let params = msg.get("params").cloned().unwrap_or(Value::Null);
+            let mut eval = document::eval(BRIDGE_JS);
+            loop {
+                let Ok(msg) = eval.recv::<Value>().await else {
+                    break;
+                };
+                // Resolve the launched activity's granted capabilities live, so a
+                // closed window can't be driven and a stale request is denied.
+                let def = launched.peek().and_then(|i| ACTIVITIES.get(i));
+                let req_id = msg.get("reqId").cloned().unwrap_or(Value::Null);
+                let method = msg.get("method").and_then(|m| m.as_str()).unwrap_or("");
+                let params = msg.get("params").cloned().unwrap_or(Value::Null);
 
-            let (ok, payload) = match def {
-                Some(def) => handle_rpc(method, &params, def, &state, &gateway),
-                None => (false, json!("no activity is open")),
-            };
-            let reply = if ok {
-                json!({ "__dxf_reply": req_id, "ok": true, "data": payload })
-            } else {
-                json!({ "__dxf_reply": req_id, "ok": false, "error": payload })
-            };
-            // Post the reply back into the sandboxed frame.
-            let _ = document::eval(&format!(
-                "var f=document.getElementById('dxf-activity-frame');\
+                let (ok, payload) = match def {
+                    Some(def) => handle_rpc(method, &params, def, &state, &gateway),
+                    None => (false, json!("no activity is open")),
+                };
+                let reply = if ok {
+                    json!({ "__dxf_reply": req_id, "ok": true, "data": payload })
+                } else {
+                    json!({ "__dxf_reply": req_id, "ok": false, "error": payload })
+                };
+                // Post the reply back into the sandboxed frame.
+                let _ = document::eval(&format!(
+                    "var f=document.getElementById('dxf-activity-frame');\
                  if(f&&f.contentWindow){{f.contentWindow.postMessage({}, '*');}}",
-                reply
-            ));
-        }
+                    reply
+                ));
+            }
         }
     });
 
@@ -180,7 +180,11 @@ pub fn ActivityHost() -> Element {
 }
 
 #[component]
-fn ConsentPanel(idx: usize, on_cancel: EventHandler<()>, on_approve: EventHandler<usize>) -> Element {
+fn ConsentPanel(
+    idx: usize,
+    on_cancel: EventHandler<()>,
+    on_approve: EventHandler<usize>,
+) -> Element {
     let Some(def) = ACTIVITIES.get(idx) else {
         return rsx! { Fragment {} };
     };
@@ -320,9 +324,15 @@ fn handle_rpc(
             let s = state.read();
             let cid = s.selected_channel;
             let name = cid.and_then(|id| {
-                s.channels.iter().find(|c| c.id == id).map(|c| c.name.clone())
+                s.channels
+                    .iter()
+                    .find(|c| c.id == id)
+                    .map(|c| c.name.clone())
             });
-            (true, json!({ "id": cid.map(|i| i.to_string()), "name": name }))
+            (
+                true,
+                json!({ "id": cid.map(|i| i.to_string()), "name": name }),
+            )
         }
         "message.send" if has(Capability::MessageSend) => {
             let content = params

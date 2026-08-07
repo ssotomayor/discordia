@@ -77,7 +77,10 @@ pub async fn start_self_host(
     // Register with rendezvous first so we know which LiveKit URL to hand
     // to clients. If the rendezvous operator runs a shared LiveKit, that
     // URL takes precedence over our local subprocess.
-    let mut rendezvous_state: Option<(crate::rendezvous::ControlStream, crate::rendezvous::PublishInfo)> = None;
+    let mut rendezvous_state: Option<(
+        crate::rendezvous::ControlStream,
+        crate::rendezvous::PublishInfo,
+    )> = None;
     let mut publish_error: Option<String> = None;
     let listed_public = publish.publish_public;
     if let Some(url) = rendezvous_url {
@@ -114,7 +117,8 @@ pub async fn start_self_host(
             match (&info.livekit_url, &info.voice_token_grant) {
                 (Some(_), Some(grant)) => Some(std::sync::Arc::new(
                     crate::rendezvous::RendezvousMinter::new(&info.rendezvous_base, grant.clone()),
-                ) as std::sync::Arc<dyn dioxusfun_server::livekit::VoiceTokenMinter>),
+                )
+                    as std::sync::Arc<dyn dioxusfun_server::livekit::VoiceTokenMinter>),
                 _ => None,
             }
         }),

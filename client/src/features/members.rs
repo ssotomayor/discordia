@@ -340,7 +340,11 @@ fn MemberRow(
             .profile_of(&member.user.pubkey)
             .and_then(|p| p.status.clone())
             .unwrap_or_else(|| "online".into());
-        let pulse = if status == "online" { "dxf-dot-pulse" } else { "" };
+        let pulse = if status == "online" {
+            "dxf-dot-pulse"
+        } else {
+            ""
+        };
         (crate::features::profiles::status_color(&status), pulse)
     };
 

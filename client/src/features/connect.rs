@@ -114,9 +114,7 @@ pub fn ConnectView(
     let disabled = match tab() {
         Tab::Remote => server_url().trim().is_empty(),
         Tab::SelfHost => false,
-        Tab::ByCode | Tab::Browse => {
-            code().trim().is_empty() || rendezvous_url().trim().is_empty()
-        }
+        Tab::ByCode | Tab::Browse => code().trim().is_empty() || rendezvous_url().trim().is_empty(),
     };
 
     let tab_key = format!("tab-{:?}", tab());
@@ -125,7 +123,11 @@ pub fn ConnectView(
     // the very top, so we leave room at the top for the traffic lights
     // (which sit at roughly y=12-32 from the window edge). Other OSes
     // keep the system titlebar so no extra padding needed.
-    let mac_top_pad = if cfg!(target_os = "macos") { "pt-7" } else { "pt-0" };
+    let mac_top_pad = if cfg!(target_os = "macos") {
+        "pt-7"
+    } else {
+        "pt-0"
+    };
 
     rsx! {
         div { class: "h-full w-full flex bg-[var(--bg)]",

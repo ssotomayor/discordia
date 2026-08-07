@@ -7,7 +7,9 @@ use crate::features::{
 };
 use crate::net::spawn_gateway;
 use crate::protocol::ClientMessage;
-use crate::state::{AppState, ConnectionStatus, SessionParams, VoicePhase, use_app_state, use_gateway};
+use crate::state::{
+    AppState, ConnectionStatus, SessionParams, VoicePhase, use_app_state, use_gateway,
+};
 
 const CONNECT_SOUND: Asset = asset!("/assets/connect.mp3");
 
@@ -23,7 +25,6 @@ const UNPLUG_ICON_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width=
 
 #[component]
 pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>) -> Element {
-
     let state = use_signal(AppState::empty);
 
     let (gateway_tx, voice_tx) = use_hook(|| {
@@ -67,10 +68,16 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
         let accent = if s.dm_mode {
             None
         } else {
-            s.selected_guild
-                .and_then(|gid| s.guilds.iter().find(|g| g.id == gid).and_then(|g| g.accent.clone()))
+            s.selected_guild.and_then(|gid| {
+                s.guilds
+                    .iter()
+                    .find(|g| g.id == gid)
+                    .and_then(|g| g.accent.clone())
+            })
         };
-        accent.map(|a| crate::app::accent_vars(&a)).unwrap_or_default()
+        accent
+            .map(|a| crate::app::accent_vars(&a))
+            .unwrap_or_default()
     };
 
     // Sweep stale typing indicators (older than 5s) so they fade out. Only
@@ -82,9 +89,10 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
             let now = std::time::Instant::now();
             let stale = {
                 let s = state.read();
-                s.typing
-                    .values()
-                    .any(|set| set.values().any(|(_, t)| now.duration_since(*t).as_secs() >= 5))
+                s.typing.values().any(|set| {
+                    set.values()
+                        .any(|(_, t)| now.duration_since(*t).as_secs() >= 5)
+                })
             };
             if stale {
                 let mut s = state.write();
@@ -101,8 +109,16 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
     // lights vertically and `pl-20` clears them horizontally. The padding must
     // NOT live on the outer column, or it would shove the whole widget grid
     // inward and leave a fat margin down the left edge.
-    let mac_top_pad = if cfg!(target_os = "macos") { "pt-5" } else { "" };
-    let mac_titlebar_clear = if cfg!(target_os = "macos") { "pt-2 pl-20" } else { "" };
+    let mac_top_pad = if cfg!(target_os = "macos") {
+        "pt-5"
+    } else {
+        ""
+    };
+    let mac_titlebar_clear = if cfg!(target_os = "macos") {
+        "pt-2 pl-20"
+    } else {
+        ""
+    };
 
     rsx! {
         div { class: "h-full w-full flex flex-col bg-[var(--bg)] p-2 gap-2 {mac_top_pad}",

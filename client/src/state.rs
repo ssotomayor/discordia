@@ -274,12 +274,18 @@ impl AppState {
 
     /// The roles of a guild (empty slice if none).
     pub fn roles_of(&self, guild_id: Id) -> &[Role] {
-        self.roles.get(&guild_id).map(|v| v.as_slice()).unwrap_or(&[])
+        self.roles
+            .get(&guild_id)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
     }
 
     /// Pubkeys sharing their screen in a channel.
     pub fn screen_sharers_in(&self, channel_id: Id) -> &[String] {
-        self.screen_shares.get(&channel_id).map(|v| v.as_slice()).unwrap_or(&[])
+        self.screen_shares
+            .get(&channel_id)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
     }
 
     /// Usernames currently typing in a channel (sorted, for a stable label).
@@ -300,9 +306,7 @@ impl AppState {
 
     /// The avatar data URL for a pubkey, if set.
     pub fn avatar_of(&self, pubkey: &str) -> Option<&str> {
-        self.profiles
-            .get(pubkey)
-            .and_then(|p| p.avatar.as_deref())
+        self.profiles.get(pubkey).and_then(|p| p.avatar.as_deref())
     }
 
     /// The DM conversation whose channel id is `channel_id`, if any.

@@ -28,7 +28,11 @@ pub fn IdentitySetupView(on_done: EventHandler<Identity>) -> Element {
     let mut private_key_input = use_signal(String::new);
 
     let step_key = format!("step-{:?}", step());
-    let mac_top_pad = if cfg!(target_os = "macos") { "pt-7" } else { "pt-0" };
+    let mac_top_pad = if cfg!(target_os = "macos") {
+        "pt-7"
+    } else {
+        "pt-0"
+    };
 
     rsx! {
         div { class: "h-full w-full flex bg-[var(--bg)]",

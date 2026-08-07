@@ -248,9 +248,17 @@ window.dxScreen = window.dxScreen || (function () {
 /// `(id, label, hint)` — the hint is the one-line explanation under the select.
 pub const QUALITY_PRESETS: &[(&str, &str, &str)] = &[
     ("smooth", "Smooth — 720p60", "Best for video and animation"),
-    ("balanced", "Balanced — 1080p30", "Good default for most sharing"),
+    (
+        "balanced",
+        "Balanced — 1080p30",
+        "Good default for most sharing",
+    ),
     ("crisp", "Crisp — 1080p15", "Sharpest text, lower framerate"),
-    ("ultra", "Ultra — 1440p30", "High detail; needs strong upload"),
+    (
+        "ultra",
+        "Ultra — 1440p30",
+        "High detail; needs strong upload",
+    ),
 ];
 
 /// Resolve a preset id to `(width, height, fps, max_bitrate_bps)`.
@@ -319,7 +327,9 @@ pub fn ScreenShareBridge() -> Element {
     use_future(move || {
         let mut s = state.clone();
         async move {
-            let mut eval = document::eval("(() => !!(navigator && navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia))()");
+            let mut eval = document::eval(
+                "(() => !!(navigator && navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia))()",
+            );
             if let Ok(v) = eval.recv::<bool>().await {
                 if v {
                     s.write().screen_capture_available = true;
@@ -344,7 +354,9 @@ pub fn ScreenShareBridge() -> Element {
             if t.is_some() && sharing {
                 // Trigger the user-gesture request which runs getDisplayMedia
                 // and then starts the LiveKit publish. The call is idempotent.
-                let _ = document::eval(&format!("{SCREEN_JS}\nwindow.dxScreen.requestAndStartShare();"));
+                let _ = document::eval(&format!(
+                    "{SCREEN_JS}\nwindow.dxScreen.requestAndStartShare();"
+                ));
             }
             last_start.set(t.is_some() && sharing);
         }

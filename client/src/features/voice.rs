@@ -14,8 +14,8 @@ use futures_util::StreamExt;
 use livekit::options::TrackPublishOptions;
 use livekit::prelude::*;
 use livekit::webrtc::audio_frame::AudioFrame;
-use livekit::webrtc::audio_source::native::NativeAudioSource;
 use livekit::webrtc::audio_source::AudioSourceOptions;
+use livekit::webrtc::audio_source::native::NativeAudioSource;
 use livekit::webrtc::audio_stream::native::NativeAudioStream;
 use livekit::webrtc::prelude::RtcAudioSource;
 use parking_lot::Mutex;
@@ -148,8 +148,12 @@ async fn service_loop(
                         if let Ok(name) = d.name() {
                             let is_input = d.default_input_config().is_ok();
                             let is_output = d.default_output_config().is_ok();
-                            if is_input { inputs.push(name.clone()); }
-                            if is_output { outputs.push(name); }
+                            if is_input {
+                                inputs.push(name.clone());
+                            }
+                            if is_output {
+                                outputs.push(name);
+                            }
                         }
                     }
                 }
@@ -226,7 +230,12 @@ struct ActiveVoice {
 }
 
 impl ActiveVoice {
-    async fn connect(livekit_url: &str, token: &str, _channel_id: Id, state: Signal<AppState>) -> Result<Self, String> {
+    async fn connect(
+        livekit_url: &str,
+        token: &str,
+        _channel_id: Id,
+        state: Signal<AppState>,
+    ) -> Result<Self, String> {
         let (room, mut events) = Room::connect(livekit_url, token, RoomOptions::default())
             .await
             .map_err(|e| format!("livekit connect: {e}"))?;
@@ -264,8 +273,7 @@ impl ActiveVoice {
         // sync cpal audio thread and dropping the future means it never
         // runs. Funnel frames through an mpsc channel to a tokio task that
         // properly awaits.
-        let (frame_tx, mut frame_rx) =
-            tokio::sync::mpsc::unbounded_channel::<Vec<i16>>();
+        let (frame_tx, mut frame_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<i16>>();
         let publish_source = source.clone();
         tokio::spawn(async move {
             let mut sent = 0u64;
@@ -304,14 +312,19 @@ impl ActiveVoice {
                         RoomEvent::ParticipantDisconnected(p) => {
                             eprintln!("[voice] participant left: {}", p.identity().0);
                         }
-                        RoomEvent::TrackPublished { participant, publication } => {
+                        RoomEvent::TrackPublished {
+                            participant,
+                            publication,
+                        } => {
                             eprintln!(
                                 "[voice] track published by {}: {:?}",
                                 participant.identity().0,
                                 publication.kind()
                             );
                         }
-                        RoomEvent::TrackSubscribed { track, participant, .. } => {
+                        RoomEvent::TrackSubscribed {
+                            track, participant, ..
+                        } => {
                             eprintln!(
                                 "[voice] track SUBSCRIBED from {}: kind={:?}",
                                 participant.identity().0,
@@ -319,7 +332,10 @@ impl ActiveVoice {
                             );
                         }
                         RoomEvent::TrackUnsubscribed { participant, .. } => {
-                            eprintln!("[voice] track unsubscribed from {}", participant.identity().0);
+                            eprintln!(
+                                "[voice] track unsubscribed from {}",
+                                participant.identity().0
+                            );
                         }
                         RoomEvent::Disconnected { reason } => {
                             eprintln!("[voice] room disconnected: {reason:?}");
@@ -376,7 +392,10 @@ struct MicCapture {
 }
 
 impl MicCapture {
-    fn start(frame_tx: tokio::sync::mpsc::UnboundedSender<Vec<i16>>, mut state: Signal<AppState>) -> Result<Self, String> {
+    fn start(
+        frame_tx: tokio::sync::mpsc::UnboundedSender<Vec<i16>>,
+        mut state: Signal<AppState>,
+    ) -> Result<Self, String> {
         let host = cpal::default_host();
         // Prefer user-selected device (by name) if present in AppState.
         let selected = state.read().selected_input_device.clone();
@@ -393,7 +412,10 @@ impl MicCapture {
                     }
                 }
             }
-            found.unwrap_or_else(|| host.default_input_device().expect("no default input device"))
+            found.unwrap_or_else(|| {
+                host.default_input_device()
+                    .expect("no default input device")
+            })
         } else {
             host.default_input_device()
                 .ok_or_else(|| "no default input device".to_string())?
@@ -414,14 +436,15 @@ impl MicCapture {
 
         let raw_peak = Arc::new(std::sync::atomic::AtomicI32::new(0));
         let raw_peak_cb = raw_peak.clone();
-        let frames_pushed = Arc::new(std::sync::atomic::AtomicU64::new(0)); 
-        let frames_pushed_cb = frames_pushed.clone();                    
+        let frames_pushed = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let frames_pushed_cb = frames_pushed.clone();
         let speak_peak = Arc::new(std::sync::atomic::AtomicI32::new(0));
         let speak_peak_cb = speak_peak.clone();
 
         // Carry resampled samples across cpal callbacks so each frame we
         // hand to libwebrtc is always exactly `FRAME_SAMPLES` long.
-        let accum: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::with_capacity(FRAME_SAMPLES * 4)));
+        let accum: Arc<Mutex<Vec<f32>>> =
+            Arc::new(Mutex::new(Vec::with_capacity(FRAME_SAMPLES * 4)));
 
         // High-quality resampler (rubato FFT). None if device already runs at
         // SAMPLE_RATE (48kHz) — most common case on macOS CoreAudio.
@@ -528,7 +551,13 @@ impl MicCapture {
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                 let p = peak_log.swap(0, std::sync::atomic::Ordering::Relaxed) as f32 / 1_000.0;
                 let f = frames_log.load(std::sync::atomic::Ordering::Relaxed);
-                let level = if p < 0.001 { "silent" } else if p < 0.01 { "very quiet" } else { "speaking" };
+                let level = if p < 0.001 {
+                    "silent"
+                } else if p < 0.01 {
+                    "very quiet"
+                } else {
+                    "speaking"
+                };
                 eprintln!(
                     "[voice] mic heartbeat: raw peak={p:.4} ({level}), frames pushed to webrtc={f} (+{})",
                     f - prev_frames
@@ -540,29 +569,29 @@ impl MicCapture {
         // doesn't flicker between words/breaths. The threshold is read live from
         // AppState so the audio-settings slider takes effect immediately.
         dioxus::prelude::spawn(async move {
-        const HANGOVER_TICKS: u32 = 4; // ~600ms tras el último sonido fuerte
-        let mut hangover = 0u32;
-        let mut currently_speaking = false;
-        loop {
-        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-        let p = speak_peak.swap(0, std::sync::atomic::Ordering::Relaxed);
-        let threshold = state.read().mic_sensitivity as i32;
-        // Publish the live mic level so the audio-settings VU bar can render
-        // it alongside the threshold marker. Clamp to the 0..=1000 range the
-        // UI expects (peak is stored as ×1000 fixed-point).
-        state.write().mic_level = p.clamp(0, 1000) as u32;
-        if p > threshold {
-            hangover = HANGOVER_TICKS;
-        } else if hangover > 0 {
-            hangover -= 1;
-        }
-        let should_speak = hangover > 0;
-        if should_speak != currently_speaking {
-            currently_speaking = should_speak;
-            state.write().voice.speaking = should_speak;
-        }
-    }
-});
+            const HANGOVER_TICKS: u32 = 4; // ~600ms tras el último sonido fuerte
+            let mut hangover = 0u32;
+            let mut currently_speaking = false;
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                let p = speak_peak.swap(0, std::sync::atomic::Ordering::Relaxed);
+                let threshold = state.read().mic_sensitivity as i32;
+                // Publish the live mic level so the audio-settings VU bar can render
+                // it alongside the threshold marker. Clamp to the 0..=1000 range the
+                // UI expects (peak is stored as ×1000 fixed-point).
+                state.write().mic_level = p.clamp(0, 1000) as u32;
+                if p > threshold {
+                    hangover = HANGOVER_TICKS;
+                } else if hangover > 0 {
+                    hangover -= 1;
+                }
+                let should_speak = hangover > 0;
+                if should_speak != currently_speaking {
+                    currently_speaking = should_speak;
+                    state.write().voice.speaking = should_speak;
+                }
+            }
+        });
         Ok(Self {
             _stream: stream,
             muted,
@@ -686,15 +715,10 @@ impl AudioResampler {
         if from_rate == to_rate {
             return None;
         }
-        let inner = FftFixedIn::<f32>::new(
-            from_rate as usize,
-            to_rate as usize,
-            RESAMPLER_CHUNK,
-            2,
-            1,
-        )
-        .map_err(|e| eprintln!("[voice] rubato resampler init failed: {e:?}"))
-        .ok()?;
+        let inner =
+            FftFixedIn::<f32>::new(from_rate as usize, to_rate as usize, RESAMPLER_CHUNK, 2, 1)
+                .map_err(|e| eprintln!("[voice] rubato resampler init failed: {e:?}"))
+                .ok()?;
         let max_out = inner.output_frames_max();
         Some(Self {
             inner,
@@ -712,7 +736,12 @@ impl AudioResampler {
 
         // Destructure so the borrow checker sees the fields as independent —
         // `inner` is borrowed mutably while the buffers are borrowed too.
-        let Self { inner, input_accum, chunk_in, scratch_out } = self;
+        let Self {
+            inner,
+            input_accum,
+            chunk_in,
+            scratch_out,
+        } = self;
 
         let mut out = Vec::new();
         while input_accum.len() >= RESAMPLER_CHUNK {
@@ -812,7 +841,10 @@ impl PlaybackMixer {
                     }
                 }
             }
-            found.unwrap_or_else(|| host.default_output_device().expect("no default output device"))
+            found.unwrap_or_else(|| {
+                host.default_output_device()
+                    .expect("no default output device")
+            })
         } else {
             host.default_output_device()
                 .ok_or_else(|| "no default output device".to_string())?
@@ -830,9 +862,9 @@ impl PlaybackMixer {
 
         // VecDeque for O(1) pop_front — Vec::remove(0) is O(n) and was
         // starving the audio callback at our buffer sizes.
-        let buffer = Arc::new(Mutex::new(std::collections::VecDeque::<f32>::with_capacity(
-            SAMPLE_RATE as usize,
-        )));
+        let buffer = Arc::new(Mutex::new(
+            std::collections::VecDeque::<f32>::with_capacity(SAMPLE_RATE as usize),
+        ));
         let buffer_cb = buffer.clone();
         let cb_counter = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let cb_counter_cb = cb_counter.clone();
@@ -873,7 +905,9 @@ impl PlaybackMixer {
                         let sample = if buf_len > overrun_threshold {
                             // Buffer too full — skip every 32nd sample to shrink
                             // it smoothly without audible clicks.
-                            if counter % 32 == 0 { buf.pop_front(); }
+                            if counter % 32 == 0 {
+                                buf.pop_front();
+                            }
                             buf.pop_front().unwrap_or(0.0)
                         } else if buf_len < underrun_threshold {
                             // Buffer too empty — duplicate every 64th sample to
@@ -913,7 +947,9 @@ impl PlaybackMixer {
                         counter = counter.wrapping_add(1);
                         let buf_len = buf.len();
                         let sample = if buf_len > overrun_threshold {
-                            if counter % 32 == 0 { buf.pop_front(); }
+                            if counter % 32 == 0 {
+                                buf.pop_front();
+                            }
                             buf.pop_front().unwrap_or(0.0)
                         } else if buf_len < underrun_threshold {
                             if counter % 64 == 0 {
@@ -1016,7 +1052,9 @@ async fn consume_remote_track(mut stream: NativeAudioStream, handle: PlaybackHan
             // through at their original volume and only the top of the range
             // gets rounded off (1.0 -> 0.76). The previous `(v * 1.5).tanh() *
             // 0.9` was really a ~1.34x booster at speech levels, not a limiter.
-            let f32_samples: Vec<f32> = frame.data.iter()
+            let f32_samples: Vec<f32> = frame
+                .data
+                .iter()
                 .map(|s| (*s as f32 / i16::MAX as f32).tanh())
                 .collect();
             // High-quality resampling via rubato (48kHz → device_rate).
@@ -1041,7 +1079,13 @@ async fn consume_remote_track(mut stream: NativeAudioStream, handle: PlaybackHan
         if frames % 500 == 0 {
             eprintln!(
                 "[voice] remote-track: {frames} frames, {sample_count} samples, peak={peak_recent} ({})",
-                if peak_recent < 100 { "near-silent" } else if peak_recent < 1000 { "very quiet" } else { "audible" }
+                if peak_recent < 100 {
+                    "near-silent"
+                } else if peak_recent < 1000 {
+                    "very quiet"
+                } else {
+                    "audible"
+                }
             );
             peak_recent = 0;
         }

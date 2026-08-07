@@ -9,9 +9,9 @@ use crate::state::{use_app_state, use_gateway};
 /// Curated emoji set for the composer picker. Plain Unicode — they travel as
 /// ordinary message text, so no protocol support is needed.
 const EMOJIS: &[&str] = &[
-    "😀", "😂", "😅", "😍", "😎", "🤔", "😭", "😡", "👍", "👎", "🙏", "🔥", "🎉", "❤️", "💯",
-    "✨", "🚀", "👀", "🙌", "😉", "🥳", "😴", "🤯", "🤝", "👋", "💀", "✅", "❌", "⚡", "🌈",
-    "🍕", "☕", "🎮", "💸", "🐛", "📎", "🖼️", "🤖", "🫡", "😬",
+    "😀", "😂", "😅", "😍", "😎", "🤔", "😭", "😡", "👍", "👎", "🙏", "🔥", "🎉", "❤️", "💯", "✨",
+    "🚀", "👀", "🙌", "😉", "🥳", "😴", "🤯", "🤝", "👋", "💀", "✅", "❌", "⚡", "🌈", "🍕", "☕",
+    "🎮", "💸", "🐛", "📎", "🖼️", "🤖", "🫡", "😬",
 ];
 
 /// Quick reactions offered in the message hover bar.
@@ -33,17 +33,51 @@ pub fn ChatView() -> Element {
     let snapshot = state.read();
     let selected_channel = snapshot.selected_channel;
     let dm = selected_channel.and_then(|cid| snapshot.dm_of(cid).cloned());
-    let channel_meta = selected_channel
-        .and_then(|cid| snapshot.channels.iter().find(|c| c.id == cid).cloned());
+    let channel_meta =
+        selected_channel.and_then(|cid| snapshot.channels.iter().find(|c| c.id == cid).cloned());
     let messages: Vec<Message> = selected_channel
         .and_then(|cid| snapshot.messages.get(&cid).cloned())
         .unwrap_or_default();
-    let typers = selected_channel.map(|cid| snapshot.typers_in(cid)).unwrap_or_default();
+    let typers = selected_channel
+        .map(|cid| snapshot.typers_in(cid))
+        .unwrap_or_default();
     drop(snapshot);
+
+    // --- Sticky-bottom auto-scroll ---------------------------------------
+    // `anchored` tracks whether the view is pinned to the bottom: while true,
+    // every new message scrolls down; scrolling up manually (detected via the
+    // onscroll JS probe on the scroll container) clears it, and scrolling back
+    // to the bottom re-sets it. The effect re-runs on every AppState write
+    // (new message, channel switch…); `peek` + writing `last` avoid a
+    // self-trigger loop.
+    let mut anchored = use_signal(|| true);
+    let mut last = use_signal::<(Option<Id>, usize)>(|| (None, 0));
+    use_effect(move || {
+        let snap = state.read();
+        let cur_chan = snap.selected_channel;
+        let cur_count = cur_chan
+            .and_then(|cid| snap.messages.get(&cid).map(|v| v.len()))
+            .unwrap_or(0);
+        drop(snap);
+        let (prev_chan, prev_count) = *last.peek();
+        let chan_changed = prev_chan != cur_chan;
+        let grew = prev_chan == cur_chan && cur_count > prev_count;
+        last.set((cur_chan, cur_count));
+        if chan_changed {
+            anchored.set(true);
+        }
+        if (chan_changed || grew) && *anchored.peek() {
+            scroll_to_bottom();
+        }
+    });
 
     // Header + composer labelling differ for DMs ("@user") vs channels ("#name").
     let (is_dm, header_name, composer_label) = match &dm {
-        Some(d) => (true, d.other.username.clone(), format!("@{}", d.other.username)),
+        Some(d) => (
+            true,
+            d.other.username.clone(),
+            format!("@{}", d.other.username),
+        ),
         None => {
             let name = channel_meta
                 .as_ref()
@@ -68,7 +102,24 @@ pub fn ChatView() -> Element {
             }
 
             NoDrag {
-                div { class: "flex-1 overflow-y-auto px-4 py-4 min-h-0",
+                div {
+                    class: "flex-1 overflow-y-auto px-4 py-4 min-h-0",
+                    id: "dxf-chat-scroll",
+                    // Probe the live scroll position to drive `anchored`: at (or
+                    // near) the bottom → stick; scrolled up → unstick so reading
+                    // old messages isn't interrupted by new arrivals.
+                    onscroll: move |_| {
+                        let mut a = anchored;
+                        spawn(async move {
+                            let js = format!(
+                                "(() => {{ const el = document.getElementById('dxf-chat-scroll'); if (!el) return false; return (el.scrollHeight - el.scrollTop - el.clientHeight) < {STICKY_THRESHOLD_PX}; }})()"
+                            );
+                            let mut eval = document::eval(&js);
+                            if let Ok(at_bottom) = eval.recv::<bool>().await {
+                                a.set(at_bottom);
+                            }
+                        });
+                    },
                     if messages.is_empty() && selected_channel.is_some() {
                         div { class: "h-full flex items-center justify-center text-[var(--text-dim)] text-xs",
                             if is_dm { "No messages yet. Say hi 👋" } else { "No messages yet." }
@@ -90,6 +141,12 @@ pub fn ChatView() -> Element {
                                             button {
                                                 class: "text-[11px] uppercase tracking-wider text-[var(--text-muted)] border border-[var(--border)] rounded px-3 py-1 hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors",
                                                 onclick: move |_| {
+                                                    // Loading older history is an
+                                                    // explicit "read up" action:
+                                                    // drop the anchor so the
+                                                    // incoming page doesn't yank
+                                                    // the view back to the bottom.
+                                                    anchored.set(false);
                                                     gw.send(ClientMessage::FetchMessages {
                                                         channel_id,
                                                         limit: PAGE_SIZE as u32,
@@ -120,7 +177,7 @@ pub fn ChatView() -> Element {
                 }
 
                 if let Some(channel_id) = selected_channel {
-                    Composer { channel_id, composer_label }
+                    Composer { channel_id, composer_label, anchored }
                 }
             }
         }
@@ -131,6 +188,18 @@ pub fn ChatView() -> Element {
 /// holds at least this many messages there is probably older history to page
 /// back through, so we surface the "load earlier" affordance.
 const PAGE_SIZE: usize = 50;
+
+/// Distance from the bottom (px) within which we treat the view as "anchored"
+/// so grouped message arrivals or lazy image layout don't accidentally unstick.
+const STICKY_THRESHOLD_PX: i64 = 80;
+
+/// Scrolls the chat viewport to the bottom. Fire-and-forget JS eval against the
+/// scroll container tagged `dxf-chat-scroll` (see `ChatView`).
+fn scroll_to_bottom() {
+    let _ = document::eval(
+        "(() => { const el = document.getElementById('dxf-chat-scroll'); if (el) el.scrollTop = el.scrollHeight; })()",
+    );
+}
 
 /// Whether `cur` should render compactly under `prev` (same author, close in time).
 fn groups_with(prev: &Message, cur: &Message) -> bool {
@@ -166,7 +235,11 @@ fn MessageRow(message: Message, grouped: bool) -> Element {
     let can_delete = {
         let s = state.read();
         let is_author = self_pubkey.as_deref() == Some(message.author.pubkey.as_str());
-        let guild_of_channel = s.channels.iter().find(|c| c.id == channel_id).map(|c| c.guild_id);
+        let guild_of_channel = s
+            .channels
+            .iter()
+            .find(|c| c.id == channel_id)
+            .map(|c| c.guild_id);
         is_author
             || guild_of_channel
                 .map(|gid| s.can(gid, crate::protocol::Permission::ManageMessages))
@@ -368,7 +441,7 @@ fn is_url(w: &str) -> bool {
 }
 
 #[component]
-fn Composer(channel_id: Id, composer_label: String) -> Element {
+fn Composer(channel_id: Id, composer_label: String, anchored: Signal<bool>) -> Element {
     let mut draft = use_signal(String::new);
     let mut pending_image = use_signal::<Option<String>>(|| None);
     let attach_err = use_signal::<Option<String>>(|| None);
@@ -409,6 +482,9 @@ fn Composer(channel_id: Id, composer_label: String) -> Element {
         if content.is_empty() && image.is_none() {
             return;
         }
+        // Sending your own message re-pins the view to the bottom so you see
+        // the echo land (matches Discord/Slack behaviour).
+        anchored.set(true);
         gateway_submit.send(ClientMessage::SendMessage {
             channel_id,
             content,
