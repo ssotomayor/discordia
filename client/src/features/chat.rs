@@ -133,7 +133,7 @@ pub fn ChatView() -> Element {
                             if let (Some(channel_id), Some(oldest)) =
                                 (selected_channel, messages.first())
                             {
-                                {
+                                
                                     let before_ms = oldest.created_at.timestamp_millis();
                                     let gw = gateway.clone();
                                     rsx! {
@@ -157,14 +157,14 @@ pub fn ChatView() -> Element {
                                             }
                                         }
                                     }
-                                }
+                                
                             }
                         }
                         for (i, msg) in messages.iter().enumerate() {
-                            {
+                            
                                 let grouped = i > 0 && groups_with(&messages[i - 1], msg);
                                 rsx! { MessageRow { key: "{msg.id}", message: msg.clone(), grouped } }
-                            }
+                            
                         }
                     }
                 }
