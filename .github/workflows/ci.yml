@@ -120,8 +120,21 @@ jobs:
       # --force: rust-cache restaura ~/.cargo metadata, así que binstall ve
       # dioxus-cli como "already installed" y lo salta — mientras el dx real
       # no está en el cache restaurado.
+      #
+      # GITHUB_TOKEN: binstall consulta la GitHub API para localizar el `dx`
+      # precompilado. Sin token va anónimo (60 req/h compartidos por IP del
+      # runner) y devuelve 403 → binstall cae a `cargo install` desde fuente,
+      # que rompe (ver nota de --locked). Autenticado son 5000 req/h.
+      #
+      # --locked: si aun así toca compilar, usa el Cargo.lock publicado de
+      # dioxus-cli. Sin él cargo re-resuelve a lo último semver-compatible y
+      # auth-git2 no compila contra el git2 nuevo (E0599 credential_helper).
       - name: Install Dioxus CLI
-        run: cargo binstall dioxus-cli --no-confirm --force
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: cargo binstall dioxus-cli --no-confirm --force --locked
+      - name: Verify dx
+        run: dx --version
       - name: Build server (release)
         run: cargo build --release -p dioxusfun-server
       - name: Strip server binary
@@ -162,8 +175,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: cargo-bins/cargo-binstall@main
+      # Ver la nota extensa en prerelease-linux: --force por el rust-cache,
+      # GITHUB_TOKEN para no comerse el 403 anónimo de la GitHub API, y
+      # --locked para que el fallback a compilación desde fuente no rompa.
       - name: Install Dioxus CLI
-        run: cargo binstall dioxus-cli --no-confirm --force
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: cargo binstall dioxus-cli --no-confirm --force --locked
+      - name: Verify dx
+        run: dx --version
       - name: Build server (release)
         env:
           LIVEKIT_BUNDLE_SKIP: "1"
@@ -214,8 +234,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: cargo-bins/cargo-binstall@main
+      # Ver la nota extensa en prerelease-linux. Este es el job que falló en la
+      # run 31195906555: 403 de la GitHub API → fallback a fuente → E0599 en
+      # auth-git2. GITHUB_TOKEN evita el 403; --locked salva el fallback.
       - name: Install Dioxus CLI
-        run: cargo binstall dioxus-cli --no-confirm --force
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: cargo binstall dioxus-cli --no-confirm --force --locked
+      - name: Verify dx
+        run: dx --version
       - name: Build server (release)
         env:
           LIVEKIT_BUNDLE_SKIP: "1"
