@@ -260,17 +260,30 @@ jobs:
       - name: Stage release artifacts
         run: |
           mkdir -p release
+          # find (no cp con paths fijos): upload-artifact@v4 preserva la
+          # estructura del least-common-ancestor, así que los binarios del
+          # server quedan anidados bajo target/release/ dentro del artefacto
+          # descargado. find los localiza sin importar la profundidad.
           # Linux
-          cp artifacts/prerelease-linux/dioxusfun-server           release/dioxusfun-server-linux
-          cp artifacts/prerelease-linux/Discordia-linux-x86_64.AppImage release/
+          find artifacts/prerelease-linux -type f -name dioxusfun-server \
+            -exec cp {} release/dioxusfun-server-linux \;
+          find artifacts/prerelease-linux -type f -name '*.AppImage' \
+            -exec cp {} release/ \;
           # Windows
-          cp artifacts/prerelease-windows/dioxusfun-server.exe     release/
-          cp artifacts/prerelease-windows/Discordia-windows-portable.zip release/
-          cp artifacts/prerelease-windows/Discordia-windows-setup.exe   release/
+          find artifacts/prerelease-windows -type f -name dioxusfun-server.exe \
+            -exec cp {} release/ \;
+          find artifacts/prerelease-windows -type f -name 'Discordia-windows-portable.zip' \
+            -exec cp {} release/ \;
+          find artifacts/prerelease-windows -type f -name 'Discordia-windows-setup.exe' \
+            -exec cp {} release/ \;
           # macOS
-          cp artifacts/prerelease-macos/dioxusfun-server          release/dioxusfun-server-macos
-          cp artifacts/prerelease-macos/Discordia-macos-arm64.dmg  release/
+          find artifacts/prerelease-macos -type f -name dioxusfun-server \
+            -exec cp {} release/dioxusfun-server-macos \;
+          find artifacts/prerelease-macos -type f -name 'Discordia-macos-arm64.dmg' \
+            -exec cp {} release/ \;
+          # Verificar que los 7 artefactos están presentes
           ls -l release/
+          test "$(find release -type f | wc -l)" -eq 7 || { echo "ERROR: expected 7 artifacts"; exit 1; }
       - name: Create pre-release
         uses: softprops/action-gh-release@v2
         with:
