@@ -116,6 +116,11 @@ Read it, then `docs/ROADMAP.md` for where the project is headed and
   `can()`/`is_owner()` advisory permission helpers.
 - `identity.rs` — key gen/import (nsec/hex), signing. `session.rs`,
   `settings.rs` — connection params & local prefs.
+- `denoise.rs` — DeepFilterNet 3 mic noise suppression (pure-Rust `tract`,
+  weights compiled in). Runs on the voice service's DSP thread, one 10ms hop at
+  a time. The tract crates are pinned and get a `[profile.dev.package]`
+  optimisation override in the root `Cargo.toml` — read the comment there before
+  bumping them, the model won't even load without it.
 - `host.rs` — self-host: spawn embedded server + LiveKit, register with
   rendezvous. `rendezvous.rs` — the rendezvous client (control handshake +
   proxy bridging). `blossom.rs` — Nostr media upload for avatars/banners.

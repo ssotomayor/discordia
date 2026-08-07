@@ -331,15 +331,10 @@ fn MemberRow(
     let dim = if member.online { "" } else { "opacity-60" };
     let card_pubkey = member.user.pubkey.clone();
 
-    // Presence: offline trumps the self-set status; online users pulse.
-    let (dot_color, pulse) = if !member.online {
-        ("var(--text-dim)", "")
-    } else {
-        let status = state
-            .read()
-            .profile_of(&member.user.pubkey)
-            .and_then(|p| p.status.clone())
-            .unwrap_or_else(|| "online".into());
+    // Presence: connection state trumps the self-set status (see
+    // `AppState::presence_of`); only actually-online users pulse.
+    let (dot_color, pulse) = {
+        let status = state.read().presence_of(&member.user.pubkey).to_string();
         let pulse = if status == "online" { "dxf-dot-pulse" } else { "" };
         (crate::features::profiles::status_color(&status), pulse)
     };

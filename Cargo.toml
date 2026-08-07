@@ -31,3 +31,56 @@ bs58 = "0.5"
 # pubkeys/signatures.
 secp256k1 = { version = "0.29", default-features = false, features = ["std", "rand-std"] }
 hex = "0.4"
+
+# --- DeepFilterNet / tract inference stack ----------------------------------
+# Two reasons this can't run as a plain debug build (see client/src/denoise.rs):
+#
+#  1. Correctness. `tract-core` runs an internal self-consistency check after
+#     graph compaction, but only under `cfg(debug_assertions)`. DeepFilterNet 3's
+#     graph trips it ("duplicate name /convt3/Conv.bias") even though inference
+#     is perfectly fine — so in an unmodified dev build the model simply refuses
+#     to load and noise cancellation is unavailable under `cargo run`/`dx serve`.
+#  2. Speed. Unoptimised tract is orders of magnitude slower than the ~150µs per
+#     10ms hop the release build manages; it cannot keep up with realtime audio.
+#
+# Optimising just these packages costs a one-time compile and leaves the rest of
+# the workspace debuggable as usual.
+[profile.dev.package.deep_filter]
+opt-level = 3
+debug-assertions = false
+
+[profile.dev.package.tract-core]
+opt-level = 3
+debug-assertions = false
+
+[profile.dev.package.tract-data]
+opt-level = 3
+debug-assertions = false
+
+[profile.dev.package.tract-linalg]
+opt-level = 3
+debug-assertions = false
+
+[profile.dev.package.tract-nnef]
+opt-level = 3
+debug-assertions = false
+
+[profile.dev.package.tract-onnx]
+opt-level = 3
+debug-assertions = false
+
+[profile.dev.package.tract-onnx-opl]
+opt-level = 3
+debug-assertions = false
+
+[profile.dev.package.tract-hir]
+opt-level = 3
+debug-assertions = false
+
+[profile.dev.package.tract-pulse]
+opt-level = 3
+debug-assertions = false
+
+[profile.dev.package.tract-pulse-opl]
+opt-level = 3
+debug-assertions = false

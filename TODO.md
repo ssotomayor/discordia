@@ -98,3 +98,23 @@ the top within each section.
   Mid-session renames need a new protocol message
   (`ClientMessage::UpdateUsername`) + server-side member-row mutation +
   broadcast.
+
+## Voice / audio
+
+- **Screen-share audio is platform-dependent.** The share request asks for
+  `audio: true` and publishes the audio track when the platform hands one back,
+  but whether it does is out of our hands: Chromium/WebView2 offers tab and
+  system audio (and the user must still tick the box in the picker), while
+  WKWebView on macOS generally offers none. Shares from those platforms are
+  silent and the viewer's stream-volume control has nothing to act on. Capturing
+  system audio natively (per-OS loopback: WASAPI loopback, ScreenCaptureKit,
+  PipeWire) and publishing it from the Rust side would close the gap.
+- **Stream audio doesn't follow the output device everywhere.** Screen-share
+  audio plays through the webview, so it can only follow the app's selected
+  output device where `AudioContext.setSinkId` exists (Chromium). Elsewhere it
+  lands on the system default while voice honours the choice — the two can
+  diverge. Native capture (above) would put it on the same cpal path as voice.
+- **Per-user volumes are session-scoped.** `AppState.user_volumes` /
+  `stream_volumes` live for the run of the app, not across restarts. Persisting
+  them means a keyed store that doesn't grow without bound (cap + LRU), which is
+  why it isn't in `ClientSettings` today.

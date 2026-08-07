@@ -21,8 +21,76 @@ const SCREEN_JS: &str = r#"
 window.dxScreen = window.dxScreen || (function () {
   let room = null;
   const tracks = {}; // identity -> video track
+  const audioTracks = {}; // identity -> audio track (screen-share sound)
   const CONTAINERS = ['screenshare-self', 'screenshare-viewer'];
   const LK = () => window.LivekitClient || window.LiveKitClient;
+
+  // --- Screen-share audio -------------------------------------------------
+  // Routed through Web Audio rather than an <audio> element's `volume`,
+  // because that property is capped at 1.0 and the viewer is allowed to boost
+  // a quiet stream past 100%. A GainNode also gives us mute for free (gain 0)
+  // without tearing the graph down and having to rebuild it on unmute.
+  //
+  // This is entirely listener-side: it scales what THIS machine plays. The
+  // broadcaster's capture and every other viewer are untouched.
+  let actx = null;      // AudioContext, created on first stream with sound
+  let srcNode = null;   // MediaStreamAudioSourceNode for the attached stream
+  let gainNode = null;  // viewer's volume
+  let audioIdentity = null; // whose stream is currently wired up
+  let pendingGain = 1;  // volume to apply when a stream does arrive
+  let sinkLabel = null; // app's chosen output device, matched by label
+
+  function ensureCtx() {
+    if (!actx) {
+      try { actx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { return null; }
+      gainNode = actx.createGain();
+      gainNode.gain.value = pendingGain;
+      gainNode.connect(actx.destination);
+      applySink();
+    }
+    if (actx.state === 'suspended') { actx.resume().catch(function () {}); }
+    return actx;
+  }
+  // Best-effort: follow the output device the user picked in audio settings.
+  // cpal names devices by their OS label and the webview exposes opaque ids,
+  // so the two are matched by label. setSinkId on AudioContext is Chromium-only
+  // (and needs mic permission to see labels at all); everywhere else the stream
+  // plays on the system default, which is the same device in the common case.
+  function applySink() {
+    if (!actx || !sinkLabel || typeof actx.setSinkId !== 'function') return;
+    try {
+      navigator.mediaDevices.enumerateDevices().then(function (devs) {
+        const m = devs.find(function (d) { return d.kind === 'audiooutput' && d.label === sinkLabel; });
+        if (m) { actx.setSinkId(m.deviceId).catch(function () {}); }
+      }).catch(function () {});
+    } catch (e) {}
+  }
+  function setSink(label) { sinkLabel = label || null; applySink(); }
+  function setStreamVolume(v) {
+    pendingGain = Math.max(0, Math.min(2, v));
+    if (gainNode && actx) {
+      // Short ramp instead of a step: an instantaneous gain change on a live
+      // signal is an audible click.
+      gainNode.gain.setTargetAtTime(pendingGain, actx.currentTime, 0.02);
+    }
+  }
+  function detachAudio() {
+    if (srcNode) { try { srcNode.disconnect(); } catch (e) {} srcNode = null; }
+    audioIdentity = null;
+  }
+  function attachAudio(identity) {
+    if (audioIdentity === identity && srcNode) return;
+    detachAudio();
+    const t = audioTracks[identity];
+    if (!t) return;
+    const c = ensureCtx(); if (!c) return;
+    try {
+      const ms = t.mediaStream || new MediaStream([t.mediaStreamTrack]);
+      srcNode = c.createMediaStreamSource(ms);
+      srcNode.connect(gainNode);
+      audioIdentity = identity;
+    } catch (e) { console.warn('[dxScreen] stream audio attach failed', e); }
+  }
   function attachInto(track, c) {
     c.innerHTML = '';
     const el = track.attach();
@@ -47,11 +115,24 @@ window.dxScreen = window.dxScreen || (function () {
     const lk = LK();
     room = new lk.Room({ adaptiveStream: true, dynacast: true });
     room.on(lk.RoomEvent.TrackSubscribed, function (track, pub, participant) {
+      if (track.kind === 'audio') {
+        audioTracks[participant.identity] = track;
+        // The viewer may already be watching this person — the audio track can
+        // arrive after the video one.
+        const c = document.getElementById('screenshare-viewer');
+        if (c && c.getAttribute('data-identity') === participant.identity) attachAudio(participant.identity);
+        return;
+      }
       if (track.kind !== 'video') return;
       tracks[participant.identity] = track;
       reattach(participant.identity);
     });
     room.on(lk.RoomEvent.TrackUnsubscribed, function (track, pub, participant) {
+      if (track.kind === 'audio') {
+        delete audioTracks[participant.identity];
+        if (audioIdentity === participant.identity) detachAudio();
+        return;
+      }
       if (track.kind !== 'video') return;
       delete tracks[participant.identity];
       reattach(participant.identity);
@@ -89,11 +170,15 @@ window.dxScreen = window.dxScreen || (function () {
     c.setAttribute('data-identity', identity);
     const t = tracks[identity];
     if (t) attachInto(t, c); else c.querySelectorAll('video').forEach(function (e) { e.remove(); });
+    // Only the watch window plays sound; the self-preview must not, or the
+    // sharer hears their own machine echoed back.
+    if (cid === 'screenshare-viewer') attachAudio(identity);
   }
   function detach(cid) {
     const c = document.getElementById(cid); if (!c) return;
     c.removeAttribute('data-identity');
     c.querySelectorAll('video').forEach(function (e) { e.remove(); });
+    if (cid === 'screenshare-viewer') detachAudio();
   }
   async function startShare() {
     if (!room) { console.warn('[dxScreen] not connected yet'); return; }
@@ -140,6 +225,10 @@ window.dxScreen = window.dxScreen || (function () {
     const wantH = quality.height || 1080;
     const wantFps = quality.fps || 30;
     let stream;
+    // Ask for the share's audio too. Whether anything comes back is up to the
+    // platform: Chromium gives tab/system audio, and the user still has to tick
+    // "share audio" in the picker. Where it isn't offered we simply publish
+    // video, exactly as before — hence `audio: true` and not a hard requirement.
     try {
       stream = await navigator.mediaDevices.getDisplayMedia({
         video: {
@@ -147,18 +236,22 @@ window.dxScreen = window.dxScreen || (function () {
           height: { ideal: wantH },
           frameRate: { ideal: wantFps },
         },
-        audio: false,
+        audio: true,
       });
     } catch (e) {
       console.warn('[dxScreen] constrained getDisplayMedia failed, retrying unconstrained', e);
-      // Some embedded webviews reject any constraints on getDisplayMedia.
-      // Falling back keeps sharing working (at default quality) rather than
-      // failing outright.
+      // Some embedded webviews reject any constraints on getDisplayMedia, and
+      // some reject the audio request specifically. Falling back keeps sharing
+      // working (at default quality, possibly silent) rather than failing.
       try {
-        stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+        stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
       } catch (e2) {
-        console.warn('[dxScreen] getDisplayMedia denied or failed', e2);
-        return;
+        try {
+          stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+        } catch (e3) {
+          console.warn('[dxScreen] getDisplayMedia denied or failed', e3);
+          return;
+        }
       }
     }
     if (!stream) return;
@@ -221,6 +314,16 @@ window.dxScreen = window.dxScreen || (function () {
         // costs upload bandwidth that the full-resolution layer needs.
         simulcast: false,
       });
+      // Publish the share's audio as its own track. LiveKit keeps it separate
+      // from the microphone, which is what lets a viewer set the stream's
+      // volume independently of the sharer's voice.
+      const at = stream.getAudioTracks()[0];
+      if (at) {
+        try {
+          await room.localParticipant.publishTrack(at, { source: lk.Track.Source.ScreenShareAudio });
+          console.log('[dxScreen] publishing screen-share audio');
+        } catch (e2) { console.warn('[dxScreen] screen-share audio publish failed', e2); }
+      }
     } catch (e) {
       // Fallback: try the SDK's built-in path. It may re-prompt and fail on a
       // first gesture-less invocation, but costs nothing to attempt.
@@ -236,9 +339,11 @@ window.dxScreen = window.dxScreen || (function () {
   async function disconnect() {
     if (room) { try { await room.disconnect(); } catch (e) {} room = null; }
     for (const k in tracks) delete tracks[k];
+    for (const k in audioTracks) delete audioTracks[k];
+    detachAudio();
     CONTAINERS.forEach(detach);
   }
-  return { connect: connect, attach: attach, detach: detach, startShare: startShare, requestAndStartShare: requestAndStartShare, stopShare: stopShare, disconnect: disconnect };
+  return { connect: connect, attach: attach, detach: detach, startShare: startShare, requestAndStartShare: requestAndStartShare, stopShare: stopShare, disconnect: disconnect, setStreamVolume: setStreamVolume, setSink: setSink };
 })();
 "#;
 
@@ -287,6 +392,22 @@ fn attach_js(identity: &str, container: &str) -> String {
 
 fn detach_js(container: &str) -> String {
     format!("{SCREEN_JS}\nwindow.dxScreen.detach('{container}');")
+}
+
+/// Set the local playback gain for the screen-share stream we're watching.
+/// `gain` is a linear multiplier (1.0 = as broadcast, 0.0 = muted).
+fn stream_volume_js(gain: f32) -> String {
+    format!("{SCREEN_JS}\nwindow.dxScreen.setStreamVolume({gain});")
+}
+
+/// Point the stream's audio at the output device chosen in audio settings,
+/// matched by name. Best-effort — see `applySink` in the JS controller.
+pub fn stream_sink_js(device: Option<&str>) -> String {
+    // Device names come from the OS and can contain quotes or other characters
+    // that would break out of a hand-built JS string literal — let serde_json
+    // do the escaping. `null` when no device is chosen (system default).
+    let arg = serde_json::to_string(&device).unwrap_or_else(|_| "null".into());
+    format!("{SCREEN_JS}\nwindow.dxScreen.setSink({arg});")
 }
 
 /// Connects/disconnects the JS screen room as the token comes and goes.
@@ -526,7 +647,17 @@ pub fn ScreenWatchWindow() -> Element {
         if v != *last.peek() {
             match &v {
                 Some(pk) => {
-                    let _ = document::eval(&attach_js(pk, "screenshare-viewer"));
+                    // Volume first: the gain node has to be at the right level
+                    // before the stream is wired into it, or a stream the user
+                    // had turned down blasts at full volume for a moment.
+                    let s = state.read();
+                    let js = format!(
+                        "{}\n{}",
+                        stream_volume_js(s.stream_gain_of(pk)),
+                        attach_js(pk, "screenshare-viewer"),
+                    );
+                    drop(s);
+                    let _ = document::eval(&js);
                 }
                 None => {
                     let _ = document::eval(&detach_js("screenshare-viewer"));
@@ -534,6 +665,12 @@ pub fn ScreenWatchWindow() -> Element {
             }
             last.set(v);
         }
+    });
+
+    // Follow the output device chosen in audio settings.
+    let output_device = use_memo(move || state.read().selected_output_device.clone());
+    use_effect(move || {
+        let _ = document::eval(&stream_sink_js(output_device().as_deref()));
     });
 
     let mut x = use_signal(|| 160.0_f64);
@@ -550,6 +687,19 @@ pub fn ScreenWatchWindow() -> Element {
         .user_of(&pk)
         .map(|u| u.username.clone())
         .unwrap_or_else(|| crate::identity::truncate_pubkey(&pk));
+
+    // Stream audio controls. Deliberately separate from the participant's voice
+    // volume in the channel roster: someone's game audio and their microphone
+    // are two different things to want quieter. Both are listener-side only.
+    let stream_volume = state.read().stream_volumes.get(&pk).copied().unwrap_or(100);
+    let stream_muted = state.read().stream_muted.contains(&pk);
+    let pk_vol = pk.clone();
+    let pk_mute = pk.clone();
+    let apply_stream = move |vol: u32, muted: bool| {
+        let gain = if muted { 0.0 } else { vol as f32 / 100.0 };
+        let _ = document::eval(&stream_volume_js(gain));
+    };
+    let apply_from_slider = apply_stream;
 
     rsx! {
         // Move/resize tracking overlay — only present while dragging, so it
@@ -585,6 +735,48 @@ pub fn ScreenWatchWindow() -> Element {
                 span { class: "text-sm text-[var(--text)] font-medium truncate", "{name}'s screen" }
                 span { class: "text-[10px] uppercase tracking-wider text-[var(--danger)] font-semibold", "Live" }
                 div { class: "flex-1" }
+                // Stream audio: mute + level. Affects only our own playback —
+                // the broadcaster and every other viewer are unaffected.
+                div {
+                    class: "flex items-center gap-1.5 mr-2",
+                    onmousedown: move |e| e.stop_propagation(),
+                    button {
+                        class: if stream_muted {
+                            "w-6 h-6 flex items-center justify-center rounded text-[var(--danger)]"
+                        } else {
+                            "w-6 h-6 flex items-center justify-center rounded text-[var(--text-dim)] hover:text-[var(--text)]"
+                        },
+                        title: if stream_muted { "Unmute stream audio" } else { "Mute stream audio" },
+                        onclick: move |_| {
+                            let now = !stream_muted;
+                            {
+                                let mut s = state.write();
+                                if now { s.stream_muted.insert(pk_mute.clone()); } else { s.stream_muted.remove(&pk_mute); }
+                            }
+                            apply_stream(stream_volume, now);
+                        },
+                        dangerous_inner_html: if stream_muted {
+                            crate::features::icons::SPEAKER_OFF
+                        } else {
+                            crate::features::icons::SPEAKER
+                        },
+                    }
+                    input {
+                        r#type: "range",
+                        min: "0",
+                        max: "200",
+                        value: "{stream_volume}",
+                        disabled: stream_muted,
+                        class: "w-24 accent-[var(--accent)] disabled:opacity-40",
+                        title: "Stream volume (yours only)",
+                        oninput: move |e| {
+                            let val: u32 = e.value().parse().unwrap_or(100).clamp(0, 200);
+                            state.write().stream_volumes.insert(pk_vol.clone(), val);
+                            apply_from_slider(val, stream_muted);
+                        },
+                    }
+                    span { class: "text-[10px] text-[var(--text-dim)] w-8 text-right", "{stream_volume}%" }
+                }
                 button {
                     class: "text-[var(--text-dim)] hover:text-[var(--text)] text-lg leading-none",
                     onmousedown: move |e| e.stop_propagation(),

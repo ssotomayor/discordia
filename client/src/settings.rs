@@ -38,11 +38,15 @@ pub struct ClientSettings {
     pub selected_input_device: Option<String>,
     #[serde(default)]
     pub selected_output_device: Option<String>,
-    /// Microphone speaking-detection threshold (1..=200). Peak values above
-    /// this mark the user as "speaking" (green ring around the avatar).
-    /// Lower = more sensitive. Default 25 matches the original hardcoded value.
+    /// Microphone gate threshold (1..=1000, peak ×1000). Below it the mic is
+    /// treated as inactive: nothing is transmitted and the speaking indicator
+    /// stays off. Lower = more sensitive. Default 25 (≈ -32 dBFS).
     #[serde(default = "default_mic_sensitivity")]
     pub mic_sensitivity: u32,
+    /// DeepFilterNet noise suppression on captured microphone audio. Off by
+    /// default: it costs ~1.5% of a core and users should opt into it.
+    #[serde(default)]
+    pub noise_cancellation: bool,
     /// Screen-share quality preset id — see
     /// `features::screenshare::quality_preset`. Trades resolution against
     /// framerate and bitrate; "balanced" (1080p30) is the default.
@@ -88,6 +92,7 @@ impl Default for ClientSettings {
             selected_input_device: None,
             selected_output_device: None,
             mic_sensitivity: default_mic_sensitivity(),
+            noise_cancellation: false,
             screenshare_quality: default_screenshare_quality(),
         }
     }

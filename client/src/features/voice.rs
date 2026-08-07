@@ -6,9 +6,12 @@
 //! exposes only PCM frames at the edges; cpal handles the actual mic and
 //! speaker devices.
 
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use dioxus::core::Task;
 use dioxus::prelude::*;
 use futures_util::StreamExt;
 use livekit::options::TrackPublishOptions;
@@ -39,6 +42,55 @@ const RESAMPLER_CHUNK: usize = 512;
 /// the two mechanisms don't fight — see `PlaybackMixer::new`.
 const PLAYBACK_CAP_DIVISOR: u32 = 5;
 
+/// How long the transmit gate stays open after the last frame above threshold,
+/// in 10ms frames. Speech has gaps — breaths, stops between words — and a gate
+/// that slams shut in them chops the front off the next syllable. 300ms is the
+/// usual compromise between "doesn't clip speech" and "doesn't leak the room".
+const GATE_HANGOVER_FRAMES: u32 = 30;
+
+/// Live audio knobs shared between the UI thread, the cpal callbacks and the
+/// publish task.
+///
+/// These deliberately avoid Dioxus signals: the audio path runs off the UI
+/// thread and must never block on a `Signal` read (the cpal callback is
+/// realtime and the publish task runs 100 times a second). They're owned by
+/// `service_loop` and cloned into each session, so a device change or a
+/// reconnect — which tears down and rebuilds `ActiveVoice` — keeps every
+/// setting the user picked.
+#[derive(Clone)]
+struct AudioControls {
+    /// Transmit/speaking threshold as peak ×1000 fixed point (1..=1000), the
+    /// same scale the VU bar renders, so the slider's marker sits exactly where
+    /// the gate actually opens.
+    threshold: Arc<AtomicI32>,
+    /// DeepFilterNet noise suppression on the captured mic signal.
+    denoise: Arc<AtomicBool>,
+    /// Per-participant playback gain, keyed by LiveKit identity (= pubkey).
+    /// Absent = unity. Applied to *incoming* audio in our own mixer only.
+    gains: Arc<Mutex<HashMap<String, f32>>>,
+}
+
+impl AudioControls {
+    fn new(threshold: u32, denoise: bool) -> Self {
+        Self {
+            threshold: Arc::new(AtomicI32::new(threshold as i32)),
+            denoise: Arc::new(AtomicBool::new(denoise)),
+            gains: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+}
+
+/// What the mic pipeline reports back to the UI: the live input peak and
+/// whether the gate is currently passing audio. Written by the capture path,
+/// polled by a task that mirrors them into `AppState`.
+#[derive(Default)]
+struct MicMeter {
+    /// Peak since the last poll, ×1000 fixed point. Swapped to 0 on read.
+    peak: AtomicI32,
+    /// True while the transmit gate is open.
+    open: AtomicBool,
+}
+
 pub enum VoiceCmd {
     Connect {
         livekit_url: String,
@@ -56,9 +108,21 @@ pub enum VoiceCmd {
     SetMute {
         muted: bool,
     },
-    /// Set the microphone speaking-detection threshold (1..=200).
+    /// Set the microphone gate threshold (1..=1000, peak ×1000). Below it the
+    /// mic is treated as inactive and nothing is transmitted.
     SetSensitivity {
         threshold: u32,
+    },
+    /// Toggle DeepFilterNet noise suppression on captured mic audio.
+    SetNoiseCancellation {
+        enabled: bool,
+    },
+    /// Set one participant's *local* playback gain (1.0 = unity, 0.0 = muted
+    /// for us only). Never leaves this client — it scales incoming audio in our
+    /// mixer, so it cannot touch the speaker's mic or any other listener.
+    SetUserVolume {
+        pubkey: String,
+        gain: f32,
     },
 }
 
@@ -95,6 +159,14 @@ async fn service_loop(
     let mut session: Option<ActiveVoice> = None;
     // Remember last connect parameters so we can reconnect on device changes.
     let mut last_connect: Option<(String, String, Id)> = None;
+    // Audio knobs outlive individual sessions: seeded from the settings the UI
+    // already restored into AppState, then mutated in place by the commands
+    // below. A reconnect rebuilds the pipeline around the *same* controls, so
+    // sensitivity, noise cancellation and per-user volumes all survive it.
+    let controls = {
+        let s = state.read();
+        AudioControls::new(s.mic_sensitivity, s.noise_cancellation)
+    };
 
     while let Some(cmd) = rx.recv().await {
         match cmd {
@@ -110,7 +182,15 @@ async fn service_loop(
                     eprintln!("[voice] shutting down previous session");
                     prev.shutdown().await;
                 }
-                match ActiveVoice::connect(&livekit_url, &token, channel_id, state.clone()).await {
+                match ActiveVoice::connect(
+                    &livekit_url,
+                    &token,
+                    channel_id,
+                    state.clone(),
+                    controls.clone(),
+                )
+                .await
+                {
                     Ok(active) => {
                         eprintln!("[voice] connected ok");
                         state.write().voice.phase = VoicePhase::Connected;
@@ -178,7 +258,9 @@ async fn service_loop(
                         if let Some(prev) = session.take() {
                             prev.shutdown().await;
                         }
-                        match ActiveVoice::connect(url, tok, cid, state.clone()).await {
+                        match ActiveVoice::connect(url, tok, cid, state.clone(), controls.clone())
+                            .await
+                        {
                             Ok(active) => {
                                 eprintln!("[voice] reconnected ok");
                                 // update phase in its own small scope
@@ -207,8 +289,22 @@ async fn service_loop(
                 state.write().voice.muted = muted;
             }
             VoiceCmd::SetSensitivity { threshold } => {
+                let threshold = threshold.clamp(1, 1000);
                 eprintln!("[voice] SetSensitivity threshold={threshold}");
+                // The live pipeline reads this atomic, so the change lands on
+                // the very next 10ms frame — no reconnect, no session restart.
+                controls.threshold.store(threshold as i32, Ordering::Relaxed);
                 state.write().mic_sensitivity = threshold;
+            }
+            VoiceCmd::SetNoiseCancellation { enabled } => {
+                eprintln!("[voice] SetNoiseCancellation enabled={enabled}");
+                controls.denoise.store(enabled, Ordering::Relaxed);
+                state.write().noise_cancellation = enabled;
+            }
+            VoiceCmd::SetUserVolume { pubkey, gain } => {
+                let gain = gain.clamp(0.0, 2.0);
+                eprintln!("[voice] SetUserVolume {} gain={gain:.2}", &pubkey[..pubkey.len().min(8)]);
+                controls.gains.lock().insert(pubkey, gain);
             }
         }
     }
@@ -223,10 +319,20 @@ struct ActiveVoice {
     local_audio: LocalAudioTrack,
     _playback: PlaybackMixer,
     event_task: tokio::task::JoinHandle<()>,
+    /// Mirrors the mic meter into `AppState`. Cancelled on shutdown — left
+    /// running, one accumulates per reconnect and they fight over the same
+    /// `mic_level` / `speaking` fields.
+    meter_task: Task,
 }
 
 impl ActiveVoice {
-    async fn connect(livekit_url: &str, token: &str, _channel_id: Id, state: Signal<AppState>) -> Result<Self, String> {
+    async fn connect(
+        livekit_url: &str,
+        token: &str,
+        _channel_id: Id,
+        state: Signal<AppState>,
+        controls: AudioControls,
+    ) -> Result<Self, String> {
         let (room, mut events) = Room::connect(livekit_url, token, RoomOptions::default())
             .await
             .map_err(|e| format!("livekit connect: {e}"))?;
@@ -260,36 +366,39 @@ impl ActiveVoice {
             .await
             .map_err(|e| format!("publish mic: {e}"))?;
 
-        // `NativeAudioSource::capture_frame` is async — calling it from the
-        // sync cpal audio thread and dropping the future means it never
-        // runs. Funnel frames through an mpsc channel to a tokio task that
-        // properly awaits.
-        let (frame_tx, mut frame_rx) =
-            tokio::sync::mpsc::unbounded_channel::<Vec<i16>>();
-        let publish_source = source.clone();
-        tokio::spawn(async move {
-            let mut sent = 0u64;
-            while let Some(samples) = frame_rx.recv().await {
-                let frame = AudioFrame {
-                    data: samples.into(),
-                    sample_rate: SAMPLE_RATE,
-                    num_channels: CHANNELS,
-                    samples_per_channel: FRAME_SAMPLES as u32,
-                };
-                if let Err(e) = publish_source.capture_frame(&frame).await {
-                    eprintln!("[voice] capture_frame error: {e:?}");
-                }
-                sent += 1;
-                if sent % 500 == 0 {
-                    eprintln!("[voice] publish: {sent} frames forwarded to libwebrtc");
-                }
-            }
-            eprintln!("[voice] publish task ended after {sent} frames");
-        });
-        let mic = MicCapture::start(frame_tx, state.clone())?;
+        // The capture path is three stages, for three different reasons.
+        //
+        // cpal's callback is realtime: it only downmixes, resamples and cuts
+        // the buffer into exact 10ms hops. Those hops go to a dedicated DSP
+        // thread that does the expensive work — DeepFilterNet inference and the
+        // transmit gate — because a 150µs model run inside a callback with a
+        // ~10ms budget invites xruns the moment the machine gets busy (and
+        // because the model is `!Send`, so it cannot live in a task at all).
+        // What survives the gate reaches a tokio task, which exists purely
+        // because `NativeAudioSource::capture_frame` is async: calling it from
+        // the sync audio thread and dropping the future means it never runs.
+        //
+        // Hops stay f32 until the last step so the model works at full
+        // resolution; quantization to i16 happens after the gate.
+        let (frame_tx, frame_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<f32>>();
+        let (gated_tx, gated_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<i16>>();
+        let meter = Arc::new(MicMeter::default());
+        let muted = Arc::new(AtomicBool::new(false));
+        {
+            let controls = controls.clone();
+            let meter = meter.clone();
+            let muted = muted.clone();
+            std::thread::Builder::new()
+                .name("dxf-mic-dsp".into())
+                .spawn(move || denoise_gate_loop(frame_rx, gated_tx, controls, meter, muted))
+                .map_err(|e| format!("spawn mic dsp thread: {e}"))?;
+        }
+        tokio::spawn(publish_loop(gated_rx, source.clone()));
+        let mic = MicCapture::start(frame_tx, state.clone(), muted)?;
+        let meter_task = spawn_meter_task(state.clone(), meter);
 
         // Remote audio mixer.
-        let playback = PlaybackMixer::start(state.clone())?;
+        let playback = PlaybackMixer::start(state.clone(), controls.clone())?;
         let mixer_handle = playback.handle();
 
         // Event task: subscribe to room events, hook up remote tracks.
@@ -326,7 +435,7 @@ impl ActiveVoice {
                         }
                         _ => {}
                     }
-                    if let RoomEvent::TrackSubscribed { track, .. } = ev {
+                    if let RoomEvent::TrackSubscribed { track, participant, .. } = ev {
                         if let RemoteTrack::Audio(audio) = track {
                             let stream = NativeAudioStream::new(
                                 audio.rtc_track(),
@@ -334,7 +443,11 @@ impl ActiveVoice {
                                 CHANNELS as i32,
                             );
                             let mixer_handle = mixer_handle.clone();
-                            tokio::spawn(consume_remote_track(stream, mixer_handle));
+                            // The LiveKit identity is the user's pubkey (the
+                            // gateway mints tokens with `with_identity(pubkey)`),
+                            // which is what the per-user volume map is keyed by.
+                            let identity = participant.identity().0.clone();
+                            tokio::spawn(consume_remote_track(stream, mixer_handle, identity));
                         }
                     }
                 }
@@ -348,11 +461,12 @@ impl ActiveVoice {
             local_audio: local_audio_for_mute,
             _playback: playback,
             event_task,
+            meter_task,
         })
     }
 
     async fn set_muted(&mut self, muted: bool) {
-        self.mic.set_muted(muted);
+        self.mic.muted.store(muted, Ordering::Relaxed);
         // Disabling the track stops audio from being sent and signals other
         // peers via the muted-track event.
         self.local_audio.rtc_track().set_enabled(!muted);
@@ -360,6 +474,7 @@ impl ActiveVoice {
 
     async fn shutdown(self) {
         self.event_task.abort();
+        self.meter_task.cancel();
         self.mic.stop();
         // Dropping the Arc<Room> triggers disconnect.
         drop(self.room);
@@ -367,16 +482,206 @@ impl ActiveVoice {
 }
 
 // ---------------------------------------------------------------------------
-// Microphone capture: cpal -> AudioFrame -> NativeAudioSource
+// Publish path: mic hop -> denoise -> transmit gate -> NativeAudioSource
+// ---------------------------------------------------------------------------
+
+/// Denoise and gate captured hops, on a thread of its own.
+///
+/// The gate is what makes the sensitivity slider mean something. Before, the
+/// threshold only tinted a dot in the UI while every frame — breathing, fans,
+/// the neighbour's drill — went out on the wire regardless. Now a frame below
+/// the threshold is simply not transmitted, which is what "the microphone is
+/// not active" has to mean for the control to be worth having.
+///
+/// This is a plain OS thread, not a task, for two reasons. `DfTract` holds `Rc`
+/// internally so it is `!Send` and cannot be held across an `.await` in a
+/// spawned task at all; and the work is a steady 150µs of CPU every 10ms, which
+/// is exactly what you don't want sharing a runtime worker with the network I/O
+/// that has to keep the call up. It exits when `MicCapture` drops the sender.
+fn denoise_gate_loop(
+    mut frame_rx: UnboundedReceiver<Vec<f32>>,
+    out_tx: UnboundedSender<Vec<i16>>,
+    controls: AudioControls,
+    meter: Arc<MicMeter>,
+    muted: Arc<AtomicBool>,
+) {
+    let mut denoiser: Option<crate::denoise::Denoiser> = None;
+    // Frames left before the gate closes. Non-zero = currently transmitting.
+    let mut hangover = 0u32;
+    let mut gated = 0u64;
+
+    while let Some(mut samples) = frame_rx.blocking_recv() {
+        // Muted short-circuits everything except metering: the VU bar should
+        // still move so a user who forgot they're muted can see the mic is
+        // fine. No point running the model on audio nobody will hear.
+        if muted.load(Ordering::Relaxed) {
+            meter.bump_peak(peak_fixed(&samples));
+            meter.open.store(false, Ordering::Relaxed);
+            hangover = 0;
+            continue;
+        }
+
+        // Noise suppression first: the gate should judge the signal the
+        // listener will actually hear, so a fan the model removes shouldn't be
+        // holding the gate open.
+        if controls.denoise.load(Ordering::Relaxed) {
+            if denoiser.is_none() {
+                match crate::denoise::Denoiser::new() {
+                    Ok(d) => {
+                        eprintln!("[voice] DeepFilterNet loaded, noise cancellation active");
+                        denoiser = Some(d);
+                        // Loading took ~200ms, during which the capture callback
+                        // kept queueing hops. Playing catch-up would put that
+                        // 200ms into the call as permanent extra latency, so
+                        // throw the backlog away and resume at real time.
+                        let mut dropped = 0;
+                        while frame_rx.try_recv().is_ok() {
+                            dropped += 1;
+                        }
+                        if dropped > 0 {
+                            eprintln!("[voice] dropped {dropped} hops queued during model load");
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("[voice] noise cancellation unavailable: {e}");
+                        // Don't retry a model that won't load, 100 times a second.
+                        controls.denoise.store(false, Ordering::Relaxed);
+                    }
+                }
+            }
+            if let Some(d) = denoiser.as_mut() {
+                d.process_hop(&mut samples);
+            }
+        } else if denoiser.is_some() {
+            // Release the model when switched off. Its state would be stale on
+            // re-enable anyway: the GRUs would resume from whatever the audio
+            // looked like at the moment the user turned it off.
+            eprintln!("[voice] noise cancellation off, releasing model");
+            denoiser = None;
+        }
+
+        // Peak of the hop, on the same ×1000 fixed-point scale as the VU bar
+        // and the threshold slider — so the marker the user drags sits exactly
+        // where the gate opens.
+        let peak = peak_fixed(&samples);
+        meter.bump_peak(peak);
+        if peak > controls.threshold.load(Ordering::Relaxed) {
+            hangover = GATE_HANGOVER_FRAMES;
+        } else {
+            hangover = hangover.saturating_sub(1);
+        }
+        let open = hangover > 0;
+        meter.open.store(open, Ordering::Relaxed);
+        if !open {
+            gated += 1;
+            continue;
+        }
+
+        let data: Vec<i16> = samples
+            .iter()
+            // No dither here: these frames go straight into Opus. Dither is for
+            // the final quantization to an output device — feeding noise to a
+            // lossy encoder only costs bitrate.
+            .map(|s| (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16)
+            .collect();
+        if out_tx.send(data).is_err() {
+            break;
+        }
+    }
+    eprintln!("[voice] denoise/gate thread ended ({gated} frames gated)");
+}
+
+/// Peak absolute sample as ×1000 fixed point — the scale the threshold slider
+/// and the VU bar both speak.
+fn peak_fixed(samples: &[f32]) -> i32 {
+    (samples.iter().fold(0.0f32, |m, s| m.max(s.abs())) * 1_000.0) as i32
+}
+
+/// Hand gated frames to libwebrtc. `capture_frame` is async, which is the only
+/// reason this is a task at all — everything expensive already happened on the
+/// denoise/gate thread.
+async fn publish_loop(mut rx: UnboundedReceiver<Vec<i16>>, source: NativeAudioSource) {
+    let mut sent = 0u64;
+    while let Some(data) = rx.recv().await {
+        let frame = AudioFrame {
+            data: data.into(),
+            sample_rate: SAMPLE_RATE,
+            num_channels: CHANNELS,
+            samples_per_channel: FRAME_SAMPLES as u32,
+        };
+        if let Err(e) = source.capture_frame(&frame).await {
+            eprintln!("[voice] capture_frame error: {e:?}");
+        }
+        sent += 1;
+        if sent % 500 == 0 {
+            eprintln!("[voice] publish: {sent} frames forwarded to libwebrtc");
+        }
+    }
+    eprintln!("[voice] publish task ended after {sent} frames");
+}
+
+impl MicMeter {
+    /// Raise the stored peak to `value` if it's louder. Reset on read.
+    fn bump_peak(&self, value: i32) {
+        let mut current = self.peak.load(Ordering::Relaxed);
+        while value > current {
+            match self.peak.compare_exchange_weak(
+                current,
+                value,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(c) => current = c,
+            }
+        }
+    }
+}
+
+/// Mirror the mic meter into `AppState` for the VU bar and the speaking dot.
+///
+/// Both come from the *same* gate the publish path uses, so the indicator can't
+/// disagree with what is actually being transmitted — which it did when the UI
+/// ran its own copy of the threshold comparison.
+fn spawn_meter_task(mut state: Signal<AppState>, meter: Arc<MicMeter>) -> Task {
+    dioxus::prelude::spawn(async move {
+        let mut last_speaking = false;
+        let mut last_level = u32::MAX;
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            let level = meter.peak.swap(0, Ordering::Relaxed).clamp(0, 1000) as u32;
+            let speaking = meter.open.load(Ordering::Relaxed);
+            // Only write on change: this ticks 6x a second and every write
+            // re-renders the app.
+            if level != last_level {
+                last_level = level;
+                state.write().mic_level = level;
+            }
+            if speaking != last_speaking {
+                last_speaking = speaking;
+                state.write().voice.speaking = speaking;
+            }
+        }
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Microphone capture: cpal -> mono 48kHz hops -> publish task
 // ---------------------------------------------------------------------------
 
 struct MicCapture {
     _stream: cpal::Stream,
-    muted: Arc<Mutex<bool>>,
+    /// Shared with the DSP thread, which is where muted frames are dropped
+    /// (after metering, so the VU bar keeps working while muted).
+    muted: Arc<AtomicBool>,
 }
 
 impl MicCapture {
-    fn start(frame_tx: tokio::sync::mpsc::UnboundedSender<Vec<i16>>, mut state: Signal<AppState>) -> Result<Self, String> {
+    fn start(
+        frame_tx: tokio::sync::mpsc::UnboundedSender<Vec<f32>>,
+        state: Signal<AppState>,
+        muted: Arc<AtomicBool>,
+    ) -> Result<Self, String> {
         let host = cpal::default_host();
         // Prefer user-selected device (by name) if present in AppState.
         let selected = state.read().selected_input_device.clone();
@@ -409,15 +714,10 @@ impl MicCapture {
             "[voice] mic: device={device_name} format={sample_format:?} rate={device_rate} ch={device_channels}"
         );
 
-        let muted = Arc::new(Mutex::new(false));
-        let muted_for_cb = muted.clone();
-
-        let raw_peak = Arc::new(std::sync::atomic::AtomicI32::new(0));
+        let raw_peak = Arc::new(AtomicI32::new(0));
         let raw_peak_cb = raw_peak.clone();
-        let frames_pushed = Arc::new(std::sync::atomic::AtomicU64::new(0)); 
-        let frames_pushed_cb = frames_pushed.clone();                    
-        let speak_peak = Arc::new(std::sync::atomic::AtomicI32::new(0));
-        let speak_peak_cb = speak_peak.clone();
+        let frames_pushed = Arc::new(AtomicU64::new(0));
+        let frames_pushed_cb = frames_pushed.clone();
 
         // Carry resampled samples across cpal callbacks so each frame we
         // hand to libwebrtc is always exactly `FRAME_SAMPLES` long.
@@ -440,18 +740,14 @@ impl MicCapture {
                     &config.into(),
                     move |data: &[f32], _| {
                         update_peak(&raw_peak_cb, data);
-                        update_peak(&speak_peak_cb, data);
                         let pushed = forward_mic(
                             &frame_tx,
                             data,
-                            device_rate,
                             device_channels,
-                            &muted_for_cb,
                             &accum,
                             &resampler_cb,
                         );
-                        frames_pushed_cb
-                            .fetch_add(pushed as u64, std::sync::atomic::Ordering::Relaxed);
+                        frames_pushed_cb.fetch_add(pushed as u64, Ordering::Relaxed);
                     },
                     err,
                     None,
@@ -467,18 +763,14 @@ impl MicCapture {
                         let f32_buf: Vec<f32> =
                             data.iter().map(|s| *s as f32 / i16::MAX as f32).collect();
                         update_peak(&raw_peak_cb, &f32_buf);
-                        update_peak(&speak_peak_cb, &f32_buf);
                         let pushed = forward_mic(
                             &frame_tx,
                             &f32_buf,
-                            device_rate,
                             device_channels,
-                            &muted_for_cb,
                             &accum,
                             &resampler_cb,
                         );
-                        frames_pushed_cb
-                            .fetch_add(pushed as u64, std::sync::atomic::Ordering::Relaxed);
+                        frames_pushed_cb.fetch_add(pushed as u64, Ordering::Relaxed);
                     },
                     err,
                     None,
@@ -496,18 +788,14 @@ impl MicCapture {
                             .map(|s| (*s as f32 - 32768.0) / 32768.0)
                             .collect();
                         update_peak(&raw_peak_cb, &f32_buf);
-                        update_peak(&speak_peak_cb, &f32_buf);
                         let pushed = forward_mic(
                             &frame_tx,
                             &f32_buf,
-                            device_rate,
                             device_channels,
-                            &muted_for_cb,
                             &accum,
                             &resampler_cb,
                         );
-                        frames_pushed_cb
-                            .fetch_add(pushed as u64, std::sync::atomic::Ordering::Relaxed);
+                        frames_pushed_cb.fetch_add(pushed as u64, Ordering::Relaxed);
                     },
                     err,
                     None,
@@ -526,8 +814,8 @@ impl MicCapture {
             let mut prev_frames = 0u64;
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                let p = peak_log.swap(0, std::sync::atomic::Ordering::Relaxed) as f32 / 1_000.0;
-                let f = frames_log.load(std::sync::atomic::Ordering::Relaxed);
+                let p = peak_log.swap(0, Ordering::Relaxed) as f32 / 1_000.0;
+                let f = frames_log.load(Ordering::Relaxed);
                 let level = if p < 0.001 { "silent" } else if p < 0.01 { "very quiet" } else { "speaking" };
                 eprintln!(
                     "[voice] mic heartbeat: raw peak={p:.4} ({level}), frames pushed to webrtc={f} (+{})",
@@ -536,41 +824,15 @@ impl MicCapture {
                 prev_frames = f;
             }
         });
-        // Speaking indicator: sample every 150ms with a short hangover so the dot
-        // doesn't flicker between words/breaths. The threshold is read live from
-        // AppState so the audio-settings slider takes effect immediately.
-        dioxus::prelude::spawn(async move {
-        const HANGOVER_TICKS: u32 = 4; // ~600ms tras el último sonido fuerte
-        let mut hangover = 0u32;
-        let mut currently_speaking = false;
-        loop {
-        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-        let p = speak_peak.swap(0, std::sync::atomic::Ordering::Relaxed);
-        let threshold = state.read().mic_sensitivity as i32;
-        // Publish the live mic level so the audio-settings VU bar can render
-        // it alongside the threshold marker. Clamp to the 0..=1000 range the
-        // UI expects (peak is stored as ×1000 fixed-point).
-        state.write().mic_level = p.clamp(0, 1000) as u32;
-        if p > threshold {
-            hangover = HANGOVER_TICKS;
-        } else if hangover > 0 {
-            hangover -= 1;
-        }
-        let should_speak = hangover > 0;
-        if should_speak != currently_speaking {
-            currently_speaking = should_speak;
-            state.write().voice.speaking = should_speak;
-        }
-    }
-});
+        // Speaking detection and the VU bar now live on the publish task (see
+        // `publish_loop` / `spawn_meter_task`), which is the only place that
+        // sees the exact frames being transmitted. Running a second, separate
+        // threshold comparison here is what let the indicator and the actual
+        // audio disagree.
         Ok(Self {
             _stream: stream,
             muted,
         })
-    }
-
-    fn set_muted(&self, muted: bool) {
-        *self.muted.lock() = muted;
     }
 
     fn stop(self) {
@@ -578,18 +840,17 @@ impl MicCapture {
     }
 }
 
+/// Downmix, resample and cut the device's callback buffer into exact 10ms
+/// hops for the publish task. Mute is *not* checked here: the publish task
+/// still wants muted frames so the VU bar keeps moving (a muted user watching
+/// a dead meter can't tell a mute from a broken mic), and it drops them there.
 fn forward_mic(
-    frame_tx: &tokio::sync::mpsc::UnboundedSender<Vec<i16>>,
+    frame_tx: &tokio::sync::mpsc::UnboundedSender<Vec<f32>>,
     samples: &[f32],
-    _device_rate: u32,
     device_channels: u32,
-    muted: &Arc<Mutex<bool>>,
     accum: &Arc<Mutex<Vec<f32>>>,
     resampler: &Arc<Mutex<Option<AudioResampler>>>,
 ) -> usize {
-    if *muted.lock() {
-        return 0;
-    }
     let mono: Vec<f32> = samples
         .chunks(device_channels as usize)
         .map(|c| c.iter().copied().sum::<f32>() / c.len() as f32)
@@ -609,13 +870,10 @@ fn forward_mic(
 
     let mut pushed = 0usize;
     while buf.len() >= FRAME_SAMPLES {
-        // No dither here: these frames go straight into Opus. Dither is for the
-        // final quantization to an output device — feeding noise to a lossy
-        // encoder only costs bitrate.
-        let chunk: Vec<i16> = buf
-            .drain(..FRAME_SAMPLES)
-            .map(|s| (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16)
-            .collect();
+        // Stays f32 all the way to the publish task: DeepFilterNet wants
+        // floats in [-1, 1], and quantizing here just to widen it again would
+        // throw away resolution before the model ever sees the signal.
+        let chunk: Vec<f32> = buf.drain(..FRAME_SAMPLES).collect();
         if frame_tx.send(chunk).is_err() {
             break;
         }
@@ -793,40 +1051,81 @@ fn dither_to_i16(sample: f32, rng: &mut u32) -> i16 {
 /// people left: the corrupted state outlived them.
 #[derive(Default)]
 struct MixerTracks {
-    buffers: std::collections::HashMap<u64, std::collections::VecDeque<f32>>,
+    buffers: std::collections::HashMap<u64, TrackBuf>,
     next_id: u64,
+}
+
+/// One remote participant's jitter buffer plus the gain we play them back at.
+struct TrackBuf {
+    samples: std::collections::VecDeque<f32>,
+    /// LiveKit identity of whoever is speaking — the user's pubkey. Keyed by
+    /// identity rather than track id so a participant who leaves and rejoins
+    /// (new track, new id) comes back at the level you last set for them.
+    identity: String,
+    /// Gain refreshed once per output callback from the shared map, so the
+    /// per-sample loop never touches a HashMap or a second lock.
+    gain: f32,
 }
 
 #[derive(Clone)]
 struct PlaybackHandle {
     tracks: Arc<Mutex<MixerTracks>>,
     device_rate: u32,
+    /// Shared with the UI via `AudioControls` — see `VoiceCmd::SetUserVolume`.
+    gains: Arc<Mutex<HashMap<String, f32>>>,
 }
 
 impl PlaybackHandle {
     /// Claim a jitter buffer for one remote track. The id is opaque; the caller
     /// hands it back to `push`/`remove_track`.
-    fn add_track(&self) -> u64 {
+    fn add_track(&self, identity: String) -> u64 {
+        // Read the gain and release that lock BEFORE taking `tracks`: the
+        // output callback locks them the other way round (tracks, then gains
+        // in `refresh_gains`), and holding both here in the opposite order is
+        // a deadlock against the audio thread.
+        let gain = self.gains.lock().get(&identity).copied().unwrap_or(1.0);
         let mut t = self.tracks.lock();
         let id = t.next_id;
         t.next_id = t.next_id.wrapping_add(1);
-        t.buffers
-            .insert(id, std::collections::VecDeque::with_capacity(SAMPLE_RATE as usize / 2));
+        t.buffers.insert(
+            id,
+            TrackBuf {
+                samples: std::collections::VecDeque::with_capacity(SAMPLE_RATE as usize / 2),
+                identity,
+                gain,
+            },
+        );
         id
     }
 
     fn push(&self, id: u64, samples: &[f32], cap: usize) {
         let mut t = self.tracks.lock();
-        if let Some(buf) = t.buffers.get_mut(&id) {
-            buf.extend(samples);
-            while buf.len() > cap {
-                buf.pop_front();
+        if let Some(track) = t.buffers.get_mut(&id) {
+            track.samples.extend(samples);
+            while track.samples.len() > cap {
+                track.samples.pop_front();
             }
         }
     }
 
     fn remove_track(&self, id: u64) {
         self.tracks.lock().buffers.remove(&id);
+    }
+}
+
+/// Copy the user's chosen volumes onto the live tracks. Called once per output
+/// callback: a HashMap lookup per *sample* would be absurd, and the volume only
+/// needs to be as fresh as one buffer (a few ms).
+fn refresh_gains(tracks: &mut MixerTracks, gains: &Arc<Mutex<HashMap<String, f32>>>) {
+    if tracks.buffers.is_empty() {
+        return;
+    }
+    let g = gains.lock();
+    if g.is_empty() {
+        return;
+    }
+    for track in tracks.buffers.values_mut() {
+        track.gain = g.get(&track.identity).copied().unwrap_or(1.0);
     }
 }
 
@@ -865,7 +1164,7 @@ struct PlaybackMixer {
 }
 
 impl PlaybackMixer {
-    fn start(state: Signal<AppState>) -> Result<Self, String> {
+    fn start(state: Signal<AppState>, controls: AudioControls) -> Result<Self, String> {
         let host = cpal::default_host();
         // Try to honour user-selected output device name if present.
         let selected = state.read().selected_output_device.clone();
@@ -911,6 +1210,10 @@ impl PlaybackMixer {
         let drift_counter = Arc::new(std::sync::atomic::AtomicU32::new(0));
         let drift_counter_cb = drift_counter.clone();
         let device_rate_cb = device_rate;
+        // Only one of these callbacks is ever built, but both closures must be
+        // constructible, so each needs its own clone of the gain map.
+        let gains_f32 = controls.gains.clone();
+        let gains_i16 = controls.gains.clone();
         // Dither PRNG state. Moved into the i16 callback so it advances across
         // invocations (a per-callback reseed would emit the same noise pattern
         // every buffer, which is audible as a tone).
@@ -921,8 +1224,9 @@ impl PlaybackMixer {
             cpal::SampleFormat::F32 => device.build_output_stream(
                 &config.into(),
                 move |data: &mut [f32], _| {
-                    cb_counter_cb.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    cb_counter_cb.fetch_add(1, Ordering::Relaxed);
                     let mut tracks = tracks_cb.lock();
+                    refresh_gains(&mut tracks, &gains_f32);
                     let mut pulled = 0u64;
                     // Drift compensation thresholds (in samples at device rate).
                     // The overrun mark must stay under the producer-side cap
@@ -930,19 +1234,24 @@ impl PlaybackMixer {
                     // and the branch is dead.
                     let overrun_threshold = (device_rate_cb as f64 * 0.15) as usize; // 150ms
                     let underrun_threshold = (device_rate_cb as f64 * 0.05) as usize; // 50ms
-                    let mut counter = drift_counter_cb.load(std::sync::atomic::Ordering::Relaxed);
+                    let mut counter = drift_counter_cb.load(Ordering::Relaxed);
                     for frame in data.chunks_mut(device_channels) {
                         counter = counter.wrapping_add(1);
                         // Sum every active track. Each keeps its own depth, so
                         // drift is corrected per speaker rather than globally.
                         let mut acc = 0.0f32;
-                        for buf in tracks.buffers.values_mut() {
-                            acc += pop_drift_compensated(
-                                buf,
-                                counter,
-                                overrun_threshold,
-                                underrun_threshold,
-                            );
+                        for track in tracks.buffers.values_mut() {
+                            // Always pop, even at zero gain: a locally-muted
+                            // participant whose buffer stops draining would
+                            // overflow and then blast 200ms of stale audio the
+                            // moment they're unmuted.
+                            acc += track.gain
+                                * pop_drift_compensated(
+                                    &mut track.samples,
+                                    counter,
+                                    overrun_threshold,
+                                    underrun_threshold,
+                                );
                         }
                         // Limit the mix, not the individual tracks: several
                         // people talking at once can exceed full scale even
@@ -955,8 +1264,8 @@ impl PlaybackMixer {
                             *s = sample;
                         }
                     }
-                    drift_counter_cb.store(counter, std::sync::atomic::Ordering::Relaxed);
-                    pulled_cb.fetch_add(pulled, std::sync::atomic::Ordering::Relaxed);
+                    drift_counter_cb.store(counter, Ordering::Relaxed);
+                    pulled_cb.fetch_add(pulled, Ordering::Relaxed);
                 },
                 err,
                 None,
@@ -966,21 +1275,23 @@ impl PlaybackMixer {
                 // Dither RNG state, owned by the callback — no shared state, no
                 // lock, no thread-local lookup on the realtime thread.
                 move |data: &mut [i16], _| {
-                    cb_counter_cb.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    cb_counter_cb.fetch_add(1, Ordering::Relaxed);
                     let mut tracks = tracks_cb.lock();
+                    refresh_gains(&mut tracks, &gains_i16);
                     let overrun_threshold = (device_rate_cb as f64 * 0.15) as usize;
                     let underrun_threshold = (device_rate_cb as f64 * 0.05) as usize;
-                    let mut counter = drift_counter_cb.load(std::sync::atomic::Ordering::Relaxed);
+                    let mut counter = drift_counter_cb.load(Ordering::Relaxed);
                     for frame in data.chunks_mut(device_channels) {
                         counter = counter.wrapping_add(1);
                         let mut acc = 0.0f32;
-                        for buf in tracks.buffers.values_mut() {
-                            acc += pop_drift_compensated(
-                                buf,
-                                counter,
-                                overrun_threshold,
-                                underrun_threshold,
-                            );
+                        for track in tracks.buffers.values_mut() {
+                            acc += track.gain
+                                * pop_drift_compensated(
+                                    &mut track.samples,
+                                    counter,
+                                    overrun_threshold,
+                                    underrun_threshold,
+                                );
                         }
                         let sample = acc.tanh();
                         // TPDF dither on the f32→i16 conversion.
@@ -989,7 +1300,7 @@ impl PlaybackMixer {
                             *s = s16;
                         }
                     }
-                    drift_counter_cb.store(counter, std::sync::atomic::Ordering::Relaxed);
+                    drift_counter_cb.store(counter, Ordering::Relaxed);
                 },
                 err,
                 None,
@@ -1028,7 +1339,11 @@ impl PlaybackMixer {
         // The resampler is created per remote track inside consume_remote_track,
         // not here: it carries filter state that only makes sense for one
         // continuous stream.
-        let handle = PlaybackHandle { tracks, device_rate };
+        let handle = PlaybackHandle {
+            tracks,
+            device_rate,
+            gains: controls.gains.clone(),
+        };
 
         Ok(Self {
             _stream: stream,
@@ -1041,7 +1356,11 @@ impl PlaybackMixer {
     }
 }
 
-async fn consume_remote_track(mut stream: NativeAudioStream, handle: PlaybackHandle) {
+async fn consume_remote_track(
+    mut stream: NativeAudioStream,
+    handle: PlaybackHandle,
+    identity: String,
+) {
     let mut frames = 0u64;
     let mut sample_count = 0u64;
     let mut peak_recent: i16 = 0;
@@ -1049,7 +1368,7 @@ async fn consume_remote_track(mut stream: NativeAudioStream, handle: PlaybackHan
     // accumulator across calls, so it belongs to exactly one stream — sharing
     // one between participants corrupts it for everyone.
     let mut resampler = AudioResampler::new(SAMPLE_RATE, handle.device_rate);
-    let track_id = handle.add_track();
+    let track_id = handle.add_track(identity);
     let cap = (handle.device_rate / PLAYBACK_CAP_DIVISOR) as usize;
     while let Some(frame) = stream.next().await {
         if frames == 0 {
