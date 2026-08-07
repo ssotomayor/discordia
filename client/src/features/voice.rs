@@ -810,13 +810,82 @@ fn dither_to_i16(sample: f32, rng: &mut u32) -> i16 {
 // Playback mixer: NativeAudioStream -> ring buffer -> cpal output
 // ---------------------------------------------------------------------------
 
+/// One jitter buffer per subscribed remote track, summed by the output
+/// callback.
+///
+/// These must be per-track. Previously every remote participant shared a single
+/// buffer and a single resampler, so with two or more speakers their samples
+/// were *appended* to one timeline rather than mixed, and the resampler — which
+/// is stateful (FFT overlap plus a partial-chunk accumulator) — had its filter
+/// state corrupted by interleaved chunks from different people. That is why the
+/// audio degraded when a third participant joined and stayed broken after
+/// people left: the corrupted state outlived them.
+#[derive(Default)]
+struct MixerTracks {
+    buffers: std::collections::HashMap<u64, std::collections::VecDeque<f32>>,
+    next_id: u64,
+}
+
 #[derive(Clone)]
 struct PlaybackHandle {
-    buffer: Arc<Mutex<std::collections::VecDeque<f32>>>,
+    tracks: Arc<Mutex<MixerTracks>>,
     device_rate: u32,
-    /// High-quality resampler for LiveKit's 48kHz → device rate. None if the
-    /// device already runs at 48kHz (no resampling needed).
-    resampler: Arc<Mutex<Option<AudioResampler>>>,
+}
+
+impl PlaybackHandle {
+    /// Claim a jitter buffer for one remote track. The id is opaque; the caller
+    /// hands it back to `push`/`remove_track`.
+    fn add_track(&self) -> u64 {
+        let mut t = self.tracks.lock();
+        let id = t.next_id;
+        t.next_id = t.next_id.wrapping_add(1);
+        t.buffers
+            .insert(id, std::collections::VecDeque::with_capacity(SAMPLE_RATE as usize / 2));
+        id
+    }
+
+    fn push(&self, id: u64, samples: &[f32], cap: usize) {
+        let mut t = self.tracks.lock();
+        if let Some(buf) = t.buffers.get_mut(&id) {
+            buf.extend(samples);
+            while buf.len() > cap {
+                buf.pop_front();
+            }
+        }
+    }
+
+    fn remove_track(&self, id: u64) {
+        self.tracks.lock().buffers.remove(&id);
+    }
+}
+
+/// Pop one sample from a track's jitter buffer, nudging its depth back toward
+/// the target by skipping or duplicating a sample occasionally — a cheap
+/// time-stretch that doesn't shift pitch.
+#[inline]
+fn pop_drift_compensated(
+    buf: &mut std::collections::VecDeque<f32>,
+    counter: u32,
+    overrun: usize,
+    underrun: usize,
+) -> f32 {
+    let len = buf.len();
+    if len > overrun {
+        // Too full — drop every 32nd sample to shrink it without clicks.
+        if counter % 32 == 0 {
+            buf.pop_front();
+        }
+        buf.pop_front().unwrap_or(0.0)
+    } else if len < underrun {
+        // Too empty — repeat every 64th sample to stretch it.
+        if counter % 64 == 0 {
+            buf.front().copied().unwrap_or(0.0)
+        } else {
+            buf.pop_front().unwrap_or(0.0)
+        }
+    } else {
+        buf.pop_front().unwrap_or(0.0)
+    }
 }
 
 struct PlaybackMixer {
@@ -866,6 +935,8 @@ impl PlaybackMixer {
             std::collections::VecDeque::<f32>::with_capacity(SAMPLE_RATE as usize),
         ));
         let buffer_cb = buffer.clone();
+        let tracks = Arc::new(Mutex::new(MixerTracks::default()));
+        let tracks_cb = tracks.clone();
         let cb_counter = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let cb_counter_cb = cb_counter.clone();
         let pulled_counter = Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -887,7 +958,7 @@ impl PlaybackMixer {
                 &config.into(),
                 move |data: &mut [f32], _| {
                     cb_counter_cb.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    let mut buf = buffer_cb.lock();
+                    let mut tracks = tracks_cb.lock();
                     let mut pulled = 0u64;
                     // Drift compensation thresholds (in samples at device rate).
                     // The overrun mark must stay under the producer-side cap
@@ -920,6 +991,21 @@ impl PlaybackMixer {
                         } else {
                             buf.pop_front().unwrap_or(0.0)
                         };
+                        // Sum every active track. Each keeps its own depth, so
+                        // drift is corrected per speaker rather than globally.
+                        let mut acc = 0.0f32;
+                        for buf in tracks.buffers.values_mut() {
+                            acc += pop_drift_compensated(
+                                buf,
+                                counter,
+                                overrun_threshold,
+                                underrun_threshold,
+                            );
+                        }
+                        // Limit the mix, not the individual tracks: several
+                        // people talking at once can exceed full scale even
+                        // when each of them is comfortably within range.
+                        let sample = acc.tanh();
                         if sample != 0.0 {
                             pulled += 1;
                         }
@@ -939,7 +1025,7 @@ impl PlaybackMixer {
                 // lock, no thread-local lookup on the realtime thread.
                 move |data: &mut [i16], _| {
                     cb_counter_cb.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    let mut buf = buffer_cb.lock();
+                    let mut tracks = tracks_cb.lock();
                     let overrun_threshold = (device_rate_cb as f64 * 0.15) as usize;
                     let underrun_threshold = (device_rate_cb as f64 * 0.05) as usize;
                     let mut counter = drift_counter_cb.load(std::sync::atomic::Ordering::Relaxed);
@@ -960,6 +1046,16 @@ impl PlaybackMixer {
                         } else {
                             buf.pop_front().unwrap_or(0.0)
                         };
+                        let mut acc = 0.0f32;
+                        for buf in tracks.buffers.values_mut() {
+                            acc += pop_drift_compensated(
+                                buf,
+                                counter,
+                                overrun_threshold,
+                                underrun_threshold,
+                            );
+                        }
+                        let sample = acc.tanh();
                         // TPDF dither on the f32→i16 conversion.
                         let s16 = dither_to_i16(sample, &mut dither_rng);
                         for s in frame.iter_mut() {
@@ -999,17 +1095,13 @@ impl PlaybackMixer {
 
         stream.play().map_err(|e| format!("play output: {e}"))?;
 
-        // Create the output resampler (48kHz → device_rate). None if device
-        // already at 48kHz (common on macOS CoreAudio).
-        let resampler = AudioResampler::new(SAMPLE_RATE, device_rate);
-        if resampler.is_some() {
+        if device_rate != SAMPLE_RATE {
             eprintln!("[voice] playback: resampling {SAMPLE_RATE}Hz → {device_rate}Hz via rubato");
         }
-        let handle = PlaybackHandle {
-            buffer,
-            device_rate,
-            resampler: Arc::new(Mutex::new(resampler)),
-        };
+        // The resampler is created per remote track inside consume_remote_track,
+        // not here: it carries filter state that only makes sense for one
+        // continuous stream.
+        let handle = PlaybackHandle { tracks, device_rate };
 
         Ok(Self {
             _stream: stream,
@@ -1026,6 +1118,12 @@ async fn consume_remote_track(mut stream: NativeAudioStream, handle: PlaybackHan
     let mut frames = 0u64;
     let mut sample_count = 0u64;
     let mut peak_recent: i16 = 0;
+    // Per-track state. The resampler keeps FFT overlap and a partial-chunk
+    // accumulator across calls, so it belongs to exactly one stream — sharing
+    // one between participants corrupts it for everyone.
+    let mut resampler = AudioResampler::new(SAMPLE_RATE, handle.device_rate);
+    let track_id = handle.add_track();
+    let cap = (handle.device_rate / PLAYBACK_CAP_DIVISOR) as usize;
     while let Some(frame) = stream.next().await {
         if frames == 0 {
             eprintln!(
@@ -1056,25 +1154,23 @@ async fn consume_remote_track(mut stream: NativeAudioStream, handle: PlaybackHan
                 .data
                 .iter()
                 .map(|s| (*s as f32 / i16::MAX as f32).tanh())
+            // No per-track limiting here — the callback limits the summed mix
+            // instead, which is the only place that can see whether several
+            // people talking at once are driving the output past full scale.
+            let f32_samples: Vec<f32> = frame
+                .data
+                .iter()
+                .map(|s| *s as f32 / i16::MAX as f32)
                 .collect();
             // High-quality resampling via rubato (48kHz → device_rate).
-            let resampled = {
-                let mut rs = handle.resampler.lock();
-                match rs.as_mut() {
-                    Some(r) => r.process(&f32_samples),
-                    None => f32_samples,
-                }
+            let resampled = match resampler.as_mut() {
+                Some(r) => r.process(&f32_samples),
+                None => f32_samples,
             };
-            let mut buf = handle.buffer.lock();
-            buf.extend(resampled);
-            // Bound the buffer (~200 ms, down from 500ms) to limit latency
-            // drift. Keep this above the callback's overrun threshold (150ms),
-            // otherwise the buffer is hard-trimmed here before drift
-            // compensation ever sees it as too full.
-            let cap = (handle.device_rate / PLAYBACK_CAP_DIVISOR) as usize;
-            while buf.len() > cap {
-                buf.pop_front();
-            }
+            // Bound each track's buffer (~200 ms) to limit latency drift. Keep
+            // this above the callback's overrun threshold (150ms), otherwise the
+            // buffer is hard-trimmed here before drift compensation sees it.
+            handle.push(track_id, &resampled, cap);
         }
         if frames % 500 == 0 {
             eprintln!(
@@ -1090,5 +1186,8 @@ async fn consume_remote_track(mut stream: NativeAudioStream, handle: PlaybackHan
             peak_recent = 0;
         }
     }
+    // Drop this track's jitter buffer, otherwise a participant who left keeps
+    // contributing silence to the mix (and leaks a buffer per rejoin).
+    handle.remove_track(track_id);
     eprintln!("[voice] remote-track stream ended after {frames} frames");
 }
