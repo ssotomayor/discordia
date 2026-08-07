@@ -80,36 +80,18 @@ jobs:
       - name: Committed CSS matches source
         run: git diff --exit-code client/assets/tailwind.out.css
 
-  # ─────────────────────────────────────────────────────────────────────
-  # Pre-Release: on every push to master/main, build distributable
-  # artifacts for all three platforms (Linux, Windows, macOS) and publish a
-  # GitHub Pre-Release tagged v0.1.0-pre.<run_number>.
-  # `publish-prerelease` depends on the whole CI suite passing first, so a
-  # broken merge never produces a downloadable release.
-  #
-  # Gated with `if: github.event_name == 'push'` so pre-release builds
-  # and publication only run on push to master/main, never on pull_request
-  # events (where the GITHUB_TOKEN has restricted permissions and can't
-  # create releases — the 403 we hit on PR #13).
-  #
-  # Artifacts per platform:
-  #   Linux   → dioxusfun-server (binary) + Discordia-linux-x86_64.AppImage
-  #   Windows → dioxusfun-server.exe + Discordia-windows-portable.zip + -setup.exe
-  #   macOS   → dioxusfun-server (binary) + Discordia-macos-arm64.dmg
-  # ─────────────────────────────────────────────────────────────────────
+  # Pre-Release: every push to master/main builds Linux/Windows/macOS artifacts
+  # and publishes v0.1.0-pre.<run_number>. `if: push` keeps these off
+  # pull_request events, where GITHUB_TOKEN can't create releases (PR #13's 403).
 
   prerelease-linux:
     name: pre-release · server+client (linux · x86_64)
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
-    env:
-      CARGO_TERM_COLOR: always
-      LIVEKIT_BUNDLE_SKIP: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      # wry/GTK headers — necesarios para compilar el cliente (igual que desktop-build)
       - name: System deps (wry/GTK)
         run: |
           sudo apt-get update
@@ -117,18 +99,9 @@ jobs:
             libwebkit2gtk-4.1-dev libgtk-3-dev libxdo-dev \
             libasound2-dev libssl-dev pkg-config
       - uses: cargo-bins/cargo-binstall@main
-      # --force: rust-cache restaura ~/.cargo metadata, así que binstall ve
-      # dioxus-cli como "already installed" y lo salta — mientras el dx real
-      # no está en el cache restaurado.
-      #
-      # GITHUB_TOKEN: binstall consulta la GitHub API para localizar el `dx`
-      # precompilado. Sin token va anónimo (60 req/h compartidos por IP del
-      # runner) y devuelve 403 → binstall cae a `cargo install` desde fuente,
-      # que rompe (ver nota de --locked). Autenticado son 5000 req/h.
-      #
-      # --locked: si aun así toca compilar, usa el Cargo.lock publicado de
-      # dioxus-cli. Sin él cargo re-resuelve a lo último semver-compatible y
-      # auth-git2 no compila contra el git2 nuevo (E0599 credential_helper).
+      # --force: rust-cache restores ~/.cargo metadata, so binstall thinks dx is
+      # already installed. GITHUB_TOKEN: anonymous API lookups hit the 60/h
+      # per-IP limit and 403 into a source build, which needs --locked to compile.
       - name: Install Dioxus CLI
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -139,12 +112,9 @@ jobs:
         run: cargo build --release -p dioxusfun-server
       - name: Strip server binary
         run: strip target/release/dioxusfun-server
-      # dx bundle en Linux produce AppImage por defecto. No necesita FUSE en
-      # CI: dx setea APPIMAGE_EXTRACT_AND_RUN=1 y auto-descarga linuxdeploy.
       - name: Bundle client (AppImage)
         working-directory: client
         run: dx bundle --release
-      # El nombre del AppImage incluye versión+arch: Discordia_0.1.0_x86_64.AppImage
       - name: Collect artifacts
         shell: pwsh
         run: |
@@ -164,20 +134,14 @@ jobs:
     if: github.event_name == 'push'
     runs-on: windows-latest
     env:
-      CARGO_TERM_COLOR: always
-      # LiveKit's prebuilt libwebrtc links the STATIC MSVC runtime (/MT);
-      # Rust defaults to /MD, so both C++ runtimes collide (LNK2038). Match
-      # libwebrtc by making Rust use the static CRT too. Same flag as
-      # windows-release.yml and .cargo/config.toml.
+      # libwebrtc links the STATIC MSVC runtime (/MT); Rust defaults to /MD and
+      # the two collide (LNK2038). Same flag as windows-release.yml.
       RUSTFLAGS: "-C target-feature=+crt-static"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: cargo-bins/cargo-binstall@main
-      # Ver la nota extensa en prerelease-linux: --force por el rust-cache,
-      # GITHUB_TOKEN para no comerse el 403 anónimo de la GitHub API, y
-      # --locked para que el fallback a compilación desde fuente no rompa.
       - name: Install Dioxus CLI
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -185,17 +149,13 @@ jobs:
       - name: Verify dx
         run: dx --version
       - name: Build server (release)
-        env:
-          LIVEKIT_BUNDLE_SKIP: "1"
         run: cargo build --release -p dioxusfun-server
       - name: Bundle client
         working-directory: client
         run: dx bundle --release
-      # dx emits the app three times (standalone exe, NSIS installer, and
-      # the installer's staging copy). Publish two lean things instead of
-      # zipping the whole tree: a portable zip (exe + its assets, which live
-      # beside the exe — not embedded in it) and the installer on its own.
-      # Same packaging logic as windows-release.yml.
+      # dx emits the app three times (standalone exe, NSIS installer, and the
+      # installer's staging copy). Ship a portable zip (exe + the assets that
+      # live beside it, not embedded) and the installer, not the whole tree.
       - name: Package client artifacts
         shell: pwsh
         run: |
@@ -224,19 +184,11 @@ jobs:
     name: pre-release · server+client (macos · arm64)
     if: github.event_name == 'push'
     runs-on: macos-latest           # macOS 14 = Apple Silicon (M1)
-    env:
-      CARGO_TERM_COLOR: always
-      # -ObjC es requerido por libwebrtc; ya está en .cargo/config.toml para
-      # aarch64-apple-darwin, se aplica automáticamente. No hay que setearlo aquí.
-      LIVEKIT_BUNDLE_SKIP: "1"      # evita clone + go build de LiveKit (~3 min)
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: cargo-bins/cargo-binstall@main
-      # Ver la nota extensa en prerelease-linux. Este es el job que falló en la
-      # run 31195906555: 403 de la GitHub API → fallback a fuente → E0599 en
-      # auth-git2. GITHUB_TOKEN evita el 403; --locked salva el fallback.
       - name: Install Dioxus CLI
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -244,15 +196,10 @@ jobs:
       - name: Verify dx
         run: dx --version
       - name: Build server (release)
-        env:
-          LIVEKIT_BUNDLE_SKIP: "1"
         run: cargo build --release -p dioxusfun-server
       - name: Bundle client
         working-directory: client
         run: dx bundle --release
-      # dx bundle en macOS genera:
-      #   target/dx/macos/Discordia.app   (bundle)
-      #   target/dx/macos/*.dmg           (instalador)
       - name: Collect client artifacts
         shell: pwsh
         run: |
@@ -277,8 +224,8 @@ jobs:
     needs: [test, desktop-build, prerelease-linux, prerelease-windows, prerelease-macos]
     runs-on: ubuntu-latest
     permissions:
-      contents: write           # crear el release + tag
-      pull-requests: read       # generate_release_notes: true → lee PRs mergeados
+      contents: write           # create the release + tag
+      pull-requests: read       # generate_release_notes reads merged PRs
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -287,28 +234,23 @@ jobs:
       - name: Stage release artifacts
         run: |
           mkdir -p release
-          # find (no cp con paths fijos): upload-artifact@v4 preserva la
-          # estructura del least-common-ancestor, así que los binarios del
-          # server quedan anidados bajo target/release/ dentro del artefacto
-          # descargado. find los localiza sin importar la profundidad.
-          # Linux
+          # find, not fixed paths: upload-artifact@v4 keeps the least-common-
+          # ancestor structure, so the server binaries land nested under
+          # target/release/ inside the downloaded artifact.
           find artifacts/prerelease-linux -type f -name dioxusfun-server \
             -exec cp {} release/dioxusfun-server-linux \;
           find artifacts/prerelease-linux -type f -name '*.AppImage' \
             -exec cp {} release/ \;
-          # Windows
           find artifacts/prerelease-windows -type f -name dioxusfun-server.exe \
             -exec cp {} release/ \;
           find artifacts/prerelease-windows -type f -name 'Discordia-windows-portable.zip' \
             -exec cp {} release/ \;
           find artifacts/prerelease-windows -type f -name 'Discordia-windows-setup.exe' \
             -exec cp {} release/ \;
-          # macOS
           find artifacts/prerelease-macos -type f -name dioxusfun-server \
             -exec cp {} release/dioxusfun-server-macos \;
           find artifacts/prerelease-macos -type f -name 'Discordia-macos-arm64.dmg' \
             -exec cp {} release/ \;
-          # Verificar que los 7 artefactos están presentes
           ls -l release/
           test "$(find release -type f | wc -l)" -eq 7 || { echo "ERROR: expected 7 artifacts"; exit 1; }
       - name: Create pre-release
