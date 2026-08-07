@@ -41,8 +41,15 @@ jobs:
       # sees dioxus-cli as "already installed" and skips it — while the actual
       # dx.exe isn't in the restored cache. Without this the build fails on
       # every run after the first with "the term 'dx' is not recognized".
+      #
+      # GITHUB_TOKEN keeps binstall's GitHub API lookups off the anonymous
+      # per-IP rate limit (60/h → 403), which otherwise sends it down the
+      # build-from-source path; --locked makes that path use dioxus-cli's
+      # published Cargo.lock so it doesn't break on re-resolved deps.
       - name: Install Dioxus CLI
-        run: cargo binstall dioxus-cli --no-confirm --force
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: cargo binstall dioxus-cli --no-confirm --force --locked
       - name: Verify dx
         run: dx --version
 
