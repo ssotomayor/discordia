@@ -1,110 +1,48 @@
-name: CI
-
-on:
-  push:
-    branches: [main, master]
-  pull_request:
-
-env:
-  CARGO_TERM_COLOR: always
-  # CI never needs the bundled LiveKit binary (voice is exercised only in
-  # manual runs); skipping saves a ~50MB download per job.
-  LIVEKIT_BUNDLE_SKIP: "1"
-
-jobs:
-  test:
-    name: fmt · clippy · test
+prerelease-linux:
+    name: pre-release · server+client (linux · x86_64)
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
-
-      # The desktop client needs system GTK/WebKit to compile; CI covers the
-      # server-side crates (protocol, server, bot SDK) where all the tests
-      # live. The client is checked in the desktop-build job below.
-      - name: Format
-        run: cargo fmt --all --check
-        continue-on-error: true # not yet formatted repo-wide; informational
-
-      - name: Clippy (server crates)
-        run: cargo clippy -p dioxusfun-protocol -p dioxusfun-server -p dioxusfun-bot --tests -- -D warnings
-        continue-on-error: true # informational until the lint debt is paid
-
-      - name: Tests (protocol + server + bot SDK)
-        run: cargo test -p dioxusfun-protocol -p dioxusfun-server -p dioxusfun-bot
-
-  desktop-build:
-    name: client compiles (linux)
-    runs-on: ubuntu-latest
+    env:
+      CARGO_TERM_COLOR: always
+      LIVEKIT_BUNDLE_SKIP: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # wry/GTK headers — necesarios para compilar el cliente (igual que desktop-build)
       - name: System deps (wry/GTK)
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libwebkit2gtk-4.1-dev libgtk-3-dev libxdo-dev \
             libasound2-dev libssl-dev pkg-config
-      - name: Check client
-        run: cargo check -p dioxusfun
-
-  tailwind:
-    name: tailwind css is current
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-          cache-dependency-path: client/package-lock.json
-
-      # `npx @tailwindcss/cli` fetches only the CLI binary, but the
-      # `@import "tailwindcss"` in assets/tailwind.css has to resolve the
-      # `tailwindcss` package itself from the input file's directory — that
-      # comes from package.json devDependencies, so install them first.
-      - name: Install Node deps
-        run: cd client && npm ci
-
-      - name: Regenerate Tailwind CSS
-        run: cd client && npx @tailwindcss/cli -i assets/tailwind.css -o assets/tailwind.out.css --minify
-
-      # tailwind.out.css is committed and baked into the binary via
-      # include_str!, so Node is never needed to build or run the app — only to
-      # regenerate this file. Drift means someone added a utility class without
-      # regenerating, and it would silently render unstyled at runtime.
-      - name: Committed CSS matches source
-        run: git diff --exit-code client/assets/tailwind.out.css
-
-  # ─────────────────────────────────────────────────────────────────────
-  # Pre-Release: on every push to master/main, build distributable
-  # artifacts (Linux server, Windows server, Windows client bundle) and
-  # publish a GitHub Pre-Release tagged v0.1.0-pre.<run_number>.
-  # `publish-prerelease` depends on the whole CI suite passing first, so a
-  # broken merge never produces a downloadable release.
-  # ─────────────────────────────────────────────────────────────────────
-
-  prerelease-linux:
-    name: pre-release · server (linux)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: cargo-bins/cargo-binstall@main
+      # --force: rust-cache restaura ~/.cargo metadata, así que binstall ve
+      # dioxus-cli como "already installed" y lo salta — mientras el dx.exe
+      # real no está en el cache restaurado.
+      - name: Install Dioxus CLI
+        run: cargo binstall dioxus-cli --no-confirm --force
       - name: Build server (release)
-        env:
-          LIVEKIT_BUNDLE_SKIP: "1"
         run: cargo build --release -p dioxusfun-server
-      - name: Strip binary
+      - name: Strip server binary
         run: strip target/release/dioxusfun-server
+      # dx bundle en Linux produce AppImage por defecto. No necesita FUSE en
+      # CI: dx setea APPIMAGE_EXTRACT_AND_RUN=1 y auto-descarga linuxdeploy.
+      - name: Bundle client (AppImage)
+        working-directory: client
+        run: dx bundle --release
+      # El nombre del AppImage incluye versión+arch: Discordia_0.1.0_x86_64.AppImage
+      - name: Collect artifacts
+        shell: pwsh
+        run: |
+          $appimg = Get-ChildItem -Recurse -Filter '*.AppImage' target/dx | Select-Object -First 1
+          if (-not $appimg) { throw "no AppImage produced by dx bundle" }
+          Copy-Item $appimg.FullName Discordia-linux-x86_64.AppImage
       - uses: actions/upload-artifact@v4
         with:
-          name: prerelease-server-linux
-          path: target/release/dioxusfun-server
+          name: prerelease-linux
+          path: |
+            target/release/dioxusfun-server
+            Discordia-linux-x86_64.AppImage
           retention-days: 7
 
   prerelease-windows:
@@ -115,16 +53,13 @@ jobs:
       # LiveKit's prebuilt libwebrtc links the STATIC MSVC runtime (/MT);
       # Rust defaults to /MD, so both C++ runtimes collide (LNK2038). Match
       # libwebrtc by making Rust use the static CRT too. Same flag as
-      # windows-release.yml.
+      # windows-release.yml and .cargo/config.toml.
       RUSTFLAGS: "-C target-feature=+crt-static"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: cargo-bins/cargo-binstall@main
-      # --force: rust-cache restores ~/.cargo metadata, so binstall sees
-      # dioxus-cli as "already installed" and skips it — while the actual
-      # dx.exe isn't in the restored cache.
       - name: Install Dioxus CLI
         run: cargo binstall dioxus-cli --no-confirm --force
       - name: Build server (release)
@@ -163,9 +98,52 @@ jobs:
             Discordia-windows-setup.exe
           retention-days: 7
 
+  prerelease-macos:
+    name: pre-release · server+client (macos · arm64)
+    runs-on: macos-latest           # macOS 14 = Apple Silicon (M1)
+    env:
+      CARGO_TERM_COLOR: always
+      # -ObjC es requerido por libwebrtc; ya está en .cargo/config.toml para
+      # aarch64-apple-darwin, se aplica automáticamente. No hay que setearlo aquí.
+      LIVEKIT_BUNDLE_SKIP: "1"      # evita clone + go build de LiveKit (~3 min)
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: cargo-bins/cargo-binstall@main
+      - name: Install Dioxus CLI
+        run: cargo binstall dioxus-cli --no-confirm --force
+      - name: Build server (release)
+        env:
+          LIVEKIT_BUNDLE_SKIP: "1"
+        run: cargo build --release -p dioxusfun-server
+      - name: Bundle client
+        working-directory: client
+        run: dx bundle --release
+      # dx bundle en macOS genera:
+      #   target/dx/macos/Discordia.app   (bundle)
+      #   target/dx/macos/*.dmg           (instalador)
+      - name: Collect client artifacts
+        shell: pwsh
+        run: |
+          $root = Get-ChildItem -Recurse -Directory target/dx |
+                  Where-Object { $_.Name -eq 'macos' } | Select-Object -First 1
+          if (-not $root) { throw "no macos bundle output found under target/dx" }
+
+          $dmg = Get-ChildItem -Recurse -Filter '*.dmg' $root.FullName | Select-Object -First 1
+          if (-not $dmg) { throw "no .dmg produced by dx bundle" }
+          Copy-Item $dmg.FullName Discordia-macos-arm64.dmg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: prerelease-macos
+          path: |
+            target/release/dioxusfun-server
+            Discordia-macos-arm64.dmg
+          retention-days: 7
+
   publish-prerelease:
     name: Publish pre-release
-    needs: [test, desktop-build, prerelease-linux, prerelease-windows]
+    needs: [test, desktop-build, prerelease-linux, prerelease-windows, prerelease-macos]
     runs-on: ubuntu-latest
     permissions:
       contents: write           # required by softprops/action-gh-release
@@ -174,15 +152,19 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
-      - name: Flatten artifacts
+      - name: Stage release artifacts
         run: |
           mkdir -p release
-          find artifacts -type f \( \
-            -name 'dioxusfun-server' -o \
-            -name 'dioxusfun-server.exe' -o \
-            -name 'Discordia-windows-portable.zip' -o \
-            -name 'Discordia-windows-setup.exe' \) \
-            -exec cp {} release/ \;
+          # Linux
+          cp artifacts/prerelease-linux/dioxusfun-server           release/dioxusfun-server-linux
+          cp artifacts/prerelease-linux/Discordia-linux-x86_64.AppImage release/
+          # Windows
+          cp artifacts/prerelease-windows/dioxusfun-server.exe     release/
+          cp artifacts/prerelease-windows/Discordia-windows-portable.zip release/
+          cp artifacts/prerelease-windows/Discordia-windows-setup.exe   release/
+          # macOS
+          cp artifacts/prerelease-macos/dioxusfun-server          release/dioxusfun-server-macos
+          cp artifacts/prerelease-macos/Discordia-macos-arm64.dmg  release/
           ls -l release/
       - name: Create pre-release
         uses: softprops/action-gh-release@v2
