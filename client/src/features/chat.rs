@@ -703,4 +703,5 @@ fn Composer(channel_id: Id, composer_label: String, anchored: Signal<bool>) -> E
             }
         }
     }
+  }
 }
