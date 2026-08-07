@@ -467,7 +467,7 @@ fn VoiceChannelRow(
     } else {
         "text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-white/[0.03]"
     };
-    let mut state = use_app_state();
+    let state = use_app_state();
     let users_by_id = state.read();
     let sharers: Vec<String> = users_by_id.screen_sharers_in(channel.id).to_vec();
 
@@ -493,43 +493,162 @@ fn VoiceChannelRow(
                                 .map(|u| u.username.clone())
                                 .unwrap_or_else(|| crate::identity::truncate_pubkey(&vs.user_pubkey));
                             let is_self = self_pubkey.as_deref() == Some(vs.user_pubkey.as_str());
-                            let dot = if vs.speaking { "bg-[var(--accent)]" } else { "bg-[var(--text-dim)]" };
-                            let mute_badge = if vs.muted { Some("muted") } else { None };
                             let is_sharing = sharers.iter().any(|p| p == &vs.user_pubkey);
-                            // Clickable to watch only when you're in the channel
-                            // (so the JS room is connected) and it's not yourself.
-                            let can_watch = is_sharing && connected && !is_self;
-                            let watch_pk = vs.user_pubkey.clone();
                             rsx! {
-                                div {
+                                VoiceOccupant {
                                     key: "{vs.user_pubkey}",
-                                    class: "flex items-center gap-1.5 px-2 py-0.5 text-xs text-[var(--text-muted)]",
-                                    span { class: "w-1.5 h-1.5 rounded-full {dot}" }
-                                    span { class: "truncate flex-1",
-                                        "{name}"
-                                        if is_self { " (you)" }
-                                    }
-                                    if let Some(badge) = mute_badge {
-                                        span { class: "text-[9px] text-[var(--text-dim)] uppercase tracking-wider", "{badge}" }
-                                    }
-                                    if is_sharing {
-                                        button {
-                                            class: "flex items-center gap-1 text-[9px] uppercase tracking-wider text-[var(--danger)] font-semibold disabled:opacity-70 disabled:cursor-default",
-                                            disabled: !can_watch,
-                                            title: if can_watch { "Watch screen" } else { "Sharing screen" },
-                                            onclick: move |_| {
-                                                if can_watch {
-                                                    state.write().screen_viewing = Some(watch_pk.clone());
-                                                }
-                                            },
-                                            span { class: "w-1.5 h-1.5 rounded-full bg-[var(--danger)] dxf-dot-pulse", style: "color:var(--danger);" }
-                                            "live"
-                                        }
-                                    }
+                                    pubkey: vs.user_pubkey.clone(),
+                                    name,
+                                    speaking: vs.speaking,
+                                    remote_muted: vs.muted,
+                                    is_self,
+                                    is_sharing,
+                                    // Watching needs you in the channel (the JS
+                                    // screen room only connects then), and you
+                                    // can't watch your own share.
+                                    can_watch: is_sharing && connected && !is_self,
                                 }
                             }
                         }
                     }
+                }
+            }
+        }
+    }
+}
+
+/// One participant in a voice channel's roster, with the local audio controls
+/// for them: a volume slider and a local mute.
+///
+/// Everything here is *listener-side*. The gain is applied to their incoming
+/// stream in our own playback mixer (`features::voice`), so turning someone
+/// down changes only what this machine plays — it never touches their
+/// microphone, is never sent to the server, and no other listener sees it.
+/// That is also why local mute is kept separate from `remote_muted`, the
+/// speaker's own mute state pushed by the server.
+#[component]
+fn VoiceOccupant(
+    pubkey: String,
+    name: String,
+    speaking: bool,
+    remote_muted: bool,
+    is_self: bool,
+    is_sharing: bool,
+    can_watch: bool,
+) -> Element {
+    let mut state = use_app_state();
+    let voice = use_voice_tx();
+    let mut show_volume = use_signal(|| false);
+
+    let volume = state.read().user_volumes.get(&pubkey).copied().unwrap_or(100);
+    let locally_muted = state.read().user_muted.contains(&pubkey);
+
+    let dot = if speaking && !locally_muted {
+        "bg-[var(--accent)]"
+    } else {
+        "bg-[var(--text-dim)]"
+    };
+    // Push the current setting down to the mixer, reading it back through the
+    // same accessor the rest of the app uses so the slider, the mute button and
+    // what's actually playing can't drift apart. Call it *after* writing state.
+    let apply = {
+        let pubkey = pubkey.clone();
+        let voice = voice.clone();
+        move || {
+            let gain = state.read().voice_gain_of(&pubkey);
+            voice.send(crate::features::voice::VoiceCmd::SetUserVolume {
+                pubkey: pubkey.clone(),
+                gain,
+            });
+        }
+    };
+    let apply_slider = apply.clone();
+    let pk_slider = pubkey.clone();
+    let pk_mute = pubkey.clone();
+    let pk_watch = pubkey.clone();
+
+    rsx! {
+        div { class: "px-2 py-0.5",
+            div { class: "flex items-center gap-1.5 text-xs text-[var(--text-muted)]",
+                span { class: "w-1.5 h-1.5 rounded-full shrink-0 {dot}" }
+                span { class: "truncate flex-1",
+                    "{name}"
+                    if is_self { " (you)" }
+                }
+                if remote_muted {
+                    span { class: "text-[9px] text-[var(--text-dim)] uppercase tracking-wider", "muted" }
+                }
+                // No volume control for yourself: your own voice is never
+                // played back, so there'd be nothing for it to change.
+                if !is_self {
+                    button {
+                        class: if locally_muted {
+                            "w-5 h-5 flex items-center justify-center rounded text-[var(--danger)] shrink-0"
+                        } else if volume != 100 {
+                            "w-5 h-5 flex items-center justify-center rounded text-[var(--accent)] shrink-0"
+                        } else {
+                            "w-5 h-5 flex items-center justify-center rounded text-[var(--text-dim)] hover:text-[var(--text)] shrink-0"
+                        },
+                        title: if locally_muted { "Muted for you — click for volume" } else { "Volume (only affects your playback)" },
+                        onclick: move |_| {
+                            let now = !show_volume();
+                            show_volume.set(now);
+                        },
+                        dangerous_inner_html: if locally_muted {
+                            crate::features::icons::SPEAKER_OFF
+                        } else {
+                            crate::features::icons::SPEAKER
+                        },
+                    }
+                }
+                if is_sharing {
+                    button {
+                        class: "flex items-center gap-1 text-[9px] uppercase tracking-wider text-[var(--danger)] font-semibold disabled:opacity-70 disabled:cursor-default",
+                        disabled: !can_watch,
+                        title: if can_watch { "Watch screen" } else { "Sharing screen" },
+                        onclick: move |_| {
+                            if can_watch {
+                                state.write().screen_viewing = Some(pk_watch.clone());
+                            }
+                        },
+                        span { class: "w-1.5 h-1.5 rounded-full bg-[var(--danger)] dxf-dot-pulse", style: "color:var(--danger);" }
+                        "live"
+                    }
+                }
+            }
+            if show_volume() && !is_self {
+                div { class: "flex items-center gap-1.5 mt-1 mb-0.5",
+                    button {
+                        class: if locally_muted {
+                            "text-[9px] uppercase tracking-wider text-[var(--danger)] font-semibold shrink-0"
+                        } else {
+                            "text-[9px] uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--text)] shrink-0"
+                        },
+                        title: "Mute this person for you only",
+                        onclick: move |_| {
+                            let now = !locally_muted;
+                            {
+                                let mut s = state.write();
+                                if now { s.user_muted.insert(pk_mute.clone()); } else { s.user_muted.remove(&pk_mute); }
+                            }
+                            apply();
+                        },
+                        if locally_muted { "unmute" } else { "mute" }
+                    }
+                    input {
+                        r#type: "range",
+                        min: "0",
+                        max: "200",
+                        value: "{volume}",
+                        disabled: locally_muted,
+                        class: "flex-1 accent-[var(--accent)] disabled:opacity-40",
+                        oninput: move |e| {
+                            let val: u32 = e.value().parse().unwrap_or(100).clamp(0, 200);
+                            state.write().user_volumes.insert(pk_slider.clone(), val);
+                            apply_slider();
+                        },
+                    }
+                    span { class: "text-[9px] text-[var(--text-dim)] w-8 text-right shrink-0", "{volume}%" }
                 }
             }
         }
@@ -601,6 +720,10 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
     let selected_output_device = state.read().selected_output_device.clone();
     let mic_sensitivity = state.read().mic_sensitivity;
     let mic_level = state.read().mic_level;
+    let noise_cancellation = state.read().noise_cancellation;
+    // Whether the transmit gate is currently open — the very same flag the
+    // publish path acts on, so this can't claim something the audio isn't doing.
+    let gate_open = self_voice.speaking;
 
     // Clone voice sender for each closure so move into one closure doesn't
     // prevent reuse in others.
@@ -608,6 +731,7 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
     let v_for_input_change = voice.clone();
     let v_for_output_change = voice.clone();
     let v_for_sensitivity = voice.clone();
+    let v_for_denoise = voice.clone();
 
     // Snapshot current voice phase so the popover can show reconnection state.
     let voice_phase = state.read().voice.phase;
@@ -878,6 +1002,45 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                         let v = v_for_sensitivity.clone();
                                         let _ = v.send(crate::features::voice::VoiceCmd::SetSensitivity { threshold: val });
                                     },
+                                }
+                                // Live gate state. Moving the slider past the
+                                // current level flips this within ~300ms, which
+                                // is the quickest way to see that the control
+                                // does something — and the quickest way to spot
+                                // a threshold set so high you've gone silent.
+                                if voice_phase == VoicePhase::Connected && !reconnecting {
+                                    if muted {
+                                        span { class: "text-[10px] text-[var(--text-dim)] mt-0.5 block", "Muted" }
+                                    } else if gate_open {
+                                        span { class: "text-[10px] mt-0.5 block", style: "color: var(--up);", "Transmitting" }
+                                    } else {
+                                        span { class: "text-[10px] text-[var(--text-dim)] mt-0.5 block", "Below threshold — not transmitting" }
+                                    }
+                                }
+                            }
+                            // Noise cancellation (DeepFilterNet). Applies to the
+                            // live capture immediately — the model is loaded on
+                            // first enable, which takes ~200ms.
+                            div { class: "mb-2",
+                                label { class: "flex items-center gap-2 cursor-pointer select-none",
+                                    input {
+                                        r#type: "checkbox",
+                                        class: "accent-[var(--accent)]",
+                                        checked: noise_cancellation,
+                                        onchange: move |e| {
+                                            let on = e.checked();
+                                            let mut next = settings.read().clone();
+                                            next.noise_cancellation = on;
+                                            settings.set(next.clone());
+                                            crate::settings::save(&next);
+                                            state.write().noise_cancellation = on;
+                                            v_for_denoise.send(crate::features::voice::VoiceCmd::SetNoiseCancellation { enabled: on });
+                                        },
+                                    }
+                                    span { class: "text-[11px] text-[var(--text-muted)] flex-1", "Noise cancellation" }
+                                }
+                                span { class: "text-[10px] text-[var(--text-dim)] mt-0.5 block",
+                                    "Removes fans, keyboards and room noise (DeepFilterNet, ~1.5% CPU)."
                                 }
                             }
                             // Output device select

@@ -1,6 +1,6 @@
 //! App-wide state shared via Dioxus context.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use dioxus::prelude::*;
 use tokio::sync::mpsc::UnboundedSender;
@@ -145,15 +145,33 @@ pub struct AppState {
     pub selected_input_device: Option<String>,
     /// Selected output device name (None = use system default).
     pub selected_output_device: Option<String>,
-    /// Microphone speaking-detection threshold (1..=200). Peak values above
-    /// this count as "speaking". Driven by the audio settings slider; persists
-    /// via ClientSettings. Lower = more sensitive.
+    /// Microphone gate threshold (1..=1000, peak ×1000 — the same scale as
+    /// `mic_level`). Frames below it are treated as inactive mic: they are not
+    /// transmitted and the speaking indicator stays off. Driven by the audio
+    /// settings slider, persisted via `ClientSettings`. Lower = more sensitive.
     pub mic_sensitivity: u32,
-    /// Live microphone peak level (0..=1000, fixed-point ×1000). Sampled every
-    /// 150ms by the voice service's speaking-detection loop. Drives the VU bar
-    /// in the audio settings popover so the user can see mic input + where the
-    /// threshold sits relative to it.
+    /// Live microphone peak level (0..=1000, fixed-point ×1000), sampled every
+    /// 150ms from the same frames the transmit gate judges. Drives the VU bar
+    /// in the audio settings popover so the user can see mic input against
+    /// where the threshold sits.
     pub mic_level: u32,
+    /// Whether DeepFilterNet noise suppression runs on captured microphone
+    /// audio before it is published. Persisted via `ClientSettings`.
+    pub noise_cancellation: bool,
+    /// Per-participant playback gain, keyed by pubkey, as a percentage
+    /// (100 = unity, 0..=200). Purely local: it scales *incoming* audio in our
+    /// own mixer and is never sent anywhere, so it cannot affect what the
+    /// speaker transmits or what anyone else hears.
+    pub user_volumes: HashMap<String, u32>,
+    /// Participants muted locally (independent of `user_volumes`, so unmuting
+    /// restores the previous level rather than resetting it to unity).
+    pub user_muted: HashSet<String>,
+    /// Per-sharer screen-share audio gain, keyed by pubkey, as a percentage
+    /// (100 = unity, 0..=200). Separate from `user_volumes`: the broadcast's
+    /// audio track and the sharer's microphone are two different streams.
+    pub stream_volumes: HashMap<String, u32>,
+    /// Screen-share streams muted locally, keyed by sharer pubkey.
+    pub stream_muted: HashSet<String>,
     /// Populated when running in self-host mode. None for remote connections.
     pub host_info: Option<HostInfo>,
     /// Bot installs per guild, for the owner's Integrations dialog. Populated by
@@ -212,6 +230,11 @@ impl AppState {
             selected_output_device: None,
             mic_sensitivity: 25,
             mic_level: 0,
+            noise_cancellation: false,
+            user_volumes: HashMap::new(),
+            user_muted: HashSet::new(),
+            stream_volumes: HashMap::new(),
+            stream_muted: HashSet::new(),
             host_info: None,
             integrations: HashMap::new(),
             roles: HashMap::new(),
@@ -298,6 +321,57 @@ impl AppState {
         self.profiles.get(pubkey)
     }
 
+    /// Effective presence for a pubkey: `"online" | "away" | "dnd" | "offline"`.
+    ///
+    /// Two independent things feed this and both matter. Connection presence is
+    /// the server's (`Member.online`, kept live by `MemberJoin`/`MemberLeave`);
+    /// the self-set status in the profile is only a *label* the user picked. A
+    /// disconnected user with `status: "online"` sitting in their profile is
+    /// offline, so connection presence wins — that's the bug behind the profile
+    /// card's permanently green dot, which read the label alone.
+    ///
+    /// Ourselves we always treat as connected (we're the ones rendering), and a
+    /// pubkey we hold no member row for (a DM partner in a guild we don't
+    /// share) has unknown presence — falling back to the label there beats
+    /// asserting "offline" about someone we simply can't see.
+    pub fn presence_of(&self, pubkey: &str) -> &str {
+        let label = self
+            .profiles
+            .get(pubkey)
+            .and_then(|p| p.status.as_deref())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("online");
+        if self.self_user.as_ref().is_some_and(|u| u.pubkey == pubkey) {
+            return label;
+        }
+        let mut seen = false;
+        for m in self.members.iter().filter(|m| m.user.pubkey == pubkey) {
+            if m.online {
+                return label;
+            }
+            seen = true;
+        }
+        if seen { "offline" } else { label }
+    }
+
+    /// Local playback gain for a participant's voice, as a linear multiplier.
+    /// Locally muted or 0% ⇒ 0.0. Never leaves this client.
+    pub fn voice_gain_of(&self, pubkey: &str) -> f32 {
+        if self.user_muted.contains(pubkey) {
+            return 0.0;
+        }
+        self.user_volumes.get(pubkey).copied().unwrap_or(100) as f32 / 100.0
+    }
+
+    /// Local playback gain for a screen share's audio, as a linear multiplier.
+    pub fn stream_gain_of(&self, pubkey: &str) -> f32 {
+        if self.stream_muted.contains(pubkey) {
+            return 0.0;
+        }
+        self.stream_volumes.get(pubkey).copied().unwrap_or(100) as f32 / 100.0
+    }
+
     /// The avatar data URL for a pubkey, if set.
     pub fn avatar_of(&self, pubkey: &str) -> Option<&str> {
         self.profiles
@@ -381,4 +455,112 @@ pub fn use_app_state() -> Signal<AppState> {
 
 pub fn use_gateway() -> GatewayTx {
     use_context::<GatewayTx>()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocol::{Member, Profile, User};
+
+    fn user(pk: &str) -> User {
+        User {
+            pubkey: pk.into(),
+            username: format!("u-{pk}"),
+        }
+    }
+
+    fn member(pk: &str, online: bool) -> Member {
+        Member {
+            user: user(pk),
+            guild_id: uuid::Uuid::nil(),
+            online,
+            bot: false,
+            roles: Vec::new(),
+            xp: 0,
+        }
+    }
+
+    fn profile(pk: &str, status: Option<&str>) -> Profile {
+        Profile {
+            pubkey: pk.into(),
+            status: status.map(Into::into),
+            ..Default::default()
+        }
+    }
+
+    /// The bug behind the always-green profile dot: a disconnected user whose
+    /// profile still carries `status: "online"` must read as offline.
+    #[test]
+    fn presence_prefers_connection_state_over_the_self_set_label() {
+        let mut s = AppState::empty();
+        s.members.push(member("alice", false));
+        s.profiles
+            .insert("alice".into(), profile("alice", Some("online")));
+        assert_eq!(s.presence_of("alice"), "offline");
+    }
+
+    #[test]
+    fn presence_uses_the_label_while_connected() {
+        let mut s = AppState::empty();
+        s.members.push(member("bob", true));
+        s.profiles.insert("bob".into(), profile("bob", Some("dnd")));
+        assert_eq!(s.presence_of("bob"), "dnd");
+
+        // No label set at all ⇒ plain online.
+        s.members.push(member("carol", true));
+        assert_eq!(s.presence_of("carol"), "online");
+    }
+
+    /// Membership of several guilds: online anywhere is online.
+    #[test]
+    fn presence_is_online_if_any_member_row_is() {
+        let mut s = AppState::empty();
+        s.members.push(member("dave", false));
+        let mut second = member("dave", true);
+        second.guild_id = uuid::Uuid::from_u128(1);
+        s.members.push(second);
+        assert_eq!(s.presence_of("dave"), "online");
+    }
+
+    /// Someone we hold no member row for (a DM partner in no shared guild) has
+    /// unknown presence — fall back to their label rather than claim offline.
+    #[test]
+    fn presence_falls_back_to_the_label_for_unknown_users() {
+        let mut s = AppState::empty();
+        s.profiles
+            .insert("erin".into(), profile("erin", Some("away")));
+        assert_eq!(s.presence_of("erin"), "away");
+        assert_eq!(s.presence_of("nobody"), "online");
+    }
+
+    /// We are always connected from our own point of view, even before any
+    /// member row for us has arrived.
+    #[test]
+    fn presence_of_self_uses_the_chosen_label() {
+        let mut s = AppState::empty();
+        s.self_user = Some(user("me"));
+        s.profiles.insert("me".into(), profile("me", Some("dnd")));
+        s.members.push(member("me", false));
+        assert_eq!(s.presence_of("me"), "dnd");
+    }
+
+    #[test]
+    fn local_gains_default_to_unity_and_mute_wins_over_volume() {
+        let mut s = AppState::empty();
+        assert_eq!(s.voice_gain_of("x"), 1.0);
+        assert_eq!(s.stream_gain_of("x"), 1.0);
+
+        s.user_volumes.insert("x".into(), 150);
+        assert_eq!(s.voice_gain_of("x"), 1.5);
+        // Muting must not clobber the stored level — unmuting restores 150%.
+        s.user_muted.insert("x".into());
+        assert_eq!(s.voice_gain_of("x"), 0.0);
+        s.user_muted.remove("x");
+        assert_eq!(s.voice_gain_of("x"), 1.5);
+
+        // Stream volume is tracked separately from the same user's voice.
+        s.stream_volumes.insert("x".into(), 50);
+        assert_eq!(s.stream_gain_of("x"), 0.5);
+        assert_eq!(s.voice_gain_of("x"), 1.5);
+    }
 }

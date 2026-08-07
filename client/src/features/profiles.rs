@@ -106,10 +106,9 @@ pub fn ProfileCard() -> Element {
         .and_then(|p| p.bio.clone())
         .filter(|b| !b.trim().is_empty());
     let banner = snapshot.profile_of(&pubkey).and_then(|p| p.banner.clone());
-    let status = snapshot
-        .profile_of(&pubkey)
-        .and_then(|p| p.status.clone())
-        .unwrap_or_else(|| "online".into());
+    // Effective presence, not the self-set label: a user who is disconnected
+    // reads "offline" here even if their profile still says "online".
+    let status = snapshot.presence_of(&pubkey).to_string();
     let custom_status = snapshot
         .profile_of(&pubkey)
         .and_then(|p| p.custom_status.clone())

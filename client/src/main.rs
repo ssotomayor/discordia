@@ -1,5 +1,6 @@
 mod app;
 mod blossom;
+mod denoise;
 mod features;
 mod host;
 mod identity;

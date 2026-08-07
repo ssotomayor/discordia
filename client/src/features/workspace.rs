@@ -25,8 +25,24 @@ const UNPLUG_ICON_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width=
 pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>) -> Element {
 
     let state = use_signal(AppState::empty);
+    let settings = use_context::<Signal<crate::settings::ClientSettings>>();
 
     let (gateway_tx, voice_tx) = use_hook(|| {
+        // Restore the persisted audio preferences BEFORE the voice service
+        // starts: it seeds its live audio controls from `AppState` on its first
+        // poll. Without this the saved mic sensitivity, device choices and
+        // noise-cancellation toggle were written to settings.json and then
+        // silently ignored on every launch, which is most of why the
+        // sensitivity slider looked like it did nothing.
+        {
+            let saved = settings.read();
+            let mut app = state;
+            let mut w = app.write();
+            w.mic_sensitivity = saved.mic_sensitivity.clamp(1, 1000);
+            w.noise_cancellation = saved.noise_cancellation;
+            w.selected_input_device = saved.selected_input_device.clone();
+            w.selected_output_device = saved.selected_output_device.clone();
+        }
         let voice_tx = spawn_voice_service(state);
         let gateway_tx = spawn_gateway(params.clone(), state, voice_tx.clone(), move |reason| {
             on_disconnect.call(reason);
@@ -228,6 +244,72 @@ fn ErrorToast() -> Element {
     }
 }
 
+/// UI sound effects, synthesised with Web Audio so they need no assets.
+///
+/// Everything routes through one idempotent `window.dxSfx` object with a
+/// per-cue cooldown. Two things make the naive approach double up: an effect
+/// that re-runs because some *other* signal it reads changed, and a component
+/// that gets mounted twice (hot reload, a re-keyed parent). The Rust side
+/// guards the first with explicit last-value comparisons; the cooldown catches
+/// anything that slips past, so a cue can't fire twice for one event.
+const SFX_JS: &str = r#"
+window.dxSfx = window.dxSfx || (function () {
+  let ctx = null;
+  const lastAt = {};
+  // Two cues can legitimately overlap (leaving voice closes a share you were
+  // watching), so the cooldown is per cue name rather than global.
+  const COOLDOWN_MS = 250;
+  function audio() {
+    if (!ctx) { try { ctx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { return null; } }
+    // Autoplay policies suspend the context until a gesture; resume is a no-op
+    // when it is already running.
+    if (ctx.state === 'suspended') { ctx.resume().catch(function () {}); }
+    return ctx;
+  }
+  // One short enveloped tone. Exponential ramps (never to exactly zero, which
+  // is undefined for exponentialRampToValueAtTime) so there is no click.
+  function tone(c, at, freq, dur, peak, type) {
+    const o = c.createOscillator(); const g = c.createGain();
+    o.type = type || 'sine'; o.frequency.setValueAtTime(freq, at);
+    o.connect(g); g.connect(c.destination);
+    g.gain.setValueAtTime(0.0001, at);
+    g.gain.exponentialRampToValueAtTime(peak, at + 0.012);
+    g.gain.exponentialRampToValueAtTime(0.0001, at + dur);
+    o.start(at); o.stop(at + dur + 0.02);
+  }
+  function play(name) {
+    const now = Date.now();
+    if (lastAt[name] && now - lastAt[name] < COOLDOWN_MS) return;
+    lastAt[name] = now;
+    const c = audio(); if (!c) return;
+    const t = c.currentTime;
+    switch (name) {
+      // Leaving voice: a falling two-tone, the inverse of the connect chime.
+      case 'disconnect':
+        tone(c, t, 520, 0.14, 0.13); tone(c, t + 0.10, 330, 0.22, 0.13);
+        break;
+      // Opening someone's screen share: a quick rising blip, quieter than the
+      // voice cues because it accompanies a visible window appearing.
+      case 'watch-start':
+        tone(c, t, 620, 0.09, 0.09, 'triangle'); tone(c, t + 0.07, 880, 0.14, 0.09, 'triangle');
+        break;
+      // Closing it again: same shape, descending, softer still.
+      case 'watch-stop':
+        tone(c, t, 720, 0.09, 0.07, 'triangle'); tone(c, t + 0.07, 480, 0.13, 0.07, 'triangle');
+        break;
+      case 'notify':
+        tone(c, t, 660, 0.3, 0.14);
+        break;
+    }
+  }
+  return { play: play };
+})();
+"#;
+
+fn sfx(name: &str) {
+    let _ = document::eval(&format!("{SFX_JS}\nwindow.dxSfx.play('{name}');"));
+}
+
 #[component]
 fn VoiceSounds() -> Element {
     let state = use_app_state();
@@ -237,31 +319,53 @@ fn VoiceSounds() -> Element {
     use_effect(move || {
         let now = phase();
         let prev = *last_phase.peek();
-        if now == VoicePhase::Connected && prev != VoicePhase::Connected {
-            let _ = document::eval(
-                "const a = document.getElementById('voice-connect-sound'); \
-                 if (a) { a.currentTime = 0; a.play().catch(() => {}); }",
-            );
+        if now == prev {
+            return;
         }
         last_phase.set(now);
+        match now {
+            VoicePhase::Connected => {
+                let _ = document::eval(
+                    "const a = document.getElementById('voice-connect-sound'); \
+                     if (a) { a.currentTime = 0; a.play().catch(() => {}); }",
+                );
+            }
+            // Leaving voice, whether the user hung up or the session died.
+            // Connecting → Idle is a cancelled/failed attempt that never made
+            // a connect sound, so it gets no disconnect sound either.
+            VoicePhase::Idle | VoicePhase::Error if prev == VoicePhase::Connected => {
+                sfx("disconnect")
+            }
+            _ => {}
+        }
     });
 
-    // Notification chime for inbound DMs / mentions (synthesised via Web Audio
-    // so we don't need an asset).
+    // Opening / closing someone else's screen share.
+    let viewing = use_memo(move || state.read().screen_viewing.clone());
+    let mut last_viewing = use_signal(|| None::<String>);
+    use_effect(move || {
+        let now = viewing();
+        if now == *last_viewing.peek() {
+            return;
+        }
+        let was_watching = last_viewing.peek().is_some();
+        last_viewing.set(now.clone());
+        match now {
+            // Switching straight from one sharer to another still counts as
+            // starting to watch — the stream on screen changed.
+            Some(_) => sfx("watch-start"),
+            None if was_watching => sfx("watch-stop"),
+            None => {}
+        }
+    });
+
+    // Notification chime for inbound DMs / mentions.
     let notify = use_memo(move || state.read().notify_tick);
     let mut last_notify = use_signal(|| 0u64);
     use_effect(move || {
         let now = notify();
         if now != 0 && now != *last_notify.peek() {
-            let _ = document::eval(
-                "try{const c=new (window.AudioContext||window.webkitAudioContext)();\
-                 const o=c.createOscillator();const g=c.createGain();o.connect(g);g.connect(c.destination);\
-                 o.type='sine';o.frequency.value=660;\
-                 g.gain.setValueAtTime(0.0001,c.currentTime);\
-                 g.gain.exponentialRampToValueAtTime(0.14,c.currentTime+0.01);\
-                 g.gain.exponentialRampToValueAtTime(0.0001,c.currentTime+0.3);\
-                 o.start();o.stop(c.currentTime+0.3);}catch(e){}",
-            );
+            sfx("notify");
         }
         last_notify.set(now);
     });

@@ -35,6 +35,26 @@ base64 = "0.22"
 # Decodes the app icon PNG into RGBA for the native window icon (taskbar).
 image = { version = "0.25", default-features = false, features = ["png"] }
 
+# Microphone noise suppression: DeepFilterNet 3 running on the `tract` pure-Rust
+# inference engine, with the network weights compiled in (`default-model`). See
+# `src/denoise.rs` for why this model/runtime pair and what it costs.
+#
+# Pinned to a git rev because crates.io only carries deep_filter 0.2.5, which
+# predates the `tract` backend entirely. `default-features = false` drops the
+# vorbis/flac decoders (dataset tooling we don't use).
+#
+# tract is pinned to =0.21.4 on purpose: DeepFilterNet's `^0.21.4` resolves to
+# 0.21.17, where `Graph::symbol_table` moved and the crate no longer compiles.
+# Bump these four together, and only after checking DeepFilterNet builds.
+deep_filter = { git = "https://github.com/Rikorose/DeepFilterNet.git", rev = "d375b2d", default-features = false, features = ["tract", "default-model"] }
+tract-core = "=0.21.4"
+tract-onnx = "=0.21.4"
+tract-pulse = "=0.21.4"
+tract-hir = "=0.21.4"
+# Array views for handing hops to the DeepFilterNet model. Its API is built on
+# ndarray 0.15, so this must track deep_filter's version, not the newest one.
+ndarray = "0.15"
+
 # High-quality audio resampler (FFT-based, pure Rust, no C deps). Replaces the
 # naive linear-interpolation resampler that caused aliasing artefacts. Works on
 # Windows (MSVC), macOS (Intel + Apple Silicon) and Linux.
