@@ -956,7 +956,11 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
     }
 }
 
-fn select_text_channel(state: &mut Signal<AppState>, gateway: &GatewayTx, channel_id: Id) {
+pub(crate) fn select_text_channel(
+    state: &mut Signal<AppState>,
+    gateway: &GatewayTx,
+    channel_id: Id,
+) {
     let needs_fetch = {
         let mut s = state.write();
         s.selected_channel = Some(channel_id);

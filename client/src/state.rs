@@ -305,6 +305,24 @@ impl AppState {
             .and_then(|p| p.avatar.as_deref())
     }
 
+    /// The channel a guild should open on: its first *text* channel in the same
+    /// order the sidebar renders.
+    ///
+    /// `channels` is stored in arrival order, but the channel list sorts by
+    /// `(position, name)`, so picking the vec's first entry could land on a
+    /// different channel than the one sitting at the top of the list — or, if
+    /// the `kind` filter is forgotten, on a voice channel with no messages at
+    /// all. Every guild-switch path routes through here so they agree.
+    pub fn default_channel_of(&self, guild_id: Id) -> Option<Id> {
+        self.channels
+            .iter()
+            .filter(|c| {
+                c.guild_id == guild_id && matches!(c.kind, crate::protocol::ChannelKind::Text)
+            })
+            .min_by(|a, b| a.position.cmp(&b.position).then_with(|| a.name.cmp(&b.name)))
+            .map(|c| c.id)
+    }
+
     /// The DM conversation whose channel id is `channel_id`, if any.
     pub fn dm_of(&self, channel_id: Id) -> Option<&DmInfo> {
         self.dms.iter().find(|d| d.channel_id == channel_id)
