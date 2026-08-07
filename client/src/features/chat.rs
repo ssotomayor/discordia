@@ -25,6 +25,57 @@ const MAX_IMAGE_BYTES: usize = 2_000_000;
 /// same author within this many seconds.
 const GROUP_WINDOW_SECS: i64 = 300;
 
+/// Keep the message list pinned to the newest message, but only while the
+/// reader is already at the bottom.
+///
+/// The "stick" flag has to come from a scroll listener rather than being
+/// computed here: by the time this runs the new message is already in the DOM,
+/// so the distance to the bottom no longer says anything about where the reader
+/// was standing. Appending content doesn't fire a scroll event, so the flag
+/// still holds its pre-update value — which is exactly what we need.
+///
+/// `mode` is one of:
+/// - `channel` — switched channels, always jump to the newest message
+/// - `prepend` — older history loaded above the viewport, hold position
+/// - `append`  — new message arrived, follow it only if anchored
+fn chat_scroll_js(mode: &str) -> String {
+    format!(
+        r#"
+(function() {{
+  var el = document.getElementById('dxf-chat-scroll');
+  if (!el) return;
+  if (!el._dxfWired) {{
+    el._dxfWired = true;
+    el._dxfStick = true;
+    el._dxfPrevHeight = el.scrollHeight;
+    el.addEventListener('scroll', function() {{
+      // A few pixels of tolerance, so sub-pixel rounding and "near enough to
+      // the bottom" still count as anchored.
+      var gap = el.scrollHeight - el.scrollTop - el.clientHeight;
+      el._dxfStick = gap <= 40;
+    }}, {{ passive: true }});
+  }}
+  var mode = '{mode}';
+  if (mode === 'channel') {{
+    el.scrollTop = el.scrollHeight;
+    el._dxfStick = true;
+  }} else if (mode === 'prepend') {{
+    // Older messages were inserted above the viewport. Shift by exactly how
+    // much taller the content got, so what the reader was looking at stays put
+    // instead of sliding down the screen.
+    var grew = el.scrollHeight - el._dxfPrevHeight;
+    if (grew > 0) {{ el.scrollTop = el.scrollTop + grew; }}
+  }} else if (el._dxfStick) {{
+    // Assigning scrollTop is instantaneous; a smooth animation here would
+    // fight the reader if they start scrolling mid-flight.
+    el.scrollTop = el.scrollHeight;
+  }}
+  el._dxfPrevHeight = el.scrollHeight;
+}})();
+"#
+    )
+}
+
 #[component]
 pub fn ChatView() -> Element {
     let state = use_app_state();
@@ -90,6 +141,40 @@ pub fn ChatView() -> Element {
     let channel_topic = channel_meta.as_ref().and_then(|c| c.topic.clone());
     let typing_label = typing_label(&typers);
 
+    // Auto-scroll. The key is deliberately narrow — the channel plus the ids at
+    // each end — so edits and reactions on existing messages don't yank the
+    // view around. Comparing the *first* id is what distinguishes "older
+    // history was paged in above" from "a new message arrived below".
+    let scroll_key = use_memo(move || {
+        let s = state.read();
+        let cid = s.selected_channel;
+        let msgs = cid.and_then(|c| s.messages.get(&c));
+        (
+            cid,
+            msgs.and_then(|m| m.first().map(|x| x.id)),
+            msgs.and_then(|m| m.last().map(|x| x.id)),
+        )
+    });
+    let mut prev_key = use_signal(|| (None::<Id>, None::<Id>));
+    use_effect(move || {
+        let (cid, first, _last) = scroll_key();
+        // peek, not read: this effect writes prev_key below, and subscribing to
+        // it here would re-trigger the effect forever.
+        let (prev_cid, prev_first) = *prev_key.peek();
+        let channel_changed = cid != prev_cid;
+        let prepended = !channel_changed && prev_first.is_some() && first != prev_first;
+        prev_key.set((cid, first));
+
+        let mode = if channel_changed {
+            "channel"
+        } else if prepended {
+            "prepend"
+        } else {
+            "append"
+        };
+        let _ = document::eval(&chat_scroll_js(mode));
+    });
+
     rsx! {
         div { class: "flex flex-col h-full min-h-0",
             header { class: "h-11 px-3 flex items-center gap-3 border-b border-[var(--border)] shrink-0",
@@ -120,6 +205,7 @@ pub fn ChatView() -> Element {
                             }
                         });
                     },
+                div { id: "dxf-chat-scroll", class: "flex-1 overflow-y-auto px-4 py-4 min-h-0",
                     if messages.is_empty() && selected_channel.is_some() {
                         div { class: "h-full flex items-center justify-center text-[var(--text-dim)] text-xs",
                             if is_dm { "No messages yet. Say hi 👋" } else { "No messages yet." }

@@ -303,6 +303,7 @@ fn apply(
                         c.guild_id == first && matches!(c.kind, crate::protocol::ChannelKind::Text)
                     })
                     .map(|c| c.id);
+                let chan = s.default_channel_of(first);
                 s.selected_channel = chan;
                 if let Some(channel_id) = chan {
                     let _ = tx.send(ClientMessage::FetchMessages {
@@ -405,6 +406,7 @@ fn apply(
                 .iter()
                 .find(|c| c.guild_id == gid && matches!(c.kind, crate::protocol::ChannelKind::Text))
                 .map(|c| c.id);
+            let first_text = s.default_channel_of(gid);
             s.selected_channel = first_text;
             if let Some(channel_id) = first_text {
                 if !s.messages.contains_key(&channel_id) {
@@ -452,15 +454,7 @@ fn apply(
             if s.selected_guild == Some(guild_id) {
                 let next = s.guilds.first().map(|g| g.id);
                 s.selected_guild = next;
-                s.selected_channel = next.and_then(|gid| {
-                    s.channels
-                        .iter()
-                        .find(|c| {
-                            c.guild_id == gid
-                                && matches!(c.kind, crate::protocol::ChannelKind::Text)
-                        })
-                        .map(|c| c.id)
-                });
+                s.selected_channel = next.and_then(|gid| s.default_channel_of(gid));
                 if let Some(channel_id) = s.selected_channel {
                     if !s.messages.contains_key(&channel_id) {
                         let _ = tx.send(ClientMessage::FetchMessages {
@@ -626,14 +620,7 @@ fn apply(
             // If we were looking at it, fall back to the guild's first text
             // channel (mirrors the GuildDelete reselect).
             if s.selected_channel == Some(channel_id) {
-                let next = s
-                    .channels
-                    .iter()
-                    .find(|c| {
-                        c.guild_id == guild_id
-                            && matches!(c.kind, crate::protocol::ChannelKind::Text)
-                    })
-                    .map(|c| c.id);
+                let next = s.default_channel_of(guild_id);
                 s.selected_channel = next;
                 if let Some(cid) = next {
                     if !s.messages.contains_key(&cid) {

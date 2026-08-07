@@ -109,15 +109,34 @@ pub fn GuildsSidebar() -> Element {
                                 name: guild.name.clone(),
                                 selected: !dm_mode && selected == Some(guild.id),
                                 has_menu,
-                                on_select: move |gid: Id| {
-                                    let mut s = state.write();
-                                    s.dm_mode = false;
-                                    s.selected_guild = Some(gid);
-                                    s.selected_channel = s
-                                        .channels
-                                        .iter()
-                                        .find(|c| c.guild_id == gid)
-                                        .map(|c| c.id);
+                                on_select: {
+                                    let gateway = gateway.clone();
+                                    move |gid: Id| {
+                                        // Always land on this guild's default
+                                        // text channel — never leave the
+                                        // previous guild's channel on screen,
+                                        // and never land on a voice channel
+                                        // (which has no messages).
+                                        let target = {
+                                            let mut s = state.write();
+                                            s.dm_mode = false;
+                                            s.selected_guild = Some(gid);
+                                            s.selected_channel = None;
+                                            s.default_channel_of(gid)
+                                        };
+                                        // Route through the shared selector so
+                                        // the channel's history is fetched if we
+                                        // haven't loaded it yet; setting
+                                        // selected_channel directly left the
+                                        // view empty on first visit.
+                                        if let Some(cid) = target {
+                                            crate::features::channels::select_text_channel(
+                                                &mut state.clone(),
+                                                &gateway,
+                                                cid,
+                                            );
+                                        }
+                                    }
                                 },
                                 on_context: move |(gid, x, y): (Id, f64, f64)| {
                                     menu.set(Some(GuildMenu {
