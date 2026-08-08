@@ -47,17 +47,15 @@ pub struct ClientSettings {
     /// default: it costs ~1.5% of a core and users should opt into it.
     #[serde(default)]
     pub noise_cancellation: bool,
-    /// Layout: true = free-floating windows (overlap allowed), false = the
-    /// snap grid. Persisted so an arrangement survives relaunch.
-    #[serde(default)]
-    pub free_layout: bool,
     /// Persisted panel positions. Stored as flat arrays rather than the grid
     /// crate's types so `settings.json` stays readable and this file doesn't
     /// depend on the layout crate's serialization shape.
     /// `id -> [x, y, w, h]` in grid cells.
     #[serde(default)]
     pub layout_cells: Vec<(String, [u32; 4])>,
-    /// `id -> [x, y, w, h]` in pixels, for free mode.
+    /// `id -> [x, y, w, h]` as fractions of the workspace (0..=1), for the
+    /// free-floating layout. Fractions rather than pixels so a saved
+    /// arrangement rescales with the window and can never restore off-screen.
     #[serde(default)]
     pub layout_free: Vec<(String, [f64; 4])>,
     /// Screen-share quality preset id — see
@@ -106,7 +104,6 @@ impl Default for ClientSettings {
             selected_output_device: None,
             mic_sensitivity: default_mic_sensitivity(),
             noise_cancellation: false,
-            free_layout: false,
             layout_cells: Vec::new(),
             layout_free: Vec::new(),
             screenshare_quality: default_screenshare_quality(),

@@ -106,13 +106,15 @@ pub fn GridItem(
             start_free: ctx
                 .store
                 .and_then(|s| s.get_free(&item_id_for_drag))
-                .or_else(|| cell_to_px(ctx, current)),
+                .or(Some(cell_to_frac(ctx, current))),
             pointer_start_x: evt.client_coordinates().x,
             pointer_start_y: evt.client_coordinates().y,
             pointer_current_x: evt.client_coordinates().x,
             pointer_current_y: evt.client_coordinates().y,
             cell_w_px: cell_w,
             cell_h_px: ctx.cell_h_px(),
+            container_w: ctx.container_rect().map(|(w, _)| w).unwrap_or(0.0),
+            container_h: ctx.container_rect().map(|(_, h)| h).unwrap_or(0.0),
             gap_px: ctx.gap,
             cols: ctx.cols,
             min_w,
@@ -146,13 +148,15 @@ pub fn GridItem(
             start_free: ctx
                 .store
                 .and_then(|s| s.get_free(&item_id_for_resize))
-                .or_else(|| cell_to_px(ctx, current)),
+                .or(Some(cell_to_frac(ctx, current))),
             pointer_start_x: evt.client_coordinates().x,
             pointer_start_y: evt.client_coordinates().y,
             pointer_current_x: evt.client_coordinates().x,
             pointer_current_y: evt.client_coordinates().y,
             cell_w_px: cell_w,
             cell_h_px: ctx.cell_h_px(),
+            container_w: ctx.container_rect().map(|(w, _)| w).unwrap_or(0.0),
+            container_h: ctx.container_rect().map(|(_, h)| h).unwrap_or(0.0),
             gap_px: ctx.gap,
             cols: ctx.cols,
             min_w,
@@ -201,46 +205,35 @@ pub fn GridItem(
 fn free_style(id: &str, ctx: GridContext, cell: GridPosition) -> String {
     let z = ctx.store.map(|s| s.z_of(id)).unwrap_or(0);
 
-    if let Some(rect) = ctx.store.and_then(|s| s.get_free(id)) {
-        return format!(
-            "position: absolute; left: {:.1}px; top: {:.1}px; \
-             width: {:.1}px; height: {:.1}px; z-index: {z};",
-            rect.x, rect.y, rect.w, rect.h,
-        );
-    }
-
-    let cols = ctx.cols.max(1) as f64;
-    // Without a row count, treat the item's own extent as the full height —
-    // the best available guess, and only ever used before the first drag.
-    let rows = ctx.rows.unwrap_or_else(|| cell.y + cell.h).max(1) as f64;
+    // Stored by hand, or derived from the grid cell the item started life in.
+    let rect = ctx
+        .store
+        .and_then(|s| s.get_free(id))
+        .unwrap_or_else(|| cell_to_frac(ctx, cell));
     let gap = ctx.gap;
     format!(
         "position: absolute; left: {:.4}%; top: {:.4}%; \
          width: calc({:.4}% - {gap}px); height: calc({:.4}% - {gap}px); z-index: {z};",
-        cell.x as f64 / cols * 100.0,
-        cell.y as f64 / rows * 100.0,
-        cell.w as f64 / cols * 100.0,
-        cell.h as f64 / rows * 100.0,
+        rect.x * 100.0,
+        rect.y * 100.0,
+        rect.w * 100.0,
+        rect.h * 100.0,
     )
 }
 
-/// Pixel rect for a grid cell, for starting a free-mode drag on an item that
-/// has only ever been placed by percentage. `None` until the container has
-/// been measured.
-fn cell_to_px(ctx: GridContext, cell: GridPosition) -> Option<FloatRect> {
-    let cell_w = ctx.cell_w_px()?;
-    let cell_h = ctx.cell_h_px();
-    let gap = ctx.gap;
-    Some(FloatRect {
-        x: cell.x as f64 * (cell_w + gap),
-        y: cell.y as f64 * (cell_h + gap),
-        w: cell.w as f64 * cell_w + (cell.w.saturating_sub(1) as f64) * gap,
-        h: cell.h as f64 * cell_h + (cell.h.saturating_sub(1) as f64) * gap,
-    })
+/// Fractional rect for a grid cell — the starting point for the first drag of
+/// an item that has never been placed by hand.
+pub(crate) fn cell_to_frac(ctx: GridContext, cell: GridPosition) -> FloatRect {
+    let cols = ctx.cols.max(1) as f64;
+    let rows = ctx.rows.unwrap_or_else(|| cell.y + cell.h).max(1) as f64;
+    FloatRect {
+        x: cell.x as f64 / cols,
+        y: cell.y as f64 / rows,
+        w: cell.w as f64 / cols,
+        h: cell.h as f64 / rows,
+    }
+    .clamp_inside()
 }
-
-/// How much of a window must stay reachable inside the container.
-pub(crate) const MIN_VISIBLE_PX: f64 = 64.0;
 
 fn resolve_pos(id: &str, ctx: Option<GridContext>, fallback: GridPosition) -> GridPosition {
     let Some(ctx) = ctx else { return fallback };

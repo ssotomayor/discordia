@@ -57,7 +57,7 @@ const UNPLUG_ICON_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width=
 pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>) -> Element {
 
     let state = use_signal(AppState::empty);
-    let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
+    let settings = use_context::<Signal<crate::settings::ClientSettings>>();
 
     let (gateway_tx, voice_tx) = use_hook(|| {
         // Restore the persisted audio preferences BEFORE the voice service
@@ -116,9 +116,6 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
     });
 
     let mut edit_mode = use_signal(|| false);
-    // Snap (the tidy four-column dashboard) or Free (drag anywhere, windows may
-    // overlap). Restored from settings so an arrangement survives relaunch.
-    let mut free_mode = use_signal(|| settings.read().free_layout);
     let status = state.read().status;
 
     // Owner-set accent for the guild we're currently viewing (not in DM mode),
@@ -218,7 +215,12 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
                 GridLayout {
                     cols: 12, rows: GRID_ROWS, gap: GRID_GAP,
                     store: layout, editable: edit_mode(),
-                    mode: if free_mode() { LayoutMode::Free } else { LayoutMode::Snap },
+                    // Free placement only. The Snap/Free switch is gone: two
+                    // coordinate systems and a conversion between them was a
+                    // steady source of broken layouts, and free placement with
+                    // magnetic edges gets you a tidy arrangement anyway — you
+                    // just don't have to fight a grid for it.
+                    mode: LayoutMode::Free,
                     on_change: move |_: Vec<(String, GridPosition)>| persist_layout(settings, layout),
                     GridItem { id: "guilds", x: 0, y: 0, w: 1, h: GRID_ROWS, min_w: 1, min_h: 10,
                         GuildsSidebar {}
@@ -257,23 +259,6 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
                             persist_layout(settings, layout);
                         },
                         "Reset"
-                    }
-                    button {
-                        class: "border border-[var(--border)] rounded px-3 py-1 text-[10px] uppercase tracking-wider bg-[var(--panel)] hover:border-[var(--accent)] text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors",
-                        title: if free_mode() {
-                            "Snap panels back to the grid"
-                        } else {
-                            "Move panels freely — they can overlap"
-                        },
-                        onclick: move |_| {
-                            let now = !free_mode();
-                            free_mode.set(now);
-                            let mut next = settings.read().clone();
-                            next.free_layout = now;
-                            settings.set(next.clone());
-                            crate::settings::save(&next);
-                        },
-                        if free_mode() { "Snap" } else { "Free" }
                     }
                 }
                 button {

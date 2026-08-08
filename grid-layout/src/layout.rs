@@ -41,13 +41,15 @@ impl Default for LayoutSpec {
     }
 }
 
-/// Position + size of one item in pixels, relative to the container's
-/// top-left. Used by [`LayoutMode::Free`], where an item is placed absolutely
-/// rather than on a grid cell.
+/// Position + size of one item as **fractions of the container** (0..=1), used
+/// by [`LayoutMode::Free`].
 ///
-/// `f64` rather than the grid's `u32` for a reason: the whole point of free
-/// mode is that a window can sit anywhere, so there is no cell index to round
-/// to and nothing to snap against.
+/// Fractions rather than pixels, for two reasons that both came from bug
+/// reports. A fraction in [0, 1-w] is on-screen *by construction*, so a window
+/// cannot be dragged somewhere it can't be grabbed back from no matter what
+/// the container does afterwards. And a fractional layout rescales with the
+/// window for free, instead of holding pixel positions that were correct for
+/// some earlier size.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct FloatRect {
     pub x: f64,
@@ -61,18 +63,61 @@ impl FloatRect {
         Self { x, y, w, h }
     }
 
-    /// Keep at least `margin` px of the item inside a `container` so a window
-    /// can never be dragged somewhere it can't be grabbed back from.
-    pub fn clamp_visible(mut self, container_w: f64, container_h: f64, margin: f64) -> Self {
-        let max_x = (container_w - margin).max(0.0);
-        let max_y = (container_h - margin).max(0.0);
-        // The lower bound lets an item hang off the left by all but `margin`,
-        // which is what makes edge-to-edge placement possible. `min` is taken
-        // against `max_x` because f64::clamp panics when min > max — reachable
-        // with a narrow window and a narrow item.
-        let min_x = (margin - self.w).min(max_x);
-        self.x = self.x.clamp(min_x, max_x);
-        self.y = self.y.clamp(0.0, max_y);
+    /// Force the rect fully inside the container. In fraction space this is
+    /// total: there is no "mostly off-screen" state to recover from.
+    pub fn clamp_inside(mut self) -> Self {
+        self.w = self.w.clamp(MIN_FRAC, 1.0);
+        self.h = self.h.clamp(MIN_FRAC, 1.0);
+        self.x = self.x.clamp(0.0, (1.0 - self.w).max(0.0));
+        self.y = self.y.clamp(0.0, (1.0 - self.h).max(0.0));
+        self
+    }
+
+    fn edges_x(&self) -> [f64; 2] {
+        [self.x, self.x + self.w]
+    }
+
+    fn edges_y(&self) -> [f64; 2] {
+        [self.y, self.y + self.h]
+    }
+
+    /// Magnetic edge alignment: nudge this rect so an edge that is *nearly*
+    /// flush with a neighbour's edge (or the container's) becomes exactly
+    /// flush. `tol` is in fraction units.
+    ///
+    /// This is what replaces grid snapping — you can put a window anywhere, but
+    /// lining two of them up doesn't require pixel-perfect aim.
+    pub fn snap_edges(mut self, others: &[FloatRect], tol: f64) -> Self {
+        let mut xs = vec![0.0, 1.0];
+        let mut ys = vec![0.0, 1.0];
+        for o in others {
+            xs.extend(o.edges_x());
+            ys.extend(o.edges_y());
+        }
+        if let Some(dx) = best_delta(&[self.x, self.x + self.w], &xs, tol) {
+            self.x += dx;
+        }
+        if let Some(dy) = best_delta(&[self.y, self.y + self.h], &ys, tol) {
+            self.y += dy;
+        }
+        self
+    }
+
+    /// Like `snap_edges` but for a resize: only the far edges move, so the
+    /// item's origin stays put and its size changes instead.
+    pub fn snap_size(mut self, others: &[FloatRect], tol: f64) -> Self {
+        let mut xs = vec![1.0];
+        let mut ys = vec![1.0];
+        for o in others {
+            xs.extend(o.edges_x());
+            ys.extend(o.edges_y());
+        }
+        if let Some(dx) = best_delta(&[self.x + self.w], &xs, tol) {
+            self.w += dx;
+        }
+        if let Some(dy) = best_delta(&[self.y + self.h], &ys, tol) {
+            self.h += dy;
+        }
         self
     }
 }
@@ -85,6 +130,25 @@ impl FloatRect {
 pub enum Placement {
     Cell(GridPosition),
     Free(FloatRect),
+}
+
+/// Smallest fraction of the container an item may shrink to. Keeps a window
+/// grabbable and stops a resize collapsing it to nothing.
+const MIN_FRAC: f64 = 0.05;
+
+/// The smallest movement that brings any of `moving` onto any of `targets`,
+/// or `None` when nothing is within `tol`.
+fn best_delta(moving: &[f64], targets: &[f64], tol: f64) -> Option<f64> {
+    let mut best: Option<f64> = None;
+    for m in moving {
+        for t in targets {
+            let d = t - m;
+            if d.abs() <= tol && best.is_none_or(|b: f64| d.abs() < b.abs()) {
+                best = Some(d);
+            }
+        }
+    }
+    best
 }
 
 /// How the container places its items.
@@ -104,41 +168,74 @@ pub enum LayoutMode {
 mod tests {
     use super::*;
 
-    /// A window may hang off the left, but never so far that there is nothing
-    /// left to grab — that is how you lose a panel in free mode.
+    /// However far a drag goes, the result is fully inside the container. This
+    /// is the property that makes "I lost a widget off-screen" impossible
+    /// rather than merely unlikely.
     #[test]
-    fn clamp_keeps_a_grabbable_strip_on_screen() {
-        let margin = 64.0;
-        let r = FloatRect::new(-5000.0, -5000.0, 300.0, 200.0).clamp_visible(1000.0, 800.0, margin);
-        assert!(r.x + r.w >= margin, "left edge: {r:?}");
-        assert!(r.y >= 0.0, "top edge: {r:?}");
-
-        let r = FloatRect::new(9999.0, 9999.0, 300.0, 200.0).clamp_visible(1000.0, 800.0, margin);
-        assert!(r.x <= 1000.0 - margin, "right edge: {r:?}");
-        assert!(r.y <= 800.0 - margin, "bottom edge: {r:?}");
+    fn clamp_always_lands_fully_inside() {
+        for r in [
+            FloatRect::new(-50.0, -50.0, 0.3, 0.2),
+            FloatRect::new(9999.0, 9999.0, 0.3, 0.2),
+            FloatRect::new(0.9, 0.95, 0.5, 0.5),
+        ] {
+            let c = r.clamp_inside();
+            assert!(c.x >= 0.0 && c.y >= 0.0, "{c:?}");
+            assert!(c.x + c.w <= 1.0 + f64::EPSILON, "{c:?}");
+            assert!(c.y + c.h <= 1.0 + f64::EPSILON, "{c:?}");
+        }
     }
 
-    /// Clamping must not move or resize a window already comfortably inside.
+    /// Clamping must not disturb a window already comfortably inside.
     #[test]
-    fn clamp_leaves_an_onscreen_window_alone() {
-        let r = FloatRect::new(100.0, 120.0, 300.0, 200.0);
-        assert_eq!(r.clamp_visible(1000.0, 800.0, 64.0), r);
+    fn clamp_leaves_an_inside_window_alone() {
+        let r = FloatRect::new(0.1, 0.12, 0.3, 0.2);
+        assert_eq!(r.clamp_inside(), r);
     }
 
-    /// A window narrower than the margin in a container narrower than the
-    /// margin puts `min` above `max`, which `f64::clamp` panics on.
+    /// A resize can't collapse a window to nothing.
     #[test]
-    fn clamp_survives_a_container_smaller_than_the_margin() {
-        let r = FloatRect::new(10.0, 10.0, 10.0, 10.0).clamp_visible(50.0, 40.0, 64.0);
-        assert!(r.x.is_finite() && r.y.is_finite());
+    fn clamp_enforces_a_minimum_size() {
+        let r = FloatRect::new(0.5, 0.5, 0.0, -1.0).clamp_inside();
+        assert!(r.w >= MIN_FRAC && r.h >= MIN_FRAC, "{r:?}");
     }
 
-    /// Shrinking the container must pull a window back into reach — this is
-    /// what stops a panel being stranded outside an `overflow: hidden` parent.
+    /// Edge snapping: a window dropped *nearly* flush with a neighbour becomes
+    /// exactly flush — that is what replaces grid snapping.
     #[test]
-    fn shrinking_the_container_pulls_windows_back() {
-        let parked = FloatRect::new(1800.0, 900.0, 300.0, 200.0);
-        let r = parked.clamp_visible(1000.0, 600.0, 64.0);
-        assert!(r.x <= 1000.0 - 64.0 && r.y <= 600.0 - 64.0, "still stranded: {r:?}");
+    fn snap_aligns_a_near_miss_to_a_neighbour() {
+        let neighbour = FloatRect::new(0.5, 0.0, 0.5, 1.0);
+        // Left edge 0.008 short of the neighbour's left edge.
+        let dragged = FloatRect::new(0.492, 0.3, 0.2, 0.2);
+        let snapped = dragged.snap_edges(&[neighbour], 0.01);
+        assert!((snapped.x - 0.5).abs() < 1e-9, "{snapped:?}");
+        // Snapping moves, never resizes.
+        assert_eq!((snapped.w, snapped.h), (dragged.w, dragged.h));
+    }
+
+    /// ...but a window dropped clearly away from everything stays exactly
+    /// where it was put. A magnet that always grabs is just a grid again.
+    #[test]
+    fn snap_leaves_a_deliberate_placement_alone() {
+        let neighbour = FloatRect::new(0.5, 0.0, 0.5, 1.0);
+        let dragged = FloatRect::new(0.2, 0.3, 0.2, 0.2);
+        assert_eq!(dragged.snap_edges(&[neighbour], 0.01), dragged);
+    }
+
+    /// Container edges are snap targets too, so panels can sit flush with the
+    /// window without fighting for the last pixel.
+    #[test]
+    fn snap_aligns_to_the_container_edges() {
+        let r = FloatRect::new(0.004, 0.0, 0.3, 0.2).snap_edges(&[], 0.01);
+        assert!(r.x.abs() < 1e-9, "{r:?}");
+    }
+
+    /// Resize snapping moves the far edge, leaving the origin where it is.
+    #[test]
+    fn snap_size_keeps_the_origin() {
+        let neighbour = FloatRect::new(0.6, 0.0, 0.4, 1.0);
+        let resized = FloatRect::new(0.1, 0.1, 0.495, 0.3);
+        let snapped = resized.snap_size(&[neighbour], 0.01);
+        assert_eq!((snapped.x, snapped.y), (resized.x, resized.y));
+        assert!((snapped.x + snapped.w - 0.6).abs() < 1e-9, "{snapped:?}");
     }
 }

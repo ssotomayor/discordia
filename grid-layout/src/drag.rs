@@ -29,6 +29,10 @@ pub(crate) struct Interaction {
     pub pointer_current_y: f64,
     pub cell_w_px: f64,
     pub cell_h_px: f64,
+    /// Container size in pixels, for converting pointer deltas into the
+    /// fraction space free-mode rects live in.
+    pub container_w: f64,
+    pub container_h: f64,
     pub gap_px: f64,
     pub cols: u32,
     pub min_w: u32,
@@ -36,29 +40,27 @@ pub(crate) struct Interaction {
 }
 
 impl Interaction {
-    /// Free-mode projection: the pointer delta applied verbatim. No rounding to
-    /// cells, no clamping to a column count — that is the whole point of the
-    /// mode. Only `min_w`/`min_h` survive, converted to pixels, so a window
-    /// can't be resized into nothing.
+    /// Free-mode projection. The pointer delta is converted from pixels into
+    /// fractions of the container and applied verbatim — no rounding to cells,
+    /// no column clamp. `clamp_inside` on the caller keeps the result on-screen.
     pub fn project_free(&self, pointer_x: f64, pointer_y: f64) -> Option<FloatRect> {
         let start = self.start_free?;
-        let dx = pointer_x - self.pointer_start_x;
-        let dy = pointer_y - self.pointer_start_y;
+        if self.container_w <= 0.0 || self.container_h <= 0.0 {
+            return None;
+        }
+        let dx = (pointer_x - self.pointer_start_x) / self.container_w;
+        let dy = (pointer_y - self.pointer_start_y) / self.container_h;
         Some(match self.kind {
             InteractionKind::Drag => FloatRect {
                 x: start.x + dx,
                 y: start.y + dy,
                 ..start
             },
-            InteractionKind::Resize => {
-                let min_w_px = self.min_w as f64 * (self.cell_w_px + self.gap_px);
-                let min_h_px = self.min_h as f64 * (self.cell_h_px + self.gap_px);
-                FloatRect {
-                    w: (start.w + dx).max(min_w_px.max(80.0)),
-                    h: (start.h + dy).max(min_h_px.max(60.0)),
-                    ..start
-                }
-            }
+            InteractionKind::Resize => FloatRect {
+                w: start.w + dx,
+                h: start.h + dy,
+                ..start
+            },
         })
     }
 
@@ -114,6 +116,8 @@ mod tests {
             pointer_current_y: 0.0,
             cell_w_px: 50.0,
             cell_h_px: 50.0,
+            container_w: 1000.0,
+            container_h: 500.0,
             gap_px: 10.0,
             cols: 12,
             min_w: 1,
@@ -168,14 +172,16 @@ mod tests {
         i
     }
 
-    /// The heart of free mode: a 7px nudge moves the window 7px. Snap mode
-    /// rounds the same gesture to zero cells and doesn't move at all.
+    /// The heart of free mode: a small nudge moves the window by exactly that
+    /// nudge, expressed as a fraction of the container. Snap mode rounds the
+    /// same gesture to zero cells and doesn't move at all.
     #[test]
     fn free_drag_applies_the_delta_verbatim() {
-        let i = free(InteractionKind::Drag, FloatRect::new(10.0, 20.0, 300.0, 200.0));
-        let r = i.project_free(107.0, 103.0).unwrap();
-        assert_eq!((r.x, r.y), (17.0, 23.0));
-        assert_eq!((r.w, r.h), (300.0, 200.0), "dragging must not resize");
+        // container 1000x500, so 70px right = 0.07, 50px down = 0.10.
+        let i = free(InteractionKind::Drag, FloatRect::new(0.10, 0.20, 0.30, 0.20));
+        let r = i.project_free(170.0, 150.0).unwrap();
+        assert!((r.x - 0.17).abs() < 1e-9 && (r.y - 0.30).abs() < 1e-9, "{r:?}");
+        assert_eq!((r.w, r.h), (0.30, 0.20), "dragging must not resize");
 
         let snapped = i.project(107.0, 103.0);
         assert_eq!(
@@ -185,21 +191,31 @@ mod tests {
         );
     }
 
-    /// Free mode drops the column clamp on purpose — `clamp_visible` is what
-    /// keeps a window reachable, not the grid's width.
+    /// Projection itself is unbounded — `clamp_inside` is what keeps a window
+    /// on-screen, and it runs on the result.
     #[test]
-    fn free_drag_is_not_clamped_to_the_column_count() {
-        let i = free(InteractionKind::Drag, FloatRect::new(0.0, 0.0, 100.0, 100.0));
+    fn free_drag_projection_is_unbounded_but_clamps_inside() {
+        let i = free(InteractionKind::Drag, FloatRect::new(0.0, 0.0, 0.2, 0.2));
         let r = i.project_free(100_000.0, 100_000.0).unwrap();
-        assert!(r.x > 90_000.0 && r.y > 90_000.0);
+        assert!(r.x > 1.0, "projection should not clamp: {r:?}");
+        let c = r.clamp_inside();
+        assert!(c.x + c.w <= 1.0 + f64::EPSILON, "{c:?}");
     }
 
     #[test]
-    fn free_resize_respects_a_minimum_and_keeps_the_origin() {
-        let i = free(InteractionKind::Resize, FloatRect::new(5.0, 6.0, 300.0, 200.0));
+    fn free_resize_keeps_the_origin() {
+        let i = free(InteractionKind::Resize, FloatRect::new(0.05, 0.06, 0.30, 0.20));
         let r = i.project_free(-100_000.0, -100_000.0).unwrap();
-        assert!(r.w >= 80.0 && r.h >= 60.0, "collapsed to {r:?}");
-        assert_eq!((r.x, r.y), (5.0, 6.0));
+        assert_eq!((r.x, r.y), (0.05, 0.06));
+        assert!(r.clamp_inside().w >= 0.05, "clamp enforces the minimum");
+    }
+
+    /// A container that hasn't been measured yet would divide by zero.
+    #[test]
+    fn free_projection_needs_a_measured_container() {
+        let mut i = free(InteractionKind::Drag, FloatRect::new(0.0, 0.0, 0.2, 0.2));
+        i.container_w = 0.0;
+        assert!(i.project_free(200.0, 200.0).is_none());
     }
 
     /// No starting rect means Snap mode — nothing to project from.

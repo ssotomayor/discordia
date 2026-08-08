@@ -26,48 +26,35 @@ window.dxScreen = window.dxScreen || (function () {
   const LK = () => window.LivekitClient || window.LiveKitClient;
 
   // --- Screen-share audio -------------------------------------------------
-  // Playback goes through LiveKit's own attach() + webAudioMix path, NOT a
-  // hand-rolled Web Audio graph. That is not a style preference; a graph built
-  // with createMediaStreamSource() over a *remote* peer-connection stream emits
-  // silence unless the same stream is also sunk into an HTMLMediaElement. That
-  // was the bug behind "screen share has no sound": the nodes were wired up
-  // correctly and carried nothing.
+  // Playback goes through LiveKit's own attach(), never a hand-rolled Web Audio
+  // graph: createMediaStreamSource() over a *remote* peer-connection stream
+  // emits silence unless the same stream is also sunk into an HTMLMediaElement.
+  // That was the original "screen share has no sound" bug — the nodes were
+  // wired correctly and carried nothing.
   //
-  // With an AudioContext handed to the Room, RemoteAudioTrack.attach() does the
-  // right thing internally — it creates the element (which makes the stream
-  // flow), mutes it, and routes source -> gain -> destination. setVolume() then
-  // drives that gain node, so volumes above 100% work; an <audio> element's own
-  // `volume` is capped at 1.0 and could never boost a quiet stream.
+  // Volume is the element's own `volume`, so it is capped at 1.0. An earlier
+  // version routed the whole Room through Web Audio (`webAudioMix`) to allow
+  // boosting past 100%, and viewers started getting stuck on "Connecting to
+  // stream…". Changing how the Room is constructed to make audio louder risks
+  // the picture, which is the thing people actually came for.
   //
-  // All of it is listener-side: it scales what THIS machine plays. The
-  // broadcaster's capture and every other viewer are untouched.
-  let actx = null;          // AudioContext shared with the Room
-  let audioEl = null;       // element LiveKit attached the current stream to
+  // All listener-side: it scales what THIS machine plays. The broadcaster and
+  // every other viewer are untouched.
+  let audioEl = null;       // element the current stream is attached to
   let audioIdentity = null; // whose stream is currently wired up
-  let pendingGain = 1;      // volume to apply when a stream does arrive
+  let pendingGain = 1;      // volume to apply when a stream does arrive (0..1)
   let sinkLabel = null;     // app's chosen output device, matched by label
-
-  function ensureCtx() {
-    if (!actx) {
-      try { actx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { return null; }
-    }
-    // Autoplay policy parks a fresh context in 'suspended' until a gesture.
-    if (actx.state === 'suspended') { actx.resume().catch(function () {}); }
-    return actx;
-  }
   // Best-effort: follow the output device picked in audio settings. cpal names
   // devices by their OS label while the webview exposes opaque ids, so the two
-  // are matched by label. Try the context first (that's where the audio
-  // actually leaves, under webAudioMix) and the element as a fallback; both are
-  // Chromium-only, and labels need mic permission to be readable at all.
-  // Elsewhere the stream plays on the system default.
+  // are matched by label. setSinkId is Chromium-only and labels need mic
+  // permission to be readable at all; elsewhere the stream plays on the system
+  // default.
   function applySink() {
     if (!sinkLabel) return;
     try {
       navigator.mediaDevices.enumerateDevices().then(function (devs) {
         const m = devs.find(function (d) { return d.kind === 'audiooutput' && d.label === sinkLabel; });
         if (!m) return;
-        if (actx && typeof actx.setSinkId === 'function') actx.setSinkId(m.deviceId).catch(function () {});
         const t = audioIdentity ? audioTracks[audioIdentity] : null;
         if (t && typeof t.setSinkId === 'function') t.setSinkId(m.deviceId).catch(function () {});
       }).catch(function () {});
@@ -75,7 +62,9 @@ window.dxScreen = window.dxScreen || (function () {
   }
   function setSink(label) { sinkLabel = label || null; applySink(); }
   function setStreamVolume(v) {
-    pendingGain = Math.max(0, Math.min(2, v));
+    // 0..1: without Web Audio this lands on the element's `volume`, which the
+    // spec caps at 1.0. The viewer's slider is capped to match.
+    pendingGain = Math.max(0, Math.min(1, v));
     const t = audioIdentity ? audioTracks[audioIdentity] : null;
     // setVolume walks the track's attached elements, so it is a no-op until
     // attachAudio has run — pendingGain covers that ordering.
@@ -92,7 +81,6 @@ window.dxScreen = window.dxScreen || (function () {
     detachAudio();
     const t = audioTracks[identity];
     if (!t) { report(identity, false); return; }
-    ensureCtx();
     try {
       audioEl = t.attach();
       // Kept out of view but in the DOM: a detached element is at the browser's
@@ -141,15 +129,17 @@ window.dxScreen = window.dxScreen || (function () {
     if (room) return;
     if (!(await ensureLib())) { console.warn('[dxScreen] livekit lib not loaded'); return; }
     const lk = LK();
-    // webAudioMix with our own context is what makes RemoteAudioTrack route
-    // through a GainNode instead of an element's capped `volume` — see the
-    // audio section above. `true` would let LiveKit make its own context, but
-    // then we couldn't setSinkId on it to follow the chosen output device.
-    const ctx = ensureCtx();
-    room = new lk.Room({
-      adaptiveStream: true,
-      dynacast: true,
-      webAudioMix: ctx ? { audioContext: ctx } : true,
+    // Deliberately the stock options. `webAudioMix` used to be set here to get
+    // gain above 100% on stream audio, and viewers started getting stuck on
+    // "Connecting to stream…" — the Room constructor governs subscription, so
+    // an audio nicety has no business changing it. Volume is capped at 100%
+    // via the element instead; a working picture beats a louder one.
+    room = new lk.Room({ adaptiveStream: true, dynacast: true });
+    room.on(lk.RoomEvent.Disconnected, function (reason) {
+      console.warn('[dxScreen] room disconnected', reason);
+    });
+    room.on(lk.RoomEvent.ConnectionStateChanged, function (st) {
+      console.log('[dxScreen] connection state', st);
     });
     room.on(lk.RoomEvent.TrackSubscribed, function (track, pub, participant) {
       if (track.kind === 'audio') {
@@ -276,12 +266,12 @@ window.dxScreen = window.dxScreen || (function () {
     // merely dislikes `audio: true` silently lost the resolution/bitrate preset
     // and went back to shipping a pixelated capture.
     const wantVideo = { width: { ideal: wantW }, height: { ideal: wantH }, frameRate: { ideal: wantFps } };
-    // `systemAudio: 'include'` asks Chromium to offer the system-audio option
-    // in the picker (and to pre-tick it where it can). It is ignored by engines
-    // that don't know it, so it costs nothing to ask.
-    const wantAudio = { systemAudio: 'include' };
+    // `systemAudio: 'include'` is a TOP-LEVEL option of getDisplayMedia, not an
+    // audio constraint — nested inside `audio` it is just an unknown (and
+    // therefore ignored) constraint, which is where it was first put. Engines
+    // that don't know it ignore it, so asking costs nothing.
     const attempts = [
-      { video: wantVideo, audio: wantAudio },
+      { video: wantVideo, audio: true, systemAudio: 'include' },
       { video: wantVideo, audio: true },
       { video: wantVideo, audio: false },
       { video: true, audio: true },
@@ -900,7 +890,9 @@ pub fn ScreenWatchWindow() -> Element {
                     input {
                         r#type: "range",
                         min: "0",
-                        max: "200",
+                        // 100 not 200: without Web Audio the gain is the media
+                        // element's `volume`, which the spec caps at 1.0.
+                        max: "100",
                         value: "{stream_volume}",
                         disabled: stream_muted || !has_audio,
                         class: "w-24 accent-[var(--accent)] disabled:opacity-40",

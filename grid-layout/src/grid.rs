@@ -69,28 +69,10 @@ pub fn GridLayout(
         on_change: on_change_cb,
     });
 
-    // Nothing seeds free rects up front any more: an item without one is placed
-    // by percentage (see `free_style`), which is always valid and always
-    // on-screen. A rect only exists once the user has actually dragged.
-    //
-    // What this effect does do is keep those dragged rects reachable. Shrink
-    // the window and a window parked near the old right edge would otherwise
-    // end up outside the container with `overflow: hidden` and no way to scroll
-    // to it — the "I lost a widget and can't get it back" case.
-    use_effect(move || {
-        if *mode_signal.read() != LayoutMode::Free {
-            return;
-        }
-        let (Some(mut store), Some((cw, ch))) = (store, *container_size.read()) else {
-            return;
-        };
-        for (id, rect) in store.free_snapshot() {
-            let clamped = rect.clamp_visible(cw, ch, crate::item::MIN_VISIBLE_PX);
-            if clamped != rect {
-                store.set_free(id, clamped);
-            }
-        }
-    });
+    // No seeding and no re-clamping on resize: free rects are fractions of the
+    // container, so they are inside it by construction and rescale with it. The
+    // whole "a window ended up off-screen and I can't scroll to it" failure
+    // mode is gone rather than patched.
 
     let style = match mode {
         // Free mode is not a grid at all — items place themselves absolutely.
@@ -232,13 +214,22 @@ fn DragOverlay() -> Element {
                         return;
                     };
                     if let Some(rect) = state.project_free(cx, cy) {
-                        let rect = match ctx.container_rect() {
-                            Some((cw, ch)) => {
-                                rect.clamp_visible(cw, ch, crate::item::MIN_VISIBLE_PX)
-                            }
-                            None => rect,
+                        // Magnetic alignment against every other window and the
+                        // container edges. This is what replaces grid snapping:
+                        // put a window wherever you like, but lining two up
+                        // doesn't demand pixel-perfect aim.
+                        let others: Vec<_> = s
+                            .free_snapshot()
+                            .into_iter()
+                            .filter(|(id, _)| id != &item_id)
+                            .map(|(_, r)| r)
+                            .collect();
+                        let tol = ctx.snap_tolerance();
+                        let rect = match state.kind {
+                            InteractionKind::Drag => rect.snap_edges(&others, tol),
+                            InteractionKind::Resize => rect.snap_size(&others, tol),
                         };
-                        s.set_free(item_id, rect);
+                        s.set_free(item_id, rect.clamp_inside());
                     }
                     return;
                 }
@@ -399,6 +390,16 @@ impl GridContext {
 
     pub fn container_rect(&self) -> Option<(f64, f64)> {
         *self.container_size.read()
+    }
+
+    /// Edge-snap tolerance in fraction units, derived from a fixed pixel
+    /// distance so the magnet feels the same at any window size.
+    pub fn snap_tolerance(&self) -> f64 {
+        const SNAP_PX: f64 = 12.0;
+        match *self.container_size.read() {
+            Some((w, _)) if w > 0.0 => SNAP_PX / w,
+            _ => 0.01,
+        }
     }
 
     pub fn is_free(&self) -> bool {
