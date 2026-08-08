@@ -78,8 +78,24 @@ pub fn ChannelsColumn() -> Element {
     let mut chan_menu = use_signal::<Option<ChanMenu>>(|| None);
     let mut show_create = use_signal(|| false);
 
+    // The guild banner had nowhere to render at all — uploading one changed a
+    // database row and nothing else. Here is its home: a strip across the top
+    // of the channel list, which is the surface that already belongs to the
+    // guild you're looking at.
+    let banner = if dm_mode { None } else { guild.as_ref().and_then(|g| g.banner.clone()) };
+
     rsx! {
         aside { class: PANEL,
+            if let Some(src) = banner {
+                div { class: "relative h-20 shrink-0 overflow-hidden border-b border-[var(--border)]",
+                    img { class: "w-full h-full object-cover block", src: "{src}", alt: "guild banner" }
+                    // Scrim so the name below stays readable over a busy image.
+                    div {
+                        class: "absolute inset-0",
+                        style: "background: linear-gradient(180deg, transparent 40%, var(--panel-solid));",
+                    }
+                }
+            }
             div { class: HEADER,
                 h2 { class: "text-sm text-[var(--accent)] truncate font-medium flex-1",
                     if dm_mode {

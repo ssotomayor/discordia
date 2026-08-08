@@ -102,6 +102,7 @@ pub fn GuildsSidebar() -> Element {
                                 key: "{guild.id}",
                                 id: guild.id,
                                 label: guild.icon.clone().unwrap_or_else(|| initials(&guild.name)),
+                                image: guild.icon_image.clone(),
                                 name: guild.name.clone(),
                                 selected: !dm_mode && selected == Some(guild.id),
                                 has_menu,
@@ -568,6 +569,10 @@ fn CreateGuild() -> Element {
 fn GuildIcon(
     id: Id,
     label: String,
+    /// Uploaded icon (http(s) or data URL). Falls back to `label` when absent —
+    /// which, until now, was the only thing ever drawn: an uploaded guild icon
+    /// was stored and round-tripped but never rendered anywhere.
+    image: Option<String>,
     name: String,
     selected: bool,
     /// Whether right-clicking opens the management/leave menu (false only for
@@ -585,7 +590,7 @@ fn GuildIcon(
 
     rsx! {
         button {
-            class: "w-10 h-10 rounded-md border flex items-center justify-center text-xs font-medium transition-colors {cls}",
+            class: "w-10 h-10 rounded-md border flex items-center justify-center text-xs font-medium transition-colors overflow-hidden {cls}",
             title: if has_menu { "{name} (right-click for options)" } else { "{name}" },
             onclick: move |_| on_select.call(id),
             oncontextmenu: move |e: MouseEvent| {
@@ -595,7 +600,11 @@ fn GuildIcon(
                     on_context.call((id, c.x, c.y));
                 }
             },
-            "{label}"
+            if let Some(src) = image {
+                img { class: "w-full h-full object-cover", src: "{src}", alt: "{name}" }
+            } else {
+                "{label}"
+            }
         }
     }
 }
