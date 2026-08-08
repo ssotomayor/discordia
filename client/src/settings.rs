@@ -63,10 +63,18 @@ pub struct ClientSettings {
     /// framerate and bitrate; "balanced" (1080p30) is the default.
     #[serde(default = "default_screenshare_quality")]
     pub screenshare_quality: String,
+    /// Master volume for UI sound effects, 0..=100. 0 = muted. Scales the
+    /// gain of every synthesized tone in `window.dxSfx`.
+    #[serde(default = "default_sfx_volume")]
+    pub sfx_volume: u8,
 }
 
 pub fn default_screenshare_quality() -> String {
     "balanced".into()
+}
+
+fn default_sfx_volume() -> u8 {
+    70
 }
 
 fn default_mic_sensitivity() -> u32 {
@@ -107,6 +115,7 @@ impl Default for ClientSettings {
             layout_cells: Vec::new(),
             layout_free: Vec::new(),
             screenshare_quality: default_screenshare_quality(),
+            sfx_volume: default_sfx_volume(),
         }
     }
 }

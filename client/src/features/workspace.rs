@@ -6,10 +6,8 @@ use crate::features::{
     voice::spawn_voice_service,
 };
 use crate::net::spawn_gateway;
-use crate::protocol::ClientMessage;
+use crate::protocol::{ClientMessage, Id};
 use crate::state::{AppState, ConnectionStatus, SessionParams, VoicePhase, use_app_state, use_gateway};
-
-const CONNECT_SOUND: Asset = asset!("/assets/connect.mp3");
 
 /// Vertical row span each panel occupies, and the gap (px) between grid
 /// rows. The on-mount measurement divides the available height by these so
@@ -323,6 +321,9 @@ window.dxSfx = window.dxSfx || (function () {
   // Two cues can legitimately overlap (leaving voice closes a share you were
   // watching), so the cooldown is per cue name rather than global.
   const COOLDOWN_MS = 250;
+  // Master volume multiplier (0..1), set from Rust via setVolume. Scales the
+  // `peak` of every tone so a single knob controls all UI sound effects.
+  let masterVolume = 0.7;
   function audio() {
     if (!ctx) { try { ctx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { return null; } }
     // Autoplay policies suspend the context until a gesture; resume is a no-op
@@ -332,12 +333,29 @@ window.dxSfx = window.dxSfx || (function () {
   }
   // One short enveloped tone. Exponential ramps (never to exactly zero, which
   // is undefined for exponentialRampToValueAtTime) so there is no click.
+  // `peak` is scaled by masterVolume so the user's volume setting applies
+  // uniformly to every cue.
   function tone(c, at, freq, dur, peak, type) {
     const o = c.createOscillator(); const g = c.createGain();
     o.type = type || 'sine'; o.frequency.setValueAtTime(freq, at);
     o.connect(g); g.connect(c.destination);
+    const p = (peak * masterVolume) || 0.0001;
     g.gain.setValueAtTime(0.0001, at);
-    g.gain.exponentialRampToValueAtTime(peak, at + 0.012);
+    g.gain.exponentialRampToValueAtTime(p, at + 0.012);
+    g.gain.exponentialRampToValueAtTime(0.0001, at + dur);
+    o.start(at); o.stop(at + dur + 0.02);
+  }
+  // Frequency sweep for whoosh-style cues (stream start/stop). Linear ramp
+  // from `f0` to `f1` over `dur`, same envelope as `tone`.
+  function sweep(c, at, f0, f1, dur, peak, type) {
+    const o = c.createOscillator(); const g = c.createGain();
+    o.type = type || 'sawtooth';
+    o.frequency.setValueAtTime(f0, at);
+    o.frequency.linearRampToValueAtTime(f1, at + dur);
+    o.connect(g); g.connect(c.destination);
+    const p = (peak * masterVolume) || 0.0001;
+    g.gain.setValueAtTime(0.0001, at);
+    g.gain.exponentialRampToValueAtTime(p, at + 0.015);
     g.gain.exponentialRampToValueAtTime(0.0001, at + dur);
     o.start(at); o.stop(at + dur + 0.02);
   }
@@ -364,9 +382,55 @@ window.dxSfx = window.dxSfx || (function () {
       case 'notify':
         tone(c, t, 660, 0.3, 0.14);
         break;
+      // --- Connection ---
+      // Connect: a rising two-tone, the counterpart to the disconnect fall.
+      case 'connect':
+        tone(c, t, 440, 0.12, 0.12); tone(c, t + 0.09, 660, 0.18, 0.12);
+        break;
+      // Server disconnect: lower and longer, signalling something went wrong.
+      case 'server-disconnect':
+        tone(c, t, 440, 0.15, 0.11); tone(c, t + 0.12, 220, 0.25, 0.11);
+        break;
+      // --- Voice room peers ---
+      // Peer joined voice: a short ascending blip.
+      case 'peer-join':
+        tone(c, t, 523, 0.06, 0.08, 'triangle'); tone(c, t + 0.05, 659, 0.10, 0.08, 'triangle');
+        break;
+      // Peer left voice: same shape, descending.
+      case 'peer-leave':
+        tone(c, t, 659, 0.06, 0.08, 'triangle'); tone(c, t + 0.05, 523, 0.10, 0.08, 'triangle');
+        break;
+      // --- Screen share (self) ---
+      // Stream start: a quick rising whoosh.
+      case 'stream-start':
+        sweep(c, t, 300, 900, 0.18, 0.10, 'sawtooth');
+        break;
+      // Stream stop: descending whoosh.
+      case 'stream-stop':
+        sweep(c, t, 900, 300, 0.18, 0.10, 'sawtooth');
+        break;
+      // --- Screen share (peer) ---
+      // Peer started streaming: soft rising blip, quieter than self cues.
+      case 'peer-stream-start':
+        tone(c, t, 440, 0.07, 0.06, 'triangle'); tone(c, t + 0.06, 880, 0.12, 0.06, 'triangle');
+        break;
+      // Peer stopped streaming: soft descending blip.
+      case 'peer-stream-stop':
+        tone(c, t, 880, 0.07, 0.06, 'triangle'); tone(c, t + 0.06, 440, 0.12, 0.06, 'triangle');
+        break;
+      // --- Self mute/unmute ---
+      // Mute: a low short click.
+      case 'mute':
+        tone(c, t, 220, 0.06, 0.10, 'square');
+        break;
+      // Unmute: a higher short click.
+      case 'unmute':
+        tone(c, t, 440, 0.06, 0.10, 'square');
+        break;
     }
   }
-  return { play: play };
+  function setVolume(v) { masterVolume = Math.max(0, Math.min(1, v)); }
+  return { play: play, setVolume: setVolume };
 })();
 "#;
 
@@ -388,12 +452,7 @@ fn VoiceSounds() -> Element {
         }
         last_phase.set(now);
         match now {
-            VoicePhase::Connected => {
-                let _ = document::eval(
-                    "const a = document.getElementById('voice-connect-sound'); \
-                     if (a) { a.currentTime = 0; a.play().catch(() => {}); }",
-                );
-            }
+            VoicePhase::Connected => sfx("connect"),
             // Leaving voice, whether the user hung up or the session died.
             // Connecting → Idle is a cancelled/failed attempt that never made
             // a connect sound, so it gets no disconnect sound either.
@@ -434,14 +493,144 @@ fn VoiceSounds() -> Element {
         last_notify.set(now);
     });
 
-    rsx! {
-        audio {
-            id: "voice-connect-sound",
-            src: CONNECT_SOUND,
-            preload: "auto",
-            style: "display:none",
+    // --- Server connection status: connect / server-disconnect ---
+    let status = use_memo(move || state.read().status);
+    let mut last_status = use_signal(|| ConnectionStatus::Connecting);
+    use_effect(move || {
+        let now = status();
+        let prev = *last_status.peek();
+        if now == prev {
+            return;
         }
-    }
+        last_status.set(now);
+        match (prev, now) {
+            (ConnectionStatus::Connecting, ConnectionStatus::Ready) => sfx("connect"),
+            (_, ConnectionStatus::Disconnected) => sfx("server-disconnect"),
+            _ => {}
+        }
+    });
+
+    // --- Self mute / unmute ---
+    let muted = use_memo(move || state.read().voice.muted);
+    let mut last_muted = use_signal(|| false);
+    use_effect(move || {
+        let now = muted();
+        if now == *last_muted.peek() {
+            return;
+        }
+        last_muted.set(now);
+        if now {
+            sfx("mute");
+        } else {
+            sfx("unmute");
+        }
+    });
+
+    // --- Self screen share start / stop ---
+    let sharing = use_memo(move || state.read().screen_sharing);
+    let mut last_sharing = use_signal(|| false);
+    use_effect(move || {
+        let now = sharing();
+        if now == *last_sharing.peek() {
+            return;
+        }
+        last_sharing.set(now);
+        if now {
+            sfx("stream-start");
+        } else {
+            sfx("stream-stop");
+        }
+    });
+
+    // --- Peer joined / left voice ---
+    // Watch the set of pubkeys in our voice channel (excluding self). When it
+    // grows someone joined; when it shrinks someone left. On channel switch we
+    // snapshot without playing sounds — the whole set changed because *we*
+    // moved, not because peers did.
+    let voice_channel = use_memo(move || state.read().voice.channel_id);
+    let voice_states = use_memo(move || state.read().voice_states.clone());
+    let self_pk = use_memo(move || state.read().self_user.as_ref().map(|u| u.pubkey.clone()));
+    let mut last_channel = use_signal(|| None::<Id>);
+    let mut last_peers = use_signal(|| Vec::<String>::new());
+    use_effect(move || {
+        let ch = voice_channel();
+        let states = voice_states();
+        let me = self_pk();
+        // Snapshot the peers in our channel, excluding self.
+        let peers: Vec<String> = match (&ch, &me) {
+            (Some(cid), Some(me_pk)) => states
+                .iter()
+                .filter(|v| v.channel_id == Some(*cid) && &v.user_pubkey != me_pk)
+                .map(|v| v.user_pubkey.clone())
+                .collect(),
+            _ => Vec::new(),
+        };
+        // Channel changed (we joined/switched) — snapshot without sounds.
+        if ch != *last_channel.peek() {
+            last_channel.set(ch);
+            last_peers.set(peers);
+            return;
+        }
+        let prev = last_peers.peek().clone();
+        // Diff: new pubkeys that weren't before = join, gone = leave.
+        let joined = peers.iter().any(|p| !prev.contains(p));
+        let left = prev.iter().any(|p| !peers.contains(p));
+        if joined {
+            sfx("peer-join");
+        }
+        if left {
+            sfx("peer-leave");
+        }
+        last_peers.set(peers);
+    });
+
+    // --- Peer screen share start / stop ---
+    // Same pattern: watch the sharers in our channel excluding self, diff
+    // against the last snapshot, snapshot silently on channel switch.
+    let screen_shares = use_memo(move || state.read().screen_shares.clone());
+    let mut last_sharers = use_signal(|| Vec::<String>::new());
+    use_effect(move || {
+        let ch = voice_channel();
+        let shares = screen_shares();
+        let me = self_pk();
+        let sharers: Vec<String> = match (&ch, &me) {
+            (Some(cid), Some(me_pk)) => shares
+                .get(cid)
+                .map(|v| v.iter().filter(|p| *p != me_pk).cloned().collect())
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        // Channel changed — the peer-join watcher already updated last_channel,
+        // but we need our own snapshot here too since this effect may fire in a
+        // different order.
+        if ch != *last_channel.peek() {
+            last_sharers.set(sharers);
+            return;
+        }
+        let prev = last_sharers.peek().clone();
+        let started = sharers.iter().any(|p| !prev.contains(p));
+        let stopped = prev.iter().any(|p| !sharers.contains(p));
+        if started {
+            sfx("peer-stream-start");
+        }
+        if stopped {
+            sfx("peer-stream-stop");
+        }
+        last_sharers.set(sharers);
+    });
+
+    // --- Master volume: apply sfx_volume from settings on startup ---
+    let settings = use_context::<Signal<crate::settings::ClientSettings>>();
+    let sfx_vol = use_memo(move || settings.read().sfx_volume);
+    use_effect(move || {
+        let vol = sfx_vol();
+        let v = vol as f32 / 100.0;
+        let _ = document::eval(&format!(
+            "{SFX_JS}\nwindow.dxSfx.setVolume({v});"
+        ));
+    });
+
+    rsx! { Fragment {} }
 }
 
 #[component]
