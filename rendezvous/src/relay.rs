@@ -1,4 +1,7 @@
 //! WebSocket handlers: host control, friend join, host proxy pairing.
+//!
+//! Liveness: a host holds its listing only while its `/control` socket answers
+//! heartbeats — see the loop in `handle_host_control`.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,6 +17,7 @@ use crate::shortcode;
 use crate::verify;
 
 const MAX_CLAIM_ATTEMPTS: usize = 10;
+
 
 pub async fn handle_host_control(socket: WebSocket, registry: Arc<Registry>, cfg: Arc<Config>) {
     let (mut tx, mut rx) = socket.split();
@@ -106,13 +110,15 @@ pub async fn handle_host_control(socket: WebSocket, registry: Arc<Registry>, cfg
         description,
         public: publish_public,
         control_tx,
+        // Stamped properly by try_claim; this is just a starting value.
+        last_seen_ms: Default::default(),
     };
     // The live slot may momentarily race a same-slug reconnect; claim_name
     // already rejected a live-elsewhere claim, but re-check for anonymous.
-    if !registry.try_claim(&shortcode, host_entry) {
+    let Some(entry) = registry.try_claim(&shortcode, host_entry) else {
         send_err(&mut tx, "shortcode collision").await;
         return;
-    }
+    };
 
     // Send the assigned shortcode + livekit_url, plus a per-session grant the
     // host uses to ask US to mint voice tokens. The signing secret stays here.
@@ -133,7 +139,22 @@ pub async fn handle_host_control(socket: WebSocket, registry: Arc<Registry>, cfg
     }
 
     // Forward control messages from rendezvous to host (e.g. NewFriend
-    // notifications) until the host disconnects or an error occurs.
+    // notifications) until the host disconnects, errors, or stops answering.
+    //
+    // The heartbeat is what makes "stops answering" detectable at all. A clean
+    // shutdown sends Close and we drop the host immediately; the cases that
+    // left stale entries in the browse list are the unclean ones — sleep, a
+    // dropped Wi-Fi link, SIGKILL, a NAT that quietly forgets the flow. None of
+    // those produce a Close or an error: the socket is half-open, `rx.next()`
+    // blocks forever, and nothing ever removes the registration. (OS-level TCP
+    // keepalive defaults to roughly two hours where it is enabled at all, which
+    // is no help.) So we ping on a timer and give up when the replies stop.
+    //
+    // Nothing is needed on the host side: WebSocket Pong is automatic in the
+    // client's tungstenite stack, so already-deployed hosts are covered too.
+    let mut heartbeat = tokio::time::interval(cfg.heartbeat_interval);
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    heartbeat.tick().await; // the first tick completes immediately
     loop {
         tokio::select! {
             outbound = control_rx.recv() => {
@@ -146,11 +167,26 @@ pub async fn handle_host_control(socket: WebSocket, registry: Arc<Registry>, cfg
             inbound = rx.next() => {
                 match inbound {
                     Some(Ok(Message::Close(_))) | None => break,
-                    Some(Ok(_)) => {} // ignore additional frames for now
+                    // Any frame at all proves the peer is there — Pong, or a
+                    // control message we don't otherwise act on.
+                    Some(Ok(_)) => entry.touch(),
                     Some(Err(e)) => {
                         tracing::warn!(%shortcode, err = %e, "host control recv error");
                         break;
                     }
+                }
+            }
+            _ = heartbeat.tick() => {
+                let idle_ms = entry.idle_ms();
+                if idle_ms >= cfg.host_timeout.as_millis() as i64 {
+                    tracing::info!(%shortcode, idle_ms, "host stopped answering heartbeats");
+                    break;
+                }
+                // A send on a half-open socket often succeeds into the kernel
+                // buffer, so this failing is a bonus rather than the mechanism —
+                // the deadline above is what guarantees we let go.
+                if tx.send(Message::Ping(Vec::new())).await.is_err() {
+                    break;
                 }
             }
         }

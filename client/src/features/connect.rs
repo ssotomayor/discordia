@@ -10,7 +10,17 @@ struct DiscoverEntry {
     shortcode: String,
     name: Option<String>,
     description: Option<String>,
+    /// Seconds since the rendezvous last heard from this host. Older
+    /// rendezvous builds don't send it, hence the default — treat those as
+    /// fresh rather than showing every host as stale.
+    #[serde(default)]
+    idle_secs: u64,
 }
+
+/// How quiet a host has to be before the browse list stops presenting it as
+/// reachable. The rendezvous pings every 20s and unregisters at 60s, so a host
+/// past this mark has already missed at least one beat and is on its way out.
+const HOST_STALE_AFTER_SECS: u64 = 45;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tab {
@@ -657,10 +667,32 @@ fn BrowseTab(
                                         class: "w-full text-left px-3 py-2 {row_cls} transition-colors",
                                         onclick: move |_| on_pick.call(entry_for_pick.clone()),
                                         div { class: "flex items-baseline gap-2",
+                                            // Liveness dot. The rendezvous drops
+                                            // a host that stops answering, but
+                                            // that takes up to a minute — this
+                                            // shows the gap instead of listing a
+                                            // host that has already gone quiet as
+                                            // if it were fine.
+                                            span {
+                                                class: "w-1.5 h-1.5 rounded-full shrink-0 self-center",
+                                                style: if entry.idle_secs >= HOST_STALE_AFTER_SECS {
+                                                    "background: var(--warn);"
+                                                } else {
+                                                    "background: var(--up);"
+                                                },
+                                                title: if entry.idle_secs >= HOST_STALE_AFTER_SECS {
+                                                    "Not responding — this host may already be offline"
+                                                } else {
+                                                    "Online"
+                                                },
+                                            }
                                             span { class: "text-sm font-medium text-[var(--text)]",
                                                 {entry.name.clone().unwrap_or_else(|| entry.shortcode.clone())}
                                             }
                                             span { class: "text-[10px] text-[var(--text-dim)]", "{entry.shortcode}" }
+                                            if entry.idle_secs >= HOST_STALE_AFTER_SECS {
+                                                span { class: "text-[10px] text-[var(--warn)]", "not responding" }
+                                            }
                                         }
                                         if let Some(d) = entry.description.clone() {
                                             div { class: "text-xs text-[var(--text-muted)] mt-0.5", "{d}" }

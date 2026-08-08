@@ -25,6 +25,28 @@ pub struct Config {
     /// tokens they mint are accepted by it.
     pub livekit_api_key: Option<String>,
     pub livekit_api_secret: Option<String>,
+    /// How often to ping an idle host's control socket, and how long it may go
+    /// without answering before we drop its listing. See the control loop in
+    /// `relay.rs` for why a listing can't be trusted without them.
+    ///
+    /// Configurable mainly so tests can drive the timeout in milliseconds
+    /// instead of waiting out the real one.
+    pub heartbeat_interval: std::time::Duration,
+    pub host_timeout: std::time::Duration,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            livekit_url: None,
+            livekit_api_key: None,
+            livekit_api_secret: None,
+            heartbeat_interval: std::time::Duration::from_secs(20),
+            // Three intervals: one lost packet or a briefly busy host must not
+            // be enough to unregister someone who is actually fine.
+            host_timeout: std::time::Duration::from_secs(60),
+        }
+    }
 }
 
 #[derive(Clone)]

@@ -23,6 +23,7 @@ async fn main() {
         // credentials and clients get "token signature is invalid".
         livekit_api_key: std::env::var("LIVEKIT_API_KEY").ok(),
         livekit_api_secret: std::env::var("LIVEKIT_API_SECRET").ok(),
+        ..Config::default()
     };
     tracing::info!(
         ?config.livekit_url,

@@ -11,6 +11,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 
 use axum::extract::ws::WebSocket;
@@ -29,6 +30,45 @@ pub struct HostEntry {
     pub description: Option<String>,
     pub public: bool,
     pub control_tx: tokio::sync::mpsc::UnboundedSender<RendezvousToHost>,
+    /// Unix millis of the last frame we had from this host, refreshed by the
+    /// control loop's heartbeat.
+    ///
+    /// A live WebSocket is *not* evidence that the peer still exists. When a
+    /// host dies without closing the connection — laptop sleeps, Wi-Fi drops,
+    /// the process is killed, a NAT drops the flow — the socket stays half-open
+    /// and the read side simply never yields again. Without a clock the entry
+    /// would sit in `hosts` forever, which is exactly why dead hosts kept
+    /// appearing in the browse list.
+    pub last_seen_ms: AtomicI64,
+}
+
+impl HostEntry {
+    pub fn touch(&self) {
+        self.last_seen_ms.store(now_ms(), Ordering::Relaxed);
+    }
+
+    /// Milliseconds since we last heard from this host. The deadline check
+    /// works in millis so a sub-second timeout (tests) doesn't truncate to zero
+    /// and unregister every host on its first heartbeat.
+    pub fn idle_ms(&self) -> i64 {
+        (now_ms() - self.last_seen_ms.load(Ordering::Relaxed)).max(0)
+    }
+
+    /// Seconds since we last heard from this host, for the browse listing.
+    pub fn idle_secs(&self) -> u64 {
+        (self.idle_ms() / 1000) as u64
+    }
+}
+
+/// Milliseconds since the process started.
+///
+/// Monotonic on purpose: this measures "how long since we heard from the host",
+/// and a wall clock that steps (NTP correction, the machine waking from sleep,
+/// a manual change) would make a live host look long-dead or a dead one look
+/// fresh.
+fn now_ms() -> i64 {
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    START.get_or_init(std::time::Instant::now).elapsed().as_millis() as i64
 }
 
 /// A persisted claim on a name. The `slug` (lowercased) is the map key and the
@@ -194,13 +234,16 @@ impl Registry {
         self.voice_grants.get(grant).map(|s| s.clone())
     }
 
-    /// Try to claim a live slot for a shortcode; false if already live.
-    pub fn try_claim(&self, shortcode: &str, entry: HostEntry) -> bool {
+    /// Try to claim a live slot for a shortcode. Returns the shared entry so the
+    /// control loop can keep its heartbeat fresh, or `None` if already live.
+    pub fn try_claim(&self, shortcode: &str, entry: HostEntry) -> Option<Arc<HostEntry>> {
         if self.hosts.contains_key(shortcode) {
-            return false;
+            return None;
         }
-        self.hosts.insert(shortcode.to_string(), Arc::new(entry));
-        true
+        entry.touch();
+        let entry = Arc::new(entry);
+        self.hosts.insert(shortcode.to_string(), entry.clone());
+        Some(entry)
     }
 
     /// Drop the LIVE registration for a shortcode. Never touches the persistent
@@ -258,6 +301,7 @@ impl Registry {
                 shortcode: h.key().clone(),
                 name: h.value().name.clone(),
                 description: h.value().description.clone(),
+                idle_secs: h.value().idle_secs(),
             })
             .collect();
         entries.sort_by(|a, b| {

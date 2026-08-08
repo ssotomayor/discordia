@@ -45,6 +45,14 @@ pub struct DiscoverEntry {
     pub shortcode: String,
     pub name: Option<String>,
     pub description: Option<String>,
+    /// Seconds since the rendezvous last heard from this host's control socket.
+    ///
+    /// A host is dropped from the listing once it misses enough heartbeats, but
+    /// there is necessarily a window between "went away" and "we noticed". This
+    /// lets a browser show that a host has gone quiet instead of presenting a
+    /// stale entry as if it were reachable.
+    #[serde(default)]
+    pub idle_secs: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

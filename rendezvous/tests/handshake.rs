@@ -12,20 +12,23 @@ use tokio_tungstenite::tungstenite::Message;
 
 /// Spawn the rendezvous router on an ephemeral port; return its ws base URL.
 async fn spawn() -> String {
+    spawn_with(Config::default()).await.0
+}
+
+/// Spawn with a specific config, handing back the registry so a test can see
+/// what the rendezvous thinks is live.
+async fn spawn_with(config: Config) -> (String, Arc<Registry>) {
+    let registry = Arc::new(Registry::new());
     let ctx = AppCtx {
-        registry: Arc::new(Registry::new()),
-        config: Arc::new(Config {
-            livekit_url: None,
-            livekit_api_key: None,
-            livekit_api_secret: None,
-        }),
+        registry: registry.clone(),
+        config: Arc::new(config),
     };
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
         axum::serve(listener, router(ctx)).await.unwrap();
     });
-    format!("ws://{addr}")
+    (format!("ws://{addr}"), registry)
 }
 
 /// A test identity: (secret, 64-char x-only pubkey hex).
@@ -123,4 +126,79 @@ async fn a_second_key_cannot_take_a_claimed_name() {
     let reply = next_json(&mut ws_b).await;
     assert_eq!(reply["op"], "error", "got {reply}");
     assert!(reply["d"]["message"].as_str().unwrap().contains("taken"));
+}
+
+/// A host that stops answering must lose its listing.
+///
+/// This is the case that left dead hosts in the browse list: the process is
+/// gone (or asleep, or behind a dropped link) but the TCP connection was never
+/// closed, so the rendezvous' read side simply never yields and nothing
+/// unregisters it. Reproduced here by registering and then never polling the
+/// socket again — tungstenite answers pings while it is being polled, so a
+/// client that stops reading stops ponging, exactly like a host that died.
+#[tokio::test]
+async fn silent_host_is_dropped_from_the_listing() {
+    let (base, registry) = spawn_with(Config {
+        heartbeat_interval: std::time::Duration::from_millis(50),
+        host_timeout: std::time::Duration::from_millis(200),
+        ..Config::default()
+    })
+    .await;
+    let (secret, pubkey) = identity(9);
+
+    let (mut ws, nonce) = connect_control(&base).await;
+    let sig = sign(&secret, &nonce, &pubkey, "Ghost");
+    let frame = serde_json::json!({
+        "op": "register",
+        "d": { "name": "Ghost", "pubkey": pubkey, "signature": sig, "publish_public": true }
+    });
+    ws.send(Message::Text(frame.to_string().into())).await.unwrap();
+    let reply = next_json(&mut ws).await;
+    assert_eq!(reply["op"], "registered", "got {reply}");
+    assert_eq!(registry.discover().len(), 1, "host should be listed while alive");
+
+    // Hold the socket open but never poll it again: no Pong will be sent, while
+    // the kernel keeps ACKing so the rendezvous' writes still succeed.
+    let _held = ws;
+    tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+
+    assert!(
+        registry.discover().is_empty(),
+        "a host that stopped answering should not still be advertised"
+    );
+}
+
+/// The converse: a host that keeps answering must NOT be dropped, or the
+/// heartbeat would be worse than the bug it fixes.
+#[tokio::test]
+async fn responsive_host_keeps_its_listing() {
+    let (base, registry) = spawn_with(Config {
+        heartbeat_interval: std::time::Duration::from_millis(50),
+        host_timeout: std::time::Duration::from_millis(200),
+        ..Config::default()
+    })
+    .await;
+    let (secret, pubkey) = identity(10);
+
+    let (mut ws, nonce) = connect_control(&base).await;
+    let sig = sign(&secret, &nonce, &pubkey, "Steady");
+    let frame = serde_json::json!({
+        "op": "register",
+        "d": { "name": "Steady", "pubkey": pubkey, "signature": sig, "publish_public": true }
+    });
+    ws.send(Message::Text(frame.to_string().into())).await.unwrap();
+    assert_eq!(next_json(&mut ws).await["op"], "registered");
+
+    // Keep polling, which is what makes tungstenite answer the pings.
+    let pump = tokio::spawn(async move { while ws.next().await.is_some() {} });
+    tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+    assert_eq!(
+        registry.discover().len(),
+        1,
+        "a host answering heartbeats must stay listed"
+    );
+
+    // And its reported idle time should be small, so the UI shows it as live.
+    assert!(registry.discover()[0].idle_secs < 1);
+    pump.abort();
 }
