@@ -275,16 +275,24 @@ window.dxScreen = window.dxScreen || (function () {
     // Collapsing those two, as an earlier version did, meant a platform that
     // merely dislikes `audio: true` silently lost the resolution/bitrate preset
     // and went back to shipping a pixelated capture.
+    const wantVideo = { width: { ideal: wantW }, height: { ideal: wantH }, frameRate: { ideal: wantFps } };
+    // `systemAudio: 'include'` asks Chromium to offer the system-audio option
+    // in the picker (and to pre-tick it where it can). It is ignored by engines
+    // that don't know it, so it costs nothing to ask.
+    const wantAudio = { systemAudio: 'include' };
     const attempts = [
-      { video: { width: { ideal: wantW }, height: { ideal: wantH }, frameRate: { ideal: wantFps } }, audio: true },
-      { video: { width: { ideal: wantW }, height: { ideal: wantH }, frameRate: { ideal: wantFps } }, audio: false },
+      { video: wantVideo, audio: wantAudio },
+      { video: wantVideo, audio: true },
+      { video: wantVideo, audio: false },
       { video: true, audio: true },
       { video: true },
     ];
     let stream = null;
+    let audioAsked = false;
     for (let i = 0; i < attempts.length; i++) {
       try {
         stream = await navigator.mediaDevices.getDisplayMedia(attempts[i]);
+        audioAsked = attempts[i].audio !== false && attempts[i].audio !== undefined;
         if (i > 0) console.warn('[dxScreen] getDisplayMedia fell back to attempt', i, attempts[i]);
         break;
       } catch (e) {
@@ -372,7 +380,15 @@ window.dxScreen = window.dxScreen || (function () {
       } else {
         console.warn('[dxScreen] platform returned no audio track for this share');
       }
-      try { window.postMessage({ __dxf: 'share-audio', published: published }, '*'); } catch (e2) {}
+      // `supported` = the engine accepted an audio request at all. That is the
+      // difference between "your system can't do this" and "you didn't tick the
+      // box / picked a window", which need different advice.
+      try {
+        window.postMessage(
+          { __dxf: 'share-audio', published: published, supported: audioAsked },
+          '*'
+        );
+      } catch (e2) {}
     } catch (e) {
       // Fallback: try the SDK's built-in path. It may re-prompt and fail on a
       // first gesture-less invocation, but costs nothing to attempt.
@@ -489,16 +505,30 @@ pub fn ScreenShareBridge() -> Element {
     use_future(move || {
         let mut s = state.clone();
         async move {
-            let mut eval = document::eval("(() => !!(navigator && navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia))()");
-            if let Ok(v) = eval.recv::<bool>().await {
-                if v {
-                    s.write().screen_capture_available = true;
-                } else {
+            // Report the probe explicitly with `dioxus.send`. Relying on the
+            // script's completion value meant `recv::<bool>()` never resolved,
+            // the error branch ran, and capture was marked unavailable on
+            // machines where sharing works perfectly well — the bogus "install
+            // WebView2" tooltip on Windows.
+            let mut eval = document::eval(
+                "dioxus.send(!!(navigator && navigator.mediaDevices                  && navigator.mediaDevices.getDisplayMedia));",
+            );
+            match eval.recv::<bool>().await {
+                Ok(true) => s.write().screen_capture_available = true,
+                Ok(false) => {
                     s.write().screen_capture_available = false;
-                    s.write().error_toast = Some("Screen capture is not available in this embedded webview. Install WebView2 or use a browser to share your screen.".into());
+                    s.write().error_toast = Some(
+                        "Screen capture isn't available in this webview. On Windows,                          installing the WebView2 runtime enables it."
+                            .into(),
+                    );
                 }
-            } else {
-                s.write().screen_capture_available = false;
+                // Fail open. A false negative disables a working feature and
+                // tells the user something untrue; a false positive costs at
+                // most one failed share attempt, which reports its own reason.
+                Err(e) => {
+                    eprintln!("[screen] capture probe failed, assuming available: {e:?}");
+                    s.write().screen_capture_available = true;
+                }
             }
         }
     });
@@ -564,13 +594,27 @@ pub fn ScreenShareBridge() -> Element {
                         Some("share-audio") => {
                             let published =
                                 msg.get("published").and_then(|v| v.as_bool()).unwrap_or(false);
-                            eprintln!("[screen] share audio published={published}");
+                            // Whether the platform *can* do it at all, versus
+                            // whether this particular pick included it. Saying
+                            // "your platform can't" when the user simply left
+                            // the checkbox unticked — or picked a window, which
+                            // never carries audio — is just wrong.
+                            let supported = msg
+                                .get("supported")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false);
+                            eprintln!("[screen] share audio published={published} supported={supported}");
                             if !published {
-                                state.write().error_toast = Some(
-                                    "Sharing video only — this platform doesn't let the app capture \
-                                     system audio, so viewers won't hear your machine."
-                                        .into(),
-                                );
+                                state.write().error_toast = Some(if supported {
+                                    "Sharing video only. To include sound, re-share and tick \
+                                     \"Share audio\" in the picker — choose a tab or your whole \
+                                     screen, as single windows can't carry audio."
+                                        .into()
+                                } else {
+                                    "Sharing video only — this system doesn't let the app capture \
+                                     audio from a screen share, so viewers won't hear your machine."
+                                        .into()
+                                });
                             }
                         }
                         // A share we're watching: whether it carries audio at
