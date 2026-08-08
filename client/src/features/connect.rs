@@ -179,9 +179,17 @@ pub fn ConnectView(
                     onmousedown: move |_| crate::app::start_window_drag(),
                 }
                 form {
-                    class: "flex-1 overflow-auto px-8 pb-8 flex flex-col items-stretch dxf-no-drag",
+                    class: "flex-1 overflow-auto px-8 py-8 flex flex-col items-stretch dxf-no-drag",
                     onsubmit: submit,
-                    div { class: "w-full max-w-md mx-auto space-y-5 flex flex-col",
+                    // `my-auto`, not `justify-center` on the parent: auto
+                    // margins centre the form when there is spare height and
+                    // collapse to zero when there isn't, so tall content still
+                    // scrolls from the top. `justify-center` would push the
+                    // first fields above the scroll origin where they can't be
+                    // reached. Without this the brand panel sat centred while
+                    // the form clung to the top — a gap that grows with the
+                    // window, which is why it looked worst on large screens.
+                    div { class: "w-full max-w-md mx-auto my-auto space-y-5 flex flex-col",
 
                 IdentityCard { identity: identity.clone(), on_rename, on_sign_out }
 
