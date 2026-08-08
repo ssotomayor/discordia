@@ -736,10 +736,13 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
     // Snapshot current voice phase so the popover can show reconnection state.
     let voice_phase = state.read().voice.phase;
     let reconnecting = matches!(voice_phase, VoicePhase::Connecting);
-    // VU bar + threshold marker percentages (peak is stored as ×1000).
-    let mic_level_pct = (mic_level as f64 / 1000.0 * 100.0).clamp(0.0, 100.0) as u32;
-    let threshold_pct = (mic_sensitivity as f64 / 1000.0 * 100.0).clamp(0.0, 100.0) as u32;
-    let sensitivity_display = mic_sensitivity / 10;
+    // VU bar + threshold marker, both on a dB scale. A linear amplitude meter
+    // reads 3-30% for ordinary speech and made the default threshold display as
+    // "2%", which looks broken even when the audio is fine.
+    let mic_level_pct = crate::features::voice::peak_to_meter_pct(mic_level);
+    let threshold_pct = crate::features::voice::peak_to_meter_pct(mic_sensitivity);
+    let sensitivity_display = crate::features::voice::peak_to_db_label(mic_sensitivity);
+    let mic_level_display = crate::features::voice::peak_to_db_label(mic_level);
     // Screen-share preset lives only in local settings — it's a capture-side
     // choice the server never sees.
     let screenshare_quality = settings.read().screenshare_quality.clone();
@@ -945,7 +948,7 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                     if reconnecting {
                                         span { class: "text-[10px] text-[var(--text-dim)]", "reconnecting" }
                                     } else if voice_phase == VoicePhase::Connected {
-                                        span { class: "text-[10px] text-[var(--text-dim)]", "{mic_level_pct}%" }
+                                        span { class: "text-[10px] text-[var(--text-dim)]", "{mic_level_display}" }
                                     } else {
                                         span { class: "text-[10px] text-[var(--text-dim)]", "join voice" }
                                     }
@@ -981,16 +984,21 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                             div { class: "mb-2",
                                 div { class: "flex items-center justify-between",
                                     span { class: "text-[11px] text-[var(--text-muted)]", "Sensitivity" }
-                                    span { class: "text-[10px] text-[var(--text-dim)]", "{sensitivity_display}%" }
+                                    span { class: "text-[10px] text-[var(--text-dim)]", "{sensitivity_display}" }
                                 }
                                 input {
                                     r#type: "range",
-                                    min: "1",
-                                    max: "1000",
-                                    value: "{mic_sensitivity}",
+                                    // The slider moves in even dB steps, not
+                                    // even amplitude steps — otherwise the
+                                    // entire useful range is crammed into the
+                                    // bottom few percent of its travel.
+                                    min: "0",
+                                    max: "100",
+                                    value: "{threshold_pct}",
                                     class: "w-full mt-1 accent-[var(--accent)]",
                                     oninput: move |e| {
-                                        let val: u32 = e.value().parse().unwrap_or(25).clamp(1, 1000);
+                                        let pct: u32 = e.value().parse().unwrap_or(40).clamp(0, 100);
+                                        let val = crate::features::voice::meter_pct_to_peak(pct);
                                         // Persist to client settings
                                         let mut next = settings.read().clone();
                                         next.mic_sensitivity = val;

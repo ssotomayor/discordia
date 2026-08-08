@@ -48,6 +48,19 @@ const PLAYBACK_CAP_DIVISOR: u32 = 5;
 /// usual compromise between "doesn't clip speech" and "doesn't leak the room".
 const GATE_HANGOVER_FRAMES: u32 = 30;
 
+/// libwebrtc APM configuration.
+///
+/// `noise_suppression` is the inverse of the DeepFilterNet toggle: exactly one
+/// suppressor should be in the path. AEC and AGC are orthogonal (echo and
+/// level, not noise) and stay on either way.
+fn apm_options(deepfilter_on: bool) -> AudioSourceOptions {
+    AudioSourceOptions {
+        echo_cancellation: true,
+        noise_suppression: !deepfilter_on,
+        auto_gain_control: true,
+    }
+}
+
 /// Live audio knobs shared between the UI thread, the cpal callbacks and the
 /// publish task.
 ///
@@ -299,6 +312,12 @@ async fn service_loop(
             VoiceCmd::SetNoiseCancellation { enabled } => {
                 eprintln!("[voice] SetNoiseCancellation enabled={enabled}");
                 controls.denoise.store(enabled, Ordering::Relaxed);
+                // Hand libwebrtc's own suppressor over to DeepFilterNet, live —
+                // `set_audio_options` reconfigures the APM without republishing
+                // the track.
+                if let Some(active) = session.as_ref() {
+                    active.set_apm_denoise(enabled);
+                }
                 state.write().noise_cancellation = enabled;
             }
             VoiceCmd::SetUserVolume { pubkey, gain } => {
@@ -315,6 +334,8 @@ async fn service_loop(
 /// Active voice session: holds the LiveKit Room plus the audio I/O streams.
 struct ActiveVoice {
     room: Arc<Room>,
+    /// Kept so the APM can be reconfigured mid-call.
+    source: NativeAudioSource,
     mic: MicCapture,
     local_audio: LocalAudioTrack,
     _playback: PlaybackMixer,
@@ -338,16 +359,21 @@ impl ActiveVoice {
             .map_err(|e| format!("livekit connect: {e}"))?;
         let room = Arc::new(room);
 
-        // Microphone publish pipeline. APM (AEC + NS + AGC) is enabled.
-        // Same-machine testing: AEC will be a pass-through because we don't
-        // wire a render reference signal to libwebrtc — but NS and AGC still
-        // help. Real two-machine deployments get the full benefit.
+        // Microphone publish pipeline. APM (AEC + NS + AGC).
+        //
+        // Echo cancellation and AGC always stay on — they solve problems
+        // DeepFilterNet doesn't touch. Noise suppression is the one that
+        // overlaps, so it follows the DeepFilterNet toggle (see
+        // `apm_options`): running libwebrtc's suppressor over audio the model
+        // has already cleaned means a second mask applied to a signal that no
+        // longer has the noise it was estimated from, which mostly costs
+        // artefacts on quiet consonants.
+        //
+        // Same-machine testing: AEC is effectively a pass-through because we
+        // don't wire a render reference signal to libwebrtc. Real two-machine
+        // deployments get the full benefit.
         let source = NativeAudioSource::new(
-            AudioSourceOptions {
-                echo_cancellation: true,
-                noise_suppression: true,
-                auto_gain_control: true,
-            },
+            apm_options(controls.denoise.load(Ordering::Relaxed)),
             SAMPLE_RATE,
             CHANNELS,
             1000,
@@ -457,12 +483,18 @@ impl ActiveVoice {
 
         Ok(Self {
             room,
+            source,
             mic,
             local_audio: local_audio_for_mute,
             _playback: playback,
             event_task,
             meter_task,
         })
+    }
+
+    /// Swap libwebrtc's noise suppressor in or out while the call is live.
+    fn set_apm_denoise(&self, deepfilter_on: bool) {
+        self.source.set_audio_options(apm_options(deepfilter_on));
     }
 
     async fn set_muted(&mut self, muted: bool) {
@@ -590,6 +622,42 @@ fn denoise_gate_loop(
     }
     eprintln!("[voice] denoise/gate thread ended ({gated} frames gated)");
 }
+
+/// Map a peak (×1000 fixed point) to a 0..=100 meter position on a dB scale.
+///
+/// Amplitude is linear but hearing is not, which is why the old linear bar
+/// always looked broken: ordinary speech peaks around 0.03–0.3, so a linear
+/// meter sat between 3% and 30% and the default threshold rendered as "2%" —
+/// numbers that look like something is wrong when the audio is perfectly fine.
+/// On a dBFS scale (-60 dB at the bottom, 0 dBFS at the top) that same speech
+/// lands between 50% and 90%, which is where a meter is meant to sit.
+pub fn peak_to_meter_pct(peak_fixed: u32) -> u32 {
+    if peak_fixed == 0 {
+        return 0;
+    }
+    let db = 20.0 * (peak_fixed as f64 / 1000.0).log10();
+    (((db - METER_FLOOR_DB) / -METER_FLOOR_DB) * 100.0).clamp(0.0, 100.0) as u32
+}
+
+/// Inverse of `peak_to_meter_pct`, so the sensitivity slider can move in even
+/// dB steps while the stored value stays the ×1000 peak the gate compares.
+pub fn meter_pct_to_peak(pct: u32) -> u32 {
+    let db = (pct.min(100) as f64 / 100.0) * -METER_FLOOR_DB + METER_FLOOR_DB;
+    let amp = 10f64.powf(db / 20.0);
+    ((amp * 1000.0).round() as i64).clamp(1, 1000) as u32
+}
+
+/// A peak as a dBFS label for the UI ("-32 dB").
+pub fn peak_to_db_label(peak_fixed: u32) -> String {
+    if peak_fixed == 0 {
+        return "−∞".into();
+    }
+    format!("{:.0} dB", 20.0 * (peak_fixed as f64 / 1000.0).log10())
+}
+
+/// Bottom of the meter. -60 dBFS is below the noise floor of any usable mic,
+/// so nothing interesting is hidden underneath it.
+const METER_FLOOR_DB: f64 = -60.0;
 
 /// Peak absolute sample as ×1000 fixed point — the scale the threshold slider
 /// and the VU bar both speak.
@@ -1421,4 +1489,49 @@ async fn consume_remote_track(
     // contributing silence to the mix (and leaks a buffer per rejoin).
     handle.remove_track(track_id);
     eprintln!("[voice] remote-track stream ended after {frames} frames");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The complaint that prompted the dB scale: ordinary speech should not
+    /// read as a nearly-empty meter.
+    #[test]
+    fn speech_sits_in_the_middle_of_the_meter() {
+        // -30 dBFS (peak 0.032) is a comfortable speaking level.
+        let pct = peak_to_meter_pct(32);
+        assert!((45..=55).contains(&pct), "quiet speech read as {pct}%");
+        // A loud peak should be near the top, not merely a third of the way up.
+        assert!(peak_to_meter_pct(700) > 90);
+    }
+
+    #[test]
+    fn meter_endpoints_behave() {
+        assert_eq!(peak_to_meter_pct(0), 0);
+        assert_eq!(peak_to_meter_pct(1000), 100);
+        // Below the floor clamps rather than going negative.
+        assert_eq!(peak_to_meter_pct(1), 0);
+    }
+
+    /// The slider round-trips: what the user sets is what the gate compares.
+    #[test]
+    fn meter_pct_round_trips_through_the_peak_scale() {
+        for pct in [10, 25, 50, 75, 100] {
+            let peak = meter_pct_to_peak(pct);
+            let back = peak_to_meter_pct(peak);
+            assert!(
+                back.abs_diff(pct) <= 1,
+                "{pct}% -> peak {peak} -> {back}%"
+            );
+        }
+    }
+
+    /// Never returns 0: a zero threshold would gate nothing at all and the
+    /// stored value is documented as 1..=1000.
+    #[test]
+    fn threshold_never_collapses_to_zero() {
+        assert!(meter_pct_to_peak(0) >= 1);
+        assert!(meter_pct_to_peak(1000) <= 1000);
+    }
 }
