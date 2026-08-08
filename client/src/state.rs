@@ -172,6 +172,11 @@ pub struct AppState {
     pub stream_volumes: HashMap<String, u32>,
     /// Screen-share streams muted locally, keyed by sharer pubkey.
     pub stream_muted: HashSet<String>,
+    /// Sharers whose stream actually carries an audio track, as reported by the
+    /// webview when we attach it. A share can legitimately be video-only (the
+    /// platform may not let the app capture system audio at all), and a volume
+    /// slider over silence looks like a bug — so the UI needs to know.
+    pub stream_has_audio: HashSet<String>,
     /// Populated when running in self-host mode. None for remote connections.
     pub host_info: Option<HostInfo>,
     /// Bot installs per guild, for the owner's Integrations dialog. Populated by
@@ -235,6 +240,7 @@ impl AppState {
             user_muted: HashSet::new(),
             stream_volumes: HashMap::new(),
             stream_muted: HashSet::new(),
+            stream_has_audio: HashSet::new(),
             host_info: None,
             integrations: HashMap::new(),
             roles: HashMap::new(),
