@@ -292,7 +292,15 @@ window.dxScreen = window.dxScreen || (function () {
     // audio constraint — nested inside `audio` it is just an unknown (and
     // therefore ignored) constraint, which is where it was first put. Engines
     // that don't know it ignore it, so asking costs nothing.
+    // `systemAudio: 'include'` asks for the whole machine's output when a
+    // screen is picked; `windowAudio: 'system'` is the equivalent hint for a
+    // *window* pick, which otherwise carries no audio at all. Both are hints —
+    // engines that don't know them ignore them, so asking costs nothing.
+    // `suppressLocalAudioPlayback: false` keeps the sharer hearing their own
+    // audio while it is being shared.
+    const richAudio = { suppressLocalAudioPlayback: false };
     const attempts = [
+      { video: wantVideo, audio: richAudio, systemAudio: 'include', windowAudio: 'system' },
       { video: wantVideo, audio: true, systemAudio: 'include' },
       { video: wantVideo, audio: true },
       { video: wantVideo, audio: false },
