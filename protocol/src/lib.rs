@@ -300,6 +300,8 @@ pub enum Permission {
     ManageGuild,
     /// Mint/rotate the guild's invite code.
     CreateInvite,
+    /// Add, rename and remove the guild's custom emoji.
+    ManageEmojis,
 }
 
 impl Permission {
@@ -315,6 +317,7 @@ impl Permission {
         Permission::ManageRoles,
         Permission::ManageGuild,
         Permission::CreateInvite,
+        Permission::ManageEmojis,
     ];
 
     /// The subset offered in the bot installer. Management permissions are
@@ -341,6 +344,7 @@ impl Permission {
             Permission::ManageRoles => "Manage roles",
             Permission::ManageGuild => "Manage guild",
             Permission::CreateInvite => "Create invites",
+            Permission::ManageEmojis => "Manage emojis",
         }
     }
 }
@@ -365,6 +369,59 @@ pub struct Role {
     /// Display seniority (lower renders first). Cosmetic — never authority.
     #[serde(default)]
     pub position: u32,
+}
+
+/// A guild's custom emoji, referenced in message text and reactions as
+/// `:shortcode:` (NIP-30's notation and character set).
+///
+/// The image is NOT carried here — only its content address. Emoji render dozens
+/// of times per screen, so inlining the bytes into every catalog push (or every
+/// message) would be wasteful, and a plain URL wouldn't work either: a friend
+/// arriving through the rendezvous proxy has a WebSocket to the gateway and no
+/// HTTP route to it at all. So clients fetch bytes once via `FetchEmoji` and
+/// cache them under `image` forever — safe because the name *is* the SHA-256 of
+/// the bytes, so it can never go stale.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GuildEmoji {
+    pub id: Id,
+    pub guild_id: Id,
+    /// 2..=32 chars of `[a-z0-9_]`, unique within the guild. Validated by
+    /// `valid_shortcode`; the server is the authority.
+    pub shortcode: String,
+    /// Content address of the image: `<sha256>.<ext>`.
+    pub image: String,
+    /// Pubkey of whoever uploaded it.
+    #[serde(default)]
+    pub added_by: String,
+    #[serde(default)]
+    pub created_ms: i64,
+}
+
+/// One emoji image, in reply to `FetchEmoji`. `data_url` is empty when the
+/// server has no such blob (the client caches that as "don't ask again").
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EmojiBlob {
+    pub image: String,
+    pub data_url: String,
+}
+
+/// Longest a custom-emoji shortcode may be. Short enough to stay readable
+/// inline in a sentence.
+pub const MAX_SHORTCODE_LEN: usize = 32;
+/// Custom emoji per guild. A ceiling matters here because there is no account
+/// system to fall back on: anyone can self-host, so quotas are the anti-abuse
+/// mechanism (same reasoning as slowmode and the join gates).
+pub const MAX_EMOJIS_PER_GUILD: usize = 100;
+
+/// Whether `s` is a legal emoji shortcode.
+///
+/// Deliberately narrower than NIP-30 (which also allows uppercase and hyphens):
+/// lowercase-only makes `:Tada:` and `:tada:` the same emoji rather than two
+/// that look identical in a list, and excluding `-` keeps the scanner in the
+/// message renderer from having to guess about hyphenated words.
+pub fn valid_shortcode(s: &str) -> bool {
+    (2..=MAX_SHORTCODE_LEN).contains(&s.len())
+        && s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
 }
 
 /// What event streams an installed bot *receives*. This is the data-minimization
@@ -520,6 +577,35 @@ pub enum ClientMessage {
     /// the channel's audience; not stored).
     Typing {
         channel_id: Id,
+    },
+    /// Requires `ManageEmojis`: add a custom emoji to a guild. The image is a
+    /// `data:image/...;base64,...` URL, same as message attachments — the
+    /// server decodes it into the content-addressed blob store and replies with
+    /// the refreshed catalog.
+    CreateGuildEmoji {
+        guild_id: Id,
+        shortcode: String,
+        image: String,
+    },
+    /// Requires `ManageEmojis`: rename an existing emoji. The image is
+    /// untouched, so clients already holding the bytes keep them.
+    RenameGuildEmoji {
+        guild_id: Id,
+        emoji_id: Id,
+        shortcode: String,
+    },
+    /// Requires `ManageEmojis`: remove an emoji from the guild's catalog. The
+    /// blob itself stays (it's content-addressed and may be shared) — see the
+    /// blob-GC item in TODO.md.
+    DeleteGuildEmoji {
+        guild_id: Id,
+        emoji_id: Id,
+    },
+    /// Fetch emoji images by content address. Sent when the client meets a
+    /// shortcode whose bytes aren't in its cache yet; the server replies with
+    /// `EmojiBlobs`.
+    FetchEmoji {
+        images: Vec<String>,
     },
     /// Requires `ManageGuild`: set (or clear) a guild's accent color.
     SetGuildAccent {
@@ -766,12 +852,27 @@ pub enum ServerMessage {
         /// Roles of the user's guilds only.
         #[serde(default)]
         roles: Vec<Role>,
+        /// Custom-emoji catalogs of the user's guilds only. Images are fetched
+        /// separately and on demand — see `GuildEmoji`.
+        #[serde(default)]
+        emojis: Vec<GuildEmoji>,
         /// True if this connection is a configured operator — i.e. it owns
         /// system guilds (the seeded Lobby) for permission purposes. Lets the
         /// client surface management controls there even though the guild has
         /// no `owner_pubkey`.
         #[serde(default)]
         operator: bool,
+    },
+    /// A guild's full custom-emoji catalog. Sent on any change (add, rename,
+    /// delete) to that guild's members — the whole list, not a delta, because
+    /// it is small and bounded by `MAX_EMOJIS_PER_GUILD`.
+    GuildEmojis {
+        guild_id: Id,
+        emojis: Vec<GuildEmoji>,
+    },
+    /// Emoji images, in reply to `FetchEmoji`.
+    EmojiBlobs {
+        blobs: Vec<EmojiBlob>,
     },
     MessageHistory {
         channel_id: Id,
@@ -788,6 +889,9 @@ pub enum ServerMessage {
         /// The guild's roles, so the joiner can render badges/permissions.
         #[serde(default)]
         roles: Vec<Role>,
+        /// The guild's custom-emoji catalog (images fetched on demand).
+        #[serde(default)]
+        emojis: Vec<GuildEmoji>,
     },
     /// A guild was deleted by its owner. Delivered to the (former) members so
     /// they drop it from local state.

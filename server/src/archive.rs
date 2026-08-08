@@ -13,7 +13,9 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::protocol::{AuditEntry, BotInstall, Channel, Guild, Id, Member, Message, Role};
+use crate::protocol::{
+    AuditEntry, BotInstall, Channel, Guild, GuildEmoji, Id, Member, Message, Role,
+};
 use crate::store::Store;
 
 /// Current archive schema version. Bump on a breaking layout change; `import`
@@ -28,6 +30,13 @@ pub struct GuildArchive {
     pub guild: Guild,
     pub channels: Vec<Channel>,
     pub roles: Vec<Role>,
+    /// The guild's custom emoji. Only the catalog travels — `image` is a
+    /// content address, so the destination must already hold (or later
+    /// re-receive) the blob. Cross-instance blob copy is the open P6-tail item
+    /// in TODO.md; until then an imported guild keeps its shortcodes and
+    /// re-uploads are cheap because identical bytes dedupe to the same address.
+    #[serde(default)]
+    pub emojis: Vec<GuildEmoji>,
     pub members: Vec<Member>,
     /// Banned pubkeys.
     pub bans: Vec<String>,
@@ -52,6 +61,8 @@ impl Store {
             loaded.channels.into_iter().filter(|c| c.guild_id == guild_id).collect();
         let roles: Vec<Role> =
             loaded.roles.into_iter().filter(|r| r.guild_id == guild_id).collect();
+        let emojis: Vec<GuildEmoji> =
+            loaded.emojis.into_iter().filter(|e| e.guild_id == guild_id).collect();
 
         // Rebuild members from the loaded tuples: (guild, pubkey, username, bot, roles).
         let members: Vec<Member> = loaded
@@ -110,6 +121,7 @@ impl Store {
             guild,
             channels,
             roles,
+            emojis,
             members,
             bans,
             invite,
@@ -153,6 +165,14 @@ impl Store {
             role.id = role_map[&r.id];
             role.guild_id = new_guild_id;
             self.upsert_role(&role).await?;
+        }
+
+        // Emoji — fresh ids, shortcodes and content addresses preserved.
+        for e in &archive.emojis {
+            let mut emoji = e.clone();
+            emoji.id = Uuid::new_v4();
+            emoji.guild_id = new_guild_id;
+            self.upsert_emoji(&emoji).await?;
         }
 
         // Channels.

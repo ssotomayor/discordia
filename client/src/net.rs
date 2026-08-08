@@ -249,6 +249,41 @@ async fn run(
     Ok(())
 }
 
+/// Make sure every emoji in the catalog has its image, asking the server only
+/// for what we don't already hold.
+///
+/// Three tiers, cheapest first: already in memory, on disk from a previous run,
+/// or a `FetchEmoji` round trip. The disk tier is what stops a restart from
+/// re-downloading a guild's whole emoji set, and it is safe to trust
+/// indefinitely because the filename is the SHA-256 of the contents.
+fn resolve_emoji_images(s: &mut AppState, tx: &UnboundedSender<ClientMessage>) {
+    /// Keep requests under the server's per-frame ceiling; the rest are picked
+    /// up by the next catalog push (or the next launch, from disk).
+    const MAX_PER_REQUEST: usize = 64;
+
+    let mut wanted: Vec<String> = Vec::new();
+    let images: Vec<String> = s
+        .guild_emojis
+        .values()
+        .flatten()
+        .map(|e| e.image.clone())
+        .collect();
+    for image in images {
+        if s.emoji_images.contains_key(&image) || s.emoji_requested.contains(&image) {
+            continue;
+        }
+        if let Some(data_url) = crate::emoji::load_cached(&image) {
+            s.emoji_images.insert(image, data_url);
+            continue;
+        }
+        s.emoji_requested.insert(image.clone());
+        wanted.push(image);
+    }
+    for chunk in wanted.chunks(MAX_PER_REQUEST) {
+        let _ = tx.send(ClientMessage::FetchEmoji { images: chunk.to_vec() });
+    }
+}
+
 fn apply(
     state: &mut Signal<AppState>,
     msg: ServerMessage,
@@ -267,6 +302,7 @@ fn apply(
             catalog,
             profiles,
             roles,
+            emojis,
             operator,
         } => {
             s.self_user = Some(user);
@@ -288,6 +324,15 @@ fn apply(
                 }
                 map
             };
+            s.guild_emojis = {
+                let mut map: std::collections::HashMap<Id, Vec<crate::protocol::GuildEmoji>> =
+                    std::collections::HashMap::new();
+                for e in emojis {
+                    map.entry(e.guild_id).or_default().push(e);
+                }
+                map
+            };
+            resolve_emoji_images(&mut s, tx);
             s.messages = BTreeMap::new();
             s.screen_shares = std::collections::HashMap::new();
             s.screen_viewing = None;
@@ -361,13 +406,15 @@ fn apply(
                 s.notify_tick = s.notify_tick.wrapping_add(1);
             }
         }
-        ServerMessage::GuildJoined { guild, channels, members, roles } => {
+        ServerMessage::GuildJoined { guild, channels, members, roles, emojis } => {
             // We created or joined this guild — add it (dedup) and jump to it.
             let gid = guild.id;
             if !s.guilds.iter().any(|g| g.id == gid) {
                 s.guilds.push(guild);
             }
             s.roles.insert(gid, roles);
+            s.guild_emojis.insert(gid, emojis);
+            resolve_emoji_images(&mut s, tx);
             for ch in channels {
                 if !s.channels.iter().any(|c| c.id == ch.id) {
                     s.channels.push(ch);
@@ -489,6 +536,21 @@ fn apply(
         }
         ServerMessage::GuildRoles { guild_id, roles } => {
             s.roles.insert(guild_id, roles);
+        }
+        ServerMessage::GuildEmojis { guild_id, emojis } => {
+            s.guild_emojis.insert(guild_id, emojis);
+            resolve_emoji_images(&mut s, tx);
+        }
+        ServerMessage::EmojiBlobs { blobs } => {
+            for blob in blobs {
+                // An empty data URL means the server has no such blob. Cache
+                // that too: without it a missing image is re-requested on every
+                // catalog push, forever.
+                if !blob.data_url.is_empty() {
+                    crate::emoji::store_cached(&blob.image, &blob.data_url);
+                }
+                s.emoji_images.insert(blob.image, blob.data_url);
+            }
         }
         ServerMessage::MemberUpdate(member) => {
             // Role set (or other member metadata) changed — upsert the row.

@@ -246,14 +246,22 @@ fn MessageRow(message: Message, grouped: bool) -> Element {
     let channel_id = message.channel_id;
     let message_id = message.id;
 
+    // Guild that owns this channel. None for DMs — which is also why custom
+    // emoji don't resolve there: they belong to a guild.
+    let guild_id = state
+        .read()
+        .channels
+        .iter()
+        .find(|c| c.id == channel_id)
+        .map(|c| c.guild_id);
+
     // Delete affordance: your own messages always; others' need ManageMessages
     // in the channel's guild (DMs: author-only). Server re-checks.
     let can_delete = {
         let s = state.read();
         let is_author = self_pubkey.as_deref() == Some(message.author.pubkey.as_str());
-        let guild_of_channel = s.channels.iter().find(|c| c.id == channel_id).map(|c| c.guild_id);
         is_author
-            || guild_of_channel
+            || guild_id
                 .map(|gid| s.can(gid, crate::protocol::Permission::ManageMessages))
                 .unwrap_or(false)
     };
@@ -297,7 +305,7 @@ fn MessageRow(message: Message, grouped: bool) -> Element {
                 }
                 if has_text {
                     div { class: "text-sm text-[var(--text)] break-words whitespace-pre-wrap leading-relaxed",
-                        MessageContent { content: message.content.clone() }
+                        MessageContent { content: message.content.clone(), channel_id }
                     }
                 }
                 if let Some(img) = message.image.as_ref() {
@@ -326,7 +334,12 @@ fn MessageRow(message: Message, grouped: bool) -> Element {
                                         key: "{r.emoji}",
                                         class: "dxf-pop flex items-center gap-1 px-1.5 h-6 rounded-full border text-xs transition-colors {cls}",
                                         onclick: move |_| g.send(ClientMessage::React { channel_id, message_id, emoji: emoji.clone() }),
-                                        span { "{r.emoji}" }
+                                        // `Reaction.emoji` is just a string, so a
+                                        // custom emoji rides in it as `:shortcode:`
+                                        // and needs the same resolution as message
+                                        // text — otherwise reacting with a guild
+                                        // emoji shows the raw code in the chip.
+                                        span { EmojiText { text: r.emoji.clone(), guild_id } }
                                         span { class: "text-[10px]", "{count}" }
                                     }
                                 }
@@ -401,8 +414,65 @@ fn MessageRow(message: Message, grouped: bool) -> Element {
 
 /// Renders message text with clickable URLs and highlighted @mentions, while
 /// preserving line breaks.
+/// Render one word that contains at least one `:shortcode:`, swapping in the
+/// guild's custom emoji images.
+///
+/// A shortcode with no matching emoji — or one whose bytes haven't arrived yet
+/// — renders as the literal `:shortcode:`. That's deliberate: it degrades to
+/// exactly what a client without the emoji sees, so a slow fetch looks like
+/// plain text rather than a hole in the message.
 #[component]
-fn MessageContent(content: String) -> Element {
+fn EmojiText(text: String, guild_id: Option<Id>) -> Element {
+    let state = use_app_state();
+    // Resolve to owned data up front so the state borrow ends before rendering.
+    let parts: Vec<(String, Option<String>)> = {
+        let s = state.read();
+        crate::emoji::split_shortcodes(&text)
+            .into_iter()
+            .map(|p| match p {
+                crate::emoji::Piece::Text(t) => (t.to_string(), None),
+                crate::emoji::Piece::Shortcode(code) => {
+                    let url = guild_id
+                        .and_then(|g| s.emoji_image(g, code))
+                        .map(str::to_string);
+                    (code.to_string(), Some(url.unwrap_or_default()))
+                }
+            })
+            .collect()
+    };
+
+    rsx! {
+        for (body, emoji) in parts.into_iter() {
+            match emoji {
+                // Sized in `em` so emoji track the surrounding text rather than
+                // a fixed pixel height, and nudged down to sit on the baseline.
+                Some(url) if !url.is_empty() => rsx! {
+                    img {
+                        src: "{url}",
+                        alt: ":{body}:",
+                        title: ":{body}:",
+                        style: "height:1.4em;width:auto;display:inline-block;vertical-align:-0.3em;",
+                    }
+                },
+                Some(_) => rsx! { ":{body}:" },
+                None => rsx! { "{body}" },
+            }
+        }
+    }
+}
+
+#[component]
+fn MessageContent(content: String, channel_id: Id) -> Element {
+    let state = use_app_state();
+    // Custom emoji are guild-scoped, so a DM (no guild) simply renders the
+    // literal `:shortcode:` — which is also what a client that doesn't have
+    // the emoji shows, so nothing is lost.
+    let guild_id = state
+        .read()
+        .channels
+        .iter()
+        .find(|c| c.id == channel_id)
+        .map(|c| c.guild_id);
     let lines: Vec<&str> = content.split('\n').collect();
     let last = lines.len().saturating_sub(1);
     rsx! {
@@ -434,6 +504,13 @@ fn MessageContent(content: String) -> Element {
                                         "{trailing}"
                                     }
                                 }
+                            } else if crate::emoji::has_shortcode(&w) {
+                                rsx! {
+                                    span {
+                                        EmojiText { text: w.clone(), guild_id }
+                                        "{trailing}"
+                                    }
+                                }
                             } else {
                                 rsx! { span { "{w}{trailing}" } }
                             }
@@ -461,6 +538,21 @@ fn Composer(channel_id: Id, composer_label: String) -> Element {
     let mut last_typing = use_signal::<Option<std::time::Instant>>(|| None);
     let gateway = use_gateway();
     let gateway_submit = gateway.clone();
+
+    // The guild's custom emoji, for the picker's first section. Snapshotted
+    // (rather than read inside the RSX) so the state borrow doesn't span the
+    // closures below.
+    let (guild_emojis, emoji_urls) = {
+        let state = use_app_state();
+        let s = state.read();
+        let gid = s.channels.iter().find(|c| c.id == channel_id).map(|c| c.guild_id);
+        let list = gid.map(|g| s.emojis_of(g).to_vec()).unwrap_or_default();
+        let urls: std::collections::HashMap<String, String> = list
+            .iter()
+            .filter_map(|e| s.emoji_images.get(&e.image).map(|u| (e.image.clone(), u.clone())))
+            .collect();
+        (list, urls)
+    };
 
     // Read-only channels: swap the composer for a lock notice unless the user
     // holds ManageMessages/ManageChannels there (mirrors the server gate).
@@ -521,19 +613,58 @@ fn Composer(channel_id: Id, composer_label: String) -> Element {
     rsx! {
         div { class: "px-3 pb-3 shrink-0 relative",
 
-            // Emoji picker popover, floats above the input row.
+            // Emoji picker popover, floats above the input row. Anchored to the
+            // right so it sits under the button that opens it, and sized to its
+            // content instead of stretching the full composer width.
             if show_emoji() {
                 div {
-                    class: "dxf-pop-in absolute bottom-full left-3 right-3 mb-2 p-2 bg-[var(--panel-solid)] border border-[var(--border)] rounded-md shadow-lg grid grid-cols-10 gap-1 z-30",
-                    for emoji in EMOJIS.iter().copied() {
-                        button {
-                            r#type: "button",
-                            class: "w-7 h-7 flex items-center justify-center rounded hover:bg-white/[0.06] text-lg leading-none",
-                            onclick: move |_| {
-                                let mut d = draft.write();
-                                d.push_str(emoji);
-                            },
-                            "{emoji}"
+                    class: "dxf-pop-in absolute bottom-full right-3 mb-2 p-1.5 bg-[var(--panel-solid)] border border-[var(--border)] rounded-md shadow-lg z-30",
+                    // The guild's own emoji come first — they're the ones you
+                    // can't type any other way. Inserted as `:shortcode:`, so
+                    // the draft stays plain text and needs no special casing on
+                    // send.
+                    if !guild_emojis.is_empty() {
+                        div { class: "text-[9px] uppercase tracking-wider text-[var(--text-dim)] px-1 pb-1", "This guild" }
+                        div { class: "grid grid-cols-8 gap-0.5 pb-1.5 mb-1.5 border-b border-[var(--border)]",
+                            for e in guild_emojis.iter().cloned() {
+                                {
+                                    let code = e.shortcode.clone();
+                                    let url = emoji_urls.get(&e.image).cloned().unwrap_or_default();
+                                    rsx! {
+                                        button {
+                                            key: "{e.id}",
+                                            r#type: "button",
+                                            class: "w-6 h-6 flex items-center justify-center rounded hover:bg-white/[0.06] text-base leading-none",
+                                            title: ":{code}:",
+                                            onclick: move |_| {
+                                                draft.write().push_str(&format!(":{code}:"));
+                                                show_emoji.set(false);
+                                            },
+                                            if url.is_empty() {
+                                                span { class: "text-[8px] text-[var(--text-dim)]", "…" }
+                                            } else {
+                                                img { src: "{url}", style: "height:1.2em;width:auto;" }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    div { class: "grid grid-cols-8 gap-0.5",
+                        for emoji in EMOJIS.iter().copied() {
+                            button {
+                                r#type: "button",
+                                class: "w-6 h-6 flex items-center justify-center rounded hover:bg-white/[0.06] text-base leading-none",
+                                onclick: move |_| {
+                                    draft.write().push_str(emoji);
+                                    // Close on pick: the picker is for reaching
+                                    // one emoji, and leaving it open covers the
+                                    // message you were just typing.
+                                    show_emoji.set(false);
+                                },
+                                "{emoji}"
+                            }
                         }
                     }
                 }
@@ -563,20 +694,14 @@ fn Composer(channel_id: Id, composer_label: String) -> Element {
                 onsubmit: move |e| { e.prevent_default(); submit(); },
                 div { class: "border border-[var(--border)] rounded flex items-center px-2 gap-1 focus-within:border-[var(--accent)] transition-colors",
 
-                    // Emoji toggle.
-                    button {
-                        r#type: "button",
-                        class: "px-1.5 text-base leading-none text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors",
-                        title: "Emoji",
-                        onclick: move |_| show_emoji.set(!show_emoji()),
-                        "🙂"
-                    }
-
-                    // Image attach (label opens the hidden file input).
+                    // Attach, on the left (label opens the hidden file input).
+                    // A "+" rather than a picture glyph: it's the affordance
+                    // people look for on the left of a composer, and it reads as
+                    // "add something" rather than "images only".
                     label {
-                        class: "px-1.5 text-base leading-none text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors cursor-pointer",
-                        title: "Attach image",
-                        "🖼"
+                        class: "px-1.5 text-lg leading-none text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors cursor-pointer select-none",
+                        title: "Attach an image",
+                        "+"
                         input {
                             r#type: "file",
                             accept: "image/*",
@@ -616,6 +741,17 @@ fn Composer(channel_id: Id, composer_label: String) -> Element {
                         value: "{draft}",
                         oninput: move |e| { draft.set(e.value()); notify_typing(); },
                     }
+
+                    // Emoji toggle, on the right — next to Send, and directly
+                    // under the picker it opens.
+                    button {
+                        r#type: "button",
+                        class: "px-1.5 text-base leading-none text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors",
+                        title: "Emoji",
+                        onclick: move |_| show_emoji.toggle(),
+                        "🙂"
+                    }
+
                     button {
                         class: "dxf-cta text-xs font-semibold uppercase tracking-wider px-4 py-1.5 rounded-lg disabled:opacity-30 transition-all",
                         r#type: "submit",

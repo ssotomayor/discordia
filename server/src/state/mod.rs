@@ -6,8 +6,9 @@ use uuid::Uuid;
 
 use crate::media::MediaStore;
 use crate::protocol::{
-    BotInstall, Channel, DmInfo, Guild, GuildVisibility, Id, Intent, Member, Message, Permission,
-    Profile, Role, ServerMessage, User, VoiceState,
+    BotInstall, Channel, DmInfo, Guild, GuildEmoji, GuildVisibility, Id, Intent, Member, Message,
+    Permission, Profile, Role, ServerMessage, User, VoiceState, MAX_EMOJIS_PER_GUILD,
+    valid_shortcode,
 };
 use crate::store::Store;
 
@@ -80,6 +81,9 @@ pub struct AppState {
     /// Guild roles, by guild. A member's effective permissions are the union
     /// over their assigned roles (see `effective_permissions`).
     pub roles: DashMap<Id, Vec<Role>>,
+    /// Custom emoji, by guild. The catalog only — the images live in the
+    /// content-addressed media store and are served on demand (`FetchEmoji`).
+    pub emojis: DashMap<Id, Vec<GuildEmoji>>,
     /// Invite codes: code -> guild. High-entropy random strings — invites are
     /// a ban-evasion surface, so guessability matters.
     pub invites: DashMap<String, Id>,
@@ -135,6 +139,7 @@ impl AppState {
             screen_shares: DashMap::new(),
             bot_installs: DashMap::new(),
             roles: DashMap::new(),
+            emojis: DashMap::new(),
             invites: DashMap::new(),
             invite_by_guild: DashMap::new(),
             bans: DashMap::new(),
@@ -188,6 +193,9 @@ impl AppState {
         }
         for r in loaded.roles {
             state.roles.entry(r.guild_id).or_default().push(r);
+        }
+        for e in loaded.emojis {
+            state.emojis.entry(e.guild_id).or_default().push(e);
         }
         for (id, a, b) in loaded.dms {
             state.dm_index.insert(Self::dm_key(&a, &b), id);
@@ -749,6 +757,7 @@ impl AppState {
         let catalog = self.guild_catalog();
         let profiles = self.profiles_snapshot();
         let roles = self.roles_for_guilds(&my_guild_ids);
+        let emojis = self.emojis_for_guilds(&my_guild_ids);
 
         ServerMessage::Ready {
             user: user.clone(),
@@ -760,6 +769,7 @@ impl AppState {
             catalog,
             profiles,
             roles,
+            emojis,
             operator: self.operators.contains(&user.pubkey),
         }
     }
@@ -895,6 +905,111 @@ impl AppState {
         };
         persist(self.store.upsert_role(&updated).await, "role update");
         Ok(updated)
+    }
+
+    // -- Custom emoji ----------------------------------------------------
+    //
+    // Authority is `ManageEmojis` (the owner implicitly holds it, like every
+    // other permission). The client's `can()` only hides buttons — every one of
+    // these re-checks, because that is the only check that counts.
+
+    /// The guild's emoji catalog (empty slice if it has none).
+    pub fn emojis_of(&self, guild_id: Id) -> Vec<GuildEmoji> {
+        self.emojis.get(&guild_id).map(|e| e.clone()).unwrap_or_default()
+    }
+
+    /// Catalogs for every guild in `guild_ids` — used to build the Ready
+    /// snapshot without leaking the emoji of guilds you aren't in.
+    pub fn emojis_for_guilds(&self, guild_ids: &[Id]) -> Vec<GuildEmoji> {
+        guild_ids.iter().flat_map(|g| self.emojis_of(*g)).collect()
+    }
+
+    /// Add a custom emoji. `image` is the media-store sentinel the caller has
+    /// already stored (the gateway owns blob decoding, as it does for message
+    /// attachments).
+    pub async fn create_emoji(
+        &self,
+        guild_id: Id,
+        shortcode: &str,
+        image: String,
+        by_pubkey: &str,
+    ) -> Result<GuildEmoji, String> {
+        self.require_permission(guild_id, by_pubkey, Permission::ManageEmojis)?;
+        let shortcode = shortcode.trim().trim_matches(':').to_ascii_lowercase();
+        if !valid_shortcode(&shortcode) {
+            return Err("shortcode must be 2-32 chars of a-z, 0-9 or _".into());
+        }
+        let emoji = {
+            let mut list = self.emojis.entry(guild_id).or_default();
+            if list.len() >= MAX_EMOJIS_PER_GUILD {
+                return Err(format!("emoji limit reached ({MAX_EMOJIS_PER_GUILD} per guild)"));
+            }
+            if list.iter().any(|e| e.shortcode == shortcode) {
+                return Err(format!(":{shortcode}: already exists in this guild"));
+            }
+            let emoji = GuildEmoji {
+                id: Uuid::new_v4(),
+                guild_id,
+                shortcode,
+                image,
+                added_by: by_pubkey.to_string(),
+                created_ms: chrono::Utc::now().timestamp_millis(),
+            };
+            list.push(emoji.clone());
+            emoji
+        };
+        persist(self.store.upsert_emoji(&emoji).await, "emoji create");
+        Ok(emoji)
+    }
+
+    /// Rename an emoji, leaving its image alone — clients that already hold the
+    /// bytes keep them, since the content address hasn't moved.
+    pub async fn rename_emoji(
+        &self,
+        guild_id: Id,
+        emoji_id: Id,
+        shortcode: &str,
+        by_pubkey: &str,
+    ) -> Result<GuildEmoji, String> {
+        self.require_permission(guild_id, by_pubkey, Permission::ManageEmojis)?;
+        let shortcode = shortcode.trim().trim_matches(':').to_ascii_lowercase();
+        if !valid_shortcode(&shortcode) {
+            return Err("shortcode must be 2-32 chars of a-z, 0-9 or _".into());
+        }
+        let updated = {
+            let mut list = self.emojis.get_mut(&guild_id).ok_or("unknown emoji")?;
+            if list.iter().any(|e| e.shortcode == shortcode && e.id != emoji_id) {
+                return Err(format!(":{shortcode}: already exists in this guild"));
+            }
+            let e = list.iter_mut().find(|e| e.id == emoji_id).ok_or("unknown emoji")?;
+            e.shortcode = shortcode;
+            e.clone()
+        };
+        persist(self.store.upsert_emoji(&updated).await, "emoji rename");
+        Ok(updated)
+    }
+
+    /// Remove an emoji from the catalog. The blob stays: it is content-
+    /// addressed and may be shared with a message attachment, so dropping it
+    /// needs refcounting (the blob-GC item in TODO.md).
+    pub async fn delete_emoji(
+        &self,
+        guild_id: Id,
+        emoji_id: Id,
+        by_pubkey: &str,
+    ) -> Result<(), String> {
+        self.require_permission(guild_id, by_pubkey, Permission::ManageEmojis)?;
+        let existed = {
+            let mut list = self.emojis.get_mut(&guild_id).ok_or("unknown emoji")?;
+            let before = list.len();
+            list.retain(|e| e.id != emoji_id);
+            before != list.len()
+        };
+        if !existed {
+            return Err("unknown emoji".into());
+        }
+        persist(self.store.delete_emoji(emoji_id).await, "emoji delete");
+        Ok(())
     }
 
     /// Delete a role, stripping it from every member. Returns the members
@@ -1542,7 +1657,14 @@ impl AppState {
         if icon_image.as_ref().is_some_and(|i| !valid_image(i))
             || banner.as_ref().is_some_and(|i| !valid_image(i))
         {
-            return Err("guild images must be http(s) or data:image URLs under the size limit".into());
+            // Reached when a client sends something odd (an old build, a bot,
+            // a non-image mime slipping through) — say what would work rather
+            // than restating the rule in wire terms.
+            return Err(format!(
+                "Guild icon and banner must be an image (PNG, JPEG, GIF or WebP) \
+                 under {} MB, or a link to one.",
+                MAX_IMAGE_LEN / 1_000_000
+            ));
         }
         let description = description
             .map(|d| d.trim().chars().take(280).collect::<String>())
@@ -2220,6 +2342,9 @@ impl AppState {
             profiles: Vec::new(),
             // Roles never apply to bot connections — don't leak them.
             roles: Vec::new(),
+            // Nor do custom emoji: a bot posts text, and the catalog is guild
+            // configuration it has no business enumerating.
+            emojis: Vec::new(),
             // Bots are never operators.
             operator: false,
         }

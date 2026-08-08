@@ -183,6 +183,16 @@ pub struct AppState {
     /// `GuildIntegrations` (owner-only) in response to `FetchIntegrations` and
     /// after each install/uninstall.
     pub integrations: HashMap<Id, Vec<BotInstall>>,
+    /// Custom emoji per guild. Arrives in `Ready`/`GuildJoined` and stays live
+    /// via `GuildEmojis` pushes. The catalog only — see `emoji_images`.
+    pub guild_emojis: HashMap<Id, Vec<crate::protocol::GuildEmoji>>,
+    /// Emoji images by content address (`<sha256>.<ext>` -> `data:` URL).
+    /// An empty value means "the server has no such blob" — cached so a broken
+    /// emoji is asked about once, not on every render.
+    pub emoji_images: HashMap<String, String>,
+    /// Content addresses we've already asked the server for, so a catalog that
+    /// mentions the same image fifty times produces one request.
+    pub emoji_requested: HashSet<String>,
     /// Roles per guild. Arrives in `Ready`/`GuildJoined` and stays live via
     /// `GuildRoles` pushes.
     pub roles: HashMap<Id, Vec<Role>>,
@@ -243,6 +253,9 @@ impl AppState {
             stream_has_audio: HashSet::new(),
             host_info: None,
             integrations: HashMap::new(),
+            guild_emojis: HashMap::new(),
+            emoji_images: HashMap::new(),
+            emoji_requested: HashSet::new(),
             roles: HashMap::new(),
             bans: HashMap::new(),
             invites: HashMap::new(),
@@ -299,6 +312,25 @@ impl AppState {
                 .find(|r| r.id == *rid)
                 .is_some_and(|r| r.permissions.contains(&perm))
         })
+    }
+
+    /// Resolve a `:shortcode:` to its image data URL, within one guild.
+    /// `None` when the guild has no such emoji or its bytes haven't arrived
+    /// yet — callers render the literal `:shortcode:` text in that case, which
+    /// is also what a client without the emoji would show.
+    pub fn emoji_image(&self, guild_id: Id, shortcode: &str) -> Option<&str> {
+        let image = self
+            .guild_emojis
+            .get(&guild_id)?
+            .iter()
+            .find(|e| e.shortcode == shortcode)
+            .map(|e| e.image.as_str())?;
+        self.emoji_images.get(image).map(String::as_str).filter(|u| !u.is_empty())
+    }
+
+    /// The custom emoji of a guild (empty slice if none).
+    pub fn emojis_of(&self, guild_id: Id) -> &[crate::protocol::GuildEmoji] {
+        self.guild_emojis.get(&guild_id).map(|v| v.as_slice()).unwrap_or(&[])
     }
 
     /// The roles of a guild (empty slice if none).

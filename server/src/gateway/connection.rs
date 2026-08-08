@@ -8,7 +8,9 @@ use futures_util::{SinkExt, StreamExt};
 use crate::AppContext;
 use crate::auth;
 use crate::livekit;
-use crate::protocol::{ClientMessage, Intent, Member, Permission, ServerMessage, User};
+use crate::protocol::{
+    ClientMessage, EmojiBlob, Id, Intent, Member, Permission, ServerMessage, User,
+};
 
 pub async fn handle_connection(
     socket: WebSocket,
@@ -330,6 +332,8 @@ pub async fn handle_connection(
                             channels,
                             members: vec![member],
                             roles,
+                            // A brand-new guild has no custom emoji yet.
+                            emojis: Vec::new(),
                         }).await.is_err() {
                             break;
                         }
@@ -568,6 +572,104 @@ pub async fn handle_connection(
                                 user_pubkey: u.pubkey.clone(),
                                 username: u.username.clone(),
                             });
+                        }
+                    }
+                    ClientMessage::CreateGuildEmoji { guild_id, shortcode, image } => {
+                        let Some(u) = user.as_ref() else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "identify first".into(),
+                            }).await;
+                            continue;
+                        };
+                        // Emoji render at ~24px next to text, so the cap is far
+                        // tighter than a message attachment's: a multi-megabyte
+                        // emoji would be re-sent to every member of the guild
+                        // and gains nothing on screen.
+                        if !image.starts_with("data:image/") || image.len() > MAX_EMOJI_DATA_LEN {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "emoji must be an image under 256 KB".into(),
+                            }).await;
+                            continue;
+                        }
+                        // Decode into the content-addressed blob store, exactly
+                        // as message attachments do — an emoji that duplicates
+                        // an existing image costs no extra bytes on disk.
+                        let Some(stored) = ctx.state.media.store_data_url(&image) else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "unsupported image format".into(),
+                            }).await;
+                            continue;
+                        };
+                        // `store_data_url` hands back the DB sentinel
+                        // (`media:<hash>.<ext>`), but `GuildEmoji.image` is the
+                        // bare content address: it is a cache key on the client
+                        // and a filename there, so the `media:` prefix would
+                        // both break `FetchEmoji` (double-prefixing) and be
+                        // rejected by the client's filename check.
+                        let address = stored.strip_prefix("media:").unwrap_or(&stored).to_string();
+                        match ctx.state.create_emoji(guild_id, &shortcode, address, &u.pubkey).await {
+                            Ok(_) => broadcast_emojis(&ctx.state, guild_id),
+                            Err(e) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message: e }).await;
+                            }
+                        }
+                    }
+                    ClientMessage::RenameGuildEmoji { guild_id, emoji_id, shortcode } => {
+                        let Some(u) = user.as_ref() else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "identify first".into(),
+                            }).await;
+                            continue;
+                        };
+                        match ctx.state.rename_emoji(guild_id, emoji_id, &shortcode, &u.pubkey).await {
+                            Ok(_) => broadcast_emojis(&ctx.state, guild_id),
+                            Err(e) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message: e }).await;
+                            }
+                        }
+                    }
+                    ClientMessage::DeleteGuildEmoji { guild_id, emoji_id } => {
+                        let Some(u) = user.as_ref() else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "identify first".into(),
+                            }).await;
+                            continue;
+                        };
+                        match ctx.state.delete_emoji(guild_id, emoji_id, &u.pubkey).await {
+                            Ok(()) => broadcast_emojis(&ctx.state, guild_id),
+                            Err(e) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message: e }).await;
+                            }
+                        }
+                    }
+                    ClientMessage::FetchEmoji { images } => {
+                        if user.is_none() {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "identify first".into(),
+                            }).await;
+                            continue;
+                        }
+                        // Bounded per request so one client can't ask us to read
+                        // the whole blob directory in a single frame. The client
+                        // batches, so a big catalog just takes a few round trips.
+                        let blobs: Vec<EmojiBlob> = images
+                            .into_iter()
+                            .take(MAX_EMOJI_FETCH)
+                            .map(|image| {
+                                // `inline` sanitises the name (path traversal is
+                                // impossible) and returns None for anything
+                                // missing; an empty data URL tells the client
+                                // "no such blob, stop asking".
+                                let data_url = ctx
+                                    .state
+                                    .media
+                                    .inline(&format!("media:{image}"))
+                                    .unwrap_or_default();
+                                EmojiBlob { image, data_url }
+                            })
+                            .collect();
+                        if send(&mut ws_tx, &ServerMessage::EmojiBlobs { blobs }).await.is_err() {
+                            break;
                         }
                     }
                     ClientMessage::SetGuildAccent { guild_id, accent } => {
@@ -1360,6 +1462,26 @@ fn removal_broadcasts(
     }
 }
 
+/// Largest emoji upload accepted, as data-URL length. Emoji are rendered at
+/// roughly text height and pushed to every member of the guild, so the cap is
+/// far tighter than a message attachment's `MAX_IMAGE_LEN`.
+const MAX_EMOJI_DATA_LEN: usize = 350_000; // ~256 KB of bytes once base64 is undone
+/// Emoji images served per `FetchEmoji`, so one frame can't ask us to read the
+/// whole blob directory. Clients batch and come back for the rest.
+const MAX_EMOJI_FETCH: usize = 64;
+
+/// Push a guild's whole emoji catalog to its members.
+///
+/// The full list rather than a delta: it is bounded by `MAX_EMOJIS_PER_GUILD`,
+/// so a replace is cheap and cannot drift out of sync the way an add/remove
+/// stream can. `deliver` (not `broadcast`) keeps it to the guild's members —
+/// emoji are guild configuration, not public data.
+fn broadcast_emojis(state: &crate::state::AppState, guild_id: Id) {
+    let targets = state.guild_member_pubkeys(guild_id);
+    let emojis = state.emojis_of(guild_id);
+    state.deliver(targets, ServerMessage::GuildEmojis { guild_id, emojis });
+}
+
 /// Drop a user from every screen-share set and tell each affected channel's
 /// guild members the updated sharer list.
 fn broadcast_screen_clear(state: &crate::state::AppState, pubkey: &str) {
@@ -1506,7 +1628,8 @@ where
             xp: state.xp_of(guild_id, &joiner.pubkey),
         }),
     );
-    if send(ws_tx, &ServerMessage::GuildJoined { guild, channels, members, roles })
+    let emojis = state.emojis_of(guild_id);
+    if send(ws_tx, &ServerMessage::GuildJoined { guild, channels, members, roles, emojis })
         .await
         .is_err()
     {

@@ -20,7 +20,7 @@ use sqlx::{Row, SqlitePool};
 use uuid::Uuid;
 
 use crate::protocol::{
-    BotInstall, Channel, ChannelKind, Guild, GuildVisibility, Id, Member, Message,
+    BotInstall, Channel, ChannelKind, Guild, GuildEmoji, GuildVisibility, Id, Member, Message,
     Profile, Reaction, Role, User,
 };
 
@@ -36,6 +36,7 @@ pub struct LoadedState {
     /// (guild_id, pubkey, username, bot, role ids)
     pub members: Vec<(Id, String, String, bool, Vec<Id>)>,
     pub roles: Vec<Role>,
+    pub emojis: Vec<GuildEmoji>,
     /// (dm channel id, participant_a, participant_b) — participants sorted.
     pub dms: Vec<(Id, String, String)>,
     pub bans: Vec<(Id, String)>,
@@ -118,6 +119,16 @@ impl Store {
                 color TEXT, permissions TEXT NOT NULL DEFAULT '[]',
                 position INTEGER NOT NULL DEFAULT 0)",
             "CREATE INDEX IF NOT EXISTS idx_roles_guild ON roles(guild_id)",
+            // Custom emoji. `image` is the media-store sentinel, so the bytes
+            // are shared with any message that happens to carry the same
+            // picture. UNIQUE(guild_id, shortcode) makes the uniqueness rule
+            // the database's job rather than a race between two admins.
+            "CREATE TABLE IF NOT EXISTS guild_emojis (
+                id TEXT PRIMARY KEY, guild_id TEXT NOT NULL, shortcode TEXT NOT NULL,
+                image TEXT NOT NULL, added_by TEXT NOT NULL DEFAULT '',
+                created_ms INTEGER NOT NULL DEFAULT 0,
+                UNIQUE (guild_id, shortcode))",
+            "CREATE INDEX IF NOT EXISTS idx_emojis_guild ON guild_emojis(guild_id)",
             "CREATE TABLE IF NOT EXISTS messages (
                 id TEXT PRIMARY KEY, channel_id TEXT NOT NULL,
                 author_pubkey TEXT NOT NULL, author_username TEXT NOT NULL,
@@ -250,6 +261,21 @@ impl Store {
                 position: r.get::<i64, _>(5).max(0) as u32,
             });
         }
+        for r in sqlx::query(
+            "SELECT id, guild_id, shortcode, image, added_by, created_ms FROM guild_emojis",
+        )
+        .fetch_all(&self.pool)
+        .await?
+        {
+            out.emojis.push(GuildEmoji {
+                id: parse_id(&r.get::<String, _>(0)),
+                guild_id: parse_id(&r.get::<String, _>(1)),
+                shortcode: r.get(2),
+                image: r.get(3),
+                added_by: r.get(4),
+                created_ms: r.get(5),
+            });
+        }
         for r in sqlx::query("SELECT id, participant_a, participant_b FROM dms")
             .fetch_all(&self.pool)
             .await?
@@ -368,7 +394,10 @@ impl Store {
         .bind(&gid)
         .execute(&mut *tx)
         .await?;
-        for table in ["channels", "members", "roles", "bans", "invites", "bot_installs", "guild_xp"] {
+        for table in [
+            "channels", "members", "roles", "guild_emojis", "bans", "invites", "bot_installs",
+            "guild_xp",
+        ] {
             sqlx::query(&format!("DELETE FROM {table} WHERE guild_id = ?"))
                 .bind(&gid)
                 .execute(&mut *tx)
@@ -491,6 +520,32 @@ impl Store {
         .bind(role.position as i64)
         .execute(&self.pool)
         .await?;
+        Ok(())
+    }
+
+    pub async fn upsert_emoji(&self, e: &GuildEmoji) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO guild_emojis (id, guild_id, shortcode, image, added_by, created_ms)
+             VALUES (?, ?, ?, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET shortcode=excluded.shortcode,
+               image=excluded.image",
+        )
+        .bind(e.id.to_string())
+        .bind(e.guild_id.to_string())
+        .bind(&e.shortcode)
+        .bind(&e.image)
+        .bind(&e.added_by)
+        .bind(e.created_ms)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn delete_emoji(&self, emoji_id: Id) -> Result<()> {
+        sqlx::query("DELETE FROM guild_emojis WHERE id = ?")
+            .bind(emoji_id.to_string())
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 
