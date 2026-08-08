@@ -58,13 +58,21 @@ impl LayoutStore {
 
     /// Bring `id` to the front. No-op if it is already there, so clicking the
     /// top window repeatedly doesn't churn the signal and re-render.
+    ///
+    /// Order is re-ranked into 1..=n on every raise rather than handed an
+    /// ever-increasing counter. A monotonic counter would eventually push a
+    /// panel's z-index past the app's own overlay layers — modals and toasts
+    /// live in the 30-50 band — and a panel would start painting over dialogs
+    /// after enough clicks. Ranks stay small and bounded by the item count.
     pub fn raise(&mut self, id: &str) {
-        if self.z_of(id) == *self.z_top.read() && self.z_of(id) != 0 {
+        let current = self.z.read().clone();
+        if is_top(&current, id) {
             return;
         }
-        let next = *self.z_top.read() + 1;
-        self.z_top.set(next);
-        self.z.write().insert(id.to_string(), next);
+        let next = rerank(current, id);
+        let top = next.len() as u32;
+        *self.z.write() = next;
+        self.z_top.set(top);
     }
 
     pub fn free_snapshot(&self) -> Vec<(String, FloatRect)> {
@@ -117,4 +125,89 @@ where
     F: FnOnce() -> Vec<(String, GridPosition)>,
 {
     use_hook(|| LayoutStore::new(initial()))
+}
+
+/// Whether `id` already sits on top, so a repeat click doesn't churn state.
+fn is_top(z: &HashMap<String, u32>, id: &str) -> bool {
+    match z.get(id) {
+        Some(v) => *v == z.values().copied().max().unwrap_or(0),
+        None => false,
+    }
+}
+
+/// Re-rank stacking order into 1..=n with `id` on top.
+///
+/// Split out from `raise` so it can be tested: `LayoutStore` is built on Dioxus
+/// signals and cannot be touched outside a runtime, but this — the part with
+/// the actual reasoning in it — is plain data.
+fn rerank(current: HashMap<String, u32>, id: &str) -> HashMap<String, u32> {
+    let mut order: Vec<(String, u32)> = current.into_iter().collect();
+    // Existing order first (ties broken by id for determinism), raised last.
+    order.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+    order.retain(|(k, _)| k != id);
+    order.push((id.to_string(), u32::MAX));
+    order
+        .into_iter()
+        .enumerate()
+        .map(|(rank, (k, _))| (k, rank as u32 + 1))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[allow(dead_code)]
+    fn store() -> LayoutStore {
+        LayoutStore::new([
+            ("a".to_string(), GridPosition::new(0, 0, 1, 1)),
+            ("b".to_string(), GridPosition::new(1, 0, 1, 1)),
+            ("c".to_string(), GridPosition::new(2, 0, 1, 1)),
+        ])
+    }
+
+    fn z(pairs: &[(&str, u32)]) -> HashMap<String, u32> {
+        pairs.iter().map(|(k, v)| (k.to_string(), *v)).collect()
+    }
+
+    #[test]
+    fn raise_puts_the_item_on_top() {
+        let m = rerank(z(&[("a", 1), ("b", 2), ("c", 3)]), "a");
+        assert!(m["a"] > m["b"] && m["a"] > m["c"]);
+        // Relative order of the others is preserved.
+        assert!(m["b"] < m["c"]);
+    }
+
+    /// Ranks stay small no matter how much clicking happens. A monotonic
+    /// counter would eventually carry a panel past the app's modal/toast
+    /// layers (z 30-50) and it would start painting over dialogs.
+    #[test]
+    fn ranks_stay_bounded_by_the_item_count() {
+        let mut m = z(&[("a", 1), ("b", 2), ("c", 3)]);
+        for i in 0..500 {
+            m = rerank(m, ["a", "b", "c"][i % 3]);
+        }
+        assert_eq!(m.len(), 3);
+        for (id, v) in &m {
+            assert!(*v >= 1 && *v <= 3, "{id} reached z {v}");
+        }
+    }
+
+    /// Raising something not yet ranked adds it on top without disturbing the
+    /// rest — this is the first click on a never-touched panel.
+    #[test]
+    fn raising_an_unranked_item_adds_it_on_top() {
+        let m = rerank(z(&[("a", 1), ("b", 2)]), "new");
+        assert!(m["new"] > m["a"] && m["new"] > m["b"]);
+        assert!(m["a"] < m["b"]);
+    }
+
+    #[test]
+    fn is_top_detects_the_frontmost_item() {
+        let m = z(&[("a", 1), ("b", 2)]);
+        assert!(is_top(&m, "b"));
+        assert!(!is_top(&m, "a"));
+        // Never-raised items are not on top, so the first click always ranks.
+        assert!(!is_top(&m, "missing"));
+    }
 }

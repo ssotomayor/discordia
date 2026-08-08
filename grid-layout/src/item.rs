@@ -61,7 +61,15 @@ pub fn GridItem(
     let pinned_class = if pinned { " grid-item-pinned" } else { "" };
     let editable = ctx.map(|c| *c.editable.read()).unwrap_or(false);
     let interactive = editable && !pinned;
-    let drag_cursor = if interactive { " cursor: grab;" } else { "" };
+
+    let item_id_for_raise = id.clone();
+    let onpointerdown_raise = move |_: PointerEvent| {
+        if let (Some(ctx), true) = (ctx, ctx.is_some_and(|c| c.is_free())) {
+            if let Some(mut s) = ctx.store {
+                s.raise(&item_id_for_raise);
+            }
+        }
+    };
 
     let item_id_for_drag = id.clone();
     let id_for_log = id.clone();
@@ -94,11 +102,6 @@ pub fn GridItem(
             .store
             .and_then(|s| s.get(&item_id_for_drag))
             .unwrap_or(GridPosition { x, y, w, h });
-        // Click-to-front, so the window you grab is the one on top.
-        if let (true, Some(mut s)) = (ctx.is_free(), ctx.store) {
-            s.raise(&item_id_for_drag);
-        }
-
         let state = Interaction {
             kind: InteractionKind::Drag,
             item_id: item_id_for_drag.clone(),
@@ -170,14 +173,35 @@ pub fn GridItem(
         div {
             class: "dioxus-grid-item{pinned_class} {class}",
             "data-id": "{id}",
-            style: "{cell_style}{drag_cursor}",
-            onpointerdown: onpointerdown_drag,
+            style: "{cell_style}",
+            // Raise on any press, any button, edit mode or not. Two reasons:
+            // clicking a window bringing it forward is what windows do, and
+            // popovers *inside* a panel (a right-click menu, say) paint within
+            // that panel's stacking order — so without this they end up behind
+            // whichever panel happens to come later in the DOM.
+            onpointerdown: onpointerdown_raise,
             {children}
             if interactive {
+                // Drag handle: a strip along the top, not the whole panel.
+                // Making the entire surface draggable meant a grab cursor over
+                // every widget and no way to use the content while the layout
+                // was unlocked. A title-bar strip is where people expect to
+                // pick a window up from anyway.
+                div {
+                    class: "dioxus-grid-drag-handle",
+                    style: "position: absolute; left: 0; right: 0; top: 0; \
+                            height: 22px; cursor: grab; z-index: 2; \
+                            background: linear-gradient(180deg, \
+                              color-mix(in srgb, currentColor 10%, transparent), transparent); \
+                            border-top-left-radius: inherit; \
+                            border-top-right-radius: inherit;",
+                    title: "Drag to move",
+                    onpointerdown: onpointerdown_drag,
+                }
                 div {
                     class: "dioxus-grid-resize-handle",
                     style: "position: absolute; right: 0; bottom: 0; \
-                            width: 14px; height: 14px; \
+                            width: 14px; height: 14px; z-index: 2; \
                             cursor: nwse-resize; \
                             background: linear-gradient(135deg, transparent 0%, transparent 50%, rgba(255,255,255,0.45) 50%, rgba(255,255,255,0.45) 100%); \
                             border-bottom-right-radius: inherit;",
@@ -203,7 +227,13 @@ pub fn GridItem(
 /// measurement, can never be off-screen, and lands exactly where the snap
 /// layout had it — so switching to Free looks like nothing moved.
 fn free_style(id: &str, ctx: GridContext, cell: GridPosition) -> String {
+    // Only emit z-index once the panel has actually been raised. `z-index: 0`
+    // is not free — it establishes a stacking context, which traps every
+    // popover rendered inside the panel so it cannot paint above a sibling
+    // panel. An untouched panel therefore gets no z-index at all and behaves
+    // exactly as it did before free mode existed.
     let z = ctx.store.map(|s| s.z_of(id)).unwrap_or(0);
+    let z_rule = if z > 0 { format!(" z-index: {z};") } else { String::new() };
 
     // Stored by hand, or derived from the grid cell the item started life in.
     let rect = ctx
@@ -213,7 +243,7 @@ fn free_style(id: &str, ctx: GridContext, cell: GridPosition) -> String {
     let gap = ctx.gap;
     format!(
         "position: absolute; left: {:.4}%; top: {:.4}%; \
-         width: calc({:.4}% - {gap}px); height: calc({:.4}% - {gap}px); z-index: {z};",
+         width: calc({:.4}% - {gap}px); height: calc({:.4}% - {gap}px);{z_rule}",
         rect.x * 100.0,
         rect.y * 100.0,
         rect.w * 100.0,
