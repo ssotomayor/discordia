@@ -52,9 +52,6 @@ pub fn GuildsSidebar() -> Element {
     let mut menu = use_signal::<Option<GuildMenu>>(|| None);
     let mut show_browse = use_signal(|| false);
     // Guild whose Integrations (bots) / Roles / Settings dialog is open.
-    let mut integrations_for = use_signal::<Option<Id>>(|| None);
-    let mut roles_for = use_signal::<Option<Id>>(|| None);
-    let mut settings_for = use_signal::<Option<Id>>(|| None);
 
     rsx! {
         nav { class: "panel-hover w-full h-full bg-[var(--panel)] border border-[var(--border)] rounded-lg flex flex-col overflow-hidden",
@@ -105,6 +102,7 @@ pub fn GuildsSidebar() -> Element {
                                 key: "{guild.id}",
                                 id: guild.id,
                                 label: guild.icon.clone().unwrap_or_else(|| initials(&guild.name)),
+                                image: guild.icon_image.clone(),
                                 name: guild.name.clone(),
                                 selected: !dm_mode && selected == Some(guild.id),
                                 has_menu,
@@ -237,7 +235,8 @@ pub fn GuildsSidebar() -> Element {
                                             button {
                                                 class: "w-full text-left px-3 py-1.5 rounded text-[var(--text)] hover:bg-white/[0.04] transition-colors",
                                                 onclick: move |_| {
-                                                    settings_for.set(Some(gid));
+                                                    state.write().guild_dialog =
+                                                        Some(crate::state::GuildDialog::Settings(gid));
                                                     menu.set(None);
                                                 },
                                                 "Guild settings"
@@ -245,7 +244,8 @@ pub fn GuildsSidebar() -> Element {
                                             button {
                                                 class: "w-full text-left px-3 py-1.5 rounded text-[var(--text)] hover:bg-white/[0.04] transition-colors",
                                                 onclick: move |_| {
-                                                    integrations_for.set(Some(gid));
+                                                    state.write().guild_dialog =
+                                                        Some(crate::state::GuildDialog::Integrations(gid));
                                                     menu.set(None);
                                                 },
                                                 "Integrations"
@@ -255,7 +255,8 @@ pub fn GuildsSidebar() -> Element {
                                             button {
                                                 class: "w-full text-left px-3 py-1.5 rounded text-[var(--text)] hover:bg-white/[0.04] transition-colors",
                                                 onclick: move |_| {
-                                                    roles_for.set(Some(gid));
+                                                    state.write().guild_dialog =
+                                                        Some(crate::state::GuildDialog::Roles(gid));
                                                     menu.set(None);
                                                 },
                                                 "Roles"
@@ -353,25 +354,10 @@ pub fn GuildsSidebar() -> Element {
                 }
             }
 
-            // Management dialogs (each opens from the context menu).
-            if let Some(gid) = integrations_for() {
-                crate::features::integrations::IntegrationsDialog {
-                    guild_id: gid,
-                    on_close: move |_| integrations_for.set(None),
-                }
-            }
-            if let Some(gid) = roles_for() {
-                crate::features::roles::RolesDialog {
-                    guild_id: gid,
-                    on_close: move |_| roles_for.set(None),
-                }
-            }
-            if let Some(gid) = settings_for() {
-                crate::features::guild_settings::GuildSettingsDialog {
-                    guild_id: gid,
-                    on_close: move |_| settings_for.set(None),
-                }
-            }
+            // The management dialogs are rendered at the workspace root (see
+            // `GuildDialogHost`), not here. A modal inside this panel would be
+            // inside this panel's stacking context and could be covered by any
+            // panel stacked above it.
 
             // Browse-and-join modal.
             if show_browse() {
@@ -583,6 +569,10 @@ fn CreateGuild() -> Element {
 fn GuildIcon(
     id: Id,
     label: String,
+    /// Uploaded icon (http(s) or data URL). Falls back to `label` when absent —
+    /// which, until now, was the only thing ever drawn: an uploaded guild icon
+    /// was stored and round-tripped but never rendered anywhere.
+    image: Option<String>,
     name: String,
     selected: bool,
     /// Whether right-clicking opens the management/leave menu (false only for
@@ -600,7 +590,7 @@ fn GuildIcon(
 
     rsx! {
         button {
-            class: "w-10 h-10 rounded-md border flex items-center justify-center text-xs font-medium transition-colors {cls}",
+            class: "w-10 h-10 rounded-md border flex items-center justify-center text-xs font-medium transition-colors overflow-hidden {cls}",
             title: if has_menu { "{name} (right-click for options)" } else { "{name}" },
             onclick: move |_| on_select.call(id),
             oncontextmenu: move |e: MouseEvent| {
@@ -610,7 +600,11 @@ fn GuildIcon(
                     on_context.call((id, c.x, c.y));
                 }
             },
-            "{label}"
+            if let Some(src) = image {
+                img { class: "w-full h-full object-cover", src: "{src}", alt: "{name}" }
+            } else {
+                "{label}"
+            }
         }
     }
 }

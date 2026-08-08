@@ -59,7 +59,10 @@ pub fn GuildSettingsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element 
             .and_then(|g| g.description.clone())
             .unwrap_or_default()
     });
-    let mut upload_note = use_signal(|| None::<String>);
+    // (is_problem, message). Success and failure looked identical before —
+    // both silent — and rendering a "done" message in warning orange would be
+    // its own small lie, so the flag drives the colour.
+    let mut upload_note = use_signal(|| None::<(bool, String)>);
     let mut copied = use_signal(|| false);
 
     let Some(g) = guild() else {
@@ -113,6 +116,39 @@ pub fn GuildSettingsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element 
                             value: "{description}",
                             oninput: move |e| description.set(e.value()),
                         }
+                        // What is actually set right now. Without this the only
+                        // way to tell an upload had worked was to go hunting for
+                        // where the image is used.
+                        div { class: "flex items-center gap-3 mt-2",
+                            div { class: "shrink-0 text-center",
+                                if let Some(src) = g.icon_image.clone() {
+                                    img {
+                                        class: "w-10 h-10 rounded-md object-cover border border-[var(--border)]",
+                                        src: "{src}", alt: "guild icon",
+                                    }
+                                } else {
+                                    div { class: "w-10 h-10 rounded-md border border-dashed border-[var(--border)] flex items-center justify-center text-[10px] text-[var(--text-dim)]",
+                                        "none"
+                                    }
+                                }
+                                div { class: "text-[9px] text-[var(--text-dim)] mt-0.5", "Icon" }
+                            }
+                            div { class: "flex-1 min-w-0 text-center",
+                                if let Some(src) = g.banner.clone() {
+                                    img {
+                                        class: "w-full h-10 rounded-md object-cover border border-[var(--border)]",
+                                        src: "{src}", alt: "guild banner",
+                                    }
+                                } else {
+                                    div { class: "w-full h-10 rounded-md border border-dashed border-[var(--border)] flex items-center justify-center text-[10px] text-[var(--text-dim)]",
+                                        "no banner"
+                                    }
+                                }
+                                div { class: "text-[9px] text-[var(--text-dim)] mt-0.5",
+                                    "Banner — shown above the channel list"
+                                }
+                            }
+                        }
                         div { class: "flex gap-2 mt-2",
                             // Icon + banner pickers: upload to Blossom, fall
                             // back to an embedded data URL (same path as
@@ -123,8 +159,15 @@ pub fn GuildSettingsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element 
                                     let gateway = gateway.clone();
                                     let banner = g.banner.clone();
                                     move |(url, note): (Option<String>, Option<String>)| {
-                                        upload_note.set(note);
-                                        if url.is_some() {
+                                        let ok = url.is_some();
+                                        // A silent success looked identical to a
+                                        // silent failure; say which happened.
+                                        upload_note.set(match note {
+                                            Some(n) => Some((true, n)),
+                                            None if ok => Some((false, "Icon updated.".into())),
+                                            None => None,
+                                        });
+                                        if ok {
                                             gateway.send(ClientMessage::SetGuildProfile {
                                                 guild_id,
                                                 description: {
@@ -146,8 +189,13 @@ pub fn GuildSettingsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element 
                                     let gateway = gateway.clone();
                                     let icon_image = g.icon_image.clone();
                                     move |(url, note): (Option<String>, Option<String>)| {
-                                        upload_note.set(note);
-                                        if url.is_some() {
+                                        let ok = url.is_some();
+                                        upload_note.set(match note {
+                                            Some(n) => Some((true, n)),
+                                            None if ok => Some((false, "Banner updated.".into())),
+                                            None => None,
+                                        });
+                                        if ok {
                                             gateway.send(ClientMessage::SetGuildProfile {
                                                 guild_id,
                                                 description: {
@@ -176,8 +224,12 @@ pub fn GuildSettingsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element 
                             "Icon: square works best. Banner: wide (about 4:1). "
                             {crate::features::profiles::IMAGE_HELP}
                         }
-                        if let Some(note) = upload_note() {
-                            div { class: "text-[10px] text-[var(--warn)] mt-1", "{note}" }
+                        if let Some((problem, note)) = upload_note() {
+                            div {
+                                class: "text-[10px] mt-1",
+                                style: if problem { "color: var(--warn);" } else { "color: var(--up);" },
+                                "{note}"
+                            }
                         }
                     }
 

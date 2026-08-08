@@ -172,6 +172,7 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
             crate::features::screenshare::ScreenSelfPreview {}
             crate::features::screenshare::ScreenWatchWindow {}
             crate::features::profiles::ProfileCard {}
+            GuildDialogHost {}
 
             // Top row: host banner (only renders when self-hosting) grows
             // to push the brand mark + wallet button to the right. The
@@ -706,5 +707,32 @@ fn HostBanner() -> Element {
             span { class: "flex-1" }
             span { class: "{voice_color}", "● {voice_label}" }
         }
+    }
+}
+
+/// Renders whichever guild-management dialog is open, at the workspace root.
+///
+/// Deliberately not inside `GuildsSidebar`, where these used to live. Panels
+/// are absolutely positioned and can be stacked above one another, and a panel
+/// with a z-index establishes a stacking context — so a modal rendered inside
+/// one is confined to that panel's layer and paints underneath any panel above
+/// it, however high its own z-index is. At the root there is nothing to escape.
+#[component]
+fn GuildDialogHost() -> Element {
+    let mut state = use_app_state();
+    let open = use_memo(move || state.read().guild_dialog);
+    let close = move |_| state.write().guild_dialog = None;
+
+    match open() {
+        None => rsx! { Fragment {} },
+        Some(crate::state::GuildDialog::Settings(gid)) => rsx! {
+            crate::features::guild_settings::GuildSettingsDialog { guild_id: gid, on_close: close }
+        },
+        Some(crate::state::GuildDialog::Integrations(gid)) => rsx! {
+            crate::features::integrations::IntegrationsDialog { guild_id: gid, on_close: close }
+        },
+        Some(crate::state::GuildDialog::Roles(gid)) => rsx! {
+            crate::features::roles::RolesDialog { guild_id: gid, on_close: close }
+        },
     }
 }

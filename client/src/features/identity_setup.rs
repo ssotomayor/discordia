@@ -66,8 +66,11 @@ pub fn IdentitySetupView(on_done: EventHandler<Identity>) -> Element {
                     class: "dxf-drag-region h-8 shrink-0 {mac_top_pad}",
                     onmousedown: move |_| crate::app::start_window_drag(),
                 }
-                div { class: "flex-1 overflow-auto px-8 pb-8 dxf-no-drag",
-                    div { class: "w-full max-w-md mx-auto space-y-5",
+                // flex column so the `my-auto` below has free space to
+                // distribute; see the note in `connect.rs` for why auto margins
+                // rather than justify-center on a scrolling container.
+                div { class: "flex-1 overflow-auto px-8 py-8 flex flex-col dxf-no-drag",
+                    div { class: "w-full max-w-md mx-auto my-auto space-y-5",
 
                 div { class: "space-y-1",
                     h1 { class: "dxf-display text-2xl font-bold text-[var(--text)]", "Set up your identity" }
