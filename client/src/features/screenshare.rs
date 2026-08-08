@@ -13,6 +13,7 @@
 use dioxus::prelude::*;
 use serde_json::Value;
 
+use crate::features::voice::{use_voice_tx, VoiceCmd};
 use crate::protocol::ClientMessage;
 use crate::state::{use_app_state, use_gateway};
 
@@ -299,14 +300,18 @@ window.dxScreen = window.dxScreen || (function () {
     // `suppressLocalAudioPlayback: false` keeps the sharer hearing their own
     // audio while it is being shared.
     const richAudio = { suppressLocalAudioPlayback: false };
-    const attempts = [
-      { video: wantVideo, audio: richAudio, systemAudio: 'include', windowAudio: 'system' },
-      { video: wantVideo, audio: true, systemAudio: 'include' },
-      { video: wantVideo, audio: true },
-      { video: wantVideo, audio: false },
-      { video: true, audio: true },
-      { video: true },
-    ];
+    // When Rust captures system audio natively there is nothing for the engine
+    // to add — asking anyway would capture the machine twice and play it twice.
+    const attempts = quality.nativeAudio
+      ? [{ video: wantVideo, audio: false }, { video: true }]
+      : [
+          { video: wantVideo, audio: richAudio, systemAudio: 'include', windowAudio: 'system' },
+          { video: wantVideo, audio: true, systemAudio: 'include' },
+          { video: wantVideo, audio: true },
+          { video: wantVideo, audio: false },
+          { video: true, audio: true },
+          { video: true },
+        ];
     let stream = null;
     let audioAsked = false;
     for (let i = 0; i < attempts.length; i++) {
@@ -421,12 +426,14 @@ window.dxScreen = window.dxScreen || (function () {
       // the channel — saw "live" while the picker was still open, and had to
       // be walked back on every cancel.
       try { window.postMessage({ __dxf: 'share-started' }, '*'); } catch (e2) {}
-      try {
-        window.postMessage(
-          { __dxf: 'share-audio', published: published, supported: audioAsked },
-          '*'
-        );
-      } catch (e2) {}
+      if (!quality.nativeAudio) {
+        try {
+          window.postMessage(
+            { __dxf: 'share-audio', published: published, supported: audioAsked },
+            '*'
+          );
+        } catch (e2) {}
+      }
     } catch (e) {
       // Fallback: try the SDK's built-in path. It may re-prompt and fail on a
       // first gesture-less invocation, but costs nothing to attempt.
@@ -483,6 +490,13 @@ fn quality_preset(id: &str) -> (u32, u32, u32, u32) {
     }
 }
 
+/// Whether the app captures system audio itself on this platform. When it
+/// does, the webview is asked for video only — otherwise the machine's audio
+/// would be captured twice and viewers would hear it doubled.
+pub fn native_system_audio() -> bool {
+    crate::sysaudio::supported()
+}
+
 pub fn share_js(on: bool, quality: &str) -> String {
     // When starting, call the user-gesture variant that prompts getDisplayMedia
     // before delegating to the LiveKit flow. When stopping, just stopShare.
@@ -490,8 +504,9 @@ pub fn share_js(on: bool, quality: &str) -> String {
         return format!("{SCREEN_JS}\nwindow.dxScreen.stopShare();");
     }
     let (w, h, fps, bitrate) = quality_preset(quality);
+    let native_audio = native_system_audio();
     format!(
-        "{SCREEN_JS}\nwindow.dxScreen.requestAndStartShare({{width:{w},height:{h},fps:{fps},bitrate:{bitrate}}});"
+        "{SCREEN_JS}\nwindow.dxScreen.requestAndStartShare({{width:{w},height:{h},fps:{fps},bitrate:{bitrate},nativeAudio:{native_audio}}});"
     )
 }
 
@@ -592,9 +607,11 @@ pub fn ScreenShareBridge() -> Element {
     // Guards against double-wiring across hot reloads (same pattern as the
     // activities bridge).
     let gateway_end = gateway.clone();
+    let voice = use_voice_tx();
     use_future(move || {
         let mut state = state.clone();
         let gateway = gateway_end.clone();
+        let voice = voice.clone();
         async move {
             let bridge_js = r#"
             if (!window.__dxfShareEndWired) {
@@ -621,6 +638,11 @@ pub fn ScreenShareBridge() -> Element {
                                     sharing: true,
                                 });
                             }
+                            // Where we capture system audio ourselves, it rides
+                            // along on the voice room as a second track.
+                            if native_system_audio() {
+                                voice.send(VoiceCmd::SetSystemAudio { enabled: true });
+                            }
                         }
                         Some("screen-share-ended") => {
                             let cid = state.read().voice.channel_id;
@@ -631,6 +653,7 @@ pub fn ScreenShareBridge() -> Element {
                                     sharing: false,
                                 });
                             }
+                            voice.send(VoiceCmd::SetSystemAudio { enabled: false });
                         }
                         // Our own share: did the platform give us any audio to
                         // send? Silence here is a platform limit, not a bug we
@@ -837,6 +860,33 @@ pub fn ScreenWatchWindow() -> Element {
         }
     });
 
+    // Stream audio follows the watch window. The mixer defaults these tracks
+    // to silent, so this is what turns them on — and it re-runs when the
+    // volume or mute changes, keeping one rule for "how loud is this stream".
+    let watching = use_memo(move || state.read().screen_viewing.clone());
+    let stream_levels = use_memo(move || {
+        let s = state.read();
+        (s.stream_volumes.clone(), s.stream_muted.clone())
+    });
+    let voice_for_stream = use_voice_tx();
+    use_effect(move || {
+        let watched = watching();
+        let _ = stream_levels();
+        let s = state.read();
+        // Every known sharer gets an explicit gain: whoever we're watching at
+        // their chosen level, everyone else at zero.
+        let mut seen: Vec<String> = s.screen_shares.values().flatten().cloned().collect();
+        if let Some(w) = watched.clone() {
+            if !seen.contains(&w) {
+                seen.push(w);
+            }
+        }
+        for pk in seen {
+            let gain = if Some(&pk) == watched.as_ref() { s.stream_gain_of(&pk) } else { 0.0 };
+            voice_for_stream.send(VoiceCmd::SetStreamVolume { pubkey: pk, gain });
+        }
+    });
+
     // Follow the output device chosen in audio settings.
     let output_device = use_memo(move || state.read().selected_output_device.clone());
     use_effect(move || {
@@ -865,7 +915,14 @@ pub fn ScreenWatchWindow() -> Element {
     let stream_muted = state.read().stream_muted.contains(&pk);
     // A video-only share has nothing for these to act on. Showing a live-looking
     // slider over silence is how "the volume control does nothing" starts.
-    let has_audio = state.read().stream_has_audio.contains(&pk);
+    //
+    // Two ways a stream can have sound: the webview reported an audio track, or
+    // the sharer is capturing natively and it arrives on the voice room instead
+    // — where the JS never sees it, so it can't report anything.
+    let has_audio = {
+        let s = state.read();
+        s.stream_has_audio.contains(&pk) || s.stream_native_audio.contains(&pk)
+    };
     let pk_vol = pk.clone();
     let pk_mute = pk.clone();
     let apply_stream = move |vol: u32, muted: bool| {

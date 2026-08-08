@@ -12,6 +12,7 @@ mod rendezvous;
 mod session;
 mod settings;
 mod state;
+mod sysaudio;
 
 use dioxus::LaunchBuilder;
 use dioxus::desktop::{Config, WindowBuilder, tao::dpi::LogicalSize, tao::window::Icon};
