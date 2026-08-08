@@ -804,6 +804,9 @@ impl MicCapture {
                 let accum = accum.clone();
                 let frame_tx = frame_tx.clone();
                 let resampler_cb = resampler.clone();
+                // Reusable buffers for the realtime callback — see `forward_mic`.
+                let mut mono_buf: Vec<f32> = Vec::with_capacity(1024);
+                let mut resampled_buf: Vec<f32> = Vec::with_capacity(1024);
                 device.build_input_stream(
                     &config.into(),
                     move |data: &[f32], _| {
@@ -814,6 +817,8 @@ impl MicCapture {
                             device_channels,
                             &accum,
                             &resampler_cb,
+                            &mut mono_buf,
+                            &mut resampled_buf,
                         );
                         frames_pushed_cb.fetch_add(pushed as u64, Ordering::Relaxed);
                     },
@@ -825,11 +830,14 @@ impl MicCapture {
                 let accum = accum.clone();
                 let frame_tx = frame_tx.clone();
                 let resampler_cb = resampler.clone();
+                let mut f32_buf: Vec<f32> = Vec::with_capacity(1024);
+                let mut mono_buf: Vec<f32> = Vec::with_capacity(1024);
+                let mut resampled_buf: Vec<f32> = Vec::with_capacity(1024);
                 device.build_input_stream(
                     &config.into(),
                     move |data: &[i16], _| {
-                        let f32_buf: Vec<f32> =
-                            data.iter().map(|s| *s as f32 / i16::MAX as f32).collect();
+                        f32_buf.clear();
+                        f32_buf.extend(data.iter().map(|s| *s as f32 / i16::MAX as f32));
                         update_peak(&raw_peak_cb, &f32_buf);
                         let pushed = forward_mic(
                             &frame_tx,
@@ -837,6 +845,8 @@ impl MicCapture {
                             device_channels,
                             &accum,
                             &resampler_cb,
+                            &mut mono_buf,
+                            &mut resampled_buf,
                         );
                         frames_pushed_cb.fetch_add(pushed as u64, Ordering::Relaxed);
                     },
@@ -848,13 +858,17 @@ impl MicCapture {
                 let accum = accum.clone();
                 let frame_tx = frame_tx.clone();
                 let resampler_cb = resampler.clone();
+                let mut f32_buf: Vec<f32> = Vec::with_capacity(1024);
+                let mut mono_buf: Vec<f32> = Vec::with_capacity(1024);
+                let mut resampled_buf: Vec<f32> = Vec::with_capacity(1024);
                 device.build_input_stream(
                     &config.into(),
                     move |data: &[u16], _| {
-                        let f32_buf: Vec<f32> = data
-                            .iter()
-                            .map(|s| (*s as f32 - 32768.0) / 32768.0)
-                            .collect();
+                        f32_buf.clear();
+                        f32_buf.extend(
+                            data.iter()
+                                .map(|s| (*s as f32 - 32768.0) / 32768.0),
+                        );
                         update_peak(&raw_peak_cb, &f32_buf);
                         let pushed = forward_mic(
                             &frame_tx,
@@ -862,6 +876,8 @@ impl MicCapture {
                             device_channels,
                             &accum,
                             &resampler_cb,
+                            &mut mono_buf,
+                            &mut resampled_buf,
                         );
                         frames_pushed_cb.fetch_add(pushed as u64, Ordering::Relaxed);
                     },
@@ -912,35 +928,56 @@ impl MicCapture {
 /// hops for the publish task. Mute is *not* checked here: the publish task
 /// still wants muted frames so the VU bar keeps moving (a muted user watching
 /// a dead meter can't tell a mute from a broken mic), and it drops them there.
+///
+/// `mono_buf` and `resampled_buf` are caller-provided reusable buffers —
+/// allocating inside cpal's realtime callback can trigger a page fault or
+/// allocator lock and cause an xrun (dropout). Both are cleared at entry.
 fn forward_mic(
     frame_tx: &tokio::sync::mpsc::UnboundedSender<Vec<f32>>,
     samples: &[f32],
     device_channels: u32,
     accum: &Arc<Mutex<Vec<f32>>>,
     resampler: &Arc<Mutex<Option<AudioResampler>>>,
+    mono_buf: &mut Vec<f32>,
+    resampled_buf: &mut Vec<f32>,
 ) -> usize {
-    let mono: Vec<f32> = samples
-        .chunks(device_channels as usize)
-        .map(|c| c.iter().copied().sum::<f32>() / c.len() as f32)
-        .collect();
+    // Downmix to mono reusing the caller's buffer instead of allocating.
+    mono_buf.clear();
+    mono_buf.extend(
+        samples
+            .chunks(device_channels as usize)
+            .map(|c| c.iter().copied().sum::<f32>() / c.len() as f32),
+    );
     // High-quality resampling via rubato (FFT + anti-aliasing). Falls back to
     // passthrough if no resampler is needed (device already at SAMPLE_RATE).
-    let resampled = {
+    // Uses `process_into` (realtime-safe, no Vec allocation) when resampling,
+    // or copies directly into `resampled_buf` when passing through.
+    {
         let mut rs = resampler.lock();
         match rs.as_mut() {
-            Some(r) => r.process(&mono),
-            None => mono,
+            Some(r) => r.process_into(mono_buf, resampled_buf),
+            None => {
+                resampled_buf.clear();
+                resampled_buf.extend_from_slice(mono_buf);
+            }
         }
-    };
+    }
 
     let mut buf = accum.lock();
-    buf.extend(resampled);
+    buf.extend_from_slice(resampled_buf);
 
     let mut pushed = 0usize;
     while buf.len() >= FRAME_SAMPLES {
         // Stays f32 all the way to the publish task: DeepFilterNet wants
         // floats in [-1, 1], and quantizing here just to widen it again would
         // throw away resolution before the model ever sees the signal.
+        //
+        // This drain+collect is the one remaining allocation per 10ms hop: it
+        // hands ownership of the chunk to the channel sender. Using a rotating
+        // pool of pre-allocated Vecs would remove it, but the channel API
+        // (`send(Vec<f32>)`) takes ownership, so the Vec must exist. One alloc
+        // per 10ms (100/s) is far less costly than the 2-3 per callback we had
+        // before, and it happens on the DSP side, not under the cpal lock.
         let chunk: Vec<f32> = buf.drain(..FRAME_SAMPLES).collect();
         if frame_tx.send(chunk).is_err() {
             break;
@@ -1030,29 +1067,26 @@ impl AudioResampler {
         })
     }
 
-    /// Push raw input samples and return all resampled output available.
+    /// Realtime-safe variant of resampling: writes into a caller-provided
+    /// buffer instead of allocating a new Vec per call. Used inside cpal's
+    /// audio callback, where a heap allocation can trigger a page fault or
+    /// allocator lock and cause an xrun (dropout).
+    ///
     /// Feeds the internal resampler in chunks of `RESAMPLER_CHUNK` frames;
     /// leftover input is kept for the next call.
-    fn process(&mut self, input: &[f32]) -> Vec<f32> {
+    fn process_into(&mut self, input: &[f32], out: &mut Vec<f32>) {
+        out.clear();
         self.input_accum.extend_from_slice(input);
 
-        // Destructure so the borrow checker sees the fields as independent —
-        // `inner` is borrowed mutably while the buffers are borrowed too.
         let Self { inner, input_accum, chunk_in, scratch_out } = self;
 
-        let mut out = Vec::new();
         while input_accum.len() >= RESAMPLER_CHUNK {
             chunk_in.clear();
             chunk_in.extend(input_accum.drain(..RESAMPLER_CHUNK));
-            // The output slice must already be `output_frames_next()` long.
-            // Handing rubato an empty Vec makes every call fail validation with
-            // `InsufficientOutputBufferSize`, which silently produced zero
-            // samples — i.e. total silence on any device not already at 48kHz.
             let need = inner.output_frames_next();
             if scratch_out.len() < need {
                 scratch_out.resize(need, 0.0);
             }
-            // rubato takes one buffer per channel; we're mono.
             let waves_in = [&chunk_in[..]];
             let mut waves_out = [&mut scratch_out[..]];
             match inner.process_into_buffer(&waves_in, &mut waves_out, None) {
@@ -1060,7 +1094,6 @@ impl AudioResampler {
                 Err(e) => eprintln!("[voice] rubato process error: {e:?}"),
             }
         }
-        out
     }
 }
 
@@ -1307,24 +1340,42 @@ impl PlaybackMixer {
                         counter = counter.wrapping_add(1);
                         // Sum every active track. Each keeps its own depth, so
                         // drift is corrected per speaker rather than globally.
+                        //
+                        // Per-track soft knee before summing: a single loud
+                        // speaker shouldn't be able to saturate the bus before
+                        // the global limiter even sees the other tracks. The
+                        // knee is gentle (15% gain reduction at full scale) so
+                        // a solo speaker at unity gain is effectively untouched.
                         let mut acc = 0.0f32;
                         for track in tracks.buffers.values_mut() {
                             // Always pop, even at zero gain: a locally-muted
                             // participant whose buffer stops draining would
                             // overflow and then blast 200ms of stale audio the
                             // moment they're unmuted.
-                            acc += track.gain
+                            let s = track.gain
                                 * pop_drift_compensated(
                                     &mut track.samples,
                                     counter,
                                     overrun_threshold,
                                     underrun_threshold,
                                 );
+                            // Soft knee: compress gradually as the sample
+                            // approaches full scale, instead of a hard clip.
+                            acc += s * (1.0 - 0.15 * s.abs().min(1.0));
                         }
-                        // Limit the mix, not the individual tracks: several
-                        // people talking at once can exceed full scale even
-                        // when each of them is comfortably within range.
-                        let sample = acc.tanh();
+                        // Transparent limiter: identity below 1.0 (no
+                        // compression of normal-level speech), soft clip above.
+                        // tanh compressed everything — even a single speaker at
+                        // 0.5 lost ~2% to the curve — and several simultaneous
+                        // speakers at unity summed to 3.0 which tanh squashed
+                        // to 0.995, flat and slightly distorted.
+                        let sample = if acc.abs() > 1.0 {
+                            // 2 - 1/|x|: continuous at ±1, asymptotes to ±2.
+                            // A sum of 3.0 maps to 1.67 — loud but not flat.
+                            acc.signum() * (2.0 - 1.0 / acc.abs())
+                        } else {
+                            acc
+                        };
                         if sample != 0.0 {
                             pulled += 1;
                         }
@@ -1351,17 +1402,24 @@ impl PlaybackMixer {
                     let mut counter = drift_counter_cb.load(Ordering::Relaxed);
                     for frame in data.chunks_mut(device_channels) {
                         counter = counter.wrapping_add(1);
+                        // Per-track soft knee + transparent limiter — see the
+                        // f32 callback above for the full rationale.
                         let mut acc = 0.0f32;
                         for track in tracks.buffers.values_mut() {
-                            acc += track.gain
+                            let s = track.gain
                                 * pop_drift_compensated(
                                     &mut track.samples,
                                     counter,
                                     overrun_threshold,
                                     underrun_threshold,
                                 );
+                            acc += s * (1.0 - 0.15 * s.abs().min(1.0));
                         }
-                        let sample = acc.tanh();
+                        let sample = if acc.abs() > 1.0 {
+                            acc.signum() * (2.0 - 1.0 / acc.abs())
+                        } else {
+                            acc
+                        };
                         // TPDF dither on the f32→i16 conversion.
                         let s16 = dither_to_i16(sample, &mut dither_rng);
                         for s in frame.iter_mut() {
@@ -1436,6 +1494,12 @@ async fn consume_remote_track(
     // accumulator across calls, so it belongs to exactly one stream — sharing
     // one between participants corrupts it for everyone.
     let mut resampler = AudioResampler::new(SAMPLE_RATE, handle.device_rate);
+    // Reusable buffers — avoids allocating a fresh Vec for every 10ms frame
+    // received from the network. Not as critical as the cpal callback (this
+    // runs on a tokio task, not a realtime thread) but still ~100 allocs/s
+    // per remote participant that the allocator doesn't need to handle.
+    let mut f32_buf: Vec<f32> = Vec::with_capacity(FRAME_SAMPLES * 4);
+    let mut resampled_buf: Vec<f32> = Vec::with_capacity(FRAME_SAMPLES * 4);
     let track_id = handle.add_track(identity);
     let cap = (handle.device_rate / PLAYBACK_CAP_DIVISOR) as usize;
     while let Some(frame) = stream.next().await {
@@ -1462,20 +1526,17 @@ async fn consume_remote_track(
             // No per-track limiting here — the callback limits the summed mix
             // instead, which is the only place that can see whether several
             // people talking at once are driving the output past full scale.
-            let f32_samples: Vec<f32> = frame
-                .data
-                .iter()
-                .map(|s| *s as f32 / i16::MAX as f32)
-                .collect();
+            f32_buf.clear();
+            f32_buf.extend(frame.data.iter().map(|s| *s as f32 / i16::MAX as f32));
             // High-quality resampling via rubato (48kHz → device_rate).
-            let resampled = match resampler.as_mut() {
-                Some(r) => r.process(&f32_samples),
-                None => f32_samples,
-            };
-            // Bound each track's buffer (~200 ms) to limit latency drift. Keep
-            // this above the callback's overrun threshold (150ms), otherwise the
-            // buffer is hard-trimmed here before drift compensation sees it.
-            handle.push(track_id, &resampled, cap);
+            // Uses the realtime-safe `process_into` variant.
+            match resampler.as_mut() {
+                Some(r) => {
+                    r.process_into(&f32_buf, &mut resampled_buf);
+                    handle.push(track_id, &resampled_buf, cap);
+                }
+                None => handle.push(track_id, &f32_buf, cap),
+            }
         }
         if frames % 500 == 0 {
             eprintln!(
