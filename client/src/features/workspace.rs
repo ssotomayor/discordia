@@ -1,5 +1,5 @@
 use dioxus::prelude::*;
-use dioxus_grid_layout::{GridItem, GridLayout, GridPosition, use_layout_store};
+use dioxus_grid_layout::{FloatRect, GridItem, GridLayout, GridPosition, LayoutMode, use_layout_store};
 
 use crate::features::{
     channels::ChannelsColumn, chat::ChatView, guilds::GuildsSidebar, members::MembersPanel,
@@ -17,6 +17,38 @@ const CONNECT_SOUND: Asset = asset!("/assets/connect.mp3");
 const GRID_ROWS: u32 = 30;
 const GRID_GAP: f64 = 8.0;
 
+/// Write the current arrangement to local settings. Called after every
+/// drag/resize commit and on reset — previously nothing persisted the layout at
+/// all, so every launch started from the default.
+fn persist_layout(
+    mut settings: Signal<crate::settings::ClientSettings>,
+    layout: dioxus_grid_layout::LayoutStore,
+) {
+    let mut next = settings.read().clone();
+    next.layout_cells = layout
+        .snapshot()
+        .into_iter()
+        .map(|(id, p)| (id, [p.x, p.y, p.w, p.h]))
+        .collect();
+    next.layout_free = layout
+        .free_snapshot()
+        .into_iter()
+        .map(|(id, r)| (id, [r.x, r.y, r.w, r.h]))
+        .collect();
+    settings.set(next.clone());
+    crate::settings::save(&next);
+}
+
+/// The stock four-column dashboard, used on first launch and by "Reset".
+fn default_layout() -> Vec<(String, GridPosition)> {
+    vec![
+        ("guilds".into(), GridPosition::new(0, 0, 1, GRID_ROWS)),
+        ("channels".into(), GridPosition::new(1, 0, 2, GRID_ROWS)),
+        ("chat".into(), GridPosition::new(3, 0, 7, GRID_ROWS)),
+        ("members".into(), GridPosition::new(10, 0, 2, GRID_ROWS)),
+    ]
+}
+
 /// Power / unplug glyph for the disconnect button. Inherits `currentColor`
 /// so it picks up the button's text colour (and the danger hover state).
 const UNPLUG_ICON_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>"##;
@@ -25,7 +57,7 @@ const UNPLUG_ICON_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width=
 pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>) -> Element {
 
     let state = use_signal(AppState::empty);
-    let settings = use_context::<Signal<crate::settings::ClientSettings>>();
+    let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
 
     let (gateway_tx, voice_tx) = use_hook(|| {
         // Restore the persisted audio preferences BEFORE the voice service
@@ -60,19 +92,33 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
     // height is derived at mount from the available viewport (see below) so
     // the panels exactly fill the window on first open instead of overflowing
     // into a scroll. Users can still drag/resize via the corner grip.
-    let layout = use_layout_store(|| {
-        vec![
-            ("guilds".into(), GridPosition::new(0, 0, 1, GRID_ROWS)),
-            ("channels".into(), GridPosition::new(1, 0, 2, GRID_ROWS)),
-            ("chat".into(), GridPosition::new(3, 0, 7, GRID_ROWS)),
-            ("members".into(), GridPosition::new(10, 0, 2, GRID_ROWS)),
-        ]
+    let mut layout = use_layout_store(|| {
+        let saved = settings.read();
+        if saved.layout_cells.is_empty() {
+            return default_layout();
+        }
+        saved
+            .layout_cells
+            .iter()
+            .map(|(id, [x, y, w, h])| (id.clone(), GridPosition::new(*x, *y, *w, *h)))
+            .collect()
+    });
+    // Free-mode rects live in a second map, so they're restored separately.
+    use_hook(|| {
+        let saved = settings.read();
+        if saved.layout_free.is_empty() {
+            return;
+        }
+        let mut store = layout;
+        for (id, [x, y, w, h]) in &saved.layout_free {
+            store.set_free(id.clone(), FloatRect::new(*x, *y, *w, *h));
+        }
     });
 
     let mut edit_mode = use_signal(|| false);
-    // Row height is measured from the grid's visible area on mount so the
-    // panels fit the window exactly. Falls back to a sane default until then.
-    let mut row_height = use_signal(|| 24.0_f64);
+    // Snap (the tidy four-column dashboard) or Free (drag anywhere, windows may
+    // overlap). Restored from settings so an arrangement survives relaunch.
+    let mut free_mode = use_signal(|| settings.read().free_layout);
     let status = state.read().status;
 
     // Owner-set accent for the guild we're currently viewing (not in DM mode),
@@ -158,22 +204,22 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
                 }
             }
 
+            // overflow-auto still matters in Snap mode: a panel dragged below
+            // the last template row lands on `grid-auto-rows` and would
+            // otherwise be clipped with no way to scroll to it. Free mode's own
+            // container is exactly 100% tall and clips deliberately, so this
+            // never produces a scrollbar there.
             div { class: "flex-1 overflow-auto min-h-0",
-                onmounted: move |evt| {
-                    // Derive the per-row pixel height from the grid's visible
-                    // area so the panels exactly fill the window on first open.
-                    let data = evt.data();
-                    spawn(async move {
-                        if let Ok(rect) = data.get_client_rect().await {
-                            let rows = GRID_ROWS as f64;
-                            let rh = (rect.size.height - GRID_GAP * (rows - 1.0)) / rows;
-                            row_height.set(rh.max(8.0));
-                        }
-                    });
-                },
+                // No pixel measurement here any more. `rows` makes the grid use
+                // `repeat(GRID_ROWS, 1fr)`, so the browser re-divides the height
+                // on every window resize. The old code measured once in
+                // `onmounted` and never again, which is why panels kept their
+                // original height when the window grew.
                 GridLayout {
-                    cols: 12, row_height: row_height(), gap: GRID_GAP,
+                    cols: 12, rows: GRID_ROWS, gap: GRID_GAP,
                     store: layout, editable: edit_mode(),
+                    mode: if free_mode() { LayoutMode::Free } else { LayoutMode::Snap },
+                    on_change: move |_: Vec<(String, GridPosition)>| persist_layout(settings, layout),
                     GridItem { id: "guilds", x: 0, y: 0, w: 1, h: GRID_ROWS, min_w: 1, min_h: 10,
                         GuildsSidebar {}
                     }
@@ -197,11 +243,44 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
                 }
             }
 
-            // Floating edit-mode toggle. Always visible, subtle.
-            button {
-                class: "fixed bottom-3 right-3 z-40 border border-[var(--border)] rounded px-3 py-1 text-[10px] uppercase tracking-wider bg-[var(--panel)] hover:border-[var(--accent)] text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors",
-                onclick: move |_| edit_mode.set(!edit_mode()),
-                if edit_mode() { "Done" } else { "Edit layout" }
+            // Floating layout controls. Always visible, subtle.
+            div { class: "fixed bottom-3 right-3 z-40 flex items-center gap-1.5",
+                // Reset is only offered while editing — it is the way back from
+                // a layout you've made a mess of, including a window dragged
+                // somewhere awkward in Free mode.
+                if edit_mode() {
+                    button {
+                        class: "border border-[var(--border)] rounded px-3 py-1 text-[10px] uppercase tracking-wider bg-[var(--panel)] hover:border-[var(--danger)] text-[var(--text-muted)] hover:text-[var(--danger)] transition-colors",
+                        title: "Put the panels back the way they started",
+                        onclick: move |_| {
+                            layout.restore(default_layout(), Vec::new());
+                            persist_layout(settings, layout);
+                        },
+                        "Reset"
+                    }
+                    button {
+                        class: "border border-[var(--border)] rounded px-3 py-1 text-[10px] uppercase tracking-wider bg-[var(--panel)] hover:border-[var(--accent)] text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors",
+                        title: if free_mode() {
+                            "Snap panels back to the grid"
+                        } else {
+                            "Move panels freely — they can overlap"
+                        },
+                        onclick: move |_| {
+                            let now = !free_mode();
+                            free_mode.set(now);
+                            let mut next = settings.read().clone();
+                            next.free_layout = now;
+                            settings.set(next.clone());
+                            crate::settings::save(&next);
+                        },
+                        if free_mode() { "Snap" } else { "Free" }
+                    }
+                }
+                button {
+                    class: "border border-[var(--border)] rounded px-3 py-1 text-[10px] uppercase tracking-wider bg-[var(--panel)] hover:border-[var(--accent)] text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors",
+                    onclick: move |_| edit_mode.set(!edit_mode()),
+                    if edit_mode() { "Done" } else { "Edit layout" }
+                }
             }
         }
     }

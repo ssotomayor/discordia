@@ -6,7 +6,7 @@ use dioxus::prelude::*;
 
 use crate::collision::compact_vertical;
 use crate::drag::{Interaction, InteractionKind};
-use crate::layout::GridPosition;
+use crate::layout::{FloatRect, GridPosition, LayoutMode};
 use crate::store::LayoutStore;
 
 /// Container that positions its `GridItem` children on a CSS grid.
@@ -21,15 +21,21 @@ use crate::store::LayoutStore;
 pub fn GridLayout(
     #[props(default = 12)] cols: u32,
     #[props(default = 30.0)] row_height: f64,
+    /// When set, the grid uses `repeat(rows, 1fr)` instead of fixed-pixel rows,
+    /// so the layout fills — and keeps filling — the container's height. This
+    /// is what makes panels grow with the window instead of holding whatever
+    /// size they were measured at on mount.
+    rows: Option<u32>,
     #[props(default = 10.0)] gap: f64,
     #[props(default = String::new())] class: String,
     #[props(default = false)] editable: bool,
+    #[props(default = LayoutMode::Snap)] mode: LayoutMode,
     store: Option<LayoutStore>,
     on_change: Option<EventHandler<Vec<(String, GridPosition)>>>,
     children: Element,
 ) -> Element {
     let drag = use_signal::<Option<Interaction>>(|| None);
-    let container_width = use_signal::<Option<f64>>(|| None);
+    let container_size = use_signal::<Option<(f64, f64)>>(|| None);
     let pinned_ids = use_signal::<HashSet<String>>(HashSet::new);
     let on_change_cb = use_hook(|| on_change.clone());
 
@@ -42,28 +48,84 @@ pub fn GridLayout(
         editable_signal.set(editable);
     }
 
+    // Same story as `editable`: props don't flow into a context initializer
+    // after the first render, so mode lives in a signal that tracks the prop.
+    let mut mode_signal = use_signal(|| mode);
+    if *mode_signal.peek() != mode {
+        mode_signal.set(mode);
+    }
+
     use_context_provider(|| GridContext {
         store,
         cols,
         row_height,
+        rows,
         gap,
         editable: editable_signal,
+        mode: mode_signal,
         drag,
-        container_width,
+        container_size,
         pinned_ids,
         on_change: on_change_cb,
     });
 
-    let style = format!(
-        "display: grid; \
-         grid-template-columns: repeat({cols}, 1fr); \
-         grid-auto-rows: {row_height}px; \
-         gap: {gap}px; \
-         touch-action: none; \
-         --grid-cols: {cols}; \
-         --grid-row-height: {row_height}px; \
-         --grid-gap: {gap}px;",
-    );
+    // Seed free-mode rects from the current grid cells the first time we enter
+    // Free, so windows appear exactly where they already were instead of
+    // jumping to some default. Needs the measured container, hence the effect
+    // rather than doing it at the switch.
+    use_effect(move || {
+        if *mode_signal.read() != LayoutMode::Free {
+            return;
+        }
+        let (Some(mut store), Some((cw, ch))) = (store, *container_size.read()) else {
+            return;
+        };
+        if store.has_free() {
+            return;
+        }
+        let cell_w = cell_w_from(cw, cols, gap);
+        let cell_h = cell_h_from(ch, rows, row_height, gap);
+        for (id, p) in store.snapshot() {
+            store.set_free(
+                id,
+                FloatRect {
+                    x: p.x as f64 * (cell_w + gap),
+                    y: p.y as f64 * (cell_h + gap),
+                    w: p.w as f64 * cell_w + (p.w.saturating_sub(1) as f64) * gap,
+                    h: p.h as f64 * cell_h + (p.h.saturating_sub(1) as f64) * gap,
+                },
+            );
+        }
+    });
+
+    let style = match mode {
+        // Free mode is not a grid at all — items place themselves absolutely.
+        LayoutMode::Free => "position: relative; width: 100%; height: 100%; \
+                             overflow: hidden; touch-action: none;"
+            .to_string(),
+        LayoutMode::Snap => {
+            // `repeat(n, 1fr)` when the host told us how many rows fill the
+            // container: the browser then re-divides the height on every
+            // resize for free. `grid-auto-rows` still covers anything placed
+            // past the last template row.
+            let rows_rule = match rows {
+                Some(n) => format!("grid-template-rows: repeat({n}, 1fr); "),
+                None => String::new(),
+            };
+            format!(
+                "display: grid; \
+                 grid-template-columns: repeat({cols}, 1fr); \
+                 {rows_rule}\
+                 grid-auto-rows: {row_height}px; \
+                 gap: {gap}px; \
+                 height: 100%; \
+                 touch-action: none; \
+                 --grid-cols: {cols}; \
+                 --grid-row-height: {row_height}px; \
+                 --grid-gap: {gap}px;",
+            )
+        }
+    };
     let editable_class = if editable { " grid-editable" } else { "" };
 
     rsx! {
@@ -72,12 +134,21 @@ pub fn GridLayout(
             style,
             onmounted: move |evt| {
                 let data = evt.data();
-                let mut cw = container_width;
+                let mut cs = container_size;
                 spawn(async move {
                     if let Ok(rect) = data.get_client_rect().await {
-                        cw.set(Some(rect.size.width));
+                        cs.set(Some((rect.size.width, rect.size.height)));
                     }
                 });
+            },
+            // Keep the measurement true for the life of the container. Taking
+            // it once at mount left every derived number — cell size, and so
+            // drag projection — wrong the moment the window was resized.
+            onresize: move |evt| {
+                let mut cs = container_size;
+                if let Ok(size) = evt.get_content_box_size() {
+                    cs.set(Some((size.width, size.height)));
+                }
             },
             {children}
             DragPlaceholder {}
@@ -91,6 +162,11 @@ pub fn GridLayout(
 #[component]
 fn DragPlaceholder() -> Element {
     let ctx: GridContext = use_context();
+    // Nothing to preview in Free mode: the item follows the pointer exactly,
+    // so a "where it will land" ghost would just sit underneath it.
+    if ctx.is_free() {
+        return rsx! { Fragment {} };
+    }
     let snap = ctx.drag.read().as_ref().and_then(|state| {
         if state.kind != InteractionKind::Drag {
             return None;
@@ -152,6 +228,27 @@ fn DragOverlay() -> Element {
                     }
                 });
 
+                // Free mode: apply the pointer delta straight to the item's
+                // rect. No projection to cells, and crucially no
+                // `settle_layout` — compaction exists to guarantee "no
+                // overlaps anywhere", which is exactly the behaviour Free mode
+                // is meant to drop.
+                if ctx.is_free() {
+                    let (Some(mut s), Some(state)) = (store, drag.read().clone()) else {
+                        return;
+                    };
+                    if let Some(rect) = state.project_free(cx, cy) {
+                        let rect = match ctx.container_rect() {
+                            Some((cw, ch)) => {
+                                rect.clamp_visible(cw, ch, crate::item::MIN_VISIBLE_PX)
+                            }
+                            None => rect,
+                        };
+                        s.set_free(item_id, rect);
+                    }
+                    return;
+                }
+
                 match kind {
                     InteractionKind::Drag => {
                         // Smooth: move the item directly via CSS transform,
@@ -185,8 +282,8 @@ fn DragOverlay() -> Element {
                     }
                 }
             },
-            onpointerup: move |_| { commit_and_clear(&mut drag, store, ctx.on_change); },
-            onpointercancel: move |_| { commit_and_clear(&mut drag, store, ctx.on_change); },
+            onpointerup: move |_| { commit_and_clear(&mut drag, store, ctx.on_change, ctx.is_free()); },
+            onpointercancel: move |_| { commit_and_clear(&mut drag, store, ctx.on_change, ctx.is_free()); },
         }
     }
 }
@@ -232,8 +329,19 @@ fn commit_and_clear(
     drag: &mut Signal<Option<Interaction>>,
     store: Option<LayoutStore>,
     on_change: Option<EventHandler<Vec<(String, GridPosition)>>>,
+    is_free: bool,
 ) {
     let Some(state) = drag.read().clone() else { return };
+    if is_free {
+        // Free mode already wrote every intermediate position, so there is
+        // nothing to snap on release — and no transform to undo, since the
+        // item was moved by re-rendering rather than by a CSS transform.
+        drag.set(None);
+        if let (Some(handler), Some(s)) = (on_change, store) {
+            handler.call(s.snapshot());
+        }
+        return;
+    }
     // Clear smooth-drag transform / z-index regardless of kind.
     let js = format!(
         "var el=document.querySelector('[data-id=\"{}\"]');\
@@ -264,22 +372,58 @@ pub(crate) struct GridContext {
     pub store: Option<LayoutStore>,
     pub cols: u32,
     pub row_height: f64,
+    pub rows: Option<u32>,
     pub gap: f64,
     /// Reactive — host can toggle this at any time and GridItems see it
     /// without remounting.
     pub editable: Signal<bool>,
+    pub mode: Signal<LayoutMode>,
     pub drag: Signal<Option<Interaction>>,
-    pub container_width: Signal<Option<f64>>,
+    pub container_size: Signal<Option<(f64, f64)>>,
     pub pinned_ids: Signal<HashSet<String>>,
     pub on_change: Option<EventHandler<Vec<(String, GridPosition)>>>,
 }
 
 impl GridContext {
     pub fn cell_w_px(&self) -> Option<f64> {
-        let total = self.container_width.read().as_ref().copied()?;
-        let inner_gap = self.gap * (self.cols.saturating_sub(1) as f64);
-        let cell_w = (total - inner_gap) / (self.cols as f64);
-        if cell_w > 0.0 { Some(cell_w) } else { None }
+        let (w, _) = (*self.container_size.read())?;
+        let cell = cell_w_from(w, self.cols, self.gap);
+        (cell > 0.0).then_some(cell)
+    }
+
+    /// Row height in pixels. With `rows` set the tracks are `1fr`, so the real
+    /// height comes from the measured container rather than the `row_height`
+    /// prop — using the prop here is what made drag projection drift after a
+    /// resize.
+    pub fn cell_h_px(&self) -> f64 {
+        let h = (*self.container_size.read()).map(|(_, h)| h);
+        match (self.rows, h) {
+            (Some(_), Some(h)) => cell_h_from(h, self.rows, self.row_height, self.gap),
+            _ => self.row_height,
+        }
+    }
+
+    pub fn container_rect(&self) -> Option<(f64, f64)> {
+        *self.container_size.read()
+    }
+
+    pub fn is_free(&self) -> bool {
+        *self.mode.read() == LayoutMode::Free
+    }
+}
+
+fn cell_w_from(total_w: f64, cols: u32, gap: f64) -> f64 {
+    let inner_gap = gap * (cols.saturating_sub(1) as f64);
+    (total_w - inner_gap) / (cols.max(1) as f64)
+}
+
+fn cell_h_from(total_h: f64, rows: Option<u32>, row_height: f64, gap: f64) -> f64 {
+    match rows {
+        Some(n) if n > 0 => {
+            let inner_gap = gap * (n.saturating_sub(1) as f64);
+            ((total_h - inner_gap) / n as f64).max(1.0)
+        }
+        _ => row_height,
     }
 }
 
