@@ -26,70 +26,98 @@ window.dxScreen = window.dxScreen || (function () {
   const LK = () => window.LivekitClient || window.LiveKitClient;
 
   // --- Screen-share audio -------------------------------------------------
-  // Routed through Web Audio rather than an <audio> element's `volume`,
-  // because that property is capped at 1.0 and the viewer is allowed to boost
-  // a quiet stream past 100%. A GainNode also gives us mute for free (gain 0)
-  // without tearing the graph down and having to rebuild it on unmute.
+  // Playback goes through LiveKit's own attach() + webAudioMix path, NOT a
+  // hand-rolled Web Audio graph. That is not a style preference; a graph built
+  // with createMediaStreamSource() over a *remote* peer-connection stream emits
+  // silence unless the same stream is also sunk into an HTMLMediaElement. That
+  // was the bug behind "screen share has no sound": the nodes were wired up
+  // correctly and carried nothing.
   //
-  // This is entirely listener-side: it scales what THIS machine plays. The
+  // With an AudioContext handed to the Room, RemoteAudioTrack.attach() does the
+  // right thing internally — it creates the element (which makes the stream
+  // flow), mutes it, and routes source -> gain -> destination. setVolume() then
+  // drives that gain node, so volumes above 100% work; an <audio> element's own
+  // `volume` is capped at 1.0 and could never boost a quiet stream.
+  //
+  // All of it is listener-side: it scales what THIS machine plays. The
   // broadcaster's capture and every other viewer are untouched.
-  let actx = null;      // AudioContext, created on first stream with sound
-  let srcNode = null;   // MediaStreamAudioSourceNode for the attached stream
-  let gainNode = null;  // viewer's volume
+  let actx = null;          // AudioContext shared with the Room
+  let audioEl = null;       // element LiveKit attached the current stream to
   let audioIdentity = null; // whose stream is currently wired up
-  let pendingGain = 1;  // volume to apply when a stream does arrive
-  let sinkLabel = null; // app's chosen output device, matched by label
+  let pendingGain = 1;      // volume to apply when a stream does arrive
+  let sinkLabel = null;     // app's chosen output device, matched by label
 
   function ensureCtx() {
     if (!actx) {
       try { actx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { return null; }
-      gainNode = actx.createGain();
-      gainNode.gain.value = pendingGain;
-      gainNode.connect(actx.destination);
-      applySink();
     }
+    // Autoplay policy parks a fresh context in 'suspended' until a gesture.
     if (actx.state === 'suspended') { actx.resume().catch(function () {}); }
     return actx;
   }
-  // Best-effort: follow the output device the user picked in audio settings.
-  // cpal names devices by their OS label and the webview exposes opaque ids,
-  // so the two are matched by label. setSinkId on AudioContext is Chromium-only
-  // (and needs mic permission to see labels at all); everywhere else the stream
-  // plays on the system default, which is the same device in the common case.
+  // Best-effort: follow the output device picked in audio settings. cpal names
+  // devices by their OS label while the webview exposes opaque ids, so the two
+  // are matched by label. Try the context first (that's where the audio
+  // actually leaves, under webAudioMix) and the element as a fallback; both are
+  // Chromium-only, and labels need mic permission to be readable at all.
+  // Elsewhere the stream plays on the system default.
   function applySink() {
-    if (!actx || !sinkLabel || typeof actx.setSinkId !== 'function') return;
+    if (!sinkLabel) return;
     try {
       navigator.mediaDevices.enumerateDevices().then(function (devs) {
         const m = devs.find(function (d) { return d.kind === 'audiooutput' && d.label === sinkLabel; });
-        if (m) { actx.setSinkId(m.deviceId).catch(function () {}); }
+        if (!m) return;
+        if (actx && typeof actx.setSinkId === 'function') actx.setSinkId(m.deviceId).catch(function () {});
+        const t = audioIdentity ? audioTracks[audioIdentity] : null;
+        if (t && typeof t.setSinkId === 'function') t.setSinkId(m.deviceId).catch(function () {});
       }).catch(function () {});
     } catch (e) {}
   }
   function setSink(label) { sinkLabel = label || null; applySink(); }
   function setStreamVolume(v) {
     pendingGain = Math.max(0, Math.min(2, v));
-    if (gainNode && actx) {
-      // Short ramp instead of a step: an instantaneous gain change on a live
-      // signal is an audible click.
-      gainNode.gain.setTargetAtTime(pendingGain, actx.currentTime, 0.02);
-    }
+    const t = audioIdentity ? audioTracks[audioIdentity] : null;
+    // setVolume walks the track's attached elements, so it is a no-op until
+    // attachAudio has run — pendingGain covers that ordering.
+    if (t) { try { t.setVolume(pendingGain); } catch (e) {} }
   }
   function detachAudio() {
-    if (srcNode) { try { srcNode.disconnect(); } catch (e) {} srcNode = null; }
+    const t = audioIdentity ? audioTracks[audioIdentity] : null;
+    if (t) { try { t.detach(); } catch (e) {} }
+    if (audioEl) { try { audioEl.remove(); } catch (e) {} audioEl = null; }
     audioIdentity = null;
   }
   function attachAudio(identity) {
-    if (audioIdentity === identity && srcNode) return;
+    if (audioIdentity === identity && audioEl) return;
     detachAudio();
     const t = audioTracks[identity];
-    if (!t) return;
-    const c = ensureCtx(); if (!c) return;
+    if (!t) { report(identity, false); return; }
+    ensureCtx();
     try {
-      const ms = t.mediaStream || new MediaStream([t.mediaStreamTrack]);
-      srcNode = c.createMediaStreamSource(ms);
-      srcNode.connect(gainNode);
+      audioEl = t.attach();
+      // Kept out of view but in the DOM: a detached element is at the browser's
+      // mercy as to whether it is allowed to play at all.
+      audioEl.style.display = 'none';
+      document.body.appendChild(audioEl);
       audioIdentity = identity;
-    } catch (e) { console.warn('[dxScreen] stream audio attach failed', e); }
+      t.setVolume(pendingGain);
+      applySink();
+      // Autoplay policy can block the room's audio outright. startAudio() wants
+      // a user gesture, and watching a share is one (the click that opened the
+      // window), so this is as close to the gesture as we can get.
+      if (room && room.canPlaybackAudio === false) {
+        room.startAudio().catch(function (e) { console.warn('[dxScreen] startAudio blocked', e); });
+      }
+      report(identity, true);
+    } catch (e) {
+      console.warn('[dxScreen] stream audio attach failed', e);
+      report(identity, false);
+    }
+  }
+  // Tell Rust whether the stream we're watching actually carries audio, so the
+  // viewer's volume control can say so instead of appearing to do nothing.
+  function report(identity, present) {
+    try { window.postMessage({ __dxf: 'stream-audio', identity: identity, present: !!present }, '*'); } catch (e) {}
   }
   function attachInto(track, c) {
     c.innerHTML = '';
@@ -113,7 +141,16 @@ window.dxScreen = window.dxScreen || (function () {
     if (room) return;
     if (!(await ensureLib())) { console.warn('[dxScreen] livekit lib not loaded'); return; }
     const lk = LK();
-    room = new lk.Room({ adaptiveStream: true, dynacast: true });
+    // webAudioMix with our own context is what makes RemoteAudioTrack route
+    // through a GainNode instead of an element's capped `volume` — see the
+    // audio section above. `true` would let LiveKit make its own context, but
+    // then we couldn't setSinkId on it to follow the chosen output device.
+    const ctx = ensureCtx();
+    room = new lk.Room({
+      adaptiveStream: true,
+      dynacast: true,
+      webAudioMix: ctx ? { audioContext: ctx } : true,
+    });
     room.on(lk.RoomEvent.TrackSubscribed, function (track, pub, participant) {
       if (track.kind === 'audio') {
         audioTracks[participant.identity] = track;
@@ -129,8 +166,11 @@ window.dxScreen = window.dxScreen || (function () {
     });
     room.on(lk.RoomEvent.TrackUnsubscribed, function (track, pub, participant) {
       if (track.kind === 'audio') {
-        delete audioTracks[participant.identity];
         if (audioIdentity === participant.identity) detachAudio();
+        delete audioTracks[participant.identity];
+        // The sharer stopped sending audio (or stopped sharing) — take the
+        // viewer's volume control back out of service.
+        report(participant.identity, false);
         return;
       }
       if (track.kind !== 'video') return;
@@ -224,32 +264,32 @@ window.dxScreen = window.dxScreen || (function () {
     const wantW = quality.width || 1920;
     const wantH = quality.height || 1080;
     const wantFps = quality.fps || 30;
-    let stream;
-    // Ask for the share's audio too. Whether anything comes back is up to the
-    // platform: Chromium gives tab/system audio, and the user still has to tick
-    // "share audio" in the picker. Where it isn't offered we simply publish
-    // video, exactly as before — hence `audio: true` and not a hard requirement.
-    try {
-      stream = await navigator.mediaDevices.getDisplayMedia({
-        video: {
-          width: { ideal: wantW },
-          height: { ideal: wantH },
-          frameRate: { ideal: wantFps },
-        },
-        audio: true,
-      });
-    } catch (e) {
-      console.warn('[dxScreen] constrained getDisplayMedia failed, retrying unconstrained', e);
-      // Some embedded webviews reject any constraints on getDisplayMedia, and
-      // some reject the audio request specifically. Falling back keeps sharing
-      // working (at default quality, possibly silent) rather than failing.
+    // Ask for the share's audio too. Whether any comes back is up to the
+    // platform: Chromium offers tab/system audio and the user still has to tick
+    // the box in the picker, while WebKit (macOS) offers none at all. So audio
+    // is requested, never required.
+    //
+    // The fallback order matters. Two independent things can be rejected — the
+    // video constraints (some embedded webviews refuse any) and the audio
+    // request — so dropping audio is tried BEFORE dropping the constraints.
+    // Collapsing those two, as an earlier version did, meant a platform that
+    // merely dislikes `audio: true` silently lost the resolution/bitrate preset
+    // and went back to shipping a pixelated capture.
+    const attempts = [
+      { video: { width: { ideal: wantW }, height: { ideal: wantH }, frameRate: { ideal: wantFps } }, audio: true },
+      { video: { width: { ideal: wantW }, height: { ideal: wantH }, frameRate: { ideal: wantFps } }, audio: false },
+      { video: true, audio: true },
+      { video: true },
+    ];
+    let stream = null;
+    for (let i = 0; i < attempts.length; i++) {
       try {
-        stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
-      } catch (e2) {
-        try {
-          stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
-        } catch (e3) {
-          console.warn('[dxScreen] getDisplayMedia denied or failed', e3);
+        stream = await navigator.mediaDevices.getDisplayMedia(attempts[i]);
+        if (i > 0) console.warn('[dxScreen] getDisplayMedia fell back to attempt', i, attempts[i]);
+        break;
+      } catch (e) {
+        if (i === attempts.length - 1) {
+          console.warn('[dxScreen] getDisplayMedia denied or failed', e);
           return;
         }
       }
@@ -317,13 +357,22 @@ window.dxScreen = window.dxScreen || (function () {
       // Publish the share's audio as its own track. LiveKit keeps it separate
       // from the microphone, which is what lets a viewer set the stream's
       // volume independently of the sharer's voice.
+      //
+      // Tell Rust either way. A share that is silently video-only is the single
+      // most confusing outcome here — the sharer has no way to tell that
+      // viewers hear nothing, and the viewer's volume slider looks broken.
       const at = stream.getAudioTracks()[0];
+      let published = false;
       if (at) {
         try {
           await room.localParticipant.publishTrack(at, { source: lk.Track.Source.ScreenShareAudio });
+          published = true;
           console.log('[dxScreen] publishing screen-share audio');
         } catch (e2) { console.warn('[dxScreen] screen-share audio publish failed', e2); }
+      } else {
+        console.warn('[dxScreen] platform returned no audio track for this share');
       }
+      try { window.postMessage({ __dxf: 'share-audio', published: published }, '*'); } catch (e2) {}
     } catch (e) {
       // Fallback: try the SDK's built-in path. It may re-prompt and fail on a
       // first gesture-less invocation, but costs nothing to attempt.
@@ -488,7 +537,7 @@ pub fn ScreenShareBridge() -> Element {
               window.__dxfShareEndWired = true;
               window.addEventListener('message', function (e) {
                 var d = e.data;
-                if (d && d.__dxf === 'screen-share-ended') {
+                if (d && (d.__dxf === 'screen-share-ended' || d.__dxf === 'share-audio' || d.__dxf === 'stream-audio')) {
                   try { dioxus.send(d); } catch (err) {}
                 }
               });
@@ -497,8 +546,8 @@ pub fn ScreenShareBridge() -> Element {
             let mut eval = document::eval(bridge_js);
             loop {
                 match eval.recv::<Value>().await {
-                    Ok(msg) => {
-                        if msg.get("__dxf").and_then(|v| v.as_str()) == Some("screen-share-ended") {
+                    Ok(msg) => match msg.get("__dxf").and_then(|v| v.as_str()) {
+                        Some("screen-share-ended") => {
                             let cid = state.read().voice.channel_id;
                             state.write().screen_sharing = false;
                             if let Some(c) = cid {
@@ -508,7 +557,39 @@ pub fn ScreenShareBridge() -> Element {
                                 });
                             }
                         }
-                    }
+                        // Our own share: did the platform give us any audio to
+                        // send? Silence here is a platform limit, not a bug we
+                        // can fix client-side, so say so rather than let the
+                        // sharer assume viewers can hear their machine.
+                        Some("share-audio") => {
+                            let published =
+                                msg.get("published").and_then(|v| v.as_bool()).unwrap_or(false);
+                            eprintln!("[screen] share audio published={published}");
+                            if !published {
+                                state.write().error_toast = Some(
+                                    "Sharing video only — this platform doesn't let the app capture \
+                                     system audio, so viewers won't hear your machine."
+                                        .into(),
+                                );
+                            }
+                        }
+                        // A share we're watching: whether it carries audio at
+                        // all, so the volume control can be honest about it.
+                        Some("stream-audio") => {
+                            let present =
+                                msg.get("present").and_then(|v| v.as_bool()).unwrap_or(false);
+                            if let Some(id) = msg.get("identity").and_then(|v| v.as_str()) {
+                                eprintln!("[screen] watching {}: audio={present}", &id[..id.len().min(8)]);
+                                let mut s = state.write();
+                                if present {
+                                    s.stream_has_audio.insert(id.to_string());
+                                } else {
+                                    s.stream_has_audio.remove(id);
+                                }
+                            }
+                        }
+                        _ => {}
+                    },
                     Err(_) => break,
                 }
             }
@@ -693,6 +774,9 @@ pub fn ScreenWatchWindow() -> Element {
     // are two different things to want quieter. Both are listener-side only.
     let stream_volume = state.read().stream_volumes.get(&pk).copied().unwrap_or(100);
     let stream_muted = state.read().stream_muted.contains(&pk);
+    // A video-only share has nothing for these to act on. Showing a live-looking
+    // slider over silence is how "the volume control does nothing" starts.
+    let has_audio = state.read().stream_has_audio.contains(&pk);
     let pk_vol = pk.clone();
     let pk_mute = pk.clone();
     let apply_stream = move |vol: u32, muted: bool| {
@@ -740,12 +824,20 @@ pub fn ScreenWatchWindow() -> Element {
                 div {
                     class: "flex items-center gap-1.5 mr-2",
                     onmousedown: move |e| e.stop_propagation(),
+                    if !has_audio {
+                        span {
+                            class: "text-[10px] text-[var(--text-dim)] italic",
+                            title: "The sharer's platform didn't provide system audio for this stream, so there is nothing to play.",
+                            "no stream audio"
+                        }
+                    }
                     button {
                         class: if stream_muted {
-                            "w-6 h-6 flex items-center justify-center rounded text-[var(--danger)]"
+                            "w-6 h-6 flex items-center justify-center rounded text-[var(--danger)] disabled:opacity-40"
                         } else {
-                            "w-6 h-6 flex items-center justify-center rounded text-[var(--text-dim)] hover:text-[var(--text)]"
+                            "w-6 h-6 flex items-center justify-center rounded text-[var(--text-dim)] hover:text-[var(--text)] disabled:opacity-40"
                         },
+                        disabled: !has_audio,
                         title: if stream_muted { "Unmute stream audio" } else { "Mute stream audio" },
                         onclick: move |_| {
                             let now = !stream_muted;
@@ -766,7 +858,7 @@ pub fn ScreenWatchWindow() -> Element {
                         min: "0",
                         max: "200",
                         value: "{stream_volume}",
-                        disabled: stream_muted,
+                        disabled: stream_muted || !has_audio,
                         class: "w-24 accent-[var(--accent)] disabled:opacity-40",
                         title: "Stream volume (yours only)",
                         oninput: move |e| {
