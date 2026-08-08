@@ -20,10 +20,56 @@ pub fn status_color(status: &str) -> &'static str {
 }
 
 /// Sanity ceiling on how big a file we'll even read for upload.
-const MAX_UPLOAD_BYTES: usize = 15_000_000;
+pub(crate) const MAX_UPLOAD_BYTES: usize = 15_000_000;
 /// Largest image we'll embed as a data URL when Blossom is unavailable (kept
 /// under the server's data-URL cap).
-const EMBED_MAX_BYTES: usize = 2_000_000;
+///
+/// This is the number that actually matters to a user: an image under it always
+/// works, because the embed fallback can carry it even when no media server is
+/// reachable. Above it we are betting on Blossom, which may be down, may not
+/// accept anonymous uploads, or may not be configured at all.
+pub(crate) const EMBED_MAX_BYTES: usize = 2_000_000;
+
+/// The formats and size we tell users about, in one place so every picker in
+/// the app says the same thing.
+pub(crate) const IMAGE_HELP: &str =
+    "PNG, JPEG, GIF or WebP. Under 2 MB always works; larger needs a reachable Blossom media server.";
+
+/// Pre-flight an image the user just picked, without uploading it.
+///
+/// Returns `Err(message)` with something the user can act on. The point is to
+/// fail here rather than let the upload path fail later with a note about
+/// Blossom, which tells someone who just wanted to set a guild icon nothing
+/// they can use.
+pub(crate) fn check_image(bytes: &[u8], mime: &str) -> Result<(), String> {
+    if bytes.is_empty() {
+        return Err("That file is empty.".into());
+    }
+    if !mime.starts_with("image/") {
+        return Err(format!("That's a {mime} file, not an image. {IMAGE_HELP}"));
+    }
+    if bytes.len() > MAX_UPLOAD_BYTES {
+        return Err(format!(
+            "That image is {:.1} MB — too big to upload. {IMAGE_HELP}",
+            bytes.len() as f64 / 1_000_000.0
+        ));
+    }
+    Ok(())
+}
+
+/// Best guess at an image mime type for a picked file.
+///
+/// The webview reports `File.type` from the extension and can hand back
+/// `application/octet-stream` for anything it doesn't recognise. Passing that
+/// through builds a `data:application/octet-stream;...` URL, which the server
+/// rejects outright ("must be http(s) or data:image") — a confusing bounce for
+/// what is a perfectly good picture. Fall back to PNG: browsers sniff the real
+/// format from the bytes when rendering, and the server only checks the prefix.
+pub(crate) fn image_mime(reported: Option<String>) -> String {
+    reported
+        .filter(|m| m.starts_with("image/"))
+        .unwrap_or_else(|| "image/png".to_string())
+}
 
 /// Upload an image to Blossom, returning `(value, note)`: on success the value
 /// is the Blossom URL; on failure it falls back to an embedded data URL (if it
@@ -47,13 +93,21 @@ pub(crate) async fn image_to_ref(
             if n > EMBED_MAX_BYTES {
                 (
                     None,
-                    Some(format!("Blossom upload failed ({e}); image too large to embed.")),
+                    Some(format!(
+                        "Couldn't upload to the media server ({e}), and this image is \
+                         {:.1} MB — too large to embed instead. Pick one under 2 MB, or set \
+                         a working Blossom server under Appearance.",
+                        n as f64 / 1_000_000.0
+                    )),
                 )
             } else {
                 let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
                 (
                     Some(format!("data:{mime};base64,{b64}")),
-                    Some(format!("Blossom upload failed ({e}); embedded the image instead.")),
+                    Some(format!(
+                        "Media server unavailable ({e}) — embedded the image instead, which works \
+                         but makes this guild's snapshot larger for everyone."
+                    )),
                 )
             }
         }
@@ -355,14 +409,11 @@ pub fn ProfileEditor() -> Element {
                                             let Some(file) = files.into_iter().next() else { return };
                                             match file.read_bytes().await {
                                                 Ok(bytes) => {
-                                                    if bytes.len() > MAX_UPLOAD_BYTES {
-                                                        err.set(Some("Image too large (max 15 MB).".into()));
+                                                    let mime = image_mime(file.content_type());
+                                                    if let Err(msg) = check_image(&bytes, &mime) {
+                                                        err.set(Some(msg));
                                                         return;
                                                     }
-                                                    let mime = file
-                                                        .content_type()
-                                                        .filter(|m| m.starts_with("image/"))
-                                                        .unwrap_or_else(|| "image/png".to_string());
                                                     let (val, note) =
                                                         image_to_ref(server, identity, bytes.to_vec(), mime).await;
                                                     err.set(note);
@@ -413,14 +464,11 @@ pub fn ProfileEditor() -> Element {
                                             let Some(file) = files.into_iter().next() else { return };
                                             match file.read_bytes().await {
                                                 Ok(bytes) => {
-                                                    if bytes.len() > MAX_UPLOAD_BYTES {
-                                                        err.set(Some("Banner too large (max 15 MB).".into()));
+                                                    let mime = image_mime(file.content_type());
+                                                    if let Err(msg) = check_image(&bytes, &mime) {
+                                                        err.set(Some(msg));
                                                         return;
                                                     }
-                                                    let mime = file
-                                                        .content_type()
-                                                        .filter(|m| m.starts_with("image/"))
-                                                        .unwrap_or_else(|| "image/png".to_string());
                                                     let (val, note) =
                                                         image_to_ref(server, identity, bytes.to_vec(), mime).await;
                                                     err.set(note);
@@ -484,6 +532,9 @@ pub fn ProfileEditor() -> Element {
                         oninput: move |e| bio.set(e.value()),
                     }
 
+                    // Same guidance as the guild branding pickers, from the
+                    // same constant — the rules shouldn't be learned by trial.
+                    div { class: "mt-2 text-[10px] text-[var(--text-dim)]", {IMAGE_HELP} }
                     if let Some(e) = err() {
                         div { class: "mt-2 text-[10px] text-[var(--danger)]", "{e}" }
                     }

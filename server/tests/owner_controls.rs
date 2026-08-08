@@ -1159,7 +1159,9 @@ async fn guild_branding() {
         .await
         .unwrap();
     let err = next_error(&mut owner).await;
-    assert!(err.contains("size limit"), "got: {err}");
+    // The rejection should tell the user the size that would work, not just
+    // that a rule exists.
+    assert!(err.contains("MB"), "got: {err}");
 
     // A plain member can't rebrand.
     member

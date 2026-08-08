@@ -85,7 +85,7 @@ pub fn ChannelsColumn() -> Element {
                     if dm_mode {
                         "Direct Messages"
                     } else {
-                        {guild.as_ref().map(|g| g.name.clone()).unwrap_or_else(|| "No server".into())}
+                        {guild.as_ref().map(|g| g.name.clone()).unwrap_or_else(|| "No guild".into())}
                     }
                 }
                 if !dm_mode && can_manage_channels {

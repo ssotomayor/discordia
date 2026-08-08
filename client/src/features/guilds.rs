@@ -66,7 +66,7 @@ pub fn GuildsSidebar() -> Element {
 
             NoDrag {
             div { class: "flex-1 overflow-y-auto flex flex-col items-center py-3 gap-2",
-                // DM "home" button, pinned above the servers.
+                // DM "home" button, pinned above the guilds.
                 DmHomeButton {
                     active: dm_mode,
                     count: dm_unread,
@@ -240,7 +240,7 @@ pub fn GuildsSidebar() -> Element {
                                                     settings_for.set(Some(gid));
                                                     menu.set(None);
                                                 },
-                                                "Server settings"
+                                                "Guild settings"
                                             }
                                             button {
                                                 class: "w-full text-left px-3 py-1.5 rounded text-[var(--text)] hover:bg-white/[0.04] transition-colors",
@@ -279,7 +279,7 @@ pub fn GuildsSidebar() -> Element {
                                                             cur.confirming = Some(ConfirmAction::Delete);
                                                         }
                                                     },
-                                                    "Delete server"
+                                                    "Delete guild"
                                                 }
                                             } else {
                                                 button {
@@ -289,7 +289,7 @@ pub fn GuildsSidebar() -> Element {
                                                             cur.confirming = Some(ConfirmAction::Leave);
                                                         }
                                                     },
-                                                    "Leave server"
+                                                    "Leave guild"
                                                 }
                                             }
                                         }
@@ -534,7 +534,7 @@ fn CreateGuild() -> Element {
         return rsx! {
             button {
                 class: "w-10 h-10 rounded-md border border-dashed border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] flex items-center justify-center text-lg leading-none transition-colors",
-                title: "Create a server",
+                title: "Create a guild",
                 onclick: move |_| open.set(true),
                 "+"
             }
@@ -636,7 +636,7 @@ fn TransferPicker(guild_id: Id, on_done: EventHandler<()>) -> Element {
 
     rsx! {
         div { class: "px-3 py-1.5 text-xs text-[var(--text-muted)]",
-            "Hand this server to… (you keep membership, they get the crown)"
+            "Hand this guild to… (you keep membership, they get the crown)"
         }
         if candidates.is_empty() {
             div { class: "px-3 pb-1.5 text-xs text-[var(--text-dim)]", "No other members yet." }

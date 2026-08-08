@@ -1,9 +1,15 @@
-//! "Server settings" dialog for a guild: branding (description + icon/banner
-//! images), visibility (public directory vs invite-only), the invite code, and
-//! the ban list. Everything here needs `ManageGuild` (bans need `BanMembers`);
-//! the server enforces — the dialog just won't be reachable without the menu
-//! entry.
+//! "Guild settings" dialog: branding (description + icon/banner images),
+//! visibility (public directory vs invite-only), the invite code, custom emoji,
+//! and the ban list. Everything here needs `ManageGuild` (bans need
+//! `BanMembers`, emoji need `ManageEmojis`); the server enforces — the dialog
+//! just won't be reachable without the menu entry.
+//!
+//! Guild-facing copy says "guild", never "server". In this project a *server*
+//! is the host you connect to (`dioxusfun-server`, "Server URL", the self-host
+//! flow), so Discord's habit of calling a guild a server collides with a term
+//! that already means something else here.
 
+use base64::Engine as _;
 use dioxus::prelude::*;
 
 use crate::identity::truncate_pubkey;
@@ -28,6 +34,7 @@ pub fn GuildSettingsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element 
     let invite = use_memo(move || state.read().invites.get(&guild_id).cloned());
     let bans = use_memo(move || state.read().bans.get(&guild_id).cloned().unwrap_or_default());
     let can_ban = state.read().can(guild_id, crate::protocol::Permission::BanMembers);
+    let can_emojis = state.read().can(guild_id, crate::protocol::Permission::ManageEmojis);
 
     // Fetch the invite + ban list once on open (fetch-on-open pattern).
     {
@@ -84,7 +91,7 @@ pub fn GuildSettingsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element 
                 class: "dxf-modal-in w-[26rem] max-h-[80vh] flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl overflow-hidden",
                 onclick: move |e| e.stop_propagation(),
                 div { class: "px-4 py-3 border-b border-[var(--border)] flex items-center",
-                    h3 { class: "text-sm font-medium text-[var(--accent)] flex-1", "Server settings — {g.name}" }
+                    h3 { class: "text-sm font-medium text-[var(--accent)] flex-1", "Guild settings — {g.name}" }
                     button {
                         class: "text-[var(--text-dim)] hover:text-[var(--text)] text-lg leading-none",
                         onclick: move |_| on_close.call(()),
@@ -102,7 +109,7 @@ pub fn GuildSettingsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element 
                             class: "w-full bg-transparent border border-[var(--border)] focus:border-[var(--accent)] rounded px-2 py-1 text-xs text-[var(--text)] outline-none transition-colors resize-none",
                             rows: 2,
                             maxlength: 280,
-                            placeholder: "Describe this server…",
+                            placeholder: "Describe this guild…",
                             value: "{description}",
                             oninput: move |e| description.set(e.value()),
                         }
@@ -163,6 +170,12 @@ pub fn GuildSettingsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element 
                                 "Save"
                             }
                         }
+                        // What's actually accepted. Without this the only way to
+                        // learn the rules was to trip over them.
+                        div { class: "text-[10px] text-[var(--text-dim)] mt-1",
+                            "Icon: square works best. Banner: wide (about 4:1). "
+                            {crate::features::profiles::IMAGE_HELP}
+                        }
                         if let Some(note) = upload_note() {
                             div { class: "text-[10px] text-[var(--warn)] mt-1", "{note}" }
                         }
@@ -194,7 +207,7 @@ pub fn GuildSettingsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element 
                             span { "Private (invite-only)" }
                         }
                         div { class: "text-[10px] text-[var(--text-dim)] mt-1",
-                            "Private servers are hidden from the browse directory; people join with the invite code below."
+                            "Private guilds are hidden from the browse directory; people join with the invite code below."
                         }
                     }
 
@@ -257,6 +270,11 @@ pub fn GuildSettingsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element 
                                 "Rotate"
                             }
                         }
+                    }
+
+                    // ----- Custom emoji -----
+                    if can_emojis {
+                        EmojiSettings { guild_id }
                     }
 
                     // ----- Bans -----
@@ -477,9 +495,23 @@ fn ImagePickButton(
                         let Some(file) = files.into_iter().next() else { return };
                         match file.read_bytes().await {
                             Ok(bytes) => {
-                                let mime = file
-                                    .content_type()
-                                    .unwrap_or_else(|| "image/png".to_string());
+                                // Normalise the mime BEFORE validating: the
+                                // webview reports `application/octet-stream`
+                                // for extensions it doesn't know, and passing
+                                // that through produced a data URL the server
+                                // refuses — which looked like "my image was
+                                // rejected" for a perfectly good picture.
+                                let mime = crate::features::profiles::image_mime(
+                                    file.content_type(),
+                                );
+                                // Say what's wrong here rather than letting the
+                                // upload fail later with a note about Blossom.
+                                if let Err(msg) =
+                                    crate::features::profiles::check_image(&bytes, &mime)
+                                {
+                                    onpicked.call((None, Some(msg)));
+                                    return;
+                                }
                                 let result = crate::features::profiles::image_to_ref(
                                     server,
                                     identity,
@@ -495,6 +527,199 @@ fn ImagePickButton(
                         }
                     });
                 },
+            }
+        }
+    }
+}
+
+/// Largest emoji image accepted before upload. Matches the server's cap, so a
+/// too-big file is refused here with a message instead of bouncing back as a
+/// generic error.
+const MAX_EMOJI_BYTES: usize = 256_000;
+
+/// Custom-emoji management for a guild. Needs `ManageEmojis` — which the guild
+/// owner implicitly holds, like every other permission. The server re-checks
+/// every operation here; this only decides what's worth showing.
+#[component]
+fn EmojiSettings(guild_id: Id) -> Element {
+    let state = use_app_state();
+    let gateway = use_gateway();
+
+    let emojis = use_memo(move || state.read().emojis_of(guild_id).to_vec());
+    let mut shortcode = use_signal(String::new);
+    let mut pending = use_signal(|| None::<String>);
+    let mut error = use_signal(|| None::<String>);
+    let mut renaming = use_signal(|| None::<Id>);
+    let mut rename_draft = use_signal(String::new);
+
+    let count = emojis().len();
+    let full = count >= crate::protocol::MAX_EMOJIS_PER_GUILD;
+
+    let submit = {
+        let gateway = gateway.clone();
+        move |_| {
+            let code = shortcode().trim().trim_matches(':').to_ascii_lowercase();
+            let Some(image) = pending() else {
+                error.set(Some("Pick an image first.".into()));
+                return;
+            };
+            if !crate::protocol::valid_shortcode(&code) {
+                error.set(Some("Name must be 2-32 characters of a-z, 0-9 or _.".into()));
+                return;
+            }
+            error.set(None);
+            gateway.send(ClientMessage::CreateGuildEmoji {
+                guild_id,
+                shortcode: code,
+                image,
+            });
+            shortcode.set(String::new());
+            pending.set(None);
+        }
+    };
+
+    rsx! {
+        div { class: "border-t border-[var(--border)] pt-3",
+            div { class: "flex items-center gap-2 mb-1.5",
+                div { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] flex-1",
+                    "Custom emoji"
+                }
+                div { class: "text-[10px] text-[var(--text-dim)]",
+                    "{count}/{crate::protocol::MAX_EMOJIS_PER_GUILD}"
+                }
+            }
+            div { class: "text-[10px] text-[var(--text-dim)] mb-2",
+                "Members of this guild type :name: to use them. PNG, JPEG, GIF or WebP, up to 256 KB."
+            }
+
+            // Add form.
+            if !full {
+                div { class: "flex items-center gap-2 mb-2",
+                    label {
+                        class: "shrink-0 w-8 h-8 rounded border border-dashed border-[var(--border)] flex items-center justify-center cursor-pointer text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--accent)] transition-colors",
+                        title: "Choose an image",
+                        if let Some(img) = pending() {
+                            img { src: "{img}", style: "max-height:100%;max-width:100%;" }
+                        } else {
+                            span { class: "text-sm leading-none", "+" }
+                        }
+                        input {
+                            r#type: "file",
+                            accept: "image/*",
+                            class: "hidden",
+                            onchange: move |evt: FormEvent| {
+                                let files = evt.files();
+                                spawn(async move {
+                                    let Some(file) = files.into_iter().next() else { return };
+                                    match file.read_bytes().await {
+                                        Ok(bytes) => {
+                                            // Fail here rather than bouncing off
+                                            // the server, so the message can say
+                                            // something useful.
+                                            if bytes.len() > MAX_EMOJI_BYTES {
+                                                error.set(Some("That image is over 256 KB.".into()));
+                                                return;
+                                            }
+                                            let mime = file
+                                                .content_type()
+                                                .filter(|m| m.starts_with("image/"))
+                                                .unwrap_or_else(|| "image/png".to_string());
+                                            let b64 = base64::engine::general_purpose::STANDARD
+                                                .encode(&bytes);
+                                            error.set(None);
+                                            pending.set(Some(format!("data:{mime};base64,{b64}")));
+                                        }
+                                        Err(_) => error.set(Some("Couldn't read that file.".into())),
+                                    }
+                                });
+                            },
+                        }
+                    }
+                    input {
+                        class: "flex-1 bg-transparent border border-[var(--border)] rounded px-2 py-1 text-xs text-[var(--text)] focus:outline-none focus:border-[var(--accent)]",
+                        placeholder: "name",
+                        maxlength: crate::protocol::MAX_SHORTCODE_LEN as i64,
+                        value: "{shortcode}",
+                        oninput: move |e| shortcode.set(e.value()),
+                    }
+                    button {
+                        class: "rounded px-3 py-1 text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors disabled:opacity-40",
+                        disabled: pending().is_none() || shortcode().trim().is_empty(),
+                        onclick: submit,
+                        "Add"
+                    }
+                }
+            } else {
+                div { class: "text-[10px] text-[var(--warn)] mb-2",
+                    "This guild has reached the emoji limit. Remove one to add another."
+                }
+            }
+            if let Some(e) = error() {
+                div { class: "text-[10px] text-[var(--danger)] mb-2", "{e}" }
+            }
+
+            if emojis().is_empty() {
+                div { class: "text-xs text-[var(--text-dim)]", "No custom emoji yet." }
+            }
+            for e in emojis().iter().cloned() {
+                {
+                    let url = state.read().emoji_images.get(&e.image).cloned().unwrap_or_default();
+                    let gw_del = gateway.clone();
+                    let gw_ren = gateway.clone();
+                    let id = e.id;
+                    let code = e.shortcode.clone();
+                    let is_renaming = renaming() == Some(id);
+                    rsx! {
+                        div { key: "{e.id}", class: "flex items-center gap-2 py-1",
+                            if url.is_empty() {
+                                div { class: "w-6 h-6 rounded bg-[var(--bg2)] shrink-0" }
+                            } else {
+                                img { src: "{url}", style: "height:1.5rem;width:auto;", alt: ":{code}:" }
+                            }
+                            if is_renaming {
+                                input {
+                                    class: "flex-1 bg-transparent border border-[var(--border)] rounded px-2 py-0.5 text-xs text-[var(--text)] focus:outline-none focus:border-[var(--accent)]",
+                                    maxlength: crate::protocol::MAX_SHORTCODE_LEN as i64,
+                                    value: "{rename_draft}",
+                                    oninput: move |ev| rename_draft.set(ev.value()),
+                                }
+                                button {
+                                    class: "text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] rounded px-2 py-0.5 hover:border-[var(--accent)] transition-colors",
+                                    onclick: move |_| {
+                                        let next = rename_draft().trim().trim_matches(':').to_ascii_lowercase();
+                                        if crate::protocol::valid_shortcode(&next) {
+                                            gw_ren.send(ClientMessage::RenameGuildEmoji {
+                                                guild_id,
+                                                emoji_id: id,
+                                                shortcode: next,
+                                            });
+                                            renaming.set(None);
+                                        }
+                                    },
+                                    "Save"
+                                }
+                            } else {
+                                span { class: "text-xs text-[var(--text)] flex-1 font-mono", ":{code}:" }
+                                button {
+                                    class: "text-[10px] uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--text)] transition-colors",
+                                    onclick: move |_| {
+                                        rename_draft.set(code.clone());
+                                        renaming.set(Some(id));
+                                    },
+                                    "Rename"
+                                }
+                            }
+                            button {
+                                class: "text-[10px] uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--danger)] transition-colors",
+                                onclick: move |_| gw_del.send(ClientMessage::DeleteGuildEmoji {
+                                    guild_id,
+                                    emoji_id: id,
+                                }),
+                                "Remove"
+                            }
+                        }
+                    }
+                }
             }
         }
     }
