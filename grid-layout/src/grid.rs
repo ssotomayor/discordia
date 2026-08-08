@@ -6,7 +6,7 @@ use dioxus::prelude::*;
 
 use crate::collision::compact_vertical;
 use crate::drag::{Interaction, InteractionKind};
-use crate::layout::{FloatRect, GridPosition, LayoutMode};
+use crate::layout::{GridPosition, LayoutMode};
 use crate::store::LayoutStore;
 
 /// Container that positions its `GridItem` children on a CSS grid.
@@ -69,10 +69,14 @@ pub fn GridLayout(
         on_change: on_change_cb,
     });
 
-    // Seed free-mode rects from the current grid cells the first time we enter
-    // Free, so windows appear exactly where they already were instead of
-    // jumping to some default. Needs the measured container, hence the effect
-    // rather than doing it at the switch.
+    // Nothing seeds free rects up front any more: an item without one is placed
+    // by percentage (see `free_style`), which is always valid and always
+    // on-screen. A rect only exists once the user has actually dragged.
+    //
+    // What this effect does do is keep those dragged rects reachable. Shrink
+    // the window and a window parked near the old right edge would otherwise
+    // end up outside the container with `overflow: hidden` and no way to scroll
+    // to it — the "I lost a widget and can't get it back" case.
     use_effect(move || {
         if *mode_signal.read() != LayoutMode::Free {
             return;
@@ -80,21 +84,11 @@ pub fn GridLayout(
         let (Some(mut store), Some((cw, ch))) = (store, *container_size.read()) else {
             return;
         };
-        if store.has_free() {
-            return;
-        }
-        let cell_w = cell_w_from(cw, cols, gap);
-        let cell_h = cell_h_from(ch, rows, row_height, gap);
-        for (id, p) in store.snapshot() {
-            store.set_free(
-                id,
-                FloatRect {
-                    x: p.x as f64 * (cell_w + gap),
-                    y: p.y as f64 * (cell_h + gap),
-                    w: p.w as f64 * cell_w + (p.w.saturating_sub(1) as f64) * gap,
-                    h: p.h as f64 * cell_h + (p.h.saturating_sub(1) as f64) * gap,
-                },
-            );
+        for (id, rect) in store.free_snapshot() {
+            let clamped = rect.clamp_visible(cw, ch, crate::item::MIN_VISIBLE_PX);
+            if clamped != rect {
+                store.set_free(id, clamped);
+            }
         }
     });
 

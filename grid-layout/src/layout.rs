@@ -66,9 +66,12 @@ impl FloatRect {
     pub fn clamp_visible(mut self, container_w: f64, container_h: f64, margin: f64) -> Self {
         let max_x = (container_w - margin).max(0.0);
         let max_y = (container_h - margin).max(0.0);
-        // The lower bounds let an item hang off the left/top by all but
-        // `margin`, which is what makes edge-to-edge placement possible.
-        self.x = self.x.clamp(margin - self.w, max_x);
+        // The lower bound lets an item hang off the left by all but `margin`,
+        // which is what makes edge-to-edge placement possible. `min` is taken
+        // against `max_x` because f64::clamp panics when min > max — reachable
+        // with a narrow window and a narrow item.
+        let min_x = (margin - self.w).min(max_x);
+        self.x = self.x.clamp(min_x, max_x);
         self.y = self.y.clamp(0.0, max_y);
         self
     }
@@ -120,5 +123,22 @@ mod tests {
     fn clamp_leaves_an_onscreen_window_alone() {
         let r = FloatRect::new(100.0, 120.0, 300.0, 200.0);
         assert_eq!(r.clamp_visible(1000.0, 800.0, 64.0), r);
+    }
+
+    /// A window narrower than the margin in a container narrower than the
+    /// margin puts `min` above `max`, which `f64::clamp` panics on.
+    #[test]
+    fn clamp_survives_a_container_smaller_than_the_margin() {
+        let r = FloatRect::new(10.0, 10.0, 10.0, 10.0).clamp_visible(50.0, 40.0, 64.0);
+        assert!(r.x.is_finite() && r.y.is_finite());
+    }
+
+    /// Shrinking the container must pull a window back into reach — this is
+    /// what stops a panel being stranded outside an `overflow: hidden` parent.
+    #[test]
+    fn shrinking_the_container_pulls_windows_back() {
+        let parked = FloatRect::new(1800.0, 900.0, 300.0, 200.0);
+        let r = parked.clamp_visible(1000.0, 600.0, 64.0);
+        assert!(r.x <= 1000.0 - 64.0 && r.y <= 600.0 - 64.0, "still stranded: {r:?}");
     }
 }

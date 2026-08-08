@@ -47,16 +47,9 @@ pub fn GridItem(
     }
 
     let pos = resolve_pos(&id, ctx, GridPosition { x, y, w, h });
-    let free = ctx.filter(|c| c.is_free()).and_then(|c| free_rect(&id, c, pos));
 
-    let cell_style = match free {
-        // Absolute placement: no cell to snap to, and a z-index so overlapping
-        // windows have a defined order.
-        Some((rect, z)) => format!(
-            "position: absolute; left: {:.1}px; top: {:.1}px; \
-             width: {:.1}px; height: {:.1}px; z-index: {z};",
-            rect.x, rect.y, rect.w, rect.h,
-        ),
+    let cell_style = match ctx.filter(|c| c.is_free()) {
+        Some(c) => free_style(&id, c, pos),
         None => format!(
             "grid-column: {col} / span {w}; grid-row: {row} / span {h}; position: relative;",
             col = pos.x + 1,
@@ -110,7 +103,10 @@ pub fn GridItem(
             kind: InteractionKind::Drag,
             item_id: item_id_for_drag.clone(),
             start_pos: current,
-            start_free: ctx.store.and_then(|s| s.get_free(&item_id_for_drag)),
+            start_free: ctx
+                .store
+                .and_then(|s| s.get_free(&item_id_for_drag))
+                .or_else(|| cell_to_px(ctx, current)),
             pointer_start_x: evt.client_coordinates().x,
             pointer_start_y: evt.client_coordinates().y,
             pointer_current_x: evt.client_coordinates().x,
@@ -147,7 +143,10 @@ pub fn GridItem(
             kind: InteractionKind::Resize,
             item_id: item_id_for_resize.clone(),
             start_pos: current,
-            start_free: ctx.store.and_then(|s| s.get_free(&item_id_for_resize)),
+            start_free: ctx
+                .store
+                .and_then(|s| s.get_free(&item_id_for_resize))
+                .or_else(|| cell_to_px(ctx, current)),
             pointer_start_x: evt.client_coordinates().x,
             pointer_start_y: evt.client_coordinates().y,
             pointer_current_x: evt.client_coordinates().x,
@@ -185,26 +184,59 @@ pub fn GridItem(
     }
 }
 
-/// The free-mode rect + z for an item, seeding the rect from its grid cell if
-/// the mode was just switched and the effect hasn't filled it in yet.
-fn free_rect(id: &str, ctx: GridContext, cell: GridPosition) -> Option<(FloatRect, u32)> {
-    let mut store = ctx.store?;
-    if let Some(rect) = store.get_free(id) {
-        return Some((rect, store.z_of(id)));
+/// Absolute placement CSS for free mode.
+///
+/// Always returns an absolute rule — never grid properties. That distinction
+/// matters more than it looks: in free mode the container is
+/// `position: relative`, not a grid, so emitting `grid-column`/`grid-row` there
+/// leaves an item with no position and no size, and every panel collapses into
+/// a pile in the top-left corner. Falling back to grid CSS in a non-grid
+/// container is what "the layout completely breaks" looked like.
+///
+/// An item the user has never dragged has no pixel rect yet, and rather than
+/// invent one (or write to the store mid-render, which is its own bug) it is
+/// placed by *percentage* derived from its grid cell. That needs no
+/// measurement, can never be off-screen, and lands exactly where the snap
+/// layout had it — so switching to Free looks like nothing moved.
+fn free_style(id: &str, ctx: GridContext, cell: GridPosition) -> String {
+    let z = ctx.store.map(|s| s.z_of(id)).unwrap_or(0);
+
+    if let Some(rect) = ctx.store.and_then(|s| s.get_free(id)) {
+        return format!(
+            "position: absolute; left: {:.1}px; top: {:.1}px; \
+             width: {:.1}px; height: {:.1}px; z-index: {z};",
+            rect.x, rect.y, rect.w, rect.h,
+        );
     }
-    let (cw, ch) = ctx.container_rect()?;
+
+    let cols = ctx.cols.max(1) as f64;
+    // Without a row count, treat the item's own extent as the full height —
+    // the best available guess, and only ever used before the first drag.
+    let rows = ctx.rows.unwrap_or_else(|| cell.y + cell.h).max(1) as f64;
+    let gap = ctx.gap;
+    format!(
+        "position: absolute; left: {:.4}%; top: {:.4}%; \
+         width: calc({:.4}% - {gap}px); height: calc({:.4}% - {gap}px); z-index: {z};",
+        cell.x as f64 / cols * 100.0,
+        cell.y as f64 / rows * 100.0,
+        cell.w as f64 / cols * 100.0,
+        cell.h as f64 / rows * 100.0,
+    )
+}
+
+/// Pixel rect for a grid cell, for starting a free-mode drag on an item that
+/// has only ever been placed by percentage. `None` until the container has
+/// been measured.
+fn cell_to_px(ctx: GridContext, cell: GridPosition) -> Option<FloatRect> {
     let cell_w = ctx.cell_w_px()?;
     let cell_h = ctx.cell_h_px();
     let gap = ctx.gap;
-    let rect = FloatRect {
+    Some(FloatRect {
         x: cell.x as f64 * (cell_w + gap),
         y: cell.y as f64 * (cell_h + gap),
         w: cell.w as f64 * cell_w + (cell.w.saturating_sub(1) as f64) * gap,
         h: cell.h as f64 * cell_h + (cell.h.saturating_sub(1) as f64) * gap,
-    }
-    .clamp_visible(cw, ch, MIN_VISIBLE_PX);
-    store.set_free(id, rect);
-    Some((rect, store.z_of(id)))
+    })
 }
 
 /// How much of a window must stay reachable inside the container.
