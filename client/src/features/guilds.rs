@@ -52,9 +52,6 @@ pub fn GuildsSidebar() -> Element {
     let mut menu = use_signal::<Option<GuildMenu>>(|| None);
     let mut show_browse = use_signal(|| false);
     // Guild whose Integrations (bots) / Roles / Settings dialog is open.
-    let mut integrations_for = use_signal::<Option<Id>>(|| None);
-    let mut roles_for = use_signal::<Option<Id>>(|| None);
-    let mut settings_for = use_signal::<Option<Id>>(|| None);
 
     rsx! {
         nav { class: "panel-hover w-full h-full bg-[var(--panel)] border border-[var(--border)] rounded-lg flex flex-col overflow-hidden",
@@ -237,7 +234,8 @@ pub fn GuildsSidebar() -> Element {
                                             button {
                                                 class: "w-full text-left px-3 py-1.5 rounded text-[var(--text)] hover:bg-white/[0.04] transition-colors",
                                                 onclick: move |_| {
-                                                    settings_for.set(Some(gid));
+                                                    state.write().guild_dialog =
+                                                        Some(crate::state::GuildDialog::Settings(gid));
                                                     menu.set(None);
                                                 },
                                                 "Guild settings"
@@ -245,7 +243,8 @@ pub fn GuildsSidebar() -> Element {
                                             button {
                                                 class: "w-full text-left px-3 py-1.5 rounded text-[var(--text)] hover:bg-white/[0.04] transition-colors",
                                                 onclick: move |_| {
-                                                    integrations_for.set(Some(gid));
+                                                    state.write().guild_dialog =
+                                                        Some(crate::state::GuildDialog::Integrations(gid));
                                                     menu.set(None);
                                                 },
                                                 "Integrations"
@@ -255,7 +254,8 @@ pub fn GuildsSidebar() -> Element {
                                             button {
                                                 class: "w-full text-left px-3 py-1.5 rounded text-[var(--text)] hover:bg-white/[0.04] transition-colors",
                                                 onclick: move |_| {
-                                                    roles_for.set(Some(gid));
+                                                    state.write().guild_dialog =
+                                                        Some(crate::state::GuildDialog::Roles(gid));
                                                     menu.set(None);
                                                 },
                                                 "Roles"
@@ -353,25 +353,10 @@ pub fn GuildsSidebar() -> Element {
                 }
             }
 
-            // Management dialogs (each opens from the context menu).
-            if let Some(gid) = integrations_for() {
-                crate::features::integrations::IntegrationsDialog {
-                    guild_id: gid,
-                    on_close: move |_| integrations_for.set(None),
-                }
-            }
-            if let Some(gid) = roles_for() {
-                crate::features::roles::RolesDialog {
-                    guild_id: gid,
-                    on_close: move |_| roles_for.set(None),
-                }
-            }
-            if let Some(gid) = settings_for() {
-                crate::features::guild_settings::GuildSettingsDialog {
-                    guild_id: gid,
-                    on_close: move |_| settings_for.set(None),
-                }
-            }
+            // The management dialogs are rendered at the workspace root (see
+            // `GuildDialogHost`), not here. A modal inside this panel would be
+            // inside this panel's stacking context and could be covered by any
+            // panel stacked above it.
 
             // Browse-and-join modal.
             if show_browse() {

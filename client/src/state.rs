@@ -84,6 +84,15 @@ impl Default for VoiceSession {
     }
 }
 
+/// The guild-management dialogs, all app-modal and all rendered at the
+/// workspace root.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GuildDialog {
+    Settings(Id),
+    Integrations(Id),
+    Roles(Id),
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub status: ConnectionStatus,
@@ -117,6 +126,14 @@ pub struct AppState {
     pub profiles: HashMap<String, Profile>,
     /// Pubkey of the user whose profile card is open, if any (UI state).
     pub profile_card: Option<String>,
+    /// Which guild-management dialog is open, if any.
+    ///
+    /// Lives here rather than in `GuildsSidebar` so the dialog can be rendered
+    /// at the workspace root. Rendered inside the panel it was opened from, an
+    /// app-modal dialog sits inside that panel's stacking context and paints
+    /// underneath any panel stacked above it — which is exactly what happened
+    /// once panels could overlap.
+    pub guild_dialog: Option<GuildDialog>,
     /// Who is currently typing, per channel: pubkey -> (username, last seen).
     /// Entries are swept after a few seconds (see WorkspaceView).
     pub typing: HashMap<Id, HashMap<String, (String, std::time::Instant)>>,
@@ -231,6 +248,7 @@ impl AppState {
             catalog_total: 0,
             profiles: HashMap::new(),
             profile_card: None,
+            guild_dialog: None,
             typing: HashMap::new(),
             notify_tick: 0,
             screen_token: None,

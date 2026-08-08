@@ -64,10 +64,9 @@ pub fn GridItem(
 
     let item_id_for_raise = id.clone();
     let onpointerdown_raise = move |_: PointerEvent| {
-        if let (Some(ctx), true) = (ctx, ctx.is_some_and(|c| c.is_free())) {
-            if let Some(mut s) = ctx.store {
-                s.raise(&item_id_for_raise);
-            }
+        let Some(ctx) = ctx.filter(|c| c.is_free()) else { return };
+        if let Some(mut s) = ctx.store {
+            s.raise(&item_id_for_raise);
         }
     };
 
