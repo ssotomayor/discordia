@@ -1104,6 +1104,34 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                     "{screenshare_hint}"
                                 }
                             }
+                            // Sound effects volume. Controls all synthesized UI
+                            // cues (connect, disconnect, mute, peer events, etc.).
+                            div { class: "mb-2",
+                                span { class: "text-[11px] text-[var(--text-muted)]", "Sound effects" }
+                                div { class: "flex items-center gap-2 mt-1",
+                                    input {
+                                        r#type: "range",
+                                        min: "0",
+                                        max: "100",
+                                        value: "{settings.read().sfx_volume}",
+                                        class: "flex-1 accent-[var(--accent)]",
+                                        title: "UI sound effects volume",
+                                        oninput: move |e| {
+                                            let val: u8 = e.value().parse().unwrap_or(70).min(100);
+                                            let mut next = settings.read().clone();
+                                            next.sfx_volume = val;
+                                            settings.set(next.clone());
+                                            crate::settings::save(&next);
+                                            // Apply immediately to the live SFX engine.
+                                            let v = val as f32 / 100.0;
+                                            let _ = document::eval(&format!(
+                                                "window.dxSfx && window.dxSfx.setVolume({v});"
+                                            ));
+                                        },
+                                    }
+                                    span { class: "text-[10px] text-[var(--text-dim)] w-8 text-right", "{settings.read().sfx_volume}%" }
+                                }
+                            }
                         }
                     }
                 }
