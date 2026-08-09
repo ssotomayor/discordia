@@ -48,6 +48,9 @@ const PLAYBACK_CAP_DIVISOR: u32 = 5;
 /// usual compromise between "doesn't clip speech" and "doesn't leak the room".
 const GATE_HANGOVER_FRAMES: u32 = 30;
 
+/// How long to wait for a clean leave before giving up on it.
+const ROOM_CLOSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
 /// libwebrtc APM configuration.
 ///
 /// `noise_suppression` is the inverse of the DeepFilterNet toggle: exactly one
@@ -645,9 +648,27 @@ impl ActiveVoice {
     async fn shutdown(self) {
         self.event_task.abort();
         self.meter_task.cancel();
+        // Stop capturing before leaving, so no frames are published into a
+        // room that is on its way out.
         self.mic.stop();
-        // Dropping the Arc<Room> triggers disconnect.
-        drop(self.room);
+        // Actually tell the SFU we are leaving.
+        //
+        // This used to be `drop(self.room)` with a comment claiming the drop
+        // triggered a disconnect. It does not: livekit's `Room` has no `Drop`
+        // impl at all, and `close()` is async precisely because leaving means
+        // sending a message over the signalling channel. Without it the server
+        // held the participant until its own timeout, so hanging up left you
+        // visible — and audible — in the channel to everyone else.
+        // Bounded: this is on the service loop, and a close that never returns
+        // (dead network, half-open socket) would wedge every later command —
+        // including the Connect for the channel the user is trying to join
+        // next. A missed leave costs a stale participant until the SFU times
+        // out; a stuck loop costs voice entirely.
+        match tokio::time::timeout(ROOM_CLOSE_TIMEOUT, self.room.close()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => eprintln!("[voice] room close failed: {e}"),
+            Err(_) => eprintln!("[voice] room close timed out, dropping anyway"),
+        }
     }
 }
 
