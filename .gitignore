@@ -17,6 +17,8 @@ Thumbs.db
 .env
 .env.local
 .claude/settings.local.json
+# Isolated checkouts for parallel Claude Code sessions — never ours to commit.
+.claude/worktrees/
 discordia-data/
 rendezvous-data/
 

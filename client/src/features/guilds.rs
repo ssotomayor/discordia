@@ -31,7 +31,19 @@ pub fn GuildsSidebar() -> Element {
     let gateway = use_gateway();
 
     let snapshot = state.read();
-    let guilds = snapshot.guilds.clone();
+    // Your own guilds first. They are the ones you administer, so they are the
+    // ones you reach for — and grouping them makes the cog affordance below
+    // read as a property of a group rather than a quirk of individual rows.
+    // Stable within each group, so the existing order is otherwise preserved.
+    let guilds = {
+        let mut v = snapshot.guilds.clone();
+        v.sort_by_key(|g| !snapshot.is_owner(g.id));
+        v
+    };
+    // Where the owned run ends, so each row knows which group it landed in.
+    // `is_owner` also covers system guilds (empty owner) for operators,
+    // matching the rest of the app.
+    let owned_count = guilds.iter().filter(|g| snapshot.is_owner(g.id)).count();
     let selected = snapshot.selected_guild;
     let dm_mode = snapshot.dm_mode;
     let dm_unread = snapshot.dm_unread_total() as usize;
@@ -89,13 +101,18 @@ pub fn GuildsSidebar() -> Element {
                 // Divider between DMs and servers.
                 div { class: "w-6 h-px bg-[var(--border)] my-1" }
 
-                for guild in guilds.iter().cloned() {
+                for (idx, guild) in guilds.iter().cloned().enumerate() {
                     {
                         // Any manageable-or-leavable guild gets the context
                         // menu; individual entries are permission-gated inside.
                         // System guilds (empty owner) get one only for an
                         // operator — nobody else can manage or leave them.
                         let has_menu = !guild.owner_pubkey.is_empty() || is_operator;
+                        // Owners get a visible cog. Right-click still works
+                        // everywhere — it is the only way to reach "Leave" on a
+                        // guild you don't own — but a hidden gesture is no way
+                        // to find settings you're expected to use.
+                        let is_mine = idx < owned_count;
                         let gname = guild.name.clone();
                         rsx! {
                             GuildIcon {
@@ -106,6 +123,7 @@ pub fn GuildsSidebar() -> Element {
                                 name: guild.name.clone(),
                                 selected: !dm_mode && selected == Some(guild.id),
                                 has_menu,
+                                is_mine,
                                 on_select: {
                                     let gateway = gateway.clone();
                                     move |gid: Id| {
@@ -135,7 +153,7 @@ pub fn GuildsSidebar() -> Element {
                                         }
                                     }
                                 },
-                                on_context: move |(gid, x, y): (Id, f64, f64)| {
+                                on_menu: move |(gid, x, y): (Id, f64, f64)| {
                                     menu.set(Some(GuildMenu {
                                         guild_id: gid,
                                         name: gname.clone(),
@@ -578,9 +596,13 @@ fn GuildIcon(
     /// Whether right-clicking opens the management/leave menu (false only for
     /// system guilds, which can be neither managed nor left).
     has_menu: bool,
+    /// Whether the viewer owns this guild. Owners get a visible cog, because
+    /// "right-click the icon" is not a thing anyone discovers on their own.
+    is_mine: bool,
     on_select: EventHandler<Id>,
-    /// Fired on right-click when `has_menu`, with (guild_id, x, y).
-    on_context: EventHandler<(Id, f64, f64)>,
+    /// Fired with (guild_id, x, y) when the menu should open — right-click on
+    /// anything with a menu, or the cog on a guild you own.
+    on_menu: EventHandler<(Id, f64, f64)>,
 ) -> Element {
     let cls = if selected {
         "border-[var(--accent)] text-[var(--accent)]"
@@ -589,21 +611,48 @@ fn GuildIcon(
     };
 
     rsx! {
-        button {
-            class: "w-10 h-10 rounded-md border flex items-center justify-center text-xs font-medium transition-colors overflow-hidden {cls}",
-            title: if has_menu { "{name} (right-click for options)" } else { "{name}" },
-            onclick: move |_| on_select.call(id),
-            oncontextmenu: move |e: MouseEvent| {
-                if has_menu {
-                    e.prevent_default();
-                    let c = e.client_coordinates();
-                    on_context.call((id, c.x, c.y));
+        // `relative` so the cog can sit on the tile's corner; `group` so it can
+        // brighten with the tile rather than demanding its own hover target.
+        div { class: "relative group",
+            button {
+                class: "w-10 h-10 rounded-md border flex items-center justify-center text-xs font-medium transition-colors overflow-hidden {cls}",
+                title: if is_mine {
+                    "{name} — yours, click the cog for settings"
+                } else if has_menu {
+                    "{name} (right-click for options)"
+                } else {
+                    "{name}"
+                },
+                onclick: move |_| on_select.call(id),
+                oncontextmenu: move |e: MouseEvent| {
+                    if has_menu {
+                        e.prevent_default();
+                        let c = e.client_coordinates();
+                        on_menu.call((id, c.x, c.y));
+                    }
+                },
+                if let Some(src) = image {
+                    img { class: "w-full h-full object-cover", src: "{src}", alt: "{name}" }
+                } else {
+                    "{label}"
                 }
-            },
-            if let Some(src) = image {
-                img { class: "w-full h-full object-cover", src: "{src}", alt: "{name}" }
-            } else {
-                "{label}"
+            }
+            if is_mine {
+                button {
+                    class: "absolute -right-1 -bottom-1 w-4 h-4 flex items-center justify-center rounded-full border border-[var(--border)] bg-[var(--panel-solid)] text-[var(--text-muted)] opacity-70 group-hover:opacity-100 hover:text-[var(--accent)] hover:border-[var(--accent)] transition-all",
+                    title: "Guild settings",
+                    // Open at the cog, not under the cursor, so the menu lands
+                    // in the same place however the pointer arrived.
+                    onclick: move |e: MouseEvent| {
+                        e.stop_propagation();
+                        let c = e.client_coordinates();
+                        on_menu.call((id, c.x, c.y));
+                    },
+                    span {
+                        class: "block w-2.5 h-2.5",
+                        dangerous_inner_html: crate::features::icons::GEAR,
+                    }
+                }
             }
         }
     }
