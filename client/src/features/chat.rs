@@ -1,6 +1,7 @@
 use base64::Engine as _;
 use dioxus::prelude::*;
 use dioxus_grid_layout::NoDrag;
+use serde_json::Value;
 
 use crate::identity::discriminator;
 use crate::protocol::{ClientMessage, Id, Message};
@@ -76,10 +77,89 @@ fn chat_scroll_js(mode: &str) -> String {
     )
 }
 
+/// Drag-and-drop attachment bridge, evaluated by the composer.
+///
+/// Two things are worth knowing here:
+///
+/// * The listeners sit on `document` and are wired exactly once, but they report
+///   through `window.__dxfDropSink`, which every *run* of this eval rebinds to
+///   its own channel. A remount (switching to a channel-less view and back)
+///   otherwise leaves the listeners talking into a dead channel nobody recvs on.
+/// * `preventDefault` is called for drags anywhere in the document, not just
+///   over the chat. A file dropped on a webview that doesn't claim it makes the
+///   webview *navigate to that file* — the whole app simply disappears.
+///
+/// `$MAX` is substituted with the attachment size cap (plain `replace` rather
+/// than `format!` so the script's braces don't all need doubling).
+const DROP_JS: &str = r#"
+(function () {
+  window.__dxfDropSink = function (m) { try { dioxus.send(m); } catch (e) {} };
+  if (window.__dxfDropWired) return;
+  window.__dxfDropWired = true;
+
+  function sink(m) { if (window.__dxfDropSink) window.__dxfDropSink(m); }
+  function isFileDrag(e) {
+    var t = e.dataTransfer && e.dataTransfer.types;
+    return !!t && Array.prototype.indexOf.call(t, 'Files') >= 0;
+  }
+  function inZone(e) {
+    var t = e.target;
+    return !!(t && t.closest && t.closest('#dxf-chat-drop'));
+  }
+
+  // dragenter/dragleave fire once per element crossed, so a single drag over the
+  // message list emits a burst of both. Counting them is what distinguishes
+  // "moved onto a child" from "left the window".
+  var depth = 0;
+  document.addEventListener('dragover', function (e) { e.preventDefault(); }, false);
+  document.addEventListener('dragenter', function (e) {
+    e.preventDefault();
+    if (!isFileDrag(e)) return;
+    depth++;
+    if (inZone(e)) sink({ k: 'over', v: true });
+  }, false);
+  document.addEventListener('dragleave', function (e) {
+    if (!isFileDrag(e)) return;
+    depth = Math.max(0, depth - 1);
+    if (depth === 0) sink({ k: 'over', v: false });
+  }, false);
+  document.addEventListener('drop', function (e) {
+    e.preventDefault();
+    depth = 0;
+    sink({ k: 'over', v: false });
+    if (!inZone(e)) return;
+    var f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    if (!f) return;
+    if (f.type && f.type.indexOf('image/') !== 0) {
+      sink({ k: 'err', v: "That's not an image." });
+      return;
+    }
+    if (f.size > $MAX) {
+      sink({ k: 'err', v: 'Image too large (max 2 MB).' });
+      return;
+    }
+    var r = new FileReader();
+    r.onload = function () {
+      var url = String(r.result);
+      // A file the webview can't type yields `data:;base64,...`, which the
+      // server rejects outright. Claim PNG and let the renderer sniff the real
+      // format from the bytes — the same fallback the file picker uses.
+      if (url.indexOf('data:image/') !== 0) url = url.replace(/^data:[^;]*;/, 'data:image/png;');
+      sink({ k: 'file', v: url });
+    };
+    r.onerror = function () { sink({ k: 'err', v: "Couldn't read that file." }); };
+    r.readAsDataURL(f);
+  }, false);
+})();
+"#;
+
 #[component]
 pub fn ChatView() -> Element {
     let state = use_app_state();
     let gateway = use_gateway();
+    // Set by the composer's drop bridge; owned here so the highlight can cover
+    // the whole chat column rather than just the composer row.
+    let drag_over = use_signal(|| false);
 
     let snapshot = state.read();
     let selected_channel = snapshot.selected_channel;
@@ -90,6 +170,13 @@ pub fn ChatView() -> Element {
         .and_then(|cid| snapshot.messages.get(&cid).cloned())
         .unwrap_or_default();
     let typers = selected_channel.map(|cid| snapshot.typers_in(cid)).unwrap_or_default();
+    // A locked channel takes no dropped images either, so it simply doesn't
+    // carry the drop-zone id the bridge looks for — no overlay, no drop, no
+    // attachment quietly swallowed by a composer that isn't there.
+    let drop_id = match selected_channel {
+        Some(cid) if !composer_locked(&snapshot, cid) => "dxf-chat-drop",
+        _ => "dxf-chat-none",
+    };
     drop(snapshot);
 
     // Header + composer labelling differ for DMs ("@user") vs channels ("#name").
@@ -142,7 +229,19 @@ pub fn ChatView() -> Element {
     });
 
     rsx! {
-        div { class: "flex flex-col h-full min-h-0",
+        div { id: "{drop_id}", class: "relative flex flex-col h-full min-h-0",
+
+            // Drop affordance. `pointer-events-none` matters: an overlay that
+            // swallowed the cursor would fire dragleave the instant it appeared
+            // and flicker itself away.
+            if drag_over() {
+                div {
+                    class: "dxf-fade pointer-events-none absolute inset-0 z-30 flex items-center justify-center rounded-lg border-2 border-dashed border-[var(--accent)] bg-[var(--accent-soft)]",
+                    style: "margin: 0.5rem;",
+                    span { class: "text-sm font-medium text-[var(--accent)]", "Drop an image to attach it" }
+                }
+            }
+
             header { class: "h-11 px-3 flex items-center gap-3 border-b border-[var(--border)] shrink-0",
                 span { class: "text-[var(--text-dim)] font-medium", if is_dm { "@" } else { "#" } }
                 span { class: "text-sm text-[var(--accent)] font-medium", "{header_name}" }
@@ -205,7 +304,7 @@ pub fn ChatView() -> Element {
                 }
 
                 if let Some(channel_id) = selected_channel {
-                    Composer { channel_id, composer_label }
+                    Composer { channel_id, composer_label, drag_over }
                 }
             }
         }
@@ -216,6 +315,22 @@ pub fn ChatView() -> Element {
 /// holds at least this many messages there is probably older history to page
 /// back through, so we surface the "load earlier" affordance.
 const PAGE_SIZE: usize = 50;
+
+/// Whether the composer is locked for this channel: it's read-only and we hold
+/// neither ManageMessages nor ManageChannels there. Mirrors the server's gate
+/// (which re-checks anyway) and also decides whether the chat accepts dropped
+/// images, so both surfaces can't disagree.
+fn composer_locked(s: &crate::state::AppState, channel_id: Id) -> bool {
+    s.channels
+        .iter()
+        .find(|c| c.id == channel_id)
+        .filter(|c| c.read_only)
+        .map(|c| {
+            !(s.can(c.guild_id, crate::protocol::Permission::ManageMessages)
+                || s.can(c.guild_id, crate::protocol::Permission::ManageChannels))
+        })
+        .unwrap_or(false)
+}
 
 /// Whether `cur` should render compactly under `prev` (same author, close in time).
 fn groups_with(prev: &Message, cur: &Message) -> bool {
@@ -309,10 +424,21 @@ fn MessageRow(message: Message, grouped: bool) -> Element {
                     }
                 }
                 if let Some(img) = message.image.as_ref() {
-                    img {
-                        class: "mt-1 rounded-md border border-[var(--border)] max-w-xs max-h-80 object-contain block",
-                        src: "{img}",
-                        alt: "attachment",
+                    {
+                        // Thumbnails are capped at 20rem; click opens the
+                        // full-size viewer, which is the only way to actually
+                        // read anything in a screenshot.
+                        let full = img.clone();
+                        rsx! {
+                            img {
+                                class: "mt-1 rounded-md border border-[var(--border)] max-w-xs max-h-80 object-contain block hover:border-[var(--border-strong)] transition-colors",
+                                style: "cursor: zoom-in;",
+                                src: "{img}",
+                                alt: "attachment",
+                                title: "Click to view full size",
+                                onclick: move |_| state.write().image_viewer = Some(full.clone()),
+                            }
+                        }
                     }
                 }
                 // Reaction chips.
@@ -407,6 +533,44 @@ fn MessageRow(message: Message, grouped: bool) -> Element {
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+/// Full-size viewer for a chat image, driven by `AppState.image_viewer`.
+///
+/// Mounted at the workspace root rather than inside the message row: panels can
+/// overlap, so a modal rendered inside the chat panel sits in that panel's
+/// stacking context and paints underneath whatever is stacked above it. Same
+/// reason `ProfileCard` lives up there.
+#[component]
+pub fn ImageViewer() -> Element {
+    let mut state = use_app_state();
+    let Some(src) = state.read().image_viewer.clone() else {
+        return rsx! { Fragment {} };
+    };
+
+    rsx! {
+        div {
+            class: "dxf-backdrop-in fixed inset-0 z-50 flex items-center justify-center",
+            style: "padding: 2.5rem; background: rgba(0,0,0,0.8);",
+            onclick: move |_| state.write().image_viewer = None,
+            img {
+                class: "dxf-modal-in object-contain rounded-lg shadow-2xl",
+                style: "max-width: 100%; max-height: 100%;",
+                src: "{src}",
+                alt: "attachment",
+                // Clicking the picture itself shouldn't dismiss it — only the
+                // backdrop around it does.
+                onclick: move |e| e.stop_propagation(),
+            }
+            button {
+                class: "absolute w-9 h-9 flex items-center justify-center rounded-full border border-[var(--border)] bg-[var(--panel-solid)] text-[var(--text-muted)] hover:text-[var(--text)] hover:border-[var(--border-strong)] transition-colors",
+                style: "top: 1rem; right: 1.25rem;",
+                title: "Close",
+                onclick: move |_| state.write().image_viewer = None,
+                "✕"
             }
         }
     }
@@ -530,14 +694,37 @@ fn is_url(w: &str) -> bool {
 }
 
 #[component]
-fn Composer(channel_id: Id, composer_label: String) -> Element {
+fn Composer(channel_id: Id, composer_label: String, drag_over: Signal<bool>) -> Element {
     let mut draft = use_signal(String::new);
     let mut pending_image = use_signal::<Option<String>>(|| None);
-    let attach_err = use_signal::<Option<String>>(|| None);
+    let mut attach_err = use_signal::<Option<String>>(|| None);
     let mut show_emoji = use_signal(|| false);
     let mut last_typing = use_signal::<Option<std::time::Instant>>(|| None);
     let gateway = use_gateway();
     let gateway_submit = gateway.clone();
+
+    // Dropped images land in the same `pending_image` slot the "+" picker fills,
+    // so from here on a dragged file and a picked one are indistinguishable —
+    // preview, Remove, and send all work unchanged.
+    let mut drag_over = drag_over;
+    use_future(move || async move {
+        let js = DROP_JS.replace("$MAX", &MAX_IMAGE_BYTES.to_string());
+        let mut eval = document::eval(&js);
+        while let Ok(msg) = eval.recv::<Value>().await {
+            let v = msg.get("v");
+            match msg.get("k").and_then(|k| k.as_str()) {
+                Some("over") => drag_over.set(v.and_then(|v| v.as_bool()).unwrap_or(false)),
+                Some("file") => {
+                    if let Some(url) = v.and_then(|v| v.as_str()) {
+                        attach_err.set(None);
+                        pending_image.set(Some(url.to_string()));
+                    }
+                }
+                Some("err") => attach_err.set(v.and_then(|v| v.as_str()).map(str::to_string)),
+                _ => {}
+            }
+        }
+    });
 
     // The guild's custom emoji, for the picker's first section. Snapshotted
     // (rather than read inside the RSX) so the state borrow doesn't span the
@@ -555,19 +742,11 @@ fn Composer(channel_id: Id, composer_label: String) -> Element {
     };
 
     // Read-only channels: swap the composer for a lock notice unless the user
-    // holds ManageMessages/ManageChannels there (mirrors the server gate).
+    // holds ManageMessages/ManageChannels there.
     let locked = {
         let state = use_app_state();
         let s = state.read();
-        s.channels
-            .iter()
-            .find(|c| c.id == channel_id)
-            .filter(|c| c.read_only)
-            .map(|c| {
-                !(s.can(c.guild_id, crate::protocol::Permission::ManageMessages)
-                    || s.can(c.guild_id, crate::protocol::Permission::ManageChannels))
-            })
-            .unwrap_or(false)
+        composer_locked(&s, channel_id)
     };
     if locked {
         return rsx! {

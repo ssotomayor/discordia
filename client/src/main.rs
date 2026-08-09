@@ -42,8 +42,27 @@ fn main() {
         .with_window_icon(load_window_icon());
     let window = mac_window(window);
     LaunchBuilder::new()
-        .with_cfg(Config::new().with_window(window).with_menu(None))
+        .with_cfg(apply_menu(Config::new().with_window(window)))
         .launch(app::App);
+}
+
+/// macOS routes ⌘C/⌘V/⌘X/⌘A/⌘Z through the application menu bar: those
+/// shortcuts are *owned* by the Edit menu's items, not by the webview. With no
+/// menu there is nothing holding the accelerators, which is why ⌘-anything did
+/// nothing in every input in the app.
+///
+/// So keep Dioxus's default menu bar on macOS — it draws in the system menu bar
+/// at the top of the screen, not inside our window, so it costs us no chrome —
+/// and only strip it on Windows/Linux, where a menu *would* paint a strip inside
+/// the frameless window.
+#[cfg(target_os = "macos")]
+fn apply_menu(cfg: Config) -> Config {
+    cfg
+}
+
+#[cfg(not(target_os = "macos"))]
+fn apply_menu(cfg: Config) -> Config {
+    cfg.with_menu(None)
 }
 
 /// Load the Discordia app icon from the bundled PNG so the native window

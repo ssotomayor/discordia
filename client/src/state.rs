@@ -135,6 +135,11 @@ pub struct AppState {
     pub profiles: HashMap<String, Profile>,
     /// Pubkey of the user whose profile card is open, if any (UI state).
     pub profile_card: Option<String>,
+    /// Source of the chat image being viewed full-size, if any. Lives here (and
+    /// renders at the workspace root) for the same reason `profile_card` does —
+    /// a lightbox mounted inside the message row would be clipped by the chat
+    /// panel's stacking context.
+    pub image_viewer: Option<String>,
     /// Which guild-management dialog is open, if any.
     ///
     /// Lives here rather than in `GuildsSidebar` so the dialog can be rendered
@@ -282,6 +287,7 @@ impl AppState {
             catalog_total: 0,
             profiles: HashMap::new(),
             profile_card: None,
+            image_viewer: None,
             guild_dialog: None,
             typing: HashMap::new(),
             notify_tick: 0,

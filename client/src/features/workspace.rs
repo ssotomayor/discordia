@@ -172,6 +172,7 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
             crate::features::screenshare::ScreenSelfPreview {}
             crate::features::screenshare::ScreenWatchWindow {}
             crate::features::profiles::ProfileCard {}
+            crate::features::chat::ImageViewer {}
             GuildDialogHost {}
 
             // Top row: host banner (only renders when self-hosting) grows
