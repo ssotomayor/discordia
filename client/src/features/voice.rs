@@ -418,6 +418,12 @@ impl ActiveVoice {
                 LocalTrack::Audio(local_audio),
                 TrackPublishOptions {
                     source: TrackSource::Microphone,
+                    // Speech defaults are right here — including `dtx`, which
+                    // costs nothing when the transmit gate is already holding
+                    // silence back — so this only makes the choice explicit
+                    // rather than inherited, next to the very different one the
+                    // screen-share audio track makes.
+                    audio_encoding: Some(livekit::options::audio::SPEECH.encoding.clone()),
                     ..Default::default()
                 },
             )
@@ -613,6 +619,21 @@ impl ActiveVoice {
                 LocalTrack::Audio(track),
                 TrackPublishOptions {
                     source: TrackSource::ScreenshareAudio,
+                    // Music and game audio, not a voice. The defaults are tuned
+                    // for speech and both of them hurt here:
+                    //
+                    // - the computed bitrate lands around SPEECH (24 kbit/s),
+                    //   which is fine for a talking head and poor for anything
+                    //   with music in it;
+                    // - `dtx` (discontinuous transmission) stops sending during
+                    //   quiet passages and substitutes comfort noise. On speech
+                    //   that is free bandwidth; on music it is audible dropouts
+                    //   every time the track goes quiet.
+                    //
+                    // 96 kbit/s is generous for the mono downmix we send, and
+                    // trivial beside the multi-megabit video it accompanies.
+                    audio_encoding: Some(livekit::options::audio::MUSIC_HIGH_QUALITY.encoding.clone()),
+                    dtx: false,
                     ..Default::default()
                 },
             )
