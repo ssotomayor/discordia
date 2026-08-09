@@ -286,6 +286,18 @@ window.dxScreen = window.dxScreen || (function () {
         if (i > 0) console.warn('[dxScreen] getDisplayMedia fell back to attempt', i, attempts[i]);
         break;
       } catch (e) {
+        // NotAllowedError covers two very different things in Chromium: the
+        // user hit "Cancel" on the picker, and the user (or an OS policy)
+        // denied capture outright. Either way it's an explicit human
+        // decision, not this attempt's constraints being unsupported — so
+        // retrying with the next `attempts[i]` just reopens the picker for a
+        // choice the user already made. Only fall through to the next
+        // attempt for errors that are actually about the constraints
+        // (OverconstrainedError, NotFoundError, TypeError, etc).
+        if (e && e.name === 'NotAllowedError') {
+          console.warn('[dxScreen] getDisplayMedia cancelled or denied by user', e);
+          return;
+        }
         if (i === attempts.length - 1) {
           console.warn('[dxScreen] getDisplayMedia denied or failed', e);
           return;
