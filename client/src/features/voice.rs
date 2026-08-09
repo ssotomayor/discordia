@@ -81,6 +81,10 @@ struct AudioControls {
     /// Per-participant playback gain, keyed by LiveKit identity (= pubkey).
     /// Absent = unity. Applied to *incoming* audio in our own mixer only.
     gains: Arc<Mutex<HashMap<String, f32>>>,
+    /// The same, for screen-share audio tracks. Absent = SILENT, not unity:
+    /// stream audio plays only while you are watching that person's share, so
+    /// the default has to be off.
+    stream_gains: Arc<Mutex<HashMap<String, f32>>>,
 }
 
 impl AudioControls {
@@ -89,6 +93,7 @@ impl AudioControls {
             threshold: Arc::new(AtomicI32::new(threshold as i32)),
             denoise: Arc::new(AtomicBool::new(denoise)),
             gains: Arc::new(Mutex::new(HashMap::new())),
+            stream_gains: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
@@ -129,6 +134,18 @@ pub enum VoiceCmd {
     /// Toggle DeepFilterNet noise suppression on captured mic audio.
     SetNoiseCancellation {
         enabled: bool,
+    },
+    /// Start/stop capturing this machine's audio and publishing it alongside a
+    /// screen share. Only does anything where `sysaudio` has a backend.
+    SetSystemAudio {
+        enabled: bool,
+    },
+    /// Set the local playback gain for a participant's *screen-share* audio,
+    /// separately from their voice. 0.0 while you aren't watching them, which
+    /// is the default — stream audio follows the watch window.
+    SetStreamVolume {
+        pubkey: String,
+        gain: f32,
     },
     /// Set one participant's *local* playback gain (1.0 = unity, 0.0 = muted
     /// for us only). Never leaves this client — it scales incoming audio in our
@@ -320,6 +337,16 @@ async fn service_loop(
                 }
                 state.write().noise_cancellation = enabled;
             }
+            VoiceCmd::SetSystemAudio { enabled } => {
+                if let Some(active) = session.as_mut() {
+                    active.set_system_audio(enabled).await;
+                } else if enabled {
+                    eprintln!("[voice] SetSystemAudio ignored — no voice session");
+                }
+            }
+            VoiceCmd::SetStreamVolume { pubkey, gain } => {
+                controls.stream_gains.lock().insert(pubkey, gain.clamp(0.0, 2.0));
+            }
             VoiceCmd::SetUserVolume { pubkey, gain } => {
                 let gain = gain.clamp(0.0, 2.0);
                 eprintln!("[voice] SetUserVolume {} gain={gain:.2}", &pubkey[..pubkey.len().min(8)]);
@@ -340,6 +367,8 @@ struct ActiveVoice {
     local_audio: LocalAudioTrack,
     _playback: PlaybackMixer,
     event_task: tokio::task::JoinHandle<()>,
+    /// Live system-audio publication, when sharing a screen with sound.
+    system_audio: Option<SystemAudioTrack>,
     /// Mirrors the mic meter into `AppState`. Cancelled on shutdown — left
     /// running, one accumulates per reconnect and they fight over the same
     /// `mic_level` / `speaking` fields.
@@ -427,6 +456,20 @@ impl ActiveVoice {
         let playback = PlaybackMixer::start(state.clone(), controls.clone())?;
         let mixer_handle = playback.handle();
 
+        // Bridge for "this sharer has native screen audio" notices: the event
+        // task can't touch a Signal, so it posts identities here and a Dioxus
+        // task applies them.
+        let (native_audio_tx, mut native_audio_rx) =
+            tokio::sync::mpsc::unbounded_channel::<String>();
+        {
+            let mut state = state;
+            dioxus::prelude::spawn(async move {
+                while let Some(id) = native_audio_rx.recv().await {
+                    state.write().stream_native_audio.insert(id);
+                }
+            });
+        }
+
         // Event task: subscribe to room events, hook up remote tracks.
         let event_task = tokio::spawn({
             let mixer_handle = mixer_handle.clone();
@@ -461,7 +504,11 @@ impl ActiveVoice {
                         }
                         _ => {}
                     }
-                    if let RoomEvent::TrackSubscribed { track, participant, .. } = ev {
+                    if let RoomEvent::TrackSubscribed { track, publication, participant } = ev {
+                        // Screen-share audio and a microphone arrive on the
+                        // same event; only the publication says which is which.
+                        let is_stream =
+                            publication.source() == TrackSource::ScreenshareAudio;
                         if let RemoteTrack::Audio(audio) = track {
                             let stream = NativeAudioStream::new(
                                 audio.rtc_track(),
@@ -473,7 +520,21 @@ impl ActiveVoice {
                             // gateway mints tokens with `with_identity(pubkey)`),
                             // which is what the per-user volume map is keyed by.
                             let identity = participant.identity().0.clone();
-                            tokio::spawn(consume_remote_track(stream, mixer_handle, identity));
+                            // Tell the UI this sharer has sound, so the watch
+                            // window's volume control comes out of "no stream
+                            // audio" — the JS layer can't know about a track
+                            // that never touches the webview. Routed through a
+                            // channel because this task is `tokio::spawn`ed and
+                            // so must be Send, which a Dioxus Signal is not.
+                            if is_stream {
+                                let _ = native_audio_tx.send(identity.clone());
+                            }
+                            tokio::spawn(consume_remote_track(
+                                stream,
+                                mixer_handle,
+                                identity,
+                                is_stream,
+                            ));
                         }
                     }
                 }
@@ -489,7 +550,84 @@ impl ActiveVoice {
             _playback: playback,
             event_task,
             meter_task,
+            system_audio: None,
         })
+    }
+
+    /// Start or stop publishing this machine's audio as a second track.
+    ///
+    /// Published on the voice room rather than the webview's screen room: the
+    /// native SDK is already connected here, every peer is already subscribed,
+    /// and it lands in the same mixer as everything else — so the per-sharer
+    /// volume control works on it without any new delivery path.
+    async fn set_system_audio(&mut self, enabled: bool) {
+        if enabled == self.system_audio.is_some() {
+            return;
+        }
+        if !enabled {
+            if let Some(sa) = self.system_audio.take() {
+                let _ = self
+                    .room
+                    .local_participant()
+                    .unpublish_track(&sa.sid)
+                    .await;
+            }
+            eprintln!("[voice] system audio stopped");
+            return;
+        }
+        if !crate::sysaudio::supported() {
+            return;
+        }
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Vec<f32>>();
+        let capture = match crate::sysaudio::start(tx) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("[voice] system audio unavailable: {e}");
+                return;
+            }
+        };
+        // No APM on this source: it is already-mixed program audio, not a
+        // microphone in a room. Echo cancellation and noise suppression would
+        // chew on music and game audio for no benefit.
+        let source = NativeAudioSource::new(
+            AudioSourceOptions {
+                echo_cancellation: false,
+                noise_suppression: false,
+                auto_gain_control: false,
+            },
+            SAMPLE_RATE,
+            CHANNELS,
+            1000,
+        );
+        let track = LocalAudioTrack::create_audio_track(
+            "screen-audio",
+            RtcAudioSource::Native(source.clone()),
+        );
+        let publication = match self
+            .room
+            .local_participant()
+            .publish_track(
+                LocalTrack::Audio(track),
+                TrackPublishOptions {
+                    source: TrackSource::ScreenshareAudio,
+                    ..Default::default()
+                },
+            )
+            .await
+        {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("[voice] publish system audio failed: {e}");
+                return;
+            }
+        };
+        let task = tokio::spawn(publish_pcm(rx, source));
+        self.system_audio = Some(SystemAudioTrack {
+            sid: publication.sid(),
+            _capture: capture,
+            task,
+        });
+        eprintln!("[voice] system audio started");
     }
 
     /// Swap libwebrtc's noise suppressor in or out while the call is live.
@@ -658,6 +796,40 @@ pub fn peak_to_db_label(peak_fixed: u32) -> String {
 /// Bottom of the meter. -60 dBFS is below the noise floor of any usable mic,
 /// so nothing interesting is hidden underneath it.
 const METER_FLOOR_DB: f64 = -60.0;
+
+/// A published system-audio track and the capture feeding it.
+struct SystemAudioTrack {
+    sid: livekit::prelude::TrackSid,
+    /// Dropping this stops the OS-level capture.
+    _capture: crate::sysaudio::Capture,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for SystemAudioTrack {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+/// Forward captured PCM frames to a libwebrtc source. Same shape as the mic's
+/// publish loop, without the gate — program audio isn't voice-activated.
+async fn publish_pcm(mut rx: UnboundedReceiver<Vec<f32>>, source: NativeAudioSource) {
+    while let Some(samples) = rx.recv().await {
+        let data: Vec<i16> = samples
+            .iter()
+            .map(|s| (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16)
+            .collect();
+        let frame = AudioFrame {
+            data: data.into(),
+            sample_rate: SAMPLE_RATE,
+            num_channels: CHANNELS,
+            samples_per_channel: FRAME_SAMPLES as u32,
+        };
+        if let Err(e) = source.capture_frame(&frame).await {
+            eprintln!("[voice] system audio capture_frame error: {e:?}");
+        }
+    }
+}
 
 /// Peak absolute sample as ×1000 fixed point — the scale the threshold slider
 /// and the VU bar both speak.
@@ -1166,6 +1338,10 @@ struct TrackBuf {
     /// Gain refreshed once per output callback from the shared map, so the
     /// per-sample loop never touches a HashMap or a second lock.
     gain: f32,
+    /// Screen-share audio rather than someone's voice. The two are mixed the
+    /// same way but take their gain from different maps, so turning a stream
+    /// down doesn't quieten the person talking over it.
+    is_stream: bool,
 }
 
 #[derive(Clone)]
@@ -1174,17 +1350,23 @@ struct PlaybackHandle {
     device_rate: u32,
     /// Shared with the UI via `AudioControls` — see `VoiceCmd::SetUserVolume`.
     gains: Arc<Mutex<HashMap<String, f32>>>,
+    stream_gains: Arc<Mutex<HashMap<String, f32>>>,
 }
 
 impl PlaybackHandle {
     /// Claim a jitter buffer for one remote track. The id is opaque; the caller
     /// hands it back to `push`/`remove_track`.
-    fn add_track(&self, identity: String) -> u64 {
+    fn add_track(&self, identity: String, is_stream: bool) -> u64 {
         // Read the gain and release that lock BEFORE taking `tracks`: the
         // output callback locks them the other way round (tracks, then gains
         // in `refresh_gains`), and holding both here in the opposite order is
         // a deadlock against the audio thread.
-        let gain = self.gains.lock().get(&identity).copied().unwrap_or(1.0);
+        let gain = if is_stream {
+            // Silent until the viewer opens the watch window.
+            self.stream_gains.lock().get(&identity).copied().unwrap_or(0.0)
+        } else {
+            self.gains.lock().get(&identity).copied().unwrap_or(1.0)
+        };
         let mut t = self.tracks.lock();
         let id = t.next_id;
         t.next_id = t.next_id.wrapping_add(1);
@@ -1194,6 +1376,7 @@ impl PlaybackHandle {
                 samples: std::collections::VecDeque::with_capacity(SAMPLE_RATE as usize / 2),
                 identity,
                 gain,
+                is_stream,
             },
         );
         id
@@ -1217,16 +1400,24 @@ impl PlaybackHandle {
 /// Copy the user's chosen volumes onto the live tracks. Called once per output
 /// callback: a HashMap lookup per *sample* would be absurd, and the volume only
 /// needs to be as fresh as one buffer (a few ms).
-fn refresh_gains(tracks: &mut MixerTracks, gains: &Arc<Mutex<HashMap<String, f32>>>) {
+fn refresh_gains(
+    tracks: &mut MixerTracks,
+    gains: &Arc<Mutex<HashMap<String, f32>>>,
+    stream_gains: &Arc<Mutex<HashMap<String, f32>>>,
+) {
     if tracks.buffers.is_empty() {
         return;
     }
     let g = gains.lock();
-    if g.is_empty() {
-        return;
-    }
+    let sg = stream_gains.lock();
     for track in tracks.buffers.values_mut() {
-        track.gain = g.get(&track.identity).copied().unwrap_or(1.0);
+        track.gain = if track.is_stream {
+            // Absent means "not watching", which is silence — the opposite
+            // default from voice, where absent means normal volume.
+            sg.get(&track.identity).copied().unwrap_or(0.0)
+        } else {
+            g.get(&track.identity).copied().unwrap_or(1.0)
+        };
     }
 }
 
@@ -1315,6 +1506,8 @@ impl PlaybackMixer {
         // constructible, so each needs its own clone of the gain map.
         let gains_f32 = controls.gains.clone();
         let gains_i16 = controls.gains.clone();
+        let stream_gains_f32 = controls.stream_gains.clone();
+        let stream_gains_i16 = controls.stream_gains.clone();
         // Dither PRNG state. Moved into the i16 callback so it advances across
         // invocations (a per-callback reseed would emit the same noise pattern
         // every buffer, which is audible as a tone).
@@ -1327,7 +1520,7 @@ impl PlaybackMixer {
                 move |data: &mut [f32], _| {
                     cb_counter_cb.fetch_add(1, Ordering::Relaxed);
                     let mut tracks = tracks_cb.lock();
-                    refresh_gains(&mut tracks, &gains_f32);
+                    refresh_gains(&mut tracks, &gains_f32, &stream_gains_f32);
                     let mut pulled = 0u64;
                     // Drift compensation thresholds (in samples at device rate).
                     // The overrun mark must stay under the producer-side cap
@@ -1396,7 +1589,7 @@ impl PlaybackMixer {
                 move |data: &mut [i16], _| {
                     cb_counter_cb.fetch_add(1, Ordering::Relaxed);
                     let mut tracks = tracks_cb.lock();
-                    refresh_gains(&mut tracks, &gains_i16);
+                    refresh_gains(&mut tracks, &gains_i16, &stream_gains_i16);
                     let overrun_threshold = (device_rate_cb as f64 * 0.15) as usize;
                     let underrun_threshold = (device_rate_cb as f64 * 0.05) as usize;
                     let mut counter = drift_counter_cb.load(Ordering::Relaxed);
@@ -1469,6 +1662,7 @@ impl PlaybackMixer {
             tracks,
             device_rate,
             gains: controls.gains.clone(),
+            stream_gains: controls.stream_gains.clone(),
         };
 
         Ok(Self {
@@ -1486,6 +1680,7 @@ async fn consume_remote_track(
     mut stream: NativeAudioStream,
     handle: PlaybackHandle,
     identity: String,
+    is_stream: bool,
 ) {
     let mut frames = 0u64;
     let mut sample_count = 0u64;
@@ -1500,7 +1695,7 @@ async fn consume_remote_track(
     // per remote participant that the allocator doesn't need to handle.
     let mut f32_buf: Vec<f32> = Vec::with_capacity(FRAME_SAMPLES * 4);
     let mut resampled_buf: Vec<f32> = Vec::with_capacity(FRAME_SAMPLES * 4);
-    let track_id = handle.add_track(identity);
+    let track_id = handle.add_track(identity, is_stream);
     let cap = (handle.device_rate / PLAYBACK_CAP_DIVISOR) as usize;
     while let Some(frame) = stream.next().await {
         if frames == 0 {

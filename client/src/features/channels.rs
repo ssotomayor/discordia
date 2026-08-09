@@ -792,10 +792,20 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                             } else if sharing { "Stop sharing your screen" } else { "Share your screen" },
                             onclick: move |_| {
                                 let now = !sharing;
-                                state.write().screen_sharing = now;
-                                                            if let Some(cid) = voice_channel {
-                                                                g_for_share.send(ClientMessage::SetScreenShare { channel_id: cid, sharing: now });
-                                                            }
+                                // Starting is NOT announced here. The capture
+                                // may still be cancelled at the picker, and
+                                // claiming to share before a track exists meant
+                                // the button lit up, the self-preview mounted,
+                                // and everyone in the channel saw "live" for a
+                                // share that never happened. The JS reports
+                                // `share-started` once a track is published;
+                                // stopping is immediate and stays here.
+                                if !now {
+                                    state.write().screen_sharing = false;
+                                    if let Some(cid) = voice_channel {
+                                        g_for_share.send(ClientMessage::SetScreenShare { channel_id: cid, sharing: false });
+                                    }
+                                }
 
                                                             if now {
                                                                 // Execute the user-gesture prompt + start helper from the

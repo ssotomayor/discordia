@@ -13,6 +13,7 @@
 use dioxus::prelude::*;
 use serde_json::Value;
 
+use crate::features::voice::{use_voice_tx, VoiceCmd};
 use crate::protocol::ClientMessage;
 use crate::state::{use_app_state, use_gateway};
 
@@ -192,6 +193,23 @@ window.dxScreen = window.dxScreen || (function () {
   // from here (the SCREEN_JS controller, evaluated by a fire-and-forget eval)
   // goes nowhere because no one is recv-ing on that channel. Same chain as
   // the activities bridge: postMessage → addEventListener → dioxus.send → recv.
+  // Did the user close the picker / deny permission, as opposed to the engine
+  // rejecting the constraints? Retrying with different constraints cannot help
+  // with a decision — it just asks again.
+  function isUserCancel(e) {
+    const n = e && e.name;
+    return n === 'NotAllowedError' || n === 'AbortError' || n === 'SecurityError';
+  }
+  // Give up on a share attempt and put everything back to idle: release any
+  // tracks we already acquired and tell Rust, which clears `screen_sharing`
+  // and notifies the server. Without this the app went on believing it was
+  // sharing after a cancel, and the self-preview sat on "Starting…" forever.
+  function abortShare(stream) {
+    if (stream) {
+      try { stream.getTracks().forEach(function (t) { t.stop(); }); } catch (e) {}
+    }
+    notifyShareEnded();
+  }
   function notifyShareEnded() {
     try { window.postMessage({ __dxf: 'screen-share-ended' }, '*'); } catch (e) { console.warn('[dxScreen] notifyShareEnded failed', e); }
   }
@@ -239,7 +257,12 @@ window.dxScreen = window.dxScreen || (function () {
       // Wait a short moment for room to exist; otherwise call startShare
       // immediately (it may still prompt or fail depending on environment).
       for (let i = 0; i < 20; i++) { if (room) break; await new Promise(function (r) { setTimeout(r, 100); }); }
-      try { await startShare(); } catch (e) { console.warn('[dxScreen] startShare fallback failed', e); }
+      try {
+        await startShare();
+      } catch (e) {
+        console.warn('[dxScreen] startShare fallback failed', e);
+        notifyShareEnded();
+      }
       return;
     }
 
@@ -270,13 +293,25 @@ window.dxScreen = window.dxScreen || (function () {
     // audio constraint — nested inside `audio` it is just an unknown (and
     // therefore ignored) constraint, which is where it was first put. Engines
     // that don't know it ignore it, so asking costs nothing.
-    const attempts = [
-      { video: wantVideo, audio: true, systemAudio: 'include' },
-      { video: wantVideo, audio: true },
-      { video: wantVideo, audio: false },
-      { video: true, audio: true },
-      { video: true },
-    ];
+    // `systemAudio: 'include'` asks for the whole machine's output when a
+    // screen is picked; `windowAudio: 'system'` is the equivalent hint for a
+    // *window* pick, which otherwise carries no audio at all. Both are hints —
+    // engines that don't know them ignore them, so asking costs nothing.
+    // `suppressLocalAudioPlayback: false` keeps the sharer hearing their own
+    // audio while it is being shared.
+    const richAudio = { suppressLocalAudioPlayback: false };
+    // When Rust captures system audio natively there is nothing for the engine
+    // to add — asking anyway would capture the machine twice and play it twice.
+    const attempts = quality.nativeAudio
+      ? [{ video: wantVideo, audio: false }, { video: true }]
+      : [
+          { video: wantVideo, audio: richAudio, systemAudio: 'include', windowAudio: 'system' },
+          { video: wantVideo, audio: true, systemAudio: 'include' },
+          { video: wantVideo, audio: true },
+          { video: wantVideo, audio: false },
+          { video: true, audio: true },
+          { video: true },
+        ];
     let stream = null;
     let audioAsked = false;
     for (let i = 0; i < attempts.length; i++) {
@@ -296,16 +331,27 @@ window.dxScreen = window.dxScreen || (function () {
         // (OverconstrainedError, NotFoundError, TypeError, etc).
         if (e && e.name === 'NotAllowedError') {
           console.warn('[dxScreen] getDisplayMedia cancelled or denied by user', e);
+        // Closing the picker is a DECISION, not a constraint problem, and the
+        // two arrive as the same rejected promise. Treating them alike is what
+        // made cancelling take five or six goes: each cancel was read as "those
+        // constraints failed" and immediately reopened the picker with the next
+        // set. It also explains the disappearing "Share audio" checkbox, since
+        // the fallbacks alternate between asking for audio and not
+        // (true, true, false, true, none) — so cancel #2 landed on the
+        // audio-less attempt, #3 on an audio one again, and so on.
+        if (isUserCancel(e)) {
+          console.log('[dxScreen] share cancelled by user');
+          abortShare(null);
           return;
         }
         if (i === attempts.length - 1) {
           console.warn('[dxScreen] getDisplayMedia denied or failed', e);
+          abortShare(null);
           return;
         }
       }
     }
-    if (!stream) return;
-    window._dxf_display_permission_granted = true;
+    if (!stream) { abortShare(null); return; }
 
     // Wait briefly for the room to connect (Server should have provided a
     // token and ScreenShareBridge will call dxScreen.connect). If the room
@@ -316,7 +362,7 @@ window.dxScreen = window.dxScreen || (function () {
     }
     if (!room) {
       console.warn('[dxScreen] room not connected yet, cannot start share');
-      try { stream.getTracks().forEach(function (t) { t.stop(); }); } catch (e) {}
+      abortShare(stream);
       return;
     }
 
@@ -329,7 +375,7 @@ window.dxScreen = window.dxScreen || (function () {
     const vt = stream.getVideoTracks()[0];
     if (!vt) {
       console.warn('[dxScreen] no video track in captured stream');
-      try { stream.getTracks().forEach(function (t) { t.stop(); }); } catch (e) {}
+      abortShare(stream);
       return;
     }
     // The browser fires `ended` on the MediaStreamTrack when the user closes
@@ -385,18 +431,31 @@ window.dxScreen = window.dxScreen || (function () {
       // `supported` = the engine accepted an audio request at all. That is the
       // difference between "your system can't do this" and "you didn't tick the
       // box / picked a window", which need different advice.
-      try {
-        window.postMessage(
-          { __dxf: 'share-audio', published: published, supported: audioAsked },
-          '*'
-        );
-      } catch (e2) {}
+      // Report that sharing has genuinely begun. Rust used to assume it had
+      // the moment the button was clicked, so the app — and everyone else in
+      // the channel — saw "live" while the picker was still open, and had to
+      // be walked back on every cancel.
+      try { window.postMessage({ __dxf: 'share-started' }, '*'); } catch (e2) {}
+      if (!quality.nativeAudio) {
+        try {
+          window.postMessage(
+            { __dxf: 'share-audio', published: published, supported: audioAsked },
+            '*'
+          );
+        } catch (e2) {}
+      }
     } catch (e) {
       // Fallback: try the SDK's built-in path. It may re-prompt and fail on a
       // first gesture-less invocation, but costs nothing to attempt.
       console.warn('[dxScreen] direct publishTrack failed, falling back to setScreenShareEnabled', e);
       try { stream.getTracks().forEach(function (t) { t.stop(); }); } catch (e2) {}
-      try { await startShare(); } catch (e2) { console.warn('[dxScreen] startShare fallback failed', e2); }
+      try {
+        await startShare();
+      } catch (e2) {
+        console.warn('[dxScreen] startShare fallback failed', e2);
+        // Both routes failed — don't leave the UI claiming to share.
+        notifyShareEnded();
+      }
     }
   }
   async function stopShare() {
@@ -441,6 +500,13 @@ fn quality_preset(id: &str) -> (u32, u32, u32, u32) {
     }
 }
 
+/// Whether the app captures system audio itself on this platform. When it
+/// does, the webview is asked for video only — otherwise the machine's audio
+/// would be captured twice and viewers would hear it doubled.
+pub fn native_system_audio() -> bool {
+    crate::sysaudio::supported()
+}
+
 pub fn share_js(on: bool, quality: &str) -> String {
     // When starting, call the user-gesture variant that prompts getDisplayMedia
     // before delegating to the LiveKit flow. When stopping, just stopShare.
@@ -448,8 +514,9 @@ pub fn share_js(on: bool, quality: &str) -> String {
         return format!("{SCREEN_JS}\nwindow.dxScreen.stopShare();");
     }
     let (w, h, fps, bitrate) = quality_preset(quality);
+    let native_audio = native_system_audio();
     format!(
-        "{SCREEN_JS}\nwindow.dxScreen.requestAndStartShare({{width:{w},height:{h},fps:{fps},bitrate:{bitrate}}});"
+        "{SCREEN_JS}\nwindow.dxScreen.requestAndStartShare({{width:{w},height:{h},fps:{fps},bitrate:{bitrate},nativeAudio:{native_audio}}});"
     )
 }
 
@@ -535,22 +602,12 @@ pub fn ScreenShareBridge() -> Element {
         }
     });
 
-    // If both a token and the user's local `screen_sharing` flag are set,
-    // initiate the user-gesture sharing flow. This ensures the room is
-    // connected (dxScreen.connect ran above) before prompting for capture.
-    let mut last_start = use_signal(|| false);
-    use_effect(move || {
-        let t = token();
-        let sharing = state.read().screen_sharing;
-        if (t.is_some() && sharing) != *last_start.peek() {
-            if t.is_some() && sharing {
-                // Trigger the user-gesture request which runs getDisplayMedia
-                // and then starts the LiveKit publish. The call is idempotent.
-                let _ = document::eval(&format!("{SCREEN_JS}\nwindow.dxScreen.requestAndStartShare();"));
-            }
-            last_start.set(t.is_some() && sharing);
-        }
-    });
+    // There is deliberately no effect here re-triggering the share when the
+    // token arrives. The share button already calls `requestAndStartShare`
+    // inside the click (which it must, for the user-gesture grant) and that
+    // call waits for the room itself. A second trigger from here raced the
+    // first, dropped the quality preset (it passed no argument), and gave the
+    // flow a way to reopen the picker on its own.
 
     // Listen for the JS-side `screen-share-ended` signal. The browser fires
     // `ended` on the captured MediaStreamTrack when the user closes the shared
@@ -560,16 +617,18 @@ pub fn ScreenShareBridge() -> Element {
     // Guards against double-wiring across hot reloads (same pattern as the
     // activities bridge).
     let gateway_end = gateway.clone();
+    let voice = use_voice_tx();
     use_future(move || {
         let mut state = state.clone();
         let gateway = gateway_end.clone();
+        let voice = voice.clone();
         async move {
             let bridge_js = r#"
             if (!window.__dxfShareEndWired) {
               window.__dxfShareEndWired = true;
               window.addEventListener('message', function (e) {
                 var d = e.data;
-                if (d && (d.__dxf === 'screen-share-ended' || d.__dxf === 'share-audio' || d.__dxf === 'stream-audio')) {
+                if (d && (d.__dxf === 'screen-share-ended' || d.__dxf === 'share-started' || d.__dxf === 'share-audio' || d.__dxf === 'stream-audio')) {
                   try { dioxus.send(d); } catch (err) {}
                 }
               });
@@ -579,6 +638,22 @@ pub fn ScreenShareBridge() -> Element {
             loop {
                 match eval.recv::<Value>().await {
                     Ok(msg) => match msg.get("__dxf").and_then(|v| v.as_str()) {
+                        // Publishing succeeded — only now is this a share.
+                        Some("share-started") => {
+                            let cid = state.read().voice.channel_id;
+                            state.write().screen_sharing = true;
+                            if let Some(c) = cid {
+                                gateway.send(ClientMessage::SetScreenShare {
+                                    channel_id: c,
+                                    sharing: true,
+                                });
+                            }
+                            // Where we capture system audio ourselves, it rides
+                            // along on the voice room as a second track.
+                            if native_system_audio() {
+                                voice.send(VoiceCmd::SetSystemAudio { enabled: true });
+                            }
+                        }
                         Some("screen-share-ended") => {
                             let cid = state.read().voice.channel_id;
                             state.write().screen_sharing = false;
@@ -588,6 +663,7 @@ pub fn ScreenShareBridge() -> Element {
                                     sharing: false,
                                 });
                             }
+                            voice.send(VoiceCmd::SetSystemAudio { enabled: false });
                         }
                         // Our own share: did the platform give us any audio to
                         // send? Silence here is a platform limit, not a bug we
@@ -794,6 +870,33 @@ pub fn ScreenWatchWindow() -> Element {
         }
     });
 
+    // Stream audio follows the watch window. The mixer defaults these tracks
+    // to silent, so this is what turns them on — and it re-runs when the
+    // volume or mute changes, keeping one rule for "how loud is this stream".
+    let watching = use_memo(move || state.read().screen_viewing.clone());
+    let stream_levels = use_memo(move || {
+        let s = state.read();
+        (s.stream_volumes.clone(), s.stream_muted.clone())
+    });
+    let voice_for_stream = use_voice_tx();
+    use_effect(move || {
+        let watched = watching();
+        let _ = stream_levels();
+        let s = state.read();
+        // Every known sharer gets an explicit gain: whoever we're watching at
+        // their chosen level, everyone else at zero.
+        let mut seen: Vec<String> = s.screen_shares.values().flatten().cloned().collect();
+        if let Some(w) = watched.clone() {
+            if !seen.contains(&w) {
+                seen.push(w);
+            }
+        }
+        for pk in seen {
+            let gain = if Some(&pk) == watched.as_ref() { s.stream_gain_of(&pk) } else { 0.0 };
+            voice_for_stream.send(VoiceCmd::SetStreamVolume { pubkey: pk, gain });
+        }
+    });
+
     // Follow the output device chosen in audio settings.
     let output_device = use_memo(move || state.read().selected_output_device.clone());
     use_effect(move || {
@@ -822,7 +925,14 @@ pub fn ScreenWatchWindow() -> Element {
     let stream_muted = state.read().stream_muted.contains(&pk);
     // A video-only share has nothing for these to act on. Showing a live-looking
     // slider over silence is how "the volume control does nothing" starts.
-    let has_audio = state.read().stream_has_audio.contains(&pk);
+    //
+    // Two ways a stream can have sound: the webview reported an audio track, or
+    // the sharer is capturing natively and it arrives on the voice room instead
+    // — where the JS never sees it, so it can't report anything.
+    let has_audio = {
+        let s = state.read();
+        s.stream_has_audio.contains(&pk) || s.stream_native_audio.contains(&pk)
+    };
     let pk_vol = pk.clone();
     let pk_mute = pk.clone();
     let apply_stream = move |vol: u32, muted: bool| {

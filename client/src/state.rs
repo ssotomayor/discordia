@@ -189,6 +189,10 @@ pub struct AppState {
     pub stream_volumes: HashMap<String, u32>,
     /// Screen-share streams muted locally, keyed by sharer pubkey.
     pub stream_muted: HashSet<String>,
+    /// Sharers whose screen audio arrives natively (a `ScreenshareAudio` track
+    /// on the voice room) rather than through the webview. The JS layer never
+    /// sees those, so it cannot report them — the voice service does.
+    pub stream_native_audio: HashSet<String>,
     /// Sharers whose stream actually carries an audio track, as reported by the
     /// webview when we attach it. A share can legitimately be video-only (the
     /// platform may not let the app capture system audio at all), and a volume
@@ -269,6 +273,7 @@ impl AppState {
             stream_volumes: HashMap::new(),
             stream_muted: HashSet::new(),
             stream_has_audio: HashSet::new(),
+            stream_native_audio: HashSet::new(),
             host_info: None,
             integrations: HashMap::new(),
             guild_emojis: HashMap::new(),

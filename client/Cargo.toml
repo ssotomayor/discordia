@@ -86,3 +86,19 @@ web = ["dioxus/web"]
 [[bin]]
 name = "Discordia"
 path = "src/main.rs"
+
+# Native system-audio capture for screen sharing (see src/sysaudio/). macOS
+# only for now: WebKit's getDisplayMedia is video-only, so a macOS share is
+# silent unless we capture the machine's output ourselves. objc2 rather than the
+# `screencapturekit` crate deliberately — that one builds a Swift component and
+# would put the Swift runtime (plus an extra rpath) in the shipped app.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-screen-capture-kit = "0.3"
+objc2-core-media = "0.3"
+objc2-core-audio-types = "0.3"
+objc2-core-foundation = "0.3"
+block2 = "0.6"
+dispatch2 = "0.3"
+
