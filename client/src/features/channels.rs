@@ -788,7 +788,7 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                 "w-7 h-7 flex items-center justify-center rounded text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors"
                             },
                             title: if !screen_capture_available {
-                                "Screen sharing unavailable in this build (embedded webview lacks screen capture). Install WebView2 or use the browser."
+                                "Screen capture isn't available in this webview — pressing this will explain why."
                             } else if sharing { "Stop sharing your screen" } else { "Share your screen" },
                             onclick: move |_| {
                                 let now = !sharing;

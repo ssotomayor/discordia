@@ -18,14 +18,20 @@ use dioxus::LaunchBuilder;
 use dioxus::desktop::{Config, WindowBuilder, tao::dpi::LogicalSize, tao::window::Icon};
 
 fn main() {
-    // WebView2 (Chromium) treats our custom `dioxus://` asset origin as
-    // insecure, which hides navigator.mediaDevices (getDisplayMedia) needed
-    // for screen sharing. Explicitly allowlist it as secure.
+    // WebView2 (Chromium) treats our asset origin as insecure, and an insecure
+    // context hides `navigator.mediaDevices` entirely — which is what stops
+    // screen sharing working on Windows. Allowlist the origin as secure.
+    //
+    // Both spellings are listed on purpose. Dioxus serves Windows from
+    // `http://dioxus.index.html/` (see dioxus-desktop's BASE_URI), but Chromium
+    // parses this flag as a list of *origins*, where a trailing slash may not
+    // match. Passing both costs nothing and removes the guess.
     #[cfg(target_os = "windows")]
     unsafe {
         std::env::set_var(
             "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
-            "--unsafely-treat-insecure-origin-as-secure=http://dioxus.index.html/",
+            "--unsafely-treat-insecure-origin-as-secure=\
+             http://dioxus.index.html,http://dioxus.index.html/",
         );
     }
 

@@ -254,6 +254,14 @@ window.dxScreen = window.dxScreen || (function () {
     // fallback for embedded webviews without mediaDevices.
     if (!(navigator && navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia)) {
       console.warn('[dxScreen] navigator.mediaDevices.getDisplayMedia not available; falling back to startShare');
+      // Tell Rust too. This branch used to warn to a console nobody has open,
+      // so pressing Share appeared to do nothing at all.
+      try {
+        window.postMessage(
+          { __dxf: 'share-unavailable', secure: !!window.isSecureContext },
+          '*'
+        );
+      } catch (e) {}
       // Wait a short moment for room to exist; otherwise call startShare
       // immediately (it may still prompt or fail depending on environment).
       for (let i = 0; i < 20; i++) { if (room) break; await new Promise(function (r) { setTimeout(r, 100); }); }
@@ -618,7 +626,7 @@ pub fn ScreenShareBridge() -> Element {
               window.__dxfShareEndWired = true;
               window.addEventListener('message', function (e) {
                 var d = e.data;
-                if (d && (d.__dxf === 'screen-share-ended' || d.__dxf === 'share-started' || d.__dxf === 'share-audio' || d.__dxf === 'stream-audio')) {
+                if (d && (d.__dxf === 'screen-share-ended' || d.__dxf === 'share-started' || d.__dxf === 'share-audio' || d.__dxf === 'share-unavailable' || d.__dxf === 'stream-audio')) {
                   try { dioxus.send(d); } catch (err) {}
                 }
               });
@@ -643,6 +651,22 @@ pub fn ScreenShareBridge() -> Element {
                             if native_system_audio() {
                                 voice.send(VoiceCmd::SetSystemAudio { enabled: true });
                             }
+                        }
+                        // The click found no capture API at all.
+                        Some("share-unavailable") => {
+                            let secure =
+                                msg.get("secure").and_then(|v| v.as_bool()).unwrap_or(false);
+                            eprintln!("[screen] share unavailable (secure_context={secure})");
+                            let mut w = state.write();
+                            w.screen_capture_available = false;
+                            w.screen_sharing = false;
+                            w.error_toast = Some(if secure {
+                                "This webview has no screen-capture support.".into()
+                            } else {
+                                "Screen sharing can't start: this window isn't a secure context, \
+                                 so the capture API is hidden. Please report this."
+                                    .into()
+                            });
                         }
                         Some("screen-share-ended") => {
                             let cid = state.read().voice.channel_id;
