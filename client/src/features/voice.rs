@@ -143,6 +143,15 @@ pub enum VoiceCmd {
     SetSystemAudio {
         enabled: bool,
     },
+    /// Join or leave the screen-share room as an audio-only subscriber, so a
+    /// share captured by someone else's *webview* still plays through our
+    /// chosen output device rather than the webview's.
+    ///
+    /// `None` disconnects. Sent when the set of other people sharing in our
+    /// voice channel becomes non-empty / empty.
+    SetScreenAudio {
+        room: Option<(String, String)>,
+    },
     /// Set the local playback gain for a participant's *screen-share* audio,
     /// separately from their voice. 0.0 while you aren't watching them, which
     /// is the default — stream audio follows the watch window.
@@ -213,7 +222,7 @@ async fn service_loop(
                 last_connect = Some((livekit_url.clone(), token.clone(), channel_id));
                 if let Some(prev) = session.take() {
                     eprintln!("[voice] shutting down previous session");
-                    prev.shutdown().await;
+                    prev.shutdown(state).await;
                 }
                 match ActiveVoice::connect(
                     &livekit_url,
@@ -226,7 +235,14 @@ async fn service_loop(
                 {
                     Ok(active) => {
                         eprintln!("[voice] connected ok");
-                        state.write().voice.phase = VoicePhase::Connected;
+                        {
+                            let mut s = state.write();
+                            s.voice.phase = VoicePhase::Connected;
+                            // A fresh session owns none of what the old one was
+                            // told; whoever has to re-issue those commands
+                            // watches this.
+                            s.voice_session_epoch += 1;
+                        }
                         session = Some(active);
                     }
                     Err(e) => {
@@ -241,7 +257,7 @@ async fn service_loop(
             VoiceCmd::Disconnect => {
                 eprintln!("[voice] Disconnect");
                 if let Some(prev) = session.take() {
-                    prev.shutdown().await;
+                    prev.shutdown(state).await;
                 }
                 let mut s = state.write();
                 s.voice.phase = VoicePhase::Idle;
@@ -289,7 +305,7 @@ async fn service_loop(
                     if let Some((ref url, ref tok, cid)) = last_connect.clone() {
                         eprintln!("[voice] Reconnecting to apply device changes");
                         if let Some(prev) = session.take() {
-                            prev.shutdown().await;
+                            prev.shutdown(state).await;
                         }
                         match ActiveVoice::connect(url, tok, cid, state.clone(), controls.clone())
                             .await
@@ -300,6 +316,7 @@ async fn service_loop(
                                 {
                                     let mut s = state.write();
                                     s.voice.phase = VoicePhase::Connected;
+                                    s.voice_session_epoch += 1;
                                 }
                                 session = Some(active);
                             }
@@ -356,6 +373,13 @@ async fn service_loop(
                     eprintln!("[voice] SetSystemAudio ignored — no voice session");
                 }
             }
+            VoiceCmd::SetScreenAudio { room } => {
+                if let Some(active) = session.as_mut() {
+                    active.set_screen_audio(room, state.clone()).await;
+                } else if room.is_some() {
+                    eprintln!("[voice] SetScreenAudio ignored — no voice session");
+                }
+            }
             VoiceCmd::SetStreamVolume { pubkey, gain } => {
                 controls.stream_gains.lock().insert(pubkey, gain.clamp(0.0, 2.0));
             }
@@ -381,6 +405,21 @@ struct ActiveVoice {
     event_task: tokio::task::JoinHandle<()>,
     /// Live system-audio publication, when sharing a screen with sound.
     system_audio: Option<SystemAudioTrack>,
+    /// Audio-only connection to the screen-share room, live while someone else
+    /// in the channel is sharing.
+    screen_audio: Option<ScreenAudioRoom>,
+    /// Kept so the screen-audio room can feed the same mixer as voice — which
+    /// is the entire point: one output device, one set of gains.
+    mixer: PlaybackHandle,
+    /// Our own LiveKit identity, so the screen-audio room can skip our own
+    /// share. Read once here because the event task cannot touch a Signal.
+    ///
+    /// `Option` rather than a defaulted empty string: a pubkey is never
+    /// legitimately empty, so `""` could only mean "there was no `self_user`" —
+    /// and silently comparing identities against it would match nobody, leaving
+    /// the sharer subscribed to their own screen audio. Absence is a reason to
+    /// refuse the room, not to guess.
+    self_pubkey: Option<String>,
     /// Mirrors the mic meter into `AppState`. Cancelled on shutdown — left
     /// running, one accumulates per reconnect and they fight over the same
     /// `mic_level` / `speaking` fields.
@@ -485,9 +524,9 @@ impl ActiveVoice {
                 while let Some((id, present)) = native_audio_rx.recv().await {
                     let mut s = state.write();
                     if present {
-                        s.stream_native_audio.insert(id);
+                        s.stream_has_audio.insert(id);
                     } else {
-                        s.stream_native_audio.remove(&id);
+                        s.stream_has_audio.remove(&id);
                     }
                 }
             });
@@ -572,6 +611,8 @@ impl ActiveVoice {
             }
         });
 
+        let self_pubkey = state.peek().self_user.as_ref().map(|u| u.pubkey.clone());
+
         Ok(Self {
             room,
             source,
@@ -581,6 +622,9 @@ impl ActiveVoice {
             event_task,
             meter_task,
             system_audio: None,
+            screen_audio: None,
+            mixer: mixer_handle,
+            self_pubkey,
         })
     }
 
@@ -690,6 +734,73 @@ impl ActiveVoice {
         Ok(())
     }
 
+    /// Join (or leave) the screen-share room as an audio-only subscriber.
+    ///
+    /// A share captured by the *webview* publishes its audio into the
+    /// `screen-…` room, where the JS client used to play it through an HTML
+    /// element — which follows the app's chosen output device only where
+    /// `setSinkId` exists. Subscribing to it here instead puts that audio on the
+    /// same cpal mixer as voice, so one device setting governs both. The
+    /// per-sharer volume control needs no changes: the mixer is where it
+    /// already lived.
+    async fn set_screen_audio(
+        &mut self,
+        room: Option<(String, String)>,
+        mut state: Signal<AppState>,
+    ) {
+        let Some(key) = room else {
+            if let Some(prev) = self.screen_audio.take() {
+                prev.shutdown().await;
+                // Nobody is publishing stream audio to us any more; the volume
+                // control should stop claiming otherwise.
+                state.write().stream_has_audio.clear();
+                eprintln!("[voice] screen audio room left");
+            }
+            return;
+        };
+        // Switch rooms when the token changes rather than keeping the old one.
+        // Returning early on "already connected" made a token change vanish
+        // without a trace, which is only invisible for as long as every channel
+        // switch happens to mint a fresh session.
+        match &self.screen_audio {
+            Some(existing) if existing.key == key => return,
+            Some(_) => {
+                if let Some(prev) = self.screen_audio.take() {
+                    prev.shutdown().await;
+                }
+                state.write().stream_has_audio.clear();
+                eprintln!("[voice] screen audio room changed, reconnecting");
+            }
+            None => {}
+        }
+        // Without our own identity there is nothing to exclude ourselves by, and
+        // the room would feed this machine's own screen audio back to it. Refuse
+        // rather than join on a guess.
+        let Some(self_pubkey) = self.self_pubkey.clone() else {
+            eprintln!("[voice] screen audio skipped — no local identity yet");
+            state.write().error_toast =
+                Some("Couldn't join the stream's audio: this session has no identity yet.".into());
+            return;
+        };
+        let (url, token) = key.clone();
+        match ScreenAudioRoom::connect(&url, &token, self.mixer.clone(), self_pubkey, state, key)
+            .await
+        {
+            Ok(r) => {
+                self.screen_audio = Some(r);
+                eprintln!("[voice] screen audio room joined");
+            }
+            // The webview is no longer playing this audio, so a failure here is
+            // silence, not a downgrade — say so rather than let the viewer
+            // wonder why a live-looking volume slider does nothing.
+            Err(e) => {
+                eprintln!("[voice] screen audio room failed: {e}");
+                state.write().error_toast =
+                    Some(format!("Couldn't join the stream's audio: {e}"));
+            }
+        }
+    }
+
     /// Swap libwebrtc's noise suppressor in or out while the call is live.
     fn set_apm_denoise(&self, deepfilter_on: bool) {
         self.source.set_audio_options(apm_options(deepfilter_on));
@@ -702,12 +813,22 @@ impl ActiveVoice {
         self.local_audio.rtc_track().set_enabled(!muted);
     }
 
-    async fn shutdown(self) {
+    async fn shutdown(self, mut state: Signal<AppState>) {
         self.event_task.abort();
         self.meter_task.cancel();
         // Stop capturing before leaving, so no frames are published into a
         // room that is on its way out.
         self.mic.stop();
+        if let Some(sa) = self.screen_audio {
+            sa.shutdown().await;
+        }
+        // Cleared here rather than left to the `SetScreenAudio { room: None }`
+        // the bridge sends on leaving voice: that command arrives *after*
+        // `Disconnect` has already taken the session, so it lands in the
+        // no-session branch and clears nothing. A stale entry survives the
+        // rejoin and makes the volume control look live over a stream that
+        // ended. Doing it here makes it independent of message ordering.
+        state.write().stream_has_audio.clear();
         // Actually tell the SFU we are leaving.
         //
         // This used to be `drop(self.room)` with a comment claiming the drop
@@ -727,6 +848,142 @@ impl ActiveVoice {
             Err(_) => eprintln!("[voice] room close timed out, dropping anyway"),
         }
     }
+}
+
+/// Audio-only subscriber to the screen-share room.
+///
+/// Publishes nothing. It exists so screen audio captured by someone else's
+/// webview reaches our cpal mixer instead of theirs — see
+/// `ActiveVoice::set_screen_audio`.
+struct ScreenAudioRoom {
+    room: Arc<Room>,
+    event_task: tokio::task::JoinHandle<()>,
+    /// The `(url, token)` this room was joined with, so a later command carrying
+    /// a different one is recognised as a different room instead of ignored.
+    key: (String, String),
+}
+
+impl ScreenAudioRoom {
+    async fn connect(
+        url: &str,
+        token: &str,
+        mixer: PlaybackHandle,
+        self_pubkey: String,
+        state: Signal<AppState>,
+        key: (String, String),
+    ) -> Result<Self, String> {
+        // Built by mutation rather than a struct literal: `RoomOptions` is
+        // `#[non_exhaustive]`.
+        let mut options = RoomOptions::default();
+        // Opt in per track. Subscribing to everything would pull the screen
+        // *video* down as well — the exact cost the separate screen room exists
+        // to keep away from native peers.
+        options.auto_subscribe = false;
+        let (room, mut events) = Room::connect(url, token, options)
+            .await
+            .map_err(|e| format!("livekit connect: {e}"))?;
+        let room = Arc::new(room);
+
+        // Same bridge shape as the voice room's: the event task is `spawn`ed and
+        // so must be Send, which a Dioxus Signal is not.
+        let (has_tx, mut has_rx) = unbounded_channel::<(String, bool)>();
+        {
+            let mut state = state;
+            dioxus::prelude::spawn(async move {
+                while let Some((id, present)) = has_rx.recv().await {
+                    let mut s = state.write();
+                    if present {
+                        s.stream_has_audio.insert(id);
+                    } else {
+                        s.stream_has_audio.remove(&id);
+                    }
+                }
+            });
+        }
+
+        // Anyone already sharing when we arrive. We connect *because* someone is
+        // sharing, so this is the common case, not the edge one — `TrackPublished`
+        // only fires for publications that happen after the join.
+        for (_, participant) in room.remote_participants() {
+            for (_, publication) in participant.track_publications() {
+                if wanted(&publication.source(), &participant.identity().0, &self_pubkey) {
+                    publication.set_subscribed(true);
+                }
+            }
+        }
+
+        let event_task = tokio::spawn({
+            let self_pubkey = self_pubkey.clone();
+            async move {
+                while let Some(ev) = events.recv().await {
+                    match ev {
+                        RoomEvent::TrackPublished { publication, participant } => {
+                            if wanted(
+                                &publication.source(),
+                                &participant.identity().0,
+                                &self_pubkey,
+                            ) {
+                                publication.set_subscribed(true);
+                            }
+                        }
+                        RoomEvent::TrackSubscribed { track, participant, .. } => {
+                            if let RemoteTrack::Audio(audio) = track {
+                                let identity = participant.identity().0.clone();
+                                let stream = NativeAudioStream::new(
+                                    audio.rtc_track(),
+                                    SAMPLE_RATE as i32,
+                                    CHANNELS as i32,
+                                );
+                                let _ = has_tx.send((identity.clone(), true));
+                                // `is_stream: true` — this is program audio, so
+                                // it takes the stream gains, not the voice ones.
+                                tokio::spawn(consume_remote_track(
+                                    stream,
+                                    mixer.clone(),
+                                    identity,
+                                    true,
+                                ));
+                            }
+                        }
+                        RoomEvent::TrackUnsubscribed { participant, .. }
+                        | RoomEvent::TrackUnpublished { participant, .. } => {
+                            let _ = has_tx.send((participant.identity().0.clone(), false));
+                        }
+                        RoomEvent::Disconnected { reason } => {
+                            eprintln!("[voice] screen audio room disconnected: {reason:?}");
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        });
+
+        Ok(Self {
+            room,
+            event_task,
+            key,
+        })
+    }
+
+    async fn shutdown(self) {
+        self.event_task.abort();
+        // Same reasoning as `ActiveVoice::shutdown`: `Room` has no `Drop` impl,
+        // so leaving without `close()` would hold this subscriber on the SFU
+        // until its own timeout instead of freeing the slot immediately.
+        match tokio::time::timeout(ROOM_CLOSE_TIMEOUT, self.room.close()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => eprintln!("[voice] screen audio room close failed: {e}"),
+            Err(_) => eprintln!("[voice] screen audio room close timed out, dropping anyway"),
+        }
+    }
+}
+
+/// Screen *audio* from somebody else. Our own share is excluded deliberately:
+/// the webview publishes it under our bare pubkey while this connection holds a
+/// suffixed identity, so LiveKit sees two different participants and would hand
+/// our own machine's sound straight back to us.
+fn wanted(source: &TrackSource, publisher: &str, self_pubkey: &str) -> bool {
+    *source == TrackSource::ScreenshareAudio && publisher != self_pubkey
 }
 
 // ---------------------------------------------------------------------------

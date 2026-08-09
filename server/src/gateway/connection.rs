@@ -818,10 +818,16 @@ pub async fn handle_connection(
                                     },
                                 )
                                 .await;
-                                // Also hand over a screen-share token (separate
-                                // room) for the webview JS client.
+                                // Also hand over screen-share tokens (separate
+                                // room): one for the webview JS client, which
+                                // renders the video, and one for the native
+                                // client, which subscribes to the audio so it
+                                // plays through the same device as voice. Two
+                                // tokens because they join under different
+                                // identities — LiveKit permits only one
+                                // connection per identity per room.
                                 let screen_name = format!("{} (screen)", u.username);
-                                if let Ok(screen_token) = livekit::screen_token(
+                                if let Ok(screen_token) = livekit::screen_token_as(
                                     &ctx.livekit,
                                     &u.pubkey,
                                     &screen_name,
@@ -829,12 +835,21 @@ pub async fn handle_connection(
                                 )
                                 .await
                                 {
+                                    let audio_token = livekit::screen_token_as(
+                                        &ctx.livekit,
+                                        &livekit::screen_audio_identity(&u.pubkey),
+                                        &screen_name,
+                                        channel_id,
+                                    )
+                                    .await
+                                    .unwrap_or_default();
                                     let _ = send(
                                         &mut ws_tx,
                                         &ServerMessage::ScreenToken {
                                             channel_id,
                                             livekit_url,
                                             token: screen_token,
+                                            audio_token,
                                         },
                                     )
                                     .await;

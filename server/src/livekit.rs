@@ -149,10 +149,20 @@ pub async fn voice_token(
     }
 }
 
-/// Mint a screen-share token, delegating like `voice_token`.
-pub async fn screen_token(
+/// The screen-share room is joined twice by the same user: once by the webview
+/// (video) and once by the native client (audio). LiveKit evicts a duplicate
+/// identity, so the second connection needs its own — hence this suffix.
+///
+/// It is only ever an identity, never an authorisation: both tokens carry the
+/// same grants for the same room.
+pub fn screen_audio_identity(user_pubkey: &str) -> String {
+    format!("{user_pubkey}#audio")
+}
+
+/// Mint a screen-share token under an explicit identity.
+pub async fn screen_token_as(
     cfg: &LiveKitConfig,
-    user_pubkey: &str,
+    identity: &str,
     username: &str,
     channel_id: Id,
 ) -> Result<String, String> {
@@ -160,12 +170,12 @@ pub async fn screen_token(
         Some(m) => {
             m.mint(MintRequest {
                 room: screen_room_name(channel_id),
-                identity: user_pubkey.to_string(),
+                identity: identity.to_string(),
                 name: username.to_string(),
             })
             .await
         }
-        None => mint_screen_token(cfg, user_pubkey, username, channel_id),
+        None => mint_screen_token(cfg, identity, username, channel_id),
     }
 }
 
@@ -173,25 +183,33 @@ pub fn room_name(channel_id: Id) -> String {
     format!("voice-{channel_id}")
 }
 
-/// Screen sharing rides in a SEPARATE room from voice so native-audio clients
-/// (in `voice-…`) never auto-subscribe to — and waste bandwidth decoding — the
-/// screen video, which only the webview JS clients render.
+/// Screen sharing rides in a SEPARATE room from voice so peers in `voice-…`
+/// never auto-subscribe to — and waste bandwidth decoding — the screen video,
+/// which only the webview JS clients render.
+///
+/// Native clients do join this room, but audio-only and opt-in per track
+/// (`auto_subscribe: false`), so stream sound plays through the same output
+/// device as voice without any video being pulled down. That means one user
+/// holds two connections here, under two identities — see
+/// `screen_audio_identity`.
 pub fn screen_room_name(channel_id: Id) -> String {
     format!("screen-{channel_id}")
 }
 
-/// Mint a token for the webview JS client to join the screen-share room. The
-/// identity stays the user's pubkey (fine — it's a different room from the
-/// native-audio one, and identities only need to be unique per room).
+/// Mint a token to join the screen-share room under `identity`.
+///
+/// `identity` is a parameter rather than the pubkey because the same user joins
+/// this room twice — webview for video, native client for audio — and LiveKit
+/// allows only one connection per identity. See `screen_audio_identity`.
 pub fn mint_screen_token(
     cfg: &LiveKitConfig,
-    user_pubkey: &str,
+    identity: &str,
     username: &str,
     channel_id: Id,
 ) -> Result<String, String> {
     let room = screen_room_name(channel_id);
     AccessToken::with_api_key(&cfg.api_key, &cfg.api_secret)
-        .with_identity(user_pubkey)
+        .with_identity(identity)
         .with_name(username)
         .with_grants(VideoGrants {
             room_join: true,

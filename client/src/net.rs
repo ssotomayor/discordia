@@ -723,6 +723,7 @@ fn apply(
                     let _ = voice_tx.send(VoiceCmd::Disconnect);
                     // Leaving voice also tears down the screen-share room.
                     s.screen_token = None;
+                    s.screen_audio_token = None;
                     s.screen_sharing = false;
                     s.screen_viewing = None;
                 }
@@ -746,10 +747,14 @@ fn apply(
         ServerMessage::ScreenToken {
             livekit_url,
             token,
+            audio_token,
             ..
         } => {
             // Hand the JS screen bridge what it needs to join the screen room.
-            s.screen_token = Some((livekit_url, token));
+            s.screen_token = Some((livekit_url.clone(), token));
+            // Empty from a server that predates the native audio path; leaving
+            // this None is what keeps the webview playing stream audio there.
+            s.screen_audio_token = (!audio_token.is_empty()).then_some((livekit_url, audio_token));
         }
         ServerMessage::Error { message } => {
             tracing::warn!(server_error = %message);
