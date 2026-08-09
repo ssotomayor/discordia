@@ -49,28 +49,42 @@ window.dxScreen = window.dxScreen || (function () {
   //
   // All listener-side: it scales what THIS machine plays. The broadcaster and
   // every other viewer are untouched.
-  // Set by Rust when it has a token for the screen room and is subscribing to
-  // the audio itself. Everything below it guards is the fallback path, kept for
-  // servers that don't send that token.
+  // Set by Rust when the native screen-audio room is actually joined — not
+  // merely when a token for it exists. Everything this guards is the fallback
+  // path: it runs against older servers, and again whenever the native join
+  // fails or its room drops, so a failure degrades to playback here rather than
+  // to nobody playing at all.
   let nativeStreamAudio = false;
   function setNativeStreamAudio(on) {
+    const was = nativeStreamAudio;
     nativeStreamAudio = !!on;
-    if (nativeStreamAudio) { detachAudio(); dropAudioSubscriptions(); }
+    if (was === nativeStreamAudio) return;
+    if (nativeStreamAudio) { detachAudio(); applyAudioSubscriptions(); }
+    // Handing playback back: resubscribe, and pick up whoever is being watched
+    // right now — the track may have arrived while we were standing down, in
+    // which case no future event would attach it.
+    else { applyAudioSubscriptions(); attachWatched(); }
   }
-  // In native mode this room still auto-subscribes to the screen-audio track it
-  // no longer plays, so every viewer downloads that stream twice. Unsubscribing
-  // is per-publication because the room is shared with the video, which we do
-  // want. Called both for tracks already present when native mode turns on and
-  // for ones published afterwards.
-  function dropAudioSubscriptions() {
+  // In native mode this room would still auto-subscribe to the screen-audio
+  // track it no longer plays, so every viewer downloads that stream twice.
+  // Per-publication because the room is shared with the video, which we do want.
+  // Runs for tracks already present when the mode flips and for ones published
+  // afterwards.
+  function applyAudioSubscriptions() {
     if (!room || !room.remoteParticipants) return;
     room.remoteParticipants.forEach(function (p) {
-      p.trackPublications.forEach(unsubscribeIfAudio);
+      p.trackPublications.forEach(applyAudioSubscription);
     });
   }
-  function unsubscribeIfAudio(pub) {
-    if (!nativeStreamAudio || !pub || pub.kind !== 'audio') return;
-    try { pub.setSubscribed(false); } catch (e) { console.warn('[dxScreen] unsubscribe audio failed', e); }
+  function applyAudioSubscription(pub) {
+    if (!pub || pub.kind !== 'audio') return;
+    try { pub.setSubscribed(!nativeStreamAudio); } catch (e) { console.warn('[dxScreen] audio subscribe toggle failed', e); }
+  }
+  // Attach the stream of whoever the watch window currently points at.
+  function attachWatched() {
+    const c = document.getElementById('screenshare-viewer');
+    const id = c && c.getAttribute('data-identity');
+    if (id) attachAudio(id);
   }
   let audioEl = null;       // element the current stream is attached to
   let audioIdentity = null; // whose stream is currently wired up
@@ -176,7 +190,7 @@ window.dxScreen = window.dxScreen || (function () {
     // Fires before the SDK's own auto-subscribe settles, so a screen-audio
     // track published while native mode is on is dropped rather than downloaded.
     room.on(lk.RoomEvent.TrackPublished, function (pub) {
-      unsubscribeIfAudio(pub);
+      applyAudioSubscription(pub);
     });
     room.on(lk.RoomEvent.TrackSubscribed, function (track, pub, participant) {
       if (track.kind === 'audio') {
@@ -230,7 +244,7 @@ window.dxScreen = window.dxScreen || (function () {
     // Native mode is usually decided before this room exists, so the sweep that
     // setNativeStreamAudio would have run found nothing to sweep. Anyone already
     // publishing when we arrive is caught here.
-    dropAudioSubscriptions();
+    applyAudioSubscriptions();
   }
   // Notify the Rust side that local screen sharing has ended (track stopped
   // or unpublished by the browser). We must use window.postMessage (NOT
@@ -699,10 +713,17 @@ pub fn ScreenShareBridge() -> Element {
     });
 
     // Who plays stream audio: the native mixer (so it follows the output device
-    // like voice) or the webview (fallback, when the server sent no token).
-    let native_audio_token = use_memo(move || state.read().screen_audio_token.is_some());
+    // like voice) or the webview.
+    //
+    // Keyed on the room being *joined*, not on a token existing. Standing the
+    // webview down on the token alone meant a join that failed — or a room that
+    // later dropped — left nobody playing: silence, with a volume slider that
+    // still looked live and no way back short of rejoining voice. On this, the
+    // webview picks the audio back up, on the system default device. That is
+    // the behaviour this feature replaces, and it beats silence.
+    let native_audio_live = use_memo(move || state.read().screen_audio_joined);
     use_effect(move || {
-        let on = native_audio_token();
+        let on = native_audio_live();
         let _ = document::eval(&format!(
             "{SCREEN_JS}\nwindow.dxScreen.setNativeStreamAudio({on});"
         ));
@@ -727,8 +748,15 @@ pub fn ScreenShareBridge() -> Element {
     // this share is actually the native-capture kind: on Windows a window pick
     // deliberately leaves its audio to the engine, and re-publishing blindly
     // would send the whole machine for a share scoped to one window.
+    // `joined` is in the key so a room that drops re-fires this exactly once:
+    // the flag flips false, the tuple changes, one rejoin is attempted. If that
+    // rejoin fails the flag is already false, the tuple no longer changes, and
+    // nothing repeats — which is why the guard keys on the flag rather than
+    // being skipped on failure. This effect runs on *every* `AppState` change,
+    // so "retry until it works" would mean a fresh connection attempt per
+    // arriving message against an SFU that is already down.
     let voice_screen_audio = use_voice_tx();
-    let mut last_sent = use_signal(|| None::<(u64, Option<(String, String)>, bool)>);
+    let mut last_sent = use_signal(|| None::<(u64, Option<(String, String)>, bool, bool)>);
     use_effect(move || {
         let s = state.read();
         let self_pk = s.self_user.as_ref().map(|u| u.pubkey.as_str());
@@ -744,9 +772,10 @@ pub fn ScreenShareBridge() -> Element {
         };
         let publish_system = s.screen_sharing && s.screen_native_audio;
         let epoch = s.voice_session_epoch;
+        let joined = s.screen_audio_joined;
         drop(s);
 
-        let now = (epoch, want, publish_system);
+        let now = (epoch, want, publish_system, joined);
         if last_sent.peek().as_ref() != Some(&now) {
             voice_screen_audio.send(VoiceCmd::SetScreenAudio { room: now.1.clone() });
             voice_screen_audio.send(VoiceCmd::SetSystemAudio { enabled: now.2 });

@@ -514,19 +514,26 @@ impl ActiveVoice {
         let mixer_handle = playback.handle();
 
         // Bridge for "this sharer has native screen audio" notices: the event
-        // task can't touch a Signal, so it posts identities here and a Dioxus
-        // task applies them.
+        // task can't touch a Signal, so it posts these here and a Dioxus task
+        // applies them.
         let (native_audio_tx, mut native_audio_rx) =
-            tokio::sync::mpsc::unbounded_channel::<(String, bool)>();
+            tokio::sync::mpsc::unbounded_channel::<StreamAudio>();
         {
             let mut state = state;
             dioxus::prelude::spawn(async move {
-                while let Some((id, present)) = native_audio_rx.recv().await {
+                while let Some(ev) = native_audio_rx.recv().await {
                     let mut s = state.write();
-                    if present {
-                        s.stream_has_audio.insert(id);
-                    } else {
-                        s.stream_has_audio.remove(&id);
+                    match ev {
+                        StreamAudio::Present(id) => {
+                            s.stream_has_audio.insert(id);
+                        }
+                        StreamAudio::Gone(id) => {
+                            s.stream_has_audio.remove(&id);
+                        }
+                        StreamAudio::RoomGone => {
+                            s.stream_has_audio.clear();
+                            s.screen_audio_joined = false;
+                        }
                     }
                 }
             });
@@ -565,7 +572,7 @@ impl ActiveVoice {
                             // slider over a stream that ended.
                             if publication.source() == TrackSource::ScreenshareAudio {
                                 let _ = native_audio_tx
-                                    .send((participant.identity().0.clone(), false));
+                                    .send(StreamAudio::Gone(participant.identity().0.clone()));
                             }
                         }
                         RoomEvent::Disconnected { reason } => {
@@ -596,7 +603,7 @@ impl ActiveVoice {
                             // channel because this task is `tokio::spawn`ed and
                             // so must be Send, which a Dioxus Signal is not.
                             if is_stream {
-                                let _ = native_audio_tx.send((identity.clone(), true));
+                                let _ = native_audio_tx.send(StreamAudio::Present(identity.clone()));
                             }
                             tokio::spawn(consume_remote_track(
                                 stream,
@@ -753,23 +760,30 @@ impl ActiveVoice {
                 prev.shutdown().await;
                 // Nobody is publishing stream audio to us any more; the volume
                 // control should stop claiming otherwise.
-                state.write().stream_has_audio.clear();
+                let mut s = state.write();
+                s.stream_has_audio.clear();
+                s.screen_audio_joined = false;
                 eprintln!("[voice] screen audio room left");
             }
             return;
         };
-        // Switch rooms when the token changes rather than keeping the old one.
-        // Returning early on "already connected" made a token change vanish
-        // without a trace, which is only invisible for as long as every channel
-        // switch happens to mint a fresh session.
+        // Switch rooms when the token changes rather than keeping the old one,
+        // and treat a room that has since disconnected as no room at all.
+        // Matching on the key alone made "already connected" the answer to every
+        // later command, so a dead room could never be replaced by a live one.
         match &self.screen_audio {
-            Some(existing) if existing.key == key => return,
+            Some(existing) if existing.key == key && existing.alive.load(Ordering::Relaxed) => {
+                return;
+            }
             Some(_) => {
                 if let Some(prev) = self.screen_audio.take() {
                     prev.shutdown().await;
                 }
-                state.write().stream_has_audio.clear();
-                eprintln!("[voice] screen audio room changed, reconnecting");
+                let mut s = state.write();
+                s.stream_has_audio.clear();
+                s.screen_audio_joined = false;
+                drop(s);
+                eprintln!("[voice] screen audio room stale, rejoining");
             }
             None => {}
         }
@@ -788,15 +802,22 @@ impl ActiveVoice {
         {
             Ok(r) => {
                 self.screen_audio = Some(r);
+                // Only now is the native path actually in charge — the webview
+                // stands down on this, not on the token merely existing.
+                state.write().screen_audio_joined = true;
                 eprintln!("[voice] screen audio room joined");
             }
-            // The webview is no longer playing this audio, so a failure here is
-            // silence, not a downgrade — say so rather than let the viewer
-            // wonder why a live-looking volume slider does nothing.
+            // Leaving this at `false` is what hands playback back to the
+            // webview: it plays on the wrong device, which is the behaviour this
+            // change replaces, and is strictly better than silence.
             Err(e) => {
                 eprintln!("[voice] screen audio room failed: {e}");
-                state.write().error_toast =
-                    Some(format!("Couldn't join the stream's audio: {e}"));
+                let mut s = state.write();
+                s.screen_audio_joined = false;
+                s.error_toast = Some(format!(
+                    "Stream sound is playing through the app window instead of your chosen \
+                     output device: {e}"
+                ));
             }
         }
     }
@@ -828,7 +849,11 @@ impl ActiveVoice {
         // no-session branch and clears nothing. A stale entry survives the
         // rejoin and makes the volume control look live over a stream that
         // ended. Doing it here makes it independent of message ordering.
-        state.write().stream_has_audio.clear();
+        {
+            let mut s = state.write();
+            s.stream_has_audio.clear();
+            s.screen_audio_joined = false;
+        }
         // Actually tell the SFU we are leaving.
         //
         // This used to be `drop(self.room)` with a comment claiming the drop
@@ -861,6 +886,20 @@ struct ScreenAudioRoom {
     /// The `(url, token)` this room was joined with, so a later command carrying
     /// a different one is recognised as a different room instead of ignored.
     key: (String, String),
+    /// Cleared when the room reports a terminal disconnect. Without it a dead
+    /// room still matches on `key`, so every later command would be answered
+    /// with "already connected" and the audio would never come back.
+    alive: Arc<AtomicBool>,
+}
+
+/// What the screen/voice event tasks tell the UI about stream audio. An enum
+/// rather than `(String, bool)` because a dying room has to say "all of it",
+/// and encoding that as an empty identity would be a sentinel nobody expects.
+enum StreamAudio {
+    Present(String),
+    Gone(String),
+    /// The room itself went away: everything it reported is stale.
+    RoomGone,
 }
 
 impl ScreenAudioRoom {
@@ -886,16 +925,23 @@ impl ScreenAudioRoom {
 
         // Same bridge shape as the voice room's: the event task is `spawn`ed and
         // so must be Send, which a Dioxus Signal is not.
-        let (has_tx, mut has_rx) = unbounded_channel::<(String, bool)>();
+        let (has_tx, mut has_rx) = unbounded_channel::<StreamAudio>();
         {
             let mut state = state;
             dioxus::prelude::spawn(async move {
-                while let Some((id, present)) = has_rx.recv().await {
+                while let Some(ev) = has_rx.recv().await {
                     let mut s = state.write();
-                    if present {
-                        s.stream_has_audio.insert(id);
-                    } else {
-                        s.stream_has_audio.remove(&id);
+                    match ev {
+                        StreamAudio::Present(id) => {
+                            s.stream_has_audio.insert(id);
+                        }
+                        StreamAudio::Gone(id) => {
+                            s.stream_has_audio.remove(&id);
+                        }
+                        StreamAudio::RoomGone => {
+                            s.stream_has_audio.clear();
+                            s.screen_audio_joined = false;
+                        }
                     }
                 }
             });
@@ -912,8 +958,10 @@ impl ScreenAudioRoom {
             }
         }
 
+        let alive = Arc::new(AtomicBool::new(true));
         let event_task = tokio::spawn({
             let self_pubkey = self_pubkey.clone();
+            let alive = alive.clone();
             async move {
                 while let Some(ev) = events.recv().await {
                     match ev {
@@ -934,7 +982,7 @@ impl ScreenAudioRoom {
                                     SAMPLE_RATE as i32,
                                     CHANNELS as i32,
                                 );
-                                let _ = has_tx.send((identity.clone(), true));
+                                let _ = has_tx.send(StreamAudio::Present(identity.clone()));
                                 // `is_stream: true` — this is program audio, so
                                 // it takes the stream gains, not the voice ones.
                                 tokio::spawn(consume_remote_track(
@@ -945,12 +993,26 @@ impl ScreenAudioRoom {
                                 ));
                             }
                         }
-                        RoomEvent::TrackUnsubscribed { participant, .. }
-                        | RoomEvent::TrackUnpublished { participant, .. } => {
-                            let _ = has_tx.send((participant.identity().0.clone(), false));
+                        // Filtered by source, like the voice room's sibling
+                        // handler: this room carries the sharer's *video* too,
+                        // and its unpublish would otherwise retract a claim
+                        // about audio that is still playing.
+                        RoomEvent::TrackUnsubscribed { participant, publication, .. }
+                        | RoomEvent::TrackUnpublished { participant, publication } => {
+                            if publication.source() == TrackSource::ScreenshareAudio {
+                                let _ = has_tx
+                                    .send(StreamAudio::Gone(participant.identity().0.clone()));
+                            }
                         }
                         RoomEvent::Disconnected { reason } => {
                             eprintln!("[voice] screen audio room disconnected: {reason:?}");
+                            // Nothing else notices this. Left alone, the room
+                            // stays `Some` with a matching key, every later
+                            // command is answered "already connected", and the
+                            // stream is silently gone for good — with the
+                            // webview fallback already stood down.
+                            alive.store(false, Ordering::Relaxed);
+                            let _ = has_tx.send(StreamAudio::RoomGone);
                         }
                         _ => {}
                     }
@@ -962,6 +1024,7 @@ impl ScreenAudioRoom {
             room,
             event_task,
             key,
+            alive,
         })
     }
 
