@@ -218,6 +218,30 @@ pub fn ProfileCard() -> Element {
     let (level, into, span) = crate::protocol::level_progress(xp);
     let xp_pct = (into as f64 / span.max(1) as f64 * 100.0) as u32;
     let copy_pubkey = pubkey.clone();
+    // Roles held in the guild being viewed, in display order. Guild-scoped by
+    // nature, so a card opened from a DM (no selected guild) shows none — a role
+    // means standing in one community, not an attribute of the person.
+    let member_roles: Vec<crate::protocol::Role> = {
+        let s = state.read();
+        s.selected_guild
+            .map(|gid| {
+                let assigned = s
+                    .members
+                    .iter()
+                    .find(|m| m.guild_id == gid && m.user.pubkey == pubkey)
+                    .map(|m| m.roles.clone())
+                    .unwrap_or_default();
+                let mut held: Vec<_> = s
+                    .roles_of(gid)
+                    .iter()
+                    .filter(|r| assigned.contains(&r.id))
+                    .cloned()
+                    .collect();
+                held.sort_by_key(|r| r.position);
+                held
+            })
+            .unwrap_or_default()
+    };
 
     rsx! {
         div {
@@ -279,6 +303,32 @@ pub fn ProfileCard() -> Element {
                     }
                     if let Some(bio) = bio {
                         div { class: "mt-3 text-sm text-[var(--text-muted)] whitespace-pre-wrap break-words", "{bio}" }
+                    }
+                    if !member_roles.is_empty() {
+                        div { class: "mt-3",
+                            div { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-1.5", "Roles" }
+                            div { class: "flex flex-wrap gap-1.5",
+                                for role in member_roles.iter() {
+                                    {
+                                        // Uncoloured roles fall back to the muted
+                                        // text colour so the chip still reads as a
+                                        // chip rather than vanishing.
+                                        let color = role.color.clone()
+                                            .filter(|c| !c.trim().is_empty())
+                                            .unwrap_or_else(|| "var(--text-muted)".into());
+                                        rsx! {
+                                            span {
+                                                key: "{role.id}",
+                                                class: "flex items-center gap-1.5 px-2 py-0.5 rounded-md border text-xs",
+                                                style: "color: {color}; border-color: color-mix(in srgb, {color} 45%, transparent); background: color-mix(in srgb, {color} 10%, transparent);",
+                                                span { class: "w-2 h-2 rounded-full shrink-0", style: "background: {color};" }
+                                                "{role.name}"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                     // Level + XP bar.
                     div { class: "mt-4 flex items-center gap-3",
