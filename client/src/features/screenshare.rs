@@ -301,10 +301,18 @@ window.dxScreen = window.dxScreen || (function () {
     // audio constraint — nested inside `audio` it is just an unknown (and
     // therefore ignored) constraint, which is where it was first put. Engines
     // that don't know it ignore it, so asking costs nothing.
-    // `systemAudio: 'include'` asks for the whole machine's output when a
-    // screen is picked; `windowAudio: 'system'` is the equivalent hint for a
-    // *window* pick, which otherwise carries no audio at all. Both are hints —
-    // engines that don't know them ignore them, so asking costs nothing.
+    // Scope matters more than getting audio at all costs.
+    //
+    // `windowAudio: 'window'` captures ONLY the selected window's audio. The
+    // other legal value, 'system', captures the whole machine mix even for a
+    // window pick — which drags this app's own output in with it, so everyone
+    // in the call hears themselves come back. That is the echo, and it is what
+    // application-scoped capture (what Discord does) avoids by construction.
+    //
+    // `systemAudio: 'include'` still applies to *screen* picks, where the whole
+    // mix is the only thing on offer and the echo is unavoidable in the webview
+    // — see the warning after capture.
+    //
     // `suppressLocalAudioPlayback: false` keeps the sharer hearing their own
     // audio while it is being shared.
     const richAudio = { suppressLocalAudioPlayback: false };
@@ -313,7 +321,7 @@ window.dxScreen = window.dxScreen || (function () {
     const attempts = quality.nativeAudio
       ? [{ video: wantVideo, audio: false }, { video: true }]
       : [
-          { video: wantVideo, audio: richAudio, systemAudio: 'include', windowAudio: 'system' },
+          { video: wantVideo, audio: richAudio, systemAudio: 'include', windowAudio: 'window' },
           { video: wantVideo, audio: true, systemAudio: 'include' },
           { video: wantVideo, audio: true },
           { video: wantVideo, audio: false },
@@ -416,6 +424,18 @@ window.dxScreen = window.dxScreen || (function () {
       // most confusing outcome here — the sharer has no way to tell that
       // viewers hear nothing, and the viewer's volume slider looks broken.
       const at = stream.getAudioTracks()[0];
+      // A whole-screen capture with audio is the system mix, which includes
+      // this app's own playback — so other people's voices ride back out and
+      // they hear themselves. A window capture is scoped to that window and is
+      // safe. Nothing in getDisplayMedia can exclude our own process, so the
+      // honest move is to say so.
+      let surface = '';
+      try { surface = (vt.getSettings() || {}).displaySurface || ''; } catch (e) {}
+      if (at && surface === 'monitor') {
+        try {
+          window.postMessage({ __dxf: 'share-echo-risk' }, '*');
+        } catch (e) {}
+      }
       let published = false;
       if (at) {
         try {
@@ -626,7 +646,7 @@ pub fn ScreenShareBridge() -> Element {
               window.__dxfShareEndWired = true;
               window.addEventListener('message', function (e) {
                 var d = e.data;
-                if (d && (d.__dxf === 'screen-share-ended' || d.__dxf === 'share-started' || d.__dxf === 'share-audio' || d.__dxf === 'share-unavailable' || d.__dxf === 'stream-audio')) {
+                if (d && (d.__dxf === 'screen-share-ended' || d.__dxf === 'share-started' || d.__dxf === 'share-audio' || d.__dxf === 'share-unavailable' || d.__dxf === 'share-echo-risk' || d.__dxf === 'stream-audio')) {
                   try { dioxus.send(d); } catch (err) {}
                 }
               });
@@ -667,6 +687,16 @@ pub fn ScreenShareBridge() -> Element {
                                  so the capture API is hidden. Please report this."
                                     .into()
                             });
+                        }
+                        // Whole-screen capture with sound: the mix includes us.
+                        Some("share-echo-risk") => {
+                            eprintln!("[screen] whole-screen audio capture — echo risk");
+                            state.write().error_toast = Some(
+                                "Sharing a whole screen with sound also captures this call, so \
+                                 others may hear themselves echo. Share a single window instead \
+                                 to send only that app's audio."
+                                    .into(),
+                            );
                         }
                         Some("screen-share-ended") => {
                             let cid = state.read().voice.channel_id;
