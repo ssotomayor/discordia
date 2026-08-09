@@ -121,6 +121,13 @@ Read it, then `docs/ROADMAP.md` for where the project is headed and
   a time. The tract crates are pinned and get a `[profile.dev.package]`
   optimisation override in the root `Cargo.toml` — read the comment there before
   bumping them, the model won't even load without it.
+- `sysaudio/` — native system-audio capture for screen sharing, so a share
+  carries the machine's sound without depending on the webview's picker.
+  `scope()` says how far it reaches per platform (macOS: every share; Windows:
+  whole-screen picks only, build 20348+; elsewhere: not at all) and the share
+  flow settles which path a given capture takes *after* the picker closes, since
+  that answer depends on what the user chose. Frames are mono f32 @48kHz — the
+  format `features::voice` already publishes.
 - `host.rs` — self-host: spawn embedded server + LiveKit, register with
   rendezvous. `rendezvous.rs` — the rendezvous client (control handshake +
   proxy bridging). `blossom.rs` — Nostr media upload for avatars/banners.

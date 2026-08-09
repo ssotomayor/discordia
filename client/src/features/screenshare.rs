@@ -1,10 +1,18 @@
 //! Screen sharing via the LiveKit JS SDK running inside the webview.
 //!
-//! Native audio stays on the Rust LiveKit SDK; screen *video* runs here because
-//! the webview can capture (`getDisplayMedia`) and render (`<video>`) it. The
-//! JS client joins a SEPARATE room (`screen-…`) from voice so native-audio
-//! peers never download the video. Who's sharing is tracked via our own
-//! protocol (`ScreenShareState`), not the JS layer.
+//! Audio stays on the Rust LiveKit SDK; screen *video* runs here because the
+//! webview can capture (`getDisplayMedia`) and render (`<video>`) it. The JS
+//! client joins a SEPARATE room (`screen-…`) from voice so peers never download
+//! the video just to hear a call. Who's sharing is tracked via our own protocol
+//! (`ScreenShareState`), not the JS layer.
+//!
+//! Stream *audio* reaches the ear by one of two routes, and neither of them is
+//! this file's `<audio>` element unless the server is too old to offer the
+//! first. Either the sharer captured it natively (`sysaudio`) and published it
+//! on the voice room, or the webview captured it and `features::voice` joins
+//! this room audio-only to subscribe. Both land in the same cpal mixer, which
+//! is what makes stream volume and the output-device choice work the same way
+//! they do for voice.
 //!
 //! Two on-screen surfaces, each a container the JS attaches a `<video>` into:
 //! - `#screenshare-self`   — small draggable self-preview for the sharer.
@@ -41,6 +49,29 @@ window.dxScreen = window.dxScreen || (function () {
   //
   // All listener-side: it scales what THIS machine plays. The broadcaster and
   // every other viewer are untouched.
+  // Set by Rust when it has a token for the screen room and is subscribing to
+  // the audio itself. Everything below it guards is the fallback path, kept for
+  // servers that don't send that token.
+  let nativeStreamAudio = false;
+  function setNativeStreamAudio(on) {
+    nativeStreamAudio = !!on;
+    if (nativeStreamAudio) { detachAudio(); dropAudioSubscriptions(); }
+  }
+  // In native mode this room still auto-subscribes to the screen-audio track it
+  // no longer plays, so every viewer downloads that stream twice. Unsubscribing
+  // is per-publication because the room is shared with the video, which we do
+  // want. Called both for tracks already present when native mode turns on and
+  // for ones published afterwards.
+  function dropAudioSubscriptions() {
+    if (!room || !room.remoteParticipants) return;
+    room.remoteParticipants.forEach(function (p) {
+      p.trackPublications.forEach(unsubscribeIfAudio);
+    });
+  }
+  function unsubscribeIfAudio(pub) {
+    if (!nativeStreamAudio || !pub || pub.kind !== 'audio') return;
+    try { pub.setSubscribed(false); } catch (e) { console.warn('[dxScreen] unsubscribe audio failed', e); }
+  }
   let audioEl = null;       // element the current stream is attached to
   let audioIdentity = null; // whose stream is currently wired up
   let pendingGain = 1;      // volume to apply when a stream does arrive (0..1)
@@ -142,9 +173,15 @@ window.dxScreen = window.dxScreen || (function () {
     room.on(lk.RoomEvent.ConnectionStateChanged, function (st) {
       console.log('[dxScreen] connection state', st);
     });
+    // Fires before the SDK's own auto-subscribe settles, so a screen-audio
+    // track published while native mode is on is dropped rather than downloaded.
+    room.on(lk.RoomEvent.TrackPublished, function (pub) {
+      unsubscribeIfAudio(pub);
+    });
     room.on(lk.RoomEvent.TrackSubscribed, function (track, pub, participant) {
       if (track.kind === 'audio') {
         audioTracks[participant.identity] = track;
+        if (nativeStreamAudio) return;
         // The viewer may already be watching this person — the audio track can
         // arrive after the video one.
         const c = document.getElementById('screenshare-viewer');
@@ -161,7 +198,13 @@ window.dxScreen = window.dxScreen || (function () {
         delete audioTracks[participant.identity];
         // The sharer stopped sending audio (or stopped sharing) — take the
         // viewer's volume control back out of service.
-        report(participant.identity, false);
+        //
+        // Only when this room is the one playing it. In native mode the entry
+        // belongs to the Rust side, and any resubscribe cycle here — a
+        // livekit-client reconnect, say — would fire unsubscribe then subscribe,
+        // clearing a flag the subscribe half no longer restores. The controls go
+        // dead while the audio is still playing.
+        if (!nativeStreamAudio) report(participant.identity, false);
         return;
       }
       if (track.kind !== 'video') return;
@@ -184,6 +227,10 @@ window.dxScreen = window.dxScreen || (function () {
       notifyShareEnded();
     });
     try { await room.connect(url, token); } catch (e) { console.warn('[dxScreen] connect failed', e); room = null; }
+    // Native mode is usually decided before this room exists, so the sweep that
+    // setNativeStreamAudio would have run found nothing to sweep. Anyone already
+    // publishing when we arrive is caught here.
+    dropAudioSubscriptions();
   }
   // Notify the Rust side that local screen sharing has ended (track stopped
   // or unpublished by the browser). We must use window.postMessage (NOT
@@ -220,7 +267,12 @@ window.dxScreen = window.dxScreen || (function () {
     if (t) attachInto(t, c); else c.querySelectorAll('video').forEach(function (e) { e.remove(); });
     // Only the watch window plays sound; the self-preview must not, or the
     // sharer hears their own machine echoed back.
-    if (cid === 'screenshare-viewer') attachAudio(identity);
+    //
+    // And only when the native side isn't taking the audio. It normally is —
+    // that is what lets stream sound follow the app's output device like voice
+    // does, instead of being stuck on whatever the webview picked. Playing it
+    // here as well would be the same stream heard twice.
+    if (cid === 'screenshare-viewer' && !nativeStreamAudio) attachAudio(identity);
   }
   function detach(cid) {
     const c = document.getElementById(cid); if (!c) return;
@@ -520,7 +572,7 @@ window.dxScreen = window.dxScreen || (function () {
     detachAudio();
     CONTAINERS.forEach(detach);
   }
-  return { connect: connect, attach: attach, detach: detach, startShare: startShare, requestAndStartShare: requestAndStartShare, stopShare: stopShare, disconnect: disconnect, setStreamVolume: setStreamVolume, setSink: setSink };
+  return { connect: connect, attach: attach, detach: detach, startShare: startShare, requestAndStartShare: requestAndStartShare, stopShare: stopShare, disconnect: disconnect, setStreamVolume: setStreamVolume, setSink: setSink, setNativeStreamAudio: setNativeStreamAudio };
 })();
 "#;
 
@@ -646,6 +698,62 @@ pub fn ScreenShareBridge() -> Element {
         }
     });
 
+    // Who plays stream audio: the native mixer (so it follows the output device
+    // like voice) or the webview (fallback, when the server sent no token).
+    let native_audio_token = use_memo(move || state.read().screen_audio_token.is_some());
+    use_effect(move || {
+        let on = native_audio_token();
+        let _ = document::eval(&format!(
+            "{SCREEN_JS}\nwindow.dxScreen.setNativeStreamAudio({on});"
+        ));
+    });
+
+    // Join the screen room's audio as soon as somebody *else* is sharing in our
+    // channel, rather than waiting for the watch window to open: connecting a
+    // room costs about a second, and paying it when the user clicks means the
+    // first second of every stream is silent.
+    //
+    // Our own share is excluded from the trigger — there would be nothing to
+    // subscribe to, since the room skips our own publications.
+    // Keyed on the voice session as well as the token, not the token alone. A
+    // device change tears `ActiveVoice` down and rebuilds it, and the rebuilt
+    // session starts with no screen-audio room; keyed only on the token, this
+    // guard would see an unchanged value and stay silent, so stream audio would
+    // die for the rest of the share — with the webview fallback already
+    // disabled and the volume slider still looking live.
+    //
+    // The same restart drops our own system-audio publication, which has
+    // nothing else to re-trigger it, so that is re-issued here too. Only when
+    // this share is actually the native-capture kind: on Windows a window pick
+    // deliberately leaves its audio to the engine, and re-publishing blindly
+    // would send the whole machine for a share scoped to one window.
+    let voice_screen_audio = use_voice_tx();
+    let mut last_sent = use_signal(|| None::<(u64, Option<(String, String)>, bool)>);
+    use_effect(move || {
+        let s = state.read();
+        let self_pk = s.self_user.as_ref().map(|u| u.pubkey.as_str());
+        let others_sharing = s
+            .voice
+            .channel_id
+            .and_then(|cid| s.screen_shares.get(&cid))
+            .is_some_and(|sharers| sharers.iter().any(|pk| Some(pk.as_str()) != self_pk));
+        let want = if others_sharing {
+            s.screen_audio_token.clone()
+        } else {
+            None
+        };
+        let publish_system = s.screen_sharing && s.screen_native_audio;
+        let epoch = s.voice_session_epoch;
+        drop(s);
+
+        let now = (epoch, want, publish_system);
+        if last_sent.peek().as_ref() != Some(&now) {
+            voice_screen_audio.send(VoiceCmd::SetScreenAudio { room: now.1.clone() });
+            voice_screen_audio.send(VoiceCmd::SetSystemAudio { enabled: now.2 });
+            last_sent.set(Some(now));
+        }
+    });
+
     // Detect whether the embedded webview exposes getDisplayMedia and record it.
     // Use an async eval so we can `recv::<bool>().await` the JS result.
     use_future(move || {
@@ -694,11 +802,9 @@ pub fn ScreenShareBridge() -> Element {
     // Guards against double-wiring across hot reloads (same pattern as the
     // activities bridge).
     let gateway_end = gateway.clone();
-    let voice = use_voice_tx();
     use_future(move || {
         let mut state = state.clone();
         let gateway = gateway_end.clone();
-        let voice = voice.clone();
         async move {
             let bridge_js = r#"
             if (!window.__dxfShareEndWired) {
@@ -718,20 +824,25 @@ pub fn ScreenShareBridge() -> Element {
                         // Publishing succeeded — only now is this a share.
                         Some("share-started") => {
                             let cid = state.read().voice.channel_id;
-                            state.write().screen_sharing = true;
+                            // Where we capture system audio ourselves, it rides
+                            // along on the voice room as a second track. Whether
+                            // that applies to *this* share was decided after the
+                            // picker, so it arrives on the message rather than
+                            // being recomputed from the platform here — and it is
+                            // recorded rather than acted on, because a voice
+                            // reconnect later has to know whether to re-publish.
+                            {
+                                let mut w = state.write();
+                                w.screen_sharing = true;
+                                w.screen_native_audio =
+                                    msg.get("nativeAudio").and_then(|v| v.as_bool())
+                                        == Some(true);
+                            }
                             if let Some(c) = cid {
                                 gateway.send(ClientMessage::SetScreenShare {
                                     channel_id: c,
                                     sharing: true,
                                 });
-                            }
-                            // Where we capture system audio ourselves, it rides
-                            // along on the voice room as a second track. Whether
-                            // that applies to *this* share was decided after the
-                            // picker, so it arrives on the message rather than
-                            // being recomputed from the platform here.
-                            if msg.get("nativeAudio").and_then(|v| v.as_bool()) == Some(true) {
-                                voice.send(VoiceCmd::SetSystemAudio { enabled: true });
                             }
                         }
                         // The click found no capture API at all.
@@ -762,14 +873,22 @@ pub fn ScreenShareBridge() -> Element {
                         }
                         Some("screen-share-ended") => {
                             let cid = state.read().voice.channel_id;
-                            state.write().screen_sharing = false;
+                            {
+                                let mut w = state.write();
+                                w.screen_sharing = false;
+                                w.screen_native_audio = false;
+                            }
                             if let Some(c) = cid {
                                 gateway.send(ClientMessage::SetScreenShare {
                                     channel_id: c,
                                     sharing: false,
                                 });
                             }
-                            voice.send(VoiceCmd::SetSystemAudio { enabled: false });
+                            // Stopping the publication is left to the effect
+                            // above, which owns that decision for both the start
+                            // and the restart cases — two senders racing over one
+                            // track is how the state they disagree about gets
+                            // decided by arrival order.
                         }
                         // Our own share: did the platform give us any audio to
                         // send? Silence here is a platform limit, not a bug we
@@ -1031,14 +1150,9 @@ pub fn ScreenWatchWindow() -> Element {
     let stream_muted = state.read().stream_muted.contains(&pk);
     // A video-only share has nothing for these to act on. Showing a live-looking
     // slider over silence is how "the volume control does nothing" starts.
-    //
-    // Two ways a stream can have sound: the webview reported an audio track, or
-    // the sharer is capturing natively and it arrives on the voice room instead
-    // — where the JS never sees it, so it can't report anything.
-    let has_audio = {
-        let s = state.read();
-        s.stream_has_audio.contains(&pk) || s.stream_native_audio.contains(&pk)
-    };
+    // Reported by whichever side is playing the audio — normally the voice
+    // service, which subscribes to every screen-audio track.
+    let has_audio = state.read().stream_has_audio.contains(&pk);
     let pk_vol = pk.clone();
     let pk_mute = pk.clone();
     let apply_stream = move |vol: u32, muted: bool| {

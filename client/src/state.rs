@@ -103,6 +103,15 @@ pub struct AppState {
     pub messages: BTreeMap<Id, Vec<Message>>,
     pub voice_states: Vec<VoiceState>,
     pub voice: VoiceSession,
+    /// Bumped every time the voice service builds a new `ActiveVoice`.
+    ///
+    /// Deliberately monotonic and outside `VoiceSession`, which is reset
+    /// field-wise on leave. Anything that has to be re-issued to a rebuilt
+    /// session keys on this: a device change tears the session down and
+    /// reconnects, and a guard comparing only *what* it last sent would see no
+    /// change and stay quiet, leaving the new session missing whatever the old
+    /// one had been told.
+    pub voice_session_epoch: u64,
     pub selected_guild: Option<Id>,
     pub selected_channel: Option<Id>,
     /// The user's direct-message conversations.
@@ -143,8 +152,19 @@ pub struct AppState {
     /// (livekit_url, token) for the webview JS screen-share room — set while in
     /// a voice channel. The screen bridge connects when this is Some.
     pub screen_token: Option<(String, String)>,
+    /// (livekit_url, token) for the *native* half of the same room, used to
+    /// subscribe to screen-share audio so it plays through the chosen output
+    /// device instead of the webview's. None against servers that predate it,
+    /// in which case stream audio falls back to webview playback.
+    pub screen_audio_token: Option<(String, String)>,
     /// Whether we're currently sharing our screen (UI state).
     pub screen_sharing: bool,
+    /// Whether *our* current share is the one whose sound `sysaudio` captures.
+    /// Decided after the picker closes (it depends on the surface the user
+    /// chose), so it cannot be recomputed later from the platform alone — and it
+    /// has to survive a voice reconnect, which drops the publication and needs
+    /// to know whether to re-make it.
+    pub screen_native_audio: bool,
     /// Pubkeys currently screen-sharing, per channel (from the server).
     pub screen_shares: HashMap<Id, Vec<String>>,
     /// Pubkey whose screen we're viewing in the big viewer dialog, if any.
@@ -189,14 +209,14 @@ pub struct AppState {
     pub stream_volumes: HashMap<String, u32>,
     /// Screen-share streams muted locally, keyed by sharer pubkey.
     pub stream_muted: HashSet<String>,
-    /// Sharers whose screen audio arrives natively (a `ScreenshareAudio` track
-    /// on the voice room) rather than through the webview. The JS layer never
-    /// sees those, so it cannot report them — the voice service does.
-    pub stream_native_audio: HashSet<String>,
-    /// Sharers whose stream actually carries an audio track, as reported by the
-    /// webview when we attach it. A share can legitimately be video-only (the
-    /// platform may not let the app capture system audio at all), and a volume
-    /// slider over silence looks like a bug — so the UI needs to know.
+    /// Sharers whose stream actually carries an audio track. A share can
+    /// legitimately be video-only (the platform may not let the app capture
+    /// system audio at all), and a volume slider over silence looks like a bug —
+    /// so the UI needs to know.
+    ///
+    /// Normally reported by the voice service, which subscribes to every
+    /// screen-audio track; the webview reports it only in the fallback case
+    /// where the server sent no `audio_token`.
     pub stream_has_audio: HashSet<String>,
     /// Populated when running in self-host mode. None for remote connections.
     pub host_info: Option<HostInfo>,
@@ -243,6 +263,7 @@ impl AppState {
             messages: BTreeMap::new(),
             voice_states: Vec::new(),
             voice: VoiceSession::default(),
+            voice_session_epoch: 0,
             selected_guild: None,
             selected_channel: None,
             dms: Vec::new(),
@@ -256,7 +277,9 @@ impl AppState {
             typing: HashMap::new(),
             notify_tick: 0,
             screen_token: None,
+            screen_audio_token: None,
             screen_sharing: false,
+            screen_native_audio: false,
             screen_shares: HashMap::new(),
             screen_viewing: None,
             screen_capture_available: false,
@@ -273,7 +296,6 @@ impl AppState {
             stream_volumes: HashMap::new(),
             stream_muted: HashSet::new(),
             stream_has_audio: HashSet::new(),
-            stream_native_audio: HashSet::new(),
             host_info: None,
             integrations: HashMap::new(),
             guild_emojis: HashMap::new(),

@@ -101,19 +101,21 @@ the top within each section.
 
 ## Voice / audio
 
-- **Screen-share audio is platform-dependent.** The share request asks for
-  `audio: true` and publishes the audio track when the platform hands one back,
-  but whether it does is out of our hands: Chromium/WebView2 offers tab and
-  system audio (and the user must still tick the box in the picker), while
-  WKWebView on macOS generally offers none. Shares from those platforms are
-  silent and the viewer's stream-volume control has nothing to act on. Capturing
-  system audio natively (per-OS loopback: WASAPI loopback, ScreenCaptureKit,
-  PipeWire) and publishing it from the Rust side would close the gap.
-- **Stream audio doesn't follow the output device everywhere.** Screen-share
-  audio plays through the webview, so it can only follow the app's selected
-  output device where `AudioContext.setSinkId` exists (Chromium). Elsewhere it
-  lands on the system default while voice honours the choice — the two can
-  diverge. Native capture (above) would put it on the same cpal path as voice.
+- **No native system-audio capture on Linux.** `client/src/sysaudio/` has
+  backends for macOS (ScreenCaptureKit) and Windows (WASAPI process loopback);
+  Linux reports unsupported and falls back to whatever `getDisplayMedia` hands
+  back. A PipeWire backend would close it, but two things make it more than a
+  third copy of the same file: the `pipewire` crate is C bindings (a build and
+  runtime dependency the workspace otherwise avoids), and PipeWire has no
+  per-process exclusion, so a whole-screen capture would include our own output
+  and echo — the very thing the other two backends exist to prevent.
+- **Window shares on Windows still depend on the picker.** Native capture only
+  takes over whole-screen picks: loopback is machine-wide, so using it for a
+  share the user scoped to a single window would leak every other app making
+  noise. WASAPI's `INCLUDE_TARGET_PROCESS_TREE` mode would fix this properly,
+  but `getDisplayMedia` never tells us which window (or PID) was picked, so
+  there is nothing to point it at. Until then a window share carries audio only
+  if the user ticks "Share audio" in the picker.
 - **Per-user volumes are session-scoped.** `AppState.user_volumes` /
   `stream_volumes` live for the run of the app, not across restarts. Persisting
   them means a keyed store that doesn't grow without bound (cap + LRU), which is

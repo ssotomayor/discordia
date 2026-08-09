@@ -1023,12 +1023,22 @@ pub enum ServerMessage {
         token: String,
     },
     /// Token for the webview JS client to join the screen-share room for a
-    /// channel (sent alongside `VoiceToken` on join). Used to publish/view
-    /// screen shares; never touches the native-audio path.
+    /// channel (sent alongside `VoiceToken` on join). Used to publish and to
+    /// render screen *video*.
     ScreenToken {
         channel_id: Id,
         livekit_url: String,
         token: String,
+        /// Second token for the same room, used by the *native* client to
+        /// subscribe to screen-share **audio** only — so stream sound plays
+        /// through the same cpal device as voice instead of the webview's.
+        ///
+        /// It carries a different LiveKit identity from `token` (same room,
+        /// and LiveKit evicts duplicate identities). Empty from servers that
+        /// predate it, in which case the client keeps playing stream audio in
+        /// the webview.
+        #[serde(default)]
+        audio_token: String,
     },
     Error {
         message: String,
