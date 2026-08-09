@@ -92,6 +92,30 @@ path = "src/main.rs"
 # silent unless we capture the machine's output ourselves. objc2 rather than the
 # `screencapturekit` crate deliberately — that one builds a Swift component and
 # would put the Swift runtime (plus an extra rpath) in the shipped app.
+# Native system-audio capture on Windows: WASAPI *process* loopback, which is
+# the only variant that can leave our own process tree out of the mix (see
+# src/sysaudio/windows.rs). Version 0.61 deliberately: wry/webview2-com already
+# pull that exact major, so this reuses the copy already in the tree instead of
+# compiling a second one. `Wdk_System_SystemServices` is only for RtlGetVersion,
+# which is how the build number is read honestly — see sysaudio::os_build.
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.61", features = [
+    "Wdk_System_SystemServices",
+    "Win32_Foundation",
+    "Win32_Media_Audio",
+    "Win32_Security",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+    "Win32_System_Variant",
+] }
+# The `#[implement]` macro expands to `::windows_core::…` paths, so the crate
+# has to be nameable here even though every other reference goes through
+# `windows::core`. Same version the `windows` crate itself pulls — two copies
+# would make the generated impls fail to match the interface.
+windows-core = "0.61"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 objc2-foundation = "0.3"

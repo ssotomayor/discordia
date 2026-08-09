@@ -26,17 +26,14 @@ use objc2_screen_capture_kit::{
 };
 use tokio::sync::mpsc::UnboundedSender;
 
-/// Samples per frame handed on: 10 ms at 48 kHz, matching the voice pipeline.
-const FRAME: usize = 480;
 /// How long to wait for the shareable-content query. It is asynchronous and,
 /// when the permission dialog is showing, can take as long as the user does.
 const CONTENT_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Per-callback state for the stream output delegate.
 struct TapState {
-    tx: UnboundedSender<Vec<f32>>,
-    /// Samples not yet forming a whole frame, carried between callbacks.
-    pending: std::cell::RefCell<Vec<f32>>,
+    /// Accumulates callback buffers into whole 10 ms frames.
+    cutter: std::cell::RefCell<super::frames::FrameCutter>,
 }
 
 define_class!(
@@ -133,14 +130,9 @@ impl Tap {
         }
 
         // Cut into exact frames; the remainder waits for the next callback.
-        let mut pending = state.pending.borrow_mut();
-        pending.extend_from_slice(&mono);
-        while pending.len() >= FRAME {
-            let frame: Vec<f32> = pending.drain(..FRAME).collect();
-            if state.tx.send(frame).is_err() {
-                return;
-            }
-        }
+        // The channels were already folded together above — ScreenCaptureKit
+        // delivers one buffer per channel, not interleaved.
+        state.cutter.borrow_mut().push_mono(&mono);
     }
 }
 
@@ -176,8 +168,7 @@ impl MacCapture {
             config.setHeight(2);
 
             let tap = Tap::alloc().set_ivars(TapState {
-                tx,
-                pending: std::cell::RefCell::new(Vec::with_capacity(FRAME * 4)),
+                cutter: std::cell::RefCell::new(super::frames::FrameCutter::new(tx)),
             });
             let tap: Retained<Tap> = msg_send![super(tap), init];
             let output = ProtocolObject::from_ref(&*tap);

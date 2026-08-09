@@ -316,9 +316,21 @@ window.dxScreen = window.dxScreen || (function () {
     // `suppressLocalAudioPlayback: false` keeps the sharer hearing their own
     // audio while it is being shared.
     const richAudio = { suppressLocalAudioPlayback: false };
-    // When Rust captures system audio natively there is nothing for the engine
-    // to add — asking anyway would capture the machine twice and play it twice.
-    const attempts = quality.nativeAudio
+    // Does the user want their machine heard at all? App-level setting, on by
+    // default; the engine's own "Share audio" checkbox is a separate decision
+    // we cannot make for them.
+    const wantAudio = quality.audio !== false;
+    // Where native (Rust-side) capture takes over: 'always', 'monitor' — only a
+    // whole-screen pick — or 'never'. Which one applies to THIS share cannot be
+    // settled here: it depends on what the user picks, and the picker hasn't
+    // opened yet. So we only decide the constraints now, and settle the rest
+    // below once `displaySurface` is readable.
+    const nativeMode = wantAudio ? (quality.nativeAudio || 'never') : 'never';
+    // Asking the engine for audio is pointless only where native capture is
+    // certain to take over ('always') — there it would capture the machine
+    // twice and play it twice. Under 'monitor' we must still ask, because a
+    // window pick keeps the engine's window-scoped audio.
+    const attempts = (!wantAudio || nativeMode === 'always')
       ? [{ video: wantVideo, audio: false }, { video: true }]
       : [
           { video: wantVideo, audio: richAudio, systemAudio: 'include', windowAudio: 'window' },
@@ -384,6 +396,13 @@ window.dxScreen = window.dxScreen || (function () {
       abortShare(stream);
       return;
     }
+    // The picker has closed, so what was actually shared is finally knowable.
+    // This is the only point at which the native-vs-engine question can be
+    // answered: 'monitor' mode hinges on the surface, and the surface is a
+    // property of the user's choice, not of the platform.
+    let surface = '';
+    try { surface = (vt.getSettings() || {}).displaySurface || ''; } catch (e) {}
+    const useNative = nativeMode === 'always' || (nativeMode === 'monitor' && surface === 'monitor');
     // The browser fires `ended` on the MediaStreamTrack when the user closes
     // the shared tab/window or clicks the native "Stop sharing" bar. Wire it
     // so Rust learns immediately and can tear down the self-preview + notify
@@ -425,26 +444,34 @@ window.dxScreen = window.dxScreen || (function () {
       // most confusing outcome here — the sharer has no way to tell that
       // viewers hear nothing, and the viewer's volume slider looks broken.
       const at = stream.getAudioTracks()[0];
-      // A whole-screen capture with audio is the system mix, which includes
+      // Native capture wins wherever it applies. Under 'monitor' the engine was
+      // asked for audio before the surface was known, so a whole-screen pick can
+      // arrive holding a track we now don't want: it is the same machine the
+      // native path is about to capture, except it also contains this app's own
+      // output. Publishing both would be the machine heard twice, echo included.
+      if (useNative && at) {
+        try { at.stop(); } catch (e2) {}
+      }
+      // Engine audio from a whole-screen pick is the system mix, which includes
       // this app's own playback — so other people's voices ride back out and
       // they hear themselves. A window capture is scoped to that window and is
-      // safe. Nothing in getDisplayMedia can exclude our own process, so the
-      // honest move is to say so.
-      let surface = '';
-      try { surface = (vt.getSettings() || {}).displaySurface || ''; } catch (e) {}
-      if (at && surface === 'monitor') {
+      // safe. Nothing in getDisplayMedia can exclude our own process, so where
+      // the engine is in charge the honest move is to say so. Where native
+      // capture is in charge there is nothing to warn about: it excludes us at
+      // the source.
+      if (!useNative && at && surface === 'monitor') {
         try {
           window.postMessage({ __dxf: 'share-echo-risk' }, '*');
-        } catch (e) {}
+        } catch (e2) {}
       }
       let published = false;
-      if (at) {
+      if (!useNative && at) {
         try {
           await room.localParticipant.publishTrack(at, { source: lk.Track.Source.ScreenShareAudio });
           published = true;
           console.log('[dxScreen] publishing screen-share audio');
         } catch (e2) { console.warn('[dxScreen] screen-share audio publish failed', e2); }
-      } else {
+      } else if (!useNative && wantAudio) {
         console.warn('[dxScreen] platform returned no audio track for this share');
       }
       // `supported` = the engine accepted an audio request at all. That is the
@@ -454,8 +481,13 @@ window.dxScreen = window.dxScreen || (function () {
       // the moment the button was clicked, so the app — and everyone else in
       // the channel — saw "live" while the picker was still open, and had to
       // be walked back on every cancel.
-      try { window.postMessage({ __dxf: 'share-started' }, '*'); } catch (e2) {}
-      if (!quality.nativeAudio) {
+      // `nativeAudio` rides along because Rust cannot recompute it: the surface
+      // it depends on is only visible here.
+      try { window.postMessage({ __dxf: 'share-started', nativeAudio: useNative }, '*'); } catch (e2) {}
+      // Only report on the engine's audio when the engine was the one asked.
+      // Under native capture there is nothing to explain, and a user who turned
+      // audio off does not need to be told their share is silent.
+      if (!useNative && wantAudio) {
         try {
           window.postMessage(
             { __dxf: 'share-audio', published: published, supported: audioAsked },
@@ -536,24 +568,32 @@ fn quality_preset(id: &str) -> (u32, u32, u32, u32, &'static str, &'static str) 
     }
 }
 
-/// Whether the app captures system audio itself on this platform. When it
-/// does, the webview is asked for video only — otherwise the machine's audio
-/// would be captured twice and viewers would hear it doubled.
-pub fn native_system_audio() -> bool {
-    crate::sysaudio::supported()
+/// How far native (Rust-side) system-audio capture reaches on this platform,
+/// as the tag the JS controller understands.
+///
+/// Deliberately *not* a decision — only the JS side can make one, because
+/// `MonitorOnly` turns on which surface the user picked and nothing knows that
+/// until the picker closes. See `sysaudio::NativeScope`.
+fn native_audio_mode() -> &'static str {
+    match crate::sysaudio::scope() {
+        crate::sysaudio::NativeScope::Always => "always",
+        crate::sysaudio::NativeScope::MonitorOnly => "monitor",
+        crate::sysaudio::NativeScope::Never => "never",
+    }
 }
 
-pub fn share_js(on: bool, quality: &str) -> String {
+/// `quality` and `audio` apply to starting a share; stopping ignores both.
+pub fn share_js(on: bool, quality: &str, audio: bool) -> String {
     // When starting, call the user-gesture variant that prompts getDisplayMedia
     // before delegating to the LiveKit flow. When stopping, just stopShare.
     if !on {
         return format!("{SCREEN_JS}\nwindow.dxScreen.stopShare();");
     }
     let (w, h, fps, bitrate, hint, degradation) = quality_preset(quality);
-    let native_audio = native_system_audio();
+    let mode = native_audio_mode();
     format!(
         "{SCREEN_JS}\nwindow.dxScreen.requestAndStartShare({{width:{w},height:{h},fps:{fps},\
-         bitrate:{bitrate},hint:'{hint}',degradation:'{degradation}',nativeAudio:{native_audio}}});"
+         bitrate:{bitrate},hint:'{hint}',degradation:'{degradation}',audio:{audio},nativeAudio:'{mode}'}});"
     )
 }
 
@@ -686,8 +726,11 @@ pub fn ScreenShareBridge() -> Element {
                                 });
                             }
                             // Where we capture system audio ourselves, it rides
-                            // along on the voice room as a second track.
-                            if native_system_audio() {
+                            // along on the voice room as a second track. Whether
+                            // that applies to *this* share was decided after the
+                            // picker, so it arrives on the message rather than
+                            // being recomputed from the platform here.
+                            if msg.get("nativeAudio").and_then(|v| v.as_bool()) == Some(true) {
                                 voice.send(VoiceCmd::SetSystemAudio { enabled: true });
                             }
                         }
@@ -866,8 +909,8 @@ pub fn ScreenSelfPreview() -> Element {
                         e.stop_propagation();
                         let cid = state.read().voice.channel_id;
                         state.write().screen_sharing = false;
-                        // Quality only matters when starting a share.
-                        let _ = document::eval(&share_js(false, ""));
+                        // Quality and audio only matter when starting a share.
+                        let _ = document::eval(&share_js(false, "", true));
                         if let Some(c) = cid {
                             gateway.send(ClientMessage::SetScreenShare { channel_id: c, sharing: false });
                         }

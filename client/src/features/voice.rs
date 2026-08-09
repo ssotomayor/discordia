@@ -342,7 +342,16 @@ async fn service_loop(
             }
             VoiceCmd::SetSystemAudio { enabled } => {
                 if let Some(active) = session.as_mut() {
-                    active.set_system_audio(enabled).await;
+                    // A share that turns out to be silent is the most confusing
+                    // outcome there is — the sharer has no way to tell. So the
+                    // reason the OS gave goes straight to the user; the share
+                    // itself carries on, video-only.
+                    if let Err(e) = active.set_system_audio(enabled).await {
+                        eprintln!("[voice] system audio failed: {e}");
+                        state.write().error_toast = Some(format!(
+                            "Sharing video only — couldn't capture this computer's sound: {e}"
+                        ));
+                    }
                 } else if enabled {
                     eprintln!("[voice] SetSystemAudio ignored — no voice session");
                 }
@@ -469,12 +478,17 @@ impl ActiveVoice {
         // task can't touch a Signal, so it posts identities here and a Dioxus
         // task applies them.
         let (native_audio_tx, mut native_audio_rx) =
-            tokio::sync::mpsc::unbounded_channel::<String>();
+            tokio::sync::mpsc::unbounded_channel::<(String, bool)>();
         {
             let mut state = state;
             dioxus::prelude::spawn(async move {
-                while let Some(id) = native_audio_rx.recv().await {
-                    state.write().stream_native_audio.insert(id);
+                while let Some((id, present)) = native_audio_rx.recv().await {
+                    let mut s = state.write();
+                    if present {
+                        s.stream_native_audio.insert(id);
+                    } else {
+                        s.stream_native_audio.remove(&id);
+                    }
                 }
             });
         }
@@ -505,8 +519,15 @@ impl ActiveVoice {
                                 track.kind()
                             );
                         }
-                        RoomEvent::TrackUnsubscribed { participant, .. } => {
+                        RoomEvent::TrackUnsubscribed { participant, publication, .. } => {
                             eprintln!("[voice] track unsubscribed from {}", participant.identity().0);
+                            // Take the sharer back out of "has stream audio",
+                            // or the watch window goes on offering a volume
+                            // slider over a stream that ended.
+                            if publication.source() == TrackSource::ScreenshareAudio {
+                                let _ = native_audio_tx
+                                    .send((participant.identity().0.clone(), false));
+                            }
                         }
                         RoomEvent::Disconnected { reason } => {
                             eprintln!("[voice] room disconnected: {reason:?}");
@@ -536,7 +557,7 @@ impl ActiveVoice {
                             // channel because this task is `tokio::spawn`ed and
                             // so must be Send, which a Dioxus Signal is not.
                             if is_stream {
-                                let _ = native_audio_tx.send(identity.clone());
+                                let _ = native_audio_tx.send((identity.clone(), true));
                             }
                             tokio::spawn(consume_remote_track(
                                 stream,
@@ -569,9 +590,9 @@ impl ActiveVoice {
     /// native SDK is already connected here, every peer is already subscribed,
     /// and it lands in the same mixer as everything else — so the per-sharer
     /// volume control works on it without any new delivery path.
-    async fn set_system_audio(&mut self, enabled: bool) {
+    async fn set_system_audio(&mut self, enabled: bool) -> Result<(), String> {
         if enabled == self.system_audio.is_some() {
-            return;
+            return Ok(());
         }
         if !enabled {
             if let Some(sa) = self.system_audio.take() {
@@ -582,19 +603,16 @@ impl ActiveVoice {
                     .await;
             }
             eprintln!("[voice] system audio stopped");
-            return;
+            return Ok(());
         }
         if !crate::sysaudio::supported() {
-            return;
+            return Ok(());
         }
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Vec<f32>>();
-        let capture = match crate::sysaudio::start(tx) {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("[voice] system audio unavailable: {e}");
-                return;
-            }
-        };
+        // The backend's own words: which Windows build, which permission, which
+        // service. A generic "capture failed" would send someone hunting through
+        // the wrong settings.
+        let capture = crate::sysaudio::start(tx)?;
         // No APM on this source: it is already-mixed program audio, not a
         // microphone in a room. Echo cancellation and noise suppression would
         // chew on music and game audio for no benefit.
@@ -640,10 +658,7 @@ impl ActiveVoice {
             .await
         {
             Ok(p) => p,
-            Err(e) => {
-                eprintln!("[voice] publish system audio failed: {e}");
-                return;
-            }
+            Err(e) => return Err(format!("publishing it failed ({e})")),
         };
         let task = tokio::spawn(publish_pcm(rx, source));
         self.system_audio = Some(SystemAudioTrack {
@@ -652,6 +667,7 @@ impl ActiveVoice {
             task,
         });
         eprintln!("[voice] system audio started");
+        Ok(())
     }
 
     /// Swap libwebrtc's noise suppressor in or out while the call is live.

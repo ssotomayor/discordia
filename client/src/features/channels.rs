@@ -762,6 +762,7 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
     // Screen-share preset lives only in local settings — it's a capture-side
     // choice the server never sees.
     let screenshare_quality = settings.read().screenshare_quality.clone();
+    let screenshare_audio = settings.read().screenshare_audio;
     let screenshare_hint = crate::features::screenshare::QUALITY_PRESETS
         .iter()
         .find(|(id, _, _)| *id == screenshare_quality)
@@ -814,10 +815,11 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                                                 // If the feature is unavailable the button is disabled and
                                                                 // this branch won't run.
                                                                 let q = settings.read().screenshare_quality.clone();
-                                                                let _ = document::eval(&crate::features::screenshare::share_js(true, &q));
+                                                                let a = settings.read().screenshare_audio;
+                                                                let _ = document::eval(&crate::features::screenshare::share_js(true, &q, a));
                                                             } else {
                                                                 // Turning off — stop immediately.
-                                                                let _ = document::eval(&crate::features::screenshare::share_js(false, ""));
+                                                                let _ = document::eval(&crate::features::screenshare::share_js(false, "", true));
                                                             }
                                                         },
                             dangerous_inner_html: crate::features::icons::SCREEN,
@@ -1128,6 +1130,24 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                 }
                                 span { class: "text-[10px] text-[var(--text-dim)] mt-0.5 block",
                                     "{screenshare_hint}"
+                                }
+                                // Share the machine's sound. On unless turned
+                                // off — a shared video or game without its audio
+                                // is the surprising outcome, not the safe one.
+                                // Applies to the next share.
+                                label { class: "flex items-center gap-2 cursor-pointer select-none mt-1.5",
+                                    input {
+                                        r#type: "checkbox",
+                                        class: "accent-[var(--accent)]",
+                                        checked: screenshare_audio,
+                                        onchange: move |e| {
+                                            let mut next = settings.read().clone();
+                                            next.screenshare_audio = e.checked();
+                                            settings.set(next.clone());
+                                            crate::settings::save(&next);
+                                        },
+                                    }
+                                    span { class: "text-[11px] text-[var(--text-muted)] flex-1", "Share computer sound" }
                                 }
                             }
                             // Sound effects volume. Controls all synthesized UI
