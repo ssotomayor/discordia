@@ -63,6 +63,17 @@ pub struct ClientSettings {
     /// framerate and bitrate; "balanced" (1080p30) is the default.
     #[serde(default = "default_screenshare_quality")]
     pub screenshare_quality: String,
+    /// Send the machine's sound along with a screen share. On by default:
+    /// sharing a video or a game without its audio is the surprising outcome,
+    /// not the safe one, and the share itself is already deliberate. Turning it
+    /// off is the opt-out for someone who doesn't want their machine heard.
+    ///
+    /// This governs what *we* do — the native capture path, and whether the
+    /// engine is asked for audio at all. Where the engine is in charge it still
+    /// shows its own unticked "Share audio" box, which no constraint can
+    /// pre-tick; that choice stays the user's.
+    #[serde(default = "default_screenshare_audio")]
+    pub screenshare_audio: bool,
     /// Master volume for UI sound effects, 0..=100. 0 = muted. Scales the
     /// gain of every synthesized tone in `window.dxSfx`.
     #[serde(default = "default_sfx_volume")]
@@ -71,6 +82,10 @@ pub struct ClientSettings {
 
 pub fn default_screenshare_quality() -> String {
     "balanced".into()
+}
+
+fn default_screenshare_audio() -> bool {
+    true
 }
 
 fn default_sfx_volume() -> u8 {
@@ -115,6 +130,7 @@ impl Default for ClientSettings {
             layout_cells: Vec::new(),
             layout_free: Vec::new(),
             screenshare_quality: default_screenshare_quality(),
+            screenshare_audio: default_screenshare_audio(),
             sfx_volume: default_sfx_volume(),
         }
     }
