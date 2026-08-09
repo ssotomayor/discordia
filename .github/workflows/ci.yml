@@ -52,6 +52,25 @@ jobs:
       - name: Check client
         run: cargo check -p dioxusfun
 
+  # The Linux job above compiles the client, but never the `#[cfg(target_os =
+  # "windows")]` half of it — and the release job that would is gated on `push`,
+  # so a pull request can't tell whether the Windows-only code even builds. That
+  # code is unsafe FFI against WASAPI, which is precisely the kind that should
+  # not reach master on the strength of having been read.
+  windows-build:
+    name: client compiles (windows)
+    runs-on: windows-latest
+    env:
+      # libwebrtc links the STATIC MSVC runtime (/MT); Rust defaults to /MD and
+      # the two collide (LNK2038). Same flag as the release jobs below.
+      RUSTFLAGS: "-C target-feature=+crt-static"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Check client
+        run: cargo check -p dioxusfun
+
   tailwind:
     name: tailwind css is current
     runs-on: ubuntu-latest

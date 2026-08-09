@@ -125,9 +125,20 @@ pub fn supported() -> bool {
 ///
 /// Errors are for the caller to report and carry on from: a share with no
 /// sound is worth far more than no share at all.
-pub fn start(tx: UnboundedSender<Vec<f32>>) -> Result<Capture, String> {
+///
+/// `fatal` carries the reason a *running* capture died. Returning `Ok` here
+/// only means the capture started; if it later breaks, the track stays
+/// published and would simply go quiet, which is the one outcome a sharer has
+/// no way to notice on their own. Backends that cannot detect such a failure
+/// (macOS, where ScreenCaptureKit reports through a delegate we don't install)
+/// just never send on it.
+pub fn start(
+    tx: UnboundedSender<Vec<f32>>,
+    fatal: UnboundedSender<String>,
+) -> Result<Capture, String> {
     #[cfg(target_os = "macos")]
     {
+        let _ = fatal;
         Ok(Capture {
             _inner: macos::MacCapture::start(tx)?,
         })
@@ -135,12 +146,12 @@ pub fn start(tx: UnboundedSender<Vec<f32>>) -> Result<Capture, String> {
     #[cfg(target_os = "windows")]
     {
         Ok(Capture {
-            _inner: self::windows::WinCapture::start(tx)?,
+            _inner: self::windows::WinCapture::start(tx, fatal)?,
         })
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
-        let _ = tx;
+        let _ = (tx, fatal);
         Err("system audio capture isn't implemented on this platform yet".into())
     }
 }

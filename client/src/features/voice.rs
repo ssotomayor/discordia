@@ -346,7 +346,7 @@ async fn service_loop(
                     // outcome there is — the sharer has no way to tell. So the
                     // reason the OS gave goes straight to the user; the share
                     // itself carries on, video-only.
-                    if let Err(e) = active.set_system_audio(enabled).await {
+                    if let Err(e) = active.set_system_audio(enabled, state).await {
                         eprintln!("[voice] system audio failed: {e}");
                         state.write().error_toast = Some(format!(
                             "Sharing video only — couldn't capture this computer's sound: {e}"
@@ -590,7 +590,11 @@ impl ActiveVoice {
     /// native SDK is already connected here, every peer is already subscribed,
     /// and it lands in the same mixer as everything else — so the per-sharer
     /// volume control works on it without any new delivery path.
-    async fn set_system_audio(&mut self, enabled: bool) -> Result<(), String> {
+    async fn set_system_audio(
+        &mut self,
+        enabled: bool,
+        state: Signal<AppState>,
+    ) -> Result<(), String> {
         if enabled == self.system_audio.is_some() {
             return Ok(());
         }
@@ -609,10 +613,26 @@ impl ActiveVoice {
             return Ok(());
         }
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Vec<f32>>();
+        let (fatal_tx, mut fatal_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         // The backend's own words: which Windows build, which permission, which
         // service. A generic "capture failed" would send someone hunting through
         // the wrong settings.
-        let capture = crate::sysaudio::start(tx)?;
+        let capture = crate::sysaudio::start(tx, fatal_tx)?;
+        // Starting is only half of it — a capture that dies mid-share leaves the
+        // track published and simply quiet, which the sharer cannot see. Report
+        // that the same way an activation failure is reported.
+        {
+            let mut state = state;
+            dioxus::prelude::spawn(async move {
+                if let Some(e) = fatal_rx.recv().await {
+                    eprintln!("[voice] system audio died mid-share: {e}");
+                    state.write().error_toast = Some(format!(
+                        "This computer's sound stopped being shared: {e}. The screen is still \
+                         being shared — restart the share to send sound again."
+                    ));
+                }
+            });
+        }
         // No APM on this source: it is already-mixed program audio, not a
         // microphone in a room. Echo cancellation and noise suppression would
         // chew on music and game audio for no benefit.
