@@ -157,6 +157,15 @@ pub struct AppState {
     /// device instead of the webview's. None against servers that predate it,
     /// in which case stream audio falls back to webview playback.
     pub screen_audio_token: Option<(String, String)>,
+    /// Whether the native screen-audio room is *actually joined* — not merely
+    /// whether a token for it exists.
+    ///
+    /// The webview stands down from playing stream audio on this, so keying it
+    /// on the token instead would mean a failed or dropped join leaves nobody
+    /// playing at all: silence, with a volume slider that still looks live. On
+    /// this, the same failure degrades to webview playback on the system
+    /// default device — worse than the native path, far better than nothing.
+    pub screen_audio_joined: bool,
     /// Whether we're currently sharing our screen (UI state).
     pub screen_sharing: bool,
     /// Whether *our* current share is the one whose sound `sysaudio` captures.
@@ -278,6 +287,7 @@ impl AppState {
             notify_tick: 0,
             screen_token: None,
             screen_audio_token: None,
+            screen_audio_joined: false,
             screen_sharing: false,
             screen_native_audio: false,
             screen_shares: HashMap::new(),
