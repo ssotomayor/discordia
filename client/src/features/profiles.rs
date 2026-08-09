@@ -57,6 +57,30 @@ pub(crate) fn check_image(bytes: &[u8], mime: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Wrap raw bytes as a `data:` URL, which is what the crop editor and every
+/// `<img src>` in the app want.
+pub(crate) fn to_data_url(bytes: &[u8], mime: &str) -> String {
+    let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
+    format!("data:{mime};base64,{b64}")
+}
+
+/// Decode a `data:` URL back to bytes. Returns empty on anything malformed —
+/// callers treat that as a failed upload, which is the honest outcome.
+pub(crate) fn data_url_bytes(url: &str) -> Vec<u8> {
+    url.split_once(";base64,")
+        .and_then(|(_, b64)| base64::engine::general_purpose::STANDARD.decode(b64).ok())
+        .unwrap_or_default()
+}
+
+/// The mime declared by a `data:` URL, defaulting to PNG.
+pub(crate) fn data_url_mime(url: &str) -> String {
+    url.strip_prefix("data:")
+        .and_then(|rest| rest.split_once(';'))
+        .map(|(mime, _)| mime.to_string())
+        .filter(|m| m.starts_with("image/"))
+        .unwrap_or_else(|| "image/png".to_string())
+}
+
 /// Best guess at an image mime type for a picked file.
 ///
 /// The webview reports `File.type` from the extension and can hand back
@@ -290,8 +314,9 @@ pub fn ProfileEditor() -> Element {
     let identity = use_context::<crate::identity::Identity>();
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
     // Separate clones for the two file pickers (Identity isn't Copy).
-    let id_avatar = identity.clone();
-    let id_banner = identity.clone();
+    // One clone per crop dialog; the pickers themselves no longer upload.
+    let id_avatar_crop = identity.clone();
+    let id_banner_crop = identity.clone();
 
     let mut open = use_signal(|| false);
     let mut avatar = use_signal::<Option<String>>(|| None);
@@ -300,6 +325,11 @@ pub fn ProfileEditor() -> Element {
     let mut status = use_signal(|| "online".to_string());
     let mut custom_status = use_signal(String::new);
     let mut err = use_signal::<Option<String>>(|| None);
+    // A picked image waits in one of these while the user frames it; the crop
+    // dialog uploads on accept. Two signals rather than one so the dialog knows
+    // which shape to crop to and where the result belongs.
+    let mut editing_avatar = use_signal(|| None::<String>);
+    let mut editing_banner = use_signal(|| None::<String>);
 
     // Initialise the fields from our current profile each time the modal opens.
     let mut load_current = move || {
@@ -373,6 +403,45 @@ pub fn ProfileEditor() -> Element {
             dangerous_inner_html: crate::features::icons::USER,
         }
 
+        // Crop dialogs, rendered above the editor they were opened from.
+        if let Some(src) = editing_avatar() {
+            crate::features::image_editor::ImageEditor {
+                src,
+                shape: crate::features::image_editor::CropShape::Square,
+                on_cancel: move |_| editing_avatar.set(None),
+                on_apply: move |cropped: String| {
+                    editing_avatar.set(None);
+                    let identity = id_avatar_crop.clone();
+                    let server = settings.read().blossom_server.clone();
+                    spawn(async move {
+                        let bytes = data_url_bytes(&cropped);
+                        let mime = data_url_mime(&cropped);
+                        let (val, note) = image_to_ref(server, identity, bytes, mime).await;
+                        err.set(note);
+                        avatar.set(val);
+                    });
+                },
+            }
+        }
+        if let Some(src) = editing_banner() {
+            crate::features::image_editor::ImageEditor {
+                src,
+                shape: crate::features::image_editor::CropShape::Banner,
+                on_cancel: move |_| editing_banner.set(None),
+                on_apply: move |cropped: String| {
+                    editing_banner.set(None);
+                    let identity = id_banner_crop.clone();
+                    let server = settings.read().blossom_server.clone();
+                    spawn(async move {
+                        let bytes = data_url_bytes(&cropped);
+                        let mime = data_url_mime(&cropped);
+                        let (val, note) = image_to_ref(server, identity, bytes, mime).await;
+                        err.set(note);
+                        banner.set(val);
+                    });
+                },
+            }
+        }
         if open() {
             div {
                 class: "dxf-backdrop-in fixed inset-0 z-50 flex items-center justify-center bg-black/50",
@@ -401,23 +470,26 @@ pub fn ProfileEditor() -> Element {
                                     class: "hidden",
                                     onchange: move |evt: FormEvent| {
                                         let files = evt.files();
-                                        let mut avatar = avatar;
                                         let mut err = err;
-                                        let identity = id_avatar.clone();
-                                        let server = settings.read().blossom_server.clone();
                                         spawn(async move {
                                             let Some(file) = files.into_iter().next() else { return };
                                             match file.read_bytes().await {
                                                 Ok(bytes) => {
                                                     let mime = image_mime(file.content_type());
+
                                                     if let Err(msg) = check_image(&bytes, &mime) {
+
                                                         err.set(Some(msg));
+
                                                         return;
+
                                                     }
-                                                    let (val, note) =
-                                                        image_to_ref(server, identity, bytes.to_vec(), mime).await;
-                                                    err.set(note);
-                                                    avatar.set(val);
+
+                                                    // Frame it before uploading; `editing_avatar` drives the
+
+                                                    // crop dialog, which uploads on accept.
+
+                                                    editing_avatar.set(Some(to_data_url(&bytes, &mime)));
                                                 }
                                                 Err(_) => err.set(Some("Couldn't read that file.".into())),
                                             }
@@ -456,23 +528,26 @@ pub fn ProfileEditor() -> Element {
                                     class: "hidden",
                                     onchange: move |evt: FormEvent| {
                                         let files = evt.files();
-                                        let mut banner = banner;
                                         let mut err = err;
-                                        let identity = id_banner.clone();
-                                        let server = settings.read().blossom_server.clone();
                                         spawn(async move {
                                             let Some(file) = files.into_iter().next() else { return };
                                             match file.read_bytes().await {
                                                 Ok(bytes) => {
                                                     let mime = image_mime(file.content_type());
+
                                                     if let Err(msg) = check_image(&bytes, &mime) {
+
                                                         err.set(Some(msg));
+
                                                         return;
+
                                                     }
-                                                    let (val, note) =
-                                                        image_to_ref(server, identity, bytes.to_vec(), mime).await;
-                                                    err.set(note);
-                                                    banner.set(val);
+
+                                                    // Frame it before uploading; `editing_banner` drives the
+
+                                                    // crop dialog, which uploads on accept.
+
+                                                    editing_banner.set(Some(to_data_url(&bytes, &mime)));
                                                 }
                                                 Err(_) => err.set(Some("Couldn't read that file.".into())),
                                             }

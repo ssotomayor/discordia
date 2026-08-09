@@ -155,6 +155,7 @@ pub fn GuildSettingsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element 
                             // profile avatars), then push the whole profile.
                             ImagePickButton {
                                 label: "Icon…",
+                                shape: crate::features::image_editor::CropShape::Square,
                                 onpicked: {
                                     let gateway = gateway.clone();
                                     let banner = g.banner.clone();
@@ -185,6 +186,7 @@ pub fn GuildSettingsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element 
                             }
                             ImagePickButton {
                                 label: "Banner…",
+                                shape: crate::features::image_editor::CropShape::Banner,
                                 onpicked: {
                                     let gateway = gateway.clone();
                                     let icon_image = g.icon_image.clone();
@@ -527,11 +529,40 @@ fn SafetyControls(guild_id: Id, gate: JoinGate, rules: Option<String>, panic_mod
 #[component]
 fn ImagePickButton(
     label: &'static str,
+    /// Shape the picked image is cropped to before upload.
+    shape: crate::features::image_editor::CropShape,
     onpicked: EventHandler<(Option<String>, Option<String>)>,
     identity: crate::identity::Identity,
     settings: Signal<crate::settings::ClientSettings>,
 ) -> Element {
+    // The picked image waits here while the user frames it. Uploading only
+    // happens once they accept the crop.
+    let mut editing = use_signal(|| None::<String>);
     rsx! {
+        if let Some(src) = editing() {
+            crate::features::image_editor::ImageEditor {
+                src,
+                shape,
+                on_cancel: move |_| editing.set(None),
+                on_apply: move |cropped: String| {
+                    editing.set(None);
+                    let identity = identity.clone();
+                    let server = settings.read().blossom_server.clone();
+                    let onpicked = onpicked;
+                    spawn(async move {
+                        // The crop is already a data URL; hand the bytes to the
+                        // same upload path a raw pick used to take.
+                        let bytes = crate::features::profiles::data_url_bytes(&cropped);
+                        let mime = crate::features::profiles::data_url_mime(&cropped);
+                        let result = crate::features::profiles::image_to_ref(
+                            server, identity, bytes, mime,
+                        )
+                        .await;
+                        onpicked.call(result);
+                    });
+                },
+            }
+        }
         label { class: "rounded px-3 py-1 text-[10px] uppercase tracking-wider text-[var(--text-muted)] border border-[var(--border)] hover:border-[var(--accent)] hover:text-[var(--accent)] transition-colors cursor-pointer",
             "{label}"
             input {
@@ -540,9 +571,7 @@ fn ImagePickButton(
                 style: "display:none",
                 onchange: move |evt| {
                     let files = evt.files();
-                    let identity = identity.clone();
                     let onpicked = onpicked;
-                    let server = settings.read().blossom_server.clone();
                     spawn(async move {
                         let Some(file) = files.into_iter().next() else { return };
                         match file.read_bytes().await {
@@ -564,14 +593,10 @@ fn ImagePickButton(
                                     onpicked.call((None, Some(msg)));
                                     return;
                                 }
-                                let result = crate::features::profiles::image_to_ref(
-                                    server,
-                                    identity,
-                                    bytes.to_vec(),
-                                    mime,
-                                )
-                                .await;
-                                onpicked.call(result);
+                                // Frame it first; the upload happens on accept.
+                                editing.set(Some(crate::features::profiles::to_data_url(
+                                    &bytes, &mime,
+                                )));
                             }
                             Err(_) => {
                                 onpicked.call((None, Some("Couldn't read that file.".into())));

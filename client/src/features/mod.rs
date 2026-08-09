@@ -6,6 +6,7 @@ pub mod connect;
 pub mod guild_settings;
 pub mod guilds;
 pub mod icons;
+pub mod image_editor;
 pub mod identity_setup;
 pub mod integrations;
 pub mod members;
