@@ -389,10 +389,11 @@ window.dxScreen = window.dxScreen || (function () {
     // so Rust learns immediately and can tear down the self-preview + notify
     // the server. LiveKit preserves this handler through publishTrack.
     vt.addEventListener('ended', function () { notifyShareEnded(); });
-    // Tell the encoder this is detail-critical content. Without a contentHint
-    // WebRTC assumes camera-style motion video and happily blurs fine detail —
-    // text turns to mush the moment anything on screen moves.
-    try { vt.contentHint = 'detail'; } catch (e) {}
+    // What the encoder should protect when it can't have everything. 'detail'
+    // preserves fine text at the cost of smoothness; 'motion' does the reverse.
+    // This follows the chosen preset rather than being fixed at 'detail', which
+    // made every preset behave like the text-oriented one.
+    try { vt.contentHint = quality.hint || 'detail'; } catch (e) {}
     // Re-assert the resolution on the track itself. Chromium sometimes honours
     // applyConstraints here even when it ignored them on getDisplayMedia.
     try {
@@ -408,10 +409,10 @@ window.dxScreen = window.dxScreen || (function () {
         // Without an explicit encoding LiveKit falls back to a conservative
         // default bitrate that starves a full-resolution desktop capture.
         videoEncoding: { maxBitrate: quality.bitrate || 6000000, maxFramerate: wantFps },
-        // Under bandwidth pressure, drop frames rather than pixels — the
-        // default ('maintain-framerate') scales the picture down, which is
-        // exactly the pixelation being reported.
-        degradationPreference: 'maintain-resolution',
+        // Which way to give under pressure, per preset. Fixed at
+        // 'maintain-resolution' this dropped frames on every share, so a busy
+        // screen turned into a slideshow no matter which preset was picked.
+        degradationPreference: quality.degradation || 'balanced',
         // Simulcast re-encodes at reduced sizes; for screen share it mostly
         // costs upload bandwidth that the full-resolution layer needs.
         simulcast: false,
@@ -496,25 +497,42 @@ window.dxScreen = window.dxScreen || (function () {
 /// Screen-share quality presets, in the order the settings menu shows them.
 /// `(id, label, hint)` — the hint is the one-line explanation under the select.
 pub const QUALITY_PRESETS: &[(&str, &str, &str)] = &[
-    ("smooth", "Smooth — 720p60", "Best for video and animation"),
+    ("smooth", "Smooth — 720p60", "Video and animation: stays fluid, softens when busy"),
     ("balanced", "Balanced — 1080p30", "Good default for most sharing"),
-    ("crisp", "Crisp — 1080p15", "Sharpest text, lower framerate"),
+    ("crisp", "Crisp — 1080p15", "Sharpest text; drops frames when the screen is busy"),
     ("ultra", "Ultra — 1440p30", "High detail; needs strong upload"),
 ];
 
-/// Resolve a preset id to `(width, height, fps, max_bitrate_bps)`.
-///
 /// Screen content is mostly static text, so resolution matters far more than
 /// framerate for legibility — the "crisp" preset deliberately trades fps for
 /// pixels. Bitrates are well above LiveKit's screen-share defaults because the
 /// default is tuned for slide decks, not code editors.
-fn quality_preset(id: &str) -> (u32, u32, u32, u32) {
+/// `(width, height, fps, max_bitrate, content_hint, degradation_preference)`.
+///
+/// The last two are the ones that decide what gives way when the scene gets
+/// busy, and they must follow the preset's promise. Every preset used to get
+/// `detail` + `maintain-resolution`, which means "keep the pixels, drop the
+/// frames" — so "Smooth — best for video and animation" stuttered exactly like
+/// "Crisp — sharpest text" did. The labels were describing intentions the
+/// encoder was never told about.
+///
+/// - `maintain-framerate` scales the picture down and keeps motion fluid.
+/// - `maintain-resolution` keeps every pixel and sacrifices frames.
+/// - `balanced` lets WebRTC give a little of each.
+///
+/// Bitrates are ceilings, not targets: congestion control still limits what a
+/// weak uplink actually sends, so a higher cap only helps connections that can
+/// use it — and headroom is what stops a busy scene having to degrade at all.
+fn quality_preset(id: &str) -> (u32, u32, u32, u32, &'static str, &'static str) {
     match id {
-        "smooth" => (1280, 720, 60, 4_000_000),
-        "crisp" => (1920, 1080, 15, 5_000_000),
-        "ultra" => (2560, 1440, 30, 10_000_000),
+        // Video and animation: fluid motion is the whole point.
+        "smooth" => (1280, 720, 60, 6_000_000, "motion", "maintain-framerate"),
+        // Text: every pixel matters, frames do not.
+        "crisp" => (1920, 1080, 15, 6_000_000, "detail", "maintain-resolution"),
+        // Lots of detail, but not at the cost of collapsing to a slideshow.
+        "ultra" => (2560, 1440, 30, 14_000_000, "detail", "balanced"),
         // "balanced" and anything unrecognised (older config, typo).
-        _ => (1920, 1080, 30, 6_000_000),
+        _ => (1920, 1080, 30, 9_000_000, "motion", "balanced"),
     }
 }
 
@@ -531,10 +549,11 @@ pub fn share_js(on: bool, quality: &str) -> String {
     if !on {
         return format!("{SCREEN_JS}\nwindow.dxScreen.stopShare();");
     }
-    let (w, h, fps, bitrate) = quality_preset(quality);
+    let (w, h, fps, bitrate, hint, degradation) = quality_preset(quality);
     let native_audio = native_system_audio();
     format!(
-        "{SCREEN_JS}\nwindow.dxScreen.requestAndStartShare({{width:{w},height:{h},fps:{fps},bitrate:{bitrate},nativeAudio:{native_audio}}});"
+        "{SCREEN_JS}\nwindow.dxScreen.requestAndStartShare({{width:{w},height:{h},fps:{fps},\
+         bitrate:{bitrate},hint:'{hint}',degradation:'{degradation}',nativeAudio:{native_audio}}});"
     )
 }
 
