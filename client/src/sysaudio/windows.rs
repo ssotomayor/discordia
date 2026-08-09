@@ -109,7 +109,10 @@ pub struct WinCapture {
 }
 
 impl WinCapture {
-    pub fn start(tx: UnboundedSender<Vec<f32>>) -> Result<Self, String> {
+    pub fn start(
+        tx: UnboundedSender<Vec<f32>>,
+        fatal: UnboundedSender<String>,
+    ) -> Result<Self, String> {
         // SAFETY: creating an unnamed, manual-reset-free event.
         let shutdown = unsafe { CreateEventW(None, true, false, None) }
             .map_err(|e| format!("create shutdown event: {e}"))?;
@@ -121,7 +124,7 @@ impl WinCapture {
         let (ready_tx, ready_rx) = std_mpsc::channel::<Result<(), String>>();
         let thread = std::thread::Builder::new()
             .name("dxf-sysaudio-win".into())
-            .spawn(move || run(tx, shutdown, ready_tx))
+            .spawn(move || run(tx, fatal, shutdown, ready_tx))
             .map_err(|e| format!("spawn capture thread: {e}"))?;
 
         match ready_rx.recv_timeout(ACTIVATE_TIMEOUT + Duration::from_secs(2)) {
@@ -169,6 +172,7 @@ impl Drop for WinCapture {
 /// The capture thread: activate, initialise, then pump until told to stop.
 fn run(
     tx: UnboundedSender<Vec<f32>>,
+    fatal: UnboundedSender<String>,
     shutdown: SendHandle,
     ready: std_mpsc::Sender<Result<(), String>>,
 ) {
@@ -191,7 +195,11 @@ fn run(
         }
     };
 
-    pump(started, tx, shutdown);
+    // A failure from here on is mid-share: `start` already returned `Ok`, so the
+    // track is published and nobody would otherwise learn it went quiet.
+    if let Err(e) = pump(started, tx, shutdown) {
+        let _ = fatal.send(e);
+    }
 
     // SAFETY: balances the CoInitializeEx above.
     unsafe { CoUninitialize() };
@@ -218,21 +226,29 @@ impl Drop for Started {
 }
 
 fn setup() -> Result<Started, String> {
-    let client = activate()?;
+    let mut client = activate()?;
 
     // Float first: it is what the rest of the pipeline speaks, so it saves a
     // conversion. Some drivers refuse it, hence the PCM fallback.
     let (bits, tag) = match init(&client, 32, FORMAT_IEEE_FLOAT) {
         Ok(()) => (32u16, "f32"),
-        Err(hr) if hr == AUDCLNT_E_UNSUPPORTED_FORMAT => match init(&client, 16, WAVE_FORMAT_PCM as u16) {
-            Ok(()) => (16u16, "i16"),
-            Err(hr2) => {
-                return Err(format!(
+        Err(hr) if hr == AUDCLNT_E_UNSUPPORTED_FORMAT => {
+            // A client whose `Initialize` failed is spent — WASAPI's contract is
+            // to release it and activate a fresh one. Retrying on the same
+            // client makes the second call fail because it is already spent,
+            // not because of the format, so the PCM fallback never actually
+            // happens and capture dies reporting that both formats were
+            // rejected when only one ever was.
+            drop(client);
+            client = activate()?;
+            init(&client, 16, WAVE_FORMAT_PCM as u16).map_err(|hr2| {
+                format!(
                     "Windows rejected both capture formats for per-app audio ({}).",
                     explain(hr2)
-                ))
-            }
-        },
+                )
+            })?;
+            (16u16, "i16")
+        }
         Err(hr) => return Err(format!("Couldn't start system-audio capture: {}", explain(hr))),
     };
     eprintln!("[sysaudio] windows process loopback: {RATE}Hz {CHANNELS}ch {tag}");
@@ -270,7 +286,11 @@ fn setup() -> Result<Started, String> {
 
 /// Ask the audio engine for a process-loopback client that excludes us.
 fn activate() -> Result<IAudioClient, String> {
-    let mut params = AUDIOCLIENT_ACTIVATION_PARAMS {
+    // Boxed rather than left on the stack so that an activation which times out
+    // — and may still be reading the blob on another thread — can be abandoned
+    // by leaking this, instead of pulling it out from under the engine when the
+    // function returns. See the timeout branch below.
+    let mut params = Box::new(AUDIOCLIENT_ACTIVATION_PARAMS {
         ActivationType: AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
         Anonymous: AUDIOCLIENT_ACTIVATION_PARAMS_0 {
             ProcessLoopbackParams: AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS {
@@ -282,7 +302,7 @@ fn activate() -> Result<IAudioClient, String> {
                 ProcessLoopbackMode: PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE,
             },
         },
-    };
+    });
 
     // The activation parameters travel as a VT_BLOB PROPVARIANT. Built field by
     // field because the safe constructors don't cover BLOB.
@@ -299,7 +319,7 @@ fn activate() -> Result<IAudioClient, String> {
         let inner = &mut prop.Anonymous.Anonymous;
         inner.vt = VT_BLOB;
         inner.Anonymous.blob.cbSize = std::mem::size_of::<AUDIOCLIENT_ACTIVATION_PARAMS>() as u32;
-        inner.Anonymous.blob.pBlobData = std::ptr::from_mut(&mut params).cast::<u8>();
+        inner.Anonymous.blob.pBlobData = std::ptr::from_mut(&mut *params).cast::<u8>();
     }
 
     // SAFETY: an unnamed auto-reset event, signalled by the handler below.
@@ -327,13 +347,22 @@ fn activate() -> Result<IAudioClient, String> {
 
     // SAFETY: waiting on our own event.
     let waited = unsafe { WaitForSingleObject(done.0, ACTIVATE_TIMEOUT.as_millis() as u32) };
-    // SAFETY: the handler will not fire after this point — either it already
-    // did, or the operation timed out and we are abandoning it.
+    if waited != WAIT_OBJECT_0 {
+        // Both deliberately leaked. On this path the completion handler has NOT
+        // run and may still fire on an MTA pool thread: closing `done` now would
+        // let it `SetEvent` a handle value Windows has since recycled, quietly
+        // signalling some unrelated kernel object instead of failing loudly.
+        // Freeing `params` would likewise pull the blob out from under an
+        // activation still in flight. Same trade `WinCapture::start` makes with
+        // its shutdown handle — a leak on an already-failed path costs far less
+        // than a use-after-free.
+        std::mem::forget(params);
+        return Err("Windows didn't answer the audio-capture request in time.".into());
+    }
+    // SAFETY: the handler has run — it is what signalled this event — so nothing
+    // will touch the handle again.
     unsafe {
         let _ = CloseHandle(done.0);
-    }
-    if waited != WAIT_OBJECT_0 {
-        return Err("Windows didn't answer the audio-capture request in time.".into());
     }
 
     let mut hr = HRESULT(0);
@@ -385,7 +414,15 @@ fn init(client: &IAudioClient, bits: u16, tag: u16) -> Result<(), HRESULT> {
 }
 
 /// Drain packets as they arrive, and keep the stream flowing when they don't.
-fn pump(started: Started, tx: UnboundedSender<Vec<f32>>, shutdown: SendHandle) {
+///
+/// `Ok` means a clean stop — told to shut down, or the receiver went away with
+/// the voice session. `Err` means the capture itself broke, which is worth
+/// telling the user about because the track stays published either way.
+fn pump(
+    started: Started,
+    tx: UnboundedSender<Vec<f32>>,
+    shutdown: SendHandle,
+) -> Result<(), String> {
     let mut cutter = FrameCutter::new(tx);
     let handles = [started.event.0, shutdown.0];
     let clock = Instant::now();
@@ -401,14 +438,13 @@ fn pump(started: Started, tx: UnboundedSender<Vec<f32>>, shutdown: SendHandle) {
             // Topping up here as well would splice silence into the middle of
             // live audio the moment the engine's clock ran a hair slow — an
             // audible click, in exchange for a cadence nobody was missing.
-            if !drain(&started, &mut cutter) {
+            if !drain(&started, &mut cutter)? {
                 break;
             }
             continue;
         }
         if waited != WAIT_TIMEOUT {
-            eprintln!("[sysaudio] capture wait failed ({waited:?})");
-            break;
+            return Err(format!("the audio engine stopped responding ({waited:?})"));
         }
         // Timed out, so nothing is playing: the engine goes quiet rather than
         // delivering zeroes, and libwebrtc wants a steady 10 ms cadence. The
@@ -425,19 +461,18 @@ fn pump(started: Started, tx: UnboundedSender<Vec<f32>>, shutdown: SendHandle) {
         }
     }
     eprintln!("[sysaudio] windows capture stopped");
+    Ok(())
 }
 
-/// Pull every queued packet. Returns false when the receiver is gone.
-fn drain(started: &Started, cutter: &mut FrameCutter) -> bool {
+/// Pull every queued packet. `Ok(false)` means the receiver is gone (a clean
+/// stop); `Err` means WASAPI failed.
+fn drain(started: &Started, cutter: &mut FrameCutter) -> Result<bool, String> {
     loop {
         // SAFETY: the capture client is live for the life of `Started`.
         match unsafe { started.capture.GetNextPacketSize() } {
-            Ok(0) => return true,
+            Ok(0) => return Ok(true),
             Ok(_) => {}
-            Err(e) => {
-                eprintln!("[sysaudio] packet size failed: {e}");
-                return false;
-            }
+            Err(e) => return Err(format!("reading the audio queue failed ({})", explain(e.code()))),
         }
 
         let mut data: *mut u8 = std::ptr::null_mut();
@@ -450,8 +485,7 @@ fn drain(started: &Started, cutter: &mut FrameCutter) -> bool {
                 .capture
                 .GetBuffer(&mut data, &mut frames, &mut flags, None, None)
         } {
-            eprintln!("[sysaudio] get buffer failed: {e}");
-            return false;
+            return Err(format!("reading a capture buffer failed ({})", explain(e.code())));
         }
 
         let alive = if frames == 0 {
@@ -480,11 +514,13 @@ fn drain(started: &Started, cutter: &mut FrameCutter) -> bool {
 
         // SAFETY: releasing exactly what GetBuffer handed out.
         if let Err(e) = unsafe { started.capture.ReleaseBuffer(frames) } {
-            eprintln!("[sysaudio] release buffer failed: {e}");
-            return false;
+            return Err(format!(
+                "releasing a capture buffer failed ({})",
+                explain(e.code())
+            ));
         }
         if !alive {
-            return false;
+            return Ok(false);
         }
     }
 }
