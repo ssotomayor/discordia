@@ -90,12 +90,6 @@ impl BotIdentity {
         }
     }
 
-    /// Reconstruct an identity from its 32-byte secret seed. Panics if the
-    /// bytes aren't a valid secp256k1 scalar (astronomically unlikely).
-    pub fn from_secret_bytes(secret: &[u8; 32]) -> Self {
-        Self::try_from_secret_bytes(secret).expect("valid secp256k1 secret")
-    }
-
     fn try_from_secret_bytes(secret: &[u8; 32]) -> std::result::Result<Self, secp256k1::Error> {
         let secp = Secp256k1::new();
         let sk = SecretKey::from_slice(secret)?;
@@ -293,13 +287,6 @@ impl Bot {
             emoji: emoji.to_string(),
         })
         .await
-    }
-
-    /// Request recent history for a channel (delivered as a `MessageHistory`
-    /// event). Requires the `ReadMessageHistory` permission.
-    pub async fn fetch_messages(&mut self, channel_id: Id, limit: u32) -> Result<()> {
-        self.send(&ClientMessage::FetchMessages { channel_id, limit, before_ms: None })
-            .await
     }
 
     /// Send an arbitrary client frame. Most bots won't need this directly.

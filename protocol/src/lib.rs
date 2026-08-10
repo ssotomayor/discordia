@@ -951,9 +951,6 @@ pub enum ServerMessage {
         other: User,
         messages: Vec<Message>,
     },
-    /// Sent to the *other* participant when someone opens a DM with them, so
-    /// the conversation appears in their sidebar.
-    DmCreate(DmInfo),
     /// A user published or changed their profile. Broadcast to everyone so
     /// avatars/bios stay current wherever that user is shown.
     ProfileUpdate(Profile),

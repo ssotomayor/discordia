@@ -47,10 +47,6 @@ impl LayoutStore {
         self.free.write().insert(id.into(), rect);
     }
 
-    pub fn has_free(&self) -> bool {
-        !self.free.read().is_empty()
-    }
-
     /// Stacking order for `id` (0 when it has never been raised).
     pub fn z_of(&self, id: &str) -> u32 {
         self.z.read().get(id).copied().unwrap_or(0)
@@ -156,15 +152,6 @@ fn rerank(current: HashMap<String, u32>, id: &str) -> HashMap<String, u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[allow(dead_code)]
-    fn store() -> LayoutStore {
-        LayoutStore::new([
-            ("a".to_string(), GridPosition::new(0, 0, 1, 1)),
-            ("b".to_string(), GridPosition::new(1, 0, 1, 1)),
-            ("c".to_string(), GridPosition::new(2, 0, 1, 1)),
-        ])
-    }
 
     fn z(pairs: &[(&str, u32)]) -> HashMap<String, u32> {
         pairs.iter().map(|(k, v)| (k.to_string(), *v)).collect()

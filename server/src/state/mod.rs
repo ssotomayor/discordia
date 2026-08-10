@@ -2177,14 +2177,6 @@ impl AppState {
 
     // ----- Bot platform (Tier 1) -------------------------------------------
 
-    /// True if `pubkey` is an installed bot in at least one guild.
-    pub fn is_bot(&self, pubkey: &str) -> bool {
-        self.bot_installs
-            .get(pubkey)
-            .map(|g| !g.is_empty())
-            .unwrap_or(false)
-    }
-
     /// The grants a bot has in a specific guild, if installed there.
     pub fn bot_install(&self, guild_id: Id, bot_pubkey: &str) -> Option<BotInstall> {
         self.bot_installs

@@ -19,7 +19,6 @@ tokio = { workspace = true, features = ["full"] }
 # Server-specific.
 axum = { workspace = true, features = ["macros"] }
 tokio = { workspace = true, features = ["full"] }
-tower = "0.5"
 livekit-api = { version = "0.4", default-features = false, features = ["access-token"] }
 # Nostr identity verification: secp256k1 Schnorr (BIP-340).
 secp256k1 = { workspace = true }

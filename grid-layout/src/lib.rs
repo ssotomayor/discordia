@@ -45,6 +45,6 @@ mod store;
 
 pub use grid::GridLayout;
 pub use item::GridItem;
-pub use layout::{FloatRect, GridPosition, LayoutMode, LayoutSpec, Placement};
+pub use layout::{FloatRect, GridPosition, LayoutMode};
 pub use nodrag::NoDrag;
 pub use store::{LayoutStore, use_layout_store};

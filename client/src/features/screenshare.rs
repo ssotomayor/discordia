@@ -586,7 +586,7 @@ window.dxScreen = window.dxScreen || (function () {
     detachAudio();
     CONTAINERS.forEach(detach);
   }
-  return { connect: connect, attach: attach, detach: detach, startShare: startShare, requestAndStartShare: requestAndStartShare, stopShare: stopShare, disconnect: disconnect, setStreamVolume: setStreamVolume, setSink: setSink, setNativeStreamAudio: setNativeStreamAudio };
+  return { connect: connect, attach: attach, detach: detach, requestAndStartShare: requestAndStartShare, stopShare: stopShare, disconnect: disconnect, setStreamVolume: setStreamVolume, setSink: setSink, setNativeStreamAudio: setNativeStreamAudio };
 })();
 "#;
 
