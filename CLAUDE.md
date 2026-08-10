@@ -24,6 +24,59 @@ Read it, then `docs/ROADMAP.md` for where the project is headed and
 
 ---
 
+## Architecture at a glance
+
+```mermaid
+flowchart LR
+    subgraph Client["Client — dioxusfun (Dioxus desktop, wry webview)"]
+        UI["features/*.rs — UI"]
+        Net["net.rs — WS loop<br/>apply(ServerMessage) / send(ClientMessage)"]
+        Voice["features/voice.rs — native LiveKit SDK<br/>mic, playback mixer, voice room,<br/>audio-only screen-room subscriber"]
+        SysAudio["sysaudio/ — native system-audio capture<br/>macOS ScreenCaptureKit · Windows WASAPI loopback"]
+        WebJS["features/screenshare.rs — webview JS bridge<br/>LiveKit JS SDK: screen video (+ fallback audio)"]
+        UI --> Net
+        SysAudio --> Voice
+        Voice -. same cpal mixer .-> WebJS
+    end
+
+    subgraph Server["Server — dioxusfun-server (axum gateway)"]
+        Gateway["gateway/connection.rs<br/>one task per WS connection"]
+        State["state/mod.rs — AppState (DashMaps)<br/>authoritative in-memory state"]
+        Store[("store.rs — SQLite<br/>write-through")]
+        Media["media.rs — content-addressed blobs"]
+        LK["livekit.rs — token minting"]
+        Gateway --> State --> Store
+        Gateway --> Media
+        Gateway --> LK
+    end
+
+    subgraph SFU["LiveKit SFU"]
+        VoiceRoom["voice-{channel}<br/>native peers: mic + shared system audio"]
+        ScreenRoom["screen-{channel}<br/>webview peer (video, identity = pubkey)<br/>native peer (audio-only, identity = pubkey#audio)"]
+    end
+
+    subgraph Rendezvous["rendezvous (optional discovery relay)"]
+        Relay["relay.rs — /control · /join/:code · /proxy/:session"]
+    end
+
+    Bot["bot-sdk client<br/>(filtered ClientMessage/ServerMessage stream)"]
+
+    Net <-->|"WebSocket /gateway<br/>BIP-340 Schnorr Identify"| Gateway
+    Bot <--> Gateway
+    Voice <-->|LiveKit token| VoiceRoom
+    WebJS <-->|screen token| ScreenRoom
+    Voice <-.->|"#audio token"| ScreenRoom
+    LK -.mint.-> VoiceRoom
+    LK -.mint.-> ScreenRoom
+    Gateway <-->|self-host register / proxy| Relay
+```
+
+Two runtime paths carry audio+video for a screen share, and both terminate in
+the *same* `screen-{channel}` LiveKit room under different identities — see
+`server::livekit::screen_audio_identity` and the `sysaudio/` note below.
+
+---
+
 ## The five things that will bite you if you don't know them
 
 1. **Protocol changes ripple everywhere.** Adding/removing a field on a
@@ -134,6 +187,18 @@ Read it, then `docs/ROADMAP.md` for where the project is headed and
 - `features/*.rs` — UI, one module per surface: `guilds`, `channels`, `chat`,
   `members`, `voice`, `screenshare`, `roles`, `guild_settings`, `integrations`
   (bots), `profiles`, `connect`, `appearance`, `activities`.
+- **Screen-share audio has two paths into the same room, on purpose.** The
+  `screen-{channel}` LiveKit room is joined twice per sharer/watcher: once by
+  the webview (video, plus its own fallback audio) under the user's bare
+  pubkey, and once by the native client (audio-only, `auto_subscribe: false`)
+  under `{pubkey}#audio` — LiveKit allows only one connection per identity, so
+  the suffix is what makes the second join possible. Both land in the same
+  cpal mixer voice already uses, so stream audio follows the chosen output
+  device instead of being stuck on whatever `setSinkId` support the webview
+  has. `AppState.screen_audio_joined` (client) tracks whether the native side
+  is *actually in*, not just whether it has a token — a failed/dropped native
+  join hands playback back to the webview rather than going silent. See
+  `features::voice::ScreenAudioRoom` and `server::livekit::screen_token_as`.
 - `protocol/mod.rs` — re-exports `dioxusfun-protocol` so the client says
   `crate::protocol::…`.
 
@@ -224,7 +289,7 @@ We welcome contributions from anyone who is interested in improving Discordia. H
 
 1. **Fork the Repository**: Click on the "Fork" button at the top right of this repository page.
 2. **Clone Your Fork**: Clone your forked repository to your local machine using `git clone`.
-3. **Set Up Your Environment**: Follow the instructions in the `README.md` files for setting up the development environment.
+3. **Set Up Your Environment**: There's no separate README — this file (`CLAUDE.md`) is the setup/orientation doc; see "Build, run, test" above and `docs/SELF_HOSTING.md` for deploying a server.
 
 ### Making Changes
 
