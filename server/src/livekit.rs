@@ -96,10 +96,10 @@ fn is_loopback(host: &str) -> bool {
 
 /// Strip the port from a HTTP `Host` header, handling IPv6 in brackets.
 fn host_without_port(host: &str) -> &str {
-    if host.starts_with('[') {
-        if let Some(end) = host.find(']') {
-            return &host[..=end];
-        }
+    if host.starts_with('[')
+        && let Some(end) = host.find(']')
+    {
+        return &host[..=end];
     }
     host.rsplit_once(':').map(|(h, _)| h).unwrap_or(host)
 }

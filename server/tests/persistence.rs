@@ -2,7 +2,7 @@
 //! images are offloaded to the content-addressed blob store.
 
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use dioxusfun_bot::{Bot, BotIdentity};
@@ -34,7 +34,7 @@ fn temp_data_dir() -> PathBuf {
     ))
 }
 
-async fn spawn_on(dir: &PathBuf) -> (String, dioxusfun_server::ServerHandle) {
+async fn spawn_on(dir: &Path) -> (String, dioxusfun_server::ServerHandle) {
     // Port 0 = let the OS pick. A fixed port made the two tests in this file
     // race each other under `cargo test --workspace`: one binds it, and a
     // client can end up talking to the other test's server on the same port,
@@ -44,7 +44,7 @@ async fn spawn_on(dir: &PathBuf) -> (String, dioxusfun_server::ServerHandle) {
     let cfg = dioxusfun_server::ServerConfig {
         livekit: LiveKitConfig::from_env(),
         operators: Default::default(),
-        data_dir: dir.clone(),
+        data_dir: dir.to_path_buf(),
     };
     let handle = dioxusfun_server::spawn(preferred, 100, cfg)
         .await
@@ -152,10 +152,9 @@ async fn state_survives_restart_and_media_is_offloaded() {
             channel_id,
             messages,
         } = next_timeout(&mut owner).await
+            && channel_id == text_channel
         {
-            if channel_id == text_channel {
-                break messages;
-            }
+            break messages;
         }
     };
     assert_eq!(history.len(), 2, "both messages survived");
@@ -221,10 +220,10 @@ async fn replies_are_quoted_server_side_and_survive_restart() {
             .await
             .unwrap();
         chan_b = loop {
-            if let ServerMessage::ChannelCreate(c) = next_timeout(&mut author).await {
-                if c.id != chan_a {
-                    break c.id;
-                }
+            if let ServerMessage::ChannelCreate(c) = next_timeout(&mut author).await
+                && c.id != chan_a
+            {
+                break c.id;
             }
         };
 
@@ -233,10 +232,10 @@ async fn replies_are_quoted_server_side_and_survive_restart() {
             .await
             .unwrap();
         parent_id = loop {
-            if let ServerMessage::MessageCreate(m) = next_timeout(&mut author).await {
-                if m.channel_id == chan_a {
-                    break m.id;
-                }
+            if let ServerMessage::MessageCreate(m) = next_timeout(&mut author).await
+                && m.channel_id == chan_a
+            {
+                break m.id;
             }
         };
 
@@ -262,10 +261,10 @@ async fn replies_are_quoted_server_side_and_survive_restart() {
             .await
             .unwrap();
         let reply = loop {
-            if let ServerMessage::MessageCreate(m) = next_timeout(&mut replier).await {
-                if m.content == "answering you" {
-                    break m;
-                }
+            if let ServerMessage::MessageCreate(m) = next_timeout(&mut replier).await
+                && m.content == "answering you"
+            {
+                break m;
             }
         };
         let q = reply.reply_to.expect("reply carries a quote");
@@ -287,10 +286,10 @@ async fn replies_are_quoted_server_side_and_survive_restart() {
             .await
             .unwrap();
         let stray = loop {
-            if let ServerMessage::MessageCreate(m) = next_timeout(&mut replier).await {
-                if m.content == "wrong channel" {
-                    break m;
-                }
+            if let ServerMessage::MessageCreate(m) = next_timeout(&mut replier).await
+                && m.content == "wrong channel"
+            {
+                break m;
             }
         };
         assert!(

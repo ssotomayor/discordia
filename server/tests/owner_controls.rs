@@ -137,10 +137,9 @@ async fn role_crud_and_broadcast() {
             guild_id: gid,
             roles,
         } = next_timeout(&mut member).await
+            && gid == guild_id
         {
-            if gid == guild_id {
-                break roles;
-            }
+            break roles;
         }
     };
     assert_eq!(roles.len(), 1);
@@ -158,10 +157,10 @@ async fn role_crud_and_broadcast() {
         .await
         .unwrap();
     let updated = loop {
-        if let ServerMessage::MemberUpdate(m) = next_timeout(&mut member).await {
-            if m.user.pubkey == member_id.pubkey() {
-                break m;
-            }
+        if let ServerMessage::MemberUpdate(m) = next_timeout(&mut member).await
+            && m.user.pubkey == member_id.pubkey()
+        {
+            break m;
         }
     };
     assert!(updated.roles.contains(&role_id));
@@ -274,10 +273,11 @@ async fn manage_guild_role_unlocks_accent() {
         .await
         .unwrap();
     loop {
-        if let ServerMessage::MemberUpdate(m) = next_timeout(&mut member).await {
-            if m.user.pubkey == member_id.pubkey() && m.roles.contains(&role_id) {
-                break;
-            }
+        if let ServerMessage::MemberUpdate(m) = next_timeout(&mut member).await
+            && m.user.pubkey == member_id.pubkey()
+            && m.roles.contains(&role_id)
+        {
+            break;
         }
     }
 
@@ -290,10 +290,10 @@ async fn manage_guild_role_unlocks_accent() {
         .await
         .unwrap();
     let updated = loop {
-        if let ServerMessage::GuildUpdate(g) = next_timeout(&mut owner).await {
-            if g.id == guild_id {
-                break g;
-            }
+        if let ServerMessage::GuildUpdate(g) = next_timeout(&mut owner).await
+            && g.id == guild_id
+        {
+            break g;
         }
     };
     assert_eq!(updated.accent.as_deref(), Some("#123456"));
@@ -352,10 +352,11 @@ async fn role_escalation_blocked() {
         .await
         .unwrap();
     loop {
-        if let ServerMessage::MemberUpdate(m) = next_timeout(&mut moderator).await {
-            if m.user.pubkey == mod_id.pubkey() && m.roles.contains(&role_id) {
-                break;
-            }
+        if let ServerMessage::MemberUpdate(m) = next_timeout(&mut moderator).await
+            && m.user.pubkey == mod_id.pubkey()
+            && m.roles.contains(&role_id)
+        {
+            break;
         }
     }
 
@@ -476,10 +477,10 @@ async fn private_guild_hidden_and_invite_flow() {
         .await
         .unwrap();
     loop {
-        if let ServerMessage::GuildUpdate(g) = next_timeout(&mut owner).await {
-            if g.id == guild_id {
-                break;
-            }
+        if let ServerMessage::GuildUpdate(g) = next_timeout(&mut owner).await
+            && g.id == guild_id
+        {
+            break;
         }
     }
 
@@ -522,10 +523,9 @@ async fn private_guild_hidden_and_invite_flow() {
             guild_id: gid,
             code,
         } = next_timeout(&mut owner).await
+            && gid == guild_id
         {
-            if gid == guild_id {
-                break code;
-            }
+            break code;
         }
     };
     assert_eq!(code.len(), 12, "high-entropy code expected");
@@ -788,10 +788,10 @@ async fn moderation_guard_rails() {
     // Wait until mod A sees both assignments land.
     let mut assigned = 0;
     while assigned < 2 {
-        if let ServerMessage::MemberUpdate(m) = next_timeout(&mut mod_a).await {
-            if m.roles.contains(&role_id) {
-                assigned += 1;
-            }
+        if let ServerMessage::MemberUpdate(m) = next_timeout(&mut mod_a).await
+            && m.roles.contains(&role_id)
+        {
+            assigned += 1;
         }
     }
 
@@ -1128,11 +1128,11 @@ async fn read_only_channel_gates_posting() {
         .await
         .unwrap();
     loop {
-        if let ServerMessage::MessageCreate(m) = next_timeout(&mut member).await {
-            if m.author.pubkey == bot_id.pubkey() {
-                assert_eq!(m.content, "official beep");
-                break;
-            }
+        if let ServerMessage::MessageCreate(m) = next_timeout(&mut member).await
+            && m.author.pubkey == bot_id.pubkey()
+        {
+            assert_eq!(m.content, "official beep");
+            break;
         }
     }
 
@@ -1172,10 +1172,10 @@ async fn delete_message_rules() {
         .await
         .unwrap();
     let msg_id = loop {
-        if let ServerMessage::MessageCreate(m) = next_timeout(&mut author).await {
-            if m.author.pubkey == author_id.pubkey() {
-                break m.id;
-            }
+        if let ServerMessage::MessageCreate(m) = next_timeout(&mut author).await
+            && m.author.pubkey == author_id.pubkey()
+        {
+            break m.id;
         }
     };
     author
@@ -1195,10 +1195,10 @@ async fn delete_message_rules() {
     // A plain member can't delete someone else's message.
     author.send_message(text_channel, "hot take").await.unwrap();
     let msg_id = loop {
-        if let ServerMessage::MessageCreate(m) = next_timeout(&mut plain).await {
-            if m.author.pubkey == author_id.pubkey() {
-                break m.id;
-            }
+        if let ServerMessage::MessageCreate(m) = next_timeout(&mut plain).await
+            && m.author.pubkey == author_id.pubkey()
+        {
+            break m.id;
         }
     };
     plain
@@ -1221,10 +1221,10 @@ async fn delete_message_rules() {
         .await
         .unwrap();
     loop {
-        if let ServerMessage::MessageDelete { message_id, .. } = next_timeout(&mut author).await {
-            if message_id == msg_id {
-                break;
-            }
+        if let ServerMessage::MessageDelete { message_id, .. } = next_timeout(&mut author).await
+            && message_id == msg_id
+        {
+            break;
         }
     }
 
@@ -1246,10 +1246,10 @@ async fn delete_message_rules() {
         .await
         .unwrap();
     let dm_msg = loop {
-        if let ServerMessage::MessageCreate(m) = next_timeout(&mut owner).await {
-            if m.channel_id == dm_channel {
-                break m.id;
-            }
+        if let ServerMessage::MessageCreate(m) = next_timeout(&mut owner).await
+            && m.channel_id == dm_channel
+        {
+            break m.id;
         }
     };
     // Even the (guild) owner can't delete the other side's DM message.
@@ -1328,10 +1328,10 @@ async fn transfer_ownership_swaps_powers() {
         .await
         .unwrap();
     let updated = loop {
-        if let ServerMessage::GuildUpdate(g) = next_timeout(&mut new_owner).await {
-            if g.id == guild_id {
-                break g;
-            }
+        if let ServerMessage::GuildUpdate(g) = next_timeout(&mut new_owner).await
+            && g.id == guild_id
+        {
+            break g;
         }
     };
     assert_eq!(updated.owner_pubkey, new_id.pubkey());
@@ -1399,10 +1399,10 @@ async fn guild_branding() {
         .await
         .unwrap();
     let updated = loop {
-        if let ServerMessage::GuildUpdate(g) = next_timeout(&mut member).await {
-            if g.id == guild_id {
-                break g;
-            }
+        if let ServerMessage::GuildUpdate(g) = next_timeout(&mut member).await
+            && g.id == guild_id
+        {
+            break g;
         }
     };
     assert_eq!(updated.description.as_deref(), Some("The prettiest guild"));
@@ -1488,10 +1488,10 @@ async fn operator_can_moderate_system_guild() {
     .await
     .unwrap();
     let updated = loop {
-        if let ServerMessage::GuildUpdate(g) = next_timeout(&mut op).await {
-            if g.id == lobby {
-                break g;
-            }
+        if let ServerMessage::GuildUpdate(g) = next_timeout(&mut op).await
+            && g.id == lobby
+        {
+            break g;
         }
     };
     assert_eq!(updated.accent.as_deref(), Some("#abcdef"));
@@ -1505,10 +1505,10 @@ async fn operator_can_moderate_system_guild() {
     .await
     .unwrap();
     let roles = loop {
-        if let ServerMessage::GuildRoles { guild_id, roles } = next_timeout(&mut op).await {
-            if guild_id == lobby {
-                break roles;
-            }
+        if let ServerMessage::GuildRoles { guild_id, roles } = next_timeout(&mut op).await
+            && guild_id == lobby
+        {
+            break roles;
         }
     };
     assert!(roles.iter().any(|r| r.name == "Lobby Mod"));
@@ -1554,10 +1554,11 @@ async fn message_xp_levels_up_per_guild() {
     }
 
     let member = loop {
-        if let ServerMessage::MemberUpdate(m) = next_timeout(&mut owner).await {
-            if m.user.pubkey == owner_id.pubkey() && m.guild_id == guild_id {
-                break m;
-            }
+        if let ServerMessage::MemberUpdate(m) = next_timeout(&mut owner).await
+            && m.user.pubkey == owner_id.pubkey()
+            && m.guild_id == guild_id
+        {
+            break m;
         }
     };
     assert!(member.xp >= 10, "xp should have accrued, got {}", member.xp);
@@ -1845,10 +1846,10 @@ async fn slowmode_throttles_posting() {
     // First post ok, second throttled for the member.
     member.send_message(text, "one").await.unwrap();
     loop {
-        if let ServerMessage::MessageCreate(m) = next_timeout(&mut member).await {
-            if m.content == "one" {
-                break;
-            }
+        if let ServerMessage::MessageCreate(m) = next_timeout(&mut member).await
+            && m.content == "one"
+        {
+            break;
         }
     }
     member.send_message(text, "two").await.unwrap();
@@ -1860,10 +1861,10 @@ async fn slowmode_throttles_posting() {
     owner.send_message(text, "and again").await.unwrap();
     let mut owner_msgs = 0;
     while owner_msgs < 2 {
-        if let ServerMessage::MessageCreate(m) = next_timeout(&mut owner).await {
-            if m.author.pubkey == owner_id.pubkey() {
-                owner_msgs += 1;
-            }
+        if let ServerMessage::MessageCreate(m) = next_timeout(&mut owner).await
+            && m.author.pubkey == owner_id.pubkey()
+        {
+            owner_msgs += 1;
         }
     }
     handle.abort();
@@ -2052,11 +2053,9 @@ async fn creating_a_guild_no_longer_floods_bystanders_with_catalog() {
     .await
     .ok()
     .flatten();
-    match got_push {
-        Some(ServerMessage::GuildCatalog { .. }) => {
-            panic!("bystander got an unsolicited catalog push")
-        }
-        _ => {} // timeout / unrelated frame — the storm is gone
+    // Anything else — a timeout, or an unrelated frame — means the storm is gone.
+    if let Some(ServerMessage::GuildCatalog { .. }) = got_push {
+        panic!("bystander got an unsolicited catalog push")
     }
     handle.abort();
 }

@@ -168,7 +168,7 @@ pub async fn handle_connection(
                             }).await;
                             continue;
                         }
-                        let history = ctx.state.history(channel_id, limit.max(1).min(200), before_ms).await;
+                        let history = ctx.state.history(channel_id, limit.clamp(1, 200), before_ms).await;
                         if send(&mut ws_tx, &ServerMessage::MessageHistory {
                             channel_id,
                             messages: history,
@@ -190,16 +190,15 @@ pub async fn handle_connection(
                             continue;
                         }
                         let content = content.trim().to_string();
-                        if let Some(img) = &image {
-                            if !img.starts_with("data:image/")
-                                || img.len() > crate::state::MAX_IMAGE_LEN
+                        if let Some(img) = &image
+                            && (!img.starts_with("data:image/")
+                                || img.len() > crate::state::MAX_IMAGE_LEN)
                             {
                                 let _ = send(&mut ws_tx, &ServerMessage::Error {
                                     message: "image must be a data:image/* URL under the size limit".into(),
                                 }).await;
                                 continue;
                             }
-                        }
                         // Text is optional when an image is attached, but
                         // either way it's length-capped and a wholly empty
                         // message is rejected.
@@ -263,14 +262,13 @@ pub async fn handle_connection(
                                     || perms.contains(&Permission::ManageMessages)
                                     || perms.contains(&Permission::ManageChannels)
                             };
-                            if !mod_exempt {
-                                if let Err(wait) = ctx.state.slowmode_check(channel_id, &author.pubkey) {
+                            if !mod_exempt
+                                && let Err(wait) = ctx.state.slowmode_check(channel_id, &author.pubkey) {
                                     let _ = send(&mut ws_tx, &ServerMessage::Error {
                                         message: format!("slowmode: wait {wait}s before posting again"),
                                     }).await;
                                     continue;
                                 }
-                            }
                             match ctx.state.push_message(channel_id, author, content, image, reply_to).await {
                                 Some(msg) => {
                                     let author_pk = msg.author.pubkey.clone();
@@ -1443,7 +1441,7 @@ where
     S: SinkExt<WsMessage, Error = axum::Error> + Unpin,
 {
     let json = serde_json::to_string(msg).expect("serializable");
-    tx.send(WsMessage::Text(json.into())).await
+    tx.send(WsMessage::Text(json)).await
 }
 
 /// The delivery recipe after a membership removal (kick/ban/leave): the
@@ -1731,6 +1729,9 @@ fn pow_ok(challenge: &str, nonce: &str, bits: u32) -> bool {
 }
 
 /// Outcome of the join-gate check.
+// Built once per join attempt and consumed immediately, so boxing the large
+// `ServerMessage` variant would cost an allocation to save nothing.
+#[allow(clippy::large_enum_variant)]
 enum Gate {
     Proceed,
     Challenge(ServerMessage),
