@@ -37,6 +37,12 @@ the top within each section.
 
 ## Guild owner controls (roles, membership, moderation)
 
+- **The audit log records who acted and never shows it.**
+  `AuditEntry.actor_pubkey` is written by every `audit()` call and persisted,
+  but the panel in `guild_settings.rs` renders only time, action, target and
+  detail — nothing reads the actor. "Who did this" is the question an audit log
+  exists to answer. (`GuildEmoji.created_ms` and `.added_by` are write-only in
+  the same way, with less at stake.)
 - **LiveKit force-eviction on kick.** A kicked user's client is told to hang up
   (cleared `VoiceStateUpdate`), but a malicious client keeps a valid LiveKit
   token until its TTL. Use the LiveKit RemoveParticipant API (or short TTLs)
@@ -58,6 +64,12 @@ the top within each section.
 
 ## Platform — bots (Tier 1) & activities (Tier 3)
 
+- **`Capability::ChannelRead` is unreachable.** The `channel.get` RPC arm is
+  guarded by it, but the only bundled activity declares
+  `[UserRead, MessageSend]`, so the guard is always false and the call falls
+  through to "permission denied". The sandbox shim doesn't expose `getChannel`
+  either. Either wire it into an activity that needs it, or drop the capability
+  — right now it reads as supported and isn't.
 - **Privileged-intent gate.** Today the owner can grant `message_content` /
   `members` freely. Discord reviews these past a scale threshold. At minimum
   add an extra confirm step in the install UI; longer term, a verification flow.
@@ -76,6 +88,19 @@ the top within each section.
 
 ## Decentralization / rendezvous
 
+- **The rendezvous wire protocol is duplicated by hand.** `rendezvous/src/
+  protocol.rs` defines `HostToRendezvous` and `DiscoverEntry` as `pub`, and the
+  client redefines both locally (`client/src/rendezvous.rs`,
+  `client/src/features/connect.rs`) — no crate depends on
+  `dioxusfun-rendezvous` at all. Two definitions of one wire format that can
+  drift silently, which is the thing `protocol/` exists to prevent for the
+  gateway. Either depend on the crate or move the shared types into `protocol/`.
+- **Reservation display fields are persisted but never read.** `claim_name`
+  writes `name`, `description` and `public` into `reservations.json`, but
+  `load()` only reads `slug` and `reservation_owner()` only `owner_pubkey`. A
+  reconnecting host re-supplies them from its `Register` frame, so they survive
+  a restart without being applied to anything. Fine if this is groundwork for an
+  offline browse listing; dead weight otherwise.
 - **Name release / rename.** A host can *claim* a rendezvous name (proven by
   Schnorr signature, persisted) but there's no flow to release it or rename it —
   reservations are sticky once claimed. Add an owner-authenticated unclaim/rename
@@ -101,6 +126,12 @@ the top within each section.
 
 ## Voice / audio
 
+- **Deafen is not implemented on the client.** `AppState.voice.deafened` is
+  written from `VoiceStateUpdate` and never read, and the mute button sends
+  `SetVoiceMute { muted, deafened: muted }` — so the two are the same control.
+  Deafening should stop *playback* (the mixer already has the gains to do it)
+  and the roster should show it, which today renders `muted` only. The protocol
+  and the server already carry the flag; only the client half is missing.
 - **No native system-audio capture on Linux.** `client/src/sysaudio/` has
   backends for macOS (ScreenCaptureKit) and Windows (WASAPI process loopback);
   Linux reports unsupported and falls back to whatever `getDisplayMedia` hands
