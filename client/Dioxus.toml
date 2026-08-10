@@ -11,9 +11,20 @@ enable_dev_tools = true
 display_name = "Discordia"
 identifier = "com.discordia.app"
 publisher = "TehSoTo"
-# App icon: icns for macOS, png fallback for other bundlers. Regenerate from
-# assets/icon.svg (qlmanage → sips → iconutil) if the logo changes.
-icon = ["assets/icon.icns", "assets/icon-1024.png"]
+# App icon: ico for Windows, icns for macOS, png fallback for other bundlers.
+#
+# The .ico is not optional dressing — the CLI embeds the FIRST `.ico` in this
+# list into the executable's resources, and with none listed it falls back to
+# its own bundled icon, which is the Dioxus logo. That is what shipped: the
+# generated .winres/icon.ico was byte-identical to the CLI's default.
+#
+# Regenerate all three from assets/icon.svg when the logo changes:
+#   resvg --width N --height N assets/icon.svg out-N.png     (N = 16..256, 1024)
+#   .ico  = those sizes combined (16/24/32/48/64/128/256)
+#   .icns = macOS, via qlmanage → sips → iconutil
+# Render each .ico size from the SVG rather than downscaling the 1024 — the
+# 16px entry is what Windows shows in the taskbar, and it needs the hinting.
+icon = ["assets/icon.ico", "assets/icon.icns", "assets/icon-1024.png"]
 
 # WebView2 is handled by the app, not by the bundler — see `nsis.installer_hooks`
 # below and `client/src/webview2.rs`.
@@ -28,8 +39,11 @@ icon = ["assets/icon.icns", "assets/icon-1024.png"]
 [bundle.windows]
 webview_install_mode = "Skip"
 
+[bundle.windows.nsis]
 # Runs the freshly installed binary as `Discordia.exe --ensure-webview2`, so the
 # installer and the portable zip share one implementation of "is the runtime
 # here, and install it if not" instead of keeping a second copy in NSIS script.
-[bundle.windows.nsis]
 installer_hooks = "nsis/webview2.nsh"
+# The installer window and its Add/Remove Programs entry draw their own icon,
+# which NSIS defaults to its own artwork unless told otherwise.
+installer_icon = "assets/icon.ico"
