@@ -1140,6 +1140,16 @@ pub fn ScreenWatchWindow() -> Element {
         (s.stream_volumes.clone(), s.stream_muted.clone())
     });
     let voice_for_stream = use_voice_tx();
+    // What was last actually sent, so an unchanged answer costs nothing.
+    //
+    // This effect reads `AppState`, so it re-runs on *every* mutation — every
+    // arriving message and every 150ms `mic_level` tick. Without this guard it
+    // re-sent identical gains thousands of times per call, and each send takes
+    // `stream_gains.lock()` — the same mutex the realtime cpal output callback
+    // locks in `refresh_gains`. That contention made the callback miss its
+    // deadline, so call audio audibly degraded for as long as anyone was
+    // sharing. Recomputing is cheap; *sending* is what had to stop.
+    let mut last_gains = use_signal(Vec::<(String, f32)>::new);
     use_effect(move || {
         let watched = watching();
         let _ = stream_levels();
@@ -1152,20 +1162,38 @@ pub fn ScreenWatchWindow() -> Element {
                 seen.push(w);
             }
         }
-        // The teardown this is supposed to perform: on close, `watched` is None
-        // and every sharer should be sent 0.0. If the log shows this effect not
-        // firing on close, or firing with an empty `seen`, that is the leak —
-        // gains persist in the map, so a sharer nobody enumerates keeps
-        // whatever level it last had.
-        crate::dlog!(
-            "watch gains watched={:?} sharers={:?}",
-            watched.as_ref().map(|w| &w[..w.len().min(8)]),
-            seen.iter().map(|p| &p[..p.len().min(8)]).collect::<Vec<_>>()
-        );
-        for pk in seen {
-            let gain = if Some(&pk) == watched.as_ref() { s.stream_gain_of(&pk) } else { 0.0 };
-            voice_for_stream.send(VoiceCmd::SetStreamVolume { pubkey: pk, gain });
+        let mut desired: Vec<(String, f32)> = seen
+            .into_iter()
+            .map(|pk| {
+                let gain = if Some(&pk) == watched.as_ref() {
+                    s.stream_gain_of(&pk)
+                } else {
+                    0.0
+                };
+                (pk, gain)
+            })
+            .collect();
+        drop(s);
+        // Sorted so a reordering of the underlying map can't read as a change.
+        desired.sort_by(|a, b| a.0.cmp(&b.0));
+        if *last_gains.peek() == desired {
+            return;
         }
+        crate::dlog!(
+            "watch gains changed watched={:?} gains={:?}",
+            watched.as_ref().map(|w| &w[..w.len().min(8)]),
+            desired
+                .iter()
+                .map(|(p, g)| (&p[..p.len().min(8)], g))
+                .collect::<Vec<_>>()
+        );
+        for (pk, gain) in desired.iter() {
+            voice_for_stream.send(VoiceCmd::SetStreamVolume {
+                pubkey: pk.clone(),
+                gain: *gain,
+            });
+        }
+        last_gains.set(desired);
     });
 
     // Follow the output device chosen in audio settings.

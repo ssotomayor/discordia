@@ -584,6 +584,13 @@ impl ActiveVoice {
                         }
                         StreamAudio::RoomGone => {
                             s.stream_has_audio.clear();
+                            // The other half of the flap. `joined=true` was
+                            // already logged; without this the log shows the
+                            // room arriving and the webview taking playback
+                            // back 50ms later with nothing in between.
+                            crate::dlog!(
+                                "voice screen_audio RoomGone -> joined=false (playback back to webview)"
+                            );
                             s.screen_audio_joined = false;
                         }
                     }
@@ -710,6 +717,12 @@ impl ActiveVoice {
                     .await;
             }
             eprintln!("[voice] system audio stopped");
+            // Dropping `_capture` is what stops the OS stream, and on macOS
+            // that's a fire-and-forget `stopCaptureWithCompletionHandler(None)`.
+            // If call audio stays bad after a share ends, a capture that never
+            // actually stopped is the first thing to rule out — this line says
+            // we asked.
+            crate::dlog!("voice system audio stopped (capture dropped)");
             return Ok(());
         }
         if !crate::sysaudio::supported() {
@@ -998,6 +1011,13 @@ impl ScreenAudioRoom {
                         }
                         StreamAudio::RoomGone => {
                             s.stream_has_audio.clear();
+                            // The other half of the flap. `joined=true` was
+                            // already logged; without this the log shows the
+                            // room arriving and the webview taking playback
+                            // back 50ms later with nothing in between.
+                            crate::dlog!(
+                                "voice screen_audio RoomGone -> joined=false (playback back to webview)"
+                            );
                             s.screen_audio_joined = false;
                         }
                     }
@@ -1873,7 +1893,18 @@ impl PlaybackHandle {
     }
 
     fn remove_track(&self, id: u64) {
-        self.tracks.lock().buffers.remove(&id);
+        let removed = self.tracks.lock().buffers.remove(&id);
+        // "Rejoin a share and hear nothing" needs exactly this: if the stream
+        // track leaves the mixer when the viewer closes the window and no
+        // matching `add_track` follows on reopen, then no gain the UI sends can
+        // make it audible — there is nothing left to apply it to.
+        if let Some(t) = removed {
+            crate::dlog!(
+                "mixer remove_track identity={} is_stream={}",
+                t.identity,
+                t.is_stream
+            );
+        }
     }
 }
 
