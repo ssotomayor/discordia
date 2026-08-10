@@ -404,6 +404,17 @@ fn MessageRow(message: Message, grouped: bool) -> Element {
                 .unwrap_or(false)
     };
 
+    // Hover reveals the action bar, but an *open* menu has to pin it: the menus
+    // are click-state that renders inside the hover-gated wrapper, so on hover
+    // alone the picker you just opened fades out the moment the pointer leaves
+    // the row — and reaching the picker means leaving the row.
+    let menu_open = show_react() || confirm_delete();
+    let bar_visibility = if menu_open {
+        "opacity-100"
+    } else {
+        "opacity-0 group-hover:opacity-100"
+    };
+
     rsx! {
         // The quoted parent, above the reply itself. Rendered from the snapshot
         // the message carries, so it draws even when the parent isn't in the
@@ -514,8 +525,19 @@ fn MessageRow(message: Message, grouped: bool) -> Element {
             }
 
             // Hover action bar: reply / add a reaction / delete.
-            div { class: "absolute -top-2 right-3 opacity-0 group-hover:opacity-100 transition-opacity",
+            div { class: "absolute -top-2 right-3 {bar_visibility} transition-opacity",
                 div { class: "relative flex gap-1",
+                    // Outside-click dismissal, since hover no longer does it.
+                    // Sits under the menus (z-30) and over everything else.
+                    if menu_open {
+                        div {
+                            class: "fixed inset-0 z-20",
+                            onclick: move |_| {
+                                show_react.set(false);
+                                confirm_delete.set(false);
+                            },
+                        }
+                    }
                     button {
                         class: "w-7 h-7 rounded-md border border-[var(--border)] bg-[var(--panel-solid)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] text-sm leading-none transition-colors",
                         title: "Reply",
@@ -549,8 +571,13 @@ fn MessageRow(message: Message, grouped: bool) -> Element {
                             "🗑"
                         }
                     }
+                    // Both menus open *upward*. Downward put them past the row's
+                    // bottom edge, where the scrollport clips them — and the
+                    // newest message, sitting at the bottom, is the one you
+                    // reach for most. Upward they overlap earlier rows, which
+                    // paint below this one, so they stay whole and clickable.
                     if confirm_delete() {
-                        div { class: "dxf-pop-in absolute right-0 top-full mt-1 z-30 flex items-center gap-1 p-1 bg-[var(--panel-solid)] border border-[var(--border)] rounded-md shadow-lg",
+                        div { class: "dxf-pop-in absolute right-0 bottom-full mb-1 z-30 flex items-center gap-1 p-1 bg-[var(--panel-solid)] border border-[var(--border)] rounded-md shadow-lg",
                             span { class: "text-[10px] text-[var(--text-muted)] px-1", "Delete?" }
                             button {
                                 class: "px-2 h-6 rounded text-[10px] uppercase tracking-wider text-[var(--danger)] border border-[var(--danger)]/40 hover:bg-[var(--danger)]/10 transition-colors",
@@ -571,7 +598,7 @@ fn MessageRow(message: Message, grouped: bool) -> Element {
                         }
                     }
                     if show_react() {
-                        div { class: "dxf-pop-in absolute right-0 top-full mt-1 z-30 flex gap-1 p-1 bg-[var(--panel-solid)] border border-[var(--border)] rounded-md shadow-lg",
+                        div { class: "dxf-pop-in absolute right-0 bottom-full mb-1 z-30 flex gap-1 p-1 bg-[var(--panel-solid)] border border-[var(--border)] rounded-md shadow-lg",
                             for emoji in QUICK_REACTIONS.iter().copied() {
                                 {
                                     let g = gateway.clone();

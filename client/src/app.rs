@@ -222,12 +222,21 @@ button:active:not(:disabled) { transform: scale(0.985); }
 .dx-spinner { width: 12px; height: 12px; border-radius: 50%; border: 2px solid rgba(255,255,255,0.12); border-top-color: var(--accent); display: inline-block; margin-right: 8px; animation: dxf-spin 1s linear infinite; }
 @keyframes dxf-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 
-/* Message arrival — a quick fade + slide-up as each new row mounts. */
+/* Message arrival — a quick fade + slide-up as each new row mounts.
+
+   `backwards`, not `both`, on purpose: `forwards` would leave the final
+   `transform: translateY(0)` applied for the row's whole life, and a transform
+   makes an element a stacking context *and* the containing block for any
+   `position: fixed` descendant. That trapped the message hover-menu's z-index
+   inside its own row (so the next row painted over the menu and swallowed the
+   clicks) and would reduce a `fixed inset-0` dismiss layer to covering one row.
+   The `to` state is identical to the row's unanimated style, so dropping it
+   after the run is visually a no-op. */
 @keyframes dxf-msg-in {
   from { opacity: 0; transform: translateY(5px); }
   to   { opacity: 1; transform: translateY(0); }
 }
-.dxf-msg-in { animation: dxf-msg-in 0.16s var(--ease) both; }
+.dxf-msg-in { animation: dxf-msg-in 0.16s var(--ease) backwards; }
 
 /* Pop — reaction chips and badges springing in. */
 @keyframes dxf-pop {
