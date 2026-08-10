@@ -19,30 +19,29 @@
 use std::sync::mpsc as std_mpsc;
 use std::time::{Duration, Instant};
 
-use windows::core::{implement, Interface, Ref, Result as WinResult, HRESULT};
+use tokio::sync::mpsc::UnboundedSender;
 use windows::Win32::Foundation::{
     CloseHandle, E_ACCESSDENIED, HANDLE, WAIT_EVENT, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows::Win32::Media::Audio::{
+    AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_E_DEVICE_IN_USE, AUDCLNT_E_SERVICE_NOT_RUNNING,
+    AUDCLNT_E_UNSUPPORTED_FORMAT, AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+    AUDCLNT_STREAMFLAGS_LOOPBACK, AUDIOCLIENT_ACTIVATION_PARAMS, AUDIOCLIENT_ACTIVATION_PARAMS_0,
+    AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK, AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS,
     ActivateAudioInterfaceAsync, IActivateAudioInterfaceAsyncOperation,
     IActivateAudioInterfaceCompletionHandler, IActivateAudioInterfaceCompletionHandler_Impl,
-    IAudioCaptureClient, IAudioClient, AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_E_DEVICE_IN_USE,
-    AUDCLNT_E_SERVICE_NOT_RUNNING, AUDCLNT_E_UNSUPPORTED_FORMAT, AUDCLNT_SHAREMODE_SHARED,
-    AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_LOOPBACK,
-    AUDIOCLIENT_ACTIVATION_PARAMS, AUDIOCLIENT_ACTIVATION_PARAMS_0,
-    AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK, AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS,
-    PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE, VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
-    WAVEFORMATEX, WAVE_FORMAT_PCM,
+    IAudioCaptureClient, IAudioClient, PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE,
+    VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, WAVE_FORMAT_PCM, WAVEFORMATEX,
 };
 use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
-use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
+use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize};
 use windows::Win32::System::Threading::{
     CreateEventW, GetCurrentProcessId, SetEvent, WaitForMultipleObjects, WaitForSingleObject,
 };
 use windows::Win32::System::Variant::VT_BLOB;
-use tokio::sync::mpsc::UnboundedSender;
+use windows::core::{HRESULT, Interface, Ref, Result as WinResult, implement};
 
-use super::frames::{FrameCutter, FRAME};
+use super::frames::{FRAME, FrameCutter};
 
 /// Capture format. Both are 48 kHz — only the sample encoding differs, and the
 /// float one is tried first because it is what the mixer speaks natively.
@@ -95,7 +94,7 @@ impl IActivateAudioInterfaceCompletionHandler_Impl for ActivationDone_Impl {
         // SAFETY: the handle outlives the operation — `start` waits on it
         // before returning, and only then drops it.
         unsafe {
-            let _ = SetEvent(self.0 .0);
+            let _ = SetEvent(self.0.0);
         }
         Ok(())
     }
@@ -249,7 +248,12 @@ fn setup() -> Result<Started, String> {
             })?;
             (16u16, "i16")
         }
-        Err(hr) => return Err(format!("Couldn't start system-audio capture: {}", explain(hr))),
+        Err(hr) => {
+            return Err(format!(
+                "Couldn't start system-audio capture: {}",
+                explain(hr)
+            ));
+        }
     };
     eprintln!("[sysaudio] windows process loopback: {RATE}Hz {CHANNELS}ch {tag}");
 
@@ -472,7 +476,12 @@ fn drain(started: &Started, cutter: &mut FrameCutter) -> Result<bool, String> {
         match unsafe { started.capture.GetNextPacketSize() } {
             Ok(0) => return Ok(true),
             Ok(_) => {}
-            Err(e) => return Err(format!("reading the audio queue failed ({})", explain(e.code()))),
+            Err(e) => {
+                return Err(format!(
+                    "reading the audio queue failed ({})",
+                    explain(e.code())
+                ));
+            }
         }
 
         let mut data: *mut u8 = std::ptr::null_mut();
@@ -485,7 +494,10 @@ fn drain(started: &Started, cutter: &mut FrameCutter) -> Result<bool, String> {
                 .capture
                 .GetBuffer(&mut data, &mut frames, &mut flags, None, None)
         } {
-            return Err(format!("reading a capture buffer failed ({})", explain(e.code())));
+            return Err(format!(
+                "reading a capture buffer failed ({})",
+                explain(e.code())
+            ));
         }
 
         let alive = if frames == 0 {

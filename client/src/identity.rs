@@ -87,14 +87,15 @@ impl Identity {
     ) -> Result<Self, String> {
         let raw = input.as_ref().trim();
         let secret_bytes: [u8; 32] = if raw.starts_with("nsec") {
-            let (hrp, data) =
-                bech32::decode(raw).map_err(|e| format!("invalid nsec: {e}"))?;
+            let (hrp, data) = bech32::decode(raw).map_err(|e| format!("invalid nsec: {e}"))?;
             if hrp.as_str() != "nsec" {
                 return Err(format!("expected an nsec key, got '{}'", hrp.as_str()));
             }
-            data.try_into().map_err(|_| "nsec is not 32 bytes".to_string())?
+            data.try_into()
+                .map_err(|_| "nsec is not 32 bytes".to_string())?
         } else {
-            let bytes = hex::decode(raw).map_err(|e| format!("private key is not hex or nsec: {e}"))?;
+            let bytes =
+                hex::decode(raw).map_err(|e| format!("private key is not hex or nsec: {e}"))?;
             bytes
                 .try_into()
                 .map_err(|_| "hex private key must be 32 bytes (64 chars)".to_string())?
@@ -102,7 +103,11 @@ impl Identity {
         let secret =
             SecretKey::from_slice(&secret_bytes).map_err(|e| format!("invalid secret key: {e}"))?;
         let nsec = to_bech32("nsec", &secret_bytes);
-        Ok(Self::from_secret(secret, display_name.into(), IdentitySource::Nsec(nsec)))
+        Ok(Self::from_secret(
+            secret,
+            display_name.into(),
+            IdentitySource::Nsec(nsec),
+        ))
     }
 
     fn from_mnemonic(mnemonic: Mnemonic, display_name: String) -> Result<Self, String> {
@@ -323,13 +328,7 @@ pub fn signature_accent(pubkey: &str) -> String {
 // ---------------------------------------------------------------------------
 
 const HARDENED: u32 = 0x8000_0000;
-const NIP06_PATH: [u32; 5] = [
-    44 | HARDENED,
-    1237 | HARDENED,
-    0 | HARDENED,
-    0,
-    0,
-];
+const NIP06_PATH: [u32; 5] = [44 | HARDENED, 1237 | HARDENED, 0 | HARDENED, 0, 0];
 
 fn derive_nip06(seed: &[u8]) -> Result<SecretKey, String> {
     let secp = Secp256k1::new();
@@ -343,8 +342,7 @@ fn derive_nip06(seed: &[u8]) -> Result<SecretKey, String> {
     chain.copy_from_slice(&master[32..]);
 
     for &index in &NIP06_PATH {
-        let mut mac =
-            <Hmac<Sha512> as Mac>::new_from_slice(&chain).expect("hmac key length");
+        let mut mac = <Hmac<Sha512> as Mac>::new_from_slice(&chain).expect("hmac key length");
         if index & HARDENED != 0 {
             // Hardened: 0x00 || ser256(k_par) || ser32(i)
             mac.update(&[0u8]);
@@ -357,8 +355,11 @@ fn derive_nip06(seed: &[u8]) -> Result<SecretKey, String> {
         mac.update(&index.to_be_bytes());
         let i = mac.finalize().into_bytes();
         let il: [u8; 32] = i[..32].try_into().unwrap();
-        let tweak = Scalar::from_be_bytes(il).map_err(|_| "derived tweak out of range".to_string())?;
-        key = key.add_tweak(&tweak).map_err(|e| format!("child key: {e}"))?;
+        let tweak =
+            Scalar::from_be_bytes(il).map_err(|_| "derived tweak out of range".to_string())?;
+        key = key
+            .add_tweak(&tweak)
+            .map_err(|e| format!("child key: {e}"))?;
         chain.copy_from_slice(&i[32..]);
     }
 

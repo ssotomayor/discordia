@@ -10,9 +10,9 @@ use crate::state::{use_app_state, use_gateway};
 /// Curated emoji set for the composer picker. Plain Unicode — they travel as
 /// ordinary message text, so no protocol support is needed.
 const EMOJIS: &[&str] = &[
-    "😀", "😂", "😅", "😍", "😎", "🤔", "😭", "😡", "👍", "👎", "🙏", "🔥", "🎉", "❤️", "💯",
-    "✨", "🚀", "👀", "🙌", "😉", "🥳", "😴", "🤯", "🤝", "👋", "💀", "✅", "❌", "⚡", "🌈",
-    "🍕", "☕", "🎮", "💸", "🐛", "📎", "🖼️", "🤖", "🫡", "😬",
+    "😀", "😂", "😅", "😍", "😎", "🤔", "😭", "😡", "👍", "👎", "🙏", "🔥", "🎉", "❤️", "💯", "✨",
+    "🚀", "👀", "🙌", "😉", "🥳", "😴", "🤯", "🤝", "👋", "💀", "✅", "❌", "⚡", "🌈", "🍕", "☕",
+    "🎮", "💸", "🐛", "📎", "🖼️", "🤖", "🫡", "😬",
 ];
 
 /// Quick reactions offered in the message hover bar.
@@ -164,12 +164,14 @@ pub fn ChatView() -> Element {
     let snapshot = state.read();
     let selected_channel = snapshot.selected_channel;
     let dm = selected_channel.and_then(|cid| snapshot.dm_of(cid).cloned());
-    let channel_meta = selected_channel
-        .and_then(|cid| snapshot.channels.iter().find(|c| c.id == cid).cloned());
+    let channel_meta =
+        selected_channel.and_then(|cid| snapshot.channels.iter().find(|c| c.id == cid).cloned());
     let messages: Vec<Message> = selected_channel
         .and_then(|cid| snapshot.messages.get(&cid).cloned())
         .unwrap_or_default();
-    let typers = selected_channel.map(|cid| snapshot.typers_in(cid)).unwrap_or_default();
+    let typers = selected_channel
+        .map(|cid| snapshot.typers_in(cid))
+        .unwrap_or_default();
     // A locked channel takes no dropped images either, so it simply doesn't
     // carry the drop-zone id the bridge looks for — no overlay, no drop, no
     // attachment quietly swallowed by a composer that isn't there.
@@ -181,7 +183,11 @@ pub fn ChatView() -> Element {
 
     // Header + composer labelling differ for DMs ("@user") vs channels ("#name").
     let (is_dm, header_name, composer_label) = match &dm {
-        Some(d) => (true, d.other.username.clone(), format!("@{}", d.other.username)),
+        Some(d) => (
+            true,
+            d.other.username.clone(),
+            format!("@{}", d.other.username),
+        ),
         None => {
             let name = channel_meta
                 .as_ref()
@@ -804,11 +810,19 @@ fn Composer(channel_id: Id, composer_label: String, drag_over: Signal<bool>) -> 
     let (guild_emojis, emoji_urls) = {
         let state = use_app_state();
         let s = state.read();
-        let gid = s.channels.iter().find(|c| c.id == channel_id).map(|c| c.guild_id);
+        let gid = s
+            .channels
+            .iter()
+            .find(|c| c.id == channel_id)
+            .map(|c| c.guild_id);
         let list = gid.map(|g| s.emojis_of(g).to_vec()).unwrap_or_default();
         let urls: std::collections::HashMap<String, String> = list
             .iter()
-            .filter_map(|e| s.emoji_images.get(&e.image).map(|u| (e.image.clone(), u.clone())))
+            .filter_map(|e| {
+                s.emoji_images
+                    .get(&e.image)
+                    .map(|u| (e.image.clone(), u.clone()))
+            })
             .collect();
         (list, urls)
     };

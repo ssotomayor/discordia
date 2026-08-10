@@ -52,7 +52,8 @@ fn sign(secret: &SecretKey, nonce: &str, pubkey: &str, name: &str) -> String {
     hex::encode(secp.sign_schnorr_no_aux_rand(&m, &keypair).serialize())
 }
 
-type Ws = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+type Ws =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 async fn next_json(ws: &mut Ws) -> serde_json::Value {
     loop {
@@ -65,7 +66,9 @@ async fn next_json(ws: &mut Ws) -> serde_json::Value {
 
 /// Connect to /control, read the challenge nonce.
 async fn connect_control(base: &str) -> (Ws, String) {
-    let (mut ws, _) = tokio_tungstenite::connect_async(format!("{base}/control")).await.unwrap();
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!("{base}/control"))
+        .await
+        .unwrap();
     let challenge = next_json(&mut ws).await;
     assert_eq!(challenge["op"], "challenge");
     let nonce = challenge["d"]["nonce"].as_str().unwrap().to_string();
@@ -77,7 +80,9 @@ async fn send_register(ws: &mut Ws, name: &str, pubkey: &str, signature: &str) {
         "op": "register",
         "d": { "name": name, "pubkey": pubkey, "signature": signature, "publish_public": false }
     });
-    ws.send(Message::Text(frame.to_string().into())).await.unwrap();
+    ws.send(Message::Text(frame.to_string().into()))
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -152,10 +157,16 @@ async fn silent_host_is_dropped_from_the_listing() {
         "op": "register",
         "d": { "name": "Ghost", "pubkey": pubkey, "signature": sig, "publish_public": true }
     });
-    ws.send(Message::Text(frame.to_string().into())).await.unwrap();
+    ws.send(Message::Text(frame.to_string().into()))
+        .await
+        .unwrap();
     let reply = next_json(&mut ws).await;
     assert_eq!(reply["op"], "registered", "got {reply}");
-    assert_eq!(registry.discover().len(), 1, "host should be listed while alive");
+    assert_eq!(
+        registry.discover().len(),
+        1,
+        "host should be listed while alive"
+    );
 
     // Hold the socket open but never poll it again: no Pong will be sent, while
     // the kernel keeps ACKing so the rendezvous' writes still succeed.
@@ -186,7 +197,9 @@ async fn responsive_host_keeps_its_listing() {
         "op": "register",
         "d": { "name": "Steady", "pubkey": pubkey, "signature": sig, "publish_public": true }
     });
-    ws.send(Message::Text(frame.to_string().into())).await.unwrap();
+    ws.send(Message::Text(frame.to_string().into()))
+        .await
+        .unwrap();
     assert_eq!(next_json(&mut ws).await["op"], "registered");
 
     // Keep polling, which is what makes tungstenite answer the pings.

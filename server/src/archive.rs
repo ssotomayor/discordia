@@ -57,12 +57,21 @@ impl Store {
             return Ok(None);
         };
 
-        let channels: Vec<Channel> =
-            loaded.channels.into_iter().filter(|c| c.guild_id == guild_id).collect();
-        let roles: Vec<Role> =
-            loaded.roles.into_iter().filter(|r| r.guild_id == guild_id).collect();
-        let emojis: Vec<GuildEmoji> =
-            loaded.emojis.into_iter().filter(|e| e.guild_id == guild_id).collect();
+        let channels: Vec<Channel> = loaded
+            .channels
+            .into_iter()
+            .filter(|c| c.guild_id == guild_id)
+            .collect();
+        let roles: Vec<Role> = loaded
+            .roles
+            .into_iter()
+            .filter(|r| r.guild_id == guild_id)
+            .collect();
+        let emojis: Vec<GuildEmoji> = loaded
+            .emojis
+            .into_iter()
+            .filter(|e| e.guild_id == guild_id)
+            .collect();
 
         // Rebuild members from the loaded tuples: (guild, pubkey, username, bot, roles).
         let members: Vec<Member> = loaded
@@ -103,8 +112,11 @@ impl Store {
             .into_iter()
             .find(|(_, gid)| *gid == guild_id)
             .map(|(code, _)| code);
-        let bot_installs: Vec<BotInstall> =
-            loaded.bot_installs.into_iter().filter(|b| b.guild_id == guild_id).collect();
+        let bot_installs: Vec<BotInstall> = loaded
+            .bot_installs
+            .into_iter()
+            .filter(|b| b.guild_id == guild_id)
+            .collect();
 
         // Full history per channel, oldest-first (history() returns newest-first).
         let mut messages = Vec::new();
@@ -188,10 +200,15 @@ impl Store {
         for m in &archive.members {
             let mut member = m.clone();
             member.guild_id = new_guild_id;
-            member.roles = m.roles.iter().filter_map(|rid| role_map.get(rid).copied()).collect();
+            member.roles = m
+                .roles
+                .iter()
+                .filter_map(|rid| role_map.get(rid).copied())
+                .collect();
             self.upsert_member(&member).await?;
             if m.xp > 0 {
-                self.upsert_guild_xp(new_guild_id, &m.user.pubkey, m.xp).await?;
+                self.upsert_guild_xp(new_guild_id, &m.user.pubkey, m.xp)
+                    .await?;
             }
         }
 

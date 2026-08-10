@@ -58,11 +58,17 @@ async fn connect_user(url: &str, id: &BotIdentity, name: &str) -> Bot {
 
 async fn create_guild(owner: &mut Bot, name: &str) -> (Id, Id) {
     owner
-        .send(&ClientMessage::CreateGuild { name: name.into(), template: None })
+        .send(&ClientMessage::CreateGuild {
+            name: name.into(),
+            template: None,
+        })
         .await
         .unwrap();
     loop {
-        if let ServerMessage::GuildJoined { guild, channels, .. } = next_timeout(owner).await {
+        if let ServerMessage::GuildJoined {
+            guild, channels, ..
+        } = next_timeout(owner).await
+        {
             let text = channels
                 .iter()
                 .find(|c| c.kind == ChannelKind::Text)
@@ -151,7 +157,11 @@ async fn member_without_permission_is_refused() {
 
     let mut member = connect_user(&url, &member_id, "Member").await;
     member
-        .send(&ClientMessage::JoinGuild { guild_id, accept: true, pow_nonce: None })
+        .send(&ClientMessage::JoinGuild {
+            guild_id,
+            accept: true,
+            pow_nonce: None,
+        })
         .await
         .unwrap();
     loop {
@@ -169,7 +179,10 @@ async fn member_without_permission_is_refused() {
         .await
         .unwrap();
     let err = next_error(&mut member).await;
-    assert!(err.contains("manage_emojis") || err.contains("permission"), "unexpected: {err}");
+    assert!(
+        err.contains("manage_emojis") || err.contains("permission"),
+        "unexpected: {err}"
+    );
 
     handle.abort();
 }
@@ -186,7 +199,11 @@ async fn catalog_reaches_members_and_images_fetch_on_demand() {
 
     let mut member = connect_user(&url, &member_id, "Member").await;
     member
-        .send(&ClientMessage::JoinGuild { guild_id, accept: true, pow_nonce: None })
+        .send(&ClientMessage::JoinGuild {
+            guild_id,
+            accept: true,
+            pow_nonce: None,
+        })
         .await
         .unwrap();
     loop {
@@ -211,7 +228,9 @@ async fn catalog_reaches_members_and_images_fetch_on_demand() {
 
     // ...but the bytes only arrive when requested.
     member
-        .send(&ClientMessage::FetchEmoji { images: vec![image.clone()] })
+        .send(&ClientMessage::FetchEmoji {
+            images: vec![image.clone()],
+        })
         .await
         .unwrap();
     let blobs = loop {
@@ -221,7 +240,10 @@ async fn catalog_reaches_members_and_images_fetch_on_demand() {
     };
     assert_eq!(blobs.len(), 1);
     assert_eq!(blobs[0].image, image);
-    assert_eq!(blobs[0].data_url, PIXEL_PNG, "round-tripped image should be byte-identical");
+    assert_eq!(
+        blobs[0].data_url, PIXEL_PNG,
+        "round-tripped image should be byte-identical"
+    );
 
     handle.abort();
 }

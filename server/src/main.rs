@@ -65,7 +65,10 @@ async fn main() {
         .filter(|s| !s.is_empty())
         .collect();
     if !operators.is_empty() {
-        tracing::info!(count = operators.len(), "operators configured for system guilds");
+        tracing::info!(
+            count = operators.len(),
+            "operators configured for system guilds"
+        );
     }
 
     // Durable data root: SQLite DB + media blobs. Default keeps everything in
@@ -177,8 +180,8 @@ async fn run_import(args: &[String]) {
         eprintln!("error: cannot read {path}: {e}");
         std::process::exit(1);
     });
-    let archive: dioxusfun_server::archive::GuildArchive =
-        serde_json::from_str(&json).unwrap_or_else(|e| {
+    let archive: dioxusfun_server::archive::GuildArchive = serde_json::from_str(&json)
+        .unwrap_or_else(|e| {
             eprintln!("error: {path} is not a valid guild archive: {e}");
             std::process::exit(1);
         });

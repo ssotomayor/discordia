@@ -36,7 +36,9 @@ impl MediaStore {
         let rest = data_url.strip_prefix("data:")?;
         let (mime, payload) = rest.split_once(";base64,")?;
         let ext = ext_for_mime(mime)?;
-        let bytes = base64::engine::general_purpose::STANDARD.decode(payload).ok()?;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(payload)
+            .ok()?;
         let hash = hex::encode(Sha256::digest(&bytes));
         let name = format!("{hash}.{ext}");
         let path = self.dir.join(&name);
@@ -74,7 +76,6 @@ impl MediaStore {
         let bytes = std::fs::read(self.dir.join(&name)).ok()?;
         Some((bytes, mime_for_name(&name)))
     }
-
 }
 
 /// Only `<64 hex>.<short alnum ext>` filenames are ever served or read —

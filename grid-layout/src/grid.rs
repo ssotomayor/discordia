@@ -316,7 +316,9 @@ fn commit_and_clear(
     on_change: Option<EventHandler<Vec<(String, GridPosition)>>>,
     is_free: bool,
 ) {
-    let Some(state) = drag.read().clone() else { return };
+    let Some(state) = drag.read().clone() else {
+        return;
+    };
     if is_free {
         // Free mode already wrote every intermediate position, so there is
         // nothing to snap on release — and no transform to undo, since the

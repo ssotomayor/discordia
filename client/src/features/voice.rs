@@ -17,8 +17,8 @@ use futures_util::StreamExt;
 use livekit::options::TrackPublishOptions;
 use livekit::prelude::*;
 use livekit::webrtc::audio_frame::AudioFrame;
-use livekit::webrtc::audio_source::native::NativeAudioSource;
 use livekit::webrtc::audio_source::AudioSourceOptions;
+use livekit::webrtc::audio_source::native::NativeAudioSource;
 use livekit::webrtc::audio_stream::native::NativeAudioStream;
 use livekit::webrtc::prelude::RtcAudioSource;
 use parking_lot::Mutex;
@@ -304,8 +304,12 @@ async fn service_loop(
                         if let Ok(name) = d.name() {
                             let is_input = d.default_input_config().is_ok();
                             let is_output = d.default_output_config().is_ok();
-                            if is_input { inputs.push(name.clone()); }
-                            if is_output { outputs.push(name); }
+                            if is_input {
+                                inputs.push(name.clone());
+                            }
+                            if is_output {
+                                outputs.push(name);
+                            }
                         }
                     }
                 }
@@ -370,7 +374,9 @@ async fn service_loop(
                 eprintln!("[voice] SetSensitivity threshold={threshold}");
                 // The live pipeline reads this atomic, so the change lands on
                 // the very next 10ms frame — no reconnect, no session restart.
-                controls.threshold.store(threshold as i32, Ordering::Relaxed);
+                controls
+                    .threshold
+                    .store(threshold as i32, Ordering::Relaxed);
                 state.write().mic_sensitivity = threshold;
             }
             VoiceCmd::SetNoiseCancellation { enabled } => {
@@ -434,7 +440,10 @@ async fn service_loop(
             }
             VoiceCmd::SetUserVolume { pubkey, gain } => {
                 let gain = gain.clamp(0.0, 2.0);
-                eprintln!("[voice] SetUserVolume {} gain={gain:.2}", &pubkey[..pubkey.len().min(8)]);
+                eprintln!(
+                    "[voice] SetUserVolume {} gain={gain:.2}",
+                    &pubkey[..pubkey.len().min(8)]
+                );
                 controls.gains.lock().insert(pubkey, gain);
             }
         }
@@ -610,22 +619,34 @@ impl ActiveVoice {
                         RoomEvent::ParticipantDisconnected(p) => {
                             eprintln!("[voice] participant left: {}", p.identity().0);
                         }
-                        RoomEvent::TrackPublished { participant, publication } => {
+                        RoomEvent::TrackPublished {
+                            participant,
+                            publication,
+                        } => {
                             eprintln!(
                                 "[voice] track published by {}: {:?}",
                                 participant.identity().0,
                                 publication.kind()
                             );
                         }
-                        RoomEvent::TrackSubscribed { track, participant, .. } => {
+                        RoomEvent::TrackSubscribed {
+                            track, participant, ..
+                        } => {
                             eprintln!(
                                 "[voice] track SUBSCRIBED from {}: kind={:?}",
                                 participant.identity().0,
                                 track.kind()
                             );
                         }
-                        RoomEvent::TrackUnsubscribed { participant, publication, .. } => {
-                            eprintln!("[voice] track unsubscribed from {}", participant.identity().0);
+                        RoomEvent::TrackUnsubscribed {
+                            participant,
+                            publication,
+                            ..
+                        } => {
+                            eprintln!(
+                                "[voice] track unsubscribed from {}",
+                                participant.identity().0
+                            );
                             // Take the sharer back out of "has stream audio",
                             // or the watch window goes on offering a volume
                             // slider over a stream that ended.
@@ -639,11 +660,15 @@ impl ActiveVoice {
                         }
                         _ => {}
                     }
-                    if let RoomEvent::TrackSubscribed { track, publication, participant } = ev {
+                    if let RoomEvent::TrackSubscribed {
+                        track,
+                        publication,
+                        participant,
+                    } = ev
+                    {
                         // Screen-share audio and a microphone arrive on the
                         // same event; only the publication says which is which.
-                        let is_stream =
-                            publication.source() == TrackSource::ScreenshareAudio;
+                        let is_stream = publication.source() == TrackSource::ScreenshareAudio;
                         if let RemoteTrack::Audio(audio) = track {
                             let stream = NativeAudioStream::new(
                                 audio.rtc_track(),
@@ -662,7 +687,8 @@ impl ActiveVoice {
                             // channel because this task is `tokio::spawn`ed and
                             // so must be Send, which a Dioxus Signal is not.
                             if is_stream {
-                                let _ = native_audio_tx.send(StreamAudio::Present(identity.clone()));
+                                let _ =
+                                    native_audio_tx.send(StreamAudio::Present(identity.clone()));
                             }
                             tokio::spawn(consume_remote_track(
                                 stream,
@@ -710,11 +736,7 @@ impl ActiveVoice {
         }
         if !enabled {
             if let Some(sa) = self.system_audio.take() {
-                let _ = self
-                    .room
-                    .local_participant()
-                    .unpublish_track(&sa.sid)
-                    .await;
+                let _ = self.room.local_participant().unpublish_track(&sa.sid).await;
             }
             eprintln!("[voice] system audio stopped");
             // Dropping `_capture` is what stops the OS stream, and on macOS
@@ -786,7 +808,9 @@ impl ActiveVoice {
                     //
                     // 96 kbit/s is generous for the mono downmix we send, and
                     // trivial beside the multi-megabit video it accompanies.
-                    audio_encoding: Some(livekit::options::audio::MUSIC_HIGH_QUALITY.encoding.clone()),
+                    audio_encoding: Some(
+                        livekit::options::audio::MUSIC_HIGH_QUALITY.encoding.clone(),
+                    ),
                     dtx: false,
                     ..Default::default()
                 },
@@ -1030,7 +1054,11 @@ impl ScreenAudioRoom {
         // only fires for publications that happen after the join.
         for (_, participant) in room.remote_participants() {
             for (_, publication) in participant.track_publications() {
-                if wanted(&publication.source(), &participant.identity().0, &self_pubkey) {
+                if wanted(
+                    &publication.source(),
+                    &participant.identity().0,
+                    &self_pubkey,
+                ) {
                     publication.set_subscribed(true);
                 }
             }
@@ -1043,7 +1071,10 @@ impl ScreenAudioRoom {
             async move {
                 while let Some(ev) = events.recv().await {
                     match ev {
-                        RoomEvent::TrackPublished { publication, participant } => {
+                        RoomEvent::TrackPublished {
+                            publication,
+                            participant,
+                        } => {
                             if wanted(
                                 &publication.source(),
                                 &participant.identity().0,
@@ -1052,7 +1083,9 @@ impl ScreenAudioRoom {
                                 publication.set_subscribed(true);
                             }
                         }
-                        RoomEvent::TrackSubscribed { track, participant, .. } => {
+                        RoomEvent::TrackSubscribed {
+                            track, participant, ..
+                        } => {
                             if let RemoteTrack::Audio(audio) = track {
                                 let identity = participant.identity().0.clone();
                                 let stream = NativeAudioStream::new(
@@ -1075,8 +1108,15 @@ impl ScreenAudioRoom {
                         // handler: this room carries the sharer's *video* too,
                         // and its unpublish would otherwise retract a claim
                         // about audio that is still playing.
-                        RoomEvent::TrackUnsubscribed { participant, publication, .. }
-                        | RoomEvent::TrackUnpublished { participant, publication } => {
+                        RoomEvent::TrackUnsubscribed {
+                            participant,
+                            publication,
+                            ..
+                        }
+                        | RoomEvent::TrackUnpublished {
+                            participant,
+                            publication,
+                        } => {
                             if publication.source() == TrackSource::ScreenshareAudio {
                                 let _ = has_tx
                                     .send(StreamAudio::Gone(participant.identity().0.clone()));
@@ -1431,7 +1471,10 @@ impl MicCapture {
                     }
                 }
             }
-            found.unwrap_or_else(|| host.default_input_device().expect("no default input device"))
+            found.unwrap_or_else(|| {
+                host.default_input_device()
+                    .expect("no default input device")
+            })
         } else {
             host.default_input_device()
                 .ok_or_else(|| "no default input device".to_string())?
@@ -1454,7 +1497,8 @@ impl MicCapture {
 
         // Carry resampled samples across cpal callbacks so each frame we
         // hand to libwebrtc is always exactly `FRAME_SAMPLES` long.
-        let accum: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::with_capacity(FRAME_SAMPLES * 4)));
+        let accum: Arc<Mutex<Vec<f32>>> =
+            Arc::new(Mutex::new(Vec::with_capacity(FRAME_SAMPLES * 4)));
 
         // High-quality resampler (rubato FFT). None if device already runs at
         // SAMPLE_RATE (48kHz) — most common case on macOS CoreAudio.
@@ -1530,10 +1574,7 @@ impl MicCapture {
                     &config.into(),
                     move |data: &[u16], _| {
                         f32_buf.clear();
-                        f32_buf.extend(
-                            data.iter()
-                                .map(|s| (*s as f32 - 32768.0) / 32768.0),
-                        );
+                        f32_buf.extend(data.iter().map(|s| (*s as f32 - 32768.0) / 32768.0));
                         update_peak(&raw_peak_cb, &f32_buf);
                         let pushed = forward_mic(
                             &frame_tx,
@@ -1565,7 +1606,13 @@ impl MicCapture {
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                 let p = peak_log.swap(0, Ordering::Relaxed) as f32 / 1_000.0;
                 let f = frames_log.load(Ordering::Relaxed);
-                let level = if p < 0.001 { "silent" } else if p < 0.01 { "very quiet" } else { "speaking" };
+                let level = if p < 0.001 {
+                    "silent"
+                } else if p < 0.01 {
+                    "very quiet"
+                } else {
+                    "speaking"
+                };
                 eprintln!(
                     "[voice] mic heartbeat: raw peak={p:.4} ({level}), frames pushed to webrtc={f} (+{})",
                     f - prev_frames
@@ -1714,15 +1761,10 @@ impl AudioResampler {
         if from_rate == to_rate {
             return None;
         }
-        let inner = FftFixedIn::<f32>::new(
-            from_rate as usize,
-            to_rate as usize,
-            RESAMPLER_CHUNK,
-            2,
-            1,
-        )
-        .map_err(|e| eprintln!("[voice] rubato resampler init failed: {e:?}"))
-        .ok()?;
+        let inner =
+            FftFixedIn::<f32>::new(from_rate as usize, to_rate as usize, RESAMPLER_CHUNK, 2, 1)
+                .map_err(|e| eprintln!("[voice] rubato resampler init failed: {e:?}"))
+                .ok()?;
         let max_out = inner.output_frames_max();
         Some(Self {
             inner,
@@ -1743,7 +1785,12 @@ impl AudioResampler {
         out.clear();
         self.input_accum.extend_from_slice(input);
 
-        let Self { inner, input_accum, chunk_in, scratch_out } = self;
+        let Self {
+            inner,
+            input_accum,
+            chunk_in,
+            scratch_out,
+        } = self;
 
         while input_accum.len() >= RESAMPLER_CHUNK {
             chunk_in.clear();
@@ -1856,7 +1903,11 @@ impl PlaybackHandle {
         // a deadlock against the audio thread.
         let gain = if is_stream {
             // Silent until the viewer opens the watch window.
-            self.stream_gains.lock().get(&identity).copied().unwrap_or(0.0)
+            self.stream_gains
+                .lock()
+                .get(&identity)
+                .copied()
+                .unwrap_or(0.0)
         } else {
             self.gains.lock().get(&identity).copied().unwrap_or(1.0)
         };
@@ -1983,7 +2034,10 @@ impl PlaybackMixer {
                     }
                 }
             }
-            found.unwrap_or_else(|| host.default_output_device().expect("no default output device"))
+            found.unwrap_or_else(|| {
+                host.default_output_device()
+                    .expect("no default output device")
+            })
         } else {
             host.default_output_device()
                 .ok_or_else(|| "no default output device".to_string())?
@@ -2247,7 +2301,13 @@ async fn consume_remote_track(
         if frames % 500 == 0 {
             eprintln!(
                 "[voice] remote-track: {frames} frames, {sample_count} samples, peak={peak_recent} ({})",
-                if peak_recent < 100 { "near-silent" } else if peak_recent < 1000 { "very quiet" } else { "audible" }
+                if peak_recent < 100 {
+                    "near-silent"
+                } else if peak_recent < 1000 {
+                    "very quiet"
+                } else {
+                    "audible"
+                }
             );
             peak_recent = 0;
         }
@@ -2287,10 +2347,7 @@ mod tests {
         for pct in [10, 25, 50, 75, 100] {
             let peak = meter_pct_to_peak(pct);
             let back = peak_to_meter_pct(peak);
-            assert!(
-                back.abs_diff(pct) <= 1,
-                "{pct}% -> peak {peak} -> {back}%"
-            );
+            assert!(back.abs_diff(pct) <= 1, "{pct}% -> peak {peak} -> {back}%");
         }
     }
 

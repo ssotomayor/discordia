@@ -335,7 +335,11 @@ fn MemberRow(
     // `AppState::presence_of`); only actually-online users pulse.
     let (dot_color, pulse) = {
         let status = state.read().presence_of(&member.user.pubkey).to_string();
-        let pulse = if status == "online" { "dxf-dot-pulse" } else { "" };
+        let pulse = if status == "online" {
+            "dxf-dot-pulse"
+        } else {
+            ""
+        };
         (crate::features::profiles::status_color(&status), pulse)
     };
 

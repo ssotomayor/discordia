@@ -26,11 +26,11 @@
 //! # }
 //! ```
 
+use futures_util::stream::{SplitSink, SplitStream};
+use futures_util::{SinkExt, StreamExt};
+use rand::RngCore;
 use secp256k1::{Keypair, Message, Secp256k1, SecretKey};
 use sha2::{Digest, Sha256};
-use futures_util::{SinkExt, StreamExt};
-use futures_util::stream::{SplitSink, SplitStream};
-use rand::RngCore;
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
@@ -161,11 +161,7 @@ impl Bot {
     /// Connect as a regular (human) session — full Ready, unfiltered events,
     /// whole ClientMessage surface. Useful for integration tests and tooling
     /// that drive a user account through the same SDK.
-    pub async fn connect_as_user(
-        url: &str,
-        identity: &BotIdentity,
-        username: &str,
-    ) -> Result<Bot> {
+    pub async fn connect_as_user(url: &str, identity: &BotIdentity, username: &str) -> Result<Bot> {
         Self::connect_declaring(url, identity, username, false).await
     }
 
@@ -190,8 +186,8 @@ impl Bot {
                 .map_err(|e| BotError::Ws(e.to_string()))?;
             match frame {
                 WsMessage::Text(t) => {
-                    let parsed: ServerMessage = serde_json::from_str(&t)
-                        .map_err(|e| BotError::Json(e.to_string()))?;
+                    let parsed: ServerMessage =
+                        serde_json::from_str(&t).map_err(|e| BotError::Json(e.to_string()))?;
                     match parsed {
                         ServerMessage::Hello { nonce } => break nonce,
                         other => {

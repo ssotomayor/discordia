@@ -24,10 +24,7 @@ pub(crate) fn overlaps(a: &GridPosition, b: &GridPosition) -> bool {
     a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y
 }
 
-pub(crate) fn compact_vertical(
-    layout: &mut [(String, GridPosition)],
-    immovable: &HashSet<String>,
-) {
+pub(crate) fn compact_vertical(layout: &mut [(String, GridPosition)], immovable: &HashSet<String>) {
     // Push down to resolve any overlaps with immovable items or higher items.
     let mut order: Vec<usize> = (0..layout.len()).collect();
     order.sort_by_key(|&i| (layout[i].1.y, layout[i].1.x));
@@ -93,10 +90,7 @@ mod tests {
 
     #[test]
     fn pushes_overlapping_item_down() {
-        let mut layout = vec![
-            ("a".into(), pos(0, 0, 4, 2)),
-            ("b".into(), pos(0, 0, 4, 2)),
-        ];
+        let mut layout = vec![("a".into(), pos(0, 0, 4, 2)), ("b".into(), pos(0, 0, 4, 2))];
         compact_vertical(&mut layout, &immovable(&["a"]));
         assert_eq!(layout[0].1, pos(0, 0, 4, 2));
         assert_eq!(layout[1].1, pos(0, 2, 4, 2));

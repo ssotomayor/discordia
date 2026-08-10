@@ -19,7 +19,6 @@ async fn next_timeout(bot: &mut Bot) -> ServerMessage {
         .expect("connection closed unexpectedly")
 }
 
-
 /// Per-test ServerConfig: unique temp data dir (SQLite + media) so tests are
 /// hermetic and parallel-safe.
 fn test_config(operators: std::collections::HashSet<String>) -> dioxusfun_server::ServerConfig {
@@ -51,11 +50,17 @@ async fn spawn_gateway() -> (String, dioxusfun_server::ServerHandle) {
 /// Owner creates a guild; returns (guild_id, first text channel id).
 async fn create_guild(owner: &mut Bot, name: &str) -> (Id, Id) {
     owner
-        .send(&ClientMessage::CreateGuild { name: name.into(), template: None })
+        .send(&ClientMessage::CreateGuild {
+            name: name.into(),
+            template: None,
+        })
         .await
         .unwrap();
     loop {
-        if let ServerMessage::GuildJoined { guild, channels, .. } = next_timeout(owner).await {
+        if let ServerMessage::GuildJoined {
+            guild, channels, ..
+        } = next_timeout(owner).await
+        {
             let text = channels
                 .iter()
                 .find(|c| c.kind == ChannelKind::Text)
@@ -72,8 +77,13 @@ async fn bot_install_and_ping_roundtrip() {
 
     // Human owner connects and lands on a Ready.
     let owner_id = BotIdentity::generate();
-    let mut owner = Bot::connect_as_user(&url, &owner_id, "Owner").await.unwrap();
-    assert!(matches!(next_timeout(&mut owner).await, ServerMessage::Ready { .. }));
+    let mut owner = Bot::connect_as_user(&url, &owner_id, "Owner")
+        .await
+        .unwrap();
+    assert!(matches!(
+        next_timeout(&mut owner).await,
+        ServerMessage::Ready { .. }
+    ));
 
     let (guild_id, text_channel) = create_guild(&mut owner, "Test Guild").await;
 
@@ -136,8 +146,13 @@ async fn intents_and_permissions_are_enforced() {
     let (url, handle) = spawn_gateway().await;
 
     let owner_id = BotIdentity::generate();
-    let mut owner = Bot::connect_as_user(&url, &owner_id, "Owner").await.unwrap();
-    assert!(matches!(next_timeout(&mut owner).await, ServerMessage::Ready { .. }));
+    let mut owner = Bot::connect_as_user(&url, &owner_id, "Owner")
+        .await
+        .unwrap();
+    assert!(matches!(
+        next_timeout(&mut owner).await,
+        ServerMessage::Ready { .. }
+    ));
 
     let (guild_id, text_channel) = create_guild(&mut owner, "Locked Down").await;
 
@@ -154,7 +169,10 @@ async fn intents_and_permissions_are_enforced() {
         .await
         .unwrap();
     loop {
-        if matches!(next_timeout(&mut owner).await, ServerMessage::GuildIntegrations { .. }) {
+        if matches!(
+            next_timeout(&mut owner).await,
+            ServerMessage::GuildIntegrations { .. }
+        ) {
             break;
         }
     }
@@ -167,7 +185,10 @@ async fn intents_and_permissions_are_enforced() {
     }
 
     // Owner posts a secret; the bot is told a message happened but NOT its text.
-    owner.send_message(text_channel, "the password is hunter2").await.unwrap();
+    owner
+        .send_message(text_channel, "the password is hunter2")
+        .await
+        .unwrap();
     let blanked = loop {
         if let ServerMessage::MessageCreate(m) = next_timeout(&mut bot).await {
             if m.channel_id == text_channel {
@@ -175,11 +196,16 @@ async fn intents_and_permissions_are_enforced() {
             }
         }
     };
-    assert_eq!(blanked.content, "", "content withheld without MessageContent intent");
+    assert_eq!(
+        blanked.content, "",
+        "content withheld without MessageContent intent"
+    );
     assert!(blanked.image.is_none());
 
     // The bot tries to post without the SendMessages permission → rejected.
-    bot.send_message(text_channel, "i shouldn't be able to say this").await.unwrap();
+    bot.send_message(text_channel, "i shouldn't be able to say this")
+        .await
+        .unwrap();
     let err = loop {
         if let ServerMessage::Error { message } = next_timeout(&mut bot).await {
             break message;

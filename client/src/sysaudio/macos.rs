@@ -16,13 +16,13 @@ use std::time::Duration;
 use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::{NSObject, NSObjectProtocol, ProtocolObject};
-use objc2::{define_class, msg_send, AllocAnyThread, DefinedClass};
+use objc2::{AllocAnyThread, DefinedClass, define_class, msg_send};
 use objc2_core_audio_types::AudioBufferList;
 use objc2_core_media::{CMBlockBuffer, CMSampleBuffer};
 use objc2_foundation::{NSArray, NSError};
 use objc2_screen_capture_kit::{
-    SCContentFilter, SCDisplay, SCShareableContent, SCStream, SCStreamConfiguration, SCStreamOutput,
-    SCStreamOutputType,
+    SCContentFilter, SCDisplay, SCShareableContent, SCStream, SCStreamConfiguration,
+    SCStreamOutput, SCStreamOutputType,
 };
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -232,29 +232,27 @@ impl Drop for MacCapture {
 /// instead of looking like a machine with no screens.
 fn first_display() -> Result<Retained<SCDisplay>, String> {
     let (tx, rx) = std_mpsc::channel();
-    let handler = RcBlock::new(
-        move |content: *mut SCShareableContent, err: *mut NSError| {
-            if !err.is_null() {
-                let msg = unsafe { (*err).localizedDescription() }.to_string();
-                let _ = tx.send(Err(msg));
-                return;
+    let handler = RcBlock::new(move |content: *mut SCShareableContent, err: *mut NSError| {
+        if !err.is_null() {
+            let msg = unsafe { (*err).localizedDescription() }.to_string();
+            let _ = tx.send(Err(msg));
+            return;
+        }
+        if content.is_null() {
+            let _ = tx.send(Err("no shareable content returned".into()));
+            return;
+        }
+        // SAFETY: non-null and owned by the callback for its duration.
+        let displays = unsafe { (*content).displays() };
+        match displays.firstObject() {
+            Some(d) => {
+                let _ = tx.send(Ok(d));
             }
-            if content.is_null() {
-                let _ = tx.send(Err("no shareable content returned".into()));
-                return;
+            None => {
+                let _ = tx.send(Err("no displays available".into()));
             }
-            // SAFETY: non-null and owned by the callback for its duration.
-            let displays = unsafe { (*content).displays() };
-            match displays.firstObject() {
-                Some(d) => {
-                    let _ = tx.send(Ok(d));
-                }
-                None => {
-                    let _ = tx.send(Err("no displays available".into()));
-                }
-            }
-        },
-    );
+        }
+    });
     // SAFETY: the handler outlives the call via RcBlock.
     unsafe {
         SCShareableContent::getShareableContentWithCompletionHandler(&handler);

@@ -64,7 +64,9 @@ pub fn GridItem(
 
     let item_id_for_raise = id.clone();
     let onpointerdown_raise = move |_: PointerEvent| {
-        let Some(ctx) = ctx.filter(|c| c.is_free()) else { return };
+        let Some(ctx) = ctx.filter(|c| c.is_free()) else {
+            return;
+        };
         if let Some(mut s) = ctx.store {
             s.raise(&item_id_for_raise);
         }
@@ -136,7 +138,9 @@ pub fn GridItem(
             return;
         }
         evt.stop_propagation();
-        let Some(cell_w) = ctx.cell_w_px() else { return };
+        let Some(cell_w) = ctx.cell_w_px() else {
+            return;
+        };
 
         let current = ctx
             .store
@@ -232,7 +236,11 @@ fn free_style(id: &str, ctx: GridContext, cell: GridPosition) -> String {
     // panel. An untouched panel therefore gets no z-index at all and behaves
     // exactly as it did before free mode existed.
     let z = ctx.store.map(|s| s.z_of(id)).unwrap_or(0);
-    let z_rule = if z > 0 { format!(" z-index: {z};") } else { String::new() };
+    let z_rule = if z > 0 {
+        format!(" z-index: {z};")
+    } else {
+        String::new()
+    };
 
     // Stored by hand, or derived from the grid cell the item started life in.
     let rect = ctx

@@ -1,5 +1,7 @@
 use dioxus::prelude::*;
-use dioxus_grid_layout::{FloatRect, GridItem, GridLayout, GridPosition, LayoutMode, use_layout_store};
+use dioxus_grid_layout::{
+    FloatRect, GridItem, GridLayout, GridPosition, LayoutMode, use_layout_store,
+};
 
 use crate::features::{
     channels::ChannelsColumn, chat::ChatView, guilds::GuildsSidebar, members::MembersPanel,
@@ -7,7 +9,9 @@ use crate::features::{
 };
 use crate::net::spawn_gateway;
 use crate::protocol::{ClientMessage, Id};
-use crate::state::{AppState, ConnectionStatus, SessionParams, VoicePhase, use_app_state, use_gateway};
+use crate::state::{
+    AppState, ConnectionStatus, SessionParams, VoicePhase, use_app_state, use_gateway,
+};
 
 /// Vertical row span each panel occupies, and the gap (px) between grid
 /// rows. The on-mount measurement divides the available height by these so
@@ -53,7 +57,6 @@ const UNPLUG_ICON_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width=
 
 #[component]
 pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>) -> Element {
-
     let state = use_signal(AppState::empty);
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
 
@@ -126,10 +129,16 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
         let accent = if s.dm_mode {
             None
         } else {
-            s.selected_guild
-                .and_then(|gid| s.guilds.iter().find(|g| g.id == gid).and_then(|g| g.accent.clone()))
+            s.selected_guild.and_then(|gid| {
+                s.guilds
+                    .iter()
+                    .find(|g| g.id == gid)
+                    .and_then(|g| g.accent.clone())
+            })
         };
-        accent.map(|a| crate::app::accent_vars(&a)).unwrap_or_default()
+        accent
+            .map(|a| crate::app::accent_vars(&a))
+            .unwrap_or_default()
     };
 
     // Sweep stale typing indicators (older than 5s) so they fade out. Only
@@ -141,9 +150,10 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
             let now = std::time::Instant::now();
             let stale = {
                 let s = state.read();
-                s.typing
-                    .values()
-                    .any(|set| set.values().any(|(_, t)| now.duration_since(*t).as_secs() >= 5))
+                s.typing.values().any(|set| {
+                    set.values()
+                        .any(|(_, t)| now.duration_since(*t).as_secs() >= 5)
+                })
             };
             if stale {
                 let mut s = state.write();
@@ -160,8 +170,16 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
     // lights vertically and `pl-20` clears them horizontally. The padding must
     // NOT live on the outer column, or it would shove the whole widget grid
     // inward and leave a fat margin down the left edge.
-    let mac_top_pad = if cfg!(target_os = "macos") { "pt-5" } else { "" };
-    let mac_titlebar_clear = if cfg!(target_os = "macos") { "pt-2 pl-20" } else { "" };
+    let mac_top_pad = if cfg!(target_os = "macos") {
+        "pt-5"
+    } else {
+        ""
+    };
+    let mac_titlebar_clear = if cfg!(target_os = "macos") {
+        "pt-2 pl-20"
+    } else {
+        ""
+    };
 
     rsx! {
         div { class: "h-full w-full flex flex-col bg-[var(--bg)] p-2 gap-2 {mac_top_pad}",
@@ -629,9 +647,7 @@ fn VoiceSounds() -> Element {
     use_effect(move || {
         let vol = sfx_vol();
         let v = vol as f32 / 100.0;
-        let _ = document::eval(&format!(
-            "{SFX_JS}\nwindow.dxSfx.setVolume({v});"
-        ));
+        let _ = document::eval(&format!("{SFX_JS}\nwindow.dxSfx.setVolume({v});"));
     });
 
     rsx! { Fragment {} }

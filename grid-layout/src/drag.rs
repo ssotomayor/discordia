@@ -73,8 +73,7 @@ impl Interaction {
         match self.kind {
             InteractionKind::Drag => {
                 let max_x = self.cols.saturating_sub(self.start_pos.w) as i32;
-                let new_x =
-                    ((self.start_pos.x as i32) + dx_cells).clamp(0, max_x.max(0)) as u32;
+                let new_x = ((self.start_pos.x as i32) + dx_cells).clamp(0, max_x.max(0)) as u32;
                 let new_y = ((self.start_pos.y as i32) + dy_cells).max(0) as u32;
                 GridPosition {
                     x: new_x,
@@ -86,8 +85,8 @@ impl Interaction {
             InteractionKind::Resize => {
                 let max_w = self.cols.saturating_sub(self.start_pos.x) as i32;
                 let min_w = self.min_w as i32;
-                let new_w = ((self.start_pos.w as i32) + dx_cells)
-                    .clamp(min_w, max_w.max(min_w)) as u32;
+                let new_w =
+                    ((self.start_pos.w as i32) + dx_cells).clamp(min_w, max_w.max(min_w)) as u32;
                 let new_h = ((self.start_pos.h as i32) + dy_cells).max(self.min_h as i32) as u32;
                 GridPosition {
                     x: self.start_pos.x,
@@ -178,9 +177,15 @@ mod tests {
     #[test]
     fn free_drag_applies_the_delta_verbatim() {
         // container 1000x500, so 70px right = 0.07, 50px down = 0.10.
-        let i = free(InteractionKind::Drag, FloatRect::new(0.10, 0.20, 0.30, 0.20));
+        let i = free(
+            InteractionKind::Drag,
+            FloatRect::new(0.10, 0.20, 0.30, 0.20),
+        );
         let r = i.project_free(170.0, 150.0).unwrap();
-        assert!((r.x - 0.17).abs() < 1e-9 && (r.y - 0.30).abs() < 1e-9, "{r:?}");
+        assert!(
+            (r.x - 0.17).abs() < 1e-9 && (r.y - 0.30).abs() < 1e-9,
+            "{r:?}"
+        );
         assert_eq!((r.w, r.h), (0.30, 0.20), "dragging must not resize");
 
         let snapped = i.project(107.0, 103.0);
@@ -204,7 +209,10 @@ mod tests {
 
     #[test]
     fn free_resize_keeps_the_origin() {
-        let i = free(InteractionKind::Resize, FloatRect::new(0.05, 0.06, 0.30, 0.20));
+        let i = free(
+            InteractionKind::Resize,
+            FloatRect::new(0.05, 0.06, 0.30, 0.20),
+        );
         let r = i.project_free(-100_000.0, -100_000.0).unwrap();
         assert_eq!((r.x, r.y), (0.05, 0.06));
         assert!(r.clamp_inside().w >= 0.05, "clamp enforces the minimum");

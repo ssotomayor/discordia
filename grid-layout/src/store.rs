@@ -72,7 +72,12 @@ impl LayoutStore {
     }
 
     pub fn free_snapshot(&self) -> Vec<(String, FloatRect)> {
-        let mut v: Vec<_> = self.free.read().iter().map(|(k, v)| (k.clone(), *v)).collect();
+        let mut v: Vec<_> = self
+            .free
+            .read()
+            .iter()
+            .map(|(k, v)| (k.clone(), *v))
+            .collect();
         v.sort_by(|a, b| a.0.cmp(&b.0));
         v
     }

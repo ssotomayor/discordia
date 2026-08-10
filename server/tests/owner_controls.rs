@@ -9,9 +9,7 @@ use std::time::Duration;
 
 use dioxusfun_bot::{Bot, BotIdentity};
 use dioxusfun_server::livekit::LiveKitConfig;
-use dioxusfun_server::protocol::{
-    ChannelKind, ClientMessage, Id, Permission, ServerMessage,
-};
+use dioxusfun_server::protocol::{ChannelKind, ClientMessage, Id, Permission, ServerMessage};
 
 async fn next_timeout(session: &mut Bot) -> ServerMessage {
     tokio::time::timeout(Duration::from_secs(5), session.next_event())
@@ -19,7 +17,6 @@ async fn next_timeout(session: &mut Bot) -> ServerMessage {
         .expect("timed out waiting for a gateway event")
         .expect("connection closed unexpectedly")
 }
-
 
 /// Per-test ServerConfig: unique temp data dir (SQLite + media) so tests are
 /// hermetic and parallel-safe.
@@ -51,7 +48,11 @@ async fn spawn_gateway() -> (String, dioxusfun_server::ServerHandle) {
 
 /// Connect a human session and swallow its Ready, returning the session and
 /// the guilds it landed with.
-async fn connect_user(url: &str, id: &BotIdentity, name: &str) -> (Bot, Vec<dioxusfun_server::protocol::Guild>) {
+async fn connect_user(
+    url: &str,
+    id: &BotIdentity,
+    name: &str,
+) -> (Bot, Vec<dioxusfun_server::protocol::Guild>) {
     let mut session = Bot::connect_as_user(url, id, name).await.unwrap();
     let guilds = loop {
         if let ServerMessage::Ready { guilds, .. } = next_timeout(&mut session).await {
@@ -64,11 +65,17 @@ async fn connect_user(url: &str, id: &BotIdentity, name: &str) -> (Bot, Vec<diox
 /// Owner creates a guild; returns (guild_id, first text channel id).
 async fn create_guild(owner: &mut Bot, name: &str) -> (Id, Id) {
     owner
-        .send(&ClientMessage::CreateGuild { name: name.into(), template: None })
+        .send(&ClientMessage::CreateGuild {
+            name: name.into(),
+            template: None,
+        })
         .await
         .unwrap();
     loop {
-        if let ServerMessage::GuildJoined { guild, channels, .. } = next_timeout(owner).await {
+        if let ServerMessage::GuildJoined {
+            guild, channels, ..
+        } = next_timeout(owner).await
+        {
             let text = channels
                 .iter()
                 .find(|c| c.kind == ChannelKind::Text)
@@ -98,9 +105,19 @@ async fn role_crud_and_broadcast() {
     let (guild_id, _text) = create_guild(&mut owner, "Roleplay").await;
 
     let (mut member, _) = connect_user(&url, &member_id, "Member").await;
-    member.send(&ClientMessage::JoinGuild { guild_id, accept: false, pow_nonce: None }).await.unwrap();
+    member
+        .send(&ClientMessage::JoinGuild {
+            guild_id,
+            accept: false,
+            pow_nonce: None,
+        })
+        .await
+        .unwrap();
     loop {
-        if matches!(next_timeout(&mut member).await, ServerMessage::GuildJoined { .. }) {
+        if matches!(
+            next_timeout(&mut member).await,
+            ServerMessage::GuildJoined { .. }
+        ) {
             break;
         }
     }
@@ -116,7 +133,11 @@ async fn role_crud_and_broadcast() {
         .await
         .unwrap();
     let roles = loop {
-        if let ServerMessage::GuildRoles { guild_id: gid, roles } = next_timeout(&mut member).await {
+        if let ServerMessage::GuildRoles {
+            guild_id: gid,
+            roles,
+        } = next_timeout(&mut member).await
+        {
             if gid == guild_id {
                 break roles;
             }
@@ -148,7 +169,14 @@ async fn role_crud_and_broadcast() {
     // A fresh joiner receives the role list in GuildJoined.
     let fresh_id = BotIdentity::generate();
     let (mut fresh, _) = connect_user(&url, &fresh_id, "Fresh").await;
-    fresh.send(&ClientMessage::JoinGuild { guild_id, accept: false, pow_nonce: None }).await.unwrap();
+    fresh
+        .send(&ClientMessage::JoinGuild {
+            guild_id,
+            accept: false,
+            pow_nonce: None,
+        })
+        .await
+        .unwrap();
     let joined_roles = loop {
         if let ServerMessage::GuildJoined { roles, .. } = next_timeout(&mut fresh).await {
             break roles;
@@ -165,7 +193,10 @@ async fn role_crud_and_broadcast() {
     let mut saw_strip = false;
     while !(saw_empty_roles && saw_strip) {
         match next_timeout(&mut member).await {
-            ServerMessage::GuildRoles { guild_id: gid, roles } if gid == guild_id => {
+            ServerMessage::GuildRoles {
+                guild_id: gid,
+                roles,
+            } if gid == guild_id => {
                 assert!(roles.is_empty());
                 saw_empty_roles = true;
             }
@@ -190,16 +221,29 @@ async fn manage_guild_role_unlocks_accent() {
     let (guild_id, _) = create_guild(&mut owner, "Styled").await;
 
     let (mut member, _) = connect_user(&url, &member_id, "Member").await;
-    member.send(&ClientMessage::JoinGuild { guild_id, accept: false, pow_nonce: None }).await.unwrap();
+    member
+        .send(&ClientMessage::JoinGuild {
+            guild_id,
+            accept: false,
+            pow_nonce: None,
+        })
+        .await
+        .unwrap();
     loop {
-        if matches!(next_timeout(&mut member).await, ServerMessage::GuildJoined { .. }) {
+        if matches!(
+            next_timeout(&mut member).await,
+            ServerMessage::GuildJoined { .. }
+        ) {
             break;
         }
     }
 
     // Plain member can't restyle.
     member
-        .send(&ClientMessage::SetGuildAccent { guild_id, accent: Some("#123456".into()) })
+        .send(&ClientMessage::SetGuildAccent {
+            guild_id,
+            accent: Some("#123456".into()),
+        })
         .await
         .unwrap();
     let err = next_error(&mut member).await;
@@ -239,7 +283,10 @@ async fn manage_guild_role_unlocks_accent() {
 
     // Retry — now it works and the owner sees the GuildUpdate.
     member
-        .send(&ClientMessage::SetGuildAccent { guild_id, accent: Some("#123456".into()) })
+        .send(&ClientMessage::SetGuildAccent {
+            guild_id,
+            accent: Some("#123456".into()),
+        })
         .await
         .unwrap();
     let updated = loop {
@@ -264,9 +311,19 @@ async fn role_escalation_blocked() {
     let (guild_id, _) = create_guild(&mut owner, "Fortress").await;
 
     let (mut moderator, _) = connect_user(&url, &mod_id, "Mod").await;
-    moderator.send(&ClientMessage::JoinGuild { guild_id, accept: false, pow_nonce: None }).await.unwrap();
+    moderator
+        .send(&ClientMessage::JoinGuild {
+            guild_id,
+            accept: false,
+            pow_nonce: None,
+        })
+        .await
+        .unwrap();
     loop {
-        if matches!(next_timeout(&mut moderator).await, ServerMessage::GuildJoined { .. }) {
+        if matches!(
+            next_timeout(&mut moderator).await,
+            ServerMessage::GuildJoined { .. }
+        ) {
             break;
         }
     }
@@ -349,7 +406,9 @@ async fn role_escalation_blocked() {
         .unwrap();
     let ok = loop {
         match next_timeout(&mut moderator).await {
-            ServerMessage::GuildRoles { roles, .. } => break roles.iter().any(|r| r.name == "Doorman"),
+            ServerMessage::GuildRoles { roles, .. } => {
+                break roles.iter().any(|r| r.name == "Doorman");
+            }
             ServerMessage::Error { message } => panic!("unexpected error: {message}"),
             _ => {}
         }
@@ -385,7 +444,10 @@ async fn system_guild_is_immutable() {
     assert!(err.contains("manage_roles"), "got: {err}");
 
     session
-        .send(&ClientMessage::SetGuildAccent { guild_id: lobby, accent: Some("#fff".into()) })
+        .send(&ClientMessage::SetGuildAccent {
+            guild_id: lobby,
+            accent: Some("#fff".into()),
+        })
         .await
         .unwrap();
     let err = next_error(&mut session).await;
@@ -424,7 +486,9 @@ async fn private_guild_hidden_and_invite_flow() {
     // A fresh user's catalog must not list the private guild, and a direct
     // join is rejected.
     let guest_id = BotIdentity::generate();
-    let mut guest = Bot::connect_as_user(&url, &guest_id, "Guest").await.unwrap();
+    let mut guest = Bot::connect_as_user(&url, &guest_id, "Guest")
+        .await
+        .unwrap();
     let catalog = loop {
         if let ServerMessage::Ready { catalog, .. } = next_timeout(&mut guest).await {
             break catalog;
@@ -434,17 +498,31 @@ async fn private_guild_hidden_and_invite_flow() {
         !catalog.iter().any(|g| g.id == guild_id),
         "private guild leaked into the catalog"
     );
-    guest.send(&ClientMessage::JoinGuild { guild_id, accept: false, pow_nonce: None }).await.unwrap();
+    guest
+        .send(&ClientMessage::JoinGuild {
+            guild_id,
+            accept: false,
+            pow_nonce: None,
+        })
+        .await
+        .unwrap();
     let err = next_error(&mut guest).await;
     assert!(err.contains("invite-only"), "got: {err}");
 
     // Owner mints an invite; the guest joins with it.
     owner
-        .send(&ClientMessage::CreateInvite { guild_id, rotate: false })
+        .send(&ClientMessage::CreateInvite {
+            guild_id,
+            rotate: false,
+        })
         .await
         .unwrap();
     let code = loop {
-        if let ServerMessage::GuildInvite { guild_id: gid, code } = next_timeout(&mut owner).await {
+        if let ServerMessage::GuildInvite {
+            guild_id: gid,
+            code,
+        } = next_timeout(&mut owner).await
+        {
             if gid == guild_id {
                 break code;
             }
@@ -452,7 +530,11 @@ async fn private_guild_hidden_and_invite_flow() {
     };
     assert_eq!(code.len(), 12, "high-entropy code expected");
     guest
-        .send(&ClientMessage::JoinByInvite { code: code.clone(), accept: false, pow_nonce: None })
+        .send(&ClientMessage::JoinByInvite {
+            code: code.clone(),
+            accept: false,
+            pow_nonce: None,
+        })
         .await
         .unwrap();
     loop {
@@ -464,7 +546,10 @@ async fn private_guild_hidden_and_invite_flow() {
 
     // Rotation invalidates the old code.
     owner
-        .send(&ClientMessage::CreateInvite { guild_id, rotate: true })
+        .send(&ClientMessage::CreateInvite {
+            guild_id,
+            rotate: true,
+        })
         .await
         .unwrap();
     let rotated = loop {
@@ -475,7 +560,13 @@ async fn private_guild_hidden_and_invite_flow() {
     assert_ne!(rotated, code);
     let late_id = BotIdentity::generate();
     let (mut late, _) = connect_user(&url, &late_id, "Late").await;
-    late.send(&ClientMessage::JoinByInvite { code, accept: false, pow_nonce: None }).await.unwrap();
+    late.send(&ClientMessage::JoinByInvite {
+        code,
+        accept: false,
+        pow_nonce: None,
+    })
+    .await
+    .unwrap();
     let err = next_error(&mut late).await;
     assert!(err.contains("unknown or expired"), "got: {err}");
 
@@ -492,9 +583,19 @@ async fn kick_removes_and_ban_blocks() {
     let (guild_id, _) = create_guild(&mut owner, "Bouncy Castle").await;
 
     let (mut target, _) = connect_user(&url, &target_id, "Target").await;
-    target.send(&ClientMessage::JoinGuild { guild_id, accept: false, pow_nonce: None }).await.unwrap();
+    target
+        .send(&ClientMessage::JoinGuild {
+            guild_id,
+            accept: false,
+            pow_nonce: None,
+        })
+        .await
+        .unwrap();
     loop {
-        if matches!(next_timeout(&mut target).await, ServerMessage::GuildJoined { .. }) {
+        if matches!(
+            next_timeout(&mut target).await,
+            ServerMessage::GuildJoined { .. }
+        ) {
             break;
         }
     }
@@ -522,9 +623,19 @@ async fn kick_removes_and_ban_blocks() {
     }
 
     // Kicked ≠ banned: rejoining works.
-    target.send(&ClientMessage::JoinGuild { guild_id, accept: false, pow_nonce: None }).await.unwrap();
+    target
+        .send(&ClientMessage::JoinGuild {
+            guild_id,
+            accept: false,
+            pow_nonce: None,
+        })
+        .await
+        .unwrap();
     loop {
-        if matches!(next_timeout(&mut target).await, ServerMessage::GuildJoined { .. }) {
+        if matches!(
+            next_timeout(&mut target).await,
+            ServerMessage::GuildJoined { .. }
+        ) {
             break;
         }
     }
@@ -538,7 +649,10 @@ async fn kick_removes_and_ban_blocks() {
         .await
         .unwrap();
     loop {
-        if matches!(next_timeout(&mut target).await, ServerMessage::GuildDelete { .. }) {
+        if matches!(
+            next_timeout(&mut target).await,
+            ServerMessage::GuildDelete { .. }
+        ) {
             break;
         }
     }
@@ -549,12 +663,22 @@ async fn kick_removes_and_ban_blocks() {
     };
     assert!(bans.iter().any(|u| u.pubkey == target_id.pubkey()));
 
-    target.send(&ClientMessage::JoinGuild { guild_id, accept: false, pow_nonce: None }).await.unwrap();
+    target
+        .send(&ClientMessage::JoinGuild {
+            guild_id,
+            accept: false,
+            pow_nonce: None,
+        })
+        .await
+        .unwrap();
     let err = next_error(&mut target).await;
     assert!(err.contains("banned"), "got: {err}");
 
     owner
-        .send(&ClientMessage::CreateInvite { guild_id, rotate: false })
+        .send(&ClientMessage::CreateInvite {
+            guild_id,
+            rotate: false,
+        })
         .await
         .unwrap();
     let code = loop {
@@ -562,9 +686,19 @@ async fn kick_removes_and_ban_blocks() {
             break code;
         }
     };
-    target.send(&ClientMessage::JoinByInvite { code, accept: false, pow_nonce: None }).await.unwrap();
+    target
+        .send(&ClientMessage::JoinByInvite {
+            code,
+            accept: false,
+            pow_nonce: None,
+        })
+        .await
+        .unwrap();
     let err = next_error(&mut target).await;
-    assert!(err.contains("banned"), "a valid invite must not beat a ban; got: {err}");
+    assert!(
+        err.contains("banned"),
+        "a valid invite must not beat a ban; got: {err}"
+    );
 
     // Unban restores access.
     owner
@@ -580,9 +714,19 @@ async fn kick_removes_and_ban_blocks() {
         }
     };
     assert!(bans.is_empty());
-    target.send(&ClientMessage::JoinGuild { guild_id, accept: false, pow_nonce: None }).await.unwrap();
+    target
+        .send(&ClientMessage::JoinGuild {
+            guild_id,
+            accept: false,
+            pow_nonce: None,
+        })
+        .await
+        .unwrap();
     loop {
-        if matches!(next_timeout(&mut target).await, ServerMessage::GuildJoined { .. }) {
+        if matches!(
+            next_timeout(&mut target).await,
+            ServerMessage::GuildJoined { .. }
+        ) {
             break;
         }
     }
@@ -604,7 +748,13 @@ async fn moderation_guard_rails() {
     let (mut mod_a, _) = connect_user(&url, &mod_a_id, "ModA").await;
     let (mut mod_b, _) = connect_user(&url, &mod_b_id, "ModB").await;
     for m in [&mut mod_a, &mut mod_b] {
-        m.send(&ClientMessage::JoinGuild { guild_id, accept: false, pow_nonce: None }).await.unwrap();
+        m.send(&ClientMessage::JoinGuild {
+            guild_id,
+            accept: false,
+            pow_nonce: None,
+        })
+        .await
+        .unwrap();
         loop {
             if matches!(next_timeout(m).await, ServerMessage::GuildJoined { .. }) {
                 break;
@@ -691,7 +841,10 @@ async fn moderation_guard_rails() {
         .await
         .unwrap();
     loop {
-        if matches!(next_timeout(&mut owner).await, ServerMessage::GuildIntegrations { .. }) {
+        if matches!(
+            next_timeout(&mut owner).await,
+            ServerMessage::GuildIntegrations { .. }
+        ) {
             break;
         }
     }
@@ -714,19 +867,31 @@ async fn moderation_guard_rails() {
         .await
         .unwrap();
     loop {
-        if matches!(next_timeout(&mut mod_b).await, ServerMessage::GuildDelete { .. }) {
+        if matches!(
+            next_timeout(&mut mod_b).await,
+            ServerMessage::GuildDelete { .. }
+        ) {
             break;
         }
     }
 
     // 6. Leaving: a member exits voluntarily; the owner can't.
-    mod_a.send(&ClientMessage::LeaveGuild { guild_id }).await.unwrap();
+    mod_a
+        .send(&ClientMessage::LeaveGuild { guild_id })
+        .await
+        .unwrap();
     loop {
-        if matches!(next_timeout(&mut mod_a).await, ServerMessage::GuildDelete { .. }) {
+        if matches!(
+            next_timeout(&mut mod_a).await,
+            ServerMessage::GuildDelete { .. }
+        ) {
             break;
         }
     }
-    owner.send(&ClientMessage::LeaveGuild { guild_id }).await.unwrap();
+    owner
+        .send(&ClientMessage::LeaveGuild { guild_id })
+        .await
+        .unwrap();
     let err = next_error(&mut owner).await;
     assert!(err.contains("transfer"), "got: {err}");
 
@@ -747,9 +912,19 @@ async fn channel_crud_gated_and_broadcast() {
     let (guild_id, first_text) = create_guild(&mut owner, "Builders").await;
 
     let (mut member, _) = connect_user(&url, &member_id, "Member").await;
-    member.send(&ClientMessage::JoinGuild { guild_id, accept: false, pow_nonce: None }).await.unwrap();
+    member
+        .send(&ClientMessage::JoinGuild {
+            guild_id,
+            accept: false,
+            pow_nonce: None,
+        })
+        .await
+        .unwrap();
     loop {
-        if matches!(next_timeout(&mut member).await, ServerMessage::GuildJoined { .. }) {
+        if matches!(
+            next_timeout(&mut member).await,
+            ServerMessage::GuildJoined { .. }
+        ) {
             break;
         }
     }
@@ -807,7 +982,9 @@ async fn channel_crud_gated_and_broadcast() {
 
     // Delete it; the member sees ChannelDelete.
     owner
-        .send(&ClientMessage::DeleteChannel { channel_id: created.id })
+        .send(&ClientMessage::DeleteChannel {
+            channel_id: created.id,
+        })
         .await
         .unwrap();
     loop {
@@ -819,7 +996,9 @@ async fn channel_crud_gated_and_broadcast() {
 
     // The last text channel is protected.
     owner
-        .send(&ClientMessage::DeleteChannel { channel_id: first_text })
+        .send(&ClientMessage::DeleteChannel {
+            channel_id: first_text,
+        })
         .await
         .unwrap();
     let err = next_error(&mut owner).await;
@@ -838,9 +1017,19 @@ async fn read_only_channel_gates_posting() {
     let (guild_id, text_channel) = create_guild(&mut owner, "Announcements").await;
 
     let (mut member, _) = connect_user(&url, &member_id, "Member").await;
-    member.send(&ClientMessage::JoinGuild { guild_id, accept: false, pow_nonce: None }).await.unwrap();
+    member
+        .send(&ClientMessage::JoinGuild {
+            guild_id,
+            accept: false,
+            pow_nonce: None,
+        })
+        .await
+        .unwrap();
     loop {
-        if matches!(next_timeout(&mut member).await, ServerMessage::GuildJoined { .. }) {
+        if matches!(
+            next_timeout(&mut member).await,
+            ServerMessage::GuildJoined { .. }
+        ) {
             break;
         }
     }
@@ -858,18 +1047,27 @@ async fn read_only_channel_gates_posting() {
         .await
         .unwrap();
     loop {
-        if matches!(next_timeout(&mut member).await, ServerMessage::ChannelUpdate(_)) {
+        if matches!(
+            next_timeout(&mut member).await,
+            ServerMessage::ChannelUpdate(_)
+        ) {
             break;
         }
     }
 
     // Plain member is blocked.
-    member.send_message(text_channel, "can I talk?").await.unwrap();
+    member
+        .send_message(text_channel, "can I talk?")
+        .await
+        .unwrap();
     let err = next_error(&mut member).await;
     assert!(err.contains("read-only"), "got: {err}");
 
     // The owner posts fine (implicit all permissions).
-    owner.send_message(text_channel, "official news").await.unwrap();
+    owner
+        .send_message(text_channel, "official news")
+        .await
+        .unwrap();
     loop {
         if let ServerMessage::MessageCreate(m) = next_timeout(&mut member).await {
             assert_eq!(m.content, "official news");
@@ -891,7 +1089,10 @@ async fn read_only_channel_gates_posting() {
         .await
         .unwrap();
     loop {
-        if matches!(next_timeout(&mut owner).await, ServerMessage::GuildIntegrations { .. }) {
+        if matches!(
+            next_timeout(&mut owner).await,
+            ServerMessage::GuildIntegrations { .. }
+        ) {
             break;
         }
     }
@@ -916,11 +1117,16 @@ async fn read_only_channel_gates_posting() {
         .await
         .unwrap();
     loop {
-        if matches!(next_timeout(&mut owner).await, ServerMessage::GuildIntegrations { .. }) {
+        if matches!(
+            next_timeout(&mut owner).await,
+            ServerMessage::GuildIntegrations { .. }
+        ) {
             break;
         }
     }
-    bot.send_message(text_channel, "official beep").await.unwrap();
+    bot.send_message(text_channel, "official beep")
+        .await
+        .unwrap();
     loop {
         if let ServerMessage::MessageCreate(m) = next_timeout(&mut member).await {
             if m.author.pubkey == bot_id.pubkey() {
@@ -946,7 +1152,13 @@ async fn delete_message_rules() {
     let (mut author, _) = connect_user(&url, &author_id, "Author").await;
     let (mut plain, _) = connect_user(&url, &plain_id, "Plain").await;
     for m in [&mut author, &mut plain] {
-        m.send(&ClientMessage::JoinGuild { guild_id, accept: false, pow_nonce: None }).await.unwrap();
+        m.send(&ClientMessage::JoinGuild {
+            guild_id,
+            accept: false,
+            pow_nonce: None,
+        })
+        .await
+        .unwrap();
         loop {
             if matches!(next_timeout(m).await, ServerMessage::GuildJoined { .. }) {
                 break;
@@ -955,7 +1167,10 @@ async fn delete_message_rules() {
     }
 
     // Author posts, then deletes their own message — everyone sees it vanish.
-    author.send_message(text_channel, "oops, typo").await.unwrap();
+    author
+        .send_message(text_channel, "oops, typo")
+        .await
+        .unwrap();
     let msg_id = loop {
         if let ServerMessage::MessageCreate(m) = next_timeout(&mut author).await {
             if m.author.pubkey == author_id.pubkey() {
@@ -964,7 +1179,10 @@ async fn delete_message_rules() {
         }
     };
     author
-        .send(&ClientMessage::DeleteMessage { channel_id: text_channel, message_id: msg_id })
+        .send(&ClientMessage::DeleteMessage {
+            channel_id: text_channel,
+            message_id: msg_id,
+        })
         .await
         .unwrap();
     loop {
@@ -984,7 +1202,10 @@ async fn delete_message_rules() {
         }
     };
     plain
-        .send(&ClientMessage::DeleteMessage { channel_id: text_channel, message_id: msg_id })
+        .send(&ClientMessage::DeleteMessage {
+            channel_id: text_channel,
+            message_id: msg_id,
+        })
         .await
         .unwrap();
     let err = next_error(&mut plain).await;
@@ -993,7 +1214,10 @@ async fn delete_message_rules() {
     // The owner (implicit ManageMessages) can moderate it away. (Loop until
     // the MATCHING delete — the author's queue may still hold the first one.)
     owner
-        .send(&ClientMessage::DeleteMessage { channel_id: text_channel, message_id: msg_id })
+        .send(&ClientMessage::DeleteMessage {
+            channel_id: text_channel,
+            message_id: msg_id,
+        })
         .await
         .unwrap();
     loop {
@@ -1006,7 +1230,9 @@ async fn delete_message_rules() {
 
     // DMs: only the author may delete, moderators have no reach.
     owner
-        .send(&ClientMessage::OpenDm { user_pubkey: author_id.pubkey().to_string() })
+        .send(&ClientMessage::OpenDm {
+            user_pubkey: author_id.pubkey().to_string(),
+        })
         .await
         .unwrap();
     let dm_channel = loop {
@@ -1015,7 +1241,10 @@ async fn delete_message_rules() {
         }
     };
     // The author sends a DM message to the owner.
-    author.send_message(dm_channel, "private note").await.unwrap();
+    author
+        .send_message(dm_channel, "private note")
+        .await
+        .unwrap();
     let dm_msg = loop {
         if let ServerMessage::MessageCreate(m) = next_timeout(&mut owner).await {
             if m.channel_id == dm_channel {
@@ -1025,7 +1254,10 @@ async fn delete_message_rules() {
     };
     // Even the (guild) owner can't delete the other side's DM message.
     owner
-        .send(&ClientMessage::DeleteMessage { channel_id: dm_channel, message_id: dm_msg })
+        .send(&ClientMessage::DeleteMessage {
+            channel_id: dm_channel,
+            message_id: dm_msg,
+        })
         .await
         .unwrap();
     let err = next_error(&mut owner).await;
@@ -1049,9 +1281,19 @@ async fn transfer_ownership_swaps_powers() {
     let (guild_id, _) = create_guild(&mut old_owner, "Handover").await;
 
     let (mut new_owner, _) = connect_user(&url, &new_id, "NewOwner").await;
-    new_owner.send(&ClientMessage::JoinGuild { guild_id, accept: false, pow_nonce: None }).await.unwrap();
+    new_owner
+        .send(&ClientMessage::JoinGuild {
+            guild_id,
+            accept: false,
+            pow_nonce: None,
+        })
+        .await
+        .unwrap();
     loop {
-        if matches!(next_timeout(&mut new_owner).await, ServerMessage::GuildJoined { .. }) {
+        if matches!(
+            next_timeout(&mut new_owner).await,
+            ServerMessage::GuildJoined { .. }
+        ) {
             break;
         }
     }
@@ -1095,14 +1337,23 @@ async fn transfer_ownership_swaps_powers() {
     assert_eq!(updated.owner_pubkey, new_id.pubkey());
 
     // The old owner has lost the implicit powers...
-    old_owner.send(&ClientMessage::DeleteGuild { guild_id }).await.unwrap();
+    old_owner
+        .send(&ClientMessage::DeleteGuild { guild_id })
+        .await
+        .unwrap();
     let err = next_error(&mut old_owner).await;
     assert!(err.contains("owner"), "got: {err}");
 
     // ...and the new owner has gained them.
-    new_owner.send(&ClientMessage::DeleteGuild { guild_id }).await.unwrap();
+    new_owner
+        .send(&ClientMessage::DeleteGuild { guild_id })
+        .await
+        .unwrap();
     loop {
-        if matches!(next_timeout(&mut new_owner).await, ServerMessage::GuildDelete { .. }) {
+        if matches!(
+            next_timeout(&mut new_owner).await,
+            ServerMessage::GuildDelete { .. }
+        ) {
             break;
         }
     }
@@ -1120,9 +1371,19 @@ async fn guild_branding() {
     let (guild_id, _) = create_guild(&mut owner, "Pretty").await;
 
     let (mut member, _) = connect_user(&url, &member_id, "Member").await;
-    member.send(&ClientMessage::JoinGuild { guild_id, accept: false, pow_nonce: None }).await.unwrap();
+    member
+        .send(&ClientMessage::JoinGuild {
+            guild_id,
+            accept: false,
+            pow_nonce: None,
+        })
+        .await
+        .unwrap();
     loop {
-        if matches!(next_timeout(&mut member).await, ServerMessage::GuildJoined { .. }) {
+        if matches!(
+            next_timeout(&mut member).await,
+            ServerMessage::GuildJoined { .. }
+        ) {
             break;
         }
     }
@@ -1210,16 +1471,22 @@ async fn operator_can_moderate_system_guild() {
     let rando_id = BotIdentity::generate();
     let (mut rando, _) = connect_user(&url, &rando_id, "Rando").await;
     rando
-        .send(&ClientMessage::SetGuildAccent { guild_id: lobby, accent: Some("#abcdef".into()) })
+        .send(&ClientMessage::SetGuildAccent {
+            guild_id: lobby,
+            accent: Some("#abcdef".into()),
+        })
         .await
         .unwrap();
     let err = next_error(&mut rando).await;
     assert!(err.contains("manage_guild"), "got: {err}");
 
     // The operator CAN restyle + create roles in the Lobby.
-    op.send(&ClientMessage::SetGuildAccent { guild_id: lobby, accent: Some("#abcdef".into()) })
-        .await
-        .unwrap();
+    op.send(&ClientMessage::SetGuildAccent {
+        guild_id: lobby,
+        accent: Some("#abcdef".into()),
+    })
+    .await
+    .unwrap();
     let updated = loop {
         if let ServerMessage::GuildUpdate(g) = next_timeout(&mut op).await {
             if g.id == lobby {
@@ -1247,7 +1514,9 @@ async fn operator_can_moderate_system_guild() {
     assert!(roles.iter().any(|r| r.name == "Lobby Mod"));
 
     // But the Lobby stays undeletable and non-transferable, even for the operator.
-    op.send(&ClientMessage::DeleteGuild { guild_id: lobby }).await.unwrap();
+    op.send(&ClientMessage::DeleteGuild { guild_id: lobby })
+        .await
+        .unwrap();
     let err = next_error(&mut op).await;
     assert!(err.contains("owner"), "delete should fail; got: {err}");
 
@@ -1258,7 +1527,10 @@ async fn operator_can_moderate_system_guild() {
     .await
     .unwrap();
     let err = next_error(&mut op).await;
-    assert!(err.contains("system guild"), "transfer should fail; got: {err}");
+    assert!(
+        err.contains("system guild"),
+        "transfer should fail; got: {err}"
+    );
 
     handle.abort();
 }
@@ -1298,7 +1570,9 @@ async fn message_xp_levels_up_per_guild() {
     // XP is per-guild: a fresh guild starts the same user back at 0. Verify
     // both values via a second session's Ready roster (which stamps XP).
     let (guild2, _) = create_guild(&mut owner, "Fresh Start").await;
-    let mut second = Bot::connect_as_user(&url, &owner_id, "Grinder").await.unwrap();
+    let mut second = Bot::connect_as_user(&url, &owner_id, "Grinder")
+        .await
+        .unwrap();
     let members = loop {
         if let ServerMessage::Ready { members, .. } = next_timeout(&mut second).await {
             break members;
@@ -1336,11 +1610,16 @@ fn solve_pow(challenge: &str, bits: u32) -> String {
         let d = h.finalize();
         let mut seen = 0u32;
         for b in d {
-            if b == 0 { seen += 8; continue; }
+            if b == 0 {
+                seen += 8;
+                continue;
+            }
             seen += b.leading_zeros();
             break;
         }
-        if seen >= bits { return nonce; }
+        if seen >= bits {
+            return nonce;
+        }
         n += 1;
     }
 }
@@ -1361,13 +1640,25 @@ async fn rules_gate_requires_accept() {
         .await
         .unwrap();
     loop {
-        if matches!(next_timeout(&mut owner).await, ServerMessage::GuildUpdate(_)) { break; }
+        if matches!(
+            next_timeout(&mut owner).await,
+            ServerMessage::GuildUpdate(_)
+        ) {
+            break;
+        }
     }
 
     let joiner_id = BotIdentity::generate();
     let (mut joiner, _) = connect_user(&url, &joiner_id, "Joiner").await;
     // First attempt (no accept) → challenge, not a join.
-    joiner.send(&ClientMessage::JoinGuild { guild_id, accept: false, pow_nonce: None }).await.unwrap();
+    joiner
+        .send(&ClientMessage::JoinGuild {
+            guild_id,
+            accept: false,
+            pow_nonce: None,
+        })
+        .await
+        .unwrap();
     let challenge = loop {
         match next_timeout(&mut joiner).await {
             ServerMessage::JoinChallenge { gate, rules, .. } => break (gate, rules),
@@ -1379,9 +1670,21 @@ async fn rules_gate_requires_accept() {
     assert_eq!(challenge.1.as_deref(), Some("Be nice."));
 
     // Accept → joins.
-    joiner.send(&ClientMessage::JoinGuild { guild_id, accept: true, pow_nonce: None }).await.unwrap();
+    joiner
+        .send(&ClientMessage::JoinGuild {
+            guild_id,
+            accept: true,
+            pow_nonce: None,
+        })
+        .await
+        .unwrap();
     loop {
-        if matches!(next_timeout(&mut joiner).await, ServerMessage::GuildJoined { .. }) { break; }
+        if matches!(
+            next_timeout(&mut joiner).await,
+            ServerMessage::GuildJoined { .. }
+        ) {
+            break;
+        }
     }
     handle.abort();
 }
@@ -1392,25 +1695,70 @@ async fn pow_gate_requires_valid_nonce() {
     let owner_id = BotIdentity::generate();
     let (mut owner, _) = connect_user(&url, &owner_id, "Owner").await;
     let (guild_id, _) = create_guild(&mut owner, "Worked").await;
-    owner.send(&ClientMessage::SetJoinGate { guild_id, gate: JoinGate::Pow, rules: None }).await.unwrap();
-    loop { if matches!(next_timeout(&mut owner).await, ServerMessage::GuildUpdate(_)) { break; } }
+    owner
+        .send(&ClientMessage::SetJoinGate {
+            guild_id,
+            gate: JoinGate::Pow,
+            rules: None,
+        })
+        .await
+        .unwrap();
+    loop {
+        if matches!(
+            next_timeout(&mut owner).await,
+            ServerMessage::GuildUpdate(_)
+        ) {
+            break;
+        }
+    }
 
     let joiner_id = BotIdentity::generate();
     let (mut joiner, _) = connect_user(&url, &joiner_id, "Grinder").await;
-    joiner.send(&ClientMessage::JoinGuild { guild_id, accept: false, pow_nonce: None }).await.unwrap();
+    joiner
+        .send(&ClientMessage::JoinGuild {
+            guild_id,
+            accept: false,
+            pow_nonce: None,
+        })
+        .await
+        .unwrap();
     let (challenge, bits) = loop {
-        if let ServerMessage::JoinChallenge { pow_challenge, pow_difficulty, .. } = next_timeout(&mut joiner).await {
+        if let ServerMessage::JoinChallenge {
+            pow_challenge,
+            pow_difficulty,
+            ..
+        } = next_timeout(&mut joiner).await
+        {
             break (pow_challenge.unwrap(), pow_difficulty.unwrap());
         }
     };
     // A bogus nonce is rejected (re-challenged).
-    joiner.send(&ClientMessage::JoinGuild { guild_id, accept: false, pow_nonce: Some("0".into()) }).await.unwrap();
+    joiner
+        .send(&ClientMessage::JoinGuild {
+            guild_id,
+            accept: false,
+            pow_nonce: Some("0".into()),
+        })
+        .await
+        .unwrap();
     // (May coincidentally satisfy at very low bits, but 16 bits makes "0" ~always fail.)
     // Solve it for real → joins.
     let nonce = solve_pow(&challenge, bits);
-    joiner.send(&ClientMessage::JoinGuild { guild_id, accept: false, pow_nonce: Some(nonce) }).await.unwrap();
+    joiner
+        .send(&ClientMessage::JoinGuild {
+            guild_id,
+            accept: false,
+            pow_nonce: Some(nonce),
+        })
+        .await
+        .unwrap();
     loop {
-        if matches!(next_timeout(&mut joiner).await, ServerMessage::GuildJoined { .. }) { break; }
+        if matches!(
+            next_timeout(&mut joiner).await,
+            ServerMessage::GuildJoined { .. }
+        ) {
+            break;
+        }
     }
     handle.abort();
 }
@@ -1421,12 +1769,29 @@ async fn panic_mode_blocks_joins() {
     let owner_id = BotIdentity::generate();
     let (mut owner, _) = connect_user(&url, &owner_id, "Owner").await;
     let (guild_id, _) = create_guild(&mut owner, "Bunker").await;
-    owner.send(&ClientMessage::SetPanicMode { guild_id, on: true }).await.unwrap();
-    loop { if matches!(next_timeout(&mut owner).await, ServerMessage::GuildUpdate(_)) { break; } }
+    owner
+        .send(&ClientMessage::SetPanicMode { guild_id, on: true })
+        .await
+        .unwrap();
+    loop {
+        if matches!(
+            next_timeout(&mut owner).await,
+            ServerMessage::GuildUpdate(_)
+        ) {
+            break;
+        }
+    }
 
     let joiner_id = BotIdentity::generate();
     let (mut joiner, _) = connect_user(&url, &joiner_id, "Raider").await;
-    joiner.send(&ClientMessage::JoinGuild { guild_id, accept: false, pow_nonce: None }).await.unwrap();
+    joiner
+        .send(&ClientMessage::JoinGuild {
+            guild_id,
+            accept: false,
+            pow_nonce: None,
+        })
+        .await
+        .unwrap();
     let err = next_error(&mut joiner).await;
     assert!(err.contains("lockdown"), "got: {err}");
     handle.abort();
@@ -1440,18 +1805,52 @@ async fn slowmode_throttles_posting() {
     let (mut owner, _) = connect_user(&url, &owner_id, "Owner").await;
     let (guild_id, text) = create_guild(&mut owner, "Slow").await;
     let (mut member, _) = connect_user(&url, &member_id, "Member").await;
-    member.send(&ClientMessage::JoinGuild { guild_id, accept: false, pow_nonce: None }).await.unwrap();
-    loop { if matches!(next_timeout(&mut member).await, ServerMessage::GuildJoined { .. }) { break; } }
+    member
+        .send(&ClientMessage::JoinGuild {
+            guild_id,
+            accept: false,
+            pow_nonce: None,
+        })
+        .await
+        .unwrap();
+    loop {
+        if matches!(
+            next_timeout(&mut member).await,
+            ServerMessage::GuildJoined { .. }
+        ) {
+            break;
+        }
+    }
 
-    owner.send(&ClientMessage::UpdateChannel {
-        channel_id: text, name: "general".into(), topic: None,
-        read_only: false, position: 0, slowmode_secs: 30,
-    }).await.unwrap();
-    loop { if matches!(next_timeout(&mut member).await, ServerMessage::ChannelUpdate(_)) { break; } }
+    owner
+        .send(&ClientMessage::UpdateChannel {
+            channel_id: text,
+            name: "general".into(),
+            topic: None,
+            read_only: false,
+            position: 0,
+            slowmode_secs: 30,
+        })
+        .await
+        .unwrap();
+    loop {
+        if matches!(
+            next_timeout(&mut member).await,
+            ServerMessage::ChannelUpdate(_)
+        ) {
+            break;
+        }
+    }
 
     // First post ok, second throttled for the member.
     member.send_message(text, "one").await.unwrap();
-    loop { if let ServerMessage::MessageCreate(m) = next_timeout(&mut member).await { if m.content == "one" { break; } } }
+    loop {
+        if let ServerMessage::MessageCreate(m) = next_timeout(&mut member).await {
+            if m.content == "one" {
+                break;
+            }
+        }
+    }
     member.send_message(text, "two").await.unwrap();
     let err = next_error(&mut member).await;
     assert!(err.contains("slowmode"), "got: {err}");
@@ -1462,7 +1861,9 @@ async fn slowmode_throttles_posting() {
     let mut owner_msgs = 0;
     while owner_msgs < 2 {
         if let ServerMessage::MessageCreate(m) = next_timeout(&mut owner).await {
-            if m.author.pubkey == owner_id.pubkey() { owner_msgs += 1; }
+            if m.author.pubkey == owner_id.pubkey() {
+                owner_msgs += 1;
+            }
         }
     }
     handle.abort();
@@ -1476,18 +1877,54 @@ async fn audit_log_records_moderation() {
     let (mut owner, _) = connect_user(&url, &owner_id, "Owner").await;
     let (guild_id, _) = create_guild(&mut owner, "Logged").await;
     let (mut target, _) = connect_user(&url, &target_id, "Target").await;
-    target.send(&ClientMessage::JoinGuild { guild_id, accept: false, pow_nonce: None }).await.unwrap();
-    loop { if matches!(next_timeout(&mut target).await, ServerMessage::GuildJoined { .. }) { break; } }
+    target
+        .send(&ClientMessage::JoinGuild {
+            guild_id,
+            accept: false,
+            pow_nonce: None,
+        })
+        .await
+        .unwrap();
+    loop {
+        if matches!(
+            next_timeout(&mut target).await,
+            ServerMessage::GuildJoined { .. }
+        ) {
+            break;
+        }
+    }
 
-    owner.send(&ClientMessage::BanMember { guild_id, user_pubkey: target_id.pubkey().to_string() }).await.unwrap();
-    loop { if matches!(next_timeout(&mut owner).await, ServerMessage::GuildBans { .. }) { break; } }
+    owner
+        .send(&ClientMessage::BanMember {
+            guild_id,
+            user_pubkey: target_id.pubkey().to_string(),
+        })
+        .await
+        .unwrap();
+    loop {
+        if matches!(
+            next_timeout(&mut owner).await,
+            ServerMessage::GuildBans { .. }
+        ) {
+            break;
+        }
+    }
 
-    owner.send(&ClientMessage::FetchAuditLog { guild_id }).await.unwrap();
+    owner
+        .send(&ClientMessage::FetchAuditLog { guild_id })
+        .await
+        .unwrap();
     let entries = loop {
-        if let ServerMessage::AuditLog { entries, .. } = next_timeout(&mut owner).await { break entries; }
+        if let ServerMessage::AuditLog { entries, .. } = next_timeout(&mut owner).await {
+            break entries;
+        }
     };
-    assert!(entries.iter().any(|e| e.action == "ban" && e.target == target_id.pubkey()),
-        "ban recorded in audit log");
+    assert!(
+        entries
+            .iter()
+            .any(|e| e.action == "ban" && e.target == target_id.pubkey()),
+        "ban recorded in audit log"
+    );
     handle.abort();
 }
 
@@ -1496,13 +1933,26 @@ async fn community_template_seeds_roles_and_channels() {
     let (url, handle) = spawn_gateway().await;
     let owner_id = BotIdentity::generate();
     let (mut owner, _) = connect_user(&url, &owner_id, "Owner").await;
-    owner.send(&ClientMessage::CreateGuild { name: "FOSS Proj".into(), template: Some("foss".into()) }).await.unwrap();
+    owner
+        .send(&ClientMessage::CreateGuild {
+            name: "FOSS Proj".into(),
+            template: Some("foss".into()),
+        })
+        .await
+        .unwrap();
     let (channels, roles) = loop {
-        if let ServerMessage::GuildJoined { channels, roles, .. } = next_timeout(&mut owner).await {
+        if let ServerMessage::GuildJoined {
+            channels, roles, ..
+        } = next_timeout(&mut owner).await
+        {
             break (channels, roles);
         }
     };
-    assert!(channels.iter().any(|c| c.name == "announcements" && c.read_only));
+    assert!(
+        channels
+            .iter()
+            .any(|c| c.name == "announcements" && c.read_only)
+    );
     assert!(channels.iter().any(|c| c.name == "dev"));
     assert!(roles.iter().any(|r| r.name == "Maintainer"));
     handle.abort();
@@ -1524,9 +1974,20 @@ async fn fetch_catalog_returns_public_guilds_paginated() {
 
     // Page 0, limit 2 → 2 guilds, total reflects all public guilds (incl. any
     // seeded system guild that is public).
-    owner.send(&ClientMessage::FetchCatalog { offset: 0, limit: 2 }).await.unwrap();
+    owner
+        .send(&ClientMessage::FetchCatalog {
+            offset: 0,
+            limit: 2,
+        })
+        .await
+        .unwrap();
     let (page0, total) = loop {
-        if let ServerMessage::GuildCatalog { guilds, offset, total } = next_timeout(&mut owner).await {
+        if let ServerMessage::GuildCatalog {
+            guilds,
+            offset,
+            total,
+        } = next_timeout(&mut owner).await
+        {
             assert_eq!(offset, 0);
             break (guilds, total);
         }
@@ -1535,7 +1996,13 @@ async fn fetch_catalog_returns_public_guilds_paginated() {
     assert!(total >= 3, "total counts all public guilds, got {total}");
 
     // Next page continues without overlap.
-    owner.send(&ClientMessage::FetchCatalog { offset: 2, limit: 2 }).await.unwrap();
+    owner
+        .send(&ClientMessage::FetchCatalog {
+            offset: 2,
+            limit: 2,
+        })
+        .await
+        .unwrap();
     let page1 = loop {
         if let ServerMessage::GuildCatalog { guilds, offset, .. } = next_timeout(&mut owner).await {
             assert_eq!(offset, 2);
@@ -1543,7 +2010,10 @@ async fn fetch_catalog_returns_public_guilds_paginated() {
         }
     };
     let ids0: Vec<_> = page0.iter().map(|g| g.id).collect();
-    assert!(page1.iter().all(|g| !ids0.contains(&g.id)), "pages don't overlap");
+    assert!(
+        page1.iter().all(|g| !ids0.contains(&g.id)),
+        "pages don't overlap"
+    );
     handle.abort();
 }
 
@@ -1556,18 +2026,36 @@ async fn creating_a_guild_no_longer_floods_bystanders_with_catalog() {
     let (mut bystander, _) = connect_user(&url, &bystander_id, "Bystander").await;
 
     // Owner creates a guild; the bystander is not a member.
-    owner.send(&ClientMessage::CreateGuild { name: "NoStorm".into(), template: None }).await.unwrap();
-    loop { if matches!(next_timeout(&mut owner).await, ServerMessage::GuildJoined { .. }) { break; } }
+    owner
+        .send(&ClientMessage::CreateGuild {
+            name: "NoStorm".into(),
+            template: None,
+        })
+        .await
+        .unwrap();
+    loop {
+        if matches!(
+            next_timeout(&mut owner).await,
+            ServerMessage::GuildJoined { .. }
+        ) {
+            break;
+        }
+    }
 
     // The bystander must NOT receive an unsolicited GuildCatalog push. Give the
     // server a beat, then assert nothing catalog-shaped is queued for them.
     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-    let got_push = tokio::time::timeout(std::time::Duration::from_millis(200), bystander.next_event())
-        .await
-        .ok()
-        .flatten();
+    let got_push = tokio::time::timeout(
+        std::time::Duration::from_millis(200),
+        bystander.next_event(),
+    )
+    .await
+    .ok()
+    .flatten();
     match got_push {
-        Some(ServerMessage::GuildCatalog { .. }) => panic!("bystander got an unsolicited catalog push"),
+        Some(ServerMessage::GuildCatalog { .. }) => {
+            panic!("bystander got an unsolicited catalog push")
+        }
         _ => {} // timeout / unrelated frame — the storm is gone
     }
     handle.abort();

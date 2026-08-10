@@ -578,13 +578,21 @@ pub fn App() -> Element {
 fn session_key(p: &SessionParams) -> String {
     let mode = match &p.mode {
         SessionMode::Remote { server_url } => format!("remote:{server_url}"),
-        SessionMode::SelfHost { allow_lan, rendezvous_url, publish_public, .. } => {
+        SessionMode::SelfHost {
+            allow_lan,
+            rendezvous_url,
+            publish_public,
+            ..
+        } => {
             format!(
                 "selfhost:{allow_lan}:{}:{publish_public}",
                 rendezvous_url.as_deref().unwrap_or("")
             )
         }
-        SessionMode::ByCode { rendezvous_url, code } => {
+        SessionMode::ByCode {
+            rendezvous_url,
+            code,
+        } => {
             format!("bycode:{rendezvous_url}:{code}")
         }
     };

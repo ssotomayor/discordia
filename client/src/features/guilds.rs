@@ -4,7 +4,8 @@ use dioxus_grid_layout::NoDrag;
 use crate::protocol::{ClientMessage, GuildSummary, Id, Permission};
 use crate::state::{use_app_state, use_gateway};
 
-const HEADER: &str = "h-11 px-2 flex items-center justify-center border-b border-[var(--border)] shrink-0";
+const HEADER: &str =
+    "h-11 px-2 flex items-center justify-center border-b border-[var(--border)] shrink-0";
 
 /// Right-click menu anchored over a guild the current user can manage (or at
 /// least leave).
@@ -469,7 +470,11 @@ fn InviteJoinRow(on_joined: EventHandler<()>) -> Element {
         if c.is_empty() {
             return;
         }
-        gateway.send(ClientMessage::JoinByInvite { code: c, accept: false, pow_nonce: None });
+        gateway.send(ClientMessage::JoinByInvite {
+            code: c,
+            accept: false,
+            pow_nonce: None,
+        });
         code.set(String::new());
         on_joined.call(());
     };
@@ -528,7 +533,10 @@ fn CreateGuild() -> Element {
     let mut submit = move || {
         let trimmed = name().trim().to_string();
         if !trimmed.is_empty() {
-            gateway.send(ClientMessage::CreateGuild { name: trimmed, template: None });
+            gateway.send(ClientMessage::CreateGuild {
+                name: trimmed,
+                template: None,
+            });
         }
         name.set(String::new());
         open.set(false);
@@ -669,7 +677,11 @@ fn TransferPicker(guild_id: Id, on_done: EventHandler<()>) -> Element {
 
     let candidates: Vec<(String, String)> = {
         let s = state.read();
-        let me = s.self_user.as_ref().map(|u| u.pubkey.clone()).unwrap_or_default();
+        let me = s
+            .self_user
+            .as_ref()
+            .map(|u| u.pubkey.clone())
+            .unwrap_or_default();
         s.members
             .iter()
             .filter(|m| m.guild_id == guild_id && !m.bot && m.user.pubkey != me)
