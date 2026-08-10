@@ -14,3 +14,22 @@ publisher = "TehSoTo"
 # App icon: icns for macOS, png fallback for other bundlers. Regenerate from
 # assets/icon.svg (qlmanage → sips → iconutil) if the logo changes.
 icon = ["assets/icon.icns", "assets/icon-1024.png"]
+
+# How the Windows installer supplies the WebView2 runtime that wry needs.
+#
+# Without this the CLI falls back to `WebviewInstallMode::OfflineInstaller`,
+# which downloads the FULL runtime (~130MB) and embeds it in the NSIS setup —
+# that alone was the bulk of Discordia-windows-setup.exe.
+#
+# `EmbedBootstrapper` embeds the Evergreen *bootstrapper* instead: a ~2MB stub
+# that pulls the runtime from Microsoft at install time, and that no-ops when a
+# runtime is already present (the common case on Win10/11). `DownloadBootstrapper`
+# would be equivalent in dx 0.7.10 — both generate the same NSIS snippet — but
+# `Embed` is the one whose contract guarantees the file exists on the build
+# machine, which is what lets the portable zip ship that same bootstrapper
+# instead of downloading a second copy.
+#
+# silent: the stub runs without its own progress window. Flip to false if you
+# want users to see the runtime download rather than a seemingly-stalled setup.
+[bundle.windows.webview_install_mode.EmbedBootstrapper]
+silent = true
