@@ -510,12 +510,6 @@ fn apply(
             s.selected_channel = Some(channel_id);
             s.dm_unread.remove(&channel_id);
         }
-        ServerMessage::DmCreate(info) => {
-            // Someone opened a DM with us — add it to the sidebar if new.
-            if !s.dms.iter().any(|d| d.channel_id == info.channel_id) {
-                s.dms.push(info);
-            }
-        }
         ServerMessage::ProfileUpdate(profile) => {
             eprintln!(
                 "[profile] ProfileUpdate pubkey={} avatar={} banner={}",

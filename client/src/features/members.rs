@@ -412,8 +412,3 @@ fn VoiceBadges(vs: VoiceState) -> Element {
         }
     }
 }
-
-#[allow(dead_code)]
-fn id_label(id: Id) -> String {
-    id.to_string().chars().take(4).collect()
-}

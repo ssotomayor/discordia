@@ -29,11 +29,6 @@ pub const DEFAULT_LIVEKIT_PORT: u16 = 7880;
 pub const DEFAULT_LIVEKIT_KEY: &str = "devkey";
 pub const DEFAULT_LIVEKIT_SECRET: &str = "secret-must-be-at-least-32-chars-long";
 
-/// True when the build successfully bundled a `livekit-server` binary.
-pub fn is_bundled() -> bool {
-    !LIVEKIT_BIN.is_empty()
-}
-
 /// Handle to a running LiveKit subprocess. Dropping it kills the process
 /// (tokio's `kill_on_drop`).
 pub struct LivekitSubprocess {

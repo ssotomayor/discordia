@@ -31,13 +31,6 @@ pub enum IdentitySource {
     Nsec(String),
 }
 
-impl IdentitySource {
-    #[allow(dead_code)]
-    pub fn is_phrase(&self) -> bool {
-        matches!(self, IdentitySource::Phrase(_))
-    }
-}
-
 #[derive(Clone)]
 pub struct Identity {
     /// x-only public key as 64-char hex — the universal user id.
@@ -226,11 +219,6 @@ impl Identity {
         Ok(Some(identity))
     }
 
-    #[allow(dead_code)]
-    pub fn file_path() -> PathBuf {
-        identity_path()
-    }
-
     pub fn file_path_display() -> String {
         identity_path().display().to_string()
     }
@@ -243,14 +231,9 @@ impl Identity {
         Ok(())
     }
 
-    #[allow(dead_code)]
     pub fn set_display_name(&mut self, name: impl Into<String>) -> Result<(), String> {
         self.display_name = name.into();
         self.save()
-    }
-
-    pub fn truncated_pubkey(&self) -> String {
-        truncate_pubkey(&self.npub())
     }
 }
 
@@ -332,11 +315,6 @@ pub fn signature_accent(pubkey: &str) -> String {
         .into_iter()
         .next()
         .unwrap_or_else(|| "hsl(30, 70%, 60%)".into())
-}
-
-#[allow(dead_code)]
-pub fn name_with_tag(name: &str, pubkey: &str) -> String {
-    format!("{name}#{}", discriminator(pubkey))
 }
 
 // ---------------------------------------------------------------------------

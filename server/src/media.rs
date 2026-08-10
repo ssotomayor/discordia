@@ -11,7 +11,7 @@
 //! GC of unreferenced blobs is deferred (content-addressing makes blobs shared,
 //! so deletion needs refcounting — tracked in TODO.md).
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use base64::Engine as _;
 use sha2::{Digest, Sha256};
@@ -75,9 +75,6 @@ impl MediaStore {
         Some((bytes, mime_for_name(&name)))
     }
 
-    pub fn dir(&self) -> &Path {
-        &self.dir
-    }
 }
 
 /// Only `<64 hex>.<short alnum ext>` filenames are ever served or read —

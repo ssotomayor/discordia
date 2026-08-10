@@ -421,8 +421,3 @@ fn cell_h_from(total_h: f64, rows: Option<u32>, row_height: f64, gap: f64) -> f6
         _ => row_height,
     }
 }
-
-#[allow(dead_code)]
-pub(crate) fn _initial_position(x: u32, y: u32, w: u32, h: u32) -> GridPosition {
-    GridPosition::new(x, y, w, h)
-}

@@ -49,10 +49,6 @@ impl ServerHandle {
     pub fn abort(self) {
         self.task.abort();
     }
-
-    pub fn is_finished(&self) -> bool {
-        self.task.is_finished()
-    }
 }
 
 /// Build the shared context: open the store + media dir, rehydrate (or seed)

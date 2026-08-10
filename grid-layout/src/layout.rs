@@ -21,26 +21,6 @@ impl GridPosition {
     }
 }
 
-/// Layout configuration of the container. Items are addressed by `id`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LayoutSpec {
-    pub cols: u32,
-    pub row_height: u32,
-    pub gap: u32,
-    pub items: Vec<(String, GridPosition)>,
-}
-
-impl Default for LayoutSpec {
-    fn default() -> Self {
-        Self {
-            cols: 12,
-            row_height: 30,
-            gap: 10,
-            items: Vec::new(),
-        }
-    }
-}
-
 /// Position + size of one item as **fractions of the container** (0..=1), used
 /// by [`LayoutMode::Free`].
 ///
@@ -120,16 +100,6 @@ impl FloatRect {
         }
         self
     }
-}
-
-/// Where an item lives. The two variants are kept side by side rather than
-/// converted destructively, so switching modes and back returns the layout you
-/// had instead of a lossy round-trip through the other coordinate system.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum Placement {
-    Cell(GridPosition),
-    Free(FloatRect),
 }
 
 /// Smallest fraction of the container an item may shrink to. Keeps a window
