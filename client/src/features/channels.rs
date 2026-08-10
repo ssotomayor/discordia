@@ -737,6 +737,8 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
     let mic_sensitivity = state.read().mic_sensitivity;
     let mic_level = state.read().mic_level;
     let noise_cancellation = state.read().noise_cancellation;
+    let mic_volume = state.read().mic_volume;
+    let auto_gain_control = state.read().auto_gain_control;
     // Whether the transmit gate is currently open — the very same flag the
     // publish path acts on, so this can't claim something the audio isn't doing.
     let gate_open = self_voice.speaking;
@@ -748,6 +750,8 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
     let v_for_output_change = voice.clone();
     let v_for_sensitivity = voice.clone();
     let v_for_denoise = voice.clone();
+    let v_for_mic_volume = voice.clone();
+    let v_for_agc = voice.clone();
 
     // Snapshot current voice phase so the popover can show reconnection state.
     let voice_phase = state.read().voice.phase;
@@ -1004,6 +1008,41 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                     }
                                 }
                             }
+                            // Microphone input volume. Applied before the meter
+                            // and the gate, so the VU bar above moves with it —
+                            // which is the point: you set the level by watching
+                            // where speech lands on the bar, then set the
+                            // threshold underneath it.
+                            div { class: "mb-2",
+                                div { class: "flex items-center justify-between",
+                                    span { class: "text-[11px] text-[var(--text-muted)]", "Microphone Input" }
+                                    span { class: "text-[10px] text-[var(--text-dim)]", "{mic_volume}%" }
+                                }
+                                input {
+                                    r#type: "range",
+                                    min: "0",
+                                    // Above unity so a quiet mic can be rescued
+                                    // without reaching for the OS mixer.
+                                    max: "200",
+                                    value: "{mic_volume}",
+                                    class: "w-full mt-1 accent-[var(--accent)]",
+                                    oninput: move |e| {
+                                        let pct: u16 = e.value().parse().unwrap_or(100).min(200);
+                                        let mut next = settings.read().clone();
+                                        next.mic_volume = pct;
+                                        settings.set(next.clone());
+                                        crate::settings::save(&next);
+                                        state.write().mic_volume = pct;
+                                        let v = v_for_mic_volume.clone();
+                                        let _ = v.send(crate::features::voice::VoiceCmd::SetMicVolume { percent: pct });
+                                    },
+                                }
+                                if auto_gain_control && mic_volume != 100 {
+                                    span { class: "text-[10px] text-[var(--text-dim)] mt-0.5 block",
+                                        "Auto gain is on and will pull this back — turn it off below to keep this level."
+                                    }
+                                }
+                            }
                             // Mic sensitivity slider — adjusts the speaking-detection
                             // threshold (1..=1000, matching the peak's ×1000 scale).
                             // Lower = more sensitive (picks up quiet speech);
@@ -1052,6 +1091,31 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                     } else {
                                         span { class: "text-[10px] text-[var(--text-dim)] mt-0.5 block", "Below threshold — not transmitting" }
                                     }
+                                }
+                            }
+                            // Automatic gain control (libwebrtc's own). Its own
+                            // switch because it and the input slider above are
+                            // two answers to the same question — left on, it
+                            // walks a manual level back toward its target over
+                            // a second or two.
+                            div { class: "mb-2",
+                                label { class: "flex items-center gap-2 cursor-pointer select-none",
+                                    input {
+                                        r#type: "checkbox",
+                                        class: "accent-[var(--accent)]",
+                                        checked: auto_gain_control,
+                                        onchange: move |e| {
+                                            let on = e.checked();
+                                            let mut next = settings.read().clone();
+                                            next.auto_gain_control = on;
+                                            settings.set(next.clone());
+                                            crate::settings::save(&next);
+                                            state.write().auto_gain_control = on;
+                                            let v = v_for_agc.clone();
+                                            let _ = v.send(crate::features::voice::VoiceCmd::SetAutoGainControl { enabled: on });
+                                        },
+                                    }
+                                    span { class: "text-[11px] text-[var(--text-muted)]", "Automatic gain control" }
                                 }
                             }
                             // Noise cancellation (DeepFilterNet). Applies to the

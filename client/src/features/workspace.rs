@@ -69,6 +69,8 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
             let mut app = state;
             let mut w = app.write();
             w.mic_sensitivity = saved.mic_sensitivity.clamp(1, 1000);
+            w.mic_volume = saved.mic_volume.min(200);
+            w.auto_gain_control = saved.auto_gain_control;
             w.noise_cancellation = saved.noise_cancellation;
             w.selected_input_device = saved.selected_input_device.clone();
             w.selected_output_device = saved.selected_output_device.clone();
