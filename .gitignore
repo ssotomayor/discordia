@@ -30,3 +30,7 @@ node_modules/
 
 # Personal Claude Code instructions (not shared with team)
 CLAUDE.local.md
+
+# Fetched by the Windows release workflow before `dx bundle` and embedded by
+# client/nsis/webview2.nsh — a build input, not source.
+client/nsis/MicrosoftEdgeWebview2Setup.exe

@@ -169,6 +169,14 @@ jobs:
         run: dx --version
       - name: Build server (release)
         run: cargo build --release -p dioxusfun-server
+      # One download, two artifacts — see windows-release.yml for the reasoning.
+      - name: Fetch WebView2 Evergreen bootstrapper
+        shell: pwsh
+        run: |
+          $dest = 'client/nsis/MicrosoftEdgeWebview2Setup.exe'
+          Invoke-WebRequest -Uri 'https://go.microsoft.com/fwlink/p/?LinkId=2124703' -OutFile $dest
+          $size = (Get-Item $dest).Length
+          if ($size -lt 500KB -or $size -gt 20MB) { throw "unexpected bootstrapper size ($size bytes) - refusing to ship it" }
       - name: Bundle client
         working-directory: client
         run: dx bundle --release
@@ -191,12 +199,8 @@ jobs:
           $assets = Join-Path $root.FullName 'nsis/_staging/assets'
           if (Test-Path $assets) { Copy-Item $assets portable/assets -Recurse }
 
-          $tools = Join-Path $env:USERPROFILE '.dx/tools'
-          $bootstrapper = Join-Path $tools 'MicrosoftEdgeWebview2Setup.exe'
-          if (-not (Test-Path $bootstrapper)) {
-            throw "WebView2 bootstrapper missing at $bootstrapper - expected dx bundle to have fetched it for EmbedBootstrapper (see client/Dioxus.toml)"
-          }
-          Copy-Item $bootstrapper portable/
+          # The same file the NSIS hook embedded.
+          Copy-Item client/nsis/MicrosoftEdgeWebview2Setup.exe portable/
           Copy-Item .github/portable/WEBVIEW2.txt portable/
 
           Compress-Archive -Path portable/* -DestinationPath Discordia-windows-portable.zip
@@ -205,8 +209,11 @@ jobs:
           if ($setup) { Copy-Item $setup.FullName Discordia-windows-setup.exe }
 
           # Fail loudly if the offline runtime ever creeps back in.
-          if (Get-ChildItem $tools -Filter 'MicrosoftEdgeWebView2RuntimeInstaller_*.exe') {
-            throw "offline WebView2 runtime was downloaded - webview_install_mode regressed to OfflineInstaller"
+          $tools = Join-Path $env:USERPROFILE '.dx/tools'
+          if (Test-Path $tools) {
+            if (Get-ChildItem $tools -Filter 'MicrosoftEdgeWebView2RuntimeInstaller_*.exe') {
+              throw "offline WebView2 runtime was downloaded - webview_install_mode regressed away from Skip"
+            }
           }
       - uses: actions/upload-artifact@v4
         with:
