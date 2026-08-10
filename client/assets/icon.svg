@@ -1,14 +1,15 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
-  <defs>
-    <linearGradient id="tileGrad" x1="0" y1="0" x2="1024" y2="1024" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#1c1626"/>
-      <stop offset="1" stop-color="#0f0b09"/>
-    </linearGradient>
-  </defs>
-  <rect x="100" y="100" width="824" height="824" rx="186" fill="url(#tileGrad)"
-        stroke="rgba(255,158,61,0.28)" stroke-width="6"/>
-  <!-- Logo scaled to ~64% and centered on the tile -->
-  <g transform="translate(512 512) scale(0.64) translate(-512 -512)">
+  <!-- Bare mark, no tile behind it: Windows draws this straight onto the
+       taskbar and title bar, where a filled rounded square reads as a box
+       around the logo rather than as part of it.
+
+       The transform centres the mark's own bounding box — measured at
+       (212,192)-(868,802), centre (540,497) — and scales it to fill the 1024
+       canvas with a margin. The box includes the rim below, which only widens
+       the dark half, so the centre is not the one the paths alone would give.
+       Re-measure if either changes; none of this is derivable from the
+       viewBox. -->
+  <g transform="translate(512 512) scale(1.433) translate(-540 -497)">
 
   <defs>
     <linearGradient id="yellowGrad" x1="250" y1="325" x2="565" y2="760" gradientUnits="userSpaceOnUse">
@@ -27,6 +28,27 @@
   </defs>
 
   <g filter="url(#softShadow)">
+    <!-- Rim light on the dark half.
+         Without a tile behind it, this half (luminance ~42) sits about ten
+         points off a dark Windows taskbar (~32) and simply vanishes there. The
+         yellow half needs no help, so only this one is rimmed.
+         Drawn FIRST and stroke-only: everything below paints over the inner
+         half of the stroke, so what survives is an outer edge and nothing
+         along the seam with the yellow. Width is in logo units — at a 32px
+         icon this lands near a pixel, which is the point; a 2px stroke here
+         would be invisible at the sizes that need it. -->
+    <path d="M326 278
+             C420 218 553 205 657 245
+             C752 282 814 366 828 467
+             C842 570 801 667 724 719
+             C686 745 639 759 584 758
+             L503 661
+             L558 602
+             L432 530
+             L490 434
+             Z"
+          fill="none" stroke="#6f7488" stroke-width="40" stroke-linejoin="round"/>
+
     <!-- Left yellow portion -->
     <path d="M315 301
              C253 354 223 428 230 507
