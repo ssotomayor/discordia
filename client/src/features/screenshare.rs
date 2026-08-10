@@ -724,6 +724,9 @@ pub fn ScreenShareBridge() -> Element {
     let native_audio_live = use_memo(move || state.read().screen_audio_joined);
     use_effect(move || {
         let on = native_audio_live();
+        // `true` here means the webview has been told to stop playing stream
+        // audio and unsubscribe from it, leaving the native mixer in charge.
+        crate::dlog!("screen setNativeStreamAudio({on})");
         let _ = document::eval(&format!(
             "{SCREEN_JS}\nwindow.dxScreen.setNativeStreamAudio({on});"
         ));
@@ -1117,6 +1120,10 @@ pub fn ScreenWatchWindow() -> Element {
                     let _ = document::eval(&js);
                 }
                 None => {
+                    // The webview half of the teardown. `detach` also runs
+                    // `detachAudio`, so if this line is present and audio still
+                    // plays, the webview element is not the one playing it.
+                    crate::dlog!("watch detach (viewer closed)");
                     let _ = document::eval(&detach_js("screenshare-viewer"));
                 }
             }
@@ -1145,6 +1152,16 @@ pub fn ScreenWatchWindow() -> Element {
                 seen.push(w);
             }
         }
+        // The teardown this is supposed to perform: on close, `watched` is None
+        // and every sharer should be sent 0.0. If the log shows this effect not
+        // firing on close, or firing with an empty `seen`, that is the leak —
+        // gains persist in the map, so a sharer nobody enumerates keeps
+        // whatever level it last had.
+        crate::dlog!(
+            "watch gains watched={:?} sharers={:?}",
+            watched.as_ref().map(|w| &w[..w.len().min(8)]),
+            seen.iter().map(|p| &p[..p.len().min(8)]).collect::<Vec<_>>()
+        );
         for pk in seen {
             let gain = if Some(&pk) == watched.as_ref() { s.stream_gain_of(&pk) } else { 0.0 };
             voice_for_stream.send(VoiceCmd::SetStreamVolume { pubkey: pk, gain });
