@@ -235,6 +235,31 @@ pub struct Reaction {
     pub users: Vec<String>,
 }
 
+/// A denormalized snapshot of the message a reply points at.
+///
+/// Messages live only in the DB and are fetched a page at a time, so an id
+/// alone would leave a reply unable to draw its quoted line whenever the parent
+/// isn't in the page the client happens to hold — replying to something from
+/// yesterday would render as a dangling stub. Carrying the excerpt makes a
+/// reply self-contained.
+///
+/// The server fills this in from its own row, never from what the client sent,
+/// so a client can't put words in someone else's mouth by forging the quote.
+/// It's a snapshot: editing or deleting the parent later doesn't rewrite it,
+/// which matches what the replier was actually answering.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReplyRef {
+    pub message_id: Id,
+    pub author_pubkey: String,
+    pub author_username: String,
+    /// Plain-text excerpt of the parent, truncated server-side.
+    pub excerpt: String,
+}
+
+/// How much of the parent a reply quotes. Long enough to identify the message,
+/// short enough that a reply to a wall of text stays one line.
+pub const REPLY_EXCERPT_CHARS: usize = 120;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Message {
     pub id: Id,
@@ -249,6 +274,9 @@ pub struct Message {
     /// Emoji reactions, by emoji.
     #[serde(default)]
     pub reactions: Vec<Reaction>,
+    /// Set when this message is a reply. Server-populated; see `ReplyRef`.
+    #[serde(default)]
+    pub reply_to: Option<ReplyRef>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -523,6 +551,13 @@ pub enum ClientMessage {
         /// Optional inline image as a `data:image/...;base64,...` URL.
         #[serde(default)]
         image: Option<String>,
+        /// The message being replied to. Only the id travels — the server looks
+        /// the parent up in this same channel and builds the `ReplyRef` itself,
+        /// so a reply can neither quote text that was never written nor point
+        /// at a message in a channel the sender can't read. An id that doesn't
+        /// resolve is dropped: the message still sends, just without a quote.
+        #[serde(default)]
+        reply_to: Option<Id>,
     },
     /// Create a new guild. The server seeds it with a default text + voice
     /// channel and makes the requesting user its first (and only) member.

@@ -171,7 +171,7 @@ pub async fn handle_connection(
                             break;
                         }
                     }
-                    ClientMessage::SendMessage { channel_id, content, image } => {
+                    ClientMessage::SendMessage { channel_id, content, image, reply_to } => {
                         let Some(author) = user.clone() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
@@ -266,7 +266,7 @@ pub async fn handle_connection(
                                     continue;
                                 }
                             }
-                            match ctx.state.push_message(channel_id, author, content, image).await {
+                            match ctx.state.push_message(channel_id, author, content, image, reply_to).await {
                                 Some(msg) => {
                                     let author_pk = msg.author.pubkey.clone();
                                     let targets = ctx.state.guild_member_pubkeys(gid);
@@ -287,7 +287,7 @@ pub async fn handle_connection(
                         } else if let Some(participants) = ctx.state.dm_participants(channel_id) {
                             if participants.iter().any(|p| p == &author.pubkey) {
                                 if let Some(msg) =
-                                    ctx.state.push_dm_message(channel_id, author, content, image).await
+                                    ctx.state.push_dm_message(channel_id, author, content, image, reply_to).await
                                 {
                                     // DMs have no guild, so no XP is earned.
                                     ctx.state.deliver(

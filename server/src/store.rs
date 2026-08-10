@@ -21,7 +21,7 @@ use uuid::Uuid;
 
 use crate::protocol::{
     BotInstall, Channel, ChannelKind, Guild, GuildEmoji, GuildVisibility, Id, Member, Message,
-    Profile, Reaction, Role, User,
+    Profile, Reaction, ReplyRef, Role, User,
 };
 
 /// Everything rehydrated into `AppState` at boot.
@@ -129,11 +129,17 @@ impl Store {
                 created_ms INTEGER NOT NULL DEFAULT 0,
                 UNIQUE (guild_id, shortcode))",
             "CREATE INDEX IF NOT EXISTS idx_emojis_guild ON guild_emojis(guild_id)",
+            // The four `reply_*` columns are a denormalized snapshot of the
+            // parent, not a foreign key: see `protocol::ReplyRef` for why a
+            // reply has to be able to draw its own quote. All-or-nothing —
+            // `reply_id` non-null implies the other three are too.
             "CREATE TABLE IF NOT EXISTS messages (
                 id TEXT PRIMARY KEY, channel_id TEXT NOT NULL,
                 author_pubkey TEXT NOT NULL, author_username TEXT NOT NULL,
                 content TEXT NOT NULL, image TEXT,
                 reactions TEXT NOT NULL DEFAULT '[]',
+                reply_id TEXT, reply_author_pubkey TEXT,
+                reply_author_username TEXT, reply_excerpt TEXT,
                 created_at INTEGER NOT NULL)",
             "CREATE INDEX IF NOT EXISTS idx_messages_channel_time
                 ON messages(channel_id, created_at)",
@@ -154,6 +160,28 @@ impl Store {
         ];
         for stmt in ddl {
             sqlx::query(stmt).execute(&self.pool).await?;
+        }
+
+        // Additive migrations for databases created before a column existed.
+        // `CREATE TABLE IF NOT EXISTS` is a no-op on an existing table, so a
+        // column added to the DDL above never reaches an older file — the
+        // server would boot fine and then fail every insert.
+        //
+        // SQLite has no `ADD COLUMN IF NOT EXISTS`, and re-running these on an
+        // up-to-date database errors with "duplicate column name". That error is
+        // the success case on the second boot, so it's the one thing we swallow;
+        // anything else still propagates.
+        for stmt in [
+            "ALTER TABLE messages ADD COLUMN reply_id TEXT",
+            "ALTER TABLE messages ADD COLUMN reply_author_pubkey TEXT",
+            "ALTER TABLE messages ADD COLUMN reply_author_username TEXT",
+            "ALTER TABLE messages ADD COLUMN reply_excerpt TEXT",
+        ] {
+            if let Err(e) = sqlx::query(stmt).execute(&self.pool).await {
+                if !e.to_string().contains("duplicate column name") {
+                    return Err(e.into());
+                }
+            }
         }
         Ok(())
     }
@@ -639,8 +667,10 @@ impl Store {
     pub async fn insert_message(&self, m: &Message) -> Result<()> {
         sqlx::query(
             "INSERT INTO messages (id, channel_id, author_pubkey, author_username,
-                                   content, image, reactions, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                                   content, image, reactions, reply_id,
+                                   reply_author_pubkey, reply_author_username,
+                                   reply_excerpt, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(m.id.to_string())
         .bind(m.channel_id.to_string())
@@ -649,10 +679,41 @@ impl Store {
         .bind(&m.content)
         .bind(&m.image)
         .bind(serde_json::to_string(&m.reactions).unwrap_or_else(|_| "[]".into()))
+        .bind(m.reply_to.as_ref().map(|r| r.message_id.to_string()))
+        .bind(m.reply_to.as_ref().map(|r| r.author_pubkey.clone()))
+        .bind(m.reply_to.as_ref().map(|r| r.author_username.clone()))
+        .bind(m.reply_to.as_ref().map(|r| r.excerpt.clone()))
         .bind(m.created_at.timestamp_millis())
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    /// Build the quoted snapshot for a reply, from the server's own row.
+    ///
+    /// Scoped to `channel_id` on purpose: that is what stops a reply pointing at
+    /// a message in a channel the sender can't read and pulling its text into
+    /// one they can. Returns None when the id doesn't resolve there, and the
+    /// caller sends the message without a quote rather than rejecting it.
+    pub async fn reply_ref(&self, channel_id: Id, message_id: Id) -> Result<Option<ReplyRef>> {
+        let row = sqlx::query(
+            "SELECT author_pubkey, author_username, content, image
+             FROM messages WHERE id = ? AND channel_id = ?",
+        )
+        .bind(message_id.to_string())
+        .bind(channel_id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|r| {
+            let content: String = r.get(2);
+            let image: Option<String> = r.get(3);
+            ReplyRef {
+                message_id,
+                author_pubkey: r.get(0),
+                author_username: r.get(1),
+                excerpt: excerpt_for_reply(&content, image.is_some()),
+            }
+        }))
     }
 
     /// The most recent `limit` messages of a channel, oldest-first (the shape
@@ -667,7 +728,8 @@ impl Store {
             Some(cutoff) => {
                 sqlx::query(
                     "SELECT id, channel_id, author_pubkey, author_username, content,
-                            image, reactions, created_at
+                            image, reactions, reply_id, reply_author_pubkey,
+                            reply_author_username, reply_excerpt, created_at
                      FROM messages WHERE channel_id = ? AND created_at < ?
                      ORDER BY created_at DESC, id DESC LIMIT ?",
                 )
@@ -680,7 +742,8 @@ impl Store {
             None => {
                 sqlx::query(
                     "SELECT id, channel_id, author_pubkey, author_username, content,
-                            image, reactions, created_at
+                            image, reactions, reply_id, reply_author_pubkey,
+                            reply_author_username, reply_excerpt, created_at
                      FROM messages WHERE channel_id = ?
                      ORDER BY created_at DESC, id DESC LIMIT ?",
                 )
@@ -776,7 +839,19 @@ impl Store {
 // ----- row/enum helpers ------------------------------------------------------
 
 fn row_to_message(r: sqlx::sqlite::SqliteRow) -> Message {
-    let ms: i64 = r.get(7);
+    let ms: i64 = r.get(11);
+    // All four reply columns are written together, so `reply_id` present is the
+    // only condition worth testing; the rest default rather than making a row
+    // written by an older server unreadable.
+    let reply_id: Option<String> = r.get(7);
+    let reply_to = reply_id.and_then(|id| {
+        Some(ReplyRef {
+            message_id: parse_id(&id),
+            author_pubkey: r.get::<Option<String>, _>(8)?,
+            author_username: r.get::<Option<String>, _>(9).unwrap_or_default(),
+            excerpt: r.get::<Option<String>, _>(10).unwrap_or_default(),
+        })
+    });
     Message {
         id: parse_id(&r.get::<String, _>(0)),
         channel_id: parse_id(&r.get::<String, _>(1)),
@@ -784,8 +859,33 @@ fn row_to_message(r: sqlx::sqlite::SqliteRow) -> Message {
         content: r.get(4),
         image: r.get(5),
         reactions: serde_json::from_str(&r.get::<String, _>(6)).unwrap_or_default(),
+        reply_to,
         created_at: DateTime::<Utc>::from_timestamp_millis(ms).unwrap_or_else(Utc::now),
     }
+}
+
+/// One line of the parent, for a reply's quote.
+///
+/// Newlines are flattened because the quote renders as a single line; a
+/// multi-line parent would otherwise stretch every reply to it. An image-only
+/// parent has no text at all, so it gets a placeholder rather than quoting as
+/// blank — a reply to a picture should still say what it is replying to.
+///
+/// Truncation counts *characters*, not bytes: slicing a UTF-8 string mid-scalar
+/// panics, and message content is arbitrary user text.
+fn excerpt_for_reply(content: &str, has_image: bool) -> String {
+    let flat = content.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.is_empty() {
+        return if has_image { "[image]".into() } else { String::new() };
+    }
+    if flat.chars().count() <= crate::protocol::REPLY_EXCERPT_CHARS {
+        return flat;
+    }
+    let cut: String = flat
+        .chars()
+        .take(crate::protocol::REPLY_EXCERPT_CHARS)
+        .collect();
+    format!("{cut}…")
 }
 
 fn parse_id(s: &str) -> Id {

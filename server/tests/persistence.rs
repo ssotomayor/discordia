@@ -17,8 +17,15 @@ async fn next_timeout(session: &mut Bot) -> ServerMessage {
 }
 
 fn temp_data_dir() -> PathBuf {
+    // The counter is what actually guarantees uniqueness. A timestamp alone is
+    // not enough: macOS resolves `SystemTime::now()` to about a microsecond, so
+    // two tests in this binary starting together can read the same value, share
+    // a data directory, and then fail on each other's files — one test's
+    // cleanup removing the media directory the other is asserting on.
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     std::env::temp_dir().join(format!(
-        "dioxusfun-persist-{}-{}",
+        "dioxusfun-persist-{}-{}-{n}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -28,13 +35,20 @@ fn temp_data_dir() -> PathBuf {
 }
 
 async fn spawn_on(dir: &PathBuf) -> (String, dioxusfun_server::ServerHandle) {
-    let preferred: SocketAddr = "127.0.0.1:19400".parse().unwrap();
+    // Port 0 = let the OS pick. A fixed port made the two tests in this file
+    // race each other under `cargo test --workspace`: one binds it, and a
+    // client can end up talking to the other test's server on the same port,
+    // failing an assertion for reasons that have nothing to do with the code
+    // under test. The handle reports the real address, so nothing else cares.
+    let preferred: SocketAddr = "127.0.0.1:0".parse().unwrap();
     let cfg = dioxusfun_server::ServerConfig {
         livekit: LiveKitConfig::from_env(),
         operators: Default::default(),
         data_dir: dir.clone(),
     };
-    let handle = dioxusfun_server::spawn(preferred, 100, cfg).await.expect("spawn");
+    let handle = dioxusfun_server::spawn(preferred, 100, cfg)
+        .await
+        .expect("spawn");
     (format!("ws://{}", handle.addr), handle)
 }
 
@@ -50,19 +64,25 @@ async fn state_survives_restart_and_media_is_offloaded() {
     let (guild_id, text_channel): (Id, Id);
     {
         let (url, handle) = spawn_on(&dir).await;
-        let mut owner = Bot::connect_as_user(&url, &owner_id, "Owner").await.unwrap();
+        let mut owner = Bot::connect_as_user(&url, &owner_id, "Owner")
+            .await
+            .unwrap();
         loop {
             if matches!(next_timeout(&mut owner).await, ServerMessage::Ready { .. }) {
                 break;
             }
         }
         owner
-            .send(&ClientMessage::CreateGuild { name: "Persistent".into(), template: None })
+            .send(&ClientMessage::CreateGuild {
+                name: "Persistent".into(),
+                template: None,
+            })
             .await
             .unwrap();
         (guild_id, text_channel) = loop {
-            if let ServerMessage::GuildJoined { guild, channels, .. } =
-                next_timeout(&mut owner).await
+            if let ServerMessage::GuildJoined {
+                guild, channels, ..
+            } = next_timeout(&mut owner).await
             {
                 let text = channels
                     .iter()
@@ -72,12 +92,16 @@ async fn state_survives_restart_and_media_is_offloaded() {
                 break (guild.id, text);
             }
         };
-        owner.send_message(text_channel, "survives restarts").await.unwrap();
+        owner
+            .send_message(text_channel, "survives restarts")
+            .await
+            .unwrap();
         owner
             .send(&ClientMessage::SendMessage {
                 channel_id: text_channel,
                 content: "with an image".into(),
                 image: Some(TINY_PNG.into()),
+                reply_to: None,
             })
             .await
             .unwrap();
@@ -102,7 +126,9 @@ async fn state_survives_restart_and_media_is_offloaded() {
 
     // ---- boot #2: same data dir — everything must still be there -----------
     let (url, handle) = spawn_on(&dir).await;
-    let mut owner = Bot::connect_as_user(&url, &owner_id, "Owner").await.unwrap();
+    let mut owner = Bot::connect_as_user(&url, &owner_id, "Owner")
+        .await
+        .unwrap();
     let guilds = loop {
         if let ServerMessage::Ready { guilds, .. } = next_timeout(&mut owner).await {
             break guilds;
@@ -114,12 +140,18 @@ async fn state_survives_restart_and_media_is_offloaded() {
     );
 
     owner
-        .send(&ClientMessage::FetchMessages { channel_id: text_channel, limit: 50, before_ms: None })
+        .send(&ClientMessage::FetchMessages {
+            channel_id: text_channel,
+            limit: 50,
+            before_ms: None,
+        })
         .await
         .unwrap();
     let history = loop {
-        if let ServerMessage::MessageHistory { channel_id, messages } =
-            next_timeout(&mut owner).await
+        if let ServerMessage::MessageHistory {
+            channel_id,
+            messages,
+        } = next_timeout(&mut owner).await
         {
             if channel_id == text_channel {
                 break messages;
@@ -131,8 +163,174 @@ async fn state_survives_restart_and_media_is_offloaded() {
     assert_eq!(history[1].content, "with an image");
     // The image round-trips: stored as a blob, inlined back as a data URL.
     let img = history[1].image.as_deref().expect("image survived");
-    assert!(img.starts_with("data:image/png;base64,"), "inlined on serve");
+    assert!(
+        img.starts_with("data:image/png;base64,"),
+        "inlined on serve"
+    );
 
+    handle.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Replies: the server builds the quote from its own row, scopes the lookup to
+/// the channel, and the snapshot survives a restart.
+///
+/// The cross-channel half is the security-relevant one — a reply is the one
+/// message shape that can pull another message's *text* along with it, so an id
+/// from a channel the sender can't read must not resolve.
+#[tokio::test]
+async fn replies_are_quoted_server_side_and_survive_restart() {
+    let dir = temp_data_dir();
+    let author_id = BotIdentity::generate();
+    let replier_id = BotIdentity::generate();
+
+    let (guild_id, chan_a, chan_b, parent_id);
+    {
+        let (url, handle) = spawn_on(&dir).await;
+        let mut author = Bot::connect_as_user(&url, &author_id, "Author")
+            .await
+            .unwrap();
+        author
+            .send(&ClientMessage::CreateGuild {
+                name: "Replies".into(),
+                template: None,
+            })
+            .await
+            .unwrap();
+        (guild_id, chan_a) = loop {
+            if let ServerMessage::GuildJoined {
+                guild, channels, ..
+            } = next_timeout(&mut author).await
+            {
+                let text = channels
+                    .iter()
+                    .find(|c| c.kind == ChannelKind::Text)
+                    .unwrap()
+                    .id;
+                break (guild.id, text);
+            }
+        };
+        // A second text channel, to prove the lookup is channel-scoped.
+        author
+            .send(&ClientMessage::CreateChannel {
+                guild_id,
+                name: "other".into(),
+                kind: ChannelKind::Text,
+                topic: None,
+            })
+            .await
+            .unwrap();
+        chan_b = loop {
+            if let ServerMessage::ChannelCreate(c) = next_timeout(&mut author).await {
+                if c.id != chan_a {
+                    break c.id;
+                }
+            }
+        };
+
+        author
+            .send_message(chan_a, "the message being answered")
+            .await
+            .unwrap();
+        parent_id = loop {
+            if let ServerMessage::MessageCreate(m) = next_timeout(&mut author).await {
+                if m.channel_id == chan_a {
+                    break m.id;
+                }
+            }
+        };
+
+        // A reply in the same channel gets a quote built from the parent's row.
+        let mut replier = Bot::connect_as_user(&url, &replier_id, "Replier")
+            .await
+            .unwrap();
+        replier
+            .send(&ClientMessage::JoinGuild {
+                guild_id,
+                accept: true,
+                pow_nonce: None,
+            })
+            .await
+            .unwrap();
+        loop {
+            if let ServerMessage::GuildJoined { .. } = next_timeout(&mut replier).await {
+                break;
+            }
+        }
+        replier
+            .reply_message(chan_a, "answering you", parent_id)
+            .await
+            .unwrap();
+        let reply = loop {
+            if let ServerMessage::MessageCreate(m) = next_timeout(&mut replier).await {
+                if m.content == "answering you" {
+                    break m;
+                }
+            }
+        };
+        let q = reply.reply_to.expect("reply carries a quote");
+        assert_eq!(q.message_id, parent_id);
+        assert_eq!(
+            q.author_pubkey,
+            author_id.pubkey(),
+            "quote is attributed to the parent's author"
+        );
+        assert_eq!(
+            q.excerpt, "the message being answered",
+            "excerpt comes from the server's row, not the client"
+        );
+
+        // The same id from a different channel must not resolve: no quote, but
+        // the message still sends.
+        replier
+            .reply_message(chan_b, "wrong channel", parent_id)
+            .await
+            .unwrap();
+        let stray = loop {
+            if let ServerMessage::MessageCreate(m) = next_timeout(&mut replier).await {
+                if m.content == "wrong channel" {
+                    break m;
+                }
+            }
+        };
+        assert!(
+            stray.reply_to.is_none(),
+            "an id from another channel must not be quotable"
+        );
+
+        handle.abort();
+    }
+
+    // ---- restart: the snapshot is persisted, not recomputed ----------------
+    let (url, handle) = spawn_on(&dir).await;
+    let mut author = Bot::connect_as_user(&url, &author_id, "Author")
+        .await
+        .unwrap();
+    loop {
+        if let ServerMessage::Ready { .. } = next_timeout(&mut author).await {
+            break;
+        }
+    }
+    author
+        .send(&ClientMessage::FetchMessages {
+            channel_id: chan_a,
+            limit: 50,
+            before_ms: None,
+        })
+        .await
+        .unwrap();
+    let history = loop {
+        if let ServerMessage::MessageHistory { messages, .. } = next_timeout(&mut author).await {
+            break messages;
+        }
+    };
+    let reply = history
+        .iter()
+        .find(|m| m.content == "answering you")
+        .expect("reply survived the restart");
+    let q = reply.reply_to.as_ref().expect("quote survived the restart");
+    assert_eq!(q.message_id, parent_id);
+    assert_eq!(q.excerpt, "the message being answered");
     handle.abort();
     let _ = std::fs::remove_dir_all(&dir);
 }

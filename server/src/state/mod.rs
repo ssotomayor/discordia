@@ -7,7 +7,7 @@ use uuid::Uuid;
 use crate::media::MediaStore;
 use crate::protocol::{
     BotInstall, Channel, DmInfo, Guild, GuildEmoji, GuildVisibility, Id, Intent, Member, Message,
-    Permission, Profile, Role, ServerMessage, User, VoiceState, MAX_EMOJIS_PER_GUILD,
+    Permission, Profile, ReplyRef, Role, ServerMessage, User, VoiceState, MAX_EMOJIS_PER_GUILD,
     valid_shortcode,
 };
 use crate::store::Store;
@@ -2015,6 +2015,7 @@ impl AppState {
         author: User,
         content: String,
         image: Option<String>,
+        reply_to: Option<Id>,
     ) -> Option<Message> {
         let kind_ok = self
             .channels
@@ -2024,7 +2025,17 @@ impl AppState {
         if !kind_ok {
             return None;
         }
-        Some(self.append_message(channel_id, author, content, image).await)
+        // Resolve the quote from our own row, scoped to this channel. An id
+        // that doesn't resolve there is dropped rather than rejected: the reply
+        // still sends, just without a quote.
+        let reply_ref = match reply_to {
+            Some(id) => self.store.reply_ref(channel_id, id).await.unwrap_or(None),
+            None => None,
+        };
+        Some(
+            self.append_message(channel_id, author, content, image, reply_ref)
+                .await,
+        )
     }
 
     /// Append a message to a DM channel `author` participates in. Returns
@@ -2035,11 +2046,22 @@ impl AppState {
         author: User,
         content: String,
         image: Option<String>,
+        reply_to: Option<Id>,
     ) -> Option<Message> {
         if !self.is_dm_participant(channel_id, &author.pubkey) {
             return None;
         }
-        Some(self.append_message(channel_id, author, content, image).await)
+        // Resolve the quote from our own row, scoped to this channel. An id
+        // that doesn't resolve there is dropped rather than rejected: the reply
+        // still sends, just without a quote.
+        let reply_ref = match reply_to {
+            Some(id) => self.store.reply_ref(channel_id, id).await.unwrap_or(None),
+            None => None,
+        };
+        Some(
+            self.append_message(channel_id, author, content, image, reply_ref)
+                .await,
+        )
     }
 
     /// Persist a message. Inbound data-URL images are offloaded to the blob
@@ -2051,6 +2073,7 @@ impl AppState {
         author: User,
         content: String,
         image: Option<String>,
+        reply_to: Option<ReplyRef>,
     ) -> Message {
         let stored_image = image.as_ref().map(|img| {
             if img.starts_with("data:") {
@@ -2068,6 +2091,7 @@ impl AppState {
             content,
             image: stored_image,
             reactions: Vec::new(),
+            reply_to,
             created_at: chrono::Utc::now(),
         };
         persist(self.store.insert_message(&message).await, "message insert");

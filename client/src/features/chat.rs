@@ -360,6 +360,29 @@ fn MessageRow(message: Message, grouped: bool) -> Element {
     let author_pubkey = message.author.pubkey.clone();
     let channel_id = message.channel_id;
     let message_id = message.id;
+    // For the reply banner. Truncated the same way the server truncates its
+    // authoritative excerpt, so the banner and the eventual quote match.
+    let author_name = message.author.username.clone();
+    let content_for_reply = {
+        let flat = message
+            .content
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        if flat.is_empty() && message.image.is_some() {
+            "[image]".to_string()
+        } else if flat.chars().count() > crate::protocol::REPLY_EXCERPT_CHARS {
+            let cut: String = flat
+                .chars()
+                .take(crate::protocol::REPLY_EXCERPT_CHARS)
+                .collect();
+            format!("{cut}…")
+        } else {
+            flat
+        }
+    };
+    // The quoted line this message carries, when it is itself a reply.
+    let quoted = message.reply_to.clone();
 
     // Guild that owns this channel. None for DMs — which is also why custom
     // emoji don't resolve there: they belong to a guild.
@@ -382,6 +405,21 @@ fn MessageRow(message: Message, grouped: bool) -> Element {
     };
 
     rsx! {
+        // The quoted parent, above the reply itself. Rendered from the snapshot
+        // the message carries, so it draws even when the parent isn't in the
+        // page of history this client happens to hold.
+        if let Some(q) = quoted {
+            div { class: "flex gap-3 -mx-4 px-4 pt-1",
+                div { class: "w-8 shrink-0" }
+                div { class: "min-w-0 flex items-center gap-1.5 text-[11px] text-[var(--text-dim)]",
+                    span { class: "shrink-0 opacity-60", "↩" }
+                    span { class: "shrink-0 font-medium text-[var(--text-muted)]",
+                        "{q.author_username}"
+                    }
+                    span { class: "truncate", "{q.excerpt}" }
+                }
+            }
+        }
         div { class: "group relative flex gap-3 -mx-4 px-4 py-0.5 hover:bg-white/[0.02] dxf-msg-in",
 
             // Avatar column: real avatar for the first message in a run, an
@@ -475,9 +513,28 @@ fn MessageRow(message: Message, grouped: bool) -> Element {
                 }
             }
 
-            // Hover action bar: add a reaction / delete.
+            // Hover action bar: reply / add a reaction / delete.
             div { class: "absolute -top-2 right-3 opacity-0 group-hover:opacity-100 transition-opacity",
                 div { class: "relative flex gap-1",
+                    button {
+                        class: "w-7 h-7 rounded-md border border-[var(--border)] bg-[var(--panel-solid)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] text-sm leading-none transition-colors",
+                        title: "Reply",
+                        onclick: {
+                            // The banner's excerpt is local-only cosmetics; the
+                            // server quotes from its own row on send.
+                            let author = author_name.clone();
+                            let body = content_for_reply.clone();
+                            move |_| {
+                                state.write().replying_to = Some(crate::state::ReplyDraft {
+                                    message_id,
+                                    channel_id,
+                                    author_username: author.clone(),
+                                    excerpt: body.clone(),
+                                });
+                            }
+                        },
+                        "↩"
+                    }
                     button {
                         class: "w-7 h-7 rounded-md border border-[var(--border)] bg-[var(--panel-solid)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] text-sm leading-none transition-colors",
                         title: "Add reaction",
@@ -695,6 +752,21 @@ fn is_url(w: &str) -> bool {
 
 #[component]
 fn Composer(channel_id: Id, composer_label: String, drag_over: Signal<bool>) -> Element {
+    let mut state = use_app_state();
+    // A reply aimed at another channel would be dropped by the server anyway
+    // (its lookup is channel-scoped), so the draft carries the channel it was
+    // started in and is simply ignored elsewhere. Self-correcting: switching
+    // channels hides the banner and stops the id being sent, with no effect to
+    // fire and no stale value to clean up. An effect keyed on `channel_id`
+    // wouldn't work here regardless — it's a plain prop, not a signal, so the
+    // closure would capture the first value and never re-run.
+    let replying_to = use_memo(move || {
+        state
+            .read()
+            .replying_to
+            .clone()
+            .filter(|r| r.channel_id == channel_id)
+    });
     let mut draft = use_signal(String::new);
     let mut pending_image = use_signal::<Option<String>>(|| None);
     let mut attach_err = use_signal::<Option<String>>(|| None);
@@ -765,14 +837,22 @@ fn Composer(channel_id: Id, composer_label: String, drag_over: Signal<bool>) -> 
         if content.is_empty() && image.is_none() {
             return;
         }
+        // Only the id goes out; the server rebuilds the quote from its own row.
+        let reply_to = replying_to().map(|r| r.message_id);
         gateway_submit.send(ClientMessage::SendMessage {
             channel_id,
             content,
             image,
+            reply_to,
         });
         draft.set(String::new());
         pending_image.set(None);
         show_emoji.set(false);
+        // A reply is answered once. Leaving this set is how you accidentally
+        // reply to the same message for the rest of the conversation.
+        if reply_to.is_some() {
+            state.write().replying_to = None;
+        }
     };
 
     // Throttled typing notification (at most once / 2s while editing).
@@ -791,6 +871,23 @@ fn Composer(channel_id: Id, composer_label: String, drag_over: Signal<bool>) -> 
 
     rsx! {
         div { class: "px-3 pb-3 shrink-0 relative",
+
+            // "Replying to X" — the only thing that tells you a send will be a
+            // reply, so it sits directly above the input with its own dismiss.
+            if let Some(r) = replying_to() {
+                div { class: "flex items-center gap-2 mb-1 px-2 py-1 rounded-t-md bg-[var(--panel-solid)] border border-b-0 border-[var(--border)] text-[11px]",
+                    span { class: "shrink-0 text-[var(--text-dim)] opacity-60", "↩" }
+                    span { class: "shrink-0 text-[var(--text-muted)]", "Replying to" }
+                    span { class: "shrink-0 font-medium text-[var(--accent)]", "{r.author_username}" }
+                    span { class: "truncate text-[var(--text-dim)]", "{r.excerpt}" }
+                    button {
+                        class: "ml-auto shrink-0 w-5 h-5 rounded text-[var(--text-dim)] hover:text-[var(--danger)] leading-none transition-colors",
+                        title: "Cancel reply",
+                        onclick: move |_| state.write().replying_to = None,
+                        "✕"
+                    }
+                }
+            }
 
             // Emoji picker popover, floats above the input row. Anchored to the
             // right so it sits under the button that opens it, and sized to its

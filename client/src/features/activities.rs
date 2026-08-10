@@ -342,6 +342,9 @@ fn handle_rpc(
                         channel_id,
                         content,
                         image: None,
+                        // An activity posts on its own behalf; it has no notion
+                        // of a message being answered.
+                        reply_to: None,
                     });
                     (true, json!({ "sent": true }))
                 }

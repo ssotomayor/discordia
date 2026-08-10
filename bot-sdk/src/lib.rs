@@ -261,6 +261,25 @@ impl Bot {
             channel_id,
             content: content.to_string(),
             image: None,
+            reply_to: None,
+        })
+        .await
+    }
+
+    /// Post a message as a reply to `reply_to`, which must be in the same
+    /// channel. The server builds the quoted snapshot from its own copy of that
+    /// message; an id it can't resolve there sends as an ordinary message.
+    pub async fn reply_message(
+        &mut self,
+        channel_id: Id,
+        content: &str,
+        reply_to: Id,
+    ) -> Result<()> {
+        self.send(&ClientMessage::SendMessage {
+            channel_id,
+            content: content.to_string(),
+            image: None,
+            reply_to: Some(reply_to),
         })
         .await
     }

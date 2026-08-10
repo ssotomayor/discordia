@@ -385,11 +385,23 @@ fn apply(
                 .unwrap_or(false);
             let viewing = s.selected_channel == Some(cid)
                 && (is_dm == s.dm_mode);
-            // Mention = the message names us with "@username".
+            // Mention = the message names us with "@username", or it is a reply
+            // to something we wrote.
+            //
+            // A reply counts even in a channel you're looking at and even
+            // without an "@": answering someone is addressing them, and it's the
+            // case most worth hearing about. Matched on pubkey rather than
+            // username because a username is not unique and can change, while
+            // the key is the account.
             let mentioned = s
                 .self_user
                 .as_ref()
-                .map(|u| m.content.contains(&format!("@{}", u.username)))
+                .map(|u| {
+                    m.content.contains(&format!("@{}", u.username))
+                        || m.reply_to
+                            .as_ref()
+                            .is_some_and(|r| r.author_pubkey == u.pubkey)
+                })
                 .unwrap_or(false);
             // A new message from someone clears their typing indicator.
             if let Some(set) = s.typing.get_mut(&cid) {
