@@ -8,8 +8,11 @@
 # Notes:
 # - Unlike CI, this build KEEPS the bundled livekit-server.exe (build.rs
 #   downloads the official Windows release) so self-host voice works.
-# - WebView2 (the wry backend) ships with Windows 10/11, so recipients need
-#   no extra runtime.
+# - WebView2 (the wry backend) ships with Windows 10/11, so most recipients
+#   need no extra runtime. For the ones that do, both artifacts carry the
+#   ~2MB Evergreen bootstrapper rather than the ~130MB offline runtime —
+#   the setup runs it automatically, the portable ships it alongside for the
+#   user to run once. See `webview_install_mode` in client/Dioxus.toml.
 
 name: Windows build
 
@@ -47,6 +50,21 @@ jobs:
       - name: Verify dx
         run: dx --version
 
+      # One download, two artifacts. `webview_install_mode = "Skip"` means dx
+      # fetches nothing itself, so this is the only copy: the NSIS hook embeds it
+      # from here (client/nsis/, via ${__FILEDIR__}) and the portable zip below
+      # ships the same file.
+      - name: Fetch WebView2 Evergreen bootstrapper
+        shell: pwsh
+        run: |
+          $dest = 'client/nsis/MicrosoftEdgeWebview2Setup.exe'
+          Invoke-WebRequest -Uri 'https://go.microsoft.com/fwlink/p/?LinkId=2124703' -OutFile $dest
+          $size = (Get-Item $dest).Length
+          "bootstrapper: {0:N0} bytes" -f $size | Write-Host
+          # The Evergreen stub is ~1-2MB; anything near the offline runtime's
+          # ~130MB means the link started serving something else entirely.
+          if ($size -lt 500KB -or $size -gt 20MB) { throw "unexpected bootstrapper size ($size bytes) - refusing to ship it" }
+
       - name: Bundle
         working-directory: client
         run: dx bundle --release
@@ -54,6 +72,12 @@ jobs:
       # dx emits the app three times (standalone exe, NSIS installer, and the
       # installer's staging copy). Ship a portable zip (exe + the assets that
       # live beside it, not embedded) and the installer, not the whole tree.
+      #
+      # The portable has no installer to run the WebView2 stub for it, so it
+      # carries the bootstrapper for the user to run once if their machine has
+      # no runtime. It is the very file `dx bundle` already fetched into
+      # ~/.dx/tools for the NSIS setup — copied, not re-downloaded, so both
+      # artifacts ship the identical stub.
       - name: Package
         shell: pwsh
         run: |
@@ -66,10 +90,27 @@ jobs:
           Copy-Item "$($root.FullName)/Discordia.exe" portable/
           $assets = Join-Path $root.FullName 'nsis/_staging/assets'
           if (Test-Path $assets) { Copy-Item $assets portable/assets -Recurse }
+
+          # The same file the NSIS hook embedded, so the portable and the
+          # installed layout both find it beside Discordia.exe.
+          Copy-Item client/nsis/MicrosoftEdgeWebview2Setup.exe portable/
+          Copy-Item .github/portable/WEBVIEW2.txt portable/
+
           Compress-Archive -Path portable/* -DestinationPath Discordia-windows-portable.zip
 
           $setup = Get-ChildItem -Recurse -Filter '*-setup.exe' $root.FullName | Select-Object -First 1
           if ($setup) { Copy-Item $setup.FullName Discordia-windows-setup.exe }
+
+          # Fail loudly if the offline runtime ever creeps back in: it is ~130MB
+          # and would silently undo the point of this configuration.
+          $tools = Join-Path $env:USERPROFILE '.dx/tools'
+          if (Test-Path $tools) {
+            if (Get-ChildItem $tools -Filter 'MicrosoftEdgeWebView2RuntimeInstaller_*.exe') {
+              throw "offline WebView2 runtime was downloaded - webview_install_mode regressed away from Skip"
+            }
+          }
+          "setup:    {0:N1} MB" -f ((Get-Item Discordia-windows-setup.exe).Length / 1MB) | Write-Host
+          "portable: {0:N1} MB" -f ((Get-Item Discordia-windows-portable.zip).Length / 1MB) | Write-Host
 
       - uses: actions/upload-artifact@v4
         with:

@@ -1,0 +1,14 @@
+Discordia (portable) — about MicrosoftEdgeWebview2Setup.exe
+
+Discordia draws its interface with the Microsoft Edge WebView2 runtime.
+Windows 11 and up-to-date Windows 10 already have it, so most people can
+just run Discordia.exe and ignore this file.
+
+If Discordia.exe opens with a blank window or complains that WebView2 is
+missing, run MicrosoftEdgeWebview2Setup.exe once. It is Microsoft's official
+Evergreen bootstrapper: a small stub that downloads and installs the runtime
+from Microsoft, and exits without downloading anything if the runtime is
+already present. It needs an internet connection.
+
+This is the same bootstrapper the Discordia installer uses. Nothing else in
+this folder depends on it, and you can delete it once WebView2 is installed.

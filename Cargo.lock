@@ -2155,6 +2155,7 @@ dependencies = [
  "tract-pulse",
  "url",
  "uuid",
+ "webview2-com-sys",
  "windows 0.61.3",
  "windows-core 0.61.2",
 ]
