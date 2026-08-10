@@ -92,6 +92,20 @@ pub enum GuildDialog {
     Integrations(Id),
     Roles(Id),
 }
+/// What the composer needs to show a "replying to X" banner.
+///
+/// Deliberately not `protocol::ReplyRef`: that one is the server's *answer*,
+/// built from its own row and carrying an excerpt it vouches for. This is the
+/// client's *intent*, and only `message_id` survives the round trip.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplyDraft {
+    pub message_id: Id,
+    /// Which channel the reply was started in — see the composer for why.
+    pub channel_id: Id,
+    pub author_username: String,
+    pub excerpt: String,
+}
+
 
 #[derive(Clone)]
 pub struct AppState {
@@ -183,6 +197,15 @@ pub struct AppState {
     pub screen_shares: HashMap<Id, Vec<String>>,
     /// Pubkey whose screen we're viewing in the big viewer dialog, if any.
     pub screen_viewing: Option<String>,
+    /// The message the composer is currently replying to, if any.
+    ///
+    /// Lives in `AppState` rather than the composer's own signal because the
+    /// reply is *started* from a message row and *shown* above the input —
+    /// two different components. Cleared on send, on cancel, and on switching
+    /// channel, so a reply can never be aimed at a message in another channel.
+    /// Only the id is authoritative; the name and excerpt are for the banner,
+    /// and the server rebuilds the real quote from its own row.
+    pub replying_to: Option<ReplyDraft>,
     /// Whether the embedded webview supports navigator.mediaDevices.getDisplayMedia
     /// (used for screen sharing). Populated at runtime by the ScreenShareBridge.
     pub screen_capture_available: bool,
@@ -304,6 +327,7 @@ impl AppState {
             screen_native_audio: false,
             screen_shares: HashMap::new(),
             screen_viewing: None,
+            replying_to: None,
             screen_capture_available: false,
             // Audio device prefs: empty by default (discover on demand).
             available_input_devices: Vec::new(),
