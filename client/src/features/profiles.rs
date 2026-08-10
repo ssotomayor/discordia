@@ -32,8 +32,7 @@ pub(crate) const EMBED_MAX_BYTES: usize = 2_000_000;
 
 /// The formats and size we tell users about, in one place so every picker in
 /// the app says the same thing.
-pub(crate) const IMAGE_HELP: &str =
-    "PNG, JPEG, GIF or WebP. Under 2 MB always works; larger needs a reachable Blossom media server.";
+pub(crate) const IMAGE_HELP: &str = "PNG, JPEG, GIF or WebP. Under 2 MB always works; larger needs a reachable Blossom media server.";
 
 /// Pre-flight an image the user just picked, without uploading it.
 ///
@@ -409,12 +408,20 @@ pub fn ProfileEditor() -> Element {
         let bio_val = bio();
         let bio_opt = {
             let t = bio_val.trim();
-            if t.is_empty() { None } else { Some(t.chars().take(280).collect::<String>()) }
+            if t.is_empty() {
+                None
+            } else {
+                Some(t.chars().take(280).collect::<String>())
+            }
         };
         let custom_val = custom_status();
         let custom_opt = {
             let t = custom_val.trim();
-            if t.is_empty() { None } else { Some(t.chars().take(80).collect::<String>()) }
+            if t.is_empty() {
+                None
+            } else {
+                Some(t.chars().take(80).collect::<String>())
+            }
         };
         let status_opt = Some(status());
         let local = crate::profile::LocalProfile {

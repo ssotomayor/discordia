@@ -69,7 +69,9 @@ pub fn split_shortcodes(s: &str) -> Vec<Piece<'_>> {
 /// its cheap path for the overwhelming majority of words.
 pub fn has_shortcode(s: &str) -> bool {
     s.matches(':').count() >= 2
-        && split_shortcodes(s).iter().any(|p| matches!(p, Piece::Shortcode(_)))
+        && split_shortcodes(s)
+            .iter()
+            .any(|p| matches!(p, Piece::Shortcode(_)))
 }
 
 fn cache_dir() -> PathBuf {

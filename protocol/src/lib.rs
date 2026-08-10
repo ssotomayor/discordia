@@ -449,7 +449,8 @@ pub const MAX_EMOJIS_PER_GUILD: usize = 100;
 /// message renderer from having to guess about hyphenated words.
 pub fn valid_shortcode(s: &str) -> bool {
     (2..=MAX_SHORTCODE_LEN).contains(&s.len())
-        && s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+        && s.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
 }
 
 /// What event streams an installed bot *receives*. This is the data-minimization

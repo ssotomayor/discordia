@@ -197,8 +197,8 @@ pub async fn register(
             WsMessage::Text(t) => t.to_string(),
             _ => continue,
         };
-        let parsed: RendezvousToHost = serde_json::from_str(&text)
-            .map_err(|e| format!("bad rendezvous frame: {e}"))?;
+        let parsed: RendezvousToHost =
+            serde_json::from_str(&text).map_err(|e| format!("bad rendezvous frame: {e}"))?;
         match parsed {
             RendezvousToHost::Registered {
                 shortcode,

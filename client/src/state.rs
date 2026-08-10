@@ -106,7 +106,6 @@ pub struct ReplyDraft {
     pub excerpt: String,
 }
 
-
 #[derive(Clone)]
 pub struct AppState {
     pub status: ConnectionStatus,
@@ -420,22 +419,34 @@ impl AppState {
             .iter()
             .find(|e| e.shortcode == shortcode)
             .map(|e| e.image.as_str())?;
-        self.emoji_images.get(image).map(String::as_str).filter(|u| !u.is_empty())
+        self.emoji_images
+            .get(image)
+            .map(String::as_str)
+            .filter(|u| !u.is_empty())
     }
 
     /// The custom emoji of a guild (empty slice if none).
     pub fn emojis_of(&self, guild_id: Id) -> &[crate::protocol::GuildEmoji] {
-        self.guild_emojis.get(&guild_id).map(|v| v.as_slice()).unwrap_or(&[])
+        self.guild_emojis
+            .get(&guild_id)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
     }
 
     /// The roles of a guild (empty slice if none).
     pub fn roles_of(&self, guild_id: Id) -> &[Role] {
-        self.roles.get(&guild_id).map(|v| v.as_slice()).unwrap_or(&[])
+        self.roles
+            .get(&guild_id)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
     }
 
     /// Pubkeys sharing their screen in a channel.
     pub fn screen_sharers_in(&self, channel_id: Id) -> &[String] {
-        self.screen_shares.get(&channel_id).map(|v| v.as_slice()).unwrap_or(&[])
+        self.screen_shares
+            .get(&channel_id)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
     }
 
     /// Usernames currently typing in a channel (sorted, for a stable label).
@@ -507,9 +518,7 @@ impl AppState {
 
     /// The avatar data URL for a pubkey, if set.
     pub fn avatar_of(&self, pubkey: &str) -> Option<&str> {
-        self.profiles
-            .get(pubkey)
-            .and_then(|p| p.avatar.as_deref())
+        self.profiles.get(pubkey).and_then(|p| p.avatar.as_deref())
     }
 
     /// The channel a guild should open on: its first *text* channel in the same
@@ -526,7 +535,11 @@ impl AppState {
             .filter(|c| {
                 c.guild_id == guild_id && matches!(c.kind, crate::protocol::ChannelKind::Text)
             })
-            .min_by(|a, b| a.position.cmp(&b.position).then_with(|| a.name.cmp(&b.name)))
+            .min_by(|a, b| {
+                a.position
+                    .cmp(&b.position)
+                    .then_with(|| a.name.cmp(&b.name))
+            })
             .map(|c| c.id)
     }
 

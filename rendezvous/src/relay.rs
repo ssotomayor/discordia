@@ -18,16 +18,20 @@ use crate::verify;
 
 const MAX_CLAIM_ATTEMPTS: usize = 10;
 
-
 pub async fn handle_host_control(socket: WebSocket, registry: Arc<Registry>, cfg: Arc<Config>) {
     let (mut tx, mut rx) = socket.split();
 
     // Issue an ownership challenge up front. A host claiming a persistent name
     // must sign this nonce; anonymous hosts (no name) can ignore it.
     let nonce = verify::fresh_nonce();
-    if send_msg(&mut tx, &RendezvousToHost::Challenge { nonce: nonce.clone() })
-        .await
-        .is_err()
+    if send_msg(
+        &mut tx,
+        &RendezvousToHost::Challenge {
+            nonce: nonce.clone(),
+        },
+    )
+    .await
+    .is_err()
     {
         return;
     }
@@ -87,7 +91,11 @@ pub async fn handle_host_control(socket: WebSocket, registry: Arc<Registry>, cfg
                     return;
                 }
                 Err(ClaimError::LiveElsewhere) => {
-                    send_err(&mut tx, &format!("'{slug}' is currently in use by another session")).await;
+                    send_err(
+                        &mut tx,
+                        &format!("'{slug}' is currently in use by another session"),
+                    )
+                    .await;
                     return;
                 }
             }
@@ -103,8 +111,7 @@ pub async fn handle_host_control(socket: WebSocket, registry: Arc<Registry>, cfg
     };
     tracing::info!(%shortcode, host = ?display_name, public = publish_public, "host registered");
 
-    let (control_tx, mut control_rx) =
-        tokio::sync::mpsc::unbounded_channel::<RendezvousToHost>();
+    let (control_tx, mut control_rx) = tokio::sync::mpsc::unbounded_channel::<RendezvousToHost>();
     let host_entry = HostEntry {
         name: display_name,
         description,
@@ -200,7 +207,9 @@ pub async fn handle_host_control(socket: WebSocket, registry: Arc<Registry>, cfg
 async fn claim_anonymous_shortcode(registry: &Registry) -> Option<String> {
     for _ in 0..MAX_CLAIM_ATTEMPTS {
         let candidate = shortcode::generate();
-        if !registry.hosts.contains_key(&candidate) && registry.reservation_owner(&candidate).is_none() {
+        if !registry.hosts.contains_key(&candidate)
+            && registry.reservation_owner(&candidate).is_none()
+        {
             return Some(candidate);
         }
     }
@@ -214,7 +223,11 @@ pub async fn handle_friend_join(socket: WebSocket, registry: Arc<Registry>, code
     // is the canonical lowercased form.
     let code = code.to_lowercase();
     let Some(host) = registry.hosts.get(&code).map(|h| h.value().clone()) else {
-        send_err(&mut friend_tx, &format!("no host registered with code '{code}'")).await;
+        send_err(
+            &mut friend_tx,
+            &format!("no host registered with code '{code}'"),
+        )
+        .await;
         return;
     };
 
@@ -245,7 +258,11 @@ pub async fn handle_friend_join(socket: WebSocket, registry: Arc<Registry>, code
     let host_socket = match host_socket_rx.await {
         Ok(s) => s,
         Err(_) => {
-            send_err(&mut friend_tx, "host did not open a proxy connection in time").await;
+            send_err(
+                &mut friend_tx,
+                "host did not open a proxy connection in time",
+            )
+            .await;
             return;
         }
     };

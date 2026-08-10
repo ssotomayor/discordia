@@ -38,7 +38,10 @@ async fn serve_media(
         Some((bytes, mime)) => (
             [
                 (header::CONTENT_TYPE, mime.to_string()),
-                (header::CACHE_CONTROL, "public, max-age=31536000, immutable".to_string()),
+                (
+                    header::CACHE_CONTROL,
+                    "public, max-age=31536000, immutable".to_string(),
+                ),
             ],
             bytes,
         )

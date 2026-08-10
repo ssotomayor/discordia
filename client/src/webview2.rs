@@ -96,9 +96,11 @@ fn ensure() -> Result<Outcome, String> {
 
     // No runtime, so the exit code is now the only thing that can explain why.
     attempt?;
-    Err("The WebView2 installer finished but no runtime is registered. \
+    Err(
+        "The WebView2 installer finished but no runtime is registered. \
          Installing the runtime manually from Microsoft should fix this."
-        .into())
+            .into(),
+    )
 }
 
 /// The version of the registered runtime, if there is one.

@@ -196,7 +196,11 @@ pub fn ImageEditor(
         });
     };
 
-    let round = if shape == CropShape::Square { "rounded-full" } else { "rounded-md" };
+    let round = if shape == CropShape::Square {
+        "rounded-full"
+    } else {
+        "rounded-md"
+    };
 
     rsx! {
         div {

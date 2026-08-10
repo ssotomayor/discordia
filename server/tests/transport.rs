@@ -56,12 +56,22 @@ async fn connect_user(url: &str, id: &BotIdentity, name: &str) -> Bot {
 
 async fn create_guild(owner: &mut Bot, name: &str) -> (Id, Id) {
     owner
-        .send(&ClientMessage::CreateGuild { name: name.into(), template: None })
+        .send(&ClientMessage::CreateGuild {
+            name: name.into(),
+            template: None,
+        })
         .await
         .unwrap();
     loop {
-        if let ServerMessage::GuildJoined { guild, channels, .. } = next_timeout(owner).await {
-            let text = channels.iter().find(|c| c.kind == ChannelKind::Text).unwrap().id;
+        if let ServerMessage::GuildJoined {
+            guild, channels, ..
+        } = next_timeout(owner).await
+        {
+            let text = channels
+                .iter()
+                .find(|c| c.kind == ChannelKind::Text)
+                .unwrap()
+                .id;
             return (guild.id, text);
         }
     }
@@ -69,11 +79,18 @@ async fn create_guild(owner: &mut Bot, name: &str) -> (Id, Id) {
 
 async fn join(session: &mut Bot, guild_id: Id) {
     session
-        .send(&ClientMessage::JoinGuild { guild_id, accept: false, pow_nonce: None })
+        .send(&ClientMessage::JoinGuild {
+            guild_id,
+            accept: false,
+            pow_nonce: None,
+        })
         .await
         .unwrap();
     loop {
-        if matches!(next_timeout(session).await, ServerMessage::GuildJoined { .. }) {
+        if matches!(
+            next_timeout(session).await,
+            ServerMessage::GuildJoined { .. }
+        ) {
             break;
         }
     }
@@ -115,7 +132,10 @@ async fn guild_message_never_reaches_a_non_member() {
     owner.send_message(text, "members only").await.unwrap();
 
     // The member receives it; the stranger never does.
-    assert!(saw_message(&mut member, "members only", 2000).await, "member got the message");
+    assert!(
+        saw_message(&mut member, "members only", 2000).await,
+        "member got the message"
+    );
     assert!(
         !saw_message(&mut stranger, "members only", 800).await,
         "stranger must not receive a guild frame they aren't a member for"
@@ -140,8 +160,14 @@ async fn guild_message_reaches_every_device_of_a_member() {
 
     owner.send_message(text, "ping all devices").await.unwrap();
 
-    assert!(saw_message(&mut device1, "ping all devices", 2000).await, "device 1 got it");
-    assert!(saw_message(&mut device2, "ping all devices", 2000).await, "device 2 got it");
+    assert!(
+        saw_message(&mut device1, "ping all devices", 2000).await,
+        "device 1 got it"
+    );
+    assert!(
+        saw_message(&mut device2, "ping all devices", 2000).await,
+        "device 2 got it"
+    );
     handle.abort();
 }
 
@@ -157,7 +183,11 @@ async fn dm_reaches_only_its_participants() {
     let mut c = connect_user(&url, &c_id, "Cy").await;
 
     // A opens a DM with B and sends a line.
-    a.send(&ClientMessage::OpenDm { user_pubkey: b_id.pubkey().to_string() }).await.unwrap();
+    a.send(&ClientMessage::OpenDm {
+        user_pubkey: b_id.pubkey().to_string(),
+    })
+    .await
+    .unwrap();
     let dm_channel = loop {
         if let ServerMessage::DmReady { channel_id, .. } = next_timeout(&mut a).await {
             break channel_id;
@@ -165,7 +195,10 @@ async fn dm_reaches_only_its_participants() {
     };
     a.send_message(dm_channel, "just between us").await.unwrap();
 
-    assert!(saw_message(&mut b, "just between us", 2000).await, "the DM partner receives it");
+    assert!(
+        saw_message(&mut b, "just between us", 2000).await,
+        "the DM partner receives it"
+    );
     assert!(
         !saw_message(&mut c, "just between us", 800).await,
         "a third party must never receive someone else's DM"
@@ -193,19 +226,35 @@ async fn disconnect_removes_connection_from_routing() {
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     owner.send_message(text, "still flowing").await.unwrap();
-    assert!(saw_message(&mut b, "still flowing", 2000).await, "remaining member still receives");
+    assert!(
+        saw_message(&mut b, "still flowing", 2000).await,
+        "remaining member still receives"
+    );
     handle.abort();
 }
 
 /// Send a FetchMessages and return the resulting page (loops past any live
 /// MessageCreate frames queued ahead of the reply).
-async fn fetch_history(session: &mut Bot, channel_id: Id, limit: u32, before_ms: Option<i64>) -> Vec<Message> {
+async fn fetch_history(
+    session: &mut Bot,
+    channel_id: Id,
+    limit: u32,
+    before_ms: Option<i64>,
+) -> Vec<Message> {
     session
-        .send(&ClientMessage::FetchMessages { channel_id, limit, before_ms })
+        .send(&ClientMessage::FetchMessages {
+            channel_id,
+            limit,
+            before_ms,
+        })
         .await
         .unwrap();
     loop {
-        if let ServerMessage::MessageHistory { channel_id: cid, messages } = next_timeout(session).await {
+        if let ServerMessage::MessageHistory {
+            channel_id: cid,
+            messages,
+        } = next_timeout(session).await
+        {
             if cid == channel_id {
                 return messages;
             }
@@ -230,14 +279,24 @@ async fn message_history_pages_backward_with_before_ms() {
     let page1 = fetch_history(&mut owner, text, 2, None).await;
     assert_eq!(page1.len(), 2, "first page honors the limit");
     let p1: std::collections::HashSet<_> = page1.iter().map(|m| m.content.clone()).collect();
-    assert!(p1.contains("m4") && p1.contains("m3"), "newest two, got {p1:?}");
+    assert!(
+        p1.contains("m4") && p1.contains("m3"),
+        "newest two, got {p1:?}"
+    );
 
     // Page backward from the oldest message we hold.
-    let oldest_ms = page1.iter().map(|m| m.created_at.timestamp_millis()).min().unwrap();
+    let oldest_ms = page1
+        .iter()
+        .map(|m| m.created_at.timestamp_millis())
+        .min()
+        .unwrap();
     let page2 = fetch_history(&mut owner, text, 2, Some(oldest_ms)).await;
     assert_eq!(page2.len(), 2, "second page honors the limit");
     let p2: std::collections::HashSet<_> = page2.iter().map(|m| m.content.clone()).collect();
     assert!(p2.is_disjoint(&p1), "pages don't overlap: {p1:?} vs {p2:?}");
-    assert!(p2.contains("m2") && p2.contains("m1"), "next two older, got {p2:?}");
+    assert!(
+        p2.contains("m2") && p2.contains("m1"),
+        "next two older, got {p2:?}"
+    );
     handle.abort();
 }

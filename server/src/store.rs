@@ -195,13 +195,15 @@ impl Store {
             .fetch_all(&self.pool)
             .await?
         {
-            out.users.push(User { pubkey: r.get(0), username: r.get(1) });
+            out.users.push(User {
+                pubkey: r.get(0),
+                username: r.get(1),
+            });
         }
-        for r in sqlx::query(
-            "SELECT pubkey, avatar, banner, bio, status, custom_status FROM profiles",
-        )
-        .fetch_all(&self.pool)
-        .await?
+        for r in
+            sqlx::query("SELECT pubkey, avatar, banner, bio, status, custom_status FROM profiles")
+                .fetch_all(&self.pool)
+                .await?
         {
             out.profiles.push(Profile {
                 pubkey: r.get(0),
@@ -308,19 +310,26 @@ impl Store {
             .fetch_all(&self.pool)
             .await?
         {
-            out.dms.push((parse_id(&r.get::<String, _>(0)), r.get(1), r.get(2)));
+            out.dms
+                .push((parse_id(&r.get::<String, _>(0)), r.get(1), r.get(2)));
         }
-        for r in sqlx::query("SELECT guild_id, pubkey FROM bans").fetch_all(&self.pool).await? {
+        for r in sqlx::query("SELECT guild_id, pubkey FROM bans")
+            .fetch_all(&self.pool)
+            .await?
+        {
             out.bans.push((parse_id(&r.get::<String, _>(0)), r.get(1)));
         }
-        for r in sqlx::query("SELECT code, guild_id FROM invites").fetch_all(&self.pool).await? {
-            out.invites.push((r.get(0), parse_id(&r.get::<String, _>(1))));
+        for r in sqlx::query("SELECT code, guild_id FROM invites")
+            .fetch_all(&self.pool)
+            .await?
+        {
+            out.invites
+                .push((r.get(0), parse_id(&r.get::<String, _>(1))));
         }
-        for r in sqlx::query(
-            "SELECT guild_id, bot_pubkey, name, permissions, intents FROM bot_installs",
-        )
-        .fetch_all(&self.pool)
-        .await?
+        for r in
+            sqlx::query("SELECT guild_id, bot_pubkey, name, permissions, intents FROM bot_installs")
+                .fetch_all(&self.pool)
+                .await?
         {
             out.bot_installs.push(BotInstall {
                 guild_id: parse_id(&r.get::<String, _>(0)),
@@ -423,7 +432,13 @@ impl Store {
         .execute(&mut *tx)
         .await?;
         for table in [
-            "channels", "members", "roles", "guild_emojis", "bans", "invites", "bot_installs",
+            "channels",
+            "members",
+            "roles",
+            "guild_emojis",
+            "bans",
+            "invites",
+            "bot_installs",
             "guild_xp",
         ] {
             sqlx::query(&format!("DELETE FROM {table} WHERE guild_id = ?"))
@@ -431,7 +446,10 @@ impl Store {
                 .execute(&mut *tx)
                 .await?;
         }
-        sqlx::query("DELETE FROM guilds WHERE id = ?").bind(&gid).execute(&mut *tx).await?;
+        sqlx::query("DELETE FROM guilds WHERE id = ?")
+            .bind(&gid)
+            .execute(&mut *tx)
+            .await?;
         tx.commit().await
     }
 
@@ -475,7 +493,11 @@ impl Store {
         Ok(())
     }
 
-    pub async fn audit_log(&self, guild_id: Id, limit: u32) -> Result<Vec<crate::protocol::AuditEntry>> {
+    pub async fn audit_log(
+        &self,
+        guild_id: Id,
+        limit: u32,
+    ) -> Result<Vec<crate::protocol::AuditEntry>> {
         let rows = sqlx::query(
             "SELECT at_ms, actor_pubkey, action, target, detail FROM audit_log
              WHERE guild_id = ? ORDER BY at_ms DESC LIMIT ?",
@@ -503,7 +525,10 @@ impl Store {
             .bind(&cid)
             .execute(&mut *tx)
             .await?;
-        sqlx::query("DELETE FROM channels WHERE id = ?").bind(&cid).execute(&mut *tx).await?;
+        sqlx::query("DELETE FROM channels WHERE id = ?")
+            .bind(&cid)
+            .execute(&mut *tx)
+            .await?;
         tx.commit().await
     }
 
@@ -784,7 +809,10 @@ impl Store {
                 r.users.push(pubkey.to_string());
             }
         } else {
-            reactions.push(Reaction { emoji: emoji.to_string(), users: vec![pubkey.to_string()] });
+            reactions.push(Reaction {
+                emoji: emoji.to_string(),
+                users: vec![pubkey.to_string()],
+            });
         }
         reactions.retain(|r| !r.users.is_empty());
 
@@ -798,13 +826,11 @@ impl Store {
 
     /// The author pubkey of a message, if it exists (for delete permission).
     pub async fn message_author(&self, channel_id: Id, message_id: Id) -> Result<Option<String>> {
-        let row = sqlx::query(
-            "SELECT author_pubkey FROM messages WHERE id = ? AND channel_id = ?",
-        )
-        .bind(message_id.to_string())
-        .bind(channel_id.to_string())
-        .fetch_optional(&self.pool)
-        .await?;
+        let row = sqlx::query("SELECT author_pubkey FROM messages WHERE id = ? AND channel_id = ?")
+            .bind(message_id.to_string())
+            .bind(channel_id.to_string())
+            .fetch_optional(&self.pool)
+            .await?;
         Ok(row.map(|r| r.get(0)))
     }
 
@@ -830,7 +856,9 @@ impl Store {
         .await?;
         if res.rows_affected() > 0 {
             // Deleting rows alone never shrinks a SQLite file.
-            let _ = sqlx::query("PRAGMA incremental_vacuum").execute(&self.pool).await;
+            let _ = sqlx::query("PRAGMA incremental_vacuum")
+                .execute(&self.pool)
+                .await;
         }
         Ok(res.rows_affected())
     }
@@ -855,7 +883,10 @@ fn row_to_message(r: sqlx::sqlite::SqliteRow) -> Message {
     Message {
         id: parse_id(&r.get::<String, _>(0)),
         channel_id: parse_id(&r.get::<String, _>(1)),
-        author: User { pubkey: r.get(2), username: r.get(3) },
+        author: User {
+            pubkey: r.get(2),
+            username: r.get(3),
+        },
         content: r.get(4),
         image: r.get(5),
         reactions: serde_json::from_str(&r.get::<String, _>(6)).unwrap_or_default(),
@@ -876,7 +907,11 @@ fn row_to_message(r: sqlx::sqlite::SqliteRow) -> Message {
 fn excerpt_for_reply(content: &str, has_image: bool) -> String {
     let flat = content.split_whitespace().collect::<Vec<_>>().join(" ");
     if flat.is_empty() {
-        return if has_image { "[image]".into() } else { String::new() };
+        return if has_image {
+            "[image]".into()
+        } else {
+            String::new()
+        };
     }
     if flat.chars().count() <= crate::protocol::REPLY_EXCERPT_CHARS {
         return flat;
@@ -904,7 +939,11 @@ fn visibility_str(v: GuildVisibility) -> &'static str {
 }
 
 fn parse_visibility(s: &str) -> GuildVisibility {
-    if s == "private" { GuildVisibility::Private } else { GuildVisibility::Public }
+    if s == "private" {
+        GuildVisibility::Private
+    } else {
+        GuildVisibility::Public
+    }
 }
 
 fn kind_str(k: ChannelKind) -> &'static str {
@@ -915,7 +954,11 @@ fn kind_str(k: ChannelKind) -> &'static str {
 }
 
 fn parse_kind(s: &str) -> ChannelKind {
-    if s == "voice" { ChannelKind::Voice } else { ChannelKind::Text }
+    if s == "voice" {
+        ChannelKind::Voice
+    } else {
+        ChannelKind::Text
+    }
 }
 
 fn gate_str(g: crate::protocol::JoinGate) -> &'static str {

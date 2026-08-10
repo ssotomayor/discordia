@@ -26,9 +26,14 @@ pub async fn handle_connection(
     // Issue a per-connection nonce immediately so the client knows what to
     // sign in its Identify response.
     let nonce = auth::fresh_nonce();
-    if send(&mut ws_tx, &ServerMessage::Hello { nonce: nonce.clone() })
-        .await
-        .is_err()
+    if send(
+        &mut ws_tx,
+        &ServerMessage::Hello {
+            nonce: nonce.clone(),
+        },
+    )
+    .await
+    .is_err()
     {
         return;
     }
@@ -1408,18 +1413,26 @@ pub async fn handle_connection(
 
     // Drop this connection from the routing table first, so nothing is routed
     // to a socket we're tearing down.
-    ctx.state.unregister_conn(conn_id, user.as_ref().map(|u| u.pubkey.as_str()));
+    ctx.state
+        .unregister_conn(conn_id, user.as_ref().map(|u| u.pubkey.as_str()));
 
     if let Some(u) = user {
         if let Some(cleared) = ctx.state.clear_voice(&u.pubkey) {
             let targets = ctx.state.guild_member_pubkeys(cleared.guild_id);
-            ctx.state.deliver(targets, ServerMessage::VoiceStateUpdate(cleared));
+            ctx.state
+                .deliver(targets, ServerMessage::VoiceStateUpdate(cleared));
         }
         broadcast_screen_clear(&ctx.state, &u.pubkey);
         for (guild_id, user_pubkey) in ctx.state.mark_offline(&u.pubkey) {
             // Only the members of that guild should see the leave.
             let targets = ctx.state.guild_member_pubkeys(guild_id);
-            ctx.state.deliver(targets, ServerMessage::MemberLeave { guild_id, user_pubkey });
+            ctx.state.deliver(
+                targets,
+                ServerMessage::MemberLeave {
+                    guild_id,
+                    user_pubkey,
+                },
+            );
         }
         tracing::info!(user = %u.username, "client disconnected");
     }
@@ -1472,7 +1485,10 @@ fn removal_broadcasts(
     for (channel_id, sharers) in state.clear_user_screen_shares_in_guild(guild_id, target) {
         state.deliver(
             rest.clone(),
-            ServerMessage::ScreenShareState { channel_id, sharers },
+            ServerMessage::ScreenShareState {
+                channel_id,
+                sharers,
+            },
         );
     }
 }
@@ -1503,14 +1519,23 @@ fn broadcast_screen_clear(state: &crate::state::AppState, pubkey: &str) {
     for (channel_id, sharers) in state.clear_user_screen_shares(pubkey) {
         if let Some(gid) = state.channel_guild(channel_id) {
             let targets = state.guild_member_pubkeys(gid);
-            state.deliver(targets, ServerMessage::ScreenShareState { channel_id, sharers });
+            state.deliver(
+                targets,
+                ServerMessage::ScreenShareState {
+                    channel_id,
+                    sharers,
+                },
+            );
         }
     }
 }
 
 /// The set of pubkeys allowed to see activity in a channel: a guild's members
 /// for guild channels, or the two participants for a DM.
-fn channel_audience(state: &crate::state::AppState, channel_id: crate::protocol::Id) -> Option<Vec<String>> {
+fn channel_audience(
+    state: &crate::state::AppState,
+    channel_id: crate::protocol::Id,
+) -> Option<Vec<String>> {
     if let Some(gid) = state.channel_guild(channel_id) {
         Some(state.guild_member_pubkeys(gid))
     } else {
@@ -1592,16 +1617,18 @@ fn filter_for_bot(
         ServerMessage::MessageDelete { channel_id, .. } => {
             let gid = state.channel_guild(*channel_id)?;
             let install = state.bot_install(gid, bot_pubkey)?;
-            install.has_intent(Intent::GuildMessages).then(|| msg.clone())
+            install
+                .has_intent(Intent::GuildMessages)
+                .then(|| msg.clone())
         }
         // Channel topology matters to any installed bot (it's in Ready too) —
         // no intent needed, just an install in that guild.
-        ServerMessage::ChannelCreate(ch) | ServerMessage::ChannelUpdate(ch) => {
-            state.bot_install(ch.guild_id, bot_pubkey).map(|_| msg.clone())
-        }
-        ServerMessage::ChannelDelete { guild_id, .. } => {
-            state.bot_install(*guild_id, bot_pubkey).map(|_| msg.clone())
-        }
+        ServerMessage::ChannelCreate(ch) | ServerMessage::ChannelUpdate(ch) => state
+            .bot_install(ch.guild_id, bot_pubkey)
+            .map(|_| msg.clone()),
+        ServerMessage::ChannelDelete { guild_id, .. } => state
+            .bot_install(*guild_id, bot_pubkey)
+            .map(|_| msg.clone()),
         // Errors are useful feedback for a bot (e.g. permission denied).
         ServerMessage::Error { .. } => Some(msg.clone()),
         // Everything else (typing, voice, screen share, profiles, the public
@@ -1620,7 +1647,12 @@ async fn deliver_join<S>(
     state: &crate::state::AppState,
     ws_tx: &mut S,
     joiner: &User,
-    bundle: (crate::protocol::Guild, Vec<crate::protocol::Channel>, Vec<Member>, Vec<crate::protocol::Role>),
+    bundle: (
+        crate::protocol::Guild,
+        Vec<crate::protocol::Channel>,
+        Vec<Member>,
+        Vec<crate::protocol::Role>,
+    ),
 ) -> Result<(), ()>
 where
     S: SinkExt<WsMessage, Error = axum::Error> + Unpin,
@@ -1644,9 +1676,18 @@ where
         }),
     );
     let emojis = state.emojis_of(guild_id);
-    if send(ws_tx, &ServerMessage::GuildJoined { guild, channels, members, roles, emojis })
-        .await
-        .is_err()
+    if send(
+        ws_tx,
+        &ServerMessage::GuildJoined {
+            guild,
+            channels,
+            members,
+            roles,
+            emojis,
+        },
+    )
+    .await
+    .is_err()
     {
         return Err(());
     }

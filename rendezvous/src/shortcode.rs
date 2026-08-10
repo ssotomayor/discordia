@@ -1,24 +1,22 @@
 //! Generate readable shortcodes like `purple-fox-42`.
 
-use rand::seq::SliceRandom;
 use rand::Rng;
+use rand::seq::SliceRandom;
 
 const ADJECTIVES: &[&str] = &[
-    "amber", "azure", "bold", "brave", "bright", "calm", "clever", "cool",
-    "crisp", "deep", "eager", "fast", "fierce", "frosty", "gentle", "happy",
-    "jolly", "keen", "lucky", "merry", "neat", "noble", "nimble", "ocean",
-    "purple", "quiet", "quick", "rapid", "royal", "scarlet", "silent", "silver",
-    "smooth", "snowy", "sparkly", "stormy", "sunny", "swift", "tidy", "vivid",
+    "amber", "azure", "bold", "brave", "bright", "calm", "clever", "cool", "crisp", "deep",
+    "eager", "fast", "fierce", "frosty", "gentle", "happy", "jolly", "keen", "lucky", "merry",
+    "neat", "noble", "nimble", "ocean", "purple", "quiet", "quick", "rapid", "royal", "scarlet",
+    "silent", "silver", "smooth", "snowy", "sparkly", "stormy", "sunny", "swift", "tidy", "vivid",
     "wild", "wise", "warm",
 ];
 
 const ANIMALS: &[&str] = &[
-    "ant", "bear", "bee", "bison", "cat", "cobra", "crab", "crow", "deer",
-    "dolphin", "eagle", "elk", "falcon", "ferret", "fox", "frog", "goose",
-    "hare", "hawk", "ibex", "jay", "koi", "lemur", "lynx", "moose", "newt",
-    "otter", "owl", "panda", "panther", "puma", "quail", "raven", "salmon",
-    "seal", "shrew", "stoat", "swan", "tiger", "toad", "viper", "weasel",
-    "whale", "wolf", "wren", "yak",
+    "ant", "bear", "bee", "bison", "cat", "cobra", "crab", "crow", "deer", "dolphin", "eagle",
+    "elk", "falcon", "ferret", "fox", "frog", "goose", "hare", "hawk", "ibex", "jay", "koi",
+    "lemur", "lynx", "moose", "newt", "otter", "owl", "panda", "panther", "puma", "quail", "raven",
+    "salmon", "seal", "shrew", "stoat", "swan", "tiger", "toad", "viper", "weasel", "whale",
+    "wolf", "wren", "yak",
 ];
 
 pub fn generate() -> String {

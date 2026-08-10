@@ -34,12 +34,18 @@ fn main() {
     let bin_path = out_dir.join(bin_name);
 
     if env::var("LIVEKIT_BUNDLE_SKIP").is_ok() {
-        println!("cargo:warning=LIVEKIT_BUNDLE_SKIP set — self-host voice will not work in this build");
+        println!(
+            "cargo:warning=LIVEKIT_BUNDLE_SKIP set — self-host voice will not work in this build"
+        );
         fs::write(&bin_path, b"").unwrap();
         return;
     }
 
-    if bin_path.exists() && fs::metadata(&bin_path).map(|m| m.len() > 0).unwrap_or(false) {
+    if bin_path.exists()
+        && fs::metadata(&bin_path)
+            .map(|m| m.len() > 0)
+            .unwrap_or(false)
+    {
         return;
     }
 
@@ -149,7 +155,8 @@ fn build_from_source(out_dir: &Path, version: &str, bin_path: &Path) -> Result<(
         "go not found in PATH or common install dirs. `brew install go`, or set LIVEKIT_BUNDLE_SKIP=1 to skip voice bundling.".to_string()
     })?;
     let git = find_executable("git").ok_or_else(|| {
-        "git not found. Install Xcode CLT (`xcode-select --install`) or `brew install git`.".to_string()
+        "git not found. Install Xcode CLT (`xcode-select --install`) or `brew install git`."
+            .to_string()
     })?;
 
     let src_dir = out_dir.join("livekit-src");
@@ -200,10 +207,10 @@ fn find_executable(name: &str) -> Option<PathBuf> {
 
     // 2. Common install dirs.
     let mut candidates: Vec<PathBuf> = vec![
-        PathBuf::from("/opt/homebrew/bin").join(name),     // Apple Silicon brew
-        PathBuf::from("/usr/local/bin").join(name),        // Intel brew + many Linux
-        PathBuf::from("/usr/bin").join(name),              // system
-        PathBuf::from("/usr/local/go/bin").join(name),     // official Go installer
+        PathBuf::from("/opt/homebrew/bin").join(name), // Apple Silicon brew
+        PathBuf::from("/usr/local/bin").join(name),    // Intel brew + many Linux
+        PathBuf::from("/usr/bin").join(name),          // system
+        PathBuf::from("/usr/local/go/bin").join(name), // official Go installer
     ];
     if let Ok(home) = env::var("HOME") {
         candidates.push(PathBuf::from(&home).join("go/bin").join(name));

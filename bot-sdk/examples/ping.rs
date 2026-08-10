@@ -15,8 +15,8 @@
 //!
 //! Override the server with `SERVER_URL` (default `ws://localhost:9000`).
 
-use dioxusfun_bot::{Bot, BotIdentity};
 use dioxusfun_bot::protocol::ServerMessage;
+use dioxusfun_bot::{Bot, BotIdentity};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -28,7 +28,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let id = BotIdentity::generate();
             eprintln!("── No BOT_SECRET set; generated a new identity ──");
             eprintln!("  pubkey (install this in the app): {}", id.pubkey());
-            eprintln!("  secret (save as BOT_SECRET):       {}", id.secret_base58());
+            eprintln!(
+                "  secret (save as BOT_SECRET):       {}",
+                id.secret_base58()
+            );
             eprintln!("─────────────────────────────────────────────────");
             id
         }

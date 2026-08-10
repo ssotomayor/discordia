@@ -68,7 +68,10 @@ impl HostEntry {
 /// fresh.
 fn now_ms() -> i64 {
     static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
-    START.get_or_init(std::time::Instant::now).elapsed().as_millis() as i64
+    START
+        .get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_millis() as i64
 }
 
 /// A persisted claim on a name. The `slug` (lowercased) is the map key and the
@@ -152,9 +155,13 @@ impl Registry {
                     }
                     tracing::info!(count = reservations.len(), path = %path.display(), "reservations loaded");
                 }
-                Err(e) => tracing::warn!(error = %e, path = %path.display(), "reservations file unreadable — starting empty"),
+                Err(e) => {
+                    tracing::warn!(error = %e, path = %path.display(), "reservations file unreadable — starting empty")
+                }
             },
-            Err(_) => tracing::info!(path = %path.display(), "no reservations file yet — starting empty"),
+            Err(_) => {
+                tracing::info!(path = %path.display(), "no reservations file yet — starting empty")
+            }
         }
         Self {
             hosts: DashMap::new(),
@@ -169,7 +176,11 @@ impl Registry {
         let Some(path) = self.store_path.as_ref() else {
             return;
         };
-        let list: Vec<Reservation> = self.reservations.iter().map(|r| r.value().clone()).collect();
+        let list: Vec<Reservation> = self
+            .reservations
+            .iter()
+            .map(|r| r.value().clone())
+            .collect();
         match serde_json::to_string_pretty(&list) {
             Ok(json) => {
                 if let Some(dir) = path.parent() {
@@ -225,7 +236,8 @@ impl Registry {
     /// host only. Returned to the host in `Registered`; revoked on release.
     pub fn issue_voice_grant(&self, shortcode: &str) -> String {
         let grant = uuid::Uuid::new_v4().to_string();
-        self.voice_grants.insert(grant.clone(), shortcode.to_string());
+        self.voice_grants
+            .insert(grant.clone(), shortcode.to_string());
         grant
     }
 
@@ -333,9 +345,15 @@ mod tests {
     #[test]
     fn claim_is_unique_and_owner_scoped() {
         let reg = Registry::new();
-        assert!(reg.claim_name("acme", "Acme", "owner_a", None, true).is_ok());
+        assert!(
+            reg.claim_name("acme", "Acme", "owner_a", None, true)
+                .is_ok()
+        );
         // Same owner may re-claim (reconnect / metadata refresh).
-        assert!(reg.claim_name("acme", "Acme", "owner_a", None, false).is_ok());
+        assert!(
+            reg.claim_name("acme", "Acme", "owner_a", None, false)
+                .is_ok()
+        );
         // A different owner cannot.
         assert_eq!(
             reg.claim_name("acme", "Acme", "owner_b", None, true),
@@ -348,7 +366,8 @@ mod tests {
         let path = tmp();
         {
             let reg = Registry::load(path.clone());
-            reg.claim_name("acme", "Acme", "owner_a", Some("desc".into()), true).unwrap();
+            reg.claim_name("acme", "Acme", "owner_a", Some("desc".into()), true)
+                .unwrap();
         }
         // Fresh registry from the same file: the reservation and its owner
         // survived, so a squatter is still rejected but the owner reclaims.
@@ -358,7 +377,10 @@ mod tests {
             reg2.claim_name("acme", "Acme", "someone_else", None, true),
             Err(ClaimError::Taken)
         );
-        assert!(reg2.claim_name("acme", "Acme", "owner_a", None, true).is_ok());
+        assert!(
+            reg2.claim_name("acme", "Acme", "owner_a", None, true)
+                .is_ok()
+        );
         let _ = std::fs::remove_file(path);
     }
 }

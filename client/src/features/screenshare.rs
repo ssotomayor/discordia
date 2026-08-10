@@ -21,7 +21,7 @@
 use dioxus::prelude::*;
 use serde_json::Value;
 
-use crate::features::voice::{use_voice_tx, VoiceCmd};
+use crate::features::voice::{VoiceCmd, use_voice_tx};
 use crate::protocol::ClientMessage;
 use crate::state::{use_app_state, use_gateway};
 
@@ -595,10 +595,26 @@ window.dxScreen = window.dxScreen || (function () {
 /// Screen-share quality presets, in the order the settings menu shows them.
 /// `(id, label, hint)` — the hint is the one-line explanation under the select.
 pub const QUALITY_PRESETS: &[(&str, &str, &str)] = &[
-    ("smooth", "Smooth — 720p60", "Video and animation: stays fluid, softens when busy"),
-    ("balanced", "Balanced — 1080p30", "Good default for most sharing"),
-    ("crisp", "Crisp — 1080p15", "Sharpest text; drops frames when the screen is busy"),
-    ("ultra", "Ultra — 1440p30", "High detail; needs strong upload"),
+    (
+        "smooth",
+        "Smooth — 720p60",
+        "Video and animation: stays fluid, softens when busy",
+    ),
+    (
+        "balanced",
+        "Balanced — 1080p30",
+        "Good default for most sharing",
+    ),
+    (
+        "crisp",
+        "Crisp — 1080p15",
+        "Sharpest text; drops frames when the screen is busy",
+    ),
+    (
+        "ultra",
+        "Ultra — 1440p30",
+        "High detail; needs strong upload",
+    ),
 ];
 
 /// Screen content is mostly static text, so resolution matters far more than
@@ -780,7 +796,9 @@ pub fn ScreenShareBridge() -> Element {
 
         let now = (epoch, want, publish_system, joined);
         if last_sent.peek().as_ref() != Some(&now) {
-            voice_screen_audio.send(VoiceCmd::SetScreenAudio { room: now.1.clone() });
+            voice_screen_audio.send(VoiceCmd::SetScreenAudio {
+                room: now.1.clone(),
+            });
             voice_screen_audio.send(VoiceCmd::SetSystemAudio { enabled: now.2 });
             last_sent.set(Some(now));
         }
@@ -867,8 +885,7 @@ pub fn ScreenShareBridge() -> Element {
                                 let mut w = state.write();
                                 w.screen_sharing = true;
                                 w.screen_native_audio =
-                                    msg.get("nativeAudio").and_then(|v| v.as_bool())
-                                        == Some(true);
+                                    msg.get("nativeAudio").and_then(|v| v.as_bool()) == Some(true);
                             }
                             if let Some(c) = cid {
                                 gateway.send(ClientMessage::SetScreenShare {
@@ -927,8 +944,10 @@ pub fn ScreenShareBridge() -> Element {
                         // can fix client-side, so say so rather than let the
                         // sharer assume viewers can hear their machine.
                         Some("share-audio") => {
-                            let published =
-                                msg.get("published").and_then(|v| v.as_bool()).unwrap_or(false);
+                            let published = msg
+                                .get("published")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false);
                             // Whether the platform *can* do it at all, versus
                             // whether this particular pick included it. Saying
                             // "your platform can't" when the user simply left
@@ -938,7 +957,9 @@ pub fn ScreenShareBridge() -> Element {
                                 .get("supported")
                                 .and_then(|v| v.as_bool())
                                 .unwrap_or(false);
-                            eprintln!("[screen] share audio published={published} supported={supported}");
+                            eprintln!(
+                                "[screen] share audio published={published} supported={supported}"
+                            );
                             if !published {
                                 state.write().error_toast = Some(if supported {
                                     "Sharing video only. To include sound, re-share and tick \
@@ -955,10 +976,15 @@ pub fn ScreenShareBridge() -> Element {
                         // A share we're watching: whether it carries audio at
                         // all, so the volume control can be honest about it.
                         Some("stream-audio") => {
-                            let present =
-                                msg.get("present").and_then(|v| v.as_bool()).unwrap_or(false);
+                            let present = msg
+                                .get("present")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false);
                             if let Some(id) = msg.get("identity").and_then(|v| v.as_str()) {
-                                eprintln!("[screen] watching {}: audio={present}", &id[..id.len().min(8)]);
+                                eprintln!(
+                                    "[screen] watching {}: audio={present}",
+                                    &id[..id.len().min(8)]
+                                );
                                 let mut s = state.write();
                                 if present {
                                     s.stream_has_audio.insert(id.to_string());

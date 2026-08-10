@@ -6,9 +6,9 @@ use uuid::Uuid;
 
 use crate::media::MediaStore;
 use crate::protocol::{
-    BotInstall, Channel, DmInfo, Guild, GuildEmoji, GuildVisibility, Id, Intent, Member, Message,
-    Permission, Profile, ReplyRef, Role, ServerMessage, User, VoiceState, MAX_EMOJIS_PER_GUILD,
-    valid_shortcode,
+    BotInstall, Channel, DmInfo, Guild, GuildEmoji, GuildVisibility, Id, Intent,
+    MAX_EMOJIS_PER_GUILD, Member, Message, Permission, Profile, ReplyRef, Role, ServerMessage,
+    User, VoiceState, valid_shortcode,
 };
 use crate::store::Store;
 
@@ -172,24 +172,32 @@ impl AppState {
             state.guilds.insert(g.id, g);
         }
         for c in loaded.channels {
-            state.channels_by_guild.entry(c.guild_id).or_default().push(c.id);
+            state
+                .channels_by_guild
+                .entry(c.guild_id)
+                .or_default()
+                .push(c.id);
             state.channels.insert(c.id, c);
         }
         for (gid, pubkey, username, bot, role_ids) in loaded.members {
-            state.members.entry(gid).or_insert_with(DashMap::new).insert(
-                pubkey.clone(),
-                Member {
-                    user: User { pubkey, username },
-                    guild_id: gid,
-                    // Presence is ephemeral: everyone starts offline.
-                    online: false,
-                    bot,
-                    roles: role_ids,
-                    // Stored rows keep xp at 0 — the xp map is the truth,
-                    // stamped at emit (`stamp_xp`).
-                    xp: 0,
-                },
-            );
+            state
+                .members
+                .entry(gid)
+                .or_insert_with(DashMap::new)
+                .insert(
+                    pubkey.clone(),
+                    Member {
+                        user: User { pubkey, username },
+                        guild_id: gid,
+                        // Presence is ephemeral: everyone starts offline.
+                        online: false,
+                        bot,
+                        roles: role_ids,
+                        // Stored rows keep xp at 0 — the xp map is the truth,
+                        // stamped at emit (`stamp_xp`).
+                        xp: 0,
+                    },
+                );
         }
         for r in loaded.roles {
             state.roles.entry(r.guild_id).or_default().push(r);
@@ -199,7 +207,13 @@ impl AppState {
         }
         for (id, a, b) in loaded.dms {
             state.dm_index.insert(Self::dm_key(&a, &b), id);
-            state.dms.insert(id, DmChannel { id, participants: [a, b] });
+            state.dms.insert(
+                id,
+                DmChannel {
+                    id,
+                    participants: [a, b],
+                },
+            );
         }
         for (gid, pk) in loaded.bans {
             state.bans.entry(gid).or_default().insert(pk);
@@ -263,7 +277,8 @@ impl AppState {
         persist(self.store.upsert_guild(&lobby).await, "seed guild");
         persist(self.store.upsert_channel(&general).await, "seed channel");
         persist(self.store.upsert_channel(&voice).await, "seed channel");
-        self.channels_by_guild.insert(lobby.id, vec![general.id, voice.id]);
+        self.channels_by_guild
+            .insert(lobby.id, vec![general.id, voice.id]);
         for ch in [general, voice] {
             self.channels.insert(ch.id, ch);
         }
@@ -304,7 +319,8 @@ impl AppState {
             if now_empty {
                 // Only remove if still empty (a racing reconnect may have
                 // re-added the pubkey under a new conn id).
-                self.conn_ids_by_pubkey.remove_if(pk, |_, set| set.is_empty());
+                self.conn_ids_by_pubkey
+                    .remove_if(pk, |_, set| set.is_empty());
             }
         }
     }
@@ -434,7 +450,11 @@ impl AppState {
         emoji: &str,
         pubkey: &str,
     ) -> Option<Vec<crate::protocol::Reaction>> {
-        match self.store.toggle_reaction(channel_id, message_id, emoji, pubkey).await {
+        match self
+            .store
+            .toggle_reaction(channel_id, message_id, emoji, pubkey)
+            .await
+        {
             Ok(res) => res,
             Err(e) => {
                 tracing::error!(error = %e, "toggle_reaction store error");
@@ -816,9 +836,7 @@ impl AppState {
                 .iter()
                 .any(|p| matches!(p, Permission::ManageRoles | Permission::ManageGuild))
             {
-                return Err(
-                    "roles carrying manage_roles or manage_guild are owner-only".into(),
-                );
+                return Err("roles carrying manage_roles or manage_guild are owner-only".into());
             }
             if let Some(missing) = perms.iter().find(|p| !mine.contains(p)) {
                 return Err(format!(
@@ -831,7 +849,10 @@ impl AppState {
     }
 
     /// Validate + normalize a role name/color. Shared by create/update.
-    fn sanitize_role(name: &str, color: Option<String>) -> Result<(String, Option<String>), String> {
+    fn sanitize_role(
+        name: &str,
+        color: Option<String>,
+    ) -> Result<(String, Option<String>), String> {
         let name = name.trim();
         if name.is_empty() || name.chars().count() > 32 {
             return Err("role name must be 1..=32 chars".into());
@@ -888,7 +909,11 @@ impl AppState {
         let current = self
             .roles
             .get(&guild_id)
-            .and_then(|r| r.iter().find(|r| r.id == role_id).map(|r| r.permissions.clone()))
+            .and_then(|r| {
+                r.iter()
+                    .find(|r| r.id == role_id)
+                    .map(|r| r.permissions.clone())
+            })
             .ok_or_else(|| "unknown role".to_string())?;
         self.authorize_role_touch(guild_id, by_pubkey, &[&current, &permissions])?;
         let (name, color) = Self::sanitize_role(name, color)?;
@@ -915,7 +940,10 @@ impl AppState {
 
     /// The guild's emoji catalog (empty slice if it has none).
     pub fn emojis_of(&self, guild_id: Id) -> Vec<GuildEmoji> {
-        self.emojis.get(&guild_id).map(|e| e.clone()).unwrap_or_default()
+        self.emojis
+            .get(&guild_id)
+            .map(|e| e.clone())
+            .unwrap_or_default()
     }
 
     /// Catalogs for every guild in `guild_ids` — used to build the Ready
@@ -942,7 +970,9 @@ impl AppState {
         let emoji = {
             let mut list = self.emojis.entry(guild_id).or_default();
             if list.len() >= MAX_EMOJIS_PER_GUILD {
-                return Err(format!("emoji limit reached ({MAX_EMOJIS_PER_GUILD} per guild)"));
+                return Err(format!(
+                    "emoji limit reached ({MAX_EMOJIS_PER_GUILD} per guild)"
+                ));
             }
             if list.iter().any(|e| e.shortcode == shortcode) {
                 return Err(format!(":{shortcode}: already exists in this guild"));
@@ -978,10 +1008,16 @@ impl AppState {
         }
         let updated = {
             let mut list = self.emojis.get_mut(&guild_id).ok_or("unknown emoji")?;
-            if list.iter().any(|e| e.shortcode == shortcode && e.id != emoji_id) {
+            if list
+                .iter()
+                .any(|e| e.shortcode == shortcode && e.id != emoji_id)
+            {
                 return Err(format!(":{shortcode}: already exists in this guild"));
             }
-            let e = list.iter_mut().find(|e| e.id == emoji_id).ok_or("unknown emoji")?;
+            let e = list
+                .iter_mut()
+                .find(|e| e.id == emoji_id)
+                .ok_or("unknown emoji")?;
             e.shortcode = shortcode;
             e.clone()
         };
@@ -1023,7 +1059,11 @@ impl AppState {
         let current = self
             .roles
             .get(&guild_id)
-            .and_then(|r| r.iter().find(|r| r.id == role_id).map(|r| r.permissions.clone()))
+            .and_then(|r| {
+                r.iter()
+                    .find(|r| r.id == role_id)
+                    .map(|r| r.permissions.clone())
+            })
             .ok_or_else(|| "unknown role".to_string())?;
         self.authorize_role_touch(guild_id, by_pubkey, &[&current])?;
         if let Some(mut roles) = self.roles.get_mut(&guild_id) {
@@ -1058,7 +1098,11 @@ impl AppState {
         let role_perms = self
             .roles
             .get(&guild_id)
-            .and_then(|r| r.iter().find(|r| r.id == role_id).map(|r| r.permissions.clone()))
+            .and_then(|r| {
+                r.iter()
+                    .find(|r| r.id == role_id)
+                    .map(|r| r.permissions.clone())
+            })
             .ok_or_else(|| "unknown role".to_string())?;
         self.authorize_role_touch(guild_id, by_pubkey, &[&role_perms])?;
         let updated = {
@@ -1144,11 +1188,7 @@ impl AppState {
                 id: g.id,
                 name: g.name.clone(),
                 icon: g.icon.clone(),
-                member_count: self
-                    .members
-                    .get(&g.id)
-                    .map(|m| m.len() as u32)
-                    .unwrap_or(0),
+                member_count: self.members.get(&g.id).map(|m| m.len() as u32).unwrap_or(0),
             })
             .collect()
     }
@@ -1156,7 +1196,11 @@ impl AppState {
     /// A page of the public directory: `limit` summaries starting at `offset`
     /// (sorted by member count desc, then name, for a stable order), plus the
     /// total public-guild count. Backs the on-demand `FetchCatalog`.
-    pub fn guild_catalog_page(&self, offset: u32, limit: u32) -> (Vec<crate::protocol::GuildSummary>, u32) {
+    pub fn guild_catalog_page(
+        &self,
+        offset: u32,
+        limit: u32,
+    ) -> (Vec<crate::protocol::GuildSummary>, u32) {
         let mut all = self.guild_catalog();
         all.sort_by(|a, b| {
             b.member_count
@@ -1231,7 +1275,11 @@ impl AppState {
 
     /// Shared tail of both join paths: add the member and snapshot the guild
     /// bundle for `GuildJoined`.
-    async fn admit_member(&self, guild: Guild, user: &User) -> (Guild, Vec<Channel>, Vec<Member>, Vec<Role>) {
+    async fn admit_member(
+        &self,
+        guild: Guild,
+        user: &User,
+    ) -> (Guild, Vec<Channel>, Vec<Member>, Vec<Role>) {
         let guild_id = guild.id;
         self.add_member(guild_id, user).await;
         let channels: Vec<Channel> = self
@@ -1361,7 +1409,11 @@ impl AppState {
             .get(target_pubkey)
             .map(|v| v.guild_id == guild_id)
             .unwrap_or(false);
-        if in_this_guild { self.clear_voice(target_pubkey) } else { None }
+        if in_this_guild {
+            self.clear_voice(target_pubkey)
+        } else {
+            None
+        }
     }
 
     /// Requires `KickMembers`: remove a member (they may rejoin later).
@@ -1377,7 +1429,10 @@ impl AppState {
             return Err("that user isn't a member of this guild".into());
         }
         let cleared = self.remove_membership(guild_id, target_pubkey);
-        persist(self.store.delete_member(guild_id, target_pubkey).await, "member kick");
+        persist(
+            self.store.delete_member(guild_id, target_pubkey).await,
+            "member kick",
+        );
         Ok(cleared)
     }
 
@@ -1395,13 +1450,19 @@ impl AppState {
         // DB ban row FIRST: a crash mid-ban must never restart into
         // "membership removed but not banned" — the safe failure mode is
         // "banned and still listed as member", which the join gates ignore.
-        persist(self.store.insert_ban(guild_id, target_pubkey).await, "ban insert");
+        persist(
+            self.store.insert_ban(guild_id, target_pubkey).await,
+            "ban insert",
+        );
         self.bans
             .entry(guild_id)
             .or_default()
             .insert(target_pubkey.to_string());
         let cleared = self.remove_membership(guild_id, target_pubkey);
-        persist(self.store.delete_member(guild_id, target_pubkey).await, "member ban-remove");
+        persist(
+            self.store.delete_member(guild_id, target_pubkey).await,
+            "member ban-remove",
+        );
         Ok(cleared)
     }
 
@@ -1419,7 +1480,10 @@ impl AppState {
             .map(|mut b| b.remove(target_pubkey))
             .unwrap_or(false);
         if removed {
-            persist(self.store.delete_ban(guild_id, target_pubkey).await, "unban");
+            persist(
+                self.store.delete_ban(guild_id, target_pubkey).await,
+                "unban",
+            );
             Ok(())
         } else {
             Err("that user isn't banned here".into())
@@ -1458,7 +1522,10 @@ impl AppState {
             return Err("you're not a member of this guild".into());
         }
         let cleared = self.remove_membership(guild_id, pubkey);
-        persist(self.store.delete_member(guild_id, pubkey).await, "member leave");
+        persist(
+            self.store.delete_member(guild_id, pubkey).await,
+            "member leave",
+        );
         Ok(cleared)
     }
 
@@ -1487,7 +1554,9 @@ impl AppState {
             guild_id,
             name,
             kind,
-            topic: topic.filter(|t| !t.trim().is_empty()).map(|t| t.chars().take(120).collect()),
+            topic: topic
+                .filter(|t| !t.trim().is_empty())
+                .map(|t| t.chars().take(120).collect()),
             read_only: false,
             slowmode_secs: 0,
             position: next_pos,
@@ -1524,8 +1593,9 @@ impl AppState {
                 .get_mut(&channel_id)
                 .ok_or_else(|| "unknown channel".to_string())?;
             channel.name = name;
-            channel.topic =
-                topic.filter(|t| !t.trim().is_empty()).map(|t| t.chars().take(120).collect());
+            channel.topic = topic
+                .filter(|t| !t.trim().is_empty())
+                .map(|t| t.chars().take(120).collect());
             // Read-only only means something for text channels.
             channel.read_only =
                 read_only && matches!(channel.kind, crate::protocol::ChannelKind::Text);
@@ -1556,8 +1626,7 @@ impl AppState {
                 .channels
                 .iter()
                 .filter(|c| {
-                    c.guild_id == guild_id
-                        && matches!(c.kind, crate::protocol::ChannelKind::Text)
+                    c.guild_id == guild_id && matches!(c.kind, crate::protocol::ChannelKind::Text)
                 })
                 .count();
             if remaining_text <= 1 {
@@ -1581,7 +1650,10 @@ impl AppState {
         if let Some(mut ids) = self.channels_by_guild.get_mut(&guild_id) {
             ids.retain(|c| *c != channel_id);
         }
-        persist(self.store.delete_channel(channel_id).await, "channel delete");
+        persist(
+            self.store.delete_channel(channel_id).await,
+            "channel delete",
+        );
         Ok((guild_id, cleared))
     }
 
@@ -1632,7 +1704,10 @@ impl AppState {
             guild.owner_pubkey = new_owner_pubkey.to_string();
             guild.clone()
         };
-        persist(self.store.upsert_guild(&updated).await, "ownership transfer");
+        persist(
+            self.store.upsert_guild(&updated).await,
+            "ownership transfer",
+        );
         Ok(updated)
     }
 
@@ -1649,8 +1724,8 @@ impl AppState {
     ) -> Result<Guild, String> {
         self.require_permission(guild_id, by_pubkey, Permission::ManageGuild)?;
         let valid_image = |img: &String| {
-            let is_url = (img.starts_with("https://") || img.starts_with("http://"))
-                && img.len() <= 2048;
+            let is_url =
+                (img.starts_with("https://") || img.starts_with("http://")) && img.len() <= 2048;
             let is_data = img.starts_with("data:image/") && img.len() <= MAX_IMAGE_LEN;
             is_url || is_data
         };
@@ -1726,7 +1801,14 @@ impl AppState {
             guild.clone()
         };
         persist(self.store.upsert_guild(&updated).await, "join gate");
-        self.audit(guild_id, by_pubkey, "set_join_gate", "", &format!("{gate:?}")).await;
+        self.audit(
+            guild_id,
+            by_pubkey,
+            "set_join_gate",
+            "",
+            &format!("{gate:?}"),
+        )
+        .await;
         Ok(updated)
     }
 
@@ -1739,7 +1821,8 @@ impl AppState {
     ) -> Result<Guild, String> {
         self.require_permission(guild_id, by_pubkey, Permission::ManageGuild)?;
         let updated = self.set_panic_flag(guild_id, on).await?;
-        self.audit(guild_id, by_pubkey, "set_panic_mode", "", &on.to_string()).await;
+        self.audit(guild_id, by_pubkey, "set_panic_mode", "", &on.to_string())
+            .await;
         Ok(updated)
     }
 
@@ -1763,7 +1846,10 @@ impl AppState {
     }
 
     /// The guild's current gate config (gate, rules, panic) for the join flow.
-    pub fn join_requirements(&self, guild_id: Id) -> Option<(crate::protocol::JoinGate, Option<String>, bool)> {
+    pub fn join_requirements(
+        &self,
+        guild_id: Id,
+    ) -> Option<(crate::protocol::JoinGate, Option<String>, bool)> {
         self.guilds
             .get(&guild_id)
             .map(|g| (g.join_gate, g.rules.clone(), g.panic_mode))
@@ -1782,12 +1868,23 @@ impl AppState {
             v.push(now);
             v.len()
         };
-        let already = self.guilds.get(&guild_id).map(|g| g.panic_mode).unwrap_or(false);
+        let already = self
+            .guilds
+            .get(&guild_id)
+            .map(|g| g.panic_mode)
+            .unwrap_or(false);
         if count > THRESHOLD && !already {
             tracing::warn!(%guild_id, count, "mass-join detected — auto panic mode");
             let g = self.set_panic_flag(guild_id, true).await.ok();
             if let Some(g) = &g {
-                self.audit(guild_id, "", "auto_panic", "", &format!("{count} joins/min")).await;
+                self.audit(
+                    guild_id,
+                    "",
+                    "auto_panic",
+                    "",
+                    &format!("{count} joins/min"),
+                )
+                .await;
                 return Some(g.clone());
             }
         }
@@ -1830,7 +1927,11 @@ impl AppState {
     }
 
     /// Requires `ManageGuild`: the guild's recent audit entries (newest first).
-    pub async fn audit_log(&self, guild_id: Id, by_pubkey: &str) -> Result<Vec<crate::protocol::AuditEntry>, String> {
+    pub async fn audit_log(
+        &self,
+        guild_id: Id,
+        by_pubkey: &str,
+    ) -> Result<Vec<crate::protocol::AuditEntry>, String> {
         self.require_permission(guild_id, by_pubkey, Permission::ManageGuild)?;
         self.store
             .audit_log(guild_id, 100)
@@ -1882,9 +1983,7 @@ impl AppState {
             .ok_or_else(|| "unknown message".to_string())?;
         if author != by_pubkey {
             match self.channel_guild(channel_id) {
-                Some(gid) => {
-                    self.require_permission(gid, by_pubkey, Permission::ManageMessages)?
-                }
+                Some(gid) => self.require_permission(gid, by_pubkey, Permission::ManageMessages)?,
                 None => return Err("only the author can delete a DM message".into()),
             }
         }
@@ -1936,7 +2035,9 @@ impl AppState {
         let mut participants = [a.to_string(), b.to_string()];
         participants.sort();
         persist(
-            self.store.upsert_dm(id, &participants[0], &participants[1]).await,
+            self.store
+                .upsert_dm(id, &participants[0], &participants[1])
+                .await,
             "dm create",
         );
         self.dms.insert(id, DmChannel { id, participants });
@@ -2079,7 +2180,9 @@ impl AppState {
             if img.starts_with("data:") {
                 // Unknown mime or decode failure → fall back to storing the
                 // data URL itself (still capped by MAX_IMAGE_LEN upstream).
-                self.media.store_data_url(img).unwrap_or_else(|| img.clone())
+                self.media
+                    .store_data_url(img)
+                    .unwrap_or_else(|| img.clone())
             } else {
                 img.clone()
             }
@@ -2137,7 +2240,8 @@ impl AppState {
             speaking: false,
         };
         if channel_id.is_some() {
-            self.voice_states.insert(user_pubkey.to_string(), state.clone());
+            self.voice_states
+                .insert(user_pubkey.to_string(), state.clone());
         } else {
             self.voice_states.remove(user_pubkey);
         }
@@ -2302,8 +2406,14 @@ impl AppState {
         if let Some(gm) = self.members.get(&guild_id) {
             gm.remove(bot_pubkey);
         }
-        persist(self.store.delete_bot_install(guild_id, bot_pubkey).await, "bot uninstall");
-        persist(self.store.delete_member(guild_id, bot_pubkey).await, "bot member remove");
+        persist(
+            self.store.delete_bot_install(guild_id, bot_pubkey).await,
+            "bot uninstall",
+        );
+        persist(
+            self.store.delete_member(guild_id, bot_pubkey).await,
+            "bot member remove",
+        );
         Ok(())
     }
 
@@ -2396,8 +2506,12 @@ impl GuildTemplate {
                     (
                         "Maintainer",
                         vec![
-                            ManageChannels, ManageMessages, KickMembers, BanMembers,
-                            ManageRoles, ManageGuild,
+                            ManageChannels,
+                            ManageMessages,
+                            KickMembers,
+                            BanMembers,
+                            ManageRoles,
+                            ManageGuild,
                         ],
                     ),
                     ("Contributor", vec![]),
@@ -2417,8 +2531,13 @@ impl GuildTemplate {
                     (
                         "Admin",
                         vec![
-                            ManageChannels, ManageMessages, KickMembers, BanMembers,
-                            ManageRoles, ManageGuild, CreateInvite,
+                            ManageChannels,
+                            ManageMessages,
+                            KickMembers,
+                            BanMembers,
+                            ManageRoles,
+                            ManageGuild,
+                            CreateInvite,
                         ],
                     ),
                     ("Moderator", vec![ManageMessages, KickMembers, BanMembers]),
@@ -2463,7 +2582,9 @@ pub(crate) fn random_invite_code() -> String {
 /// Accept only short `#rrggbb`/`#rgb` hex colors (guild accents, role colors).
 pub fn is_hex_color(s: &str) -> bool {
     let s = s.trim();
-    let Some(hex) = s.strip_prefix('#') else { return false };
+    let Some(hex) = s.strip_prefix('#') else {
+        return false;
+    };
     (hex.len() == 3 || hex.len() == 6) && hex.chars().all(|c| c.is_ascii_hexdigit())
 }
 

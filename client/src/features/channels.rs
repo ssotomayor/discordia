@@ -32,7 +32,8 @@ enum AudioDrag {
 
 const PANEL: &str = "panel-hover w-full h-full bg-[var(--panel)] border border-[var(--border)] rounded-lg flex flex-col overflow-hidden";
 const HEADER: &str = "h-11 px-3 flex items-center border-b border-[var(--border)]";
-const SECTION_LABEL: &str = "px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]";
+const SECTION_LABEL: &str =
+    "px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]";
 
 #[component]
 pub fn ChannelsColumn() -> Element {
@@ -45,7 +46,8 @@ pub fn ChannelsColumn() -> Element {
     let dms: Vec<DmInfo> = snapshot.dms.clone();
     let selected_guild = snapshot.selected_guild;
     let selected_channel = snapshot.selected_channel;
-    let guild = selected_guild.and_then(|gid| snapshot.guilds.iter().find(|g| g.id == gid).cloned());
+    let guild =
+        selected_guild.and_then(|gid| snapshot.guilds.iter().find(|g| g.id == gid).cloned());
     let channels: Vec<Channel> = selected_guild
         .map(|gid| {
             let mut v: Vec<Channel> = snapshot
@@ -54,7 +56,11 @@ pub fn ChannelsColumn() -> Element {
                 .filter(|c| c.guild_id == gid)
                 .cloned()
                 .collect();
-            v.sort_by(|a, b| a.position.cmp(&b.position).then_with(|| a.name.cmp(&b.name)));
+            v.sort_by(|a, b| {
+                a.position
+                    .cmp(&b.position)
+                    .then_with(|| a.name.cmp(&b.name))
+            });
             v
         })
         .unwrap_or_default();
@@ -82,7 +88,11 @@ pub fn ChannelsColumn() -> Element {
     // database row and nothing else. Here is its home: a strip across the top
     // of the channel list, which is the surface that already belongs to the
     // guild you're looking at.
-    let banner = if dm_mode { None } else { guild.as_ref().and_then(|g| g.banner.clone()) };
+    let banner = if dm_mode {
+        None
+    } else {
+        guild.as_ref().and_then(|g| g.banner.clone())
+    };
 
     rsx! {
         aside { class: PANEL,
@@ -556,7 +566,12 @@ fn VoiceOccupant(
     let voice = use_voice_tx();
     let mut show_volume = use_signal(|| false);
 
-    let volume = state.read().user_volumes.get(&pubkey).copied().unwrap_or(100);
+    let volume = state
+        .read()
+        .user_volumes
+        .get(&pubkey)
+        .copied()
+        .unwrap_or(100);
     let locally_muted = state.read().user_muted.contains(&pubkey);
 
     let dot = if speaking && !locally_muted {
@@ -1300,4 +1315,3 @@ fn select_dm(state: &mut Signal<AppState>, gateway: &GatewayTx, channel_id: Id) 
         });
     }
 }
-
