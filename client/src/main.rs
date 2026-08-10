@@ -1,6 +1,8 @@
 mod app;
 mod blossom;
 mod denoise;
+#[macro_use]
+mod devlog;
 mod emoji;
 mod features;
 mod host;
