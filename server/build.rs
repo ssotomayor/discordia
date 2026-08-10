@@ -62,7 +62,6 @@ fn main() {
             "cargo:warning=livekit bundle failed: {e} — self-host voice will not work in this build; set LIVEKIT_BUNDLE_SKIP=1 to silence"
         );
         fs::write(&bin_path, b"").unwrap();
-        return;
     }
 
     #[cfg(unix)]

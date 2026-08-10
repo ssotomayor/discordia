@@ -254,10 +254,9 @@ async fn fetch_history(
             channel_id: cid,
             messages,
         } = next_timeout(session).await
+            && cid == channel_id
         {
-            if cid == channel_id {
-                return messages;
-            }
+            return messages;
         }
     }
 }

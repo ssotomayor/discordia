@@ -180,24 +180,20 @@ impl AppState {
             state.channels.insert(c.id, c);
         }
         for (gid, pubkey, username, bot, role_ids) in loaded.members {
-            state
-                .members
-                .entry(gid)
-                .or_insert_with(DashMap::new)
-                .insert(
-                    pubkey.clone(),
-                    Member {
-                        user: User { pubkey, username },
-                        guild_id: gid,
-                        // Presence is ephemeral: everyone starts offline.
-                        online: false,
-                        bot,
-                        roles: role_ids,
-                        // Stored rows keep xp at 0 — the xp map is the truth,
-                        // stamped at emit (`stamp_xp`).
-                        xp: 0,
-                    },
-                );
+            state.members.entry(gid).or_default().insert(
+                pubkey.clone(),
+                Member {
+                    user: User { pubkey, username },
+                    guild_id: gid,
+                    // Presence is ephemeral: everyone starts offline.
+                    online: false,
+                    bot,
+                    roles: role_ids,
+                    // Stored rows keep xp at 0 — the xp map is the truth,
+                    // stamped at emit (`stamp_xp`).
+                    xp: 0,
+                },
+            );
         }
         for r in loaded.roles {
             state.roles.entry(r.guild_id).or_default().push(r);
@@ -702,7 +698,7 @@ impl AppState {
         };
         self.members
             .entry(gid)
-            .or_insert_with(DashMap::new)
+            .or_default()
             .insert(creator.pubkey.clone(), member.clone());
 
         persist(self.store.upsert_guild(&guild).await, "guild create");
@@ -740,10 +736,10 @@ impl AppState {
             .map(|e| *e.key())
             .collect();
         for gid in &my_guild_ids {
-            if let Some(guild_members) = self.members.get(gid) {
-                if let Some(mut m) = guild_members.get_mut(&user.pubkey) {
-                    m.online = true;
-                }
+            if let Some(guild_members) = self.members.get(gid)
+                && let Some(mut m) = guild_members.get_mut(&user.pubkey)
+            {
+                m.online = true;
             }
         }
 
@@ -1134,7 +1130,7 @@ impl AppState {
     /// (Presence isn't persisted — only NEW memberships hit the store.)
     pub async fn add_member(&self, guild_id: Id, user: &User) -> Member {
         let (member, is_new) = {
-            let guild_members = self.members.entry(guild_id).or_insert_with(DashMap::new);
+            let guild_members = self.members.entry(guild_id).or_default();
             if let Some(mut existing) = guild_members.get_mut(&user.pubkey) {
                 existing.online = true;
                 (existing.clone(), false)
@@ -1334,10 +1330,8 @@ impl AppState {
         {
             self.require_permission(guild_id, by_pubkey, Permission::ManageGuild)?;
         }
-        if !rotate {
-            if let Some(existing) = self.invite_by_guild.get(&guild_id) {
-                return Ok(existing.clone());
-            }
+        if !rotate && let Some(existing) = self.invite_by_guild.get(&guild_id) {
+            return Ok(existing.clone());
         }
         // Rotation invalidates the old code.
         if let Some((_, old)) = self.invite_by_guild.remove(&guild_id) {
@@ -1572,6 +1566,9 @@ impl AppState {
 
     /// Requires `ManageChannels`: full-replace a channel's
     /// name/topic/read_only/position.
+    // Full replace of every editable field, so the argument count tracks the
+    // channel's shape rather than a design worth splitting up.
+    #[allow(clippy::too_many_arguments)]
     pub async fn update_channel(
         &self,
         channel_id: Id,
@@ -2208,11 +2205,11 @@ impl AppState {
         let mut affected = Vec::new();
         for entry in self.members.iter() {
             let guild_id = *entry.key();
-            if let Some(mut m) = entry.value().get_mut(user_pubkey) {
-                if m.online {
-                    m.online = false;
-                    affected.push((guild_id, user_pubkey.to_string()));
-                }
+            if let Some(mut m) = entry.value().get_mut(user_pubkey)
+                && m.online
+            {
+                m.online = false;
+                affected.push((guild_id, user_pubkey.to_string()));
             }
         }
         affected
@@ -2357,7 +2354,7 @@ impl AppState {
         // Surface the bot in the roster. Keep an already-connected bot's online
         // flag; a fresh install starts offline until the bot process connects.
         let member = {
-            let guild_members = self.members.entry(guild_id).or_insert_with(DashMap::new);
+            let guild_members = self.members.entry(guild_id).or_default();
             if let Some(mut existing) = guild_members.get_mut(bot_pubkey) {
                 existing.bot = true;
                 existing.user.username = name;
@@ -2426,10 +2423,10 @@ impl AppState {
 
         // Flip the bot online in each installed guild.
         for gid in &my_guild_ids {
-            if let Some(gm) = self.members.get(gid) {
-                if let Some(mut m) = gm.get_mut(&bot.pubkey) {
-                    m.online = true;
-                }
+            if let Some(gm) = self.members.get(gid)
+                && let Some(mut m) = gm.get_mut(&bot.pubkey)
+            {
+                m.online = true;
             }
         }
 

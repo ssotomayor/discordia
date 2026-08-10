@@ -119,10 +119,10 @@ async fn bot_install_and_ping_roundtrip() {
     // Owner posts "!ping" — the bot receives it WITH content (intent granted).
     owner.send_message(text_channel, "!ping").await.unwrap();
     let got = loop {
-        if let ServerMessage::MessageCreate(m) = next_timeout(&mut bot).await {
-            if m.channel_id == text_channel {
-                break m;
-            }
+        if let ServerMessage::MessageCreate(m) = next_timeout(&mut bot).await
+            && m.channel_id == text_channel
+        {
+            break m;
         }
     };
     assert_eq!(got.content, "!ping");
@@ -130,10 +130,10 @@ async fn bot_install_and_ping_roundtrip() {
     // Bot replies; the owner sees the bot's message.
     bot.send_message(text_channel, "pong").await.unwrap();
     let reply = loop {
-        if let ServerMessage::MessageCreate(m) = next_timeout(&mut owner).await {
-            if m.author.pubkey == bot_id.pubkey() {
-                break m;
-            }
+        if let ServerMessage::MessageCreate(m) = next_timeout(&mut owner).await
+            && m.author.pubkey == bot_id.pubkey()
+        {
+            break m;
         }
     };
     assert_eq!(reply.content, "pong");
@@ -190,10 +190,10 @@ async fn intents_and_permissions_are_enforced() {
         .await
         .unwrap();
     let blanked = loop {
-        if let ServerMessage::MessageCreate(m) = next_timeout(&mut bot).await {
-            if m.channel_id == text_channel {
-                break m;
-            }
+        if let ServerMessage::MessageCreate(m) = next_timeout(&mut bot).await
+            && m.channel_id == text_channel
+        {
+            break m;
         }
     };
     assert_eq!(

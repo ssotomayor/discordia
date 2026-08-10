@@ -289,7 +289,7 @@ impl Bot {
     pub async fn send(&mut self, msg: &ClientMessage) -> Result<()> {
         let json = serde_json::to_string(msg).map_err(|e| BotError::Json(e.to_string()))?;
         self.write
-            .send(WsMessage::Text(json.into()))
+            .send(WsMessage::Text(json))
             .await
             .map_err(|e| BotError::Ws(e.to_string()))
     }

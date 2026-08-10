@@ -177,10 +177,10 @@ impl Store {
             "ALTER TABLE messages ADD COLUMN reply_author_username TEXT",
             "ALTER TABLE messages ADD COLUMN reply_excerpt TEXT",
         ] {
-            if let Err(e) = sqlx::query(stmt).execute(&self.pool).await {
-                if !e.to_string().contains("duplicate column name") {
-                    return Err(e.into());
-                }
+            if let Err(e) = sqlx::query(stmt).execute(&self.pool).await
+                && !e.to_string().contains("duplicate column name")
+            {
+                return Err(e);
             }
         }
         Ok(())
