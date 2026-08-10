@@ -201,6 +201,12 @@ pub struct AppState {
     /// transmitted and the speaking indicator stays off. Driven by the audio
     /// settings slider, persisted via `ClientSettings`. Lower = more sensitive.
     pub mic_sensitivity: u32,
+    /// Microphone input gain as a percentage (0..=200, 100 = unity), applied
+    /// before the meter and the gate. Persisted via `ClientSettings`.
+    pub mic_volume: u16,
+    /// libwebrtc automatic gain control on the capture. Fights `mic_volume`, so
+    /// the user gets a switch. Persisted via `ClientSettings`.
+    pub auto_gain_control: bool,
     /// Live microphone peak level (0..=1000, fixed-point ×1000), sampled every
     /// 150ms from the same frames the transmit gate judges. Drives the VU bar
     /// in the audio settings popover so the user can see mic input against
@@ -304,7 +310,11 @@ impl AppState {
             available_output_devices: Vec::new(),
             selected_input_device: None,
             selected_output_device: None,
-            mic_sensitivity: 25,
+            // Keep in step with `settings::default_mic_sensitivity` — this is
+            // what a session shows before saved settings are restored.
+            mic_sensitivity: 50,
+            mic_volume: 100,
+            auto_gain_control: true,
             mic_level: 0,
             noise_cancellation: false,
             user_volumes: HashMap::new(),

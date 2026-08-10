@@ -40,9 +40,20 @@ pub struct ClientSettings {
     pub selected_output_device: Option<String>,
     /// Microphone gate threshold (1..=1000, peak ×1000). Below it the mic is
     /// treated as inactive: nothing is transmitted and the speaking indicator
-    /// stays off. Lower = more sensitive. Default 25 (≈ -32 dBFS).
+    /// stays off. Lower = more sensitive. Default 50 (≈ -26 dBFS).
     #[serde(default = "default_mic_sensitivity")]
     pub mic_sensitivity: u32,
+    /// Microphone input gain as a percentage, 0..=200 (100 = unity). Applied
+    /// *before* the meter and the transmit gate, so the VU bar shows what
+    /// listeners actually hear and the threshold stays relative to it — which
+    /// also means turning input up makes the gate open more readily.
+    #[serde(default = "default_mic_volume")]
+    pub mic_volume: u16,
+    /// libwebrtc automatic gain control on the captured mic. On by default (it
+    /// rescues a quiet mic without the user knowing there's a slider), but it
+    /// fights `mic_volume`, so it's exposed as its own switch.
+    #[serde(default = "default_auto_gain_control")]
+    pub auto_gain_control: bool,
     /// DeepFilterNet noise suppression on captured microphone audio. Off by
     /// default: it costs ~1.5% of a core and users should opt into it.
     #[serde(default)]
@@ -92,8 +103,20 @@ fn default_sfx_volume() -> u8 {
     70
 }
 
+/// ×1000 peak, so 50 is −26 dBFS. Deliberately 6 dB less sensitive than the
+/// −32 dB this used to default to: at −32 the gate opened for fan noise and
+/// keyboard clatter, which is exactly the traffic the gate exists to stop.
 fn default_mic_sensitivity() -> u32 {
-    25
+    50
+}
+
+/// Unity. The slider is there for mics that need help, not as a thing to set.
+fn default_mic_volume() -> u16 {
+    100
+}
+
+fn default_auto_gain_control() -> bool {
+    true
 }
 
 fn default_blossom_server() -> String {
@@ -126,6 +149,8 @@ impl Default for ClientSettings {
             selected_input_device: None,
             selected_output_device: None,
             mic_sensitivity: default_mic_sensitivity(),
+            mic_volume: default_mic_volume(),
+            auto_gain_control: default_auto_gain_control(),
             noise_cancellation: false,
             layout_cells: Vec::new(),
             layout_free: Vec::new(),

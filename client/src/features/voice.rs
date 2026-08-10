@@ -54,13 +54,18 @@ const ROOM_CLOSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3
 /// libwebrtc APM configuration.
 ///
 /// `noise_suppression` is the inverse of the DeepFilterNet toggle: exactly one
-/// suppressor should be in the path. AEC and AGC are orthogonal (echo and
-/// level, not noise) and stay on either way.
-fn apm_options(deepfilter_on: bool) -> AudioSourceOptions {
+/// suppressor should be in the path. AEC is orthogonal (echo, not noise or
+/// level) and stays on regardless.
+///
+/// AGC is the user's call, because it and the manual input-gain slider are two
+/// answers to the same question. Left on, it quietly walks the level back
+/// toward its own target over a second or two, so a manual boost reads as a
+/// laggy control that half-works.
+fn apm_options(deepfilter_on: bool, agc: bool) -> AudioSourceOptions {
     AudioSourceOptions {
         echo_cancellation: true,
         noise_suppression: !deepfilter_on,
-        auto_gain_control: true,
+        auto_gain_control: agc,
     }
 }
 
@@ -79,6 +84,12 @@ struct AudioControls {
     /// same scale the VU bar renders, so the slider's marker sits exactly where
     /// the gate actually opens.
     threshold: Arc<AtomicI32>,
+    /// Microphone input gain as a percentage (100 = unity). Applied to the hop
+    /// before anything measures it, so `threshold` and the VU bar are both in
+    /// post-gain terms.
+    mic_gain_pct: Arc<AtomicI32>,
+    /// libwebrtc AGC. Read when the APM options are (re)applied, not per hop.
+    agc: Arc<AtomicBool>,
     /// DeepFilterNet noise suppression on the captured mic signal.
     denoise: Arc<AtomicBool>,
     /// Per-participant playback gain, keyed by LiveKit identity (= pubkey).
@@ -91,9 +102,11 @@ struct AudioControls {
 }
 
 impl AudioControls {
-    fn new(threshold: u32, denoise: bool) -> Self {
+    fn new(threshold: u32, mic_volume: u16, agc: bool, denoise: bool) -> Self {
         Self {
             threshold: Arc::new(AtomicI32::new(threshold as i32)),
+            mic_gain_pct: Arc::new(AtomicI32::new(mic_volume as i32)),
+            agc: Arc::new(AtomicBool::new(agc)),
             denoise: Arc::new(AtomicBool::new(denoise)),
             gains: Arc::new(Mutex::new(HashMap::new())),
             stream_gains: Arc::new(Mutex::new(HashMap::new())),
@@ -136,6 +149,15 @@ pub enum VoiceCmd {
     },
     /// Toggle DeepFilterNet noise suppression on captured mic audio.
     SetNoiseCancellation {
+        enabled: bool,
+    },
+    /// Microphone input gain as a percentage (100 = unity). Takes effect on the
+    /// next 10ms hop; no session rebuild.
+    SetMicVolume {
+        percent: u16,
+    },
+    /// Toggle libwebrtc's automatic gain control on the live capture.
+    SetAutoGainControl {
         enabled: bool,
     },
     /// Start/stop capturing this machine's audio and publishing it alongside a
@@ -207,7 +229,12 @@ async fn service_loop(
     // sensitivity, noise cancellation and per-user volumes all survive it.
     let controls = {
         let s = state.read();
-        AudioControls::new(s.mic_sensitivity, s.noise_cancellation)
+        AudioControls::new(
+            s.mic_sensitivity,
+            s.mic_volume,
+            s.auto_gain_control,
+            s.noise_cancellation,
+        )
     };
 
     while let Some(cmd) = rx.recv().await {
@@ -353,9 +380,26 @@ async fn service_loop(
                 // `set_audio_options` reconfigures the APM without republishing
                 // the track.
                 if let Some(active) = session.as_ref() {
-                    active.set_apm_denoise(enabled);
+                    active.set_apm(enabled, controls.agc.load(Ordering::Relaxed));
                 }
                 state.write().noise_cancellation = enabled;
+            }
+            VoiceCmd::SetMicVolume { percent } => {
+                let percent = percent.min(200);
+                controls
+                    .mic_gain_pct
+                    .store(percent as i32, Ordering::Relaxed);
+                state.write().mic_volume = percent;
+            }
+            VoiceCmd::SetAutoGainControl { enabled } => {
+                eprintln!("[voice] SetAutoGainControl enabled={enabled}");
+                controls.agc.store(enabled, Ordering::Relaxed);
+                // Same live-reconfigure path as the suppressor toggle: the APM
+                // is swapped under the running track, nothing republishes.
+                if let Some(active) = session.as_ref() {
+                    active.set_apm(controls.denoise.load(Ordering::Relaxed), enabled);
+                }
+                state.write().auto_gain_control = enabled;
             }
             VoiceCmd::SetSystemAudio { enabled } => {
                 if let Some(active) = session.as_mut() {
@@ -381,7 +425,12 @@ async fn service_loop(
                 }
             }
             VoiceCmd::SetStreamVolume { pubkey, gain } => {
-                controls.stream_gains.lock().insert(pubkey, gain.clamp(0.0, 2.0));
+                let gain = gain.clamp(0.0, 2.0);
+                crate::dlog!(
+                    "voice SetStreamVolume pubkey={} gain={gain:.2}",
+                    &pubkey[..pubkey.len().min(8)]
+                );
+                controls.stream_gains.lock().insert(pubkey, gain);
             }
             VoiceCmd::SetUserVolume { pubkey, gain } => {
                 let gain = gain.clamp(0.0, 2.0);
@@ -453,7 +502,10 @@ impl ActiveVoice {
         // don't wire a render reference signal to libwebrtc. Real two-machine
         // deployments get the full benefit.
         let source = NativeAudioSource::new(
-            apm_options(controls.denoise.load(Ordering::Relaxed)),
+            apm_options(
+                controls.denoise.load(Ordering::Relaxed),
+                controls.agc.load(Ordering::Relaxed),
+            ),
             SAMPLE_RATE,
             CHANNELS,
             1000,
@@ -806,6 +858,10 @@ impl ActiveVoice {
                 // stands down on this, not on the token merely existing.
                 state.write().screen_audio_joined = true;
                 eprintln!("[voice] screen audio room joined");
+                // Which path owns playback. If this says joined, the webview is
+                // muted and every "still hearing it" question is about the
+                // native gains; if it never appears, it's the webview element.
+                crate::dlog!("voice screen_audio_joined=true (native owns stream playback)");
             }
             // Leaving this at `false` is what hands playback back to the
             // webview: it plays on the wrong device, which is the behaviour this
@@ -822,9 +878,11 @@ impl ActiveVoice {
         }
     }
 
-    /// Swap libwebrtc's noise suppressor in or out while the call is live.
-    fn set_apm_denoise(&self, deepfilter_on: bool) {
-        self.source.set_audio_options(apm_options(deepfilter_on));
+    /// Reconfigure libwebrtc's APM while the call is live — the suppressor
+    /// handover and the AGC switch both land here.
+    fn set_apm(&self, deepfilter_on: bool, agc: bool) {
+        self.source
+            .set_audio_options(apm_options(deepfilter_on, agc));
     }
 
     async fn set_muted(&mut self, muted: bool) {
@@ -1079,6 +1137,23 @@ fn denoise_gate_loop(
     let mut gated = 0u64;
 
     while let Some(mut samples) = frame_rx.blocking_recv() {
+        // Input gain first, before anything measures this hop. That ordering is
+        // the whole contract of the slider: the VU bar and the gate threshold
+        // are both in post-gain terms, so the bar shows what listeners hear and
+        // the marker sits where the gate really opens. The cost is that the two
+        // sliders interact — louder input also trips the gate more easily.
+        //
+        // Clamped here rather than at the end: a boosted hop that would clip is
+        // better limited before the model and the peak measurement see it, so
+        // neither is fed samples outside ±1.0.
+        let gain_pct = controls.mic_gain_pct.load(Ordering::Relaxed);
+        if gain_pct != 100 {
+            let g = gain_pct as f32 / 100.0;
+            for s in samples.iter_mut() {
+                *s = (*s * g).clamp(-1.0, 1.0);
+            }
+        }
+
         // Muted short-circuits everything except metering: the VU bar should
         // still move so a user who forgot they're muted can see the mic is
         // fine. No point running the model on audio nobody will hear.
@@ -1765,6 +1840,13 @@ impl PlaybackHandle {
         } else {
             self.gains.lock().get(&identity).copied().unwrap_or(1.0)
         };
+        // The identity a stream track is filed under is the crux of the
+        // "audio keeps playing" bug: the gain map is keyed by bare pubkey, and
+        // a screen-room peer arrives as `{pubkey}#audio`. If those disagree the
+        // lookup misses and this track answers to no slider.
+        crate::dlog!(
+            "mixer add_track identity={identity} is_stream={is_stream} initial_gain={gain:.2}"
+        );
         let mut t = self.tracks.lock();
         let id = t.next_id;
         t.next_id = t.next_id.wrapping_add(1);
