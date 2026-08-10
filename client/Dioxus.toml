@@ -15,21 +15,21 @@ publisher = "TehSoTo"
 # assets/icon.svg (qlmanage → sips → iconutil) if the logo changes.
 icon = ["assets/icon.icns", "assets/icon-1024.png"]
 
-# How the Windows installer supplies the WebView2 runtime that wry needs.
+# WebView2 is handled by the app, not by the bundler — see `nsis.installer_hooks`
+# below and `client/src/webview2.rs`.
 #
-# Without this the CLI falls back to `WebviewInstallMode::OfflineInstaller`,
-# which downloads the FULL runtime (~130MB) and embeds it in the NSIS setup —
-# that alone was the bulk of Discordia-windows-setup.exe.
-#
-# `EmbedBootstrapper` embeds the Evergreen *bootstrapper* instead: a ~2MB stub
-# that pulls the runtime from Microsoft at install time, and that no-ops when a
-# runtime is already present (the common case on Win10/11). `DownloadBootstrapper`
-# would be equivalent in dx 0.7.10 — both generate the same NSIS snippet — but
-# `Embed` is the one whose contract guarantees the file exists on the build
-# machine, which is what lets the portable zip ship that same bootstrapper
-# instead of downloading a second copy.
-#
-# silent: the stub runs without its own progress window. Flip to false if you
-# want users to see the runtime download rather than a seemingly-stalled setup.
-[bundle.windows.webview_install_mode.EmbedBootstrapper]
-silent = true
+# "Skip" is load-bearing, not a way of ignoring the problem. Left at its default
+# the CLI uses `OfflineInstaller`, which downloads the FULL runtime (~130MB) and
+# embeds it in the setup — that alone was the bulk of the installer. The other
+# modes embed the ~2MB Evergreen bootstrapper but emit their own NSIS snippet
+# that runs it *unconditionally*, and that snippet cannot be guarded: dx writes
+# it inline in the install section, while `installer_hooks` is only `!include`d
+# after that section closes. Skipping it is what lets the check happen first.
+[bundle.windows]
+webview_install_mode = "Skip"
+
+# Runs the freshly installed binary as `Discordia.exe --ensure-webview2`, so the
+# installer and the portable zip share one implementation of "is the runtime
+# here, and install it if not" instead of keeping a second copy in NSIS script.
+[bundle.windows.nsis]
+installer_hooks = "nsis/webview2.nsh"

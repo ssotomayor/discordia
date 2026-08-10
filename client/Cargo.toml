@@ -109,12 +109,20 @@ windows = { version = "0.61", features = [
     "Win32_System_SystemInformation",
     "Win32_System_Threading",
     "Win32_System_Variant",
+    # MessageBoxW, for the one error we cannot draw in our own UI: the missing
+    # WebView2 runtime that would have drawn it (see src/webview2.rs).
+    "Win32_UI_WindowsAndMessaging",
 ] }
 # The `#[implement]` macro expands to `::windows_core::…` paths, so the crate
 # has to be nameable here even though every other reference goes through
 # `windows::core`. Same version the `windows` crate itself pulls — two copies
 # would make the generated impls fail to match the interface.
 windows-core = "0.61"
+# `GetAvailableCoreWebView2BrowserVersionString` — Microsoft's own "is a runtime
+# available, and which" entry point. Already in the tree via wry, and it tracks
+# the same windows-core 0.61, so this names a copy that is already compiled
+# rather than adding one.
+webview2-com-sys = "0.38"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"

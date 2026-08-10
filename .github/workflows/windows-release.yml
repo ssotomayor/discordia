@@ -50,6 +50,21 @@ jobs:
       - name: Verify dx
         run: dx --version
 
+      # One download, two artifacts. `webview_install_mode = "Skip"` means dx
+      # fetches nothing itself, so this is the only copy: the NSIS hook embeds it
+      # from here (client/nsis/, via ${__FILEDIR__}) and the portable zip below
+      # ships the same file.
+      - name: Fetch WebView2 Evergreen bootstrapper
+        shell: pwsh
+        run: |
+          $dest = 'client/nsis/MicrosoftEdgeWebview2Setup.exe'
+          Invoke-WebRequest -Uri 'https://go.microsoft.com/fwlink/p/?LinkId=2124703' -OutFile $dest
+          $size = (Get-Item $dest).Length
+          "bootstrapper: {0:N0} bytes" -f $size | Write-Host
+          # The Evergreen stub is ~1-2MB; anything near the offline runtime's
+          # ~130MB means the link started serving something else entirely.
+          if ($size -lt 500KB -or $size -gt 20MB) { throw "unexpected bootstrapper size ($size bytes) - refusing to ship it" }
+
       - name: Bundle
         working-directory: client
         run: dx bundle --release
@@ -76,12 +91,9 @@ jobs:
           $assets = Join-Path $root.FullName 'nsis/_staging/assets'
           if (Test-Path $assets) { Copy-Item $assets portable/assets -Recurse }
 
-          $tools = Join-Path $env:USERPROFILE '.dx/tools'
-          $bootstrapper = Join-Path $tools 'MicrosoftEdgeWebview2Setup.exe'
-          if (-not (Test-Path $bootstrapper)) {
-            throw "WebView2 bootstrapper missing at $bootstrapper - expected dx bundle to have fetched it for EmbedBootstrapper (see client/Dioxus.toml)"
-          }
-          Copy-Item $bootstrapper portable/
+          # The same file the NSIS hook embedded, so the portable and the
+          # installed layout both find it beside Discordia.exe.
+          Copy-Item client/nsis/MicrosoftEdgeWebview2Setup.exe portable/
           Copy-Item .github/portable/WEBVIEW2.txt portable/
 
           Compress-Archive -Path portable/* -DestinationPath Discordia-windows-portable.zip
@@ -91,9 +103,11 @@ jobs:
 
           # Fail loudly if the offline runtime ever creeps back in: it is ~130MB
           # and would silently undo the point of this configuration.
-          Get-ChildItem $tools -Filter '*.exe' | Select-Object Name, Length | Out-String | Write-Host
-          if (Get-ChildItem $tools -Filter 'MicrosoftEdgeWebView2RuntimeInstaller_*.exe') {
-            throw "offline WebView2 runtime was downloaded - webview_install_mode regressed to OfflineInstaller"
+          $tools = Join-Path $env:USERPROFILE '.dx/tools'
+          if (Test-Path $tools) {
+            if (Get-ChildItem $tools -Filter 'MicrosoftEdgeWebView2RuntimeInstaller_*.exe') {
+              throw "offline WebView2 runtime was downloaded - webview_install_mode regressed away from Skip"
+            }
           }
           "setup:    {0:N1} MB" -f ((Get-Item Discordia-windows-setup.exe).Length / 1MB) | Write-Host
           "portable: {0:N1} MB" -f ((Get-Item Discordia-windows-portable.zip).Length / 1MB) | Write-Host

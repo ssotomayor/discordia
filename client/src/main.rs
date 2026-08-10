@@ -15,11 +15,23 @@ mod session;
 mod settings;
 mod state;
 mod sysaudio;
+#[cfg(target_os = "windows")]
+mod webview2;
 
 use dioxus::LaunchBuilder;
 use dioxus::desktop::{Config, WindowBuilder, tao::dpi::LogicalSize, tao::window::Icon};
 
 fn main() {
+    // Settle the WebView2 runtime before anything can reach for it: wry paints
+    // every pixel with it, so without one the window would open and never
+    // render. This either returns with a runtime available or exits — and it is
+    // deliberately the first statement, ahead of every Dioxus call below.
+    //
+    // It also serves the installer, which runs this same binary with
+    // `--ensure-webview2` and never gets past this line. See `webview2::gate`.
+    #[cfg(target_os = "windows")]
+    webview2::gate();
+
     // WebView2 (Chromium) treats our asset origin as insecure, and an insecure
     // context hides `navigator.mediaDevices` entirely — which is what stops
     // screen sharing working on Windows. Allowlist the origin as secure.
