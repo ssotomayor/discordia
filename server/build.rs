@@ -9,7 +9,13 @@
 //! Overrides:
 //! - `LIVEKIT_BUNDLE_VERSION=1.12.0` to pin a specific release
 //! - `LIVEKIT_BUNDLE_SKIP=1` to skip entirely (writes an empty stub; the
-//!   runtime treats voice as unavailable in this build)
+//!   runtime treats voice as unavailable in this build). Note this is checked
+//!   with `is_ok()`, so *any* value counts — including an empty string. A
+//!   workflow cannot disable it by setting it to `""`; the variable has to be
+//!   out of scope.
+//!
+//! Anything else going wrong is a build failure, not a warning: an artifact
+//! that cannot host voice must not be mistakable for one that can.
 
 use std::env;
 use std::fs;
@@ -57,11 +63,22 @@ fn main() {
         _ => download_release(&target_os, &target_arch, &version, &bin_path),
     };
 
+    // Fail the build rather than warn. The stub above is a *choice* the caller
+    // made; this is the bundle we were asked for going missing, and the two
+    // must not produce the same artifact. They did once, and it shipped: every
+    // pre-release binary went out with an empty stub, green, for weeks, because
+    // nobody reads `cargo:warning` in a passing job.
+    //
+    // Nobody is stranded by this. A developer without network — or without `go`
+    // on macOS — sets the variable the message names, and gets the stub they
+    // actually want.
     if let Err(e) = result {
-        println!(
-            "cargo:warning=livekit bundle failed: {e} — self-host voice will not work in this build; set LIVEKIT_BUNDLE_SKIP=1 to silence"
+        panic!(
+            "livekit bundle failed: {e}\n\
+             Self-host voice needs this binary, so the build stops here rather \
+             than producing one that silently cannot host voice.\n\
+             Set LIVEKIT_BUNDLE_SKIP=1 to build without it on purpose."
         );
-        fs::write(&bin_path, b"").unwrap();
     }
 
     #[cfg(unix)]

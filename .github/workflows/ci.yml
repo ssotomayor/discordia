@@ -7,14 +7,21 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  # CI never needs the bundled LiveKit binary (voice is exercised only in
-  # manual runs); skipping saves a ~50MB download per job.
-  LIVEKIT_BUNDLE_SKIP: "1"
+  # LIVEKIT_BUNDLE_SKIP deliberately does NOT live here. It used to, back when
+  # this file only ran checks — and then the pre-release jobs were added to it
+  # and inherited the skip, so every published binary went out with an empty
+  # stub in place of the 51MB livekit-server and could not host voice at all.
+  # It is now set per job, on the three that build nothing anyone downloads.
 
 jobs:
   test:
     name: fmt · clippy · test
     runs-on: ubuntu-latest
+    # Nothing here is downloaded by anyone, and voice is exercised only in
+    # manual runs — so skip the ~50MB fetch. Safe precisely because this job
+    # publishes no artifact.
+    env:
+      LIVEKIT_BUNDLE_SKIP: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -42,6 +49,9 @@ jobs:
   desktop-build:
     name: client compiles (linux)
     runs-on: ubuntu-latest
+    # Compile check only; nothing leaves this job.
+    env:
+      LIVEKIT_BUNDLE_SKIP: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -67,6 +77,8 @@ jobs:
       # libwebrtc links the STATIC MSVC runtime (/MT); Rust defaults to /MD and
       # the two collide (LNK2038). Same flag as the release jobs below.
       RUSTFLAGS: "-C target-feature=+crt-static"
+      # Compile check only; nothing leaves this job.
+      LIVEKIT_BUNDLE_SKIP: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -142,6 +154,11 @@ jobs:
         run: |
           $appimg = Get-ChildItem -Recurse -Filter '*.AppImage' target/dx | Select-Object -First 1
           if (-not $appimg) { throw "no AppImage produced by dx bundle" }
+          # The bundled livekit-server is ~51MB of the binary. Anything this
+          # small has an empty stub where it should be and cannot host voice —
+          # which is exactly what shipped, green, when this job inherited
+          # LIVEKIT_BUNDLE_SKIP from the workflow env.
+          if ($appimg.Length -lt 100MB) { throw "AppImage is $($appimg.Length) bytes - too small to contain the bundled livekit-server; refusing to publish it" }
           Copy-Item $appimg.FullName Discordia-linux-x86_64.AppImage
       - uses: actions/upload-artifact@v4
         with:
@@ -196,6 +213,11 @@ jobs:
           $root = Get-ChildItem -Recurse -Directory target/dx |
                   Where-Object { $_.Name -eq 'windows' } | Select-Object -First 1
           if (-not $root) { throw "no windows bundle output found under target/dx" }
+
+          # See the linux job: under ~100MB the 51MB livekit-server is missing
+          # and the artifact cannot host voice, however green the run looks.
+          $exe = Get-Item "$($root.FullName)/Discordia.exe"
+          if ($exe.Length -lt 100MB) { throw "Discordia.exe is $($exe.Length) bytes - too small to contain the bundled livekit-server; refusing to publish it" }
 
           New-Item -ItemType Directory -Force -Path portable | Out-Null
           Copy-Item "$($root.FullName)/Discordia.exe" portable/
@@ -256,6 +278,9 @@ jobs:
 
           $dmg = Get-ChildItem -Recurse -Filter '*.dmg' $root.FullName | Select-Object -First 1
           if (-not $dmg) { throw "no .dmg produced by dx bundle" }
+          # See the linux job. The threshold is lower here because a .dmg is
+          # compressed, but an empty stub still shows up as tens of MB missing.
+          if ($dmg.Length -lt 60MB) { throw "dmg is $($dmg.Length) bytes - too small to contain the bundled livekit-server; refusing to publish it" }
           Copy-Item $dmg.FullName Discordia-macos-arm64.dmg
       - uses: actions/upload-artifact@v4
         with:
