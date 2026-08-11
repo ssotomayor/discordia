@@ -1052,7 +1052,13 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                     }
                     div {
                         class: "fixed z-40 flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-lg overflow-hidden w-64",
-                        style: "left: {audio_x}px; top: {audio_y}px;",
+                        // The cap has to be computed, not a fixed `max-h-[80vh]`:
+                        // the window is draggable, so the room it has is the
+                        // distance from wherever it currently sits to the bottom
+                        // of the screen. Without it the popover just grew past
+                        // the edge and the last section became unreachable —
+                        // there is nowhere to scroll a `fixed` box.
+                        style: "left: {audio_x}px; top: {audio_y}px; max-height: calc(100vh - {audio_y}px - 12px);",
                         // Stop propagation so clicks inside the popover (selects,
                         // close button, drag handle) don't bubble up to the
                         // dismiss overlay and close the window prematurely.
@@ -1076,7 +1082,10 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                             }
                         }
 
-                        div { class: "p-2",
+                        // Scrolls while the drag header stays put — same shape as
+                        // the channel list above (`flex flex-col overflow-hidden`
+                        // parent, `flex-1 overflow-y-auto` child).
+                        div { class: "p-2 flex-1 overflow-y-auto",
                             // Reconnection indicator
                             if reconnecting {
                                 div { class: "mb-2 flex items-center text-[12px] text-[var(--text-muted)]",
