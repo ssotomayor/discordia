@@ -203,23 +203,13 @@ the top within each section.
 
 ## Voice / audio
 
-- **The bundled `livekit-server` gets `SIGKILL (Code Signature Invalid)`.** 15
-  crash reports on one macOS machine across two days of testing, every one with
-  that same reason, and they predate the app being signed with a real identity —
-  so this is the *extraction*, not the app signature. `spawn_livekit` writes the
-  `include_bytes!`-embedded binary to a fixed path (`$TMPDIR/dioxusfun/
-  livekit-server`) and overwrites it in place, with a staleness check that
-  compares only file *length*. Two things fall out of that: a rebuilt SFU of the
-  same size is never re-extracted (stale bytes run), and rewriting the path while
-  a previous copy is running is a known way to invalidate a mapped binary's
-  signature — which a second app instance would do. The extracted copy passes
-  `codesign --verify --strict` when inspected afterwards, so whatever it is, it
-  is intermittent rather than a permanently broken binary; the precise trigger
-  was not pinned down. Likely worth extracting to a content-hashed filename
-  (exact staleness check, never an in-place overwrite) and re-checking. Matters
-  because a killed SFU means self-hosted voice and screen sharing fail with no
-  obvious cause.
-
+- **Force-quitting the app orphans the bundled SFU.** `LivekitSubprocess` relies
+  on tokio's `kill_on_drop`, which only runs if the parent unwinds — a `SIGKILL`
+  (force quit, or a debugger) leaves `livekit-server` running, reparented to
+  launchd, holding port 7880. One was found alive more than a day after its
+  parent died, and a stale SFU squatting on the port is a confusing way for the
+  next session to fail. Sweep any `livekit-server` started from our own temp
+  directory before spawning, or have the child watch for its parent going away.
 - **Deafen is not implemented on the client.** `AppState.voice.deafened` is
   written from `VoiceStateUpdate` and never read, and the mute button sends
   `SetVoiceMute { muted, deafened: muted }` — so the two are the same control.

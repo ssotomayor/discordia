@@ -45,13 +45,60 @@ pub async fn spawn_livekit() -> Result<LivekitSubprocess, String> {
 
     let dir = std::env::temp_dir().join("dioxusfun");
     fs::create_dir_all(&dir).map_err(|e| format!("temp dir: {e}"))?;
-    let path: PathBuf = dir.join(LIVEKIT_BIN_NAME);
 
-    let needs_write = match fs::metadata(&path) {
-        Ok(m) => m.len() as usize != LIVEKIT_BIN.len(),
-        Err(_) => true,
+    // The filename carries a hash of the bytes, so a different build never
+    // lands on the same path. That is not tidiness — it is the whole fix for a
+    // bug that made self-hosting impossible on macOS.
+    //
+    // This used to be one fixed path, rewritten in place whenever the embedded
+    // bytes changed length. macOS caches a code signature against the
+    // (device, inode) pair, so overwriting the file while an older copy is still
+    // running invalidates that cache: every later `exec` of the path dies with
+    // `SIGKILL (Code Signature Invalid)` — 16 crash reports on one machine — even
+    // though `codesign --verify` on the file reports it perfectly valid, because
+    // verification reads the bytes and the kernel is comparing against its cache.
+    // Byte-identical content at a fresh path runs; at the poisoned path it is
+    // killed. Never reusing the name is what avoids the whole class.
+    //
+    // The old check compared *length* alone, so a rebuilt SFU of the same size
+    // was never re-extracted and stale bytes ran silently. A content hash is the
+    // check that was meant.
+    let digest = {
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update(LIVEKIT_BIN);
+        let out = h.finalize();
+        out.iter()
+            .take(8)
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
     };
-    if needs_write {
+    let (stem, ext) = match LIVEKIT_BIN_NAME.split_once('.') {
+        Some((s, e)) => (s, format!(".{e}")),
+        None => (LIVEKIT_BIN_NAME, String::new()),
+    };
+    let path: PathBuf = dir.join(format!("{stem}-{digest}{ext}"));
+
+    // Sweep the copies other builds left behind. Without this the hashed names
+    // accumulate one 46MB binary per build in a directory nobody looks at. A
+    // copy that is still running cannot be removed on Windows and need not be on
+    // Unix — either way the error is ignored, because a leftover file is not a
+    // reason to refuse to start.
+    if let Ok(entries) = fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue };
+            if name.starts_with(stem) && !name.ends_with(&digest) && name != LIVEKIT_BIN_NAME {
+                let _ = fs::remove_file(entry.path());
+            }
+            // The pre-hash name from older builds, which is the poisoned one.
+            if name == LIVEKIT_BIN_NAME {
+                let _ = fs::remove_file(entry.path());
+            }
+        }
+    }
+
+    if !path.exists() {
         fs::write(&path, LIVEKIT_BIN).map_err(|e| format!("write livekit binary: {e}"))?;
         #[cfg(unix)]
         {
