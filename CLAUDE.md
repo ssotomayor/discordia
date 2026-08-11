@@ -211,6 +211,10 @@ the *same* `screen-{channel}` LiveKit room under different identities — see
   lists only live public hosts.
 - `verify.rs` — Schnorr ownership proof for claimed names.
 - `shortcode.rs` — `adjective-animal-NN` random codes for anonymous hosts.
+- The wire types live in **`protocol/src/rendezvous.rs`**, not here — the host
+  side of this protocol is spoken by the client (`client/src/rendezvous.rs`),
+  and nothing depends on the relay crate. Same rule as the gateway: one
+  definition, in `protocol/`.
 - Named servers: a host claims a unique, URL-safe name (its `/join/{name}`
   code) proven by signing the challenge nonce; anonymous hosts get a random
   shortcode. Reservations persist to `<data>/reservations.json`.

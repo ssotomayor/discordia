@@ -10,42 +10,9 @@
 use std::net::SocketAddr;
 
 use futures_util::{SinkExt, StreamExt};
-use serde::{Deserialize, Serialize};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
-#[derive(Debug, Serialize)]
-#[serde(tag = "op", content = "d", rename_all = "snake_case")]
-enum HostToRendezvous {
-    Register {
-        name: Option<String>,
-        pubkey: Option<String>,
-        signature: Option<String>,
-        publish_public: bool,
-        description: Option<String>,
-    },
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(tag = "op", content = "d", rename_all = "snake_case")]
-enum RendezvousToHost {
-    Challenge {
-        nonce: String,
-    },
-    Registered {
-        shortcode: String,
-        livekit_url: Option<String>,
-        /// Per-session grant for `POST /voice-token`. Not a signing secret —
-        /// see `RendezvousMinter`.
-        #[serde(default)]
-        voice_token_grant: Option<String>,
-    },
-    NewFriend {
-        session_id: String,
-    },
-    Error {
-        message: String,
-    },
-}
+use crate::protocol::rendezvous::{HostToRendezvous, RendezvousToHost};
 
 #[derive(Debug, Clone)]
 pub struct PublishInfo {

@@ -88,13 +88,6 @@ the top within each section.
 
 ## Decentralization / rendezvous
 
-- **The rendezvous wire protocol is duplicated by hand.** `rendezvous/src/
-  protocol.rs` defines `HostToRendezvous` and `DiscoverEntry` as `pub`, and the
-  client redefines both locally (`client/src/rendezvous.rs`,
-  `client/src/features/connect.rs`) — no crate depends on
-  `dioxusfun-rendezvous` at all. Two definitions of one wire format that can
-  drift silently, which is the thing `protocol/` exists to prevent for the
-  gateway. Either depend on the crate or move the shared types into `protocol/`.
 - **Reservation display fields are persisted but never read.** `claim_name`
   writes `name`, `description` and `public` into `reservations.json`, but
   `load()` only reads `slug` and `reservation_owner()` only `owner_pubkey`. A
