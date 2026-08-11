@@ -189,6 +189,7 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
             ErrorToast {}
             crate::features::activities::ActivityHost {}
             crate::features::screenshare::ScreenShareBridge {}
+            crate::features::screenshare::ScreenSourcePicker {}
             crate::features::screenshare::ScreenSelfPreview {}
             crate::features::screenshare::ScreenWatchWindow {}
             crate::features::profiles::ProfileCard {}

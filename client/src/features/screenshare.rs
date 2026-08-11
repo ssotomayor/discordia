@@ -160,12 +160,31 @@ window.dxScreen = window.dxScreen || (function () {
     el.style.width = '100%'; el.style.height = '100%'; el.style.objectFit = 'contain'; el.style.background = '#000';
     c.appendChild(el);
   }
-  // Re-render any container currently pointed at `identity`.
+  // --- Identity suffixes ---------------------------------------------------
+  // A share captured natively is published under `{pubkey}#video`, because the
+  // webview already occupies the bare pubkey in this room and LiveKit allows one
+  // connection per identity (see `server::livekit::screen_video_identity`).
+  // Everything user-facing — our own protocol, `data-identity`, the watch
+  // window — keys off the bare pubkey, so the suffix is resolved here and
+  // nowhere else.
+  const VIDEO_SUFFIX = '#video';
+  function baseIdentity(id) {
+    return id.endsWith(VIDEO_SUFFIX) ? id.slice(0, -VIDEO_SUFFIX.length) : id;
+  }
+  // The video track for a sharer, whichever path captured it. Webview captures
+  // land on the bare pubkey, native ones on the suffixed identity; a given
+  // sharer only ever has one of the two.
+  function videoTrackFor(id) {
+    return tracks[id] || tracks[id + VIDEO_SUFFIX];
+  }
+  // Re-render any container currently pointed at `identity`, which arrives here
+  // as the *publisher's* identity and so may carry the suffix.
   function reattach(identity) {
+    const base = baseIdentity(identity);
     CONTAINERS.forEach(function (cid) {
       const c = document.getElementById(cid);
-      if (c && c.getAttribute('data-identity') === identity) {
-        const t = tracks[identity];
+      if (c && c.getAttribute('data-identity') === base) {
+        const t = videoTrackFor(base);
         if (t) attachInto(t, c); else c.querySelectorAll('video').forEach(function (e) { e.remove(); });
       }
     });
@@ -277,7 +296,7 @@ window.dxScreen = window.dxScreen || (function () {
   function attach(identity, cid) {
     const c = document.getElementById(cid); if (!c) return;
     c.setAttribute('data-identity', identity);
-    const t = tracks[identity];
+    const t = videoTrackFor(identity);
     if (t) attachInto(t, c); else c.querySelectorAll('video').forEach(function (e) { e.remove(); });
     // Only the watch window plays sound; the self-preview must not, or the
     // sharer hears their own machine echoed back.
@@ -664,6 +683,22 @@ fn native_audio_mode() -> &'static str {
     }
 }
 
+/// The capture settings a quality preset means, for the *native* path.
+///
+/// Reads the same preset table as the webview path so "Crisp" is the same
+/// promise on both. Framerate/bitrate carry over directly; the content hint and
+/// degradation preference do not, because native publishing expresses that
+/// through libwebrtc's `is_screencast` flag rather than per-track WebRTC hints.
+pub fn native_settings(quality: &str) -> crate::sysvideo::Settings {
+    let (width, height, fps, bitrate, _hint, _degradation) = quality_preset(quality);
+    crate::sysvideo::Settings {
+        width,
+        height,
+        fps,
+        max_bitrate: bitrate as u64,
+    }
+}
+
 /// `quality` and `audio` apply to starting a share; stopping ignores both.
 pub fn share_js(on: bool, quality: &str, audio: bool) -> String {
     // When starting, call the user-gesture variant that prompts getDisplayMedia
@@ -708,6 +743,7 @@ pub fn stream_sink_js(device: Option<&str>) -> String {
 pub fn ScreenShareBridge() -> Element {
     let state = use_app_state();
     let gateway = use_gateway();
+    let settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let token = use_memo(move || state.read().screen_token.clone());
     let mut last = use_signal(|| None::<(String, String)>);
 
@@ -774,8 +810,24 @@ pub fn ScreenShareBridge() -> Element {
     // being skipped on failure. This effect runs on *every* `AppState` change,
     // so "retry until it works" would mean a fresh connection attempt per
     // arriving message against an SFU that is already down.
+    // Natively captured *video* is re-issued from here for exactly the same
+    // reason, and it matters more: a voice-session restart drops the publisher
+    // room along with everything else on `ActiveVoice`, and where the native
+    // path is the only capture path there is no webview track still running
+    // underneath. Left to the button alone, changing your microphone mid-share
+    // would end the share and light the button as if it hadn't.
     let voice_screen_audio = use_voice_tx();
-    let mut last_sent = use_signal(|| None::<(u64, Option<(String, String)>, bool, bool)>);
+    #[allow(clippy::type_complexity)]
+    let mut last_sent = use_signal(|| {
+        None::<(
+            u64,
+            Option<(String, String)>,
+            bool,
+            bool,
+            Option<(String, String)>,
+            Option<crate::sysvideo::Target>,
+        )>
+    });
     use_effect(move || {
         let s = state.read();
         let self_pk = s.self_user.as_ref().map(|u| u.pubkey.as_str());
@@ -792,23 +844,54 @@ pub fn ScreenShareBridge() -> Element {
         let publish_system = s.screen_sharing && s.screen_native_audio;
         let epoch = s.voice_session_epoch;
         let joined = s.screen_audio_joined;
+        // Only where the native path is the capture path, and only once a
+        // surface has been chosen. On Windows the webview holds the video track
+        // and this must stay None, or the same screen would be published twice
+        // under two identities.
+        let target = s.screen_share_target;
+        let want_video = match (s.screen_sharing && crate::sysvideo::supported(), target) {
+            (true, Some(_)) => s.screen_video_token.clone(),
+            _ => None,
+        };
         drop(s);
+        // The preset only matters on the transition that starts a capture; a
+        // change while sharing is picked up by the next share, same as the
+        // webview path (which bakes it into the `getDisplayMedia` constraints).
+        let quality = settings.read().screenshare_quality.clone();
 
-        let now = (epoch, want, publish_system, joined);
+        // The target is in the key so switching surface mid-share re-fires this
+        // exactly once, and the publisher rebuilds against the new one.
+        let now = (epoch, want, publish_system, joined, want_video, target);
         if last_sent.peek().as_ref() != Some(&now) {
             voice_screen_audio.send(VoiceCmd::SetScreenAudio {
                 room: now.1.clone(),
             });
             voice_screen_audio.send(VoiceCmd::SetSystemAudio { enabled: now.2 });
+            voice_screen_audio.send(VoiceCmd::SetScreenVideo {
+                room: now.4.clone(),
+                // Stopping ignores the target, so the fallback is never used for
+                // anything — it just avoids making the command's type optional
+                // for a field only the start path reads.
+                target: target.unwrap_or(crate::sysvideo::Target::Display(0)),
+                settings: native_settings(&quality),
+            });
             last_sent.set(Some(now));
         }
     });
 
-    // Detect whether the embedded webview exposes getDisplayMedia and record it.
-    // Use an async eval so we can `recv::<bool>().await` the JS result.
+    // Can this build capture a screen at all, and by which path?
+    //
+    // Where `sysvideo` has a native backend the webview is not consulted: on
+    // macOS it has no `navigator.mediaDevices` whatsoever, so probing it would
+    // only ever produce a false negative and a toast recommending a Windows fix
+    // to a Mac user. That is exactly what it used to do.
     use_future(move || {
         let mut s = state.clone();
         async move {
+            if crate::sysvideo::supported() {
+                s.write().screen_capture_available = true;
+                return;
+            }
             // Report the probe explicitly with `dioxus.send`. Relying on the
             // script's completion value meant `recv::<bool>()` never resolved,
             // the error branch ran, and capture was marked unavailable on
@@ -822,7 +905,8 @@ pub fn ScreenShareBridge() -> Element {
                 Ok(false) => {
                     s.write().screen_capture_available = false;
                     s.write().error_toast = Some(
-                        "Screen capture isn't available in this webview. On Windows,                          installing the WebView2 runtime enables it."
+                        "Screen sharing isn't available in this build's webview. On Windows, \
+                         installing the WebView2 runtime enables it."
                             .into(),
                     );
                 }
@@ -1004,6 +1088,192 @@ pub fn ScreenShareBridge() -> Element {
     rsx! { Fragment {} }
 }
 
+/// Picker for the native capture path: choose a screen, an app, or one window.
+///
+/// The webview path never needed this — Chromium's `getDisplayMedia` opens the
+/// OS picker itself. ScreenCaptureKit has no picker, only an enumeration API, so
+/// this is the UI half of what Chromium was providing. (Discord solves the same
+/// problem the same way: Electron's `desktopCapturer` enumerates, and the grid
+/// you see is Discord's own.)
+///
+/// Driven by `AppState.screen_picker`: `None` closed, `Some(Ok(..))` a list,
+/// `Some(Err(..))` the reason there isn't one — usually Screen Recording
+/// permission having been refused, which is worth saying rather than showing an
+/// empty list.
+#[component]
+pub fn ScreenSourcePicker() -> Element {
+    let mut state = use_app_state();
+    let gateway = use_gateway();
+    let settings = use_context::<Signal<crate::settings::ClientSettings>>();
+    let picker = use_memo(move || state.read().screen_picker.clone());
+    let Some(result) = picker() else {
+        return rsx! {};
+    };
+
+    let close = move |_| {
+        state.write().screen_picker = None;
+    };
+
+    rsx! {
+        div {
+            class: "dxf-backdrop-in fixed inset-0 z-50 flex items-center justify-center bg-black/50",
+            onclick: close,
+            div {
+                class: "dxf-modal-in w-[30rem] max-h-[80vh] flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl overflow-hidden",
+                onclick: move |e| e.stop_propagation(),
+                div { class: "px-4 py-3 border-b border-[var(--border)] flex items-center",
+                    h3 { class: "text-sm font-medium text-[var(--accent)] flex-1", "Share your screen" }
+                    button {
+                        class: "text-[var(--text-dim)] hover:text-[var(--text)] text-lg leading-none",
+                        onclick: close,
+                        "✕"
+                    }
+                }
+                match result {
+                    Err(e) => rsx! {
+                        div { class: "p-4 space-y-2",
+                            div { class: "text-xs text-[var(--danger)]", "{e}" }
+                            div { class: "text-[11px] text-[var(--text-muted)] leading-relaxed",
+                                "Screen sharing needs the Screen Recording permission. Grant it in \
+                                 System Settings › Privacy & Security › Screen & System Audio \
+                                 Recording, then quit and reopen Discordia — macOS only re-reads it \
+                                 on launch."
+                            }
+                        }
+                    },
+                    Ok(sources) if sources.is_empty() => rsx! {
+                        div { class: "p-4 text-xs text-[var(--text-muted)]", "Looking for screens…" }
+                    },
+                    Ok(sources) => {
+                        // Displays and app entries carry no `app`, individual
+                        // windows do — which is exactly the split the two
+                        // headings want, and it preserves the order the backend
+                        // already chose.
+                        let (surfaces, windows): (Vec<_>, Vec<_>) =
+                            sources.into_iter().partition(|s| s.app.is_none());
+                        rsx! {
+                            div { class: "flex-1 overflow-y-auto p-3 space-y-3",
+                                if !surfaces.is_empty() {
+                                    div {
+                                        div { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-1.5",
+                                            "Screens & apps"
+                                        }
+                                        div { class: "space-y-1",
+                                            for s in surfaces.into_iter() {
+                                                {
+                                                    let target = s.target;
+                                                    let g = gateway.clone();
+                                                    let dims = (s.width > 0).then(|| format!("{}×{}", s.width, s.height));
+                                                    rsx! {
+                                                        button {
+                                                            key: "{s.title}",
+                                                            class: "w-full text-left px-2 py-1.5 rounded border border-[var(--border)] hover:border-[var(--accent)] hover:bg-[var(--accent-soft)] transition-colors flex items-baseline gap-2",
+                                                            onclick: move |_| choose_source(state, g.clone(), settings, target),
+                                                            span { class: "text-xs text-[var(--text)] flex-1 truncate", "{s.title}" }
+                                                            if let Some(d) = dims {
+                                                                span { class: "text-[10px] text-[var(--text-dim)] font-mono shrink-0", "{d}" }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                if !windows.is_empty() {
+                                    div {
+                                        div { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-1.5",
+                                            "Windows"
+                                        }
+                                        div { class: "space-y-1",
+                                            for s in windows.into_iter() {
+                                                {
+                                                    let target = s.target;
+                                                    let g = gateway.clone();
+                                                    let app = s.app.clone().unwrap_or_default();
+                                                    rsx! {
+                                                        button {
+                                                            key: "{app}/{s.title}",
+                                                            class: "w-full text-left px-2 py-1.5 rounded border border-[var(--border)] hover:border-[var(--accent)] hover:bg-[var(--accent-soft)] transition-colors flex items-baseline gap-2",
+                                                            onclick: move |_| choose_source(state, g.clone(), settings, target),
+                                                            span { class: "text-[10px] text-[var(--accent)] shrink-0 max-w-[7rem] truncate", "{app}" }
+                                                            span { class: "text-xs text-[var(--text)] flex-1 truncate", "{s.title}" }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Commit to sharing `target`.
+///
+/// A free function rather than a closure in the picker because every row needs
+/// its own handler and a closure capturing `GatewayTx` is not `Copy`.
+///
+/// Starting the share is the picker's job, not the button's: the button opens
+/// the picker, and until something is chosen there is nothing to announce. Same
+/// reason the webview path announces only once a track exists — a share
+/// cancelled at the picker never happened.
+fn choose_source(
+    mut state: Signal<crate::state::AppState>,
+    gateway: crate::state::GatewayTx,
+    settings: Signal<crate::settings::ClientSettings>,
+    target: crate::sysvideo::Target,
+) {
+    let with_audio = settings.read().screenshare_audio;
+    let (channel, already_sharing) = {
+        let s = state.read();
+        (s.voice.channel_id, s.screen_sharing)
+    };
+    {
+        let mut s = state.write();
+        s.screen_share_target = Some(target);
+        s.screen_sharing = true;
+        s.screen_native_audio = with_audio;
+        s.screen_picker = None;
+    }
+    // Only on the transition into sharing. Re-announcing while already live
+    // (switching surface mid-share) would tell the channel about a share it
+    // already knows about.
+    if !already_sharing {
+        if let Some(cid) = channel {
+            gateway.send(ClientMessage::SetScreenShare {
+                channel_id: cid,
+                sharing: true,
+            });
+        }
+    }
+}
+
+/// Enumerate shareable surfaces and open the picker.
+///
+/// The query is blocking and can sit behind the Screen Recording prompt for as
+/// long as the user takes, so it runs on a blocking thread rather than stalling
+/// the UI. The picker opens immediately in a loading state so the click feels
+/// answered.
+pub fn open_screen_picker(mut state: Signal<crate::state::AppState>) {
+    state.write().screen_picker = Some(Ok(Vec::new()));
+    dioxus::prelude::spawn(async move {
+        let found = tokio::task::spawn_blocking(crate::sysvideo::sources)
+            .await
+            .unwrap_or_else(|e| Err(format!("listing screens failed: {e}")));
+        // Only if the picker is still open. A user who closed it in the second
+        // the query took should not have it reappear underneath them.
+        if state.peek().screen_picker.is_some() {
+            state.write().screen_picker = Some(found);
+        }
+    });
+}
+
 /// Small self-preview shown while you're sharing, with a Stop button. Draggable
 /// (grab the header) and resizable (bottom-right grip) so it doesn't have to
 /// pin the top-right corner — same interaction model as the watch window below.
@@ -1023,6 +1293,25 @@ pub fn ScreenSelfPreview() -> Element {
 
     let sharing = use_memo(move || state.read().screen_sharing);
     let self_pk = use_memo(move || state.read().self_user.as_ref().map(|u| u.pubkey.clone()));
+
+    // Native path only: what is being shared, and proof that it is moving.
+    let native_capture = crate::sysvideo::supported();
+    let share_label = use_memo(move || match state.read().screen_share_target {
+        Some(crate::sysvideo::Target::Display(_)) => "Sharing your screen",
+        Some(crate::sysvideo::Target::Window(_)) => "Sharing one window",
+        Some(crate::sysvideo::Target::Application(_)) => "Sharing an app",
+        None => "Sharing your screen",
+    });
+    // Polled rather than pushed: the counter is bumped on the OS capture thread
+    // at up to 60 Hz, and turning each of those into a state write would re-render
+    // the whole workspace per frame. Twice a second is plenty to show "moving".
+    let mut frames = use_signal(|| 0_u64);
+    use_future(move || async move {
+        loop {
+            frames.set(crate::sysvideo::frames_captured());
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+    });
 
     // Attach our local preview when sharing turns on.
     let mut last = use_signal(|| false);
@@ -1085,9 +1374,23 @@ pub fn ScreenSelfPreview() -> Element {
                     onmousedown: move |e| {
                         e.stop_propagation();
                         let cid = state.read().voice.channel_id;
-                        state.write().screen_sharing = false;
-                        // Quality and audio only matter when starting a share.
-                        let _ = document::eval(&share_js(false, "", true));
+                        {
+                            let mut w = state.write();
+                            w.screen_sharing = false;
+                            // Forget the surface too, so the next share opens the
+                            // picker instead of silently resuming the last one.
+                            // The effect that owns publishing keys on this, so
+                            // clearing it is also what stops the capture.
+                            w.screen_share_target = None;
+                            w.screen_native_audio = false;
+                        }
+                        // Only the webview path has a JS track to stop; on the
+                        // native path this is a no-op against a controller that
+                        // never started a capture.
+                        if !crate::sysvideo::supported() {
+                            // Quality and audio only matter when starting a share.
+                            let _ = document::eval(&share_js(false, "", true));
+                        }
                         if let Some(c) = cid {
                             gateway.send(ClientMessage::SetScreenShare { channel_id: c, sharing: false });
                         }
@@ -1095,10 +1398,33 @@ pub fn ScreenSelfPreview() -> Element {
                     "Stop"
                 }
             }
-            div {
-                id: "screenshare-self",
-                class: "flex-1 min-h-0 bg-black flex items-center justify-center text-[var(--text-dim)] text-[10px]",
-                "Starting…"
+            // The webview path attaches its local video track into this
+            // container; the native path has no track to attach, because LiveKit
+            // does not loop a publication back to its publisher. Leaving the
+            // container in place there showed a black box reading "Starting…"
+            // forever, which is indistinguishable from a share that hung — so
+            // instead of a picture that cannot arrive, the native path reports
+            // the one fact that answers "is this working": frames leaving.
+            if native_capture {
+                div { class: "flex-1 min-h-0 flex flex-col items-center justify-center gap-1 px-3 text-center",
+                    div { class: "text-[11px] text-[var(--text)]", "{share_label}" }
+                    if frames() > 0 {
+                        div { class: "text-[10px] text-[var(--up)]",
+                            "{frames()} frames sent"
+                        }
+                    } else {
+                        div { class: "text-[10px] text-[var(--warn)]", "waiting for the first frame…" }
+                    }
+                    div { class: "text-[9px] text-[var(--text-dim)] leading-snug",
+                        "No preview on macOS yet — the picture only exists on the wire."
+                    }
+                }
+            } else {
+                div {
+                    id: "screenshare-self",
+                    class: "flex-1 min-h-0 bg-black flex items-center justify-center text-[var(--text-dim)] text-[10px]",
+                    "Starting…"
+                }
             }
             // Resize grip (bottom-right).
             div {

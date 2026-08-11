@@ -1074,6 +1074,20 @@ pub enum ServerMessage {
         /// the webview.
         #[serde(default)]
         audio_token: String,
+        /// Third token for the same room, used by the native client to *publish*
+        /// screen **video** where the webview cannot capture it at all.
+        ///
+        /// WKWebView does not expose `navigator.mediaDevices`, so on macOS
+        /// `getDisplayMedia` is not merely restricted — the API is absent, and
+        /// the webview capture path in `features::screenshare` can never run.
+        /// The native client captures via ScreenCaptureKit instead and needs its
+        /// own identity to publish under, for the same reason `audio_token`
+        /// does: one connection per identity per room.
+        ///
+        /// Empty from servers that predate it, in which case a client with no
+        /// webview capture simply cannot share.
+        #[serde(default)]
+        video_token: String,
     },
     Error {
         message: String,

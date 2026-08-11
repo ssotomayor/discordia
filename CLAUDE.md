@@ -31,11 +31,13 @@ flowchart LR
     subgraph Client["Client — dioxusfun (Dioxus desktop, wry webview)"]
         UI["features/*.rs — UI"]
         Net["net.rs — WS loop<br/>apply(ServerMessage) / send(ClientMessage)"]
-        Voice["features/voice.rs — native LiveKit SDK<br/>mic, playback mixer, voice room,<br/>audio-only screen-room subscriber"]
+        Voice["features/voice.rs — native LiveKit SDK<br/>mic, playback mixer, voice room,<br/>audio-only screen-room subscriber,<br/>screen-video publisher"]
         SysAudio["sysaudio/ — native system-audio capture<br/>macOS ScreenCaptureKit · Windows WASAPI loopback"]
-        WebJS["features/screenshare.rs — webview JS bridge<br/>LiveKit JS SDK: screen video (+ fallback audio)"]
+        SysVideo["sysvideo/ — native screen capture<br/>macOS ScreenCaptureKit (zero-copy CVPixelBuffer)"]
+        WebJS["features/screenshare.rs — webview JS bridge<br/>LiveKit JS SDK: renders all shares;<br/>captures video on Windows only"]
         UI --> Net
         SysAudio --> Voice
+        SysVideo --> Voice
         Voice -. same cpal mixer .-> WebJS
     end
 
@@ -52,7 +54,7 @@ flowchart LR
 
     subgraph SFU["LiveKit SFU"]
         VoiceRoom["voice-{channel}<br/>native peers: mic + shared system audio"]
-        ScreenRoom["screen-{channel}<br/>webview peer (video, identity = pubkey)<br/>native peer (audio-only, identity = pubkey#audio)"]
+        ScreenRoom["screen-{channel}<br/>webview peer (renders; captures on Windows, identity = pubkey)<br/>native peer (audio-only, identity = pubkey#audio)<br/>native peer (video publisher on macOS, identity = pubkey#video)"]
     end
 
     subgraph Rendezvous["rendezvous (optional discovery relay)"]
@@ -71,9 +73,17 @@ flowchart LR
     Gateway <-->|self-host register / proxy| Relay
 ```
 
-Two runtime paths carry audio+video for a screen share, and both terminate in
-the *same* `screen-{channel}` LiveKit room under different identities — see
-`server::livekit::screen_audio_identity` and the `sysaudio/` note below.
+Up to three runtime paths carry audio+video for a screen share, and they all
+terminate in the *same* `screen-{channel}` LiveKit room under different
+identities — see `server::livekit::screen_audio_identity` /
+`screen_video_identity` and the `sysaudio/` + `sysvideo/` notes below.
+
+**Which path captures video is per-platform, and it is not a preference.**
+Windows uses the webview (WebView2 is Chromium, `getDisplayMedia` works there).
+macOS cannot: WKWebView does not expose `navigator.mediaDevices` at all, so the
+JS capture branch is unreachable and macOS captures natively via `sysvideo/`
+instead. The webview still joins the room on both platforms, because it is what
+*renders* everyone else's share.
 
 ---
 
@@ -181,24 +191,63 @@ the *same* `screen-{channel}` LiveKit room under different identities — see
   flow settles which path a given capture takes *after* the picker closes, since
   that answer depends on what the user chose. Frames are mono f32 @48kHz — the
   format `features::voice` already publishes.
+- `sysvideo/` — native *screen* capture, for platforms where the webview has no
+  capture API at all. Only macOS has a backend, and it is not an optimisation:
+  WKWebView does not expose `navigator.mediaDevices`, so `getDisplayMedia` is
+  absent rather than restricted and the webview path is unreachable there. Frames
+  are handed to a sink as owned `Frame`s wrapping the platform's `CVPixelBuffer`,
+  which libwebrtc can encode directly — no copy, no colour conversion in our
+  process. `supported()` decides which path the share button drives; the
+  publisher lives in `features::voice::ScreenVideoRoom`.
+  `sources()` enumerates what can be shared and `Target` says which of it to
+  capture — screen, one window, or every window of one app, resolved to an
+  `SCContentFilter` at capture time. ScreenCaptureKit has no picker of its own
+  (Chromium's `getDisplayMedia` was providing that on the webview path), so
+  `features::screenshare::ScreenSourcePicker` is our own UI over that list —
+  the same division Electron apps like Discord use. Targets are re-resolved from
+  a fresh query on every start, because a window can close between the pick and
+  the capture.
 - `host.rs` — self-host: spawn embedded server + LiveKit, register with
   rendezvous. `rendezvous.rs` — the rendezvous client (control handshake +
   proxy bridging). `blossom.rs` — Nostr media upload for avatars/banners.
 - `features/*.rs` — UI, one module per surface: `guilds`, `channels`, `chat`,
   `members`, `voice`, `screenshare`, `roles`, `guild_settings`, `integrations`
   (bots), `profiles`, `connect`, `appearance`, `activities`.
-- **Screen-share audio has two paths into the same room, on purpose.** The
-  `screen-{channel}` LiveKit room is joined twice per sharer/watcher: once by
-  the webview (video, plus its own fallback audio) under the user's bare
-  pubkey, and once by the native client (audio-only, `auto_subscribe: false`)
-  under `{pubkey}#audio` — LiveKit allows only one connection per identity, so
-  the suffix is what makes the second join possible. Both land in the same
+- **One user joins the screen room under up to three identities, on purpose.**
+  LiveKit allows only one connection per identity, so each job that needs its own
+  connection needs its own suffix:
+  - bare `{pubkey}` — the webview. Renders every share; also *captures* on
+    Windows.
+  - `{pubkey}#audio` — native, audio-only, `auto_subscribe: false`. Subscribes to
+    stream audio so it plays through the same cpal device as voice.
+  - `{pubkey}#video` — native, publish-only, `auto_subscribe: false`. Publishes
+    natively captured screen video on macOS.
+
+  Watchers resolve a sharer to a track by identity, and our own protocol
+  announces sharers by *bare* pubkey — so the `#video` suffix is resolved in one
+  place, `attach`/`reattach` in the JS controller. Adding a fourth identity means
+  teaching those two functions about it.
+- **Screen-share audio has two paths into the same room, on purpose.** Both land
+  in the same
   cpal mixer voice already uses, so stream audio follows the chosen output
   device instead of being stuck on whatever `setSinkId` support the webview
   has. `AppState.screen_audio_joined` (client) tracks whether the native side
   is *actually in*, not just whether it has a token — a failed/dropped native
   join hands playback back to the webview rather than going silent. See
-  `features::voice::ScreenAudioRoom` and `server::livekit::screen_token_as`.
+  `features::voice::ScreenAudioRoom` / `ScreenVideoRoom` and
+  `server::livekit::screen_token_as`.
+- **The native publications are owned by an effect, not by the share button.**
+  On the native path the button only *opens the picker*; the picker sets intent
+  (`screen_sharing`, `screen_share_target`, `screen_native_audio`), and the
+  effect in `features::screenshare::ScreenShareBridge` issues
+  `SetSystemAudio`/`SetScreenVideo`, keyed on the voice-session epoch *and* the
+  target. Two things fall out of that: a mid-share device change survives (it
+  tears `ActiveVoice` down, and the rebuilt session re-publishes from the effect
+  rather than leaving the share silently dead with the button still lit), and
+  switching surface mid-share is just a target change — the publisher rebuilds
+  against the new one. Anything that ends a share must clear
+  `screen_share_target`, or the effect sees an unchanged key and the next click
+  does nothing.
 - `protocol/mod.rs` — re-exports `dioxusfun-protocol` so the client says
   `crate::protocol::…`.
 

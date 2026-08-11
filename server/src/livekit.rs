@@ -149,14 +149,26 @@ pub async fn voice_token(
     }
 }
 
-/// The screen-share room is joined twice by the same user: once by the webview
-/// (video) and once by the native client (audio). LiveKit evicts a duplicate
-/// identity, so the second connection needs its own — hence this suffix.
+/// The screen-share room is joined up to three times by the same user: by the
+/// webview (renders everyone's video, and captures it where it can), and by the
+/// native client twice — once to subscribe to stream audio, once to *publish*
+/// video on platforms where the webview cannot capture. LiveKit evicts a
+/// duplicate identity, so each connection needs its own — hence these suffixes.
 ///
-/// It is only ever an identity, never an authorisation: both tokens carry the
+/// They are only ever identities, never authorisations: every token carries the
 /// same grants for the same room.
 pub fn screen_audio_identity(user_pubkey: &str) -> String {
     format!("{user_pubkey}#audio")
+}
+
+/// Identity the native client publishes captured screen video under.
+///
+/// Watchers resolve a sharer to their track by identity, and a sharer announced
+/// over our own protocol is announced by bare pubkey — so anything matching
+/// publications to sharers has to know this suffix too. See `attach` in
+/// `features::screenshare`'s JS controller, which tries both.
+pub fn screen_video_identity(user_pubkey: &str) -> String {
+    format!("{user_pubkey}#video")
 }
 
 /// Mint a screen-share token under an explicit identity.

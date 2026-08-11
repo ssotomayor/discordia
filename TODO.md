@@ -40,13 +40,14 @@ the top within each section.
 
 ## Assets
 
-- **The macOS `.icns` predates the tile removal.** `icon.svg` lost its
-  background tile in `6173903` ("drop the tile behind the icon"), and
-  `icon.ico` was regenerated in that same commit — but `icon.icns` was last
-  touched on 2026-08-03 by `45a3dc4`, a week earlier and not an icon commit.
-  So the two platforms no longer render from the same source: macOS still ships
-  the tiled mark. Re-rasterise from the SVG (resvg) and eyeball it in a real
-  Dock; nobody has a macOS build to check against yet, which is why it waited.
+- **The `.icns` is downscaled from the PNG, not rasterised from the SVG.** The
+  stale-icon problem is fixed — it now carries the current tile-less mark — but
+  it was rebuilt with `sips` from `icon-1024.png` rather than per-size from
+  `icon.svg` as the `Dioxus.toml` recipe asks, because no SVG rasteriser
+  (`resvg`, `rsvg-convert`, ImageMagick) was installed. macOS draws 128px and up
+  in the Dock, where downscaling holds up; the 16px entry is the one that would
+  benefit from real hinting, and unlike Windows' taskbar macOS only uses it in
+  list views. Redo with `resvg` next time the artwork changes.
 
 ## Persistence & deploy (roadmap P1/P2 leftovers)
 
@@ -145,6 +146,35 @@ the top within each section.
   Mid-session renames need a new protocol message
   (`ClientMessage::UpdateUsername`) + server-side member-row mutation +
   broadcast.
+
+## Screen sharing
+
+- **The native picker has no thumbnails.** `ScreenSourcePicker` is a text list:
+  screens, then apps with more than one window, then individual windows grouped
+  by app. Discord's grid shows a live-ish still of each candidate, which makes
+  picking the right window much faster when six of them are called "Untitled".
+  `SCScreenshotManager` (macOS 14+, already in our bindings) would supply them,
+  but it hands back a `CGImage` — turning that into something the webview can
+  render means an ImageIO/CoreGraphics encode to PNG and a `data:` URL per
+  entry, so it is a real chunk of work rather than a field on the struct.
+- **Native window shares still carry the whole machine's audio.**
+  `sysaudio`'s macOS backend taps system-wide output, so sharing one window
+  sends every app's sound with it. Now that the picker knows *which* app was
+  chosen, ScreenCaptureKit can scope the audio to it — the missing piece the
+  Windows note below also wants, and on macOS the answer is now available.
+- **No self-preview picture on the native capture path.** The webview path shows
+  the sharer their own outgoing video because the webview holds a local track to
+  attach; the native publisher has no track in the webview, and LiveKit does not
+  loop a publication back to its publisher. The window now reports what is being
+  shared and a live frame count instead of a black box — enough to tell a working
+  share from a dead one, which is what the box was failing to do — but it is not
+  a picture. Getting one means either teeing frames into the webview as periodic
+  stills (an encode per still, sharing the `CGImage`-to-`data:`-URL problem the
+  picker thumbnails have) or rendering natively above the webview.
+- **Windows still captures in the webview.** Not a defect: WebView2 is Chromium
+  and `getDisplayMedia` works there, including the picker. Worth revisiting only
+  if a native Windows path (WGC) buys something the picker doesn't — it would
+  also give us the window/PID that `sysaudio`'s Windows note wants.
 
 ## Voice / audio
 

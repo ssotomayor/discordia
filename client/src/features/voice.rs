@@ -21,6 +21,14 @@ use livekit::webrtc::audio_source::AudioSourceOptions;
 use livekit::webrtc::audio_source::native::NativeAudioSource;
 use livekit::webrtc::audio_stream::native::NativeAudioStream;
 use livekit::webrtc::prelude::RtcAudioSource;
+// Screen video publishing (`ScreenVideoRoom`). `NativeBuffer` is the zero-copy
+// wrapper around a platform image buffer — the reason ScreenCaptureKit frames
+// reach the encoder without a conversion pass in this process.
+use livekit::options::VideoEncoding;
+use livekit::webrtc::video_frame::native::NativeBuffer;
+use livekit::webrtc::video_frame::{VideoFrame, VideoRotation};
+use livekit::webrtc::video_source::native::NativeVideoSource;
+use livekit::webrtc::video_source::{RtcVideoSource, VideoResolution};
 use parking_lot::Mutex;
 use rubato::{FftFixedIn, Resampler};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
@@ -173,6 +181,20 @@ pub enum VoiceCmd {
     /// voice channel becomes non-empty / empty.
     SetScreenAudio {
         room: Option<(String, String)>,
+    },
+    /// Start/stop capturing this machine's *screen* and publishing it as a
+    /// video track, for platforms where the webview has no capture API at all
+    /// (macOS — see `sysvideo`). `None` stops.
+    ///
+    /// Carries its own `(url, token)` because this joins the screen room under a
+    /// third identity: the webview holds the bare pubkey and the audio
+    /// subscriber holds `#audio`, so a publisher needs `#video`. See
+    /// `server::livekit::screen_video_identity`.
+    SetScreenVideo {
+        room: Option<(String, String)>,
+        /// Which surface to capture. Ignored when `room` is None.
+        target: crate::sysvideo::Target,
+        settings: crate::sysvideo::Settings,
     },
     /// Set the local playback gain for a participant's *screen-share* audio,
     /// separately from their voice. 0.0 while you aren't watching them, which
@@ -430,6 +452,30 @@ async fn service_loop(
                     eprintln!("[voice] SetScreenAudio ignored — no voice session");
                 }
             }
+            VoiceCmd::SetScreenVideo {
+                room,
+                target,
+                settings,
+            } => {
+                if let Some(active) = session.as_mut() {
+                    // Unlike system audio, a failure here is the whole feature:
+                    // there is no video-only fallback to carry on with, because
+                    // this *is* the video. Say so and clear the sharing flag so
+                    // the button doesn't sit lit for a share that isn't running.
+                    if let Err(e) = active.set_screen_video(room, target, settings, state).await {
+                        eprintln!("[voice] screen video failed: {e}");
+                        let mut s = state.write();
+                        s.screen_sharing = false;
+                        // Clear the surface too: the effect that owns publishing
+                        // keys on it, so leaving it set would make the next click
+                        // a no-op against an unchanged key.
+                        s.screen_share_target = None;
+                        s.error_toast = Some(format!("Couldn't share your screen: {e}"));
+                    }
+                } else if room.is_some() {
+                    eprintln!("[voice] SetScreenVideo ignored — no voice session");
+                }
+            }
             VoiceCmd::SetStreamVolume { pubkey, gain } => {
                 let gain = gain.clamp(0.0, 2.0);
                 crate::dlog!(
@@ -466,6 +512,9 @@ struct ActiveVoice {
     /// Audio-only connection to the screen-share room, live while someone else
     /// in the channel is sharing.
     screen_audio: Option<ScreenAudioRoom>,
+    /// Publish-only connection to the screen-share room, live while *we* are
+    /// sharing on a platform whose webview cannot capture.
+    screen_video: Option<ScreenVideoRoom>,
     /// Kept so the screen-audio room can feed the same mixer as voice — which
     /// is the entire point: one output device, one set of gains.
     mixer: PlaybackHandle,
@@ -715,6 +764,7 @@ impl ActiveVoice {
             meter_task,
             system_audio: None,
             screen_audio: None,
+            screen_video: None,
             mixer: mixer_handle,
             self_pubkey,
         })
@@ -830,6 +880,53 @@ impl ActiveVoice {
         Ok(())
     }
 
+    /// Start (or stop) publishing captured screen video into the screen room.
+    ///
+    /// This is the macOS share path in full: `sysvideo` captures, and each frame
+    /// goes straight into a LiveKit video source. Nothing here touches the
+    /// webview, which on macOS has no capture API to touch.
+    ///
+    /// A *third* connection to the screen room, and it has to be: the webview
+    /// holds the bare pubkey (it still renders everyone else's share) and the
+    /// audio subscriber holds `#audio`, so publishing needs `#video`. LiveKit
+    /// evicts duplicate identities, which would take out one of the other two.
+    async fn set_screen_video(
+        &mut self,
+        room: Option<(String, String)>,
+        target: crate::sysvideo::Target,
+        settings: crate::sysvideo::Settings,
+        state: Signal<AppState>,
+    ) -> Result<(), String> {
+        let Some((url, token)) = room else {
+            if let Some(prev) = self.screen_video.take() {
+                prev.shutdown().await;
+                crate::dlog!("voice screen video stopped (capture dropped)");
+            }
+            return Ok(());
+        };
+        // Already publishing this surface into this room: a repeated command is
+        // the effect re-firing, not a request to restart, and restarting would
+        // drop every watcher's picture for a second for nothing.
+        //
+        // The target is part of that identity, so switching surface mid-share
+        // *does* fall through and rebuild — which is what makes the picker
+        // usable while already sharing.
+        if let Some(existing) = &self.screen_video {
+            if existing.key == (url.clone(), token.clone(), target) {
+                return Ok(());
+            }
+        }
+        if let Some(prev) = self.screen_video.take() {
+            prev.shutdown().await;
+        }
+        if !crate::sysvideo::supported() {
+            return Err("screen capture isn't implemented on this platform".into());
+        }
+        let r = ScreenVideoRoom::connect(&url, &token, target, settings, state).await?;
+        self.screen_video = Some(r);
+        Ok(())
+    }
+
     /// Join (or leave) the screen-share room as an audio-only subscriber.
     ///
     /// A share captured by the *webview* publishes its audio into the
@@ -938,6 +1035,12 @@ impl ActiveVoice {
         if let Some(sa) = self.screen_audio {
             sa.shutdown().await;
         }
+        // Same reasoning as the mic: stop the OS capture before the room goes,
+        // so ScreenCaptureKit isn't still delivering frames into a source whose
+        // room is closing. Leaving voice always ends a share.
+        if let Some(sv) = self.screen_video {
+            sv.shutdown().await;
+        }
         // Cleared here rather than left to the `SetScreenAudio { room: None }`
         // the bridge sends on leaving voice: that command arrives *after*
         // `Disconnect` has already taken the session, so it lands in the
@@ -966,6 +1069,160 @@ impl ActiveVoice {
             Ok(Ok(())) => {}
             Ok(Err(e)) => eprintln!("[voice] room close failed: {e}"),
             Err(_) => eprintln!("[voice] room close timed out, dropping anyway"),
+        }
+    }
+}
+
+/// Publish-only member of the screen-share room, carrying natively captured
+/// screen video.
+///
+/// The mirror image of `ScreenAudioRoom`: that one subscribes and never
+/// publishes, this one publishes and never subscribes. Both exist because the
+/// webview is the wrong place for the job on the platform in question — see
+/// `ActiveVoice::set_screen_video` and the `sysvideo` module docs.
+struct ScreenVideoRoom {
+    room: Arc<Room>,
+    /// The OS capture. Dropping it stops the stream, which is why it is held
+    /// here and not detached: the room outliving the capture would publish a
+    /// frozen frame forever.
+    _capture: crate::sysvideo::Capture,
+    /// The `(url, token, target)` this was started with, so a repeated command
+    /// for the same surface is a no-op while a changed one rebuilds.
+    key: (String, String, crate::sysvideo::Target),
+}
+
+impl ScreenVideoRoom {
+    async fn connect(
+        url: &str,
+        token: &str,
+        target: crate::sysvideo::Target,
+        settings: crate::sysvideo::Settings,
+        state: Signal<AppState>,
+    ) -> Result<Self, String> {
+        // Built by mutation rather than a struct literal: `RoomOptions` is
+        // `#[non_exhaustive]`.
+        let mut options = RoomOptions::default();
+        // We are here to publish, not to watch. The webview is already in this
+        // room under our bare pubkey and renders everyone's video, including
+        // shares we watch — subscribing here as well would download every
+        // stream in the channel a second time.
+        options.auto_subscribe = false;
+        let (room, mut events) = Room::connect(url, token, options)
+            .await
+            .map_err(|e| format!("livekit connect: {e}"))?;
+        let room = Arc::new(room);
+
+        // `is_screencast: true` is not cosmetic — it tells libwebrtc this is
+        // desktop content, which changes the encoder's degradation behaviour
+        // towards keeping detail rather than motion.
+        let source = NativeVideoSource::new(
+            VideoResolution {
+                width: settings.width,
+                height: settings.height,
+            },
+            true,
+        );
+        let track =
+            LocalVideoTrack::create_video_track("screen", RtcVideoSource::Native(source.clone()));
+
+        let publication = room
+            .local_participant()
+            .publish_track(
+                LocalTrack::Video(track),
+                TrackPublishOptions {
+                    source: TrackSource::Screenshare,
+                    video_encoding: Some(VideoEncoding {
+                        max_framerate: settings.fps as f64,
+                        max_bitrate: settings.max_bitrate,
+                    }),
+                    ..Default::default()
+                },
+            )
+            .await
+            .map_err(|e| format!("publishing the video track failed ({e})"))?;
+        // The identity and sid are what a watcher has to match to find this
+        // track, so they are the first thing worth knowing when a share is
+        // running and nobody can see it.
+        eprintln!(
+            "[voice] screen video published sid={} identity={} target={:?} {}x{}@{}",
+            publication.sid(),
+            room.local_participant().identity().0,
+            target,
+            settings.width,
+            settings.height,
+            settings.fps,
+        );
+
+        // A capture that dies mid-share leaves the track published and the
+        // picture frozen, which the sharer cannot see for themselves — the
+        // exact failure `sysaudio` reports for sound, reported the same way.
+        let (fatal_tx, mut fatal_rx) = unbounded_channel::<String>();
+        {
+            let mut state = state;
+            dioxus::prelude::spawn(async move {
+                if let Some(e) = fatal_rx.recv().await {
+                    eprintln!("[voice] screen capture died mid-share: {e}");
+                    let mut s = state.write();
+                    s.screen_sharing = false;
+                    s.screen_share_target = None;
+                    s.error_toast =
+                        Some(format!("Your screen stopped being shared: {e}. Try again."));
+                }
+            });
+        }
+
+        // Frames are pushed straight through on ScreenCaptureKit's own queue.
+        // `capture_frame` hands the buffer to libwebrtc synchronously, so the
+        // `Frame` — and with it the retained pixel buffer — stays alive for
+        // exactly the call that needs it. See `sysvideo::FrameSink` for why this
+        // is a callback and not a channel.
+        let capture = crate::sysvideo::start(
+            target,
+            settings,
+            Box::new(move |frame: crate::sysvideo::Frame| {
+                // SAFETY: a live `CVPixelBuffer` with a reference count raised
+                // for this call. `from_cv_pixel_buffer` consumes that reference
+                // (its ObjC bridge ends in `CVPixelBufferRelease`), which is why
+                // the frame hands over a retain of its own rather than the one it
+                // keeps — see `Frame::into_consumable_pixel_buffer`.
+                let buffer = unsafe {
+                    NativeBuffer::from_cv_pixel_buffer(frame.into_consumable_pixel_buffer())
+                };
+                source.capture_frame(&VideoFrame {
+                    rotation: VideoRotation::VideoRotation0,
+                    // libwebrtc wants capture time in microseconds and uses it
+                    // for pacing; the frame's own presentation timestamp would
+                    // be on ScreenCaptureKit's clock, not this one.
+                    timestamp_us: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_micros() as i64)
+                        .unwrap_or(0),
+                    frame_metadata: None,
+                    buffer,
+                });
+            }),
+            fatal_tx,
+        )?;
+
+        // Nothing subscribes here, but the event stream still has to be drained:
+        // an unread channel is what makes livekit's room task block.
+        tokio::spawn(async move { while events.recv().await.is_some() {} });
+
+        Ok(Self {
+            room,
+            _capture: capture,
+            key: (url.to_string(), token.to_string(), target),
+        })
+    }
+
+    async fn shutdown(self) {
+        // Drop the capture first, so no frame is handed to a source whose room
+        // is already closing.
+        drop(self._capture);
+        match tokio::time::timeout(ROOM_CLOSE_TIMEOUT, self.room.close()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => eprintln!("[voice] screen video room close failed: {e}"),
+            Err(_) => eprintln!("[voice] screen video room close timed out, dropping anyway"),
         }
     }
 }

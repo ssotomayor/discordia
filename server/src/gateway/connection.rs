@@ -823,9 +823,12 @@ pub async fn handle_connection(
                                 .await;
                                 // Also hand over screen-share tokens (separate
                                 // room): one for the webview JS client, which
-                                // renders the video, and one for the native
-                                // client, which subscribes to the audio so it
-                                // plays through the same device as voice. Two
+                                // renders the video and captures it where it
+                                // can; one for the native client subscribing to
+                                // the audio so it plays through the same device
+                                // as voice; and one for the native client to
+                                // *publish* video where the webview has no
+                                // capture API at all (macOS/WKWebView). Three
                                 // tokens because they join under different
                                 // identities — LiveKit permits only one
                                 // connection per identity per room.
@@ -846,6 +849,14 @@ pub async fn handle_connection(
                                     )
                                     .await
                                     .unwrap_or_default();
+                                    let video_token = livekit::screen_token_as(
+                                        &ctx.livekit,
+                                        &livekit::screen_video_identity(&u.pubkey),
+                                        &screen_name,
+                                        channel_id,
+                                    )
+                                    .await
+                                    .unwrap_or_default();
                                     let _ = send(
                                         &mut ws_tx,
                                         &ServerMessage::ScreenToken {
@@ -853,6 +864,7 @@ pub async fn handle_connection(
                                             livekit_url,
                                             token: screen_token,
                                             audio_token,
+                                            video_token,
                                         },
                                     )
                                     .await;

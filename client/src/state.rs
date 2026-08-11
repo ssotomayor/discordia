@@ -184,6 +184,24 @@ pub struct AppState {
     /// this, the same failure degrades to webview playback on the system
     /// default device — worse than the native path, far better than nothing.
     pub screen_audio_joined: bool,
+    /// (livekit_url, token) the *native* capture path publishes screen video
+    /// under, on platforms where the webview cannot capture at all (macOS — see
+    /// the `sysvideo` module). None against servers that predate it.
+    pub screen_video_token: Option<(String, String)>,
+    /// Which surface the native path is sharing (or is about to).
+    ///
+    /// Held here rather than passed straight to the voice service because the
+    /// effect that re-publishes after a voice-session restart has to know what
+    /// was being shared — otherwise changing your microphone mid-share would
+    /// resume it pointed at the wrong screen.
+    pub screen_share_target: Option<crate::sysvideo::Target>,
+    /// The surfaces offered by the picker, and whether it is open.
+    ///
+    /// Enumerating blocks on an OS query that can sit behind the Screen
+    /// Recording prompt, so it happens off the UI thread and lands here.
+    /// `Err` is the reason to show instead of a list — most often that
+    /// permission having been refused.
+    pub screen_picker: Option<Result<Vec<crate::sysvideo::Source>, String>>,
     /// Whether we're currently sharing our screen (UI state).
     pub screen_sharing: bool,
     /// Whether *our* current share is the one whose sound `sysaudio` captures.
@@ -205,8 +223,14 @@ pub struct AppState {
     /// Only the id is authoritative; the name and excerpt are for the banner,
     /// and the server rebuilds the real quote from its own row.
     pub replying_to: Option<ReplyDraft>,
-    /// Whether the embedded webview supports navigator.mediaDevices.getDisplayMedia
-    /// (used for screen sharing). Populated at runtime by the ScreenShareBridge.
+    /// Whether this build can capture a screen *somehow* — either the webview
+    /// exposes `getDisplayMedia`, or `sysvideo` has a native backend.
+    ///
+    /// Two ways in, because the two platforms answer differently: on Windows the
+    /// webview is the capture path and the probe in `ScreenShareBridge` decides;
+    /// on macOS the webview has no `navigator.mediaDevices` at all and the
+    /// native path decides. Anything gating the share button reads this rather
+    /// than asking about a webview API.
     pub screen_capture_available: bool,
 
     // Audio device preferences surfaced to the UI.
@@ -321,6 +345,9 @@ impl AppState {
             notify_tick: 0,
             screen_token: None,
             screen_audio_token: None,
+            screen_video_token: None,
+            screen_share_target: None,
+            screen_picker: None,
             screen_audio_joined: false,
             screen_sharing: false,
             screen_native_audio: false,

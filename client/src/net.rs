@@ -779,9 +779,14 @@ fn apply(
                     s.voice.phase = VoicePhase::Idle;
                     s.voice.channel_id = None;
                     let _ = voice_tx.send(VoiceCmd::Disconnect);
-                    // Leaving voice also tears down the screen-share room.
+                    // Leaving voice also tears down the screen-share room, and
+                    // with it any native capture — the target has to go too, or
+                    // the effect that owns publishing would resume the share on
+                    // the next voice session.
                     s.screen_token = None;
                     s.screen_audio_token = None;
+                    s.screen_video_token = None;
+                    s.screen_share_target = None;
                     s.screen_sharing = false;
                     s.screen_viewing = None;
                 }
@@ -806,13 +811,20 @@ fn apply(
             livekit_url,
             token,
             audio_token,
+            video_token,
             ..
         } => {
             // Hand the JS screen bridge what it needs to join the screen room.
             s.screen_token = Some((livekit_url.clone(), token));
             // Empty from a server that predates the native audio path; leaving
             // this None is what keeps the webview playing stream audio there.
-            s.screen_audio_token = (!audio_token.is_empty()).then_some((livekit_url, audio_token));
+            s.screen_audio_token =
+                (!audio_token.is_empty()).then_some((livekit_url.clone(), audio_token));
+            // Likewise for native *video*. None from an older server, which on
+            // macOS means no share is possible at all — the webview has no
+            // capture API to fall back to. `screen_capture_available` follows
+            // this, so the button explains itself rather than failing silently.
+            s.screen_video_token = (!video_token.is_empty()).then_some((livekit_url, video_token));
         }
         ServerMessage::Error { message } => {
             tracing::warn!(server_error = %message);

@@ -692,8 +692,14 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
     let voice = use_voice_tx();
     let mut state = use_app_state();
     let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
-    // Whether the embedded webview exposes getDisplayMedia; populated by the ScreenShareBridge.
+    // Whether a screen can be captured at all, by either path; populated by the
+    // ScreenShareBridge.
     let screen_capture_available = state.read().screen_capture_available;
+    // Which path captures here. On macOS the webview has no `getDisplayMedia` to
+    // call, so the share is driven from Rust via `sysvideo` instead of by
+    // evaluating JS in the webview — and unlike the JS path it needs no user
+    // gesture, because there is no browser permission prompt in it.
+    let native_capture = crate::sysvideo::supported();
     let self_pubkey = state.read().self_user.as_ref().map(|u| u.pubkey.clone());
     let sharing = state.read().screen_sharing;
     let name = self_username.clone().unwrap_or_else(|| "—".into());
@@ -827,14 +833,36 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                     }
                                 }
 
-                                                            if now {
+                                                            let q = settings.read().screenshare_quality.clone();
+                                                            let a = settings.read().screenshare_audio;
+                                                            if native_capture {
+                                                                // Native path: the button only opens the picker, which
+                                                                // owns starting the share (it is the thing that knows
+                                                                // *what* to capture). Publishing itself belongs to the
+                                                                // effect in `ScreenShareBridge`, so a voice-session
+                                                                // restart mid-share re-issues it rather than leaving the
+                                                                // share quietly dead.
+                                                                if now && state.peek().screen_video_token.is_none() {
+                                                                    state.write().error_toast = Some(
+                                                                        "This server is too old to accept a natively \
+                                                                         captured screen share.".into()
+                                                                    );
+                                                                } else if now {
+                                                                    crate::features::screenshare::open_screen_picker(state);
+                                                                } else {
+                                                                    let mut s = state.write();
+                                                                    s.screen_native_audio = false;
+                                                                    // Forget the surface, so the next share opens the
+                                                                    // picker rather than silently reusing whatever was
+                                                                    // shared last time.
+                                                                    s.screen_share_target = None;
+                                                                }
+                                                            } else if now {
                                                                 // Execute the user-gesture prompt + start helper from the
                                                                 // screenshare module. This calls requestAndStartShare()
                                                                 // which prompts for getDisplayMedia inside the click.
                                                                 // If the feature is unavailable the button is disabled and
                                                                 // this branch won't run.
-                                                                let q = settings.read().screenshare_quality.clone();
-                                                                let a = settings.read().screenshare_audio;
                                                                 let _ = document::eval(&crate::features::screenshare::share_js(true, &q, a));
                                                             } else {
                                                                 // Turning off — stop immediately.

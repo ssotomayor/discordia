@@ -130,6 +130,11 @@ objc2-screen-capture-kit = "0.3"
 objc2-core-media = "0.3"
 objc2-core-audio-types = "0.3"
 objc2-core-foundation = "0.3"
+# CVPixelBuffer, for handing ScreenCaptureKit's frames to libwebrtc without a
+# copy (`sysvideo`). Already in the tree — objc2-core-media enables it by
+# default, which is what makes `CMSampleBuffer::image_buffer()` exist — so this
+# names a copy that is already compiled rather than adding one.
+objc2-core-video = "0.3"
 block2 = "0.6"
 dispatch2 = "0.3"
 
