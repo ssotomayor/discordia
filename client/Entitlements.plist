@@ -1,16 +1,20 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  Entitlements for the signed macOS build, wired up by `entitlements` in
-  Dioxus.toml.
+  Entitlements for a signed macOS build, passed via `--apple-entitlements` by
+  `bundle-macos.sh`. Not referenced from Dioxus.toml: see the comment there for
+  why signing configuration stays out of shared files.
 
-  These exist because signing with a real identity makes `dx` enable the
-  **hardened runtime** (`codesign` flag 0x10000). Hardened runtime denies
-  microphone access outright unless the app is entitled to it — regardless of
-  what the user granted in System Settings, and without the plist usage string
-  being enough on its own. Signed with no entitlements at all, voice would have
-  broken again in a way that looks exactly like the TCC problem this signing was
-  meant to fix.
+  The microphone entry earns its place the moment anything turns on the
+  **hardened runtime**, which denies mic access outright unless the app is
+  entitled to it — regardless of what was granted in System Settings, and with
+  the plist usage description not being enough on its own. Setting
+  `signing_identity` in Dioxus.toml *did* enable hardened runtime (codesign flag
+  0x10000) and would have broken voice again in a way that looks exactly like the
+  TCC problem the signing was meant to fix. The `--codesign` CLI path this
+  project uses does not enable it (flag 0x0), so today the entitlement is
+  belt-and-braces rather than load-bearing — and it is cheap insurance against
+  the next person turning hardened runtime on for notarisation.
 
   Only the microphone is listed, deliberately:
 

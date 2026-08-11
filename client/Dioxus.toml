@@ -52,13 +52,17 @@ info_plist_path = "Info.plist"
 # back to ad-hoc. CI does not use this: the Linux and Windows jobs never sign,
 # and the macOS pre-release job has no certificate in its keychain, so it falls
 # back to ad-hoc there.
-signing_identity = "Apple Development: Santiago Sotomayor (LH8UJF7748)"
-# Signing with a real identity makes dx enable the hardened runtime, which denies
-# the microphone unless the app is *entitled* to it — the plist usage string is
-# not enough on its own. Without this, signing to fix the TCC problem would have
-# broken voice in a way that looks identical to it. See the file for why the
-# microphone is the only entry.
-entitlements = "Entitlements.plist"
+# No `signing_identity` / `entitlements` here on purpose, even though signing is
+# what makes macOS permission grants survive a rebuild (see below). A signing
+# identity is per-developer: naming one in a shared file breaks `dx bundle` for
+# every other contributor and for CI, both of which fail hard rather than falling
+# back — `codesign` exits 1 with "no identity found", which is how this was
+# learned. Pass it at the command line instead:
+#
+#   scripts/bundle-macos.sh          # reads DISCORDIA_SIGNING_IDENTITY
+#
+# or by hand, with `--codesign true --apple-team-id "<identity>"
+# --apple-entitlements Entitlements.plist`.
 
 # WebView2 is handled by the app, not by the bundler — see `nsis.installer_hooks`
 # below and `client/src/webview2.rs`.

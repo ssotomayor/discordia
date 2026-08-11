@@ -294,6 +294,16 @@ cargo run -p dioxusfun-rendezvous
 dx serve --package dioxusfun
 # or plain: cargo run -p dioxusfun
 
+# Package the macOS .app + .dmg. Use the script rather than `dx bundle` directly:
+# it passes the code-signing identity, which is what makes macOS keep its Screen
+# Recording / Microphone grants across rebuilds instead of treating every build
+# as a new app. The identity is per-developer and deliberately not in
+# Dioxus.toml — naming one there breaks everyone else's build and all three CI
+# pre-release jobs, because dx hands it to `codesign`, which fails hard.
+DISCORDIA_SIGNING_IDENTITY="Apple Development: You (TEAMID)" ./bundle-macos.sh
+#   security find-identity -v -p codesigning   # lists candidates
+#   (unset: still builds, ad-hoc — you re-grant permissions after every build)
+
 # Tests — the whole suite runs headlessly and must stay green
 cargo test --workspace
 ```
