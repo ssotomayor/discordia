@@ -293,7 +293,7 @@ We welcome contributions from anyone who is interested in improving Discordia. H
 
 1. **Fork the Repository**: Click on the "Fork" button at the top right of this repository page.
 2. **Clone Your Fork**: Clone your forked repository to your local machine using `git clone`.
-3. **Set Up Your Environment**: There's no separate README — this file (`CLAUDE.md`) is the setup/orientation doc; see "Build, run, test" above and `docs/SELF_HOSTING.md` for deploying a server.
+3. **Set Up Your Environment**: `README.md` is the project overview; this file (`CLAUDE.md`) is the setup/orientation doc. See "Build, run, test" above and `docs/SELF_HOSTING.md` for deploying a server.
 
 ### Making Changes
 
