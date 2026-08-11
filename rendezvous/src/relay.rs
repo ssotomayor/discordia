@@ -138,11 +138,11 @@ pub async fn handle_host_control(socket: WebSocket, registry: Arc<Registry>, cfg
         livekit_url: cfg.livekit_url.clone(),
         voice_token_grant,
     };
-    if let Ok(json) = serde_json::to_string(&registered) {
-        if tx.send(Message::Text(json.into())).await.is_err() {
-            registry.release(&shortcode);
-            return;
-        }
+    if let Ok(json) = serde_json::to_string(&registered)
+        && tx.send(Message::Text(json)).await.is_err()
+    {
+        registry.release(&shortcode);
+        return;
     }
 
     // Forward control messages from rendezvous to host (e.g. NewFriend
@@ -167,7 +167,7 @@ pub async fn handle_host_control(socket: WebSocket, registry: Arc<Registry>, cfg
             outbound = control_rx.recv() => {
                 let Some(msg) = outbound else { break };
                 let Ok(json) = serde_json::to_string(&msg) else { continue };
-                if tx.send(Message::Text(json.into())).await.is_err() {
+                if tx.send(Message::Text(json)).await.is_err() {
                     break;
                 }
             }
@@ -314,7 +314,7 @@ where
     S: SinkExt<Message> + Unpin,
 {
     let json = serde_json::to_string(msg).map_err(|_| ())?;
-    tx.send(Message::Text(json.into())).await.map_err(|_| ())
+    tx.send(Message::Text(json)).await.map_err(|_| ())
 }
 
 async fn send_err<S>(tx: &mut S, message: &str)
@@ -326,6 +326,6 @@ where
         message: message.to_string(),
     };
     if let Ok(json) = serde_json::to_string(&err) {
-        let _ = tx.send(Message::Text(json.into())).await;
+        let _ = tx.send(Message::Text(json)).await;
     }
 }

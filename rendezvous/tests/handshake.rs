@@ -80,9 +80,7 @@ async fn send_register(ws: &mut Ws, name: &str, pubkey: &str, signature: &str) {
         "op": "register",
         "d": { "name": name, "pubkey": pubkey, "signature": signature, "publish_public": false }
     });
-    ws.send(Message::Text(frame.to_string().into()))
-        .await
-        .unwrap();
+    ws.send(Message::Text(frame.to_string())).await.unwrap();
 }
 
 #[tokio::test]
@@ -157,9 +155,7 @@ async fn silent_host_is_dropped_from_the_listing() {
         "op": "register",
         "d": { "name": "Ghost", "pubkey": pubkey, "signature": sig, "publish_public": true }
     });
-    ws.send(Message::Text(frame.to_string().into()))
-        .await
-        .unwrap();
+    ws.send(Message::Text(frame.to_string())).await.unwrap();
     let reply = next_json(&mut ws).await;
     assert_eq!(reply["op"], "registered", "got {reply}");
     assert_eq!(
@@ -197,9 +193,7 @@ async fn responsive_host_keeps_its_listing() {
         "op": "register",
         "d": { "name": "Steady", "pubkey": pubkey, "signature": sig, "publish_public": true }
     });
-    ws.send(Message::Text(frame.to_string().into()))
-        .await
-        .unwrap();
+    ws.send(Message::Text(frame.to_string())).await.unwrap();
     assert_eq!(next_json(&mut ws).await["op"], "registered");
 
     // Keep polling, which is what makes tungstenite answer the pings.
