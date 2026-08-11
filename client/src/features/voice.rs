@@ -21,6 +21,7 @@ use livekit::webrtc::audio_source::AudioSourceOptions;
 use livekit::webrtc::audio_source::native::NativeAudioSource;
 use livekit::webrtc::audio_stream::native::NativeAudioStream;
 use livekit::webrtc::prelude::RtcAudioSource;
+use livekit::webrtc::stats::RtcStats;
 // Screen video publishing (`ScreenVideoRoom`). `NativeBuffer` is the zero-copy
 // wrapper around a platform image buffer — the reason ScreenCaptureKit frames
 // reach the encoder without a conversion pass in this process.
@@ -43,7 +44,7 @@ use rubato::{FftFixedIn, Resampler};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use crate::protocol::Id;
-use crate::state::{AppState, ConnectionHealth, VoicePhase};
+use crate::state::{AppState, ConnectionHealth, TrackStats, VoicePhase};
 
 const SAMPLE_RATE: u32 = 48_000;
 const CHANNELS: u32 = 1;
@@ -143,6 +144,10 @@ struct AudioControls {
     /// published — unlike the knobs above there is nothing to re-read per hop,
     /// because the encoder is configured at publish time.
     bitrate_kbps: Arc<AtomicU32>,
+    /// Whether the connection-stats panel is open. Gates the stats poll, which
+    /// walks every peer connection once a second and is worth nothing while
+    /// nobody is reading it.
+    stats_polling: Arc<AtomicBool>,
     /// Per-participant playback gain, keyed by LiveKit identity (= pubkey).
     /// Absent = unity. Applied to *incoming* audio in our own mixer only.
     gains: Arc<Mutex<HashMap<String, f32>>>,
@@ -160,6 +165,7 @@ impl AudioControls {
             agc: Arc::new(AtomicBool::new(agc)),
             denoise: Arc::new(AtomicBool::new(denoise)),
             bitrate_kbps: Arc::new(AtomicU32::new(bitrate_kbps)),
+            stats_polling: Arc::new(AtomicBool::new(false)),
             gains: Arc::new(Mutex::new(HashMap::new())),
             stream_gains: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -219,6 +225,12 @@ pub enum VoiceCmd {
     /// for a setting nobody changes mid-sentence.
     SetVoiceBitrate {
         kbps: u32,
+    },
+    /// Open or close the connection-stats readout. Only a gate on the poll —
+    /// the numbers come from the peer connection, which costs a walk of every
+    /// track per tick, so nothing is collected while the panel is closed.
+    SetStatsPolling {
+        enabled: bool,
     },
     /// Start/stop capturing this machine's audio and publishing it alongside a
     /// screen share. Only does anything where `sysaudio` has a backend.
@@ -488,6 +500,13 @@ async fn service_loop(
                 controls.bitrate_kbps.store(kbps, Ordering::Relaxed);
                 state.write().voice_bitrate_kbps = kbps;
             }
+            VoiceCmd::SetStatsPolling { enabled } => {
+                // No session plumbing: the poll task reads this atomic every
+                // tick and the flag lives on `controls`, which outlives
+                // individual sessions — so leaving the panel open across a
+                // device change or a channel switch keeps measuring.
+                controls.stats_polling.store(enabled, Ordering::Relaxed);
+            }
             VoiceCmd::SetSystemAudio { enabled } => {
                 if let Some(active) = session.as_mut() {
                     // A share that turns out to be silent is the most confusing
@@ -590,6 +609,10 @@ struct ActiveVoice {
     /// running, one accumulates per reconnect and they fight over the same
     /// `mic_level` / `speaking` fields.
     meter_task: Task,
+    /// Polls the peer connection for the stats panel. Cancelled on shutdown
+    /// for the same reason as `meter_task`, with one more: it holds an
+    /// `Arc<Room>`, so leaving it running would keep a closed room alive.
+    stats_task: Task,
 }
 
 impl ActiveVoice {
@@ -897,6 +920,13 @@ impl ActiveVoice {
         });
 
         let self_pubkey = state.peek().self_user.as_ref().map(|u| u.pubkey.clone());
+        let stats_task = spawn_stats_task(
+            state,
+            room.clone(),
+            local_audio_for_mute.clone(),
+            self_pubkey.clone(),
+            controls.stats_polling.clone(),
+        );
 
         Ok(Self {
             room,
@@ -906,6 +936,7 @@ impl ActiveVoice {
             _playback: playback,
             event_task,
             meter_task,
+            stats_task,
             system_audio: None,
             screen_audio: None,
             screen_video: None,
@@ -1186,6 +1217,7 @@ impl ActiveVoice {
     async fn shutdown(self, mut state: Signal<AppState>) {
         self.event_task.abort();
         self.meter_task.cancel();
+        self.stats_task.cancel();
         // Stop capturing before leaving, so no frames are published into a
         // room that is on its way out.
         self.mic.stop();
@@ -1214,6 +1246,7 @@ impl ActiveVoice {
             // dot would sit on someone's name after the call that produced it
             // had ended.
             s.voice_quality.clear();
+            s.voice_stats.clear();
         }
         // Actually tell the SFU we are leaving.
         //
@@ -1878,6 +1911,115 @@ fn spawn_meter_task(mut state: Signal<AppState>, meter: Arc<MicMeter>) -> Task {
             }
         }
     })
+}
+
+/// Poll the peer connection for the numbers behind "it sounds bad": loss,
+/// jitter, and how much delay the decoder is holding.
+///
+/// Gated rather than started and stopped. Spawning the task once and having it
+/// check a flag costs one atomic load a second while the panel is closed, and
+/// avoids threading a `Task` handle through the command loop to be cancelled
+/// and respawned — the flag already lives on `AudioControls`, which survives
+/// the session rebuilds a device change causes.
+fn spawn_stats_task(
+    mut state: Signal<AppState>,
+    room: Arc<Room>,
+    local_audio: LocalAudioTrack,
+    self_pubkey: Option<String>,
+    enabled: Arc<AtomicBool>,
+) -> Task {
+    dioxus::prelude::spawn(async move {
+        let mut was_enabled = false;
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+            if !enabled.load(Ordering::Relaxed) {
+                // Clear once on the way down. Left populated, a reopened panel
+                // would show numbers from minutes ago as if they were live.
+                if was_enabled {
+                    was_enabled = false;
+                    if !state.peek().voice_stats.is_empty() {
+                        state.write().voice_stats.clear();
+                    }
+                }
+                continue;
+            }
+            was_enabled = true;
+
+            let mut next: HashMap<String, TrackStats> = HashMap::new();
+            for (identity, participant) in room.remote_participants() {
+                for publication in participant.track_publications().into_values() {
+                    // A sharer publishes their system audio into *this* room
+                    // too, under the same identity. Taking whichever track came
+                    // out of the map first would sometimes report the screen
+                    // audio's numbers on the person's voice row.
+                    if publication.source() != TrackSource::Microphone {
+                        continue;
+                    }
+                    let Some(RemoteTrack::Audio(audio)) = publication.track() else {
+                        continue;
+                    };
+                    let Ok(stats) = audio.get_stats().await else {
+                        continue;
+                    };
+                    if let Some(s) = stats.iter().find_map(|s| match s {
+                        RtcStats::InboundRtp(i) => Some(i),
+                        _ => None,
+                    }) {
+                        next.insert(identity.0.clone(), inbound_stats(s));
+                    }
+                }
+            }
+
+            // Our own row is the other direction: what we are sending, which is
+            // also the only place the bitrate setting can be seen taking effect.
+            if let Some(pk) = self_pubkey.clone()
+                && let Ok(stats) = local_audio.get_stats().await
+                && let Some(o) = stats.iter().find_map(|s| match s {
+                    RtcStats::OutboundRtp(o) => Some(o),
+                    _ => None,
+                })
+            {
+                next.insert(
+                    pk,
+                    TrackStats::Outbound {
+                        bitrate_kbps: (o.outbound.target_bitrate / 1000.0).round() as u32,
+                        packets_sent: o.sent.packets_sent,
+                    },
+                );
+            }
+
+            // Same discipline as the meter task: this ticks once a second and
+            // every write re-renders.
+            if state.peek().voice_stats != next {
+                state.write().voice_stats = next;
+            }
+        }
+    })
+}
+
+/// Reduce a raw inbound report to the four numbers the panel shows.
+fn inbound_stats(s: &livekit::webrtc::stats::InboundRtpStats) -> TrackStats {
+    let received = s.received.packets_received;
+    let lost = s.received.packets_lost.max(0) as u64;
+    let total = received + lost;
+    // `jitterBufferTargetDelay` is a running sum in seconds, one addend per
+    // emitted sample, so it only means anything divided by that count.
+    let emitted = s.inbound.jitter_buffer_emitted_count;
+    TrackStats::Inbound {
+        loss_pct: if total == 0 {
+            0.0
+        } else {
+            lost as f32 / total as f32 * 100.0
+        },
+        jitter_ms: (s.received.jitter * 1000.0) as f32,
+        buffer_ms: if emitted == 0 {
+            0.0
+        } else {
+            (s.inbound.jitter_buffer_target_delay / emitted as f64 * 1000.0) as f32
+        },
+        concealment_events: s.inbound.concealment_events,
+    }
 }
 
 // ---------------------------------------------------------------------------
