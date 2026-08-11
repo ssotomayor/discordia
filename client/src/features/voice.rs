@@ -43,19 +43,34 @@ const RESAMPLER_CHUNK: usize = 512;
 /// ceiling for a burst, not the depth we aim to sit at.
 const PLAYBACK_CAP_DIVISOR: u32 = 5;
 
-/// Depth the drift compensator steers each track's buffer toward, in seconds
-/// of device-rate samples. Above the overrun mark it drops a sample now and
-/// then, below the underrun mark it repeats one.
+/// Band the drift compensator keeps each track's buffer inside, in seconds of
+/// device-rate samples. Above the overrun mark it drops a sample now and then,
+/// below the underrun mark it repeats one; inside the band it does nothing.
 ///
-/// These are deliberately small because this is the *second* buffer in the
-/// path: libwebrtc's NetEq has already absorbed network jitter and concealed
-/// losses before a frame reaches us. What is left for this one to solve is the
-/// difference between the stream's clock and the output device's — drift of a
-/// few samples per second, not network burstiness. Sizing it like a primary
-/// jitter buffer (the 150ms/50ms it used to hold) bought no extra resilience
-/// and simply added its whole depth to end-to-end latency.
-const DRIFT_OVERRUN_SECS: f64 = 0.06;
-const DRIFT_UNDERRUN_SECS: f64 = 0.02;
+/// The two marks answer different questions, which is why they moved by
+/// different amounts from the 150ms/50ms this used to hold:
+///
+///  * The **underrun** mark is what costs latency. The buffer spends most of
+///    its life being defended up toward it, so it is roughly the delay this
+///    stage adds. It can afford to be low because this is the *second* buffer
+///    in the path — libwebrtc's NetEq has already absorbed network jitter and
+///    concealed losses upstream, leaving this one only the difference between
+///    the stream's clock and the output device's. Dipping below it is not a
+///    dropout either; it just starts stretching. Silence needs the buffer to
+///    reach zero.
+///  * The **width** of the band is what costs artefacts. Every correction is a
+///    dropped or duplicated sample, so a narrow band means constant fiddling
+///    with the signal. Keeping it wide is nearly free — the ceiling only has
+///    to stay under `PLAYBACK_CAP_DIVISOR` so the producer's cap can't hide
+///    the overrun branch.
+///
+/// So: floor down (latency), ceiling roughly where it was (burst tolerance,
+/// few corrections). Start conservative and tighten with real hardware —
+/// dropping the floor further is the next thing to try if latency still reads
+/// high, and raising it is the fix if a device turns out to drift harder than
+/// this leaves room for.
+const DRIFT_OVERRUN_SECS: f64 = 0.12;
+const DRIFT_UNDERRUN_SECS: f64 = 0.03;
 
 /// How long the transmit gate stays open after the last frame above threshold,
 /// in 10ms frames. Speech has gaps — breaths, stops between words — and a gate
@@ -655,6 +670,24 @@ impl ActiveVoice {
             let mut state = state;
             dioxus::prelude::spawn(async move {
                 while let Some(msg) = quality_rx.recv().await {
+                    // The SFU reports on a timer, for every participant, and
+                    // the reading is almost always the one we already hold.
+                    // Taking the write lock regardless would re-render the
+                    // channel list once per participant per tick for the whole
+                    // length of every call, so look first with a peek — which
+                    // doesn't mark the signal dirty — and only write on a real
+                    // change.
+                    let changed = {
+                        let s = state.peek();
+                        match &msg {
+                            QualityMsg::Set(id, health) => s.voice_quality.get(id) != Some(health),
+                            QualityMsg::Drop(id) => s.voice_quality.contains_key(id),
+                            QualityMsg::Clear => !s.voice_quality.is_empty(),
+                        }
+                    };
+                    if !changed {
+                        continue;
+                    }
                     let mut s = state.write();
                     match msg {
                         QualityMsg::Set(id, health) => {
@@ -797,9 +830,10 @@ impl ActiveVoice {
                     }
                 }
                 eprintln!("[voice] event stream ended");
-                // Covers the paths that end the stream without a Disconnected
-                // event — a dropped room handle, or the task being aborted on
-                // shutdown.
+                // For a stream that ends without a Disconnected event — a
+                // dropped room handle, say. Deliberately not the shutdown
+                // path: that aborts this task, so nothing here runs and
+                // `ActiveVoice::shutdown` clears the map itself.
                 let _ = quality_tx.send(QualityMsg::Clear);
             }
         });
@@ -1049,6 +1083,12 @@ impl ActiveVoice {
             let mut s = state.write();
             s.stream_has_audio.clear();
             s.screen_audio_joined = false;
+            // Same argument for the quality readings, with an extra reason:
+            // the event task was just aborted, so nothing it might have sent
+            // on the way out will ever run. Left behind, a "weak connection"
+            // dot would sit on someone's name after the call that produced it
+            // had ended.
+            s.voice_quality.clear();
         }
         // Actually tell the SFU we are leaving.
         //
