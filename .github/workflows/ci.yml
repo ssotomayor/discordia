@@ -258,6 +258,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: cargo-bins/cargo-binstall@main
+      # LiveKit publishes no darwin binaries, so `server/build.rs` clones the
+      # repo and `go build`s it here. The runner image happens to carry Go, but
+      # as a *cached tool* — which is a promise about the image, not about PATH,
+      # and now that a missing bundle fails the build instead of warning, that
+      # difference is the difference between a release and a red job. Pin it.
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+      - name: Verify go
+        run: go version
       - name: Install Dioxus CLI
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
