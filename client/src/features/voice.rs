@@ -24,10 +24,19 @@ use livekit::webrtc::prelude::RtcAudioSource;
 // Screen video publishing (`ScreenVideoRoom`). `NativeBuffer` is the zero-copy
 // wrapper around a platform image buffer — the reason ScreenCaptureKit frames
 // reach the encoder without a conversion pass in this process.
+//
+// macOS-gated with the code that uses them: `sysvideo` has a backend only there,
+// and the frame path ends in `NativeBuffer::from_cv_pixel_buffer`, which is
+// CoreVideo. Elsewhere the webview keeps the share, as it always did.
+#[cfg(target_os = "macos")]
 use livekit::options::VideoEncoding;
+#[cfg(target_os = "macos")]
 use livekit::webrtc::video_frame::native::NativeBuffer;
+#[cfg(target_os = "macos")]
 use livekit::webrtc::video_frame::{VideoFrame, VideoRotation};
+#[cfg(target_os = "macos")]
 use livekit::webrtc::video_source::native::NativeVideoSource;
+#[cfg(target_os = "macos")]
 use livekit::webrtc::video_source::{RtcVideoSource, VideoResolution};
 use parking_lot::Mutex;
 use rubato::{FftFixedIn, Resampler};
@@ -922,8 +931,21 @@ impl ActiveVoice {
         if !crate::sysvideo::supported() {
             return Err("screen capture isn't implemented on this platform".into());
         }
-        let r = ScreenVideoRoom::connect(&url, &token, target, settings, state).await?;
-        self.screen_video = Some(r);
+        // Everything above is platform-neutral, including the stop path, which
+        // has already returned by now: with `supported()` false there can be
+        // nothing publishing, so asking to stop is a no-op and not a failure.
+        // Only starting is refused, and the guard above is what refuses it —
+        // this arm exists because the call below cannot be compiled at all off
+        // macOS. Same shape as `sysaudio::start`.
+        #[cfg(target_os = "macos")]
+        {
+            let r = ScreenVideoRoom::connect(&url, &token, target, settings, state).await?;
+            self.screen_video = Some(r);
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = (url, token, target, settings, state);
+        }
         Ok(())
     }
 
@@ -1085,6 +1107,11 @@ struct ScreenVideoRoom {
     /// The OS capture. Dropping it stops the stream, which is why it is held
     /// here and not detached: the room outliving the capture would publish a
     /// frozen frame forever.
+    ///
+    /// Only where `sysvideo` has a backend. The rest of this type — the room,
+    /// the key, `shutdown` — is platform-neutral and stays, so the field that
+    /// holds one of these needs no gate of its own.
+    #[cfg(target_os = "macos")]
     _capture: crate::sysvideo::Capture,
     /// The `(url, token, target)` this was started with, so a repeated command
     /// for the same surface is a no-op while a changed one rebuilds.
@@ -1092,6 +1119,10 @@ struct ScreenVideoRoom {
 }
 
 impl ScreenVideoRoom {
+    /// macOS only, and unconditionally so: every line past the room join is
+    /// ScreenCaptureKit or CoreVideo. `set_screen_video` refuses to reach here
+    /// on other platforms long before the compiler would have to.
+    #[cfg(target_os = "macos")]
     async fn connect(
         url: &str,
         token: &str,
@@ -1217,7 +1248,9 @@ impl ScreenVideoRoom {
 
     async fn shutdown(self) {
         // Drop the capture first, so no frame is handed to a source whose room
-        // is already closing.
+        // is already closing. Only exists where there is a capture to drop; the
+        // room close below is what shutdown means on every platform.
+        #[cfg(target_os = "macos")]
         drop(self._capture);
         match tokio::time::timeout(ROOM_CLOSE_TIMEOUT, self.room.close()).await {
             Ok(Ok(())) => {}
