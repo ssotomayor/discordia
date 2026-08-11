@@ -51,7 +51,7 @@ LiveKit URL handed to clients.
 | `DIOXUSFUN_OPERATORS` | *(empty)* | comma-separated hex pubkeys who moderate system guilds |
 | `LIVEKIT_URL` | *(derived per-connection)* | LiveKit URL handed to clients |
 | `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` | dev defaults | must match the LiveKit server |
-| `LIVEKIT_PORT` | `7880` | port the bundled LiveKit is spawned on / derived URLs use |
+| `LIVEKIT_PORT` | `7880` | port used when deriving the LiveKit URL for clients (the bundled SFU always spawns on 7880) |
 | `DIOXUSFUN_LIVEKIT_AUTOSPAWN` | `1` | set `0` when LiveKit runs separately |
 
 Compose-only: `PUBLIC_HOST` (see `.env.example`) is read by
