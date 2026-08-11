@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  Entitlements for a signed macOS build, passed via `--apple-entitlements` by
+  Entitlements for a signed macOS build, passed via the `apple-entitlements` flag by
   `bundle-macos.sh`. Not referenced from Dioxus.toml: see the comment there for
   why signing configuration stays out of shared files.
 
@@ -11,7 +11,7 @@
   the plist usage description not being enough on its own. Setting
   `signing_identity` in Dioxus.toml *did* enable hardened runtime (codesign flag
   0x10000) and would have broken voice again in a way that looks exactly like the
-  TCC problem the signing was meant to fix. The `--codesign` CLI path this
+  TCC problem the signing was meant to fix. The `codesign` CLI path this
   project uses does not enable it (flag 0x0), so today the entitlement is
   belt-and-braces rather than load-bearing — and it is cheap insurance against
   the next person turning hardened runtime on for notarisation.

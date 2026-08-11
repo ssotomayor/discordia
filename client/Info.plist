@@ -18,8 +18,8 @@
   against dx 0.7.9 by building each way and dumping the result:
 
     * `[permissions] microphone = { … }`  — the unified permissions table. dx
-      maps it into the plist on the `dx build --platform ios/macos` path, but
-      `dx bundle --package-types macos/dmg` runs a different bundler that never
+      maps it into the plist on the `dx build` ios/macos platform path, but
+      `dx bundle` for macos/dmg package types runs another bundler that never
       reads it. No effect.
     * `[application] macos_info_plist`    — documented as "dx will merge any
       required settings into this file". Same story: not consulted by the

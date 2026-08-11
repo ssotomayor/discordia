@@ -3,13 +3,23 @@
 //!
 //! The webview path in `features::screenshare` is the original and still the
 //! only one on Windows, where WebView2 is Chromium and `getDisplayMedia` works.
-//! macOS is the reason this module exists: WKWebView does not expose
-//! `navigator.mediaDevices` — not restricted, *absent* — so the JS controller's
-//! capture branch can never run there, and a macOS build could not share a
-//! screen at all. (Verified from inside a bundled app: the origin is a secure
-//! context and `typeof navigator.mediaDevices` is still `"undefined"`. wry sets
-//! several `WKPreferences` keys and never the media-devices one, so its
-//! auto-granting permission delegate has nothing to grant.)
+//! macOS is why it was written: the webview capture branch could not run there,
+//! because `navigator.mediaDevices` was `undefined` and `getDisplayMedia` with
+//! it. Probed from inside a bundled app, the origin was a secure context and the
+//! API was simply absent.
+//!
+//! That turned out to be *our* fault rather than WKWebView's, and the correction
+//! matters more than the original claim: WKWebView gates media capture on the
+//! host app declaring a usage description, and the bundle had none. Adding
+//! `NSMicrophoneUsageDescription` to Info.plist (for the microphone, not for
+//! this) made `navigator.mediaDevices.getDisplayMedia` appear on macOS —
+//! re-probed and confirmed.
+//!
+//! So this module is now a *choice*, not a necessity, and the reasons to keep it
+//! are the ones that were incidental before: frames reach the encoder with no
+//! copy and no colour conversion, the surface picker is ours rather than the
+//! engine's, and capture does not depend on what the webview is permitted to do.
+//! The webview path remains the only one on Windows.
 //!
 //! Capturing natively sidesteps the engine the same way `sysaudio` does for
 //! sound: frames become an ordinary LiveKit video track published from Rust.

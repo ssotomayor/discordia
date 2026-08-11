@@ -80,10 +80,13 @@ identities — see `server::livekit::screen_audio_identity` /
 
 **Which path captures video is per-platform, and it is not a preference.**
 Windows uses the webview (WebView2 is Chromium, `getDisplayMedia` works there).
-macOS cannot: WKWebView does not expose `navigator.mediaDevices` at all, so the
-JS capture branch is unreachable and macOS captures natively via `sysvideo/`
-instead. The webview still joins the room on both platforms, because it is what
-*renders* everyone else's share.
+macOS captures natively via `sysvideo/` instead. Originally because
+`navigator.mediaDevices` was absent there — which turned out to be a missing
+`NSMicrophoneUsageDescription` in our own bundle, not a WKWebView limitation;
+adding it makes `getDisplayMedia` appear. The native path stays because it is
+better here (no copy, no colour conversion, our own surface picker), not because
+the webview cannot. The webview still joins the room on both platforms, because
+it is what *renders* everyone else's share.
 
 ---
 
@@ -191,11 +194,11 @@ instead. The webview still joins the room on both platforms, because it is what
   flow settles which path a given capture takes *after* the picker closes, since
   that answer depends on what the user chose. Frames are mono f32 @48kHz — the
   format `features::voice` already publishes.
-- `sysvideo/` — native *screen* capture, for platforms where the webview has no
-  capture API at all. Only macOS has a backend, and it is not an optimisation:
-  WKWebView does not expose `navigator.mediaDevices`, so `getDisplayMedia` is
-  absent rather than restricted and the webview path is unreachable there. Frames
-  are handed to a sink as owned `Frame`s wrapping the platform's `CVPixelBuffer`,
+- `sysvideo/` — native *screen* capture. macOS only, and it exists because the
+  webview path was unusable there: `navigator.mediaDevices` was absent until we
+  added a usage description to Info.plist, which the module docs correct at
+  length — the original "WKWebView cannot" diagnosis was ours, not WebKit's.
+  Frames are handed to a sink as owned `Frame`s wrapping the `CVPixelBuffer`,
   which libwebrtc can encode directly — no copy, no colour conversion in our
   process. `supported()` decides which path the share button drives; the
   publisher lives in `features::voice::ScreenVideoRoom`.

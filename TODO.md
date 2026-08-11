@@ -176,7 +176,49 @@ the top within each section.
   if a native Windows path (WGC) buys something the picker doesn't — it would
   also give us the window/PID that `sysaudio`'s Windows note wants.
 
+## Screen sharing (live findings, macOS)
+
+- **macOS system-audio capture delivers nothing, and says it succeeded.**
+  `sysaudio::start()` returns `Ok` and then produces zero samples, so a share
+  carries no sound and nothing reports a failure — `set_system_audio` publishes a
+  track that is silent for its whole life. Measured with a controlled test
+  (sound playing via `afplay`, Screen Recording granted): 0 samples with a video
+  capture running *and* 0 with none, so concurrent SCStreams are not the cause.
+  Adding a `SCStreamOutputType::Screen` output alongside the audio one does not
+  help either (tried, reverted). Prime suspect is macOS 15+/26 splitting system
+  audio out of the Screen Recording grant — the settings pane is now "Screen &
+  System **Audio** Recording" — so the tap may be denied separately and silently.
+  Whatever the cause, `start()` returning `Ok` for a capture that yields nothing
+  is the part that must change: it should fail loudly, the way the Windows
+  backend's `fatal` channel does.
+- **A macOS watcher can get stuck on "Connecting to stream…" indefinitely.**
+  Reproduced once against a Windows sharer. Two theories were tested and both are
+  wrong: the LiveKit JS SDK loads fine from its CDN (~100ms), and
+  `RTCPeerConnection` / `new Room()` both work in the webview. So the webview is
+  capable of subscribing and rendering, and the cause is still unknown. The JS
+  controller needs persistent diagnostics — room participants, their
+  publications, subscription state, and whether `attach` found a track — reported
+  back to Rust, so the next occurrence explains itself instead of costing another
+  guess-build-test cycle.
+
 ## Voice / audio
+
+- **The bundled `livekit-server` gets `SIGKILL (Code Signature Invalid)`.** 15
+  crash reports on one macOS machine across two days of testing, every one with
+  that same reason, and they predate the app being signed with a real identity —
+  so this is the *extraction*, not the app signature. `spawn_livekit` writes the
+  `include_bytes!`-embedded binary to a fixed path (`$TMPDIR/dioxusfun/
+  livekit-server`) and overwrites it in place, with a staleness check that
+  compares only file *length*. Two things fall out of that: a rebuilt SFU of the
+  same size is never re-extracted (stale bytes run), and rewriting the path while
+  a previous copy is running is a known way to invalidate a mapped binary's
+  signature — which a second app instance would do. The extracted copy passes
+  `codesign --verify --strict` when inspected afterwards, so whatever it is, it
+  is intermittent rather than a permanently broken binary; the precise trigger
+  was not pinned down. Likely worth extracting to a content-hashed filename
+  (exact staleness check, never an in-place overwrite) and re-checking. Matters
+  because a killed SFU means self-hosted voice and screen sharing fail with no
+  obvious cause.
 
 - **Deafen is not implemented on the client.** `AppState.voice.deafened` is
   written from `VoiceStateUpdate` and never read, and the mute button sends

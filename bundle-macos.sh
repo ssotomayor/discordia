@@ -1,20 +1,30 @@
 #!/usr/bin/env bash
 # Build the macOS .app + .dmg, code-signed if an identity is available.
 #
-# Signing is what makes macOS *permissions* survive a rebuild, which is the
-# reason this script exists rather than a bare `dx bundle`. TCC records a Screen
-# Recording / Microphone grant against the app's code signature; an ad-hoc
-# signature is derived from the binary, so it changes on every build, the grant
-# no longer matches, and — because a record for the bundle id already exists —
-# macOS does not re-prompt. ScreenCaptureKit instead fails with "the user
-# declined TCCs for application, window, display capture", which reads as a
-# permission bug and is a signing one. A real identity's designated requirement
-# is the bundle id plus the certificate, so one grant holds across rebuilds.
+# WHY SIGN AT ALL
+# macOS TCC records a Screen Recording / Microphone grant against the app's code
+# signature. An ad-hoc signature is derived from the binary, so it changes on
+# every build, the grant no longer matches, and — because a record for the bundle
+# id already exists — macOS does not re-prompt. ScreenCaptureKit instead fails
+# with "the user declined TCCs for application, window, display capture", which
+# reads as a permission bug and is a signing one. A real identity's designated
+# requirement is the bundle id plus the certificate, so one grant holds.
 #
-# The identity is NOT in Dioxus.toml on purpose. It is per-developer, and naming
-# one there breaks `dx bundle` for everyone else: dx passes it straight to
-# `codesign`, which exits 1 with "no identity found" rather than falling back.
-# That took out all three pre-release CI jobs.
+# WHY THE IDENTITY IS NOT IN Dioxus.toml
+# It is per-developer. Naming one there breaks `dx bundle` for everyone else and
+# for CI, both of which fail hard — dx hands the value to `codesign`, which exits
+# 1 with "no identity found". That took out all three pre-release jobs once.
+#
+# WHY WE SIGN HERE RATHER THAN VIA `dx --codesign`
+# That flag signs the inner executable only (its own help: `codesign --force
+# --entitlements <file> --sign <id>` against the binary). A bundle needs
+# `Contents/_CodeSignature/CodeResources` sealing Info.plist and the resources;
+# without it `codesign --verify` reports "invalid Info.plist (plist or signature
+# have been modified)" and macOS refuses to launch with "The application
+# Discordia can't be opened". Signing the *bundle* path is what produces the
+# seal, so that is what this does — and then verifies it, which is the step whose
+# absence let a broken bundle ship (`codesign -dvv` prints metadata and passes on
+# a bundle that will not open; only `--verify` validates).
 #
 #   DISCORDIA_SIGNING_IDENTITY="Apple Development: You (TEAMID)" ./bundle-macos.sh
 #
@@ -29,22 +39,29 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
   exit 1
 fi
 
+identity="${DISCORDIA_SIGNING_IDENTITY:-}"
+
 # Same regeneration dance as dev-client.sh: CI asserts the committed CSS matches
-# what the generator produces, so a bundle built from a stale one is a bundle
-# that disagrees with the repo.
+# what the generator produces, so a bundle built from a stale one disagrees with
+# the repo.
 if command -v npx >/dev/null 2>&1; then
   (cd client && npx @tailwindcss/cli -i assets/tailwind.css -o assets/tailwind.out.css --minify)
 else
   echo "warn: npx not found — using committed tailwind.out.css" >&2
 fi
 
-args=(bundle --release --platform macos --package-types macos --package-types dmg)
-if [[ -n "${DISCORDIA_SIGNING_IDENTITY:-}" ]]; then
-  # `--apple-team-id` is dx's name for the identity passed to `codesign --sign`;
-  # it takes the full "Name (TEAMID)" string, not a bare team id.
-  args+=(--codesign true --apple-team-id "$DISCORDIA_SIGNING_IDENTITY"
-         --apple-entitlements Entitlements.plist)
-  echo "signing with: $DISCORDIA_SIGNING_IDENTITY"
+if [[ -n "$identity" ]]; then
+  # Validate the entitlements as strict XML before codesign sees them. Worth its
+  # own check because the parser that matters is stricter than the obvious one:
+  # `plutil -lint` accepts a comment containing `--` (illegal in XML) and reports
+  # OK, while codesign's AMFI parser rejects it with "AMFIUnserializeXML: syntax
+  # error near line 4" after a full release compile.
+  if command -v xmllint >/dev/null 2>&1; then
+    xmllint --noout client/Entitlements.plist || {
+      echo "error: client/Entitlements.plist is not valid XML (a '--' inside a comment?)" >&2
+      exit 1
+    }
+  fi
 else
   cat >&2 <<'WARN'
 warn: DISCORDIA_SIGNING_IDENTITY unset — building ad-hoc signed.
@@ -56,19 +73,45 @@ warn: DISCORDIA_SIGNING_IDENTITY unset — building ad-hoc signed.
 WARN
 fi
 
-(cd client && dx "${args[@]}")
+# Only the .app here. The DMG is built below from the *signed* bundle — letting
+# dx make it first would package the unsigned one.
+(cd client && dx bundle --release --platform macos --package-types macos)
 
-# Report what was actually signed, because "it built" and "it will keep its
-# permissions" are different claims and only the signature settles the second.
 # The bundle lands under cargo's target dir, which is redirectable
-# (`build.target-dir`), so ask cargo instead of assuming ./target.
+# (`build.target-dir`), so ask cargo rather than assuming ./target.
 target=$(cargo metadata --format-version 1 --no-deps 2>/dev/null \
   | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')
 app=$(find "${target:-target}/dx" -maxdepth 6 -name 'Discordia.app' -path '*bundle/macos*' 2>/dev/null | head -1)
-if [[ -n "$app" ]]; then
-  echo
-  echo "bundle: $app"
-  codesign -dvv "$app" 2>&1 | grep -E '^Identifier|^Authority|^Signature|flags' || true
-else
-  echo "warn: built, but could not locate the .app to report its signature" >&2
+[[ -n "$app" ]] || { echo "error: built, but no Discordia.app found" >&2; exit 1; }
+
+if [[ -n "$identity" ]]; then
+  echo "signing bundle with: $identity"
+  # No --deep: there is exactly one Mach-O in here (the main executable), and
+  # --deep is the wrong tool the moment that stops being true. `--options
+  # runtime` matches the configuration this app has been tested against.
+  codesign --force --options runtime \
+    --entitlements client/Entitlements.plist \
+    --sign "$identity" "$app"
+
+  # The check whose absence shipped an app that could not be opened. `--verify`
+  # validates the seal; `-dvv` only prints metadata and would pass regardless.
+  codesign --verify --deep --strict --verbose=2 "$app"
+  echo "signature verified"
 fi
+
+# Rebuild the DMG from whatever the .app now is, mirroring dx's own staging: the
+# app plus an /Applications symlink to drag it onto.
+dmg_dir=$(dirname "$app")
+dmg="$dmg_dir/Discordia_0.1.0_aarch64.dmg"
+stage=$(mktemp -d)
+trap 'rm -rf "$stage"' EXIT
+cp -R "$app" "$stage/"
+ln -s /Applications "$stage/Applications"
+rm -f "$dmg"
+hdiutil create -srcfolder "$stage" -volname Discordia -ov -format UDZO "$dmg" >/dev/null
+[[ -n "$identity" ]] && codesign --force --sign "$identity" "$dmg" >/dev/null 2>&1 || true
+
+echo
+echo "app: $app"
+echo "dmg: $dmg"
+codesign -dvv "$app" 2>&1 | grep -E '^Identifier|^Authority|^Signature|flags' || true
