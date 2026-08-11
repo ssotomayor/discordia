@@ -573,6 +573,11 @@ fn VoiceOccupant(
         .copied()
         .unwrap_or(100);
     let locally_muted = state.read().user_muted.contains(&pubkey);
+    // Only rendered when the SFU says something is wrong: a dot on every name
+    // in a healthy call is noise, and trains people to ignore the one that
+    // matters. `None` covers both "fine" and "no reading yet".
+    let health = state.read().voice_quality.get(&pubkey).copied();
+    let health_dot = health.and_then(|h| h.dot_color().map(|c| (c, h.label())));
 
     let dot = if speaking && !locally_muted {
         "bg-[var(--accent)]"
@@ -608,6 +613,13 @@ fn VoiceOccupant(
                 }
                 if remote_muted {
                     span { class: "text-[9px] text-[var(--text-dim)] uppercase tracking-wider", "muted" }
+                }
+                if let Some((color, label)) = health_dot {
+                    span {
+                        class: "w-1.5 h-1.5 rounded-full shrink-0",
+                        style: "background:{color};",
+                        title: "{label}",
+                    }
                 }
                 // No volume control for yourself: your own voice is never
                 // played back, so there'd be nothing for it to change.
@@ -760,6 +772,7 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
     let noise_cancellation = state.read().noise_cancellation;
     let mic_volume = state.read().mic_volume;
     let auto_gain_control = state.read().auto_gain_control;
+    let voice_bitrate_kbps = state.read().voice_bitrate_kbps;
     // Whether the transmit gate is currently open — the very same flag the
     // publish path acts on, so this can't claim something the audio isn't doing.
     let gate_open = self_voice.speaking;
@@ -773,6 +786,7 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
     let v_for_denoise = voice.clone();
     let v_for_mic_volume = voice.clone();
     let v_for_agc = voice.clone();
+    let v_for_bitrate = voice.clone();
 
     // Snapshot current voice phase so the popover can show reconnection state.
     let voice_phase = state.read().voice.phase;
@@ -1184,6 +1198,36 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                 }
                                 span { class: "text-[10px] text-[var(--text-dim)] mt-0.5 block",
                                     "Removes fans, keyboards and room noise (DeepFilterNet, ~1.5% CPU)."
+                                }
+                            }
+                            // Outgoing voice quality. The encoder is configured
+                            // when the mic track is published, so this can only
+                            // land on the next join — said out loud below
+                            // rather than letting the user wonder why the call
+                            // they're in sounds the same.
+                            div { class: "mb-2",
+                                span { class: "text-[11px] text-[var(--text-muted)]", "Voice quality" }
+                                select {
+                                    class: "w-full mt-1 bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)] rounded px-2 py-1 text-sm",
+                                    value: "{voice_bitrate_kbps}",
+                                    onchange: move |e| {
+                                        let kbps = if e.value() == "24" { 24 } else { 48 };
+                                        let mut next = settings.read().clone();
+                                        next.voice_bitrate_kbps = kbps;
+                                        settings.set(next.clone());
+                                        crate::settings::save(&next);
+                                        state.write().voice_bitrate_kbps = kbps;
+                                        v_for_bitrate.send(crate::features::voice::VoiceCmd::SetVoiceBitrate { kbps });
+                                    },
+                                    option { value: "24", "Standard — 24 kbit/s" }
+                                    option { value: "48", "High — 48 kbit/s" }
+                                }
+                                span { class: "text-[10px] text-[var(--text-dim)] mt-0.5 block",
+                                    if voice_phase == VoicePhase::Connected {
+                                        "Applies the next time you join a voice channel."
+                                    } else {
+                                        "Higher sounds better on low voices and background music, and costs more upload."
+                                    }
                                 }
                             }
                             // Output device select
