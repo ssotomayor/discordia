@@ -20,10 +20,17 @@ A VPS with Docker:
 
 ```bash
 git clone <this repo> && cd <repo>
-LIVEKIT_HOST=your.domain docker compose up -d
+cp .env.example .env          # set PUBLIC_HOST, and change the LiveKit secret
+docker compose up -d discordia livekit
 ```
 
 Clients connect with the **URL** tab → `ws://your.domain:9000`.
+
+Name the services you want: `docker compose up -d` on its own also starts the
+`rendezvous`, which is the *other* way to be reachable (rung 1 hosting from
+your laptop) and pointless alongside an always-on gateway. `PUBLIC_HOST` is
+required — compose refuses to start without it, since it's what goes into the
+LiveKit URL handed to clients.
 
 - Data volume: `discordia-data` (SQLite + media blobs). Backup = snapshot the
   volume.
@@ -44,7 +51,16 @@ Clients connect with the **URL** tab → `ws://your.domain:9000`.
 | `DIOXUSFUN_OPERATORS` | *(empty)* | comma-separated hex pubkeys who moderate system guilds |
 | `LIVEKIT_URL` | *(derived per-connection)* | LiveKit URL handed to clients |
 | `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` | dev defaults | must match the LiveKit server |
+| `LIVEKIT_PORT` | `7880` | port the bundled LiveKit is spawned on / derived URLs use |
 | `DIOXUSFUN_LIVEKIT_AUTOSPAWN` | `1` | set `0` when LiveKit runs separately |
+
+Compose-only: `PUBLIC_HOST` (see `.env.example`) is read by
+`docker-compose.yml`, not by the server — it builds the `LIVEKIT_URL` above.
+
+Client-side, for reference: `DIOXUSFUN_CONFIG_DIR` relocates the identity, dev
+log and settings, and `DIOXUSFUN_RENDEZVOUS_URL` presets the rendezvous the
+Self-host tab offers. Build-time, `LIVEKIT_BUNDLE_SKIP=1` skips fetching the
+LiveKit binary — useful for CI, but the resulting build cannot host voice.
 
 ### Storage governance
 

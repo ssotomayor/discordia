@@ -254,8 +254,8 @@ gateway (`spawn_gateway()`) and drive it through the bot SDK's
 `Bot::connect_as_user` / `connect` — they exercise the actual WebSocket
 protocol end to end. Copy an existing test's helper block (`spawn_gateway`,
 `connect_user`, `create_guild`, `next_timeout`) when adding one. Each test uses
-a unique temp data dir so they're parallel-safe. Current suites: `bots`,
-`owner_controls`, `persistence`, `transport`, `archive` (server) and
+a unique temp data dir so they're parallel-safe. Current suites: `archive`,
+`bots`, `emoji`, `owner_controls`, `persistence`, `transport` (server) and
 `handshake` (rendezvous). **First run is slow** — the server crate builds
 LiveKit from source once (~2-3 min).
 
