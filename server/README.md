@@ -1,7 +1,7 @@
 # dioxusfun-server
 
 WebSocket gateway, voice signaling, and LiveKit token minter for the
-[dioxusfun](../dioxusfun) Discord clone.
+[dioxusfun](../client) Discord clone.
 
 ## Components
 
@@ -36,7 +36,7 @@ Listens on `ws://0.0.0.0:9000/gateway`. Override the bind with
 ### 3. Start the Dioxus client
 
 ```bash
-cd ../dioxusfun && dx serve
+cd ../client && dx serve
 ```
 
 Connect to `ws://localhost:9000` from the connect screen. Joining a voice
@@ -68,11 +68,14 @@ runs centrally.
 
 ## Status
 
-- Text messaging, presence, voice signaling, voice token minting: in-memory.
+- Text messaging, presence, voice signaling, voice token minting: live state in
+  `state/` (DashMaps), written through to SQLite by `store.rs` and rehydrated on
+  boot. Messages are the exception — they live only in the DB.
 - Voice media: libwebrtc end-to-end via LiveKit SFU.
-- PostgreSQL persistence: not yet — `state/` is the swap point for a `sqlx`
-  repository layer.
-- Redis/NATS multi-node fanout: not yet — single-node `tokio::broadcast`.
+- PostgreSQL: not yet. The `sqlx` repository layer exists (`store.rs`); only the
+  SQLite implementation is written, and `Store` is where a Postgres one would go.
+- Redis/NATS multi-node fanout: not yet — single-node, and fan-out is a
+  per-connection routing table (`AppState::deliver`), not a broadcast channel.
 
 ## Protocol
 
@@ -82,8 +85,9 @@ a single source of truth — no duplication to keep in sync.
 
 ## Bots (Tier 1)
 
-A bot is an external WS client identified by an Ed25519 pubkey — the same
-identity primitive users have, so there's no bearer token to leak. The guild
+A bot is an external WS client identified by a secp256k1 Schnorr (BIP-340 /
+Nostr) pubkey — the same identity primitive users have, so there's no bearer
+token to leak. The guild
 **owner** installs a bot by its pubkey (`InstallBot`), granting:
 
 - **Permissions** — what it may *do*: `send_messages`, `read_message_history`,

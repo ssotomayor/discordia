@@ -105,8 +105,8 @@ fn host_without_port(host: &str) -> &str {
 }
 
 /// Build a LiveKit JWT scoped to the given voice channel room. Identity is
-/// the user's Ed25519 pubkey so LiveKit's participant identifiers match
-/// dioxusfun's universal user id.
+/// the user's x-only secp256k1 pubkey so LiveKit's participant identifiers
+/// match dioxusfun's universal user id.
 pub fn mint_token(
     cfg: &LiveKitConfig,
     user_pubkey: &str,
