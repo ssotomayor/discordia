@@ -58,6 +58,15 @@ pub struct ClientSettings {
     /// default: it costs ~1.5% of a core and users should opt into it.
     #[serde(default)]
     pub noise_cancellation: bool,
+    /// Opus bitrate for the microphone track, in kbit/s. Only 24 and 48 are
+    /// offered — 24 is LiveKit's speech preset, 48 is roughly what other voice
+    /// chats spend on a talking head and is audibly better on low voices,
+    /// laughter and anything with music behind it.
+    ///
+    /// Read when the mic track is published, so a change lands on the next
+    /// voice connect rather than mid-call.
+    #[serde(default = "default_voice_bitrate_kbps")]
+    pub voice_bitrate_kbps: u32,
     /// Persisted panel positions. Stored as flat arrays rather than the grid
     /// crate's types so `settings.json` stays readable and this file doesn't
     /// depend on the layout crate's serialization shape.
@@ -119,6 +128,13 @@ fn default_auto_gain_control() -> bool {
     true
 }
 
+/// 48 kbit/s, not the 24 the SDK's speech preset carries. The extra 24 kbit/s
+/// per speaker is small next to what a screen share already costs, and it is
+/// the difference most audible on the voices that sound worst at 24.
+fn default_voice_bitrate_kbps() -> u32 {
+    48
+}
+
 fn default_blossom_server() -> String {
     "https://blossom.band".into()
 }
@@ -151,6 +167,7 @@ impl Default for ClientSettings {
             mic_volume: default_mic_volume(),
             auto_gain_control: default_auto_gain_control(),
             noise_cancellation: false,
+            voice_bitrate_kbps: default_voice_bitrate_kbps(),
             layout_cells: Vec::new(),
             layout_free: Vec::new(),
             screenshare_quality: default_screenshare_quality(),
