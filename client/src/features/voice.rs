@@ -790,6 +790,7 @@ impl ActiveVoice {
         // Event task: subscribe to room events, hook up remote tracks.
         let event_task = tokio::spawn({
             let mixer_handle = mixer_handle.clone();
+            let stream_gains = controls.stream_gains.clone();
             async move {
                 while let Some(ev) = events.recv().await {
                     match &ev {
@@ -799,6 +800,19 @@ impl ActiveVoice {
                         RoomEvent::ParticipantDisconnected(p) => {
                             eprintln!("[voice] participant left: {}", p.identity().0);
                             let _ = quality_tx.send(QualityMsg::Drop(p.identity().0.clone()));
+                            // Their screen-audio volume goes with them. Absent
+                            // means silent here — the default is "you are not
+                            // watching" — so an entry left behind is a level
+                            // set for a share that ended, and the next one they
+                            // start would be audible before the watch window is
+                            // even open.
+                            //
+                            // Deliberately NOT `gains`: absent means unity
+                            // there, so a leftover entry is the listener's own
+                            // "turn this person down", and nothing re-sends it
+                            // on rejoin. Dropping it would silently undo their
+                            // choice while the slider went on showing it.
+                            stream_gains.lock().remove(&p.identity().0);
                         }
                         RoomEvent::ConnectionQualityChanged {
                             quality,
