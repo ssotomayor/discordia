@@ -133,3 +133,15 @@ objc2-core-foundation = "0.3"
 block2 = "0.6"
 dispatch2 = "0.3"
 
+# cargo-machete flags these as unused because nothing `use`s them by their
+# package name. Both reasons are deliberate, so they're recorded here rather than
+# rediscovered — deleting any of them breaks noise cancellation.
+#
+#  * deep_filter's library is named `df` (see `use df::tract::…` in denoise.rs),
+#    which the scanner doesn't map back to the package name.
+#  * The tract crates are declared purely to pin `=0.21.4`. DeepFilterNet asks
+#    for `^0.21.4`, and on a newer tract the model does not load at all — see the
+#    `[profile.dev.package]` comment in the workspace root.
+[package.metadata.cargo-machete]
+ignored = ["deep_filter", "tract-core", "tract-onnx", "tract-pulse", "tract-hir"]
+
