@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Entitlements for the signed macOS build, wired up by `entitlements` in
+  Dioxus.toml.
+
+  These exist because signing with a real identity makes `dx` enable the
+  **hardened runtime** (`codesign` flag 0x10000). Hardened runtime denies
+  microphone access outright unless the app is entitled to it — regardless of
+  what the user granted in System Settings, and without the plist usage string
+  being enough on its own. Signed with no entitlements at all, voice would have
+  broken again in a way that looks exactly like the TCC problem this signing was
+  meant to fix.
+
+  Only the microphone is listed, deliberately:
+
+  * Screen and window capture need **no** entitlement. ScreenCaptureKit is gated
+    purely by the Screen Recording TCC grant, so `sysvideo` works without one.
+  * The App Sandbox is *not* enabled, so outbound network (the gateway
+    WebSocket, LiveKit, Blossom uploads) needs no entitlement either. Adding
+    `com.apple.security.app-sandbox` would change that and much else — don't,
+    without testing the whole app against it.
+  * JavaScriptCore's JIT runs in WebKit's own out-of-process content process,
+    which carries Apple's entitlements rather than ours, so `allow-jit` is not
+    needed here.
+
+  If a notarised distribution build is ever wanted, this is the file that grows —
+  see TODO.md.
+-->
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
+</dict>
+</plist>

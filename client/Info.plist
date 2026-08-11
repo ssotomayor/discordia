@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Info.plist for the macOS .app, wired up by `info_plist_path` in Dioxus.toml.
+
+  WHY THIS FILE EXISTS
+  `NSMicrophoneUsageDescription` is not optional dressing. macOS denies the
+  microphone to a *bundled* app that declares no reason for wanting it, and it
+  denies it silently: no prompt, no entry under System Settings > Privacy &
+  Security > Microphone, and cpal hands back a device that produces nothing.
+  That reads as "voice is broken", not as "permission was refused". It does not
+  reproduce under `dx serve`, because an unbundled binary is attributed to the
+  terminal that launched it and inherits that terminal's own grant — so voice
+  works all through development and dies in the DMG.
+
+  WHY THE WHOLE PLIST AND NOT JUST THAT ONE KEY
+  Three config surfaces look like they do this, and two of them don't. Checked
+  against dx 0.7.9 by building each way and dumping the result:
+
+    * `[permissions] microphone = { … }`  — the unified permissions table. dx
+      maps it into the plist on the `dx build --platform ios/macos` path, but
+      `dx bundle --package-types macos/dmg` runs a different bundler that never
+      reads it. No effect.
+    * `[application] macos_info_plist`    — documented as "dx will merge any
+      required settings into this file". Same story: not consulted by the
+      bundler. No effect.
+    * `[bundle.macos] info_plist_path`    — works, but REPLACES the generated
+      plist rather than merging into it. Point it at a file holding only the one
+      key and the .app ships with no CFBundleExecutable and no icon.
+
+  So every key dx would have generated has to be repeated here. The cost is
+  drift: CFBundleShortVersionString / CFBundleVersion are duplicated from the
+  crate version and do not follow it automatically. Update them together, or
+  re-check this file if dx changes what it generates.
+
+  LSMinimumSystemVersion stays at dx's own default (10.13) rather than being
+  raised to 13.0 for ScreenCaptureKit — `sysaudio::scope()` already reports at
+  runtime when system-audio capture is unavailable, which is the friendlier
+  failure than refusing to launch.
+-->
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>English</string>
+	<key>CFBundleDisplayName</key>
+	<string>Discordia</string>
+	<key>CFBundleExecutable</key>
+	<string>Discordia</string>
+	<key>CFBundleIconFile</key>
+	<string>Discordia.icns</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.discordia.app</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>Discordia</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.0</string>
+	<key>CFBundleVersion</key>
+	<string>0.1.0</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>10.13</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Discordia uses your microphone for voice chat.</string>
+</dict>
+</plist>
