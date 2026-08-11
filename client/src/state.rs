@@ -77,23 +77,34 @@ pub enum ConnectionHealth {
 }
 
 impl ConnectionHealth {
-    /// Colour for the roster dot, as a CSS value. Excellent and Good are
-    /// deliberately indistinguishable: a healthy call should not decorate
-    /// every name with a status light.
-    pub fn dot_color(self) -> Option<&'static str> {
-        match self {
-            Self::Excellent | Self::Good => None,
-            Self::Poor => Some("var(--warn)"),
-            Self::Lost => Some("var(--danger)"),
-        }
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Excellent => "Connection: excellent",
-            Self::Good => "Connection: good",
-            Self::Poor => "Weak connection — their audio may drop out",
-            Self::Lost => "Connection lost — the server has stopped hearing them",
+    /// Colour and tooltip for the roster dot, or `None` when there is nothing
+    /// worth saying. Excellent and Good draw nothing on purpose: a status light
+    /// on every name in a healthy call is noise, and teaches people to ignore
+    /// the one that means something.
+    ///
+    /// `is_self` picks the wording, and it matters. The reading comes from the
+    /// SFU's view of one participant, so on someone else's row it is about
+    /// them, and on your own row it is about you — being told "their audio may
+    /// drop out" next to your own name is both confusing and the opposite of
+    /// actionable, since you are the only one who can do anything about it.
+    pub fn dot(self, is_self: bool) -> Option<(&'static str, &'static str)> {
+        match (self, is_self) {
+            (Self::Excellent | Self::Good, _) => None,
+            (Self::Poor, false) => {
+                Some(("var(--warn)", "Weak connection — their audio may drop out"))
+            }
+            (Self::Poor, true) => Some((
+                "var(--warn)",
+                "Your connection is weak — others may hear you drop out",
+            )),
+            (Self::Lost, false) => Some((
+                "var(--danger)",
+                "Connection lost — the server has stopped hearing them",
+            )),
+            (Self::Lost, true) => Some((
+                "var(--danger)",
+                "Connection lost — the server has stopped hearing you",
+            )),
         }
     }
 }

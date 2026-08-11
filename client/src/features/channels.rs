@@ -576,8 +576,12 @@ fn VoiceOccupant(
     // Only rendered when the SFU says something is wrong: a dot on every name
     // in a healthy call is noise, and trains people to ignore the one that
     // matters. `None` covers both "fine" and "no reading yet".
-    let health = state.read().voice_quality.get(&pubkey).copied();
-    let health_dot = health.and_then(|h| h.dot_color().map(|c| (c, h.label())));
+    let health_dot = state
+        .read()
+        .voice_quality
+        .get(&pubkey)
+        .copied()
+        .and_then(|h| h.dot(is_self));
 
     let dot = if speaking && !locally_muted {
         "bg-[var(--accent)]"
