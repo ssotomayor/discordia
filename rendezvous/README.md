@@ -1,6 +1,6 @@
 # dioxusfun-rendezvous
 
-A small relay that lets self-hosted [dioxusfun](../dioxusfun) servers be
+A small relay that lets self-hosted [dioxusfun](../client) servers be
 reached by shortcode (e.g. `purple-fox-42`) instead of IP address.
 
 ## How it fits
@@ -53,18 +53,34 @@ testing).
 | Path | Direction | Use |
 |------|-----------|-----|
 | `GET /` | text | Sanity check |
+| `GET /discover` | anyone | Live hosts that opted into public browsing |
+| `POST /voice-token` | host → rendezvous | Mint a LiveKit token for the shared SFU |
 | `WS /control` | host → rendezvous | Long-lived: register, receive NewFriend |
-| `WS /join/:code` | friend → rendezvous | Join by shortcode; proxied to host |
+| `WS /join/:code` | friend → rendezvous | Join by shortcode or claimed name; proxied to host |
 | `WS /proxy/:session` | host → rendezvous | Per-friend bridge to local gateway |
 
 ## Protocol
 
-JSON tagged enums on `/control`:
+JSON tagged enums on `/control`. The types live in
+[`protocol/src/rendezvous.rs`](../protocol/src/rendezvous.rs), shared with the
+client — this crate does not define them.
+
+The rendezvous speaks first, with a nonce. A host claiming a persistent name
+signs it (see [`verify.rs`](src/verify.rs)); an anonymous host ignores it and
+gets a random shortcode.
+
+**Rendezvous → Host:**
+```json
+{ "op": "challenge", "d": { "nonce": "..." } }
+```
 
 **Host → Rendezvous:**
 ```json
-{ "op": "register", "d": { "name": null, "preferred": null } }
+{ "op": "register", "d": { "name": "casa", "pubkey": "<64-hex>", "signature": "<schnorr>",
+                           "publish_public": true, "description": null } }
 ```
+
+`name`, `pubkey` and `signature` are all `null` for an anonymous host.
 
 **Rendezvous → Host:**
 ```json
@@ -73,13 +89,19 @@ JSON tagged enums on `/control`:
 { "op": "error", "d": { "message": "..." } }
 ```
 
+`registered` also carries `voice_token_grant` when the operator runs a shared
+LiveKit — a per-session bearer for `POST /voice-token`, never the signing
+secret.
+
 After the proxy WS pairing is established, frames flow through verbatim
 (the rendezvous doesn't inspect them — it's pure transport).
 
 ## Status
 
-- In-memory registry (no persistence — restarts wipe shortcodes)
-- No auth: anyone with a shortcode can connect to that host
+- Live hosts are in-memory (restarts wipe shortcodes); claimed *names* persist
+  to `<data>/reservations.json` and stay owned across restarts
+- Name ownership is Schnorr-proven, but joining is not: anyone holding a
+  shortcode or name can connect to that host
 - No rate limiting
 - Single-node (no horizontal scaling)
 
