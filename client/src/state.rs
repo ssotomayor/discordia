@@ -109,6 +109,35 @@ impl ConnectionHealth {
     }
 }
 
+/// One participant's live transport numbers, as libwebrtc measures them.
+///
+/// Two variants rather than one struct of `Option`s: a remote row is about
+/// what we *receive* from that person and our own row is about what we *send*,
+/// and the two directions share almost no fields. Collapsing them would mean
+/// half the columns being permanently blank on every row.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TrackStats {
+    Inbound {
+        /// Share of this stream's packets that never arrived.
+        loss_pct: f32,
+        jitter_ms: f32,
+        /// Delay NetEq is aiming to hold, averaged per emitted sample. This is
+        /// the number the panel exists for: it is what the decoder adds
+        /// *before* our own drift buffer, so the two together are the real
+        /// playback latency.
+        buffer_ms: f32,
+        /// How many times loss had to be papered over. Rising here is loss
+        /// that became audible, as opposed to loss the redundancy absorbed.
+        concealment_events: u64,
+    },
+    Outbound {
+        /// What the encoder is actually aiming for — the bitrate setting made
+        /// real, rather than what we asked for at publish time.
+        bitrate_kbps: u32,
+        packets_sent: u64,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VoiceSession {
     pub phase: VoicePhase,
@@ -318,6 +347,11 @@ pub struct AppState {
     /// participants the SFU has reported on — absent means "no reading yet",
     /// which the roster shows as nothing rather than as a problem.
     pub voice_quality: HashMap<String, ConnectionHealth>,
+    /// Transport numbers per participant, keyed by pubkey. Only populated
+    /// while the stats panel is open — it is a diagnostic, and polling the
+    /// peer connection every second for a panel nobody is looking at is pure
+    /// cost. Empty therefore means "not measuring", never "measured zero".
+    pub voice_stats: HashMap<String, TrackStats>,
     /// Per-participant playback gain, keyed by pubkey, as a percentage
     /// (100 = unity, 0..=200). Purely local: it scales *incoming* audio in our
     /// own mixer and is never sent anywhere, so it cannot affect what the
@@ -427,6 +461,7 @@ impl AppState {
             // Keep in step with `settings::default_voice_bitrate_kbps`.
             voice_bitrate_kbps: 48,
             voice_quality: HashMap::new(),
+            voice_stats: HashMap::new(),
             user_volumes: HashMap::new(),
             user_muted: HashSet::new(),
             stream_volumes: HashMap::new(),

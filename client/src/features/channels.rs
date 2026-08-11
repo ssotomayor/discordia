@@ -543,6 +543,85 @@ fn VoiceChannelRow(
     }
 }
 
+/// The numbers behind "it sounds bad", for whoever is in the call.
+///
+/// Mounting is the subscription: polling the peer connection costs a walk of
+/// every track every second, so it runs only while this is on screen. Tying
+/// that to mount/unmount rather than to the toggle's own handler is what makes
+/// closing the whole popover — or the call ending under it — stop the poll
+/// too, without every close path having to remember.
+#[component]
+fn ConnectionStats() -> Element {
+    let state = use_app_state();
+    let voice = use_voice_tx();
+
+    use_hook(|| {
+        voice.send(VoiceCmd::SetStatsPolling { enabled: true });
+    });
+    {
+        let voice = voice.clone();
+        use_drop(move || {
+            voice.send(VoiceCmd::SetStatsPolling { enabled: false });
+        });
+    }
+
+    // Sorted by name: a HashMap's order is arbitrary and would reshuffle the
+    // rows under the reader's eyes on every tick.
+    let mut rows: Vec<(String, crate::state::TrackStats)> = {
+        let s = state.read();
+        s.voice_stats
+            .iter()
+            .map(|(pk, st)| {
+                let name = s
+                    .user_of(pk)
+                    .map(|u| u.username.clone())
+                    .unwrap_or_else(|| crate::identity::truncate_pubkey(pk));
+                (name, *st)
+            })
+            .collect()
+    };
+    rows.sort_by(|a, b| a.0.cmp(&b.0));
+
+    rsx! {
+        div { class: "mt-1 border-t border-[var(--border)] pt-1.5",
+            if rows.is_empty() {
+                span { class: "text-[10px] text-[var(--text-dim)] block",
+                    "Waiting for the first reading — join a voice channel."
+                }
+            }
+            for (name, st) in rows.iter() {
+                div { key: "{name}", class: "flex items-baseline gap-1.5 text-[10px] font-mono py-0.5",
+                    span { class: "truncate flex-1 text-[var(--text-muted)]", "{name}" }
+                    match st {
+                        crate::state::TrackStats::Inbound { loss_pct, jitter_ms, buffer_ms, concealment_events } => rsx! {
+                            span {
+                                class: if *loss_pct >= 1.0 { "text-[var(--warn)]" } else { "text-[var(--text-dim)]" },
+                                title: "Packets that never arrived",
+                                "{loss_pct:.1}% loss"
+                            }
+                            span { class: "text-[var(--text-dim)]", title: "Network jitter", "{jitter_ms:.0}ms jit" }
+                            span {
+                                class: "text-[var(--text-dim)]",
+                                title: "Delay the decoder is holding, on top of our own playback buffer",
+                                "{buffer_ms:.0}ms buf"
+                            }
+                            span {
+                                class: "text-[var(--text-dim)]",
+                                title: "Times loss had to be concealed — loss that became audible",
+                                "{concealment_events} conc"
+                            }
+                        },
+                        crate::state::TrackStats::Outbound { bitrate_kbps, packets_sent } => rsx! {
+                            span { class: "text-[var(--text-dim)]", title: "What your encoder is aiming for", "{bitrate_kbps} kbit/s out" }
+                            span { class: "text-[var(--text-dim)]", "{packets_sent} pkt" }
+                        },
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// One participant in a voice channel's roster, with the local audio controls
 /// for them: a volume slider and a local mute.
 ///
@@ -761,6 +840,8 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
     // `right-3 top-12` anchor in a ~1280px viewport; the user moves it from
     // there. Position persists across open/close within the session.
     let mut show_audio_settings = use_signal(|| false);
+    // Not persisted: reopening the app should not silently resume polling.
+    let mut show_stats = use_signal(|| false);
     let mut audio_x = use_signal(|| 1000.0_f64);
     let mut audio_y = use_signal(|| 48.0_f64);
     let mut audio_drag = use_signal(|| None::<AudioDrag>);
@@ -1331,6 +1412,24 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                         },
                                     }
                                     span { class: "text-[10px] text-[var(--text-dim)] w-8 text-right", "{settings.read().sfx_volume}%" }
+                                }
+                            }
+                            // Connection stats. Folded away and not persisted:
+                            // it is a diagnostic for when something sounds
+                            // wrong, and the poll behind it only runs while
+                            // this is open.
+                            div { class: "mb-1",
+                                label { class: "flex items-center gap-2 cursor-pointer select-none",
+                                    input {
+                                        r#type: "checkbox",
+                                        class: "accent-[var(--accent)]",
+                                        checked: show_stats(),
+                                        onchange: move |e| show_stats.set(e.checked()),
+                                    }
+                                    span { class: "text-[11px] text-[var(--text-muted)] flex-1", "Connection stats" }
+                                }
+                                if show_stats() {
+                                    ConnectionStats {}
                                 }
                             }
                         }
