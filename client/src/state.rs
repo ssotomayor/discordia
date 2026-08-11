@@ -61,6 +61,43 @@ pub enum VoicePhase {
     Error,
 }
 
+/// How well a participant's connection is holding up, as the SFU sees it.
+///
+/// Mirrors LiveKit's `ConnectionQuality` rather than re-exporting it: the UI
+/// should not have to name a livekit type to draw a dot, and the SDK's enum is
+/// `#[non_exhaustive]`, so pinning our own keeps the match in one place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectionHealth {
+    Excellent,
+    Good,
+    /// Losing packets — audible as dropouts.
+    Poor,
+    /// The SFU has stopped hearing from them entirely.
+    Lost,
+}
+
+impl ConnectionHealth {
+    /// Colour for the roster dot, as a CSS value. Excellent and Good are
+    /// deliberately indistinguishable: a healthy call should not decorate
+    /// every name with a status light.
+    pub fn dot_color(self) -> Option<&'static str> {
+        match self {
+            Self::Excellent | Self::Good => None,
+            Self::Poor => Some("var(--warn)"),
+            Self::Lost => Some("var(--danger)"),
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Excellent => "Connection: excellent",
+            Self::Good => "Connection: good",
+            Self::Poor => "Weak connection — their audio may drop out",
+            Self::Lost => "Connection lost — the server has stopped hearing them",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VoiceSession {
     pub phase: VoicePhase,
@@ -237,6 +274,15 @@ pub struct AppState {
     /// Whether DeepFilterNet noise suppression runs on captured microphone
     /// audio before it is published. Persisted via `ClientSettings`.
     pub noise_cancellation: bool,
+    /// Opus bitrate for our microphone track, in kbit/s (24 or 48). Applied
+    /// when the track is published, so a change takes effect on the next voice
+    /// connect. Persisted via `ClientSettings`.
+    pub voice_bitrate_kbps: u32,
+    /// How good LiveKit thinks each participant's connection is, keyed by
+    /// pubkey. Only populated while in a voice channel, and only for
+    /// participants the SFU has reported on — absent means "no reading yet",
+    /// which the roster shows as nothing rather than as a problem.
+    pub voice_quality: HashMap<String, ConnectionHealth>,
     /// Per-participant playback gain, keyed by pubkey, as a percentage
     /// (100 = unity, 0..=200). Purely local: it scales *incoming* audio in our
     /// own mixer and is never sent anywhere, so it cannot affect what the
@@ -340,6 +386,9 @@ impl AppState {
             auto_gain_control: true,
             mic_level: 0,
             noise_cancellation: false,
+            // Keep in step with `settings::default_voice_bitrate_kbps`.
+            voice_bitrate_kbps: 48,
+            voice_quality: HashMap::new(),
             user_volumes: HashMap::new(),
             user_muted: HashSet::new(),
             stream_volumes: HashMap::new(),

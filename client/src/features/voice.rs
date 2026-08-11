@@ -8,13 +8,13 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use dioxus::core::Task;
 use dioxus::prelude::*;
 use futures_util::StreamExt;
-use livekit::options::TrackPublishOptions;
+use livekit::options::{AudioEncoding, TrackPublishOptions};
 use livekit::prelude::*;
 use livekit::webrtc::audio_frame::AudioFrame;
 use livekit::webrtc::audio_source::AudioSourceOptions;
@@ -26,7 +26,7 @@ use rubato::{FftFixedIn, Resampler};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use crate::protocol::Id;
-use crate::state::{AppState, VoicePhase};
+use crate::state::{AppState, ConnectionHealth, VoicePhase};
 
 const SAMPLE_RATE: u32 = 48_000;
 const CHANNELS: u32 = 1;
@@ -38,9 +38,24 @@ const FRAME_SAMPLES: usize = (SAMPLE_RATE / 1000 * FRAME_MS) as usize;
 const RESAMPLER_CHUNK: usize = 512;
 
 /// Playback jitter buffer cap, as a divisor of the device sample rate: 5 =>
-/// ~200ms. Must stay above the drift-compensation overrun threshold (150ms) so
-/// the two mechanisms don't fight — see `PlaybackMixer::new`.
+/// ~200ms. Must stay above `DRIFT_OVERRUN_SECS` so the two mechanisms don't
+/// fight — see `PlaybackMixer::new`. It stays generous on purpose: it is the
+/// ceiling for a burst, not the depth we aim to sit at.
 const PLAYBACK_CAP_DIVISOR: u32 = 5;
+
+/// Depth the drift compensator steers each track's buffer toward, in seconds
+/// of device-rate samples. Above the overrun mark it drops a sample now and
+/// then, below the underrun mark it repeats one.
+///
+/// These are deliberately small because this is the *second* buffer in the
+/// path: libwebrtc's NetEq has already absorbed network jitter and concealed
+/// losses before a frame reaches us. What is left for this one to solve is the
+/// difference between the stream's clock and the output device's — drift of a
+/// few samples per second, not network burstiness. Sizing it like a primary
+/// jitter buffer (the 150ms/50ms it used to hold) bought no extra resilience
+/// and simply added its whole depth to end-to-end latency.
+const DRIFT_OVERRUN_SECS: f64 = 0.06;
+const DRIFT_UNDERRUN_SECS: f64 = 0.02;
 
 /// How long the transmit gate stays open after the last frame above threshold,
 /// in 10ms frames. Speech has gaps — breaths, stops between words — and a gate
@@ -92,6 +107,10 @@ struct AudioControls {
     agc: Arc<AtomicBool>,
     /// DeepFilterNet noise suppression on the captured mic signal.
     denoise: Arc<AtomicBool>,
+    /// Opus bitrate for the mic track, in kbit/s. Read once, when the track is
+    /// published — unlike the knobs above there is nothing to re-read per hop,
+    /// because the encoder is configured at publish time.
+    bitrate_kbps: Arc<AtomicU32>,
     /// Per-participant playback gain, keyed by LiveKit identity (= pubkey).
     /// Absent = unity. Applied to *incoming* audio in our own mixer only.
     gains: Arc<Mutex<HashMap<String, f32>>>,
@@ -102,12 +121,13 @@ struct AudioControls {
 }
 
 impl AudioControls {
-    fn new(threshold: u32, mic_volume: u16, agc: bool, denoise: bool) -> Self {
+    fn new(threshold: u32, mic_volume: u16, agc: bool, denoise: bool, bitrate_kbps: u32) -> Self {
         Self {
             threshold: Arc::new(AtomicI32::new(threshold as i32)),
             mic_gain_pct: Arc::new(AtomicI32::new(mic_volume as i32)),
             agc: Arc::new(AtomicBool::new(agc)),
             denoise: Arc::new(AtomicBool::new(denoise)),
+            bitrate_kbps: Arc::new(AtomicU32::new(bitrate_kbps)),
             gains: Arc::new(Mutex::new(HashMap::new())),
             stream_gains: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -159,6 +179,14 @@ pub enum VoiceCmd {
     /// Toggle libwebrtc's automatic gain control on the live capture.
     SetAutoGainControl {
         enabled: bool,
+    },
+    /// Opus bitrate for the microphone track, in kbit/s. Stored for the next
+    /// publish rather than applied live: the encoder is configured when the
+    /// track is published, so changing it mid-call would mean tearing the
+    /// publication down and putting it back — a gap in everyone else's audio
+    /// for a setting nobody changes mid-sentence.
+    SetVoiceBitrate {
+        kbps: u32,
     },
     /// Start/stop capturing this machine's audio and publishing it alongside a
     /// screen share. Only does anything where `sysaudio` has a backend.
@@ -234,6 +262,7 @@ async fn service_loop(
             s.mic_volume,
             s.auto_gain_control,
             s.noise_cancellation,
+            s.voice_bitrate_kbps,
         )
     };
 
@@ -407,6 +436,12 @@ async fn service_loop(
                 }
                 state.write().auto_gain_control = enabled;
             }
+            VoiceCmd::SetVoiceBitrate { kbps } => {
+                let kbps = if kbps == 24 { 24 } else { 48 };
+                eprintln!("[voice] SetVoiceBitrate kbps={kbps} (applies on next connect)");
+                controls.bitrate_kbps.store(kbps, Ordering::Relaxed);
+                state.write().voice_bitrate_kbps = kbps;
+            }
             VoiceCmd::SetSystemAudio { enabled } => {
                 if let Some(active) = session.as_mut() {
                     // A share that turns out to be silent is the most confusing
@@ -527,12 +562,16 @@ impl ActiveVoice {
                 LocalTrack::Audio(local_audio),
                 TrackPublishOptions {
                     source: TrackSource::Microphone,
-                    // Speech defaults are right here — including `dtx`, which
-                    // costs nothing when the transmit gate is already holding
-                    // silence back — so this only makes the choice explicit
-                    // rather than inherited, next to the very different one the
-                    // screen-share audio track makes.
-                    audio_encoding: Some(livekit::options::audio::SPEECH.encoding.clone()),
+                    // The rest of the speech defaults are right — including
+                    // `dtx`, which costs nothing when the transmit gate is
+                    // already holding silence back, and `red`, which is what
+                    // makes a lost packet survivable. Only the bitrate is
+                    // ours: the SDK's SPEECH preset is 24 kbit/s, which is
+                    // thin for anything but a close-miked talking head, so the
+                    // user picks (see `ClientSettings::voice_bitrate_kbps`).
+                    audio_encoding: Some(AudioEncoding {
+                        max_bitrate: controls.bitrate_kbps.load(Ordering::Relaxed) as u64 * 1000,
+                    }),
                     ..Default::default()
                 },
             )
@@ -607,6 +646,29 @@ impl ActiveVoice {
             });
         }
 
+        // Same bridge, for how well each participant's connection is holding
+        // up. Kept separate from the stream-audio one so a burst of quality
+        // updates — they arrive on a timer for everyone in the room — can't
+        // delay a "this sharer has sound" notice behind it.
+        let (quality_tx, mut quality_rx) = tokio::sync::mpsc::unbounded_channel::<QualityMsg>();
+        {
+            let mut state = state;
+            dioxus::prelude::spawn(async move {
+                while let Some(msg) = quality_rx.recv().await {
+                    let mut s = state.write();
+                    match msg {
+                        QualityMsg::Set(id, health) => {
+                            s.voice_quality.insert(id, health);
+                        }
+                        QualityMsg::Drop(id) => {
+                            s.voice_quality.remove(&id);
+                        }
+                        QualityMsg::Clear => s.voice_quality.clear(),
+                    }
+                }
+            });
+        }
+
         // Event task: subscribe to room events, hook up remote tracks.
         let event_task = tokio::spawn({
             let mixer_handle = mixer_handle.clone();
@@ -618,6 +680,30 @@ impl ActiveVoice {
                         }
                         RoomEvent::ParticipantDisconnected(p) => {
                             eprintln!("[voice] participant left: {}", p.identity().0);
+                            let _ = quality_tx.send(QualityMsg::Drop(p.identity().0.clone()));
+                        }
+                        RoomEvent::ConnectionQualityChanged {
+                            quality,
+                            participant,
+                        } => {
+                            let health = match quality {
+                                ConnectionQuality::Excellent => ConnectionHealth::Excellent,
+                                ConnectionQuality::Good => ConnectionHealth::Good,
+                                ConnectionQuality::Poor => ConnectionHealth::Poor,
+                                ConnectionQuality::Lost => ConnectionHealth::Lost,
+                            };
+                            // Only worth a log line when it's bad — this fires
+                            // on a timer for every participant, and a healthy
+                            // room would drown the log in "Excellent".
+                            if matches!(health, ConnectionHealth::Poor | ConnectionHealth::Lost) {
+                                eprintln!(
+                                    "[voice] connection {:?} for {}",
+                                    health,
+                                    participant.identity().0
+                                );
+                            }
+                            let _ = quality_tx
+                                .send(QualityMsg::Set(participant.identity().0.clone(), health));
                         }
                         RoomEvent::TrackPublished {
                             participant,
@@ -657,6 +743,17 @@ impl ActiveVoice {
                         }
                         RoomEvent::Disconnected { reason } => {
                             eprintln!("[voice] room disconnected: {reason:?}");
+                            let _ = quality_tx.send(QualityMsg::Clear);
+                        }
+                        // The SDK is recovering the connection on our behalf.
+                        // Say so rather than letting the call just go quiet:
+                        // silence with no explanation is the thing that makes
+                        // people restart the app mid-conversation.
+                        RoomEvent::Reconnecting => {
+                            eprintln!("[voice] reconnecting");
+                        }
+                        RoomEvent::Reconnected => {
+                            eprintln!("[voice] reconnected");
                         }
                         _ => {}
                     }
@@ -700,6 +797,10 @@ impl ActiveVoice {
                     }
                 }
                 eprintln!("[voice] event stream ended");
+                // Covers the paths that end the stream without a Disconnected
+                // event — a dropped room handle, or the task being aborted on
+                // shutdown.
+                let _ = quality_tx.send(QualityMsg::Clear);
             }
         });
 
@@ -985,6 +1086,17 @@ struct ScreenAudioRoom {
     /// room still matches on `key`, so every later command would be answered
     /// with "already connected" and the audio would never come back.
     alive: Arc<AtomicBool>,
+}
+
+/// Connection-quality notices, on the same bridge as `StreamAudio` and for the
+/// same reason: the event task is `tokio::spawn`ed and so must be `Send`, which
+/// a Dioxus Signal is not.
+enum QualityMsg {
+    Set(String, ConnectionHealth),
+    Drop(String),
+    /// The room ended. Every reading it produced is now stale, and a stale
+    /// "weak connection" dot left on a name after the call is worse than none.
+    Clear,
 }
 
 /// What the screen/voice event tasks tell the UI about stream audio. An enum
@@ -2091,8 +2203,8 @@ impl PlaybackMixer {
                     // The overrun mark must stay under the producer-side cap
                     // (PLAYBACK_CAP_DIVISOR, ~200ms) or it can never be reached
                     // and the branch is dead.
-                    let overrun_threshold = (device_rate_cb as f64 * 0.15) as usize; // 150ms
-                    let underrun_threshold = (device_rate_cb as f64 * 0.05) as usize; // 50ms
+                    let overrun_threshold = (device_rate_cb as f64 * DRIFT_OVERRUN_SECS) as usize;
+                    let underrun_threshold = (device_rate_cb as f64 * DRIFT_UNDERRUN_SECS) as usize;
                     let mut counter = drift_counter_cb.load(Ordering::Relaxed);
                     for frame in data.chunks_mut(device_channels) {
                         counter = counter.wrapping_add(1);
@@ -2155,8 +2267,8 @@ impl PlaybackMixer {
                     cb_counter_cb.fetch_add(1, Ordering::Relaxed);
                     let mut tracks = tracks_cb.lock();
                     refresh_gains(&mut tracks, &gains_i16, &stream_gains_i16);
-                    let overrun_threshold = (device_rate_cb as f64 * 0.15) as usize;
-                    let underrun_threshold = (device_rate_cb as f64 * 0.05) as usize;
+                    let overrun_threshold = (device_rate_cb as f64 * DRIFT_OVERRUN_SECS) as usize;
+                    let underrun_threshold = (device_rate_cb as f64 * DRIFT_UNDERRUN_SECS) as usize;
                     let mut counter = drift_counter_cb.load(Ordering::Relaxed);
                     for frame in data.chunks_mut(device_channels) {
                         counter = counter.wrapping_add(1);
