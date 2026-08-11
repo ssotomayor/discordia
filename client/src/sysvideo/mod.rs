@@ -202,7 +202,10 @@ pub fn start(
     })
 }
 
-#[cfg(test)]
+// Gated with the backend it exercises: the test drives a real ScreenCaptureKit
+// capture through `start`, which does not exist elsewhere. Without this the
+// crate fails to build under `--all-targets` on any other platform.
+#[cfg(all(test, target_os = "macos"))]
 mod tests {
     /// Regression test for the over-release that crashed every share the moment
     /// it started: `EXC_BREAKPOINT` inside `CFRelease` on the capture queue,
