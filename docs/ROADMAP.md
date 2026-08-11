@@ -1,6 +1,6 @@
 # Discordia — Deployment & Scale Roadmap (v2)
 
-> **Status (2026-07):** Phase 1 ✅ shipped (SQLite store, write-through
+> **Status (2026-08):** Phase 1 ✅ shipped (SQLite store, write-through
 > metadata, DB-only messages, media blob offload, retention TTL + sweep,
 > restart-survival test green). Phase 2 ✅ mostly shipped (env config,
 > Dockerfile + compose, SELF_HOSTING.md, `FetchMessages.before_ms` cursor,
@@ -28,9 +28,11 @@
 > pagination UI wired client-side ("Load earlier messages" / "Load more").
 > Phase 3 (web/PWA) is
 > **browser-test-gated**. Phase 6 🟡 partial: export/import core + CLI shipped
-> (`archive.rs`, 3 tests green); still open — signed "guild moved" redirect,
-> persistent rendezvous registrations, media blob copy across instances, and
-> the owner-side "Export guild" UI. Phase 7 (cluster) not started, demand-gated.
+> (`archive.rs`, 3 tests green) and persistent rendezvous registrations shipped
+> (claimable names, Schnorr-proven, see below); still open — signed "guild
+> moved" redirect, media blob copy across instances, and the owner-side "Export
+> guild" UI (there is no `ExportGuild` on the wire; the CLI is the only path).
+> Phase 7 (cluster) not started, demand-gated.
 
 Goal: serve every community size — a 5-person friend group through a 55k-member
 public community — from **one codebase**, with setup effort that scales with the
@@ -76,7 +78,7 @@ Two seams make this possible, both introduced in Phase 1/5:
 
 | Helper | Removes from setup | Status |
 |---|---|---|
-| Rendezvous + `/discover` directory | port-forwarding, IP-sharing, discovery | ✅ exists (needs persistent registrations — Phase 4) |
+| Rendezvous + `/discover` directory | port-forwarding, IP-sharing, discovery | ✅ exists, with persistent claimable names (Phase 6) |
 | Shared LiveKit via rendezvous `livekit_url` | running an SFU | ✅ pattern exists |
 | Blossom media | hosting avatars/banners/guild art/message images | ✅ exists (message images move here in Phase 1) |
 | Official hosted instance | all install — join like Discord | **deliberately deferred**: an open-registration hosted platform inherits exactly the age-verification/legal exposure that motivated the Discord exodus. Revisit with counsel + gated registration; the product must not depend on it. |
