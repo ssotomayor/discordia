@@ -1,21 +1,9 @@
 use dioxus::prelude::*;
-use serde::{Deserialize, Serialize};
 
 use crate::identity::Identity;
+use crate::protocol::rendezvous::DiscoverEntry;
 use crate::session::{self, SavedSession};
 use crate::state::{SessionMode, SessionParams};
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-struct DiscoverEntry {
-    shortcode: String,
-    name: Option<String>,
-    description: Option<String>,
-    /// Seconds since the rendezvous last heard from this host. Older
-    /// rendezvous builds don't send it, hence the default — treat those as
-    /// fresh rather than showing every host as stale.
-    #[serde(default)]
-    idle_secs: u64,
-}
 
 /// How quiet a host has to be before the browse list stops presenting it as
 /// reachable. The rendezvous pings every 20s and unregisters at 60s, so a host

@@ -17,6 +17,9 @@ hex = { workspace = true }
 bs58 = { workspace = true }
 
 # Shared deps inherited from workspace.
+# The host side of this protocol is spoken by the client, so the wire types
+# live in the shared crate instead of here.
+dioxusfun-protocol = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tower-http = { workspace = true }

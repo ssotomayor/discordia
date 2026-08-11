@@ -16,10 +16,9 @@ use std::time::Duration;
 
 use axum::extract::ws::WebSocket;
 use dashmap::DashMap;
+use dioxusfun_protocol::rendezvous::{DiscoverEntry, RendezvousToHost};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, oneshot};
-
-use crate::protocol::{DiscoverEntry, RendezvousToHost};
 
 /// Each registered host has a sender for control messages (so we can notify
 /// them of incoming friends), plus the public-browse metadata they opted

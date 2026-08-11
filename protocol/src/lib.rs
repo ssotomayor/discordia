@@ -9,6 +9,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+pub mod rendezvous;
+
 /// Server-generated identifier (guild, channel, message ids). User identity
 /// is NOT a Uuid — it's a Nostr-format secp256k1 public key (see
 /// `User.pubkey`).

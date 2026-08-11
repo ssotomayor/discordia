@@ -1,4 +1,3 @@
-pub mod protocol;
 pub mod registry;
 pub mod relay;
 pub mod shortcode;
@@ -13,9 +12,9 @@ use axum::extract::State;
 use axum::extract::ws::WebSocketUpgrade;
 use axum::response::IntoResponse;
 use axum::routing::get;
+use dioxusfun_protocol::rendezvous::DiscoverEntry;
 use tower_http::cors::{Any, CorsLayer};
 
-use crate::protocol::DiscoverEntry;
 use crate::registry::Registry;
 
 #[derive(Clone)]

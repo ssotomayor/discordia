@@ -8,3 +8,8 @@ description = "Shared wire protocol for dioxusfun (client, server, and the bot S
 serde = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
+
+# Test-only: the wire-shape assertions need a JSON codec, but callers of this
+# crate shouldn't have to pull one in.
+[dev-dependencies]
+serde_json = { workspace = true }

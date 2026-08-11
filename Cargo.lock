@@ -2182,6 +2182,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "serde",
+ "serde_json",
  "uuid",
 ]
 
@@ -2192,6 +2193,7 @@ dependencies = [
  "axum 0.7.9",
  "bs58",
  "dashmap",
+ "dioxusfun-protocol",
  "futures-util",
  "hex",
  "livekit-api 0.4.24",

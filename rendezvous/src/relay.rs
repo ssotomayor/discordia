@@ -7,11 +7,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::ws::{Message, WebSocket};
+use dioxusfun_protocol::rendezvous::{HostToRendezvous, RendezvousToHost};
 use futures_util::{SinkExt, StreamExt};
 use uuid::Uuid;
 
 use crate::Config;
-use crate::protocol::{HostToRendezvous, RendezvousToHost};
 use crate::registry::{ClaimError, HostEntry, Registry, validate_name};
 use crate::shortcode;
 use crate::verify;
