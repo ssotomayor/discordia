@@ -4,6 +4,25 @@ Running list of deferred work, scoped to "things we know we want but
 chose not to ship in the commit that surfaced them." Newest items at
 the top within each section.
 
+## Project
+
+- **No `LICENSE` file.** Without one the repo defaults to all rights reserved:
+  nobody can legally fork, modify or contribute, which contradicts the
+  contributing sections in `README.md` and `CLAUDE.md`. Deferred because it is
+  a decision for both copyright holders, not a code change — `git shortlog -sne`
+  shows two authors and there is no CLA, DCO or `CONTRIBUTING.md`, so every
+  contributor owns their commits and a later relicense needs all of them.
+  Nothing in the dependency tree constrains the choice: of 848 packages the
+  only copyleft is four MPL-2.0 crates (file-scoped, compatible either way),
+  and every load-bearing dep (livekit, deep_filter, dioxus, wry, cpal) is
+  MIT/Apache-2.0.
+  The choice interacts with how the project might earn money. Selling the
+  *service* (hosting, support, managed rendezvous, zaps) works under AGPL-3.0
+  and needs no CLA — AGPL also stops a competitor hosting a closed fork of our
+  own work. Selling *licence exceptions* (the classic AGPL dual-licence model)
+  needs the right to relicense, so it needs a CLA in place before the first
+  outside PR is merged. Deciding late forecloses the second option silently.
+
 ## Discordia design adoption
 
 - **Deferred decorative elements from the comps.** The design shows badges with
@@ -18,6 +37,16 @@ the top within each section.
 - **Level curve tuning.** `level_progress` is a simple 10/level-step curve;
   revisit the numbers (and maybe award XP for reactions/voice) once it's seen
   in use.
+
+## Assets
+
+- **The macOS `.icns` predates the tile removal.** `icon.svg` lost its
+  background tile in `6173903` ("drop the tile behind the icon"), and
+  `icon.ico` was regenerated in that same commit — but `icon.icns` was last
+  touched on 2026-08-03 by `45a3dc4`, a week earlier and not an icon commit.
+  So the two platforms no longer render from the same source: macOS still ships
+  the tiled mark. Re-rasterise from the SVG (resvg) and eyeball it in a real
+  Dock; nobody has a macOS build to check against yet, which is why it waited.
 
 ## Persistence & deploy (roadmap P1/P2 leftovers)
 
