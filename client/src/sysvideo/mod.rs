@@ -156,6 +156,17 @@ pub fn sources() -> Result<Vec<Source>, String> {
     macos::sources()
 }
 
+/// Resolve a native capture target to the ScreenCaptureKit filter used by both
+/// video and system audio. Keeping this in one place is a privacy boundary:
+/// changing from a display to an app/window must change what can be heard as
+/// well as what can be seen.
+#[cfg(target_os = "macos")]
+pub(crate) fn content_filter(
+    target: Target,
+) -> Result<objc2::rc::Retained<objc2_screen_capture_kit::SCContentFilter>, String> {
+    macos::content_filter(target)
+}
+
 #[cfg(not(target_os = "macos"))]
 pub fn sources() -> Result<Vec<Source>, String> {
     Err("native screen capture isn't implemented on this platform".into())

@@ -29,6 +29,9 @@ use crate::state::{use_app_state, use_gateway};
 const SCREEN_JS: &str = r#"
 window.dxScreen = window.dxScreen || (function () {
   let room = null;
+  let desiredRoom = null;
+  let reconnectTimer = null;
+  let reconnectAttempt = 0;
   const tracks = {}; // identity -> video track
   const audioTracks = {}; // identity -> audio track (screen-share sound)
   const CONTAINERS = ['screenshare-self', 'screenshare-viewer'];
@@ -190,28 +193,64 @@ window.dxScreen = window.dxScreen || (function () {
     });
   }
   async function ensureLib() { for (let i = 0; i < 100 && !LK(); i++) { await new Promise(function (r) { setTimeout(r, 100); }); } return !!LK(); }
+  function reportRoomProblem(kind, detail) {
+    try { window.postMessage({ __dxf: kind, detail: String(detail || '') }, '*'); } catch (e) {}
+  }
+  function clearRemoteTracks() {
+    for (const k in tracks) delete tracks[k];
+    for (const k in audioTracks) delete audioTracks[k];
+    detachAudio();
+    CONTAINERS.forEach(function (cid) {
+      const c = document.getElementById(cid);
+      if (c) c.querySelectorAll('video').forEach(function (e) { e.remove(); });
+    });
+  }
+  function scheduleReconnect() {
+    if (!desiredRoom || reconnectTimer) return;
+    const delay = Math.min(1500 * Math.pow(2, reconnectAttempt), 15000);
+    reconnectAttempt++;
+    reconnectTimer = setTimeout(function () {
+      reconnectTimer = null;
+      if (desiredRoom && !room) connect(desiredRoom.url, desiredRoom.token);
+    }, delay);
+  }
   async function connect(url, token) {
+    desiredRoom = { url: url, token: token };
     if (room) return;
-    if (!(await ensureLib())) { console.warn('[dxScreen] livekit lib not loaded'); return; }
+    if (!(await ensureLib())) {
+      console.warn('[dxScreen] livekit lib not loaded');
+      reportRoomProblem('screen-room-error', 'LiveKit did not load');
+      scheduleReconnect();
+      return;
+    }
     const lk = LK();
     // Deliberately the stock options. `webAudioMix` used to be set here to get
     // gain above 100% on stream audio, and viewers started getting stuck on
     // "Connecting to stream…" — the Room constructor governs subscription, so
     // an audio nicety has no business changing it. Volume is capped at 100%
     // via the element instead; a working picture beats a louder one.
-    room = new lk.Room({ adaptiveStream: true, dynacast: true });
-    room.on(lk.RoomEvent.Disconnected, function (reason) {
+    const thisRoom = new lk.Room({ adaptiveStream: true, dynacast: true });
+    room = thisRoom;
+    thisRoom.on(lk.RoomEvent.Disconnected, function (reason) {
       console.warn('[dxScreen] room disconnected', reason);
+      // Ignore a late event from a room already replaced by a newer attempt.
+      if (room !== thisRoom) return;
+      room = null;
+      clearRemoteTracks();
+      if (desiredRoom) {
+        reportRoomProblem('screen-room-reconnecting', reason || 'disconnected');
+        scheduleReconnect();
+      }
     });
-    room.on(lk.RoomEvent.ConnectionStateChanged, function (st) {
+    thisRoom.on(lk.RoomEvent.ConnectionStateChanged, function (st) {
       console.log('[dxScreen] connection state', st);
     });
     // Fires before the SDK's own auto-subscribe settles, so a screen-audio
     // track published while native mode is on is dropped rather than downloaded.
-    room.on(lk.RoomEvent.TrackPublished, function (pub) {
+    thisRoom.on(lk.RoomEvent.TrackPublished, function (pub) {
       applyAudioSubscription(pub);
     });
-    room.on(lk.RoomEvent.TrackSubscribed, function (track, pub, participant) {
+    thisRoom.on(lk.RoomEvent.TrackSubscribed, function (track, pub, participant) {
       if (track.kind === 'audio') {
         audioTracks[participant.identity] = track;
         if (nativeStreamAudio) return;
@@ -225,7 +264,7 @@ window.dxScreen = window.dxScreen || (function () {
       tracks[participant.identity] = track;
       reattach(participant.identity);
     });
-    room.on(lk.RoomEvent.TrackUnsubscribed, function (track, pub, participant) {
+    thisRoom.on(lk.RoomEvent.TrackUnsubscribed, function (track, pub, participant) {
       if (track.kind === 'audio') {
         if (audioIdentity === participant.identity) detachAudio();
         delete audioTracks[participant.identity];
@@ -244,22 +283,31 @@ window.dxScreen = window.dxScreen || (function () {
       delete tracks[participant.identity];
       reattach(participant.identity);
     });
-    room.on(lk.RoomEvent.LocalTrackPublished, function (pub) {
+    thisRoom.on(lk.RoomEvent.LocalTrackPublished, function (pub) {
       if (!pub.track || pub.track.kind !== 'video') return;
-      tracks[room.localParticipant.identity] = pub.track;
-      reattach(room.localParticipant.identity);
+      tracks[thisRoom.localParticipant.identity] = pub.track;
+      reattach(thisRoom.localParticipant.identity);
     });
-    room.on(lk.RoomEvent.LocalTrackUnpublished, function (pub) {
+    thisRoom.on(lk.RoomEvent.LocalTrackUnpublished, function (pub) {
       if (!pub.track || pub.track.kind !== 'video') return;
-      delete tracks[room.localParticipant.identity];
-      reattach(room.localParticipant.identity);
+      delete tracks[thisRoom.localParticipant.identity];
+      reattach(thisRoom.localParticipant.identity);
       // The user may have stopped sharing from the browser's native "Stop
       // sharing" bar (which ends the track without going through our Stop
       // button). Notify Rust so it can flip screen_sharing off and tell the
       // server, otherwise the self-preview stays mounted showing nothing.
       notifyShareEnded();
     });
-    try { await room.connect(url, token); } catch (e) { console.warn('[dxScreen] connect failed', e); room = null; }
+    try {
+      await thisRoom.connect(url, token);
+      reconnectAttempt = 0;
+    } catch (e) {
+      console.warn('[dxScreen] connect failed', e);
+      if (room === thisRoom) room = null;
+      reportRoomProblem('screen-room-error', e && e.message ? e.message : e);
+      scheduleReconnect();
+      return;
+    }
     // Native mode is usually decided before this room exists, so the sweep that
     // setNativeStreamAudio would have run found nothing to sweep. Anyone already
     // publishing when we arrive is caught here.
@@ -298,6 +346,17 @@ window.dxScreen = window.dxScreen || (function () {
     c.setAttribute('data-identity', identity);
     const t = videoTrackFor(identity);
     if (t) attachInto(t, c); else c.querySelectorAll('video').forEach(function (e) { e.remove(); });
+    if (!t) {
+      // A publication can legitimately arrive after the watch window opens,
+      // but waiting forever is not a state. Keep the identity check so an old
+      // timeout cannot complain after the user switched to another stream.
+      setTimeout(function () {
+        const current = document.getElementById(cid);
+        if (current && current.getAttribute('data-identity') === identity && !videoTrackFor(identity)) {
+          reportRoomProblem('screen-track-timeout', identity);
+        }
+      }, 10000);
+    }
     // Only the watch window plays sound; the self-preview must not, or the
     // sharer hears their own machine echoed back.
     //
@@ -599,10 +658,13 @@ window.dxScreen = window.dxScreen || (function () {
     try { await room.localParticipant.setScreenShareEnabled(false); } catch (e) {}
   }
   async function disconnect() {
-    if (room) { try { await room.disconnect(); } catch (e) {} room = null; }
-    for (const k in tracks) delete tracks[k];
-    for (const k in audioTracks) delete audioTracks[k];
-    detachAudio();
+    desiredRoom = null;
+    reconnectAttempt = 0;
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+    const previous = room;
+    room = null;
+    if (previous) { try { await previous.disconnect(); } catch (e) {} }
+    clearRemoteTracks();
     CONTAINERS.forEach(detach);
   }
   return { connect: connect, attach: attach, detach: detach, requestAndStartShare: requestAndStartShare, stopShare: stopShare, disconnect: disconnect, setStreamVolume: setStreamVolume, setSink: setSink, setNativeStreamAudio: setNativeStreamAudio };
@@ -866,7 +928,10 @@ pub fn ScreenShareBridge() -> Element {
             voice_screen_audio.send(VoiceCmd::SetScreenAudio {
                 room: now.1.clone(),
             });
-            voice_screen_audio.send(VoiceCmd::SetSystemAudio { enabled: now.2 });
+            voice_screen_audio.send(VoiceCmd::SetSystemAudio {
+                enabled: now.2,
+                target,
+            });
             voice_screen_audio.send(VoiceCmd::SetScreenVideo {
                 room: now.4.clone(),
                 // Stopping ignores the target, so the fallback is never used for
@@ -945,7 +1010,7 @@ pub fn ScreenShareBridge() -> Element {
               window.__dxfShareEndWired = true;
               window.addEventListener('message', function (e) {
                 var d = e.data;
-                if (d && (d.__dxf === 'screen-share-ended' || d.__dxf === 'share-started' || d.__dxf === 'share-audio' || d.__dxf === 'share-unavailable' || d.__dxf === 'share-echo-risk' || d.__dxf === 'stream-audio')) {
+                if (d && (d.__dxf === 'screen-share-ended' || d.__dxf === 'share-started' || d.__dxf === 'share-audio' || d.__dxf === 'share-unavailable' || d.__dxf === 'share-echo-risk' || d.__dxf === 'stream-audio' || d.__dxf === 'screen-room-error' || d.__dxf === 'screen-room-reconnecting' || d.__dxf === 'screen-track-timeout')) {
                   try { dioxus.send(d); } catch (err) {}
                 }
               });
@@ -1022,6 +1087,30 @@ pub fn ScreenShareBridge() -> Element {
                             // and the restart cases — two senders racing over one
                             // track is how the state they disagree about gets
                             // decided by arrival order.
+                        }
+                        Some("screen-room-error") => {
+                            let detail = msg
+                                .get("detail")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("unknown connection error");
+                            eprintln!("[screen] screen room connection failed: {detail}");
+                            state.write().error_toast = Some(format!(
+                                "Couldn't connect to the screen stream: {detail}. Retrying…"
+                            ));
+                        }
+                        Some("screen-room-reconnecting") => {
+                            let detail = msg
+                                .get("detail")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("disconnected");
+                            eprintln!("[screen] screen room disconnected: {detail}; reconnecting");
+                        }
+                        Some("screen-track-timeout") => {
+                            eprintln!("[screen] no video track arrived within 10 seconds");
+                            state.write().error_toast = Some(
+                                "Connected to the stream room, but no video arrived. Make sure the sharer is running the latest Discordia build and restart the share."
+                                    .into(),
+                            );
                         }
                         // Our own share: did the platform give us any audio to
                         // send? Silence here is a platform limit, not a bug we
@@ -1398,32 +1487,24 @@ pub fn ScreenSelfPreview() -> Element {
                     "Stop"
                 }
             }
-            // The webview path attaches its local video track into this
-            // container; the native path has no track to attach, because LiveKit
-            // does not loop a publication back to its publisher. Leaving the
-            // container in place there showed a black box reading "Starting…"
-            // forever, which is indistinguishable from a share that hung — so
-            // instead of a picture that cannot arrive, the native path reports
-            // the one fact that answers "is this working": frames leaving.
-            if native_capture {
-                div { class: "flex-1 min-h-0 flex flex-col items-center justify-center gap-1 px-3 text-center",
-                    div { class: "text-[11px] text-[var(--text)]", "{share_label}" }
-                    if frames() > 0 {
-                        div { class: "text-[10px] text-[var(--up)]",
-                            "{frames()} frames sent"
+            // On the native macOS path the publisher is `{pubkey}#video`, while
+            // this webview is the distinct bare `{pubkey}` participant. It can
+            // therefore subscribe exactly like a remote viewer, and the JS
+            // controller already resolves that suffix. This preview shows what
+            // actually crossed the wire rather than only the local source.
+            div {
+                id: "screenshare-self",
+                class: "relative flex-1 min-h-0 bg-black flex items-center justify-center text-[var(--text-dim)] text-[10px]",
+                "Starting…"
+                if native_capture {
+                    div {
+                        class: "absolute left-2 bottom-2 px-1.5 py-0.5 rounded bg-black/70 text-[9px] pointer-events-none",
+                        if frames() > 0 {
+                            span { class: "text-[var(--up)]", "{share_label} · {frames()} frames sent" }
+                        } else {
+                            span { class: "text-[var(--warn)]", "{share_label} · waiting for first frame…" }
                         }
-                    } else {
-                        div { class: "text-[10px] text-[var(--warn)]", "waiting for the first frame…" }
                     }
-                    div { class: "text-[9px] text-[var(--text-dim)] leading-snug",
-                        "No preview on macOS yet — the picture only exists on the wire."
-                    }
-                }
-            } else {
-                div {
-                    id: "screenshare-self",
-                    class: "flex-1 min-h-0 bg-black flex items-center justify-center text-[var(--text-dim)] text-[10px]",
-                    "Starting…"
                 }
             }
             // Resize grip (bottom-right).

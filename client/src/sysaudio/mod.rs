@@ -135,23 +135,25 @@ pub fn supported() -> bool {
 pub fn start(
     tx: UnboundedSender<Vec<f32>>,
     fatal: UnboundedSender<String>,
+    target: Option<crate::sysvideo::Target>,
 ) -> Result<Capture, String> {
     #[cfg(target_os = "macos")]
     {
-        let _ = fatal;
+        let target = target.ok_or_else(|| "no screen-share target was selected".to_string())?;
         Ok(Capture {
-            _inner: macos::MacCapture::start(tx)?,
+            _inner: macos::MacCapture::start(target, tx, fatal)?,
         })
     }
     #[cfg(target_os = "windows")]
     {
+        let _ = target;
         Ok(Capture {
             _inner: self::windows::WinCapture::start(tx, fatal)?,
         })
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
-        let _ = (tx, fatal);
+        let _ = (tx, fatal, target);
         Err("system audio capture isn't implemented on this platform yet".into())
     }
 }

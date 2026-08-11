@@ -236,6 +236,10 @@ pub enum VoiceCmd {
     /// screen share. Only does anything where `sysaudio` has a backend.
     SetSystemAudio {
         enabled: bool,
+        /// Native macOS capture must use the same selected surface as video.
+        /// Windows ignores this because its native path applies only after a
+        /// webview whole-screen pick, which exposes no native target id.
+        target: Option<crate::sysvideo::Target>,
     },
     /// Join or leave the screen-share room as an audio-only subscriber, so a
     /// share captured by someone else's *webview* still plays through our
@@ -507,13 +511,13 @@ async fn service_loop(
                 // device change or a channel switch keeps measuring.
                 controls.stats_polling.store(enabled, Ordering::Relaxed);
             }
-            VoiceCmd::SetSystemAudio { enabled } => {
+            VoiceCmd::SetSystemAudio { enabled, target } => {
                 if let Some(active) = session.as_mut() {
                     // A share that turns out to be silent is the most confusing
                     // outcome there is — the sharer has no way to tell. So the
                     // reason the OS gave goes straight to the user; the share
                     // itself carries on, video-only.
-                    if let Err(e) = active.set_system_audio(enabled, state).await {
+                    if let Err(e) = active.set_system_audio(enabled, target, state).await {
                         eprintln!("[voice] system audio failed: {e}");
                         state.write().error_toast = Some(format!(
                             "Sharing video only — couldn't capture this computer's sound: {e}"
@@ -954,15 +958,21 @@ impl ActiveVoice {
     async fn set_system_audio(
         &mut self,
         enabled: bool,
+        target: Option<crate::sysvideo::Target>,
         state: Signal<AppState>,
     ) -> Result<(), String> {
-        if enabled == self.system_audio.is_some() {
+        if enabled
+            && self
+                .system_audio
+                .as_ref()
+                .is_some_and(|existing| existing.target == target)
+        {
             return Ok(());
         }
+        if let Some(sa) = self.system_audio.take() {
+            let _ = self.room.local_participant().unpublish_track(&sa.sid).await;
+        }
         if !enabled {
-            if let Some(sa) = self.system_audio.take() {
-                let _ = self.room.local_participant().unpublish_track(&sa.sid).await;
-            }
             eprintln!("[voice] system audio stopped");
             // Dropping `_capture` is what stops the OS stream, and on macOS
             // that's a fire-and-forget `stopCaptureWithCompletionHandler(None)`.
@@ -980,7 +990,7 @@ impl ActiveVoice {
         // The backend's own words: which Windows build, which permission, which
         // service. A generic "capture failed" would send someone hunting through
         // the wrong settings.
-        let capture = crate::sysaudio::start(tx, fatal_tx)?;
+        let capture = crate::sysaudio::start(tx, fatal_tx, target)?;
         // Starting is only half of it — a capture that dies mid-share leaves the
         // track published and simply quiet, which the sharer cannot see. Report
         // that the same way an activation failure is reported.
@@ -1050,6 +1060,7 @@ impl ActiveVoice {
             sid: publication.sid(),
             _capture: capture,
             task,
+            target,
         });
         eprintln!("[voice] system audio started");
         Ok(())
@@ -1811,6 +1822,9 @@ struct SystemAudioTrack {
     /// Dropping this stops the OS-level capture.
     _capture: crate::sysaudio::Capture,
     task: tokio::task::JoinHandle<()>,
+    /// The selected surface this capture follows. `None` on Windows, whose
+    /// native path is whole-machine loopback after a webview monitor pick.
+    target: Option<crate::sysvideo::Target>,
 }
 
 impl Drop for SystemAudioTrack {

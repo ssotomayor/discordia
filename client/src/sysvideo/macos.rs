@@ -124,8 +124,7 @@ impl MacVideoCapture {
         sink: FrameSink,
         fatal: UnboundedSender<String>,
     ) -> Result<Self, String> {
-        let content = shareable_content()?;
-        let filter = filter_for(&content, target)?;
+        let filter = content_filter(target)?;
 
         // SAFETY: plain ObjC object construction with checked arguments.
         unsafe {
@@ -238,6 +237,16 @@ fn shareable_content() -> Result<Retained<SCShareableContent>, String> {
         Ok(r) => r,
         Err(_) => Err("timed out querying shareable content (screen recording permission?)".into()),
     }
+}
+
+/// Build the filter for a fresh view of the selected target.
+///
+/// System audio calls this too. A separate implementation there used to pick
+/// the first display regardless of the selected video target, so sharing one
+/// app/window could send an unrelated machine-wide mix.
+pub(super) fn content_filter(target: Target) -> Result<Retained<SCContentFilter>, String> {
+    let content = shareable_content()?;
+    filter_for(&content, target)
 }
 
 /// Windows worth offering in a picker.

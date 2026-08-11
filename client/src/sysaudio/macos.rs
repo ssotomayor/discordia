@@ -17,14 +17,17 @@ use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::{NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{AllocAnyThread, DefinedClass, define_class, msg_send};
-use objc2_core_audio_types::AudioBufferList;
-use objc2_core_media::{CMBlockBuffer, CMSampleBuffer};
-use objc2_foundation::{NSArray, NSError};
+use objc2_core_audio_types::{AudioBufferList, kAudioFormatFlagIsFloat, kAudioFormatLinearPCM};
+use objc2_core_media::{
+    CMAudioFormatDescriptionGetStreamBasicDescription, CMBlockBuffer, CMSampleBuffer,
+};
+use objc2_foundation::NSError;
 use objc2_screen_capture_kit::{
-    SCContentFilter, SCDisplay, SCShareableContent, SCStream, SCStreamConfiguration,
-    SCStreamOutput, SCStreamOutputType,
+    SCStream, SCStreamConfiguration, SCStreamDelegate, SCStreamOutput, SCStreamOutputType,
 };
 use tokio::sync::mpsc::UnboundedSender;
+
+use crate::sysvideo::Target;
 
 /// How long to wait for the shareable-content query. It is asynchronous and,
 /// when the permission dialog is showing, can take as long as the user does.
@@ -34,6 +37,10 @@ const CONTENT_TIMEOUT: Duration = Duration::from_secs(20);
 struct TapState {
     /// Accumulates callback buffers into whole 10 ms frames.
     cutter: std::cell::RefCell<super::frames::FrameCutter>,
+    /// Reports an extraction failure once rather than silently dropping every
+    /// callback and leaving a published track permanently quiet.
+    fatal: UnboundedSender<String>,
+    failed: std::sync::atomic::AtomicBool,
 }
 
 define_class!(
@@ -59,24 +66,109 @@ define_class!(
             self.handle_audio(sample);
         }
     }
+
+    unsafe impl SCStreamDelegate for Tap {
+        #[unsafe(method(stream:didStopWithError:))]
+        unsafe fn stream_did_stop(&self, _stream: &SCStream, error: &NSError) {
+            self.fail(format!(
+                "ScreenCaptureKit stopped system audio: {}",
+                error.localizedDescription()
+            ));
+        }
+    }
 );
 
 impl Tap {
+    fn fail(&self, message: String) {
+        let state = self.ivars();
+        if !state
+            .failed
+            .swap(true, std::sync::atomic::Ordering::Relaxed)
+        {
+            eprintln!("[sysaudio] macOS capture failed: {message}");
+            let _ = state.fatal.send(message);
+        }
+    }
+
     /// Pull PCM out of a sample buffer and forward it as mono 10 ms frames.
     fn handle_audio(&self, sample: &CMSampleBuffer) {
-        let state = self.ivars();
-        // Zeroed rather than Default: AudioBufferList is a C struct with a
-        // trailing variable-length array and implements neither.
-        let mut list: AudioBufferList = unsafe { std::mem::zeroed() };
+        if self
+            .ivars()
+            .failed
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return;
+        }
+        // SAFETY: a property read on the live sample passed to this callback.
+        if !unsafe { sample.is_valid() } {
+            self.fail("ScreenCaptureKit returned an invalid audio sample".into());
+            return;
+        }
+
+        // Read the format instead of assuming the configured format was
+        // honoured. There is no resampler on this path, so accepting anything
+        // else would reinterpret bytes or publish with the wrong clock.
+        // SAFETY: both objects are retained for this scope; CoreMedia returns a
+        // pointer into the retained format description.
+        let format = unsafe { sample.format_description() };
+        let Some(format) = format else {
+            self.fail("screen audio has no format description".into());
+            return;
+        };
+        let asbd = unsafe { CMAudioFormatDescriptionGetStreamBasicDescription(&format) };
+        let Some(asbd) = (unsafe { asbd.as_ref() }) else {
+            self.fail("screen audio has no PCM format".into());
+            return;
+        };
+        if asbd.mFormatID != kAudioFormatLinearPCM
+            || asbd.mFormatFlags & kAudioFormatFlagIsFloat == 0
+            || asbd.mBitsPerChannel != 32
+            || asbd.mSampleRate.round() as u32 != 48_000
+        {
+            self.fail(format!(
+                "unsupported screen-audio format: id={:#x} flags={:#x} {}-bit {} Hz",
+                asbd.mFormatID, asbd.mFormatFlags, asbd.mBitsPerChannel, asbd.mSampleRate
+            ));
+            return;
+        }
+
+        // AudioBufferList ends in a C flexible array. Query the required size
+        // first: `size_of::<AudioBufferList>()` only has room for one entry,
+        // while ScreenCaptureKit commonly supplies two non-interleaved buffers.
+        let mut needed = 0usize;
+        // SAFETY: only the size out-pointer is requested in this first pass.
+        let query_status = unsafe {
+            sample.audio_buffer_list_with_retained_block_buffer(
+                std::ptr::from_mut(&mut needed),
+                std::ptr::null_mut(),
+                0,
+                None,
+                None,
+                0,
+                std::ptr::null_mut(),
+            )
+        };
+        if query_status != 0 || needed < std::mem::size_of::<AudioBufferList>() {
+            self.fail(format!(
+                "couldn't size the screen-audio buffers (status {query_status}, size {needed})"
+            ));
+            return;
+        }
+
+        // `Vec<usize>` gives the storage pointer at least pointer alignment,
+        // which is sufficient for AudioBufferList on the supported macOS ABIs.
+        let word = std::mem::size_of::<usize>();
+        let mut storage = vec![0usize; needed.div_ceil(word)];
+        let list_ptr = storage.as_mut_ptr().cast::<AudioBufferList>();
         let mut block: *mut CMBlockBuffer = std::ptr::null_mut();
 
-        // SAFETY: `list` is sized as declared, and `block` receives a +1
-        // reference that is released below.
+        // SAFETY: storage has the queried size and suitable alignment; `block`
+        // receives a +1 reference retained for all reads below.
         let status = unsafe {
             sample.audio_buffer_list_with_retained_block_buffer(
                 std::ptr::null_mut(),
-                std::ptr::from_mut(&mut list),
-                std::mem::size_of::<AudioBufferList>(),
+                list_ptr,
+                storage.len() * word,
                 None,
                 None,
                 0,
@@ -84,47 +176,61 @@ impl Tap {
             )
         };
         if status != 0 {
+            self.fail(format!(
+                "couldn't read screen-audio buffers (status {status})"
+            ));
             return;
         }
 
-        // ScreenCaptureKit delivers non-interleaved f32: one buffer per
-        // channel. Averaging them to mono is what the publish path wants, and
-        // avoids sending twice the data for a stereo desktop mix.
+        // SAFETY: the successful retained-buffer call returned a +1 reference.
+        let _block = if block.is_null() {
+            self.fail("screen audio returned no backing buffer".into());
+            return;
+        } else {
+            unsafe {
+                objc2_core_foundation::CFRetained::from_raw(std::ptr::NonNull::new_unchecked(block))
+            }
+        };
+        // SAFETY: `list_ptr` points into `storage`, which outlives all accesses.
+        let list = unsafe { &*list_ptr };
+
+        // Handle both interleaved and non-interleaved PCM. AudioBuffer says how
+        // many channels its data holds, so this also remains correct if the OS
+        // changes layout while preserving the requested 48 kHz f32 format.
         let n = list.mNumberBuffers as usize;
         let mut mono: Vec<f32> = Vec::new();
-        for i in 0..n.min(8) {
-            // SAFETY: mNumberBuffers reports how many entries are valid.
+        let mut mixed_channels = 0usize;
+        for i in 0..n {
+            // SAFETY: the queried allocation accommodates mNumberBuffers.
             let buf = unsafe { &*list.mBuffers.as_ptr().add(i) };
-            if buf.mData.is_null() {
+            let channels = buf.mNumberChannels as usize;
+            if buf.mData.is_null() || channels == 0 {
                 continue;
             }
-            let count = buf.mDataByteSize as usize / std::mem::size_of::<f32>();
+            let sample_count = buf.mDataByteSize as usize / std::mem::size_of::<f32>();
             // SAFETY: mDataByteSize is the length of mData in bytes.
-            let samples = unsafe { std::slice::from_raw_parts(buf.mData.cast::<f32>(), count) };
+            let samples =
+                unsafe { std::slice::from_raw_parts(buf.mData.cast::<f32>(), sample_count) };
+            let frames = sample_count / channels;
             if mono.is_empty() {
-                mono.extend_from_slice(samples);
-            } else {
-                for (m, s) in mono.iter_mut().zip(samples) {
-                    *m += *s;
+                mono.resize(frames, 0.0);
+            }
+            let frames = frames.min(mono.len());
+            for (frame, mixed) in mono.iter_mut().enumerate().take(frames) {
+                let start = frame * channels;
+                for sample in &samples[start..start + channels] {
+                    *mixed += *sample;
                 }
             }
+            mixed_channels += channels;
         }
-        if !mono.is_empty() && n > 1 {
-            let scale = 1.0 / n as f32;
+        if !mono.is_empty() && mixed_channels > 1 {
+            let scale = 1.0 / mixed_channels as f32;
             for m in mono.iter_mut() {
                 *m *= scale;
             }
         }
 
-        if !block.is_null() {
-            // SAFETY: the "RetainedBlockBuffer" variant hands us a +1
-            // reference; wrapping it in CFRetained releases it on drop.
-            unsafe {
-                drop(objc2_core_foundation::CFRetained::from_raw(
-                    std::ptr::NonNull::new_unchecked(block),
-                ));
-            }
-        }
         if mono.is_empty() {
             return;
         }
@@ -132,7 +238,7 @@ impl Tap {
         // Cut into exact frames; the remainder waits for the next callback.
         // The channels were already folded together above — ScreenCaptureKit
         // delivers one buffer per channel, not interleaved.
-        state.cutter.borrow_mut().push_mono(&mono);
+        self.ivars().cutter.borrow_mut().push_mono(&mono);
     }
 }
 
@@ -141,19 +247,15 @@ pub struct MacCapture {
 }
 
 impl MacCapture {
-    pub fn start(tx: UnboundedSender<Vec<f32>>) -> Result<Self, String> {
-        let display = first_display()?;
+    pub fn start(
+        target: Target,
+        tx: UnboundedSender<Vec<f32>>,
+        fatal: UnboundedSender<String>,
+    ) -> Result<Self, String> {
+        let filter = crate::sysvideo::content_filter(target)?;
 
         // SAFETY: plain ObjC object construction with checked arguments.
         unsafe {
-            let empty: Retained<NSArray<objc2_screen_capture_kit::SCWindow>> = NSArray::new();
-            let filter: Retained<SCContentFilter> =
-                SCContentFilter::initWithDisplay_excludingWindows(
-                    SCContentFilter::alloc(),
-                    &display,
-                    &empty,
-                );
-
             let config = SCStreamConfiguration::new();
             config.setCapturesAudio(true);
             config.setSampleRate(48_000);
@@ -169,15 +271,18 @@ impl MacCapture {
 
             let tap = Tap::alloc().set_ivars(TapState {
                 cutter: std::cell::RefCell::new(super::frames::FrameCutter::new(tx)),
+                fatal,
+                failed: std::sync::atomic::AtomicBool::new(false),
             });
             let tap: Retained<Tap> = msg_send![super(tap), init];
             let output = ProtocolObject::from_ref(&*tap);
+            let delegate = ProtocolObject::from_ref(&*tap);
 
             let stream: Retained<SCStream> = SCStream::initWithFilter_configuration_delegate(
                 SCStream::alloc(),
                 &filter,
                 &config,
-                None,
+                Some(delegate),
             );
 
             let queue = dispatch2::DispatchQueue::new("fun.dioxus.sysaudio", None);
@@ -222,43 +327,5 @@ impl Drop for MacCapture {
         unsafe {
             self.stream.stopCaptureWithCompletionHandler(None);
         }
-    }
-}
-
-/// The first display, via the asynchronous shareable-content query.
-///
-/// This is also where a missing Screen Recording permission surfaces: the query
-/// fails rather than returning an empty list, so the error reaches the user
-/// instead of looking like a machine with no screens.
-fn first_display() -> Result<Retained<SCDisplay>, String> {
-    let (tx, rx) = std_mpsc::channel();
-    let handler = RcBlock::new(move |content: *mut SCShareableContent, err: *mut NSError| {
-        if !err.is_null() {
-            let msg = unsafe { (*err).localizedDescription() }.to_string();
-            let _ = tx.send(Err(msg));
-            return;
-        }
-        if content.is_null() {
-            let _ = tx.send(Err("no shareable content returned".into()));
-            return;
-        }
-        // SAFETY: non-null and owned by the callback for its duration.
-        let displays = unsafe { (*content).displays() };
-        match displays.firstObject() {
-            Some(d) => {
-                let _ = tx.send(Ok(d));
-            }
-            None => {
-                let _ = tx.send(Err("no displays available".into()));
-            }
-        }
-    });
-    // SAFETY: the handler outlives the call via RcBlock.
-    unsafe {
-        SCShareableContent::getShareableContentWithCompletionHandler(&handler);
-    }
-    match rx.recv_timeout(CONTENT_TIMEOUT) {
-        Ok(r) => r,
-        Err(_) => Err("timed out querying shareable content (screen recording permission?)".into()),
     }
 }
