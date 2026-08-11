@@ -318,8 +318,13 @@ protocol end to end. Copy an existing test's helper block (`spawn_gateway`,
 `connect_user`, `create_guild`, `next_timeout`) when adding one. Each test uses
 a unique temp data dir so they're parallel-safe. Current suites: `archive`,
 `bots`, `emoji`, `owner_controls`, `persistence`, `transport` (server) and
-`handshake` (rendezvous). **First run is slow** — the server crate builds
-LiveKit from source once (~2-3 min).
+`handshake` (rendezvous). **First run is slow** — the server crate gets
+`livekit-server` once, and how depends on the platform: Windows and Linux
+download the prebuilt release, macOS clones and `go build`s it (~2-3 min, needs
+`go` on PATH). Either way a failure **stops the build** rather than warning:
+the binary is embedded with `include_bytes!`, so a build without it looks
+identical to one with it and quietly cannot host voice locally. Set
+`LIVEKIT_BUNDLE_SKIP=1` to opt out on purpose — the panic names it.
 
 ---
 

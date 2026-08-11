@@ -207,7 +207,11 @@ cargo test --workspace
 ```
 
 The whole suite runs headlessly and is expected to stay green. **The first build
-is slow** — the server crate builds LiveKit from source once.
+is slow** — the server crate fetches `livekit-server` once (downloaded on
+Windows and Linux, built from source on macOS, which needs `go`). It is embedded
+in the binary so one-click self-hosting needs nothing installed; if it cannot be
+had, the build stops rather than producing a client that silently cannot host
+voice. `LIVEKIT_BUNDLE_SKIP=1` opts out.
 
 Integration tests spawn a real gateway and drive it through the bot SDK, so they
 exercise the actual WebSocket protocol end to end rather than calling into
