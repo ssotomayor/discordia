@@ -129,6 +129,12 @@ pub fn validate_name(name: &str) -> Result<String, String> {
     Ok(name.to_lowercase())
 }
 
+impl Default for Registry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Registry {
     /// In-memory registry (no persistence). Used by tests and anonymous-only
     /// deployments.
@@ -204,10 +210,10 @@ impl Registry {
         description: Option<String>,
         public: bool,
     ) -> Result<(), ClaimError> {
-        if let Some(existing) = self.reservations.get(slug) {
-            if existing.owner_pubkey != owner {
-                return Err(ClaimError::Taken);
-            }
+        if let Some(existing) = self.reservations.get(slug)
+            && existing.owner_pubkey != owner
+        {
+            return Err(ClaimError::Taken);
         }
         if self.hosts.contains_key(slug) {
             return Err(ClaimError::LiveElsewhere);

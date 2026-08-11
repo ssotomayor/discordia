@@ -23,18 +23,21 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       # The desktop client needs system GTK/WebKit to compile; CI covers the
-      # server-side crates (protocol, server, bot SDK) where all the tests
-      # live. The client is checked in the desktop-build job below.
+      # server-side crates (protocol, server, bot SDK, rendezvous) where all
+      # the tests live. The client is checked in the desktop-build job below.
       - name: Format
         run: cargo fmt --all --check
         continue-on-error: true # not yet formatted repo-wide; informational
 
+      # --all-targets, not --tests: examples are a build target the tests don't
+      # cover, and a dead-code sweep once broke bot-sdk/examples/ping.rs with
+      # nothing catching it.
       - name: Clippy (server crates)
-        run: cargo clippy -p dioxusfun-protocol -p dioxusfun-server -p dioxusfun-bot --tests -- -D warnings
+        run: cargo clippy -p dioxusfun-protocol -p dioxusfun-server -p dioxusfun-bot -p dioxusfun-rendezvous --all-targets -- -D warnings
         continue-on-error: true # informational until the lint debt is paid
 
-      - name: Tests (protocol + server + bot SDK)
-        run: cargo test -p dioxusfun-protocol -p dioxusfun-server -p dioxusfun-bot
+      - name: Tests (protocol + server + bot SDK + rendezvous)
+        run: cargo test -p dioxusfun-protocol -p dioxusfun-server -p dioxusfun-bot -p dioxusfun-rendezvous
 
   desktop-build:
     name: client compiles (linux)
