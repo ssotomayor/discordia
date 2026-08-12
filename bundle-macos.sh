@@ -28,6 +28,9 @@
 #
 #   DISCORDIA_SIGNING_IDENTITY="Apple Development: You (TEAMID)" ./bundle-macos.sh
 #
+# Final artifacts are copied to client/build/macos/ so they are easy to find;
+# Dioxus's target directory remains an internal build/cache location.
+#
 # List candidates with `security find-identity -v -p codesigning`. Unset, this
 # still produces a working (ad-hoc) bundle — you just re-grant permissions after
 # each build.
@@ -101,17 +104,21 @@ fi
 
 # Rebuild the DMG from whatever the .app now is, mirroring dx's own staging: the
 # app plus an /Applications symlink to drag it onto.
-dmg_dir=$(dirname "$app")
-dmg="$dmg_dir/Discordia_0.1.0_aarch64.dmg"
+output_dir="$PWD/client/build/macos"
+output_app="$output_dir/Discordia.app"
+dmg="$output_dir/Discordia_0.1.0_aarch64.dmg"
 stage=$(mktemp -d)
 trap 'rm -rf "$stage"' EXIT
 cp -R "$app" "$stage/"
 ln -s /Applications "$stage/Applications"
+mkdir -p "$output_dir"
+rm -rf "$output_app"
+cp -R "$app" "$output_app"
 rm -f "$dmg"
 hdiutil create -srcfolder "$stage" -volname Discordia -ov -format UDZO "$dmg" >/dev/null
 [[ -n "$identity" ]] && codesign --force --sign "$identity" "$dmg" >/dev/null 2>&1 || true
 
 echo
-echo "app: $app"
+echo "app: $output_app"
 echo "dmg: $dmg"
-codesign -dvv "$app" 2>&1 | grep -E '^Identifier|^Authority|^Signature|flags' || true
+codesign -dvv "$output_app" 2>&1 | grep -E '^Identifier|^Authority|^Signature|flags' || true

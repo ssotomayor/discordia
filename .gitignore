@@ -1,6 +1,7 @@
 # Cargo build artifacts (workspace + per-crate)
 /target
 **/target
+/client/build/
 
 # OS noise
 .DS_Store
