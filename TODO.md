@@ -38,6 +38,22 @@ the top within each section.
   revisit the numbers (and maybe award XP for reactions/voice) once it's seen
   in use.
 
+## Repo & CI
+
+- **No macOS clippy.** CI now compiles the client on all three platforms, but
+  lints it only on Linux — so the `cfg(target_os = "macos")` half of the client,
+  which is where every ScreenCaptureKit and CoreVideo `unsafe` block lives, is
+  compiled and never linted. Turning `-D warnings` on for the darwin job means
+  landing whatever it finds blind, which is why it was not done in the same
+  change that added the job.
+- **`Discordia.html` is unreferenced.** 488,666 bytes at the repo root, titled
+  "Bundled Page", with its CSS and JS embedded. It arrived in `88d8f1d` — the
+  large roadmap-execution commit — and nothing in the workspace mentions it:
+  `git grep 'Discordia.html'` outside the file itself returns nothing. The
+  dead-code sweep in `03c7e48` removed `connect.mp3` and `discordia-logo.svg` and
+  did not touch this. Left in place because deleting another author's file on a
+  guess is worse than carrying it; whoever added it should say what it is.
+
 ## Assets
 
 - **The `.icns` is downscaled from the PNG, not rasterised from the SVG.** The
@@ -119,11 +135,21 @@ the top within each section.
 ## Decentralization / rendezvous
 
 - **Reservation display fields are persisted but never read.** `claim_name`
-  writes `name`, `description` and `public` into `reservations.json`, but
-  `load()` only reads `slug` and `reservation_owner()` only `owner_pubkey`. A
-  reconnecting host re-supplies them from its `Register` frame, so they survive
-  a restart without being applied to anything. Fine if this is groundwork for an
-  offline browse listing; dead weight otherwise.
+  writes `name`, `description` and `public` into `reservations.json`, and
+  `Registry::load` does deserialize the whole `Reservation` back — but `relay.rs`
+  touches exactly one field of it, `owner_pubkey`, via `reservation_owner()`.
+  (This entry used to say `load()` reads only `slug`, which stopped being true;
+  the point did not.) A reconnecting host re-supplies the display fields from its
+  `Register` frame, so they survive a restart without being applied to anything.
+  Fine if this is groundwork for an offline browse listing; dead weight
+  otherwise.
+- **Screen tokens minted by a rendezvous ignore `can_publish`.** The local mint
+  now grants publish per identity, so the subscribe-only `{pubkey}#audio`
+  connection can no longer send. A gateway delegating to a rendezvous sends a
+  `MintRequest`, which carries no grants at all, and the relay signs its own
+  fixed set with publish on — so on that path the narrowing does not apply.
+  Closing it means a grants field on the rendezvous wire and a matching change in
+  `rendezvous/src/lib.rs`.
 - **Name release / rename.** A host can *claim* a rendezvous name (proven by
   Schnorr signature, persisted) but there's no flow to release it or rename it —
   reservations are sticky once claimed. Add an owner-authenticated unclaim/rename
@@ -191,18 +217,65 @@ the top within each section.
   Whatever the cause, `start()` returning `Ok` for a capture that yields nothing
   is the part that must change: it should fail loudly, the way the Windows
   backend's `fatal` channel does.
+  **Status unclear, and that is the actionable part.** `de01daf`
+  ("fix(screen-share): restore macOS audio and stream recovery") rewrote 239
+  lines of `sysaudio/macos.rs` afterwards and the backend now *has* a `fatal`
+  channel and explicit start errors — but that commit shipped with an empty
+  message, so nothing in the repo says whether it fixed the silence or only the
+  reporting. Do not delete this entry on the strength of reading the code. The
+  measurement that closes it is the original one: play audio, share, count
+  samples.
 - **A macOS watcher can get stuck on "Connecting to stream…" indefinitely.**
-  Reproduced once against a Windows sharer. Two theories were tested and both are
-  wrong: the LiveKit JS SDK loads fine from its CDN (~100ms), and
-  `RTCPeerConnection` / `new Room()` both work in the webview. So the webview is
-  capable of subscribing and rendering, and the cause is still unknown. The JS
-  controller needs persistent diagnostics — room participants, their
-  publications, subscription state, and whether `attach` found a track — reported
-  back to Rust, so the next occurrence explains itself instead of costing another
-  guess-build-test cycle.
+  Reproduced once against a Windows sharer. Since then two of the candidates have
+  been removed rather than ruled out: `webAudioMix` was being passed to the
+  `Room` constructor, which governs subscription, and the SDK is no longer
+  fetched from a CDN at all — it is compiled into the binary, so "the JS did not
+  load" is now only possible as a bug in our own bundle. `RTCPeerConnection` and
+  `new Room()` were tested and work in the webview.
+  Still unreproduced since, so still open. The JS controller needs persistent
+  diagnostics — room participants, their publications, subscription state, and
+  whether `attach` found a track — reported back to Rust, so the next occurrence
+  explains itself instead of costing another guess-build-test cycle.
 
 ## Voice / audio
 
+The first four here were recorded only in commit messages until now. That is
+where deferred work goes to be forgotten: `c86af67` listed five review
+follow-ups in its body, three were still open a month later, and nothing was
+tracking them.
+
+- **Call audio degrades during a screen share, and nothing explains it.**
+  Reported by a user. `c6cb994` measured the obvious suspect — the gain effect
+  re-sending identical values, peaking at 12 sends/second — found it too small to
+  be the cause, fixed it anyway and wrote "That is still open". Nothing has
+  looked at it since. `dlog!` trace points for the share teardown are still in
+  `features::voice` and `features::screenshare` from that investigation; use
+  them.
+- **Stream audio is subscribed on publication, not on watch.** Flagged in
+  `c86af67`'s review as "defer `set_subscribed` to watch-start", which would stop
+  every member of a channel pulling a share's audio whether or not they open the
+  watch window. Left as-is deliberately: `165f26d` connects early *precisely* so
+  the first second of a stream is not silent. Two defensible positions, and the
+  cost of the current one is only measurable with several watchers on one share.
+- **An old client that mutes reads as deafened.** Before the deafen button
+  existed the client sent `deafened: muted`, so on a current server every mute
+  from such a peer now shows as a deafen to everyone else. `update_voice_flags`
+  says so in a comment. The flag was equally wrong before `c2c6ff2`; what changed
+  is that something renders it. There is no protocol version to key off, which is
+  the actual gap.
+- **A peer on an older build cannot watch a natively captured share.** The macOS
+  publisher uses the `{pubkey}#video` identity (`17314c3`); older clients resolve
+  sharers by bare pubkey only, so they subscribe to nothing and sit on
+  "Connecting to stream…" with no error. Both ends need the newer build and
+  neither can tell. Same missing piece as the entry above: nothing on this wire
+  carries a version, so a break can only be documented, never detected.
+- **The `CVPixelBuffer` double-release test never runs.** `sysvideo`'s regression
+  test drives a real capture into a real video source, and is `#[ignore]`d
+  because it needs a display and the Screen Recording grant. It guards the bug
+  that trapped inside `CFRelease` on the capture queue the instant a share
+  started — a memory error in `unsafe` FFI, which is the worst class to leave
+  uncovered. Needs a macOS runner with a display, or a hand-run checklist before
+  releases.
 - **Force-quitting the app orphans the bundled SFU.** `LivekitSubprocess` relies
   on tokio's `kill_on_drop`, which only runs if the parent unwinds — a `SIGKILL`
   (force quit, or a debugger) leaves `livekit-server` running, reparented to
