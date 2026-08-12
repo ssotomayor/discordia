@@ -222,14 +222,18 @@ it is what *renders* everyone else's share.
   - bare `{pubkey}` — the webview. Renders every share; also *captures* on
     Windows.
   - `{pubkey}#audio` — native, audio-only, `auto_subscribe: false`. Subscribes to
-    stream audio so it plays through the same cpal device as voice.
+    stream audio so it plays through the same cpal device as voice. Its token is
+    minted **without** publish rights, unlike the other two.
   - `{pubkey}#video` — native, publish-only, `auto_subscribe: false`. Publishes
     natively captured screen video on macOS.
 
   Watchers resolve a sharer to a track by identity, and our own protocol
   announces sharers by *bare* pubkey — so the `#video` suffix is resolved in one
   place, `attach`/`reattach` in the JS controller. Adding a fourth identity means
-  teaching those two functions about it.
+  teaching those two functions about it — and deciding what it may publish, which
+  `screen_token_as` takes as an argument rather than inferring from the suffix.
+  That only binds on the local mint; a rendezvous-delegated one signs its own
+  grants (see `TODO.md`).
 - **Screen-share audio has two paths into the same room, on purpose.** Both land
   in the same
   cpal mixer voice already uses, so stream audio follows the chosen output
