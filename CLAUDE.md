@@ -337,6 +337,15 @@ identical to one with it and quietly cannot host voice locally. Set
 - **Match the surrounding code.** Comments explain *why*, not *what*, and the
   codebase is fairly densely commented at decision points — keep that up.
 - **Never add Claude/AI attribution** to commits, PRs, or generated content.
+- **Deferred work goes in `TODO.md`, not only in the commit message.** If
+  something is knowingly left undone — a review follow-up, a gap you chose not
+  to close, a fix you could not verify — it needs an entry there. Commit bodies
+  in this repo are unusually good, which is the trap: they are written once and
+  read never, so recording a decision in one *feels* like tracking it.
+  `c86af67` listed five review follow-ups in its body; three were still open a
+  month later and nothing anywhere was tracking them. Same for a bug you find
+  and don't fix — `c6cb994` wrote "That is still open" about a user-reported
+  problem, and that was the last anyone looked at it.
 - Mutations on `AppState` are `async` and write through to the store — follow
   the existing method shape (mutate map → `persist(store.xxx().await, "what")`).
 - Prefer `deliver(guild_member_pubkeys, msg)` over `broadcast` for guild
