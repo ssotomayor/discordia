@@ -278,6 +278,29 @@ the top within each section.
 
 ## Voice / audio
 
+- **One activation blob is now shared by every Windows capture.** The fix for
+  the heap corruption made `activation_params` a single process-wide allocation
+  instead of one per call, because the engine keeps the pointer and nothing says
+  for how long. That trades a per-share leak for sharing, and the sharing is not
+  hypothetical: `setup()` activates twice in one start when a driver rejects
+  f32 and it falls back to PCM, so two clients can hold the same pointer, the
+  first still alive when the second activates.
+  Benign as long as the blob is only read — the contents are identical and we
+  never mutate them. It stops being benign if the engine *writes* back into it,
+  which is why the allocation is on the heap rather than in a `static` that
+  could be read-only. Nobody has established which it is.
+  Closing it without reintroducing the crash means going back to one allocation
+  per activation and leaking each one deliberately: 12 bytes per share instead
+  of 12 per process. Cheap, and worth doing if a write is ever observed.
+- **The Windows blob's lifetime rule is measured, not documented.** Microsoft
+  does not say how long `ActivateAudioInterfaceAsync` needs the `VT_BLOB` it is
+  handed. "As long as the process" comes from probing: the engine had not freed
+  the block, and 64 same-size allocations afterwards never landed on its
+  address. If a future Windows *does* free it, we would be handing it a Rust
+  allocation to release — which works today only because `CoTaskMemAlloc` and
+  Rust's allocator both sit on the process heap, not because anything promises
+  it. Measured on Windows 11 26200 and one machine; no other platform even
+  compiles this file.
 - **macOS system audio is the one still untested; Windows is not.** The Windows
   backend now demonstrably captures — `windows_loopback_delivers_real_samples`
   reaches a peak of ~0.35 against a tone played from another process — after a
