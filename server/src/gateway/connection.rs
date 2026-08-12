@@ -851,6 +851,9 @@ pub async fn handle_connection(
                                     &u.pubkey,
                                     &screen_name,
                                     channel_id,
+                                    // The webview both renders and, on Windows,
+                                    // captures.
+                                    true,
                                 )
                                 .await;
                                 match screen_token {
@@ -860,6 +863,9 @@ pub async fn handle_connection(
                                             &livekit::screen_audio_identity(&u.pubkey),
                                             &screen_name,
                                             channel_id,
+                                            // Subscribes to stream audio and
+                                            // sends nothing, ever.
+                                            false,
                                         )
                                         .await
                                         {
@@ -884,6 +890,8 @@ pub async fn handle_connection(
                                             &livekit::screen_video_identity(&u.pubkey),
                                             &screen_name,
                                             channel_id,
+                                            // Publishes natively captured video.
+                                            true,
                                         )
                                         .await
                                         {

@@ -155,8 +155,9 @@ pub async fn voice_token(
 /// video on platforms where the webview cannot capture. LiveKit evicts a
 /// duplicate identity, so each connection needs its own — hence these suffixes.
 ///
-/// They are only ever identities, never authorisations: every token carries the
-/// same grants for the same room.
+/// The suffix names the connection; it does not carry the permission. What each
+/// one may do is decided at the call site and passed to `screen_token_as`, so
+/// that reading a grant never means parsing an identity string.
 pub fn screen_audio_identity(user_pubkey: &str) -> String {
     format!("{user_pubkey}#audio")
 }
@@ -172,11 +173,21 @@ pub fn screen_video_identity(user_pubkey: &str) -> String {
 }
 
 /// Mint a screen-share token under an explicit identity.
+///
+/// `can_publish` is the caller's answer to "does this connection ever send
+/// anything?". One of the three does not: the `#audio` identity only subscribes.
+///
+/// **It only binds on the local path.** A gateway delegating to a rendezvous
+/// sends a `MintRequest`, which carries no grants — the relay signs with its own
+/// fixed set, publish included. Narrowing that too means a field on the
+/// rendezvous wire, which is why it is recorded in TODO.md rather than done
+/// here.
 pub async fn screen_token_as(
     cfg: &LiveKitConfig,
     identity: &str,
     username: &str,
     channel_id: Id,
+    can_publish: bool,
 ) -> Result<String, String> {
     match &cfg.minter {
         Some(m) => {
@@ -187,7 +198,7 @@ pub async fn screen_token_as(
             })
             .await
         }
-        None => mint_screen_token(cfg, identity, username, channel_id),
+        None => mint_screen_token(cfg, identity, username, channel_id, can_publish),
     }
 }
 
@@ -213,11 +224,16 @@ pub fn screen_room_name(channel_id: Id) -> String {
 /// `identity` is a parameter rather than the pubkey because the same user joins
 /// this room twice — webview for video, native client for audio — and LiveKit
 /// allows only one connection per identity. See `screen_audio_identity`.
+///
+/// `can_publish_data` follows `can_publish`: the data channel is a publishing
+/// capability too, and a connection that has nothing to send has nothing to say
+/// on it either.
 pub fn mint_screen_token(
     cfg: &LiveKitConfig,
     identity: &str,
     username: &str,
     channel_id: Id,
+    can_publish: bool,
 ) -> Result<String, String> {
     let room = screen_room_name(channel_id);
     AccessToken::with_api_key(&cfg.api_key, &cfg.api_secret)
@@ -226,9 +242,9 @@ pub fn mint_screen_token(
         .with_grants(VideoGrants {
             room_join: true,
             room,
-            can_publish: true,
+            can_publish,
             can_subscribe: true,
-            can_publish_data: true,
+            can_publish_data: can_publish,
             ..Default::default()
         })
         .to_jwt()
@@ -238,6 +254,52 @@ pub fn mint_screen_token(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The three screen-room identities and what each is allowed to do. The
+    /// grants used to be identical for all three, so the `#audio` connection —
+    /// which only ever subscribes — could have published into a room it shares
+    /// with everyone in the channel.
+    #[test]
+    fn screen_grants_follow_the_connection() {
+        use livekit_api::access_token::TokenVerifier;
+
+        let cfg = LiveKitConfig {
+            explicit_url: None,
+            port: 7880,
+            api_key: "devkey".into(),
+            api_secret: "secret-long-enough-for-hs256-signing".into(),
+            minter: None,
+            lan_host: None,
+        };
+        let channel = Id::new_v4();
+        let verifier = TokenVerifier::with_api_key(&cfg.api_key, &cfg.api_secret);
+        let pubkey = "a".repeat(64);
+
+        let grants = |identity: &str, can_publish: bool| {
+            let jwt = mint_screen_token(&cfg, identity, "name (screen)", channel, can_publish)
+                .expect("mint");
+            let claims = verifier.verify(&jwt).expect("verify");
+            assert_eq!(claims.sub, identity);
+            assert_eq!(claims.video.room, screen_room_name(channel));
+            assert!(claims.video.room_join);
+            claims.video
+        };
+
+        // Renders everyone's share, and captures on Windows.
+        let webview = grants(&pubkey, true);
+        assert!(webview.can_publish);
+        assert!(webview.can_subscribe);
+
+        // Subscribe-only: it feeds stream audio into the cpal mixer.
+        let audio = grants(&screen_audio_identity(&pubkey), false);
+        assert!(!audio.can_publish);
+        assert!(!audio.can_publish_data);
+        assert!(audio.can_subscribe);
+
+        // Publishes natively captured screen video.
+        let video = grants(&screen_video_identity(&pubkey), true);
+        assert!(video.can_publish);
+    }
 
     #[test]
     fn strips_ipv4_port() {
