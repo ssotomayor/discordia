@@ -15,12 +15,24 @@
 ///
 /// No-op in release. Failures are swallowed: a diagnostic that can break the
 /// app it is diagnosing is worse than no diagnostic.
+///
+/// The release arm still *reads* its arguments, and has to. Expanding to
+/// nothing at all makes a binding that exists only to be logged look unused to
+/// the compiler, so every call site pays for the macro with an
+/// `unused_variables` warning that only appears in release builds — where no
+/// lint gate runs, since clippy is a `cargo` dev-profile job. `format_args!`
+/// borrows the arguments and builds nothing; `let _ =` drops it at the end of
+/// the statement. Nothing is formatted, allocated or emitted.
 #[macro_export]
 macro_rules! dlog {
     ($($arg:tt)*) => {
         #[cfg(debug_assertions)]
         {
             $crate::devlog::write_line(&format!($($arg)*));
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            let _ = format_args!($($arg)*);
         }
     };
 }
