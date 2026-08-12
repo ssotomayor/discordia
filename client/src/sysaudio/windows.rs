@@ -16,6 +16,7 @@
 //! does not support `GetMixFormat` — the format is ours to name. We name
 //! 48 kHz, which is what the publish path wants, so the question never arises.
 
+use std::sync::OnceLock;
 use std::sync::mpsc as std_mpsc;
 use std::time::{Duration, Instant};
 
@@ -288,25 +289,49 @@ fn setup() -> Result<Started, String> {
     })
 }
 
+/// The activation blob, allocated once and never freed.
+///
+/// The engine keeps the pointer it is handed. Releasing the block when
+/// `activate` returned is what made the very first capture on any machine die
+/// with `STATUS_HEAP_CORRUPTION` — measured, not guessed: leaking it made the
+/// crash go away and real samples arrive, padding the allocation by 64 bytes
+/// did not (so it is not an overrun), and freeing it through `CoTaskMemFree`
+/// instead of Rust's allocator did not either (so it is not a mismatched
+/// allocator). Probing the allocator afterwards settles which way round it is —
+/// 64 same-size allocations never land on our address and the contents stay
+/// intact, so the engine has not freed it. It is still holding it.
+///
+/// Nothing documents how long that has to last, and there is no handle to hang
+/// it off, so it lasts as long as the process. That costs one 12-byte block for
+/// the whole run rather than one per share, because the contents never vary:
+/// our own PID, and a mode constant.
+fn activation_params() -> *mut AUDIOCLIENT_ACTIVATION_PARAMS {
+    // A `usize` because a raw pointer is neither `Send` nor `Sync`, and this is
+    // reached from whichever thread starts a capture. Heap rather than a
+    // `static` of the struct itself: a `static` could land in read-only memory,
+    // and an engine that writes back into the blob would fault on it.
+    static PARAMS: OnceLock<usize> = OnceLock::new();
+    *PARAMS.get_or_init(|| {
+        Box::into_raw(Box::new(AUDIOCLIENT_ACTIVATION_PARAMS {
+            ActivationType: AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
+            Anonymous: AUDIOCLIENT_ACTIVATION_PARAMS_0 {
+                ProcessLoopbackParams: AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS {
+                    // Our own tree. Excluding it is the whole point: it drops
+                    // this app's playback — the call itself — before it can be
+                    // captured and sent back out. It also covers any child
+                    // process we spawn, which is what keeps a bundled LiveKit
+                    // out of the mix.
+                    TargetProcessId: unsafe { GetCurrentProcessId() },
+                    ProcessLoopbackMode: PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE,
+                },
+            },
+        })) as usize
+    }) as *mut AUDIOCLIENT_ACTIVATION_PARAMS
+}
+
 /// Ask the audio engine for a process-loopback client that excludes us.
 fn activate() -> Result<IAudioClient, String> {
-    // Boxed rather than left on the stack so that an activation which times out
-    // — and may still be reading the blob on another thread — can be abandoned
-    // by leaking this, instead of pulling it out from under the engine when the
-    // function returns. See the timeout branch below.
-    let mut params = Box::new(AUDIOCLIENT_ACTIVATION_PARAMS {
-        ActivationType: AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
-        Anonymous: AUDIOCLIENT_ACTIVATION_PARAMS_0 {
-            ProcessLoopbackParams: AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS {
-                // Our own tree. Excluding it is the whole point: it drops this
-                // app's playback — the call itself — before it can be captured
-                // and sent back out. It also covers any child process we spawn,
-                // which is what keeps a bundled LiveKit out of the mix.
-                TargetProcessId: unsafe { GetCurrentProcessId() },
-                ProcessLoopbackMode: PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE,
-            },
-        },
-    });
+    let params = activation_params();
 
     // The activation parameters travel as a VT_BLOB PROPVARIANT. Built field by
     // field because the safe constructors don't cover BLOB.
@@ -315,15 +340,17 @@ fn activate() -> Result<IAudioClient, String> {
     // `PropVariantClear` would hand a stack address to `CoTaskMemFree`. It
     // doesn't: the generated `PROPVARIANT` is a plain `repr(C)` union with no
     // `Drop`, and clearing is only ever explicit. Re-check that if the `windows`
-    // crate is bumped.
+    // crate is bumped. Checked once already, on 0.61: after a live activation
+    // the variant still reads `VT_BLOB` with its original `cbSize`, so the
+    // engine does not clear it either.
     let mut prop = PROPVARIANT::default();
-    // SAFETY: writing the documented layout of a zeroed PROPVARIANT. `params`
-    // outlives the call below, which is all the blob pointer requires.
+    // SAFETY: writing the documented layout of a zeroed PROPVARIANT. The blob
+    // outlives the process, never mind the call.
     unsafe {
         let inner = &mut prop.Anonymous.Anonymous;
         inner.vt = VT_BLOB;
         inner.Anonymous.blob.cbSize = std::mem::size_of::<AUDIOCLIENT_ACTIVATION_PARAMS>() as u32;
-        inner.Anonymous.blob.pBlobData = std::ptr::from_mut(&mut *params).cast::<u8>();
+        inner.Anonymous.blob.pBlobData = params.cast::<u8>();
     }
 
     // SAFETY: an unnamed auto-reset event, signalled by the handler below.
@@ -352,15 +379,16 @@ fn activate() -> Result<IAudioClient, String> {
     // SAFETY: waiting on our own event.
     let waited = unsafe { WaitForSingleObject(done.0, ACTIVATE_TIMEOUT.as_millis() as u32) };
     if waited != WAIT_OBJECT_0 {
-        // Both deliberately leaked. On this path the completion handler has NOT
-        // run and may still fire on an MTA pool thread: closing `done` now would
-        // let it `SetEvent` a handle value Windows has since recycled, quietly
+        // `done` is deliberately leaked. On this path the completion handler has
+        // NOT run and may still fire on an MTA pool thread: closing it now would
+        // let that `SetEvent` a handle value Windows has since recycled, quietly
         // signalling some unrelated kernel object instead of failing loudly.
-        // Freeing `params` would likewise pull the blob out from under an
-        // activation still in flight. Same trade `WinCapture::start` makes with
-        // its shutdown handle — a leak on an already-failed path costs far less
-        // than a use-after-free.
-        std::mem::forget(params);
+        // Same trade `WinCapture::start` makes with its shutdown handle — a leak
+        // on an already-failed path costs far less than a use-after-free.
+        //
+        // The blob needs nothing here. It is never freed on any path, which is
+        // what this branch used to arrange by hand for itself alone — and the
+        // success path, which did not, is where the heap corruption came from.
         return Err("Windows didn't answer the audio-capture request in time.".into());
     }
     // SAFETY: the handler has run — it is what signalled this event — so nothing
@@ -571,15 +599,14 @@ mod tests {
     /// failure is invisible from inside: `start()` succeeds, a track is
     /// published, and it is silent forever.
     ///
-    /// As of writing this **does not get that far**: `start()` takes the process
-    /// down with STATUS_HEAP_CORRUPTION before returning. See the entry in
-    /// `TODO.md`; the assertions below are what should hold once it does return,
-    /// and the test is the reproduction in the meantime.
+    /// It found one on its first run, before it could get as far as the samples:
+    /// `start()` took the whole process down with STATUS_HEAP_CORRUPTION,
+    /// because the activation blob was freed while the engine still held it.
+    /// See `activation_params`. It passes now, with a peak around 0.35 against a
+    /// tone played from another process.
     ///
     /// `#[ignore]`d: needs an audio device, a desktop session, and Windows 10
-    /// build 20348 or newer. It also aborts the whole test binary while the
-    /// corruption is unfixed, which is reason enough not to have it run by
-    /// default.
+    /// build 20348 or newer — none of which a CI runner has.
     ///
     /// ```text
     /// cargo test -p dioxusfun -- --ignored --nocapture windows_loopback
