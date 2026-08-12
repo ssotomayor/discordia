@@ -1,2 +1,10 @@
 @import "tailwindcss";
 @source "../src/**/*.rs";
+/* v4 scans the project on its own as well as honouring the @source above, and
+   this directory now holds a 526 KB minified bundle. Class candidates are
+   extracted by pattern, not by parsing, so `t.hidden!==(...)` inside the
+   LiveKit SDK reads as the `hidden` utility with an `!important` modifier and
+   generates a `.hidden\!` rule that nothing in the app uses. Excluded here
+   rather than by turning auto-detection off entirely (`source(none)`), which
+   also drops rules that are genuinely in use. */
+@source not "./livekit-client.umd.js";
