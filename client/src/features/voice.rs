@@ -9,6 +9,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
+use std::time::Instant;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use dioxus::core::Task;
@@ -1989,6 +1990,8 @@ fn spawn_stats_task(
 ) -> Task {
     dioxus::prelude::spawn(async move {
         let mut was_enabled = false;
+        // Previous reading of our own send counters, for the rates below.
+        let mut prev_out: Option<(u64, u64, Instant)> = None;
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
@@ -1997,6 +2000,10 @@ fn spawn_stats_task(
                 // would show numbers from minutes ago as if they were live.
                 if was_enabled {
                     was_enabled = false;
+                    // The previous reading goes with them. Kept, the first tick
+                    // after reopening would spread its delta over however long
+                    // the panel was shut and report a rate nobody sent.
+                    prev_out = None;
                     if !state.peek().voice_stats.is_empty() {
                         state.write().voice_stats.clear();
                     }
@@ -2039,11 +2046,15 @@ fn spawn_stats_task(
                     _ => None,
                 })
             {
+                let now = Instant::now();
+                let (packets, bytes) = (o.sent.packets_sent, o.sent.bytes_sent);
+                let rates = outbound_rates(prev_out, packets, bytes, now);
+                prev_out = Some((packets, bytes, now));
                 next.insert(
                     pk,
                     TrackStats::Outbound {
-                        bitrate_kbps: (o.outbound.target_bitrate / 1000.0).round() as u32,
-                        packets_sent: o.sent.packets_sent,
+                        bitrate_kbps: rates.map(|(_, kbit)| kbit),
+                        packets_per_sec: rates.map(|(pkt, _)| pkt),
                     },
                 );
             }
@@ -2079,6 +2090,39 @@ fn inbound_stats(s: &livekit::webrtc::stats::InboundRtpStats) -> TrackStats {
         },
         concealment_events: s.inbound.concealment_events,
     }
+}
+
+/// Turn two readings of libwebrtc's monotonic send counters into
+/// `(packets_per_sec, kbit_s)`.
+///
+/// Divided by the time actually elapsed rather than by the poll interval: the
+/// loop sleeps a second and *then* awaits one `get_stats()` per participant, so
+/// the real gap is a second plus however long that walk took. Same reason the
+/// Windows capture path reads its clock instead of counting iterations — it is
+/// self-correcting, which also means a tick where the read failed costs
+/// accuracy on nothing.
+///
+/// `None` until there is a previous reading to subtract from, and `None` again
+/// if a counter went backwards — which is what a renegotiated ssrc looks like
+/// from here, and which would otherwise wrap into an enormous number. Reporting
+/// zero instead would be indistinguishable from sending nothing.
+fn outbound_rates(
+    prev: Option<(u64, u64, Instant)>,
+    packets: u64,
+    bytes: u64,
+    now: Instant,
+) -> Option<(u32, u32)> {
+    let (prev_packets, prev_bytes, prev_at) = prev?;
+    let secs = now.duration_since(prev_at).as_secs_f64();
+    if secs <= 0.0 {
+        return None;
+    }
+    let d_packets = packets.checked_sub(prev_packets)?;
+    let d_bytes = bytes.checked_sub(prev_bytes)?;
+    Some((
+        (d_packets as f64 / secs).round() as u32,
+        (d_bytes as f64 * 8.0 / 1000.0 / secs).round() as u32,
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -2978,6 +3022,44 @@ async fn consume_remote_track(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The panel's own row is two deltas, and getting the arithmetic wrong is
+    /// the failure that looks plausible: a rate is believable at any value, so
+    /// nothing about the UI would give it away.
+    #[test]
+    fn outbound_rates_are_per_second_and_need_two_readings() {
+        let t0 = Instant::now();
+        // Nothing to subtract from yet.
+        assert_eq!(outbound_rates(None, 50, 6_000, t0), None);
+
+        // One second of Opus at the default 20ms frame: 50 packets, and 6000
+        // bytes is exactly the 48 kbit/s the client defaults to.
+        let t1 = t0 + std::time::Duration::from_secs(1);
+        assert_eq!(
+            outbound_rates(Some((0, 0, t0)), 50, 6_000, t1),
+            Some((50, 48))
+        );
+
+        // The same delta over twice the gap is half the rate — this is what
+        // proves the elapsed time is divided by rather than assumed.
+        let t2 = t0 + std::time::Duration::from_secs(2);
+        assert_eq!(
+            outbound_rates(Some((0, 0, t0)), 50, 6_000, t2),
+            Some((25, 24))
+        );
+    }
+
+    /// A renegotiated ssrc restarts the counters. Subtracting anyway would wrap
+    /// into an enormous number presented as a measurement.
+    #[test]
+    fn outbound_rates_refuse_a_counter_that_went_backwards() {
+        let t0 = Instant::now();
+        let t1 = t0 + std::time::Duration::from_secs(1);
+        assert_eq!(outbound_rates(Some((900, 0, t0)), 10, 6_000, t1), None);
+        assert_eq!(outbound_rates(Some((0, 90_000, t0)), 50, 600, t1), None);
+        // A gap of zero has nothing to divide by either.
+        assert_eq!(outbound_rates(Some((0, 0, t0)), 50, 6_000, t0), None);
+    }
 
     /// The complaint that prompted the dB scale: ordinary speech should not
     /// read as a nearly-empty meter.
