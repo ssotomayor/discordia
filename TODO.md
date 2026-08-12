@@ -53,6 +53,12 @@ the top within each section.
   dead-code sweep in `03c7e48` removed `connect.mp3` and `discordia-logo.svg` and
   did not touch this. Left in place because deleting another author's file on a
   guess is worse than carrying it; whoever added it should say what it is.
+  It is not inert, either. Tailwind v4 scans the project on its own on top of the
+  `@source` in `assets/tailwind.css`, and this file is where the `.shadow` rule
+  in the committed `tailwind.out.css` comes from — nothing in `client/src`
+  produces it. Measured by regenerating with `source(none)`, which drops exactly
+  that rule. So an unreferenced 488 KB page is contributing a class to the CSS
+  compiled into the binary.
 
 ## Assets
 
