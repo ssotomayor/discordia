@@ -98,6 +98,32 @@ pub fn DiscordiaLogo(#[props(into)] class: String) -> Element {
 /// works offline.
 const TAILWIND_CSS: &str = include_str!("../assets/tailwind.out.css");
 
+/// The LiveKit JS SDK, vendored. It drives the webview half of screen sharing:
+/// rendering everyone's share on both platforms, and capturing on Windows.
+///
+/// It used to be a `<script src>` against jsDelivr, which meant a client with
+/// no route to the internet could not show a single share — including the two
+/// cases this project exists for, a self-hosted server and a LAN call, where
+/// everything else already works offline. The rest of the app is built that
+/// way on purpose: Tailwind above, the DeepFilterNet weights, the LiveKit
+/// server itself via `include_bytes!`. This was the one runtime dependency on
+/// somebody else's host, and it sat on the media path.
+///
+/// Pinned to the same 2.19.2 the URL pinned, byte-identical to what npm and
+/// jsDelivr serve, so the file can be re-verified rather than trusted:
+///
+/// ```text
+/// curl -sL https://cdn.jsdelivr.net/npm/livekit-client@2.19.2/dist/livekit-client.umd.js | sha256sum
+/// 2e8fd28afad004dcad97c0eb124d4d28ce5437205a881f533f2667960de83990
+/// ```
+///
+/// The `.umd.js` name has no `.min`, but the contents are minified — 526 KB,
+/// not the ~2 MB the naming suggests. It ends in a `sourceMappingURL` comment
+/// for a `.map` we do not ship; devtools will 404 that and nothing else cares,
+/// which is a smaller price than editing a file whose whole value is being
+/// checkable against upstream.
+const LIVEKIT_JS: &str = include_str!("../assets/livekit-client.umd.js");
+
 const BASE_CSS: &str = "
 /* Default (ember) palette. Per-theme overrides are applied inline on the app
    root by `theme_vars()`. The existing variable *names* are kept as the
@@ -608,11 +634,11 @@ fn session_key(p: &SessionParams) -> String {
     format!("{mode}|{}|{}", p.username, p.identity.pubkey)
 }
 
-/// All `<head>` injections: Tailwind (bundled at build time), the LiveKit SDK
-/// (CDN — to be vendored in a follow-up), font faces, and the base stylesheet.
-/// Extracted into a prop-less component so Dioxus memoizes it and never
-/// re-evaluates it — re-rendering `App` (e.g. on settings changes) no longer
-/// triggers "Changing the props of Style/Script is not supported" warnings.
+/// All `<head>` injections: Tailwind, the LiveKit SDK, font faces, and the base
+/// stylesheet — every one of them compiled into the binary. Extracted into a
+/// prop-less component so Dioxus memoizes it and never re-evaluates it —
+/// re-rendering `App` (e.g. on settings changes) no longer triggers "Changing
+/// the props of Style/Script is not supported" warnings.
 #[component]
 fn AppHead() -> Element {
     rsx! {
@@ -621,10 +647,10 @@ fn AppHead() -> Element {
         // works offline. Same pattern as BASE_CSS and font_face_css() below.
         document::Style { {TAILWIND_CSS} }
         // LiveKit JS SDK — powers webview-side screen sharing (capture + render).
-        // NB: the UMD build is `…umd.js` (there is no `.umd.min.js`); a wrong
-        // path 404s silently and the lib never loads. TODO: vendor this so the
-        // app works fully offline (follow-up).
-        document::Script { src: "https://cdn.jsdelivr.net/npm/livekit-client@2.19.2/dist/livekit-client.umd.js" }
+        // Inline rather than `src`, for the reasons on LIVEKIT_JS. Children are
+        // what `document::Script` renders as the tag's body, exactly as
+        // `document::Style` does above.
+        document::Script { {LIVEKIT_JS} }
         document::Style { {font_face_css()} }
         document::Style { {BASE_CSS} }
     }
