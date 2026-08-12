@@ -825,10 +825,10 @@ impl ActiveVoice {
                 while let Some(ev) = events.recv().await {
                     match &ev {
                         RoomEvent::ParticipantConnected(p) => {
-                            eprintln!("[voice] participant connected: {}", p.identity().0);
+                            crate::dlog!("[voice] participant connected: {}", p.identity().0);
                         }
                         RoomEvent::ParticipantDisconnected(p) => {
-                            eprintln!("[voice] participant left: {}", p.identity().0);
+                            crate::dlog!("[voice] participant left: {}", p.identity().0);
                             let _ = quality_tx.send(QualityMsg::Drop(p.identity().0.clone()));
                             // Their screen-audio volume goes with them. Absent
                             // means silent here — the default is "you are not
@@ -858,7 +858,7 @@ impl ActiveVoice {
                             // on a timer for every participant, and a healthy
                             // room would drown the log in "Excellent".
                             if matches!(health, ConnectionHealth::Poor | ConnectionHealth::Lost) {
-                                eprintln!(
+                                crate::dlog!(
                                     "[voice] connection {:?} for {}",
                                     health,
                                     participant.identity().0
@@ -871,7 +871,7 @@ impl ActiveVoice {
                             participant,
                             publication,
                         } => {
-                            eprintln!(
+                            crate::dlog!(
                                 "[voice] track published by {}: {:?}",
                                 participant.identity().0,
                                 publication.kind()
@@ -880,7 +880,7 @@ impl ActiveVoice {
                         RoomEvent::TrackSubscribed {
                             track, participant, ..
                         } => {
-                            eprintln!(
+                            crate::dlog!(
                                 "[voice] track SUBSCRIBED from {}: kind={:?}",
                                 participant.identity().0,
                                 track.kind()
@@ -891,7 +891,7 @@ impl ActiveVoice {
                             publication,
                             ..
                         } => {
-                            eprintln!(
+                            crate::dlog!(
                                 "[voice] track unsubscribed from {}",
                                 participant.identity().0
                             );

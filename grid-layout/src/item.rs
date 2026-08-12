@@ -73,14 +73,16 @@ pub fn GridItem(
     };
 
     let item_id_for_drag = id.clone();
+    // Read only by the `gtrace!`s below, which compile out of release.
+    #[cfg_attr(not(debug_assertions), allow(unused_variables))]
     let id_for_log = id.clone();
     let onpointerdown_drag = move |evt: PointerEvent| {
         let Some(ctx) = ctx else {
-            eprintln!("[grid] {id_for_log}: pointerdown but no GridContext");
+            gtrace!("[grid] {id_for_log}: pointerdown but no GridContext");
             return;
         };
         if !interactive {
-            eprintln!(
+            gtrace!(
                 "[grid] {id_for_log}: pointerdown ignored (editable={} pinned={})",
                 *ctx.editable.read(),
                 pinned
@@ -91,7 +93,7 @@ pub fn GridItem(
             return;
         }
         let Some(cell_w) = ctx.cell_w_px() else {
-            eprintln!(
+            gtrace!(
                 "[grid] {id_for_log}: pointerdown but container not yet measured \
                  (container_size={:?})",
                 ctx.container_size.read()

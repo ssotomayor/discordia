@@ -1179,7 +1179,7 @@ pub fn ScreenShareBridge() -> Element {
                             .and_then(|v| v.as_bool())
                             .unwrap_or(false);
                         if let Some(id) = msg.get("identity").and_then(|v| v.as_str()) {
-                            eprintln!(
+                            crate::dlog!(
                                 "[screen] watching {}: audio={present}",
                                 &id[..id.len().min(8)]
                             );

@@ -4,15 +4,12 @@
 //!
 //! # Status
 //!
-//! **v0.0.1 — static rendering only.** Items are positioned via CSS grid
-//! from props; no interactive drag/resize yet. Subsequent commits on the
-//! `feature/dashboard-grid` branch add:
-//!
-//! - [ ] Pointer-driven drag of items by a drag handle
-//! - [ ] Resize from the bottom-right corner
-//! - [ ] Collision resolution (push displaced items down)
-//! - [ ] `LayoutStore` hook for owning + persisting positions
-//! - [ ] `editable` mode toggle
+//! Drag, resize, collision resolution, [`LayoutStore`] and `editable` all
+//! shipped — this text used to announce them as pending work on a branch that
+//! no longer exists, which is the same claim `35b3e00` corrected in the README
+//! and missed here. [`LayoutMode::Free`] came later and is what the app in this
+//! workspace actually uses; snap mode and its vertical compaction remain for
+//! consumers who want a grid.
 //!
 //! # Quick start
 //!
@@ -34,6 +31,21 @@
 //!     }
 //! }
 //! ```
+
+/// Drag diagnostics, debug-only. Named `gtrace` because `trace` collides with
+/// the one `dioxus::prelude` brings in.
+///
+/// These explain a pointerdown that started no drag — no context, not
+/// editable, container unmeasured — which are silent failures otherwise. They
+/// are also a library printing to its consumer's stderr, so they compile out of
+/// release rather than narrating pointer events in a shipped app. `dlog!` in
+/// the client crate is the same idea; it just isn't reachable from here.
+macro_rules! gtrace {
+    ($($arg:tt)*) => {
+        #[cfg(debug_assertions)]
+        eprintln!($($arg)*);
+    };
+}
 
 mod collision;
 mod drag;
