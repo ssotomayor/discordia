@@ -531,7 +531,7 @@ fn apply(
             s.dm_unread.remove(&channel_id);
         }
         ServerMessage::ProfileUpdate(profile) => {
-            eprintln!(
+            crate::dlog!(
                 "[profile] ProfileUpdate pubkey={} avatar={} banner={}",
                 &profile.pubkey[..profile.pubkey.len().min(8)],
                 profile.avatar.is_some(),
@@ -743,9 +743,11 @@ fn apply(
             let self_pubkey = s.self_user.as_ref().map(|u| u.pubkey.clone());
             let is_self = self_pubkey.as_deref() == Some(vs.user_pubkey.as_str());
             if is_self {
-                eprintln!(
+                crate::dlog!(
                     "[net] VoiceStateUpdate(self) channel={:?} muted={} phase={:?}",
-                    vs.channel_id, vs.muted, s.voice.phase
+                    vs.channel_id,
+                    vs.muted,
+                    s.voice.phase
                 );
             }
 

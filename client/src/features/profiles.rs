@@ -105,14 +105,14 @@ pub(crate) async fn image_to_ref(
     mime: String,
 ) -> (Option<String>, Option<String>) {
     let n = bytes.len();
-    eprintln!("[blossom] uploading {n} bytes ({mime}) to {server}");
+    crate::dlog!("[blossom] uploading {n} bytes ({mime}) to {server}");
     match crate::blossom::upload_blob(&server, bytes.clone(), &mime, &identity).await {
         Ok(url) => {
-            eprintln!("[blossom] upload ok -> {url}");
+            crate::dlog!("[blossom] upload ok -> {url}");
             (Some(url), None)
         }
         Err(e) => {
-            eprintln!("[blossom] upload failed: {e}");
+            crate::dlog!("[blossom] upload failed: {e}");
             if n > EMBED_MAX_BYTES {
                 (
                     None,
@@ -436,7 +436,7 @@ pub fn ProfileEditor() -> Element {
             Some(s) if s.starts_with("data:") => format!("data-url ({} chars)", s.len()),
             Some(s) => format!("url {s}"),
         };
-        eprintln!(
+        crate::dlog!(
             "[profile] save avatar={} banner={}",
             kind(&avatar()),
             kind(&banner())
