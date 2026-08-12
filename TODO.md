@@ -250,6 +250,19 @@ where deferred work goes to be forgotten: `c86af67` listed five review
 follow-ups in its body, three were still open a month later, and nothing was
 tracking them.
 
+- **A screen-room reconnect republishes nothing, and the UI still says "live".**
+  The JS controller reconnects with exponential backoff when the screen room
+  drops, but `connect()` only wires handlers — every publish path
+  (`publishTrack`, `setScreenShareEnabled(true)`) hangs off
+  `requestAndStartShare`, which only a click reaches. So a sharer who loses that
+  room gets a fresh, empty room: video and audio both stop reaching viewers,
+  `screen_sharing` stays true, and the badge goes on claiming a share that is
+  no longer happening until someone stops and starts it by hand. Surfaced by
+  review of the `stopLocalShareAudio` teardown, which is the audio-shaped half
+  of it; the video half is the same gap and larger. Fixing it means recording
+  enough about the live share (target, quality, whether audio was wanted) to
+  re-publish on a fresh room — which the native path already does, via the
+  effect in `ScreenShareBridge` keyed on the voice-session epoch.
 - **Call audio degrades during a screen share, and nothing explains it.**
   Reported by a user. `c6cb994` measured the obvious suspect — the gain effect
   re-sending identical values, peaking at 12 sends/second — found it too small to
