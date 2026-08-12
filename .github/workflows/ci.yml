@@ -12,7 +12,7 @@ env:
   # "dx and dioxus versions are incompatible!" and then bundles anyway, so the
   # mismatch reaches a published artifact instead of a red job. Bump this in the
   # same commit that bumps the crate.
-  DIOXUS_CLI_VERSION: "0.7.9"
+  DIOXUS_CLI_VERSION: "0.7.10"
   # LIVEKIT_BUNDLE_SKIP deliberately does NOT live here. It used to, back when
   # this file only ran checks — and then the pre-release jobs were added to it
   # and inherited the skip, so every published binary went out with an empty
