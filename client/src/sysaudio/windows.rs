@@ -305,6 +305,16 @@ fn setup() -> Result<Started, String> {
 /// it off, so it lasts as long as the process. That costs one 12-byte block for
 /// the whole run rather than one per share, because the contents never vary:
 /// our own PID, and a mode constant.
+///
+/// Which means every activation is handed the same address, and nothing here
+/// serialises them. What keeps that to one holder at a time is sequencing
+/// elsewhere: `setup` drops its client before the PCM re-activation, `activate`
+/// waits out its own completion before returning, and
+/// `voice::ActiveVoice::set_system_audio` drops the previous capture — joining
+/// its thread in `WinCapture::drop` — before starting the next. A second capture
+/// that is *live* alongside another would break that with no compile error and a
+/// memory-corruption symptom, so it wants one allocation per activation, each
+/// leaked, before it lands. See `TODO.md`.
 fn activation_params() -> *mut AUDIOCLIENT_ACTIVATION_PARAMS {
     // A `usize` because a raw pointer is neither `Send` nor `Sync`, and this is
     // reached from whichever thread starts a capture. Heap rather than a

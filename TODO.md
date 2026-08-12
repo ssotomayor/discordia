@@ -278,20 +278,31 @@ the top within each section.
 
 ## Voice / audio
 
-- **One activation blob is now shared by every Windows capture.** The fix for
-  the heap corruption made `activation_params` a single process-wide allocation
-  instead of one per call, because the engine keeps the pointer and nothing says
-  for how long. That trades a per-share leak for sharing, and the sharing is not
-  hypothetical: `setup()` activates twice in one start when a driver rejects
-  f32 and it falls back to PCM, so two clients can hold the same pointer, the
-  first still alive when the second activates.
+- **One activation blob is now shared by every Windows capture, and only
+  sequencing keeps that to one holder at a time.** The fix for the heap
+  corruption made `activation_params` a single process-wide allocation instead of
+  one per call, because the engine keeps the pointer and nothing says for how
+  long. Every activation is now handed the same address.
+  Nothing overlaps today, and the PCM fallback is not the counter-example this
+  entry used to claim it was: `setup()` drops the first client *before*
+  re-activating, and `activate` blocks on its own completion event before
+  returning, so those two activations are strictly sequential. Across shares,
+  `set_system_audio` drops the previous `SystemAudioTrack` — and
+  `WinCapture::drop` joins the capture thread — before starting the next, all on
+  one `&mut ActiveVoice`. So the invariant holds by construction and not by any
+  guard: `activation_params` is unsynchronised, so a second *live* capture (a
+  second simultaneous share, a second voice session) would put two activations on
+  one address with nothing to catch it — no compile error, no assertion, and the
+  symptom would be memory corruption rather than a wrong answer.
   Benign as long as the blob is only read — the contents are identical and we
   never mutate them. It stops being benign if the engine *writes* back into it,
   which is why the allocation is on the heap rather than in a `static` that
-  could be read-only. Nobody has established which it is.
+  could be read-only. Nobody has established which it is, nor whether the engine
+  forgets the address when the client it activated is released.
   Closing it without reintroducing the crash means going back to one allocation
   per activation and leaking each one deliberately: 12 bytes per share instead
-  of 12 per process. Cheap, and worth doing if a write is ever observed.
+  of 12 per process. Cheap, and worth doing if a write is ever observed — or
+  ahead of whatever first makes two captures live at once, whichever comes first.
 - **The Windows blob's lifetime rule is measured, not documented.** Microsoft
   does not say how long `ActivateAudioInterfaceAsync` needs the `VT_BLOB` it is
   handed. "As long as the process" comes from probing: the engine had not freed
