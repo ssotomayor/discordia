@@ -241,6 +241,13 @@ window.dxScreen = window.dxScreen || (function () {
       // Ignore a late event from a room already replaced by a newer attempt.
       if (room !== thisRoom) return;
       room = null;
+      // Our hand-published share audio belonged to the room that just went
+      // away. Left alone, `localShareAudio` points into a dead room: the
+      // capture keeps running with the OS indicator lit, and the next
+      // stopShare aims its unpublish at whatever room exists by then. Called
+      // after `room = null` on purpose, so it skips the unpublish — there is
+      // nothing to unpublish from — and just releases the capture.
+      stopLocalShareAudio();
       clearRemoteTracks();
       if (desiredRoom) {
         reportRoomProblem('screen-room-reconnecting', reason || 'disconnected');
