@@ -32,6 +32,11 @@ window.dxScreen = window.dxScreen || (function () {
   let desiredRoom = null;
   let reconnectTimer = null;
   let reconnectAttempt = 0;
+  // Our own outgoing share audio, held because we published it by hand.
+  // setScreenShareEnabled(false) retracts what the SDK created for itself; this
+  // track is not that, so stopping the share has to stop it explicitly or the
+  // machine's sound keeps going out over a share that visibly ended.
+  let localShareAudio = null;
   const tracks = {}; // identity -> video track
   const audioTracks = {}; // identity -> audio track (screen-share sound)
   const CONTAINERS = ['screenshare-self', 'screenshare-viewer'];
@@ -613,6 +618,7 @@ window.dxScreen = window.dxScreen || (function () {
         try {
           await room.localParticipant.publishTrack(at, { source: lk.Track.Source.ScreenShareAudio });
           published = true;
+          localShareAudio = at;
           console.log('[dxScreen] publishing screen-share audio');
         } catch (e2) { console.warn('[dxScreen] screen-share audio publish failed', e2); }
       } else if (!useNative && wantAudio) {
@@ -653,7 +659,26 @@ window.dxScreen = window.dxScreen || (function () {
       }
     }
   }
+  async function stopLocalShareAudio() {
+    const at = localShareAudio;
+    localShareAudio = null;
+    if (!at) return;
+    // Unpublish before stopping. A track stopped while still published leaves
+    // the publication standing, so viewers keep an audio element attached to a
+    // dead stream and their volume control goes on acting over silence.
+    if (room) {
+      try { await room.localParticipant.unpublishTrack(at, true); } catch (e) {}
+    }
+    try { at.stop(); } catch (e) {}
+  }
   async function stopShare() {
+    // Ours first, and unconditionally: `setScreenShareEnabled(false)` retracts
+    // what the SDK created inside `setScreenShareEnabled(true)`, and this track
+    // is not that — it was published by hand, out of the same getDisplayMedia
+    // stream, so nothing else knows to take it down. Stopping it even with the
+    // room already gone matters: the capture is a machine-level grant, and one
+    // left running keeps the OS "sharing" indicator lit over a finished share.
+    await stopLocalShareAudio();
     if (!room) return;
     try { await room.localParticipant.setScreenShareEnabled(false); } catch (e) {}
   }
@@ -661,6 +686,8 @@ window.dxScreen = window.dxScreen || (function () {
     desiredRoom = null;
     reconnectAttempt = 0;
     if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+    // Before `room` is cleared, so the unpublish still has somewhere to go.
+    await stopLocalShareAudio();
     const previous = room;
     room = null;
     if (previous) { try { await previous.disconnect(); } catch (e) {} }
