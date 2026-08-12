@@ -150,7 +150,7 @@ pub async fn register(
         description: options.description,
     };
     let json = serde_json::to_string(&hello).map_err(|e| e.to_string())?;
-    ws.send(WsMessage::Text(json.into()))
+    ws.send(WsMessage::Text(json))
         .await
         .map_err(|e| format!("send register: {e}"))?;
 

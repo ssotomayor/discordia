@@ -37,7 +37,7 @@ pub fn GridLayout(
     let drag = use_signal::<Option<Interaction>>(|| None);
     let container_size = use_signal::<Option<(f64, f64)>>(|| None);
     let pinned_ids = use_signal::<HashSet<String>>(HashSet::new);
-    let on_change_cb = use_hook(|| on_change.clone());
+    let on_change_cb = use_hook(|| on_change);
 
     // `editable` is a prop that may change at runtime (host toggles it).
     // `use_context_provider`'s initializer only runs once, so we hold the
@@ -338,11 +338,11 @@ fn commit_and_clear(
     let _ = document::eval(&js);
 
     // Commit the snapped position (drag) — resize already committed live.
-    if matches!(state.kind, InteractionKind::Drag) {
-        if let Some(mut s) = store {
-            let projected = state.project(state.pointer_current_x, state.pointer_current_y);
-            s.set(state.item_id.clone(), projected);
-        }
+    if matches!(state.kind, InteractionKind::Drag)
+        && let Some(mut s) = store
+    {
+        let projected = state.project(state.pointer_current_x, state.pointer_current_y);
+        s.set(state.item_id.clone(), projected);
     }
     drag.set(None);
 

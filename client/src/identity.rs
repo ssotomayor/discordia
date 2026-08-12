@@ -328,7 +328,7 @@ pub fn signature_accent(pubkey: &str) -> String {
 // ---------------------------------------------------------------------------
 
 const HARDENED: u32 = 0x8000_0000;
-const NIP06_PATH: [u32; 5] = [44 | HARDENED, 1237 | HARDENED, 0 | HARDENED, 0, 0];
+const NIP06_PATH: [u32; 5] = [44 | HARDENED, 1237 | HARDENED, HARDENED, 0, 0];
 
 fn derive_nip06(seed: &[u8]) -> Result<SecretKey, String> {
     let secp = Secp256k1::new();

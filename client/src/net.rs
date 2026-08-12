@@ -188,30 +188,29 @@ async fn run(
     };
     let json = serde_json::to_string(&identify).map_err(|e| e.to_string())?;
     ws_tx
-        .send(WsMessage::Text(json.into()))
+        .send(WsMessage::Text(json))
         .await
         .map_err(|e| format!("send identify: {e}"))?;
 
     // Publish our locally-owned profile (avatar/bio) so it travels with us to
     // this host. Sent right after Identify; the server processes frames in
     // order, so we're identified by the time it handles this.
-    if let Some(local) = crate::profile::load() {
-        if local.avatar.is_some()
+    if let Some(local) = crate::profile::load()
+        && (local.avatar.is_some()
             || local.banner.is_some()
             || local.bio.is_some()
             || local.status.is_some()
-            || local.custom_status.is_some()
-        {
-            let set_profile = ClientMessage::SetProfile {
-                avatar: local.avatar,
-                banner: local.banner,
-                bio: local.bio,
-                status: local.status,
-                custom_status: local.custom_status,
-            };
-            if let Ok(json) = serde_json::to_string(&set_profile) {
-                let _ = ws_tx.send(WsMessage::Text(json.into())).await;
-            }
+            || local.custom_status.is_some())
+    {
+        let set_profile = ClientMessage::SetProfile {
+            avatar: local.avatar,
+            banner: local.banner,
+            bio: local.bio,
+            status: local.status,
+            custom_status: local.custom_status,
+        };
+        if let Ok(json) = serde_json::to_string(&set_profile) {
+            let _ = ws_tx.send(WsMessage::Text(json)).await;
         }
     }
 
@@ -220,7 +219,7 @@ async fn run(
             outbound = rx.recv() => {
                 let Some(msg) = outbound else { break };
                 let json = serde_json::to_string(&msg).map_err(|e| e.to_string())?;
-                if let Err(e) = ws_tx.send(WsMessage::Text(json.into())).await {
+                if let Err(e) = ws_tx.send(WsMessage::Text(json)).await {
                     return Err(format!("send: {e}"));
                 }
             }
@@ -369,7 +368,7 @@ fn apply(
                     combined.push(m);
                 }
             }
-            combined.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+            combined.sort_by_key(|a| a.created_at);
         }
         ServerMessage::MessageCreate(m) => {
             let cid = m.channel_id;
@@ -458,14 +457,14 @@ fn apply(
             s.selected_guild = Some(gid);
             let first_text = s.default_channel_of(gid);
             s.selected_channel = first_text;
-            if let Some(channel_id) = first_text {
-                if !s.messages.contains_key(&channel_id) {
-                    let _ = tx.send(ClientMessage::FetchMessages {
-                        channel_id,
-                        limit: 50,
-                        before_ms: None,
-                    });
-                }
+            if let Some(channel_id) = first_text
+                && !s.messages.contains_key(&channel_id)
+            {
+                let _ = tx.send(ClientMessage::FetchMessages {
+                    channel_id,
+                    limit: 50,
+                    before_ms: None,
+                });
             }
         }
         ServerMessage::GuildCatalog {
@@ -505,14 +504,14 @@ fn apply(
                 let next = s.guilds.first().map(|g| g.id);
                 s.selected_guild = next;
                 s.selected_channel = next.and_then(|gid| s.default_channel_of(gid));
-                if let Some(channel_id) = s.selected_channel {
-                    if !s.messages.contains_key(&channel_id) {
-                        let _ = tx.send(ClientMessage::FetchMessages {
-                            channel_id,
-                            limit: 50,
-                            before_ms: None,
-                        });
-                    }
+                if let Some(channel_id) = s.selected_channel
+                    && !s.messages.contains_key(&channel_id)
+                {
+                    let _ = tx.send(ClientMessage::FetchMessages {
+                        channel_id,
+                        limit: 50,
+                        before_ms: None,
+                    });
                 }
             }
         }
@@ -545,10 +544,10 @@ fn apply(
             message_id,
             reactions,
         } => {
-            if let Some(msgs) = s.messages.get_mut(&channel_id) {
-                if let Some(msg) = msgs.iter_mut().find(|m| m.id == message_id) {
-                    msg.reactions = reactions;
-                }
+            if let Some(msgs) = s.messages.get_mut(&channel_id)
+                && let Some(msg) = msgs.iter_mut().find(|m| m.id == message_id)
+            {
+                msg.reactions = reactions;
             }
         }
         ServerMessage::TypingUpdate {
@@ -681,14 +680,14 @@ fn apply(
             if s.selected_channel == Some(channel_id) {
                 let next = s.default_channel_of(guild_id);
                 s.selected_channel = next;
-                if let Some(cid) = next {
-                    if !s.messages.contains_key(&cid) {
-                        let _ = tx.send(ClientMessage::FetchMessages {
-                            channel_id: cid,
-                            limit: 50,
-                            before_ms: None,
-                        });
-                    }
+                if let Some(cid) = next
+                    && !s.messages.contains_key(&cid)
+                {
+                    let _ = tx.send(ClientMessage::FetchMessages {
+                        channel_id: cid,
+                        limit: 50,
+                        before_ms: None,
+                    });
                 }
             }
         }
@@ -710,10 +709,10 @@ fn apply(
                 s.screen_shares.insert(channel_id, sharers);
             }
             // Close the viewer if the person we're watching stopped sharing.
-            if let Some(pk) = s.screen_viewing.clone() {
-                if !s.screen_shares.values().any(|v| v.contains(&pk)) {
-                    s.screen_viewing = None;
-                }
+            if let Some(pk) = s.screen_viewing.clone()
+                && !s.screen_shares.values().any(|v| v.contains(&pk))
+            {
+                s.screen_viewing = None;
             }
         }
         ServerMessage::MemberJoin(member) => {

@@ -951,7 +951,7 @@ pub fn ScreenShareBridge() -> Element {
     // only ever produce a false negative and a toast recommending a Windows fix
     // to a Mac user. That is exactly what it used to do.
     use_future(move || {
-        let mut s = state.clone();
+        let mut s = state;
         async move {
             if crate::sysvideo::supported() {
                 s.write().screen_capture_available = true;
@@ -1002,7 +1002,7 @@ pub fn ScreenShareBridge() -> Element {
     // activities bridge).
     let gateway_end = gateway.clone();
     use_future(move || {
-        let mut state = state.clone();
+        let mut state = state;
         let gateway = gateway_end.clone();
         async move {
             let bridge_js = r#"
@@ -1017,158 +1017,154 @@ pub fn ScreenShareBridge() -> Element {
             }
             "#;
             let mut eval = document::eval(bridge_js);
-            loop {
-                match eval.recv::<Value>().await {
-                    Ok(msg) => match msg.get("__dxf").and_then(|v| v.as_str()) {
-                        // Publishing succeeded — only now is this a share.
-                        Some("share-started") => {
-                            let cid = state.read().voice.channel_id;
-                            // Where we capture system audio ourselves, it rides
-                            // along on the voice room as a second track. Whether
-                            // that applies to *this* share was decided after the
-                            // picker, so it arrives on the message rather than
-                            // being recomputed from the platform here — and it is
-                            // recorded rather than acted on, because a voice
-                            // reconnect later has to know whether to re-publish.
-                            {
-                                let mut w = state.write();
-                                w.screen_sharing = true;
-                                w.screen_native_audio =
-                                    msg.get("nativeAudio").and_then(|v| v.as_bool()) == Some(true);
-                            }
-                            if let Some(c) = cid {
-                                gateway.send(ClientMessage::SetScreenShare {
-                                    channel_id: c,
-                                    sharing: true,
-                                });
-                            }
-                        }
-                        // The click found no capture API at all.
-                        Some("share-unavailable") => {
-                            let secure =
-                                msg.get("secure").and_then(|v| v.as_bool()).unwrap_or(false);
-                            eprintln!("[screen] share unavailable (secure_context={secure})");
+            while let Ok(msg) = eval.recv::<Value>().await {
+                match msg.get("__dxf").and_then(|v| v.as_str()) {
+                    // Publishing succeeded — only now is this a share.
+                    Some("share-started") => {
+                        let cid = state.read().voice.channel_id;
+                        // Where we capture system audio ourselves, it rides
+                        // along on the voice room as a second track. Whether
+                        // that applies to *this* share was decided after the
+                        // picker, so it arrives on the message rather than
+                        // being recomputed from the platform here — and it is
+                        // recorded rather than acted on, because a voice
+                        // reconnect later has to know whether to re-publish.
+                        {
                             let mut w = state.write();
-                            w.screen_capture_available = false;
-                            w.screen_sharing = false;
-                            w.error_toast = Some(if secure {
-                                "This webview has no screen-capture support.".into()
-                            } else {
-                                "Screen sharing can't start: this window isn't a secure context, \
-                                 so the capture API is hidden. Please report this."
-                                    .into()
+                            w.screen_sharing = true;
+                            w.screen_native_audio =
+                                msg.get("nativeAudio").and_then(|v| v.as_bool()) == Some(true);
+                        }
+                        if let Some(c) = cid {
+                            gateway.send(ClientMessage::SetScreenShare {
+                                channel_id: c,
+                                sharing: true,
                             });
                         }
-                        // Whole-screen capture with sound: the mix includes us.
-                        Some("share-echo-risk") => {
-                            eprintln!("[screen] whole-screen audio capture — echo risk");
-                            state.write().error_toast = Some(
-                                "Sharing a whole screen with sound also captures this call, so \
+                    }
+                    // The click found no capture API at all.
+                    Some("share-unavailable") => {
+                        let secure = msg.get("secure").and_then(|v| v.as_bool()).unwrap_or(false);
+                        eprintln!("[screen] share unavailable (secure_context={secure})");
+                        let mut w = state.write();
+                        w.screen_capture_available = false;
+                        w.screen_sharing = false;
+                        w.error_toast = Some(if secure {
+                            "This webview has no screen-capture support.".into()
+                        } else {
+                            "Screen sharing can't start: this window isn't a secure context, \
+                                 so the capture API is hidden. Please report this."
+                                .into()
+                        });
+                    }
+                    // Whole-screen capture with sound: the mix includes us.
+                    Some("share-echo-risk") => {
+                        eprintln!("[screen] whole-screen audio capture — echo risk");
+                        state.write().error_toast = Some(
+                            "Sharing a whole screen with sound also captures this call, so \
                                  others may hear themselves echo. Share a single window instead \
                                  to send only that app's audio."
-                                    .into(),
-                            );
+                                .into(),
+                        );
+                    }
+                    Some("screen-share-ended") => {
+                        let cid = state.read().voice.channel_id;
+                        {
+                            let mut w = state.write();
+                            w.screen_sharing = false;
+                            w.screen_native_audio = false;
                         }
-                        Some("screen-share-ended") => {
-                            let cid = state.read().voice.channel_id;
-                            {
-                                let mut w = state.write();
-                                w.screen_sharing = false;
-                                w.screen_native_audio = false;
-                            }
-                            if let Some(c) = cid {
-                                gateway.send(ClientMessage::SetScreenShare {
-                                    channel_id: c,
-                                    sharing: false,
-                                });
-                            }
-                            // Stopping the publication is left to the effect
-                            // above, which owns that decision for both the start
-                            // and the restart cases — two senders racing over one
-                            // track is how the state they disagree about gets
-                            // decided by arrival order.
+                        if let Some(c) = cid {
+                            gateway.send(ClientMessage::SetScreenShare {
+                                channel_id: c,
+                                sharing: false,
+                            });
                         }
-                        Some("screen-room-error") => {
-                            let detail = msg
-                                .get("detail")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("unknown connection error");
-                            eprintln!("[screen] screen room connection failed: {detail}");
-                            state.write().error_toast = Some(format!(
-                                "Couldn't connect to the screen stream: {detail}. Retrying…"
-                            ));
-                        }
-                        Some("screen-room-reconnecting") => {
-                            let detail = msg
-                                .get("detail")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("disconnected");
-                            eprintln!("[screen] screen room disconnected: {detail}; reconnecting");
-                        }
-                        Some("screen-track-timeout") => {
-                            eprintln!("[screen] no video track arrived within 10 seconds");
-                            state.write().error_toast = Some(
+                        // Stopping the publication is left to the effect
+                        // above, which owns that decision for both the start
+                        // and the restart cases — two senders racing over one
+                        // track is how the state they disagree about gets
+                        // decided by arrival order.
+                    }
+                    Some("screen-room-error") => {
+                        let detail = msg
+                            .get("detail")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown connection error");
+                        eprintln!("[screen] screen room connection failed: {detail}");
+                        state.write().error_toast = Some(format!(
+                            "Couldn't connect to the screen stream: {detail}. Retrying…"
+                        ));
+                    }
+                    Some("screen-room-reconnecting") => {
+                        let detail = msg
+                            .get("detail")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("disconnected");
+                        eprintln!("[screen] screen room disconnected: {detail}; reconnecting");
+                    }
+                    Some("screen-track-timeout") => {
+                        eprintln!("[screen] no video track arrived within 10 seconds");
+                        state.write().error_toast = Some(
                                 "Connected to the stream room, but no video arrived. Make sure the sharer is running the latest Discordia build and restart the share."
                                     .into(),
                             );
-                        }
-                        // Our own share: did the platform give us any audio to
-                        // send? Silence here is a platform limit, not a bug we
-                        // can fix client-side, so say so rather than let the
-                        // sharer assume viewers can hear their machine.
-                        Some("share-audio") => {
-                            let published = msg
-                                .get("published")
-                                .and_then(|v| v.as_bool())
-                                .unwrap_or(false);
-                            // Whether the platform *can* do it at all, versus
-                            // whether this particular pick included it. Saying
-                            // "your platform can't" when the user simply left
-                            // the checkbox unticked — or picked a window, which
-                            // never carries audio — is just wrong.
-                            let supported = msg
-                                .get("supported")
-                                .and_then(|v| v.as_bool())
-                                .unwrap_or(false);
-                            eprintln!(
-                                "[screen] share audio published={published} supported={supported}"
-                            );
-                            if !published {
-                                state.write().error_toast = Some(if supported {
-                                    "Sharing video only. To include sound, re-share and tick \
+                    }
+                    // Our own share: did the platform give us any audio to
+                    // send? Silence here is a platform limit, not a bug we
+                    // can fix client-side, so say so rather than let the
+                    // sharer assume viewers can hear their machine.
+                    Some("share-audio") => {
+                        let published = msg
+                            .get("published")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
+                        // Whether the platform *can* do it at all, versus
+                        // whether this particular pick included it. Saying
+                        // "your platform can't" when the user simply left
+                        // the checkbox unticked — or picked a window, which
+                        // never carries audio — is just wrong.
+                        let supported = msg
+                            .get("supported")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
+                        eprintln!(
+                            "[screen] share audio published={published} supported={supported}"
+                        );
+                        if !published {
+                            state.write().error_toast = Some(if supported {
+                                "Sharing video only. To include sound, re-share and tick \
                                      \"Share audio\" in the picker — choose a tab or your whole \
                                      screen, as single windows can't carry audio."
-                                        .into()
-                                } else {
-                                    "Sharing video only — this system doesn't let the app capture \
+                                    .into()
+                            } else {
+                                "Sharing video only — this system doesn't let the app capture \
                                      audio from a screen share, so viewers won't hear your machine."
-                                        .into()
-                                });
+                                    .into()
+                            });
+                        }
+                    }
+                    // A share we're watching: whether it carries audio at
+                    // all, so the volume control can be honest about it.
+                    Some("stream-audio") => {
+                        let present = msg
+                            .get("present")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
+                        if let Some(id) = msg.get("identity").and_then(|v| v.as_str()) {
+                            eprintln!(
+                                "[screen] watching {}: audio={present}",
+                                &id[..id.len().min(8)]
+                            );
+                            let mut s = state.write();
+                            if present {
+                                s.stream_has_audio.insert(id.to_string());
+                            } else {
+                                s.stream_has_audio.remove(id);
                             }
                         }
-                        // A share we're watching: whether it carries audio at
-                        // all, so the volume control can be honest about it.
-                        Some("stream-audio") => {
-                            let present = msg
-                                .get("present")
-                                .and_then(|v| v.as_bool())
-                                .unwrap_or(false);
-                            if let Some(id) = msg.get("identity").and_then(|v| v.as_str()) {
-                                eprintln!(
-                                    "[screen] watching {}: audio={present}",
-                                    &id[..id.len().min(8)]
-                                );
-                                let mut s = state.write();
-                                if present {
-                                    s.stream_has_audio.insert(id.to_string());
-                                } else {
-                                    s.stream_has_audio.remove(id);
-                                }
-                            }
-                        }
-                        _ => {}
-                    },
-                    Err(_) => break,
+                    }
+                    _ => {}
                 }
             }
         }
@@ -1333,13 +1329,11 @@ fn choose_source(
     // Only on the transition into sharing. Re-announcing while already live
     // (switching surface mid-share) would tell the channel about a share it
     // already knows about.
-    if !already_sharing {
-        if let Some(cid) = channel {
-            gateway.send(ClientMessage::SetScreenShare {
-                channel_id: cid,
-                sharing: true,
-            });
-        }
+    if !already_sharing && let Some(cid) = channel {
+        gateway.send(ClientMessage::SetScreenShare {
+            channel_id: cid,
+            sharing: true,
+        });
     }
 }
 
@@ -1407,10 +1401,8 @@ pub fn ScreenSelfPreview() -> Element {
     use_effect(move || {
         let sh = sharing();
         if sh != *last.peek() {
-            if sh {
-                if let Some(pk) = self_pk() {
-                    let _ = document::eval(&attach_js(&pk, "screenshare-self"));
-                }
+            if sh && let Some(pk) = self_pk() {
+                let _ = document::eval(&attach_js(&pk, "screenshare-self"));
             }
             last.set(sh);
         }
@@ -1601,10 +1593,10 @@ pub fn ScreenWatchWindow() -> Element {
         // Every known sharer gets an explicit gain: whoever we're watching at
         // their chosen level, everyone else at zero.
         let mut seen: Vec<String> = s.screen_shares.values().flatten().cloned().collect();
-        if let Some(w) = watched.clone() {
-            if !seen.contains(&w) {
-                seen.push(w);
-            }
+        if let Some(w) = watched.clone()
+            && !seen.contains(&w)
+        {
+            seen.push(w);
         }
         let mut desired: Vec<(String, f32)> = seen
             .into_iter()

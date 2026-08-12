@@ -361,7 +361,7 @@ async fn service_loop(
                     &livekit_url,
                     &token,
                     channel_id,
-                    state.clone(),
+                    state,
                     controls.clone(),
                 )
                 .await
@@ -438,32 +438,30 @@ async fn service_loop(
                 }
                 // If we're currently connected, restart the voice session so mic/playback
                 // are recreated using the newly selected devices.
-                if session.is_some() {
-                    if let Some((ref url, ref tok, cid)) = last_connect.clone() {
-                        eprintln!("[voice] Reconnecting to apply device changes");
-                        if let Some(prev) = session.take() {
-                            prev.shutdown(state).await;
-                        }
-                        match ActiveVoice::connect(url, tok, cid, state.clone(), controls.clone())
-                            .await
-                        {
-                            Ok(active) => {
-                                eprintln!("[voice] reconnected ok");
-                                // update phase in its own small scope
-                                {
-                                    let mut s = state.write();
-                                    s.voice.phase = VoicePhase::Connected;
-                                    s.voice_session_epoch += 1;
-                                }
-                                session = Some(active);
-                            }
-                            Err(e) => {
-                                eprintln!("[voice] reconnect FAILED: {e}");
+                if session.is_some()
+                    && let Some((ref url, ref tok, cid)) = last_connect.clone()
+                {
+                    eprintln!("[voice] Reconnecting to apply device changes");
+                    if let Some(prev) = session.take() {
+                        prev.shutdown(state).await;
+                    }
+                    match ActiveVoice::connect(url, tok, cid, state, controls.clone()).await {
+                        Ok(active) => {
+                            eprintln!("[voice] reconnected ok");
+                            // update phase in its own small scope
+                            {
                                 let mut s = state.write();
-                                s.voice.phase = VoicePhase::Error;
-                                s.voice.error = Some(format!("reconnect after device change: {e}"));
-                                s.voice.channel_id = None;
+                                s.voice.phase = VoicePhase::Connected;
+                                s.voice_session_epoch += 1;
                             }
+                            session = Some(active);
+                        }
+                        Err(e) => {
+                            eprintln!("[voice] reconnect FAILED: {e}");
+                            let mut s = state.write();
+                            s.voice.phase = VoicePhase::Error;
+                            s.voice.error = Some(format!("reconnect after device change: {e}"));
+                            s.voice.channel_id = None;
                         }
                     }
                 }
@@ -552,7 +550,7 @@ async fn service_loop(
             }
             VoiceCmd::SetScreenAudio { room } => {
                 if let Some(active) = session.as_mut() {
-                    active.set_screen_audio(room, state.clone()).await;
+                    active.set_screen_audio(room, state).await;
                 } else if room.is_some() {
                     eprintln!("[voice] SetScreenAudio ignored — no voice session");
                 }
@@ -738,11 +736,11 @@ impl ActiveVoice {
                 .map_err(|e| format!("spawn mic dsp thread: {e}"))?;
         }
         tokio::spawn(publish_loop(gated_rx, source.clone()));
-        let mic = MicCapture::start(frame_tx, state.clone(), muted)?;
-        let meter_task = spawn_meter_task(state.clone(), meter);
+        let mic = MicCapture::start(frame_tx, state, muted)?;
+        let meter_task = spawn_meter_task(state, meter);
 
         // Remote audio mixer.
-        let playback = PlaybackMixer::start(state.clone(), controls.clone())?;
+        let playback = PlaybackMixer::start(state, controls.clone())?;
         let mixer_handle = playback.handle();
 
         // Bridge for "this sharer has native screen audio" notices: the event
@@ -1143,10 +1141,10 @@ impl ActiveVoice {
         // The target is part of that identity, so switching surface mid-share
         // *does* fall through and rebuild — which is what makes the picker
         // usable while already sharing.
-        if let Some(existing) = &self.screen_video {
-            if existing.key == (url.clone(), token.clone(), target) {
-                return Ok(());
-            }
+        if let Some(existing) = &self.screen_video
+            && existing.key == (url.clone(), token.clone(), target)
+        {
+            return Ok(());
         }
         if let Some(prev) = self.screen_video.take() {
             prev.shutdown().await;
@@ -1616,25 +1614,25 @@ impl ScreenAudioRoom {
                             }
                         }
                         RoomEvent::TrackSubscribed {
-                            track, participant, ..
+                            track: RemoteTrack::Audio(audio),
+                            participant,
+                            ..
                         } => {
-                            if let RemoteTrack::Audio(audio) = track {
-                                let identity = participant.identity().0.clone();
-                                let stream = NativeAudioStream::new(
-                                    audio.rtc_track(),
-                                    SAMPLE_RATE as i32,
-                                    CHANNELS as i32,
-                                );
-                                let _ = has_tx.send(StreamAudio::Present(identity.clone()));
-                                // `is_stream: true` — this is program audio, so
-                                // it takes the stream gains, not the voice ones.
-                                tokio::spawn(consume_remote_track(
-                                    stream,
-                                    mixer.clone(),
-                                    identity,
-                                    true,
-                                ));
-                            }
+                            let identity = participant.identity().0.clone();
+                            let stream = NativeAudioStream::new(
+                                audio.rtc_track(),
+                                SAMPLE_RATE as i32,
+                                CHANNELS as i32,
+                            );
+                            let _ = has_tx.send(StreamAudio::Present(identity.clone()));
+                            // `is_stream: true` — this is program audio, so
+                            // it takes the stream gains, not the voice ones.
+                            tokio::spawn(consume_remote_track(
+                                stream,
+                                mixer.clone(),
+                                identity,
+                                true,
+                            ));
                         }
                         // Filtered by source, like the voice room's sibling
                         // handler: this room carries the sharer's *video* too,
@@ -1921,7 +1919,7 @@ async fn publish_loop(mut rx: UnboundedReceiver<Vec<i16>>, source: NativeAudioSo
             eprintln!("[voice] capture_frame error: {e:?}");
         }
         sent += 1;
-        if sent % 500 == 0 {
+        if sent.is_multiple_of(500) {
             eprintln!("[voice] publish: {sent} frames forwarded to libwebrtc");
         }
     }
@@ -2151,11 +2149,11 @@ impl MicCapture {
             let mut found = None;
             if let Ok(devs) = host.input_devices() {
                 for d in devs {
-                    if let Ok(name) = d.name() {
-                        if name == sel_name {
-                            found = Some(d);
-                            break;
-                        }
+                    if let Ok(name) = d.name()
+                        && name == sel_name
+                    {
+                        found = Some(d);
+                        break;
                     }
                 }
             }
@@ -2696,13 +2694,13 @@ fn pop_drift_compensated(
     let len = buf.len();
     if len > overrun {
         // Too full — drop every 32nd sample to shrink it without clicks.
-        if counter % 32 == 0 {
+        if counter.is_multiple_of(32) {
             buf.pop_front();
         }
         buf.pop_front().unwrap_or(0.0)
     } else if len < underrun {
         // Too empty — repeat every 64th sample to stretch it.
-        if counter % 64 == 0 {
+        if counter.is_multiple_of(64) {
             buf.front().copied().unwrap_or(0.0)
         } else {
             buf.pop_front().unwrap_or(0.0)
@@ -2726,11 +2724,11 @@ impl PlaybackMixer {
             let mut found = None;
             if let Ok(devs) = host.output_devices() {
                 for d in devs {
-                    if let Ok(name) = d.name() {
-                        if name == sel_name {
-                            found = Some(d);
-                            break;
-                        }
+                    if let Ok(name) = d.name()
+                        && name == sel_name
+                    {
+                        found = Some(d);
+                        break;
                     }
                 }
             }
@@ -3000,7 +2998,7 @@ async fn consume_remote_track(
                 None => handle.push(track_id, &f32_buf, cap),
             }
         }
-        if frames % 500 == 0 {
+        if frames.is_multiple_of(500) {
             eprintln!(
                 "[voice] remote-track: {frames} frames, {sample_count} samples, peak={peak_recent} ({})",
                 if peak_recent < 100 {

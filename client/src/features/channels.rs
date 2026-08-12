@@ -1148,7 +1148,7 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                         let mut s = state.write();
                                         s.selected_input_device = if val_cloned.is_empty() { None } else { Some(val_cloned.clone()) };
                                         let v = v_for_input_change.clone();
-                                        let _ = v.send(crate::features::voice::VoiceCmd::SetDevices { input: s.selected_input_device.clone(), output: None });
+                                        v.send(crate::features::voice::VoiceCmd::SetDevices { input: s.selected_input_device.clone(), output: None });
                                     },
                                     option { value: "", "System default" }
                                     for dev in available_input_devices.iter() {
@@ -1219,7 +1219,7 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                         crate::settings::save(&next);
                                         state.write().mic_volume = pct;
                                         let v = v_for_mic_volume.clone();
-                                        let _ = v.send(crate::features::voice::VoiceCmd::SetMicVolume { percent: pct });
+                                        v.send(crate::features::voice::VoiceCmd::SetMicVolume { percent: pct });
                                     },
                                 }
                                 if auto_gain_control && mic_volume != 100 {
@@ -1260,7 +1260,7 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                         // on the next 150ms speaking-detection tick).
                                         state.write().mic_sensitivity = val;
                                         let v = v_for_sensitivity.clone();
-                                        let _ = v.send(crate::features::voice::VoiceCmd::SetSensitivity { threshold: val });
+                                        v.send(crate::features::voice::VoiceCmd::SetSensitivity { threshold: val });
                                     },
                                 }
                                 // Live gate state. Moving the slider past the
@@ -1297,7 +1297,7 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                             crate::settings::save(&next);
                                             state.write().auto_gain_control = on;
                                             let v = v_for_agc.clone();
-                                            let _ = v.send(crate::features::voice::VoiceCmd::SetAutoGainControl { enabled: on });
+                                            v.send(crate::features::voice::VoiceCmd::SetAutoGainControl { enabled: on });
                                         },
                                     }
                                     span { class: "text-[11px] text-[var(--text-muted)]", "Automatic gain control" }
@@ -1377,7 +1377,7 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                         let mut s = state.write();
                                         s.selected_output_device = if val_cloned.is_empty() { None } else { Some(val_cloned.clone()) };
                                         let v = v_for_output_change.clone();
-                                        let _ = v.send(crate::features::voice::VoiceCmd::SetDevices { input: None, output: s.selected_output_device.clone() });
+                                        v.send(crate::features::voice::VoiceCmd::SetDevices { input: None, output: s.selected_output_device.clone() });
                                     },
                                     option { value: "", "System default" }
                                     for dev in available_output_devices.iter() {
