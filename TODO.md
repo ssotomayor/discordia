@@ -40,28 +40,15 @@ the top within each section.
 
 ## Repo & CI
 
-- **`dx` and the `dioxus` crate drift apart on every CI run.** Every bundle job
-  prints, at ERROR level and then carries on:
-
-  ```
-  🚫 dx and dioxus versions are incompatible!
-     • dx version: 0.7.10   • dioxus versions: [0.7.9]
-  ```
-
-  Structural rather than a one-off. `Cargo.lock` pins `dioxus 0.7.9`; all four
-  installs of the CLI (`ci.yml` ×3 and `windows-release.yml`) run
-  `cargo binstall dioxus-cli --no-confirm --force --locked` with **no version**,
-  so they take whatever is newest. `--locked` there is dioxus-cli's own
-  lockfile, from `7fa9a98`'s source-build fallback — it says nothing about which
-  version is selected. Every dx release re-opens the gap.
-
-  What makes it worth an entry is that dx does not stop. It bundles anyway, so
-  a real incompatibility would arrive as something odd at runtime in a shipped
-  artifact rather than as a red job — the shape of failure this repo has been
-  paying for repeatedly. Two ways to close it: pin the CLI to the crate
-  (`cargo binstall dioxus-cli@0.7.9`, then it drifts only when someone bumps
-  the crate), or move `dioxus` forward and keep them in step deliberately. The
-  first is one line in four places and does not touch the dependency tree.
+- **The `dx` pin is not checked against `Cargo.lock`.** The CLI is now pinned to
+  the crate version — `DIOXUS_CLI_VERSION` in `ci.yml`, and the same literal in
+  `windows-release.yml` — which stops it drifting on every dx release. What is
+  left is that nothing verifies the pin still matches: bump `dioxus` and forget
+  these, and CI goes back to printing "dx and dioxus versions are incompatible!"
+  and bundling anyway. Two literals in two files, kept in step by comments. A
+  step that reads the `dioxus` version out of `Cargo.lock` and compares would
+  make it structural; `dx --version` is already run right after the install, so
+  it has the other half in hand.
 - **A release-profile build is never linted.** `unused_variables` and friends
   can fire with `debug_assertions` off and pass every gate: clippy is a cargo
   dev-profile job, and the only thing that compiles the client in release is the
