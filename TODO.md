@@ -40,6 +40,36 @@ the top within each section.
 
 ## Repo & CI
 
+- **`dx` and the `dioxus` crate drift apart on every CI run.** Every bundle job
+  prints, at ERROR level and then carries on:
+
+  ```
+  🚫 dx and dioxus versions are incompatible!
+     • dx version: 0.7.10   • dioxus versions: [0.7.9]
+  ```
+
+  Structural rather than a one-off. `Cargo.lock` pins `dioxus 0.7.9`; all four
+  installs of the CLI (`ci.yml` ×3 and `windows-release.yml`) run
+  `cargo binstall dioxus-cli --no-confirm --force --locked` with **no version**,
+  so they take whatever is newest. `--locked` there is dioxus-cli's own
+  lockfile, from `7fa9a98`'s source-build fallback — it says nothing about which
+  version is selected. Every dx release re-opens the gap.
+
+  What makes it worth an entry is that dx does not stop. It bundles anyway, so
+  a real incompatibility would arrive as something odd at runtime in a shipped
+  artifact rather than as a red job — the shape of failure this repo has been
+  paying for repeatedly. Two ways to close it: pin the CLI to the crate
+  (`cargo binstall dioxus-cli@0.7.9`, then it drifts only when someone bumps
+  the crate), or move `dioxus` forward and keep them in step deliberately. The
+  first is one line in four places and does not touch the dependency tree.
+- **A release-profile build is never linted.** `unused_variables` and friends
+  can fire with `debug_assertions` off and pass every gate: clippy is a cargo
+  dev-profile job, and the only thing that compiles the client in release is the
+  pre-release job, which runs on `push` and does not fail on warnings. That is
+  how nine of them reached a published build before anyone saw them (`c685828`).
+  A `RUSTFLAGS=-C debug-assertions=off cargo clippy -p dioxusfun` job would
+  close it; the two that survive that fix today (`tab_key`, `step_key`) have to
+  be understood first, or the job lands red.
 - **No macOS clippy.** CI now compiles the client on all three platforms, but
   lints it only on Linux — so the `cfg(target_os = "macos")` half of the client,
   which is where every ScreenCaptureKit and CoreVideo `unsafe` block lives, is
