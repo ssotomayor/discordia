@@ -2254,8 +2254,15 @@ impl AppState {
         let mut entry = self.voice_states.get_mut(user_pubkey)?;
         // Deafening implies muting — you can't talk to people you can't hear —
         // but not the reverse: muting says nothing about what you're listening
-        // to. Coercing it here rather than trusting the client keeps the two
-        // flags consistent for every watcher, including older clients.
+        // to. Coercing it here rather than trusting the client is what keeps
+        // the pair consistent for every watcher.
+        //
+        // It does not rescue a client older than the deafen button, which sends
+        // `deafened: muted` and so now reads as deafened whenever it mutes. The
+        // flag was equally wrong before this change; the difference is that
+        // nothing rendered it. Coercing the other way would only trade a
+        // mislabelled mute for a deafen that cannot be expressed at all, and
+        // the mixed-version window is one pre-release wide.
         entry.muted = muted || deafened;
         entry.deafened = deafened;
         Some(entry.clone())
