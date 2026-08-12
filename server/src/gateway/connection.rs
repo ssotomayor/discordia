@@ -832,42 +832,115 @@ pub async fn handle_connection(
                                 // tokens because they join under different
                                 // identities — LiveKit permits only one
                                 // connection per identity per room.
+                                //
+                                // An empty token on the wire means "this server
+                                // predates that identity" — see ScreenToken's
+                                // docs — and the client degrades on it, which is
+                                // the right answer for an old server and the
+                                // wrong one for a mint that failed a moment ago.
+                                // The client cannot tell those apart: a failed
+                                // video mint surfaces on macOS as "This server is
+                                // too old to accept a natively captured screen
+                                // share", a diagnosis rather than a fact. So a
+                                // failure is logged where the operator can see
+                                // it, and the ones that leave a path with no
+                                // fallback also reach the user.
                                 let screen_name = format!("{} (screen)", u.username);
-                                if let Ok(screen_token) = livekit::screen_token_as(
+                                let screen_token = livekit::screen_token_as(
                                     &ctx.livekit,
                                     &u.pubkey,
                                     &screen_name,
                                     channel_id,
                                 )
-                                .await
-                                {
-                                    let audio_token = livekit::screen_token_as(
-                                        &ctx.livekit,
-                                        &livekit::screen_audio_identity(&u.pubkey),
-                                        &screen_name,
-                                        channel_id,
-                                    )
-                                    .await
-                                    .unwrap_or_default();
-                                    let video_token = livekit::screen_token_as(
-                                        &ctx.livekit,
-                                        &livekit::screen_video_identity(&u.pubkey),
-                                        &screen_name,
-                                        channel_id,
-                                    )
-                                    .await
-                                    .unwrap_or_default();
-                                    let _ = send(
-                                        &mut ws_tx,
-                                        &ServerMessage::ScreenToken {
+                                .await;
+                                match screen_token {
+                                    Ok(screen_token) => {
+                                        let audio_token = match livekit::screen_token_as(
+                                            &ctx.livekit,
+                                            &livekit::screen_audio_identity(&u.pubkey),
+                                            &screen_name,
                                             channel_id,
-                                            livekit_url,
-                                            token: screen_token,
-                                            audio_token,
-                                            video_token,
-                                        },
-                                    )
-                                    .await;
+                                        )
+                                        .await
+                                        {
+                                            Ok(t) => t,
+                                            Err(err) => {
+                                                // Quiet on purpose: the client
+                                                // falls back to playing stream
+                                                // audio in the webview. That
+                                                // works — it just lands on the
+                                                // system's output device instead
+                                                // of the chosen one.
+                                                tracing::error!(
+                                                    %err, %channel_id,
+                                                    "screen-audio token mint failed; \
+                                                     stream audio falls back to the webview"
+                                                );
+                                                String::new()
+                                            }
+                                        };
+                                        let video_token = match livekit::screen_token_as(
+                                            &ctx.livekit,
+                                            &livekit::screen_video_identity(&u.pubkey),
+                                            &screen_name,
+                                            channel_id,
+                                        )
+                                        .await
+                                        {
+                                            Ok(t) => t,
+                                            Err(err) => {
+                                                tracing::error!(
+                                                    %err, %channel_id,
+                                                    "screen-video token mint failed"
+                                                );
+                                                let _ = send(
+                                                    &mut ws_tx,
+                                                    &ServerMessage::Error {
+                                                        message: format!(
+                                                            "screen-share video token mint \
+                                                             failed: {err}"
+                                                        ),
+                                                    },
+                                                )
+                                                .await;
+                                                String::new()
+                                            }
+                                        };
+                                        let _ = send(
+                                            &mut ws_tx,
+                                            &ServerMessage::ScreenToken {
+                                                channel_id,
+                                                livekit_url,
+                                                token: screen_token,
+                                                audio_token,
+                                                video_token,
+                                            },
+                                        )
+                                        .await;
+                                    }
+                                    Err(err) => {
+                                        // The one with no fallback at all: the
+                                        // webview renders every share from this
+                                        // room, so without it the user sees
+                                        // nobody's screen and can publish none of
+                                        // their own on the webview path either.
+                                        // It used to be swallowed by an `if let
+                                        // Ok`, which left voice working and screen
+                                        // sharing quietly absent.
+                                        tracing::error!(
+                                            %err, %channel_id,
+                                            "screen token mint failed"
+                                        );
+                                        let _ = send(
+                                            &mut ws_tx,
+                                            &ServerMessage::Error {
+                                                message: format!(
+                                                    "screen-share token mint failed: {err}"
+                                                ),
+                                            },
+                                        )
+                                        .await;
+                                    }
                                 }
                             }
                             Err(err) => {
