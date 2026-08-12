@@ -147,6 +147,10 @@ pub struct VoiceSession {
     /// What `muted` was before deafening, so undeafening gives back what the
     /// user actually chose. Deafening forces mute on, and always unmuting on
     /// the way out would silently undo a mute they set themselves.
+    ///
+    /// Only meaningful while `deafened` is true, and rewritten on every
+    /// transition into it — so it is never cleared, and a value left over from
+    /// a session that ended is read by nothing.
     pub muted_before_deafen: bool,
     pub speaking: bool,
     pub error: Option<String>,

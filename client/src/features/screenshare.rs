@@ -1543,10 +1543,21 @@ pub fn ScreenWatchWindow() -> Element {
                     // Volume first: the gain node has to be at the right level
                     // before the stream is wired into it, or a stream the user
                     // had turned down blasts at full volume for a moment.
+                    //
+                    // Deafen is read here and not left to the effect below,
+                    // which cannot cover this: switching between two sharers
+                    // who are both at the default level leaves its memo at the
+                    // same value, so it never re-runs and this eval is the last
+                    // word. That is the common case, not a corner.
                     let s = state.read();
+                    let gain = if s.voice.deafened {
+                        0.0
+                    } else {
+                        s.stream_gain_of(pk)
+                    };
                     let js = format!(
                         "{}\n{}",
-                        stream_volume_js(s.stream_gain_of(pk)),
+                        stream_volume_js(gain),
                         attach_js(pk, "screenshare-viewer"),
                     );
                     drop(s);
@@ -1641,9 +1652,12 @@ pub fn ScreenWatchWindow() -> Element {
     // `refresh_gains` cannot reach it, and a deafen that doesn't deafen is the
     // worst way for this to fail.
     //
-    // Reading only memos is what keeps this off the `last_gains` treadmill
-    // above: an unchanged `Memo` doesn't wake its subscribers, so the effect
-    // fires on a real change rather than on every `AppState` mutation.
+    // This covers toggling deafen while already watching. Changing *who* you
+    // watch is the attach effect's, which re-sends the volume in the same eval
+    // as the attach and so has to apply the flag itself — an unchanged `Memo`
+    // does not wake its subscribers, and that is also what keeps this effect
+    // off the `last_gains` treadmill above rather than firing on every
+    // `AppState` mutation.
     let deafened = use_memo(move || state.read().voice.deafened);
     let watched_gain = use_memo(move || {
         let s = state.read();
