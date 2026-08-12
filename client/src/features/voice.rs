@@ -2055,6 +2055,7 @@ fn spawn_stats_task(
                     TrackStats::Outbound {
                         bitrate_kbps: rates.map(|(_, kbit)| kbit),
                         packets_per_sec: rates.map(|(pkt, _)| pkt),
+                        target_kbps: (o.outbound.target_bitrate / 1000.0).round() as u32,
                     },
                 );
             }

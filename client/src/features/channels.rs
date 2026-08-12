@@ -624,10 +624,15 @@ fn ConnectionStats() -> Element {
                                 "{concealment_events} conc"
                             }
                         },
-                        crate::state::TrackStats::Outbound { bitrate_kbps, packets_per_sec } => rsx! {
+                        crate::state::TrackStats::Outbound { bitrate_kbps, packets_per_sec, target_kbps } => rsx! {
                             span {
                                 class: "text-[var(--text-dim)]",
-                                title: "What is actually leaving, measured between readings — not what the encoder is aiming for",
+                                // Payload only — RTP headers add a few kbit/s on
+                                // top — so this says what the encoder produced,
+                                // which is the question the row is for. The aim
+                                // rides along because it is the only half still
+                                // readable while the transmit gate is shut.
+                                title: "What the encoder produced, measured between readings (payload only, so the wire is a little higher) — it is aiming for {target_kbps} kbit/s",
                                 {rate_or_dash(*bitrate_kbps, "kbit/s out")}
                             }
                             span {
