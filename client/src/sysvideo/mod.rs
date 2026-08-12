@@ -116,6 +116,14 @@ pub struct Settings {
 /// backend re-resolves the id against a fresh `SCShareableContent` at capture
 /// time — which is also the only honest way to do it, since the window may have
 /// closed between the pick and the start.
+///
+/// The enum itself is not gated, because `AppState`, the share effect and
+/// `sysaudio` all carry a `Target` on every platform — but the only code that
+/// *builds* a `Window` or an `Application` is the picker in the macOS backend,
+/// so off macOS the dead-code lint sees two variants nobody constructs. It is
+/// right about the build it is looking at and wrong about the type, hence the
+/// narrowest possible silencing rather than a blanket allow.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Target {
     /// A whole display, wallpaper and dock included.
