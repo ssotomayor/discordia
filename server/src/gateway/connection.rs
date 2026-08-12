@@ -844,7 +844,11 @@ pub async fn handle_connection(
                                 // share", a diagnosis rather than a fact. So a
                                 // failure is logged where the operator can see
                                 // it, and the ones that leave a path with no
-                                // fallback also reach the user.
+                                // fallback also reach the user. Which of the two
+                                // optional identities that applies to is decided
+                                // once, in `OptionalScreen`, rather than at each
+                                // call. The main token is handled here because
+                                // its failure sends no frame at all.
                                 let screen_name = format!("{} (screen)", u.username);
                                 let screen_token = livekit::screen_token_as(
                                     &ctx.livekit,
@@ -858,62 +862,24 @@ pub async fn handle_connection(
                                 .await;
                                 match screen_token {
                                     Ok(screen_token) => {
-                                        let audio_token = match livekit::screen_token_as(
+                                        let audio_token = optional_screen_token(
                                             &ctx.livekit,
-                                            &livekit::screen_audio_identity(&u.pubkey),
+                                            OptionalScreen::Audio,
+                                            &u.pubkey,
                                             &screen_name,
                                             channel_id,
-                                            // Subscribes to stream audio and
-                                            // sends nothing, ever.
-                                            false,
+                                            &mut ws_tx,
                                         )
-                                        .await
-                                        {
-                                            Ok(t) => t,
-                                            Err(err) => {
-                                                // Quiet on purpose: the client
-                                                // falls back to playing stream
-                                                // audio in the webview. That
-                                                // works — it just lands on the
-                                                // system's output device instead
-                                                // of the chosen one.
-                                                tracing::error!(
-                                                    %err, %channel_id,
-                                                    "screen-audio token mint failed; \
-                                                     stream audio falls back to the webview"
-                                                );
-                                                String::new()
-                                            }
-                                        };
-                                        let video_token = match livekit::screen_token_as(
+                                        .await;
+                                        let video_token = optional_screen_token(
                                             &ctx.livekit,
-                                            &livekit::screen_video_identity(&u.pubkey),
+                                            OptionalScreen::Video,
+                                            &u.pubkey,
                                             &screen_name,
                                             channel_id,
-                                            // Publishes natively captured video.
-                                            true,
+                                            &mut ws_tx,
                                         )
-                                        .await
-                                        {
-                                            Ok(t) => t,
-                                            Err(err) => {
-                                                tracing::error!(
-                                                    %err, %channel_id,
-                                                    "screen-video token mint failed"
-                                                );
-                                                let _ = send(
-                                                    &mut ws_tx,
-                                                    &ServerMessage::Error {
-                                                        message: format!(
-                                                            "screen-share video token mint \
-                                                             failed: {err}"
-                                                        ),
-                                                    },
-                                                )
-                                                .await;
-                                                String::new()
-                                            }
-                                        };
+                                        .await;
                                         let _ = send(
                                             &mut ws_tx,
                                             &ServerMessage::ScreenToken {
@@ -1535,6 +1501,80 @@ where
 {
     let json = serde_json::to_string(msg).expect("serializable");
     tx.send(WsMessage::Text(json)).await
+}
+
+/// The two screen-room identities a client can do without.
+///
+/// Each one answers three questions the same way every time — which identity,
+/// whether it ever publishes, and what its absence costs — so they live here
+/// together instead of being spelled out at each call site. Adding a fourth
+/// identity to the screen room means adding a variant, which is the point.
+#[derive(Clone, Copy)]
+enum OptionalScreen {
+    /// `{pubkey}#audio`. Subscribes to stream audio so it plays through the same
+    /// cpal device as voice, and sends nothing, ever. Losing it degrades to
+    /// webview playback: still audible, just on the system's output device
+    /// rather than the chosen one — a real fallback, so the user is not told.
+    Audio,
+    /// `{pubkey}#video`. Publishes natively captured screen video. Losing it has
+    /// no fallback at all — on macOS this is the only capture path — so the user
+    /// is told rather than left with a share button that does nothing.
+    Video,
+}
+
+/// Mint one of the optional screen-room tokens, or report why not.
+///
+/// Empty is a real value on this wire: it is what a server predating either
+/// identity sends, and the client degrades on it. That makes an empty string the
+/// right thing to return on failure too — the client behaves identically — as
+/// long as the failure is not silent, which is what this exists to guarantee.
+///
+/// The **main** screen token deliberately does not come through here. Its
+/// failure has to suppress the whole `ScreenToken` frame rather than empty one
+/// field of it: `net.rs` stores that field unconditionally, so a frame carrying
+/// `token: ""` would have the client try to join the room with an empty token.
+/// A helper returning `String` cannot express "send nothing at all".
+async fn optional_screen_token<S>(
+    cfg: &livekit::LiveKitConfig,
+    which: OptionalScreen,
+    user_pubkey: &str,
+    screen_name: &str,
+    channel_id: Id,
+    ws_tx: &mut S,
+) -> String
+where
+    S: SinkExt<WsMessage, Error = axum::Error> + Unpin,
+{
+    let (identity, can_publish, label, notify) = match which {
+        OptionalScreen::Audio => (
+            livekit::screen_audio_identity(user_pubkey),
+            false,
+            "audio",
+            false,
+        ),
+        OptionalScreen::Video => (
+            livekit::screen_video_identity(user_pubkey),
+            true,
+            "video",
+            true,
+        ),
+    };
+    match livekit::screen_token_as(cfg, &identity, screen_name, channel_id, can_publish).await {
+        Ok(token) => token,
+        Err(err) => {
+            tracing::error!(%err, %channel_id, kind = label, "screen token mint failed");
+            if notify {
+                let _ = send(
+                    ws_tx,
+                    &ServerMessage::Error {
+                        message: format!("screen-share {label} token mint failed: {err}"),
+                    },
+                )
+                .await;
+            }
+            String::new()
+        }
+    }
 }
 
 /// The delivery recipe after a membership removal (kick/ban/leave): the
