@@ -34,14 +34,12 @@ jobs:
       # the tests live. The client is checked in the desktop-build job below.
       - name: Format
         run: cargo fmt --all --check
-        continue-on-error: true # not yet formatted repo-wide; informational
 
       # --all-targets, not --tests: examples are a build target the tests don't
       # cover, and a dead-code sweep once broke bot-sdk/examples/ping.rs with
       # nothing catching it.
       - name: Clippy (server crates)
         run: cargo clippy -p dioxusfun-protocol -p dioxusfun-server -p dioxusfun-bot -p dioxusfun-rendezvous --all-targets -- -D warnings
-        continue-on-error: true # informational until the lint debt is paid
 
       - name: Tests (protocol + server + bot SDK + rendezvous)
         run: cargo test -p dioxusfun-protocol -p dioxusfun-server -p dioxusfun-bot -p dioxusfun-rendezvous
@@ -55,6 +53,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
       - uses: Swatinem/rust-cache@v2
       - name: System deps (wry/GTK)
         run: |
@@ -62,8 +62,12 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             libwebkit2gtk-4.1-dev libgtk-3-dev libxdo-dev \
             libasound2-dev libssl-dev pkg-config
-      - name: Check client
-        run: cargo check -p dioxusfun
+      # The remaining two crates, and the only job that can lint them: both
+      # need GTK/WebKit, which the `test` job above deliberately does not
+      # install. Clippy compiles what it lints, so this is still the compile
+      # check this job exists for — one build, not two.
+      - name: Clippy (client + grid-layout)
+        run: cargo clippy -p dioxusfun -p dioxus-grid-layout --all-targets -- -D warnings
 
   # The Linux job above compiles the client, but never the `#[cfg(target_os =
   # "windows")]` half of it — and the release job that would is gated on `push`,
@@ -77,6 +81,27 @@ jobs:
       # libwebrtc links the STATIC MSVC runtime (/MT); Rust defaults to /MD and
       # the two collide (LNK2038). Same flag as the release jobs below.
       RUSTFLAGS: "-C target-feature=+crt-static"
+      # Compile check only; nothing leaves this job.
+      LIVEKIT_BUNDLE_SKIP: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Check client
+        run: cargo check -p dioxusfun
+
+  # And the same hole on the other side. `client/src/sysvideo/macos.rs` and
+  # `client/src/sysaudio/macos.rs` are unsafe FFI against ScreenCaptureKit and
+  # CoreVideo — one of them shipped a double-release of a CVPixelBuffer that
+  # trapped inside CFRelease the instant a share started. Neither compiles on
+  # Linux or Windows, and the only job that did build them, prerelease-macos,
+  # is gated on `push`. So a pull request could not tell whether the macOS half
+  # of the client built at all, which is exactly how c1442ab reached master.
+  macos-build:
+    name: client compiles (macos)
+    runs-on: macos-latest
+    env:
+      # No crt-static here: that flag is an MSVC concern, not a darwin one.
       # Compile check only; nothing leaves this job.
       LIVEKIT_BUNDLE_SKIP: "1"
     steps:
