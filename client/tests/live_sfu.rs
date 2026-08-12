@@ -20,6 +20,26 @@
 //!
 //! `LIVEKIT_URL`, `LIVEKIT_API_KEY` and `LIVEKIT_API_SECRET` override the
 //! defaults, which match what the bundled server uses.
+//!
+//! # Why this is here at all
+//!
+//! Worth stating, because everything about this file argues against itself:
+//! nothing in CI runs it — the test job covers four crates and `dioxusfun` is
+//! not among them, and both tests are `#[ignore]`d besides — and it is the only
+//! reason `livekit-api` and `uuid` appear in this package's dev-dependencies.
+//! By the usual rules it would live somewhere else, or nowhere.
+//!
+//! It stays because the claims it backs are made about this codebase and would
+//! otherwise rest on a transcript. "The subscribe-only identity still hears" and
+//! "a tone comes back within 0.6 dB and 94% in band" are the kind of statement
+//! that gets repeated long after anyone can reproduce it. The instrument that
+//! produced them belongs next to the code they are about, runnable in two
+//! commands, with its baseline written down — so the next person can disagree
+//! with a measurement instead of with a memory.
+//!
+//! That also sets the bar for changing it: if an assertion here starts failing,
+//! the first question is whether the *measurement* is wrong. Both metrics in
+//! this file were wrong before they were right, and the code says how.
 
 use std::time::{Duration, Instant};
 
