@@ -2129,6 +2129,7 @@ dependencies = [
  "hmac",
  "image",
  "livekit",
+ "livekit-api 0.4.24",
  "local-ip-address",
  "ndarray",
  "objc2",

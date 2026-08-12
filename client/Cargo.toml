@@ -150,3 +150,11 @@ dispatch2 = "0.3"
 [package.metadata.cargo-machete]
 ignored = ["deep_filter", "tract-core", "tract-onnx", "tract-pulse", "tract-hir"]
 
+
+[dev-dependencies]
+# `tests/live_sfu.rs` mints its own tokens so it can put a `can_publish: false`
+# one in front of a real SFU. Both are already in the workspace lockfile —
+# livekit-api via dioxusfun-server, uuid via the protocol crate — so nothing new
+# enters the tree; they are only unavailable to *this* package's tests.
+livekit-api = { version = "0.4", default-features = false, features = ["access-token"] }
+uuid = { workspace = true }
