@@ -717,7 +717,16 @@ impl ActiveVoice {
         let (frame_tx, frame_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<f32>>();
         let (gated_tx, gated_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<i16>>();
         let meter = Arc::new(MicMeter::default());
-        let muted = Arc::new(AtomicBool::new(false));
+        // Seeded from state, not hardcoded off: a device change tears this
+        // session down and rebuilds it, and nothing re-issues `SetMute`, so
+        // starting at false put the mic back on the air with the button still
+        // red. Deafen makes that worse — `AudioControls` survives the rebuild,
+        // so you would come back deafened *and* transmitting.
+        let start_muted = state.peek().voice.muted;
+        let muted = Arc::new(AtomicBool::new(start_muted));
+        // The atomic only gates the DSP thread; the publication has its own
+        // switch, and `set_muted` flips both — so a rebuilt session must too.
+        local_audio_for_mute.rtc_track().set_enabled(!start_muted);
         {
             let controls = controls.clone();
             let meter = meter.clone();
