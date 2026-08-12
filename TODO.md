@@ -40,6 +40,22 @@ the top within each section.
 
 ## Repo & CI
 
+- **CI runs none of the client's or grid-layout's tests.** The `test` job runs
+  `cargo test` over four crates — protocol, server, bot SDK, rendezvous — and the
+  comment above it says CI covers the server-side crates "where all the tests
+  live". That stopped being true: `cargo test -p dioxusfun` is 30 passing tests
+  and `-p dioxus-grid-layout` another 28, so **59 tests exist that no job has
+  ever run**. They cover identity and NIP-06 derivation, the resampler and mixer
+  arithmetic, the emoji shortcode scanner, the connection-stats rates, and the
+  collision and clamping maths behind the panel layout — none of it
+  platform-specific, all of it the kind that fails silently.
+  The reason for the split is real (the client needs GTK/WebKit to compile, and
+  the `test` job deliberately does not install them) but it points at the answer
+  rather than away from it: `desktop-build` already installs those deps and
+  already compiles the client for clippy, so `cargo test -p dioxusfun -p
+  dioxus-grid-layout` belongs in that job, not a new one. The `#[ignore]`d
+  CVPixelBuffer test would stay ignored either way — that one is tracked
+  separately under Voice / audio.
 - **The `dx` pin is not checked against `Cargo.lock`.** The CLI is now pinned to
   the crate version — `DIOXUS_CLI_VERSION` in `ci.yml`, and the same literal in
   `windows-release.yml` — which stops it drifting on every dx release. What is
