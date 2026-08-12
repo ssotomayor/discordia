@@ -145,6 +145,17 @@ pub enum TrackStats {
         /// both arrive on the same tick. A zero would be indistinguishable from
         /// sending nothing, which is the one thing this row is for.
         packets_per_sec: Option<u32>,
+        /// What the encoder says it is aiming for. Kept alongside the measured
+        /// rate rather than replaced by it, because the two answer different
+        /// questions and only this one is answerable while you are silent: a
+        /// measured rate is 0 with the transmit gate closed, and so is a
+        /// publication that broke. Shown in the tooltip, not as a column — the
+        /// row is narrow and this is the secondary reading.
+        ///
+        /// Not the same as `AppState::voice_bitrate_kbps`, which is what we
+        /// *asked* for. This is what the encoder adopted, and the gap between
+        /// them is the interesting part.
+        target_kbps: u32,
     },
 }
 
