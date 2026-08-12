@@ -527,6 +527,7 @@ fn VoiceChannelRow(
                                     name,
                                     speaking: vs.speaking,
                                     remote_muted: vs.muted,
+                                    remote_deafened: vs.deafened,
                                     is_self,
                                     is_sharing,
                                     // Watching needs you in the channel (the JS
@@ -637,6 +638,7 @@ fn VoiceOccupant(
     name: String,
     speaking: bool,
     remote_muted: bool,
+    remote_deafened: bool,
     is_self: bool,
     is_sharing: bool,
     can_watch: bool,
@@ -694,7 +696,11 @@ fn VoiceOccupant(
                     "{name}"
                     if is_self { " (you)" }
                 }
-                if remote_muted {
+                // Deafened subsumes muted — the server forces mute on with it —
+                // so showing both would be permanent noise in a narrow column.
+                if remote_deafened {
+                    span { class: "text-[9px] text-[var(--text-dim)] uppercase tracking-wider", "deafened" }
+                } else if remote_muted {
                     span { class: "text-[9px] text-[var(--text-dim)] uppercase tracking-wider", "muted" }
                 }
                 if let Some((color, label)) = health_dot {
@@ -826,9 +832,12 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
     let voice_error = self_voice.error.clone();
 
     let muted = self_voice.muted;
+    let deafened = self_voice.deafened;
     let mute_label = if muted { "unmute" } else { "mute" };
     let g_for_mute = gateway.clone();
     let v_for_mute = voice.clone();
+    let g_for_deafen = gateway.clone();
+    let v_for_deafen = voice.clone();
     let g_for_hang = gateway.clone();
     let v_for_hang = voice.clone();
     let g_for_share = gateway.clone();
@@ -1454,10 +1463,32 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                     title: mute_label,
                     onclick: move |_| {
                         let new_muted = !muted;
-                        g_for_mute.send(ClientMessage::SetVoiceMute { muted: new_muted, deafened: new_muted });
+                        // Mute is only ever about the mic — deafen rides along
+                        // untouched instead of being forged from it.
+                        g_for_mute.send(ClientMessage::SetVoiceMute { muted: new_muted, deafened });
                         v_for_mute.send(VoiceCmd::SetMute { muted: new_muted });
                     },
                     dangerous_inner_html: if muted { crate::features::icons::MIC_OFF } else { crate::features::icons::MIC },
+                }
+
+                button {
+                    class: if deafened {
+                        "w-7 h-7 flex items-center justify-center rounded text-[var(--danger)] hover:text-[var(--accent-strong)] transition-colors"
+                    } else {
+                        "w-7 h-7 flex items-center justify-center rounded text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors"
+                    },
+                    title: if deafened { "undeafen" } else { "deafen" },
+                    onclick: move |_| {
+                        let (next_muted, next_deafened) = state.write().voice.toggle_deafen();
+                        g_for_deafen.send(ClientMessage::SetVoiceMute { muted: next_muted, deafened: next_deafened });
+                        v_for_deafen.send(VoiceCmd::SetDeafen { deafened: next_deafened });
+                        v_for_deafen.send(VoiceCmd::SetMute { muted: next_muted });
+                    },
+                    dangerous_inner_html: if deafened {
+                        crate::features::icons::HEADPHONES_OFF
+                    } else {
+                        crate::features::icons::HEADPHONES
+                    },
                 }
             }
         }

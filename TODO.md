@@ -210,12 +210,6 @@ the top within each section.
   parent died, and a stale SFU squatting on the port is a confusing way for the
   next session to fail. Sweep any `livekit-server` started from our own temp
   directory before spawning, or have the child watch for its parent going away.
-- **Deafen is not implemented on the client.** `AppState.voice.deafened` is
-  written from `VoiceStateUpdate` and never read, and the mute button sends
-  `SetVoiceMute { muted, deafened: muted }` — so the two are the same control.
-  Deafening should stop *playback* (the mixer already has the gains to do it)
-  and the roster should show it, which today renders `muted` only. The protocol
-  and the server already carry the flag; only the client half is missing.
 - **No native system-audio capture on Linux.** `client/src/sysaudio/` has
   backends for macOS (ScreenCaptureKit) and Windows (WASAPI process loopback);
   Linux reports unsupported and falls back to whatever `getDisplayMedia` hands

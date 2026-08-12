@@ -2252,8 +2252,12 @@ impl AppState {
         deafened: bool,
     ) -> Option<VoiceState> {
         let mut entry = self.voice_states.get_mut(user_pubkey)?;
-        entry.muted = muted;
-        entry.deafened = deafened || muted;
+        // Deafening implies muting — you can't talk to people you can't hear —
+        // but not the reverse: muting says nothing about what you're listening
+        // to. Coercing it here rather than trusting the client keeps the two
+        // flags consistent for every watcher, including older clients.
+        entry.muted = muted || deafened;
+        entry.deafened = deafened;
         Some(entry.clone())
     }
 

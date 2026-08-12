@@ -772,6 +772,20 @@ fn apply(
 
             // Self updates propagate to local VoiceSession.
             if is_self {
+                // The server is the authority on these two and can disagree
+                // with what we asked for — it forces mute on while deafened,
+                // and it drops both when we weren't in a channel to begin with.
+                // Its answer has to reach the audio path and not only the
+                // buttons, or the mic ends up live under a red icon (or the
+                // mixer stays gated while the icon says otherwise).
+                if vs.muted != s.voice.muted {
+                    let _ = voice_tx.send(VoiceCmd::SetMute { muted: vs.muted });
+                }
+                if vs.deafened != s.voice.deafened {
+                    let _ = voice_tx.send(VoiceCmd::SetDeafen {
+                        deafened: vs.deafened,
+                    });
+                }
                 s.voice.muted = vs.muted;
                 s.voice.deafened = vs.deafened;
                 if vs.channel_id.is_none() && s.voice.phase != VoicePhase::Idle {
