@@ -131,10 +131,20 @@ pub enum TrackStats {
         concealment_events: u64,
     },
     Outbound {
-        /// What the encoder is actually aiming for — the bitrate setting made
-        /// real, rather than what we asked for at publish time.
-        bitrate_kbps: u32,
-        packets_sent: u64,
+        /// What is actually leaving, from the byte counter between two readings
+        /// — not the encoder's `target_bitrate`, which is only what it aims
+        /// for. The row exists to say whether the bitrate setting had the
+        /// effect it claims, and an aim cannot answer that.
+        bitrate_kbps: Option<u32>,
+        /// Packets a second. Opus at the default 20ms frame sits around 50
+        /// while the transmit gate is open and near zero while DTX holds
+        /// silence back, so this is the sender-side "audio is leaving this
+        /// machine".
+        ///
+        /// `None` on the first reading, like the bitrate — both are deltas and
+        /// both arrive on the same tick. A zero would be indistinguishable from
+        /// sending nothing, which is the one thing this row is for.
+        packets_per_sec: Option<u32>,
     },
 }
 

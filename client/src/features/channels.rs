@@ -544,6 +544,18 @@ fn VoiceChannelRow(
     }
 }
 
+/// A measured rate, or an em dash while there is nothing to measure against.
+///
+/// The outbound numbers are deltas between two readings, so the tick that opens
+/// the panel has nothing to divide. A dash says "measuring"; a zero would say
+/// "sending nothing", which is the opposite.
+fn rate_or_dash(v: Option<u32>, unit: &str) -> String {
+    match v {
+        Some(n) => format!("{n} {unit}"),
+        None => format!("— {unit}"),
+    }
+}
+
 /// The numbers behind "it sounds bad", for whoever is in the call.
 ///
 /// Mounting is the subscription: polling the peer connection costs a walk of
@@ -612,9 +624,17 @@ fn ConnectionStats() -> Element {
                                 "{concealment_events} conc"
                             }
                         },
-                        crate::state::TrackStats::Outbound { bitrate_kbps, packets_sent } => rsx! {
-                            span { class: "text-[var(--text-dim)]", title: "What your encoder is aiming for", "{bitrate_kbps} kbit/s out" }
-                            span { class: "text-[var(--text-dim)]", "{packets_sent} pkt" }
+                        crate::state::TrackStats::Outbound { bitrate_kbps, packets_per_sec } => rsx! {
+                            span {
+                                class: "text-[var(--text-dim)]",
+                                title: "What is actually leaving, measured between readings — not what the encoder is aiming for",
+                                {rate_or_dash(*bitrate_kbps, "kbit/s out")}
+                            }
+                            span {
+                                class: "text-[var(--text-dim)]",
+                                title: "Packets a second — around 50 while you're transmitting, near zero while silence is held back",
+                                {rate_or_dash(*packets_per_sec, "pkt/s")}
+                            }
                         },
                     }
                 }
