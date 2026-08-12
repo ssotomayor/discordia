@@ -16,13 +16,23 @@
 /// No-op in release. Failures are swallowed: a diagnostic that can break the
 /// app it is diagnosing is worse than no diagnostic.
 ///
-/// The release arm still *reads* its arguments, and has to. Expanding to
-/// nothing at all makes a binding that exists only to be logged look unused to
-/// the compiler, so every call site pays for the macro with an
-/// `unused_variables` warning that only appears in release builds — where no
-/// lint gate runs, since clippy is a `cargo` dev-profile job. `format_args!`
-/// borrows the arguments and builds nothing; `let _ =` drops it at the end of
-/// the statement. Nothing is formatted, allocated or emitted.
+/// The release arm still has to *mention* its arguments. Expanding to nothing
+/// at all makes a binding that exists only to be logged look unused to the
+/// compiler, so every call site pays for the macro with an `unused_variables`
+/// warning that only appears in release builds — where no lint gate runs, since
+/// clippy is a `cargo` dev-profile job.
+///
+/// Mentioning them inside `if false` is what keeps that free. The block is
+/// name-resolved and type-checked, which is all the lint looks at, but the
+/// branch is never taken — so argument *expressions* never run. That matters
+/// more than it sounds: `format_args!` alone formats and allocates nothing, but
+/// it evaluates its arguments eagerly, exactly like a function call. Call sites
+/// here pass things like a `format!`ing closure (`features::profiles`) and a
+/// `.collect::<Vec<_>>()` (`features::screenshare`), and a bare `format_args!`
+/// would have quietly moved that work into release builds — which before this
+/// dropped the whole call, arguments included. Under `if false` the cost stays
+/// dropped, and not because an optimiser removed it: nothing is reachable to
+/// remove. Verified at `opt-level=0` as well as `-O`.
 #[macro_export]
 macro_rules! dlog {
     ($($arg:tt)*) => {
@@ -32,7 +42,9 @@ macro_rules! dlog {
         }
         #[cfg(not(debug_assertions))]
         {
-            let _ = format_args!($($arg)*);
+            if false {
+                let _ = format_args!($($arg)*);
+            }
         }
     };
 }
