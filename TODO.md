@@ -335,6 +335,12 @@ tracking them.
   parent died, and a stale SFU squatting on the port is a confusing way for the
   next session to fail. Sweep any `livekit-server` started from our own temp
   directory before spawning, or have the child watch for its parent going away.
+  **Not macOS-specific**, which this entry used to imply by describing only the
+  launchd case. Reproduced on Windows: `taskkill /F` on `dioxusfun-server.exe`
+  left `livekit-server-<hash>.exe` alive and still `LISTENING` on 7880, and it
+  had to be killed by PID. `kill_on_drop` is a destructor, so any kill that
+  skips unwinding — on any platform — leaves the child behind. That makes the
+  "have the child watch for its parent" half of the fix the portable one.
 - **No native system-audio capture on Linux.** `client/src/sysaudio/` has
   backends for macOS (ScreenCaptureKit) and Windows (WASAPI process loopback);
   Linux reports unsupported and falls back to whatever `getDisplayMedia` hands
