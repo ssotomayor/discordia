@@ -297,7 +297,7 @@ pub fn GuildSettingsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element 
                         }
                         SafetyControls {
                             guild_id,
-                            gate: g.join_gate.clone(),
+                            gate: g.join_gate,
                             rules: g.rules.clone(),
                             panic_mode: g.panic_mode,
                         }
@@ -432,7 +432,7 @@ fn SafetyControls(
     let state = use_app_state();
     let gateway = use_gateway();
 
-    let mut gate_draft = use_signal(|| gate.clone());
+    let mut gate_draft = use_signal(|| gate);
     let mut rules_draft = use_signal(|| rules.clone().unwrap_or_default());
     let entries = use_memo(move || {
         state

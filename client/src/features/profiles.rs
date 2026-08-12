@@ -384,15 +384,15 @@ pub fn ProfileEditor() -> Element {
     let mut load_current = move || {
         let s = state.read();
         let me = s.self_user.as_ref().map(|u| u.pubkey.clone());
-        if let Some(pk) = me {
-            if let Some(p) = s.profile_of(&pk) {
-                avatar.set(p.avatar.clone());
-                banner.set(p.banner.clone());
-                bio.set(p.bio.clone().unwrap_or_default());
-                status.set(p.status.clone().unwrap_or_else(|| "online".into()));
-                custom_status.set(p.custom_status.clone().unwrap_or_default());
-                return;
-            }
+        if let Some(pk) = me
+            && let Some(p) = s.profile_of(&pk)
+        {
+            avatar.set(p.avatar.clone());
+            banner.set(p.banner.clone());
+            bio.set(p.bio.clone().unwrap_or_default());
+            status.set(p.status.clone().unwrap_or_else(|| "online".into()));
+            custom_status.set(p.custom_status.clone().unwrap_or_default());
+            return;
         }
         // Fall back to whatever is on disk.
         if let Some(local) = crate::profile::load() {

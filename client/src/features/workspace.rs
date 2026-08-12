@@ -580,7 +580,7 @@ fn VoiceSounds() -> Element {
     let voice_states = use_memo(move || state.read().voice_states.clone());
     let self_pk = use_memo(move || state.read().self_user.as_ref().map(|u| u.pubkey.clone()));
     let mut last_channel = use_signal(|| None::<Id>);
-    let mut last_peers = use_signal(|| Vec::<String>::new());
+    let mut last_peers = use_signal(Vec::<String>::new);
     use_effect(move || {
         let ch = voice_channel();
         let states = voice_states();
@@ -617,7 +617,7 @@ fn VoiceSounds() -> Element {
     // Same pattern: watch the sharers in our channel excluding self, diff
     // against the last snapshot, snapshot silently on channel switch.
     let screen_shares = use_memo(move || state.read().screen_shares.clone());
-    let mut last_sharers = use_signal(|| Vec::<String>::new());
+    let mut last_sharers = use_signal(Vec::<String>::new);
     use_effect(move || {
         let ch = voice_channel();
         let shares = screen_shares();

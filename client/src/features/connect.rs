@@ -186,7 +186,7 @@ pub fn ConnectView(
                 if let Some(saved) = last_session.clone() {
                     {
                         let identity_for_reconnect = identity.clone();
-                        let on_connect_for_reconnect = on_connect.clone();
+                        let on_connect_for_reconnect = on_connect;
                         rsx! {
                             button {
                                 r#type: "button",
