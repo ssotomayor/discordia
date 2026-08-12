@@ -410,7 +410,10 @@ fn VoiceBadges(vs: VoiceState) -> Element {
             if vs.channel_id.is_some() {
                 span { class: "text-[var(--accent)]", title: "In voice", "v" }
             }
-            if vs.muted {
+            // Deafened implies muted server-side, so the two never both show.
+            if vs.deafened {
+                span { class: "text-[var(--text-dim)]", title: "Deafened", "d" }
+            } else if vs.muted {
                 span { class: "text-[var(--text-dim)]", title: "Muted", "m" }
             }
         }

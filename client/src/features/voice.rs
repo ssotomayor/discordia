@@ -148,6 +148,10 @@ struct AudioControls {
     /// walks every peer connection once a second and is worth nothing while
     /// nobody is reading it.
     stats_polling: Arc<AtomicBool>,
+    /// Playback deafen. A gate rather than a level, and read ahead of the two
+    /// maps below: it overrides them instead of being written into them, so the
+    /// per-participant volumes the user picked are still there on undeafen.
+    deafened: Arc<AtomicBool>,
     /// Per-participant playback gain, keyed by LiveKit identity (= pubkey).
     /// Absent = unity. Applied to *incoming* audio in our own mixer only.
     gains: Arc<Mutex<HashMap<String, f32>>>,
@@ -166,6 +170,7 @@ impl AudioControls {
             denoise: Arc::new(AtomicBool::new(denoise)),
             bitrate_kbps: Arc::new(AtomicU32::new(bitrate_kbps)),
             stats_polling: Arc::new(AtomicBool::new(false)),
+            deafened: Arc::new(AtomicBool::new(false)),
             gains: Arc::new(Mutex::new(HashMap::new())),
             stream_gains: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -199,6 +204,15 @@ pub enum VoiceCmd {
     },
     SetMute {
         muted: bool,
+    },
+    /// Silence *playback* — every remote voice and every stream at once.
+    ///
+    /// Deliberately separate from `SetMute`: this is a gate on the mixer, mute
+    /// is a gate on capture, and they sit at opposite ends of the pipeline.
+    /// That deafening also mutes is a rule of the UI — which sends both — not a
+    /// fact about the audio path.
+    SetDeafen {
+        deafened: bool,
     },
     /// Set the microphone gate threshold (1..=1000, peak ×1000). Below it the
     /// mic is treated as inactive and nothing is transmitted.
@@ -459,6 +473,14 @@ async fn service_loop(
                     active.set_muted(muted).await;
                 }
                 state.write().voice.muted = muted;
+            }
+            VoiceCmd::SetDeafen { deafened } => {
+                eprintln!("[voice] SetDeafen deafened={deafened}");
+                // Nothing to hand to the session: the flag lives on `controls`,
+                // which outlives it, so a device change rebuilds the mixer
+                // around the same atomic and comes back up still deafened.
+                controls.deafened.store(deafened, Ordering::Relaxed);
+                state.write().voice.deafened = deafened;
             }
             VoiceCmd::SetSensitivity { threshold } => {
                 let threshold = threshold.clamp(1, 1000);
@@ -2578,8 +2600,20 @@ fn refresh_gains(
     tracks: &mut MixerTracks,
     gains: &Arc<Mutex<HashMap<String, f32>>>,
     stream_gains: &Arc<Mutex<HashMap<String, f32>>>,
+    deafened: &Arc<AtomicBool>,
 ) {
     if tracks.buffers.is_empty() {
+        return;
+    }
+    // Deafen overrides both maps and returns before either lock is taken: the
+    // user's own levels have to survive it, and there is no reason for the
+    // realtime callback to contend for a map it is about to ignore. Only the
+    // gain is touched — the per-sample loop still pops every track, which is
+    // what keeps a 200ms burst from escaping on undeafen.
+    if deafened.load(Ordering::Relaxed) {
+        for track in tracks.buffers.values_mut() {
+            track.gain = 0.0;
+        }
         return;
     }
     let g = gains.lock();
@@ -2685,6 +2719,8 @@ impl PlaybackMixer {
         let gains_i16 = controls.gains.clone();
         let stream_gains_f32 = controls.stream_gains.clone();
         let stream_gains_i16 = controls.stream_gains.clone();
+        let deafened_f32 = controls.deafened.clone();
+        let deafened_i16 = controls.deafened.clone();
         // Dither PRNG state. Moved into the i16 callback so it advances across
         // invocations (a per-callback reseed would emit the same noise pattern
         // every buffer, which is audible as a tone).
@@ -2697,7 +2733,7 @@ impl PlaybackMixer {
                 move |data: &mut [f32], _| {
                     cb_counter_cb.fetch_add(1, Ordering::Relaxed);
                     let mut tracks = tracks_cb.lock();
-                    refresh_gains(&mut tracks, &gains_f32, &stream_gains_f32);
+                    refresh_gains(&mut tracks, &gains_f32, &stream_gains_f32, &deafened_f32);
                     let mut pulled = 0u64;
                     // Drift compensation thresholds (in samples at device rate).
                     // The overrun mark must stay under the producer-side cap
@@ -2766,7 +2802,7 @@ impl PlaybackMixer {
                 move |data: &mut [i16], _| {
                     cb_counter_cb.fetch_add(1, Ordering::Relaxed);
                     let mut tracks = tracks_cb.lock();
-                    refresh_gains(&mut tracks, &gains_i16, &stream_gains_i16);
+                    refresh_gains(&mut tracks, &gains_i16, &stream_gains_i16, &deafened_i16);
                     let overrun_threshold = (device_rate_cb as f64 * DRIFT_OVERRUN_SECS) as usize;
                     let underrun_threshold = (device_rate_cb as f64 * DRIFT_UNDERRUN_SECS) as usize;
                     let mut counter = drift_counter_cb.load(Ordering::Relaxed);

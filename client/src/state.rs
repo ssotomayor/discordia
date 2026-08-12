@@ -144,6 +144,10 @@ pub struct VoiceSession {
     pub channel_id: Option<Id>,
     pub muted: bool,
     pub deafened: bool,
+    /// What `muted` was before deafening, so undeafening gives back what the
+    /// user actually chose. Deafening forces mute on, and always unmuting on
+    /// the way out would silently undo a mute they set themselves.
+    pub muted_before_deafen: bool,
     pub speaking: bool,
     pub error: Option<String>,
 }
@@ -155,8 +159,30 @@ impl Default for VoiceSession {
             channel_id: None,
             muted: false,
             deafened: false,
+            muted_before_deafen: false,
             speaking: false,
             error: None,
+        }
+    }
+}
+
+impl VoiceSession {
+    /// Flip deafen and report the `(muted, deafened)` pair to announce.
+    ///
+    /// Deafening implies muting — talking to people you can't hear is the
+    /// antisocial half of the state — but muting says nothing about deafen, so
+    /// only this direction is coupled. Lives here rather than in the click
+    /// handler so the restore rule is the one piece of deafen a test can reach
+    /// without audio hardware.
+    ///
+    /// `muted`/`deafened` themselves are not written here — the `VoiceCmd`s the
+    /// caller sends own that, so the flags and the audio can't drift apart.
+    pub fn toggle_deafen(&mut self) -> (bool, bool) {
+        if self.deafened {
+            (self.muted_before_deafen, false)
+        } else {
+            self.muted_before_deafen = self.muted;
+            (true, true)
         }
     }
 }
@@ -830,5 +856,25 @@ mod tests {
         s.stream_volumes.insert("x".into(), 50);
         assert_eq!(s.stream_gain_of("x"), 0.5);
         assert_eq!(s.voice_gain_of("x"), 1.5);
+    }
+
+    #[test]
+    fn deafening_mutes_and_undeafening_restores_the_previous_mute() {
+        let mut v = VoiceSession::default();
+        // Unmuted → deafen mutes → undeafen unmutes.
+        assert_eq!(v.toggle_deafen(), (true, true));
+        v.muted = true;
+        v.deafened = true;
+        assert_eq!(v.toggle_deafen(), (false, false));
+
+        // Already muted → deafen keeps it → undeafen leaves it muted rather
+        // than undoing a choice the user made before deafening.
+        let mut v = VoiceSession {
+            muted: true,
+            ..VoiceSession::default()
+        };
+        assert_eq!(v.toggle_deafen(), (true, true));
+        v.deafened = true;
+        assert_eq!(v.toggle_deafen(), (true, false));
     }
 }

@@ -1635,6 +1635,28 @@ pub fn ScreenWatchWindow() -> Element {
         let _ = document::eval(&stream_sink_js(output_device().as_deref()));
     });
 
+    // Deafen has to reach the webview too. When the native `#audio` join isn't
+    // live — old server, failed join, dropped room — stream audio plays through
+    // an HTMLMediaElement instead of our mixer, where the gate in
+    // `refresh_gains` cannot reach it, and a deafen that doesn't deafen is the
+    // worst way for this to fail.
+    //
+    // Reading only memos is what keeps this off the `last_gains` treadmill
+    // above: an unchanged `Memo` doesn't wake its subscribers, so the effect
+    // fires on a real change rather than on every `AppState` mutation.
+    let deafened = use_memo(move || state.read().voice.deafened);
+    let watched_gain = use_memo(move || {
+        let s = state.read();
+        s.screen_viewing
+            .as_ref()
+            .map(|pk| s.stream_gain_of(pk))
+            .unwrap_or(0.0)
+    });
+    use_effect(move || {
+        let gain = if deafened() { 0.0 } else { watched_gain() };
+        let _ = document::eval(&stream_volume_js(gain));
+    });
+
     let mut x = use_signal(|| 160.0_f64);
     let mut y = use_signal(|| 90.0_f64);
     let mut w = use_signal(|| 880.0_f64);
