@@ -278,6 +278,29 @@ the top within each section.
 
 ## Voice / audio
 
+- **Windows system-audio capture corrupts the heap and takes the process down.**
+  `sysaudio::start()` never returns: the process dies with
+  `STATUS_HEAP_CORRUPTION` (0xc0000374). Reproduced on Windows 11 26200 with a
+  real audio device, by the `#[ignore]`d `windows_loopback_delivers_real_samples`
+  in `sysaudio::windows`. This is reachable from the app — `scope()` is
+  `MonitorOnly` on Windows, so ticking "Share computer sound" on a whole-screen
+  share is what runs it.
+  Narrowed by instrumentation to a window inside `activate()`: it gets past
+  `WaitForSingleObject` and `CloseHandle(done)` — so the completion handler ran
+  and the activation succeeded — and dies before `setup()` sees a client. What
+  is left in that window is `GetActivateResult`, and the drops of `params`
+  (the boxed `AUDIOCLIENT_ACTIVATION_PARAMS`), `prop`, the `#[implement]`
+  handler, and `op`.
+  Two hypotheses checked and **eliminated**, so nobody repeats them:
+  * Not `PROPVARIANT`'s `Drop` freeing a Rust pointer with `CoTaskMemFree` —
+    the risk the comment above `prop` warns about. `windows-core` 0.61.2 has no
+    `impl Drop for PROPVARIANT`; only 0.54 does, and this is 0.61.
+  * Not a split between `windows` and `windows-core`. Both are 0.61 and the
+    `#[implement]` vtable matches, exactly as `client/Cargo.toml` intends.
+  Root-causing the rest wants a debugger or Application Verifier. Until then the
+  Windows native path is not merely untested, it is actively dangerous, and the
+  reproduction is one command.
+
 The first four here were recorded only in commit messages until now. That is
 where deferred work goes to be forgotten: `c86af67` listed five review
 follow-ups in its body, three were still open a month later, and nothing was

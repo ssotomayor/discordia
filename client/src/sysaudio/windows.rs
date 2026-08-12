@@ -554,3 +554,109 @@ fn explain(hr: HRESULT) -> String {
         format!("error {:#010x}", hr.0 as u32)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    use tokio::sync::mpsc::unbounded_channel;
+
+    /// Does this backend capture anything, and does the process survive asking?
+    ///
+    /// Nobody had checked. It landed in `94120de` and was corrected in
+    /// `638746b` on review, both times on the strength of being read — and the
+    /// macOS backend, written the same way, returns `Ok` and then delivers zero
+    /// samples for its whole life, which is still open in `TODO.md`. That
+    /// failure is invisible from inside: `start()` succeeds, a track is
+    /// published, and it is silent forever.
+    ///
+    /// As of writing this **does not get that far**: `start()` takes the process
+    /// down with STATUS_HEAP_CORRUPTION before returning. See the entry in
+    /// `TODO.md`; the assertions below are what should hold once it does return,
+    /// and the test is the reproduction in the meantime.
+    ///
+    /// `#[ignore]`d: needs an audio device, a desktop session, and Windows 10
+    /// build 20348 or newer. It also aborts the whole test binary while the
+    /// corruption is unfixed, which is reason enough not to have it run by
+    /// default.
+    ///
+    /// ```text
+    /// cargo test -p dioxusfun -- --ignored --nocapture windows_loopback
+    /// ```
+    #[tokio::test]
+    #[ignore = "needs an audio device and a desktop session; currently aborts the process"]
+    async fn windows_loopback_delivers_real_samples() {
+        assert!(
+            crate::sysaudio::supported(),
+            "unsupported on this build ({}); nothing to exercise",
+            crate::sysaudio::os_build_label()
+        );
+
+        let (tx, mut rx) = unbounded_channel::<Vec<f32>>();
+        let (fatal_tx, mut fatal_rx) = unbounded_channel::<String>();
+        // `target` is a macOS concern (which surface to scope the tap to); this
+        // backend takes the machine mix.
+        let capture = crate::sysaudio::start(tx, fatal_tx, None).expect("start capture");
+
+        // From a *different* process, on purpose: the capture excludes our own
+        // process tree, so that a share does not echo the call it is published
+        // into. Noise this test made itself would be filtered out by design.
+        let mut tone = Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-Command",
+                "1..8 | ForEach-Object { [console]::beep(880, 400) }",
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn the tone player");
+
+        let (mut frames, mut samples, mut peak) = (0usize, 0usize, 0.0f32);
+        let deadline = Instant::now() + Duration::from_secs(8);
+        while Instant::now() < deadline {
+            match tokio::time::timeout(Duration::from_millis(500), rx.recv()).await {
+                Ok(Some(frame)) => {
+                    frames += 1;
+                    samples += frame.len();
+                    for s in frame {
+                        peak = peak.max(s.abs());
+                    }
+                    if peak > 0.01 && frames > 20 {
+                        break;
+                    }
+                }
+                Ok(None) => break,
+                Err(_) => {}
+            }
+        }
+
+        let _ = tone.kill();
+        // Reaped rather than left behind: an unwaited child is a zombie for as
+        // long as this process lives, and clippy is right to say so.
+        let _ = tone.wait();
+        drop(capture);
+
+        if let Ok(err) = fatal_rx.try_recv() {
+            panic!("the capture reported a fatal error: {err}");
+        }
+        println!("frames={frames} samples={samples} peak={peak:.4}");
+
+        assert!(
+            frames > 0,
+            "start() succeeded and delivered no frames at all — the same shape \
+             as the open macOS finding in TODO.md"
+        );
+        assert!(
+            samples >= 4800,
+            "only {samples} samples; the capture is starved"
+        );
+        // The part frame counting cannot see: silence is still frames.
+        assert!(
+            peak > 0.01,
+            "{frames} frames captured but every sample was ~zero (peak \
+             {peak:.6}) — a track published from this would be silent"
+        );
+    }
+}
