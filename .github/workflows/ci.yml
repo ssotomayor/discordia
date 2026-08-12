@@ -7,6 +7,12 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # Must match the `dioxus` version in Cargo.lock. Unpinned, binstall takes the
+  # newest CLI, which drifts from the crate on every dx release — and dx prints
+  # "dx and dioxus versions are incompatible!" and then bundles anyway, so the
+  # mismatch reaches a published artifact instead of a red job. Bump this in the
+  # same commit that bumps the crate.
+  DIOXUS_CLI_VERSION: "0.7.9"
   # LIVEKIT_BUNDLE_SKIP deliberately does NOT live here. It used to, back when
   # this file only ran checks — and then the pre-release jobs were added to it
   # and inherited the skip, so every published binary went out with an empty
@@ -164,7 +170,7 @@ jobs:
       - name: Install Dioxus CLI
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: cargo binstall dioxus-cli --no-confirm --force --locked
+        run: cargo binstall dioxus-cli@${{ env.DIOXUS_CLI_VERSION }} --no-confirm --force --locked
       - name: Verify dx
         run: dx --version
       - name: Build server (release)
@@ -225,7 +231,7 @@ jobs:
       - name: Install Dioxus CLI
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: cargo binstall dioxus-cli --no-confirm --force --locked
+        run: cargo binstall dioxus-cli@${{ env.DIOXUS_CLI_VERSION }} --no-confirm --force --locked
       - name: Verify dx
         run: dx --version
       - name: Build server (release)
@@ -321,7 +327,7 @@ jobs:
       - name: Install Dioxus CLI
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: cargo binstall dioxus-cli --no-confirm --force --locked
+        run: cargo binstall dioxus-cli@${{ env.DIOXUS_CLI_VERSION }} --no-confirm --force --locked
       - name: Verify dx
         run: dx --version
       - name: Build server (release)

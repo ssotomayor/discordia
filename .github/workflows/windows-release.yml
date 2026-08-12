@@ -43,10 +43,14 @@ jobs:
       # already installed and later steps fail with "'dx' is not recognized".
       # GITHUB_TOKEN: anonymous API lookups hit the 60/h per-IP limit and 403
       # into a source build, which needs --locked to compile.
+      # Pinned to the `dioxus` version in Cargo.lock, and kept in step with the
+      # DIOXUS_CLI_VERSION in ci.yml. Unpinned, binstall takes the newest CLI and
+      # dx bundles anyway after printing "dx and dioxus versions are
+      # incompatible!", so the mismatch ships instead of failing.
       - name: Install Dioxus CLI
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: cargo binstall dioxus-cli --no-confirm --force --locked
+        run: cargo binstall dioxus-cli@0.7.9 --no-confirm --force --locked
       - name: Verify dx
         run: dx --version
 
