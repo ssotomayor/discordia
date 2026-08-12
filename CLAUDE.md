@@ -321,14 +321,31 @@ gateway (`spawn_gateway()`) and drive it through the bot SDK's
 protocol end to end. Copy an existing test's helper block (`spawn_gateway`,
 `connect_user`, `create_guild`, `next_timeout`) when adding one. Each test uses
 a unique temp data dir so they're parallel-safe. Current suites: `archive`,
-`bots`, `emoji`, `owner_controls`, `persistence`, `transport` (server) and
-`handshake` (rendezvous). **First run is slow** — the server crate gets
+`bots`, `emoji`, `owner_controls`, `persistence`, `transport`, `voice` (server)
+and `handshake` (rendezvous). **First run is slow** — the server crate gets
 `livekit-server` once, and how depends on the platform: Windows and Linux
 download the prebuilt release, macOS clones and `go build`s it (~2-3 min, needs
 `go` on PATH). Either way a failure **stops the build** rather than warning:
 the binary is embedded with `include_bytes!`, so a build without it looks
 identical to one with it and quietly cannot host voice locally. Set
 `LIVEKIT_BUNDLE_SKIP=1` to opt out on purpose — the panic names it.
+
+`voice` is the one to copy when a test needs something to fail *partway*.
+`JoinVoice` mints three JWTs, and one key and secret cannot express "this mint
+fails, its siblings succeed". `ScriptedMinter` there implements the same public
+`VoiceTokenMinter` trait the rendezvous-delegated path uses and answers per
+request, so that delegation seam doubles as a fault injector.
+
+**Some tests are `#[ignore]`d, and they are where the platform paths are
+actually verified** — `cargo test -p dioxusfun -- --ignored`.
+`client/tests/live_sfu.rs` drives two live peers against a real SFU (its module
+docs give the command for pointing it at the bundled one);
+`windows_loopback_delivers_real_samples` needs an audio device and a desktop
+session; the macOS `frames_survive_the_encoder_handoff` needs the Screen
+Recording grant and a display. They are ignored because no runner has any of
+that, which is what keeps `cargo test --workspace` headless — not a sign they
+are optional. The Windows one found a heap corruption in shipped code the first
+time anyone ran it.
 
 ---
 
