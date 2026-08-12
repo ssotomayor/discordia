@@ -144,6 +144,20 @@ jobs:
         run: dx --version
       - name: Build server (release)
         run: cargo build --release -p dioxusfun-server
+      # The direct assertion, and the only one that does not have to guess a
+      # threshold from a compressed container: this binary *is* the embed. It
+      # is ~10MB with an empty stub and ~61MB with the real thing, so 40MB has
+      # room on both sides, and it is the same number on all three platforms.
+      # Runs before `strip` so nothing depends on which sections strip keeps.
+      #
+      # It also covers the published `dioxusfun-server-*` assets, which are
+      # release artifacts in their own right (rung 2/3 of SELF_HOSTING.md) and
+      # which no size check reached before.
+      - name: Verify livekit-server is embedded
+        shell: pwsh
+        run: |
+          $srv = Get-Item target/release/dioxusfun-server
+          if ($srv.Length -lt 40MB) { throw "dioxusfun-server is $($srv.Length) bytes - the ~51MB bundled livekit-server is missing; refusing to publish it" }
       - name: Strip server binary
         run: strip target/release/dioxusfun-server
       - name: Bundle client (AppImage)
@@ -154,11 +168,13 @@ jobs:
         run: |
           $appimg = Get-ChildItem -Recurse -Filter '*.AppImage' target/dx | Select-Object -First 1
           if (-not $appimg) { throw "no AppImage produced by dx bundle" }
-          # The bundled livekit-server is ~51MB of the binary. Anything this
-          # small has an empty stub where it should be and cannot host voice —
-          # which is exactly what shipped, green, when this job inherited
-          # LIVEKIT_BUNDLE_SKIP from the workflow env.
-          if ($appimg.Length -lt 100MB) { throw "AppImage is $($appimg.Length) bytes - too small to contain the bundled livekit-server; refusing to publish it" }
+          # No size floor here on purpose. The broken AppImage published as
+          # v0.1.0-pre.125 was 116,663,488 bytes — a floor reasoned across from
+          # the Windows numbers would have been inert, because the AppImage
+          # carries a GTK/WebKit payload the exe does not. A floor that would
+          # actually fire has to come from measuring a real bundled build, and
+          # there has never been one. The check on `dioxusfun-server` above is
+          # the direct assertion and needs no such number.
           Copy-Item $appimg.FullName Discordia-linux-x86_64.AppImage
       - uses: actions/upload-artifact@v4
         with:
@@ -189,6 +205,12 @@ jobs:
         run: dx --version
       - name: Build server (release)
         run: cargo build --release -p dioxusfun-server
+      # See the linux job — same check, same number.
+      - name: Verify livekit-server is embedded
+        shell: pwsh
+        run: |
+          $srv = Get-Item target/release/dioxusfun-server.exe
+          if ($srv.Length -lt 40MB) { throw "dioxusfun-server.exe is $($srv.Length) bytes - the ~51MB bundled livekit-server is missing; refusing to publish it" }
       # One download, two artifacts — see windows-release.yml for the reasoning.
       - name: Fetch WebView2 Evergreen bootstrapper
         shell: pwsh
@@ -214,8 +236,11 @@ jobs:
                   Where-Object { $_.Name -eq 'windows' } | Select-Object -First 1
           if (-not $root) { throw "no windows bundle output found under target/dx" }
 
-          # See the linux job: under ~100MB the 51MB livekit-server is missing
-          # and the artifact cannot host voice, however green the run looks.
+          # The one artifact-level floor kept, because it is the only one with a
+          # measurement on both sides: 74,465,280 bytes broken against
+          # 125,901,312 fixed, so 100MB sits between them with room to spare.
+          # It guards something the server-binary check cannot — the *client*
+          # embeds its own copy, and this is the binary users actually run.
           $exe = Get-Item "$($root.FullName)/Discordia.exe"
           if ($exe.Length -lt 100MB) { throw "Discordia.exe is $($exe.Length) bytes - too small to contain the bundled livekit-server; refusing to publish it" }
 
@@ -276,6 +301,14 @@ jobs:
         run: dx --version
       - name: Build server (release)
         run: cargo build --release -p dioxusfun-server
+      # See the linux job — same check, same number. Worth the most here: this
+      # is the platform that builds livekit-server from source with `go`, so it
+      # has a way to come up empty that a failed download does not cover.
+      - name: Verify livekit-server is embedded
+        shell: pwsh
+        run: |
+          $srv = Get-Item target/release/dioxusfun-server
+          if ($srv.Length -lt 40MB) { throw "dioxusfun-server is $($srv.Length) bytes - the ~51MB bundled livekit-server is missing; refusing to publish it" }
       - name: Bundle client
         working-directory: client
         run: dx bundle --release
@@ -288,9 +321,14 @@ jobs:
 
           $dmg = Get-ChildItem -Recurse -Filter '*.dmg' $root.FullName | Select-Object -First 1
           if (-not $dmg) { throw "no .dmg produced by dx bundle" }
-          # See the linux job. The threshold is lower here because a .dmg is
-          # compressed, but an empty stub still shows up as tens of MB missing.
-          if ($dmg.Length -lt 60MB) { throw "dmg is $($dmg.Length) bytes - too small to contain the bundled livekit-server; refusing to publish it" }
+          # No size floor here either, and this one was worse than inert. The
+          # broken dmg was 35,017,024 bytes; scaling by the uncompressed growth
+          # measured on Windows (×1.69) projects ~56.5MB for a *fixed* one —
+          # under the 60MB floor this used to carry. `publish-prerelease` needs
+          # all three jobs, so a false positive here would have stopped every
+          # pre-release, and only once the release actually worked. UDZO on a Go
+          # binary is not the Windows ratio, which is the point: the number was
+          # extrapolated, and the check above does not need one.
           Copy-Item $dmg.FullName Discordia-macos-arm64.dmg
       - uses: actions/upload-artifact@v4
         with:
