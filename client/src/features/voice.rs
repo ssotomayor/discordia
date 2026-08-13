@@ -255,6 +255,15 @@ struct GateStats {
     /// heartbeat can print it beside the peaks without being handed
     /// `AudioControls` of its own. The gate reads it every hop anyway.
     threshold: AtomicI32,
+    /// The attenuation ceiling the DSP thread has actually handed the model,
+    /// or 0 when no model is loaded. Requested and applied are different
+    /// facts — the request is a UI event, this is the hop loop confirming it
+    /// — and this is the only one worth logging. It lands here rather than in
+    /// a `dlog!` at the point of change because that point *is* the hop loop,
+    /// and `dlog!` opens and writes a file synchronously; see `devlog`'s
+    /// module doc. A relaxed store costs nothing there, and the 2s heartbeat
+    /// is already the non-realtime reader.
+    atten_lim_applied: AtomicU32,
 }
 
 pub enum VoiceCmd {
@@ -288,11 +297,13 @@ pub enum VoiceCmd {
     SetSensitivity {
         threshold: u32,
     },
-    /// Toggle DeepFilterNet noise suppression on captured mic audio.
-    /// Ceiling on DeepFilterNet's attenuation, in dB.
+    /// Ceiling on DeepFilterNet's attenuation, in dB (6..=60, the domain the
+    /// slider in `features::channels` offers). Picked up by the DSP thread on
+    /// its next hop — no model rebuild, so it can be dragged mid-sentence.
     SetDenoiseAttenLim {
         db: u32,
     },
+    /// Toggle DeepFilterNet noise suppression on captured mic audio.
     SetNoiseCancellation {
         enabled: bool,
     },
@@ -1942,7 +1953,12 @@ fn denoise_gate_loop(
                 if want != applied_atten_lim {
                     d.set_atten_lim(want as f32);
                     applied_atten_lim = want;
-                    crate::dlog!("voice denoise attenuation ceiling {want} dB");
+                    // Published for the heartbeat, not logged here: dragging
+                    // the slider fires one of these per integer step, and a
+                    // `dlog!` would put a synchronous file open + write on the
+                    // 10ms hop loop during exactly the interaction this
+                    // feature exists for.
+                    stats.atten_lim_applied.store(want, Ordering::Relaxed);
                 }
                 d.process_hop(&mut samples);
             }
@@ -1953,6 +1969,7 @@ fn denoise_gate_loop(
             eprintln!("[voice] noise cancellation off, releasing model");
             denoiser = None;
             applied_atten_lim = 0;
+            stats.atten_lim_applied.store(0, Ordering::Relaxed);
         }
 
         // Peak of the hop, on the same ×1000 fixed-point scale as the VU bar
@@ -2633,9 +2650,21 @@ impl MicCapture {
                 let after = gate_stats.peak_after.swap(0, Ordering::Relaxed) as f32 / 1_000.0;
                 let passed = gate_stats.passed.swap(0, Ordering::Relaxed);
                 let dropped = gate_stats.dropped.swap(0, Ordering::Relaxed);
+                // `atten` is the ceiling the DSP thread has the model running
+                // under. Not swapped to 0 like the counters: it is a level,
+                // and the thread only writes it when it changes, so clearing
+                // it would blank the field on every tick but the first. Empty
+                // when no model is loaded, so the line never names a ceiling
+                // that applies to nothing. Formatted inside the macro's
+                // arguments on purpose — release drops those unevaluated (see
+                // `dlog!`), so the allocation is debug-only.
                 crate::dlog!(
-                    "mic 2s raw={p:.4} after={after:.4} thr={:.4} passed={passed} dropped={dropped}",
+                    "mic 2s raw={p:.4} after={after:.4} thr={:.4} passed={passed} dropped={dropped}{}",
                     gate_stats.threshold.load(Ordering::Relaxed) as f32 / 1_000.0,
+                    match gate_stats.atten_lim_applied.load(Ordering::Relaxed) {
+                        0 => String::new(),
+                        db => format!(" atten={db}dB"),
+                    },
                 );
                 prev_frames = f;
             }
