@@ -43,9 +43,14 @@ the top within each section.
 - **CI runs none of the client's or grid-layout's tests.** The `test` job runs
   `cargo test` over four crates — protocol, server, bot SDK, rendezvous — and the
   comment above it says CI covers the server-side crates "where all the tests
-  live". That stopped being true: `cargo test -p dioxusfun` is 30 passing tests
-  and `-p dioxus-grid-layout` another 28, so **59 tests exist that no job has
-  ever run**. They cover identity and NIP-06 derivation, the resampler and mixer
+  live". That stopped being true: on the Linux runner that would host them,
+  `cargo test -p dioxusfun` compiles 36 tests and `-p dioxus-grid-layout`
+  another 28 plus a doctest, so **65 tests exist that no job has ever run**.
+  (Counted with `cargo test -- --list`, not by grep. Windows compiles 38 of the
+  client's — the two `sysaudio::windows` ones do not exist elsewhere — and
+  passes 37, the loopback test being `#[ignore]`d. The number moves with the
+  platform, so re-measure rather than quoting this one.)
+  They cover identity and NIP-06 derivation, the resampler and mixer
   arithmetic, the emoji shortcode scanner, the connection-stats rates, and the
   collision and clamping maths behind the panel layout — none of it
   platform-specific, all of it the kind that fails silently.
@@ -198,6 +203,41 @@ the top within each section.
 
 ## Client UX
 
+- **The Windows client is a console application, so every release ships a `cmd`
+  window beside it.** Nothing in the workspace sets `windows_subsystem` — a grep
+  across every file finds no occurrence — so the linker leaves the default, and
+  the binary comes out as subsystem 3 (`IMAGE_SUBSYSTEM_WINDOWS_CUI`). Read out
+  of the PE headers of the two exes a debug build produces here,
+  `dioxusfun-server.exe` and `dioxusfun-rendezvous.exe`: both 3. For those two it
+  is correct — they are console tools. For the desktop app it is a black window
+  that opens with the UI and stays for the session, and one-click self-host
+  fills it with the bundled SFU's own logs, `livekit_bundle` spawning it with
+  `stdout`/`stderr` on `inherit()`. Including an `ERROR` from `hwstats` about
+  having no Windows CPU backend, which is LiveKit disabling capacity management
+  on purpose and reads to a user like a crash.
+  The two halves of the fix have to land together, because the first one alone
+  makes it worse. `#![cfg_attr(not(debug_assertions), windows_subsystem =
+  "windows")]` takes the console away from the parent, and Windows then
+  allocates a *fresh* one for a console child — so the shared window becomes a
+  stray `cmd` belonging to `livekit-server`. The other half is `CREATE_NO_WINDOW`
+  in `creation_flags` plus piped stdio on that spawn.
+  What makes it more than two flags is where the output should go instead. The
+  client writes to the console in 96 places — 92 `eprintln!` and 4 `println!`,
+  66 of them in `features::voice` alone, and `host.rs`'s four are the self-host
+  narration (`[host] livekit ready at …`, `[host] livekit unavailable: {e}`).
+  A windowless process has no stderr for any of that to reach, so it does not
+  become quieter, it becomes unreadable.
+  And the obvious destination is not available. `devlog` writes to a file, but
+  `dlog!` compiles to nothing in release *on purpose* — the module docs say why:
+  a shipped client must not grow an unbounded record of who was in which voice
+  channel. The console is therefore the only diagnostic channel a release build
+  has today, which is the same reason it cannot simply be taken away. Closing
+  this means deciding what replaces it — a bounded, non-identifying log; an
+  opt-in `--verbose` that calls `AttachConsole`; or accepting that release
+  self-host is diagnosed by reproducing under `dx serve`. That decision is the
+  work, not the two flags.
+  Not verified against a release build: `target/` here holds debug artifacts
+  only, and the reasoning above is from the source and from debug PE headers.
 - **The fade-in never re-triggers on the connect and identity-setup panels.**
   Both wrapped their switched content in `div { key: "…", class: "fade-in" }` so
   that changing tab or step would replace the node and restart the CSS
@@ -289,6 +329,20 @@ the top within each section.
 
 ## Voice / audio
 
+- **The transmit gate judges the denoised hop, so its operating point moves when
+  suppression is toggled.** `denoise_gate_loop` runs the model first and gates
+  what comes out, so switching DeepFilterNet on drops the signal the gate is
+  measuring while the threshold the user calibrated by ear stays where it was.
+  `efcc23d` made that survivable — hysteresis, a released envelope, ramped
+  edges — and left the ordering alone on purpose: gating the raw signal would
+  hold the operating point still across the toggle, but it would also let a fan
+  the model removes hold the gate open, which is the reason the order is what it
+  is. Recorded here rather than only in that commit because it is a live
+  trade-off, not a closed one: the alternative is a threshold that is
+  re-derived when suppression changes, which keeps the ordering and removes the
+  jump. Same shape as the subscribe-on-publication entry below — two defensible
+  positions, and the cost of the current one is a recalibration the user has to
+  do by hand.
 - **Every Windows activation leaks its 12-byte blob, deliberately.**
   `activation_params` allocates one per `activate` call and never frees it,
   because the engine keeps the pointer and nothing documents for how long. So the

@@ -86,11 +86,13 @@ flowchart LR
     subgraph Client["Client — dioxusfun (Dioxus desktop, wry webview)"]
         UI["features/*.rs — UI"]
         Net["net.rs — WS loop<br/>apply(ServerMessage) / send(ClientMessage)"]
-        Voice["features/voice.rs — native LiveKit SDK<br/>mic, playback mixer, voice room,<br/>audio-only screen-room subscriber"]
+        Voice["features/voice.rs — native LiveKit SDK<br/>mic, playback mixer, voice room,<br/>audio-only screen-room subscriber,<br/>screen-video publisher"]
         SysAudio["sysaudio/ — native system-audio capture<br/>macOS ScreenCaptureKit · Windows WASAPI loopback"]
-        WebJS["features/screenshare.rs — webview JS bridge<br/>LiveKit JS SDK: screen video (+ fallback audio)"]
+        SysVideo["sysvideo/ — native screen capture<br/>macOS ScreenCaptureKit"]
+        WebJS["features/screenshare.rs — webview JS bridge<br/>LiveKit JS SDK: renders every share;<br/>captures video on Windows"]
         UI --> Net
         SysAudio --> Voice
+        SysVideo --> Voice
         Voice -. same cpal mixer .-> WebJS
     end
 
@@ -107,7 +109,7 @@ flowchart LR
 
     subgraph SFU["LiveKit SFU"]
         VoiceRoom["voice-{channel}<br/>native peers: mic + shared system audio"]
-        ScreenRoom["screen-{channel}<br/>webview peer (video, identity = pubkey)<br/>native peer (audio-only, identity = pubkey#audio)"]
+        ScreenRoom["screen-{channel}<br/>webview peer (renders; captures on Windows, identity = pubkey)<br/>native peer (audio-only, identity = pubkey#audio)<br/>native peer (video on macOS, identity = pubkey#video)"]
     end
 
     subgraph Rendezvous["rendezvous (optional discovery relay)"]
@@ -136,9 +138,14 @@ A few load-bearing decisions the diagram implies:
   exactly the connections of the members that should see them.
 - **The server re-checks every permission.** The client's `can()` only hides
   dead-end UI; authority is server-side.
-- **A screen share joins the same LiveKit room twice** — the webview for video,
-  the native client for audio-only under a `#audio` identity suffix — so stream
-  sound follows your chosen output device instead of the webview's.
+- **A screen share joins the same LiveKit room under up to three identities.**
+  LiveKit allows one connection per identity, so each job that needs its own
+  connection gets its own suffix: the webview renders everyone's share (and
+  captures the video on Windows, where WebView2 is Chromium and
+  `getDisplayMedia` works), a native audio-only peer joins as `#audio` so stream
+  sound follows your chosen output device instead of the webview's, and on macOS
+  a native `#video` peer publishes frames captured through ScreenCaptureKit.
+  Which side captures video is per-platform, not a preference.
 
 ---
 
