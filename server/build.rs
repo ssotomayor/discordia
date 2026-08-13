@@ -25,6 +25,9 @@ use std::process::Command;
 
 const DEFAULT_VERSION: &str = "1.12.0";
 
+/// Where the digest below is left for `livekit_bundle` to `include_str!`.
+const DIGEST_NAME: &str = "livekit-server.sha";
+
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-env-changed=LIVEKIT_BUNDLE_VERSION");
@@ -39,28 +42,56 @@ fn main() {
     };
     let bin_path = out_dir.join(bin_name);
 
+    ensure_binary(&out_dir, &target_os, &bin_path);
+
+    // The runtime extracts this binary under a name carrying its content hash,
+    // and used to compute that hash itself on every self-host. It is a hash of
+    // a compile-time constant, so the answer cannot change while the program
+    // runs — and unoptimised it costs ~650ms over the 49MB Windows build
+    // (against 19ms optimised), on whichever thread asked to host. On the
+    // client that is the thread drawing the UI, which is why opening self-host
+    // froze the window for about a second every time.
+    //
+    // `cargo run` and `dx serve` are unoptimised by definition, so this is not
+    // a case of a developer build being merely slower — it is the shape the
+    // tract stack already has an opt-level override for in the workspace
+    // manifest. Here there is nothing to optimise: the work does not need to
+    // happen at runtime at all.
+    let bytes = fs::read(&bin_path).expect("read the bundled livekit binary back");
+    fs::write(out_dir.join(DIGEST_NAME), short_digest(&bytes)).expect("write the livekit digest");
+}
+
+/// First 8 bytes of the SHA-256, hex — the same 16 characters the extracted
+/// filename has always carried.
+fn short_digest(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes)
+        .iter()
+        .take(8)
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// Put a `livekit-server` at `bin_path`, however this platform gets one.
+fn ensure_binary(out_dir: &Path, target_os: &str, bin_path: &Path) {
     if env::var("LIVEKIT_BUNDLE_SKIP").is_ok() {
         println!(
             "cargo:warning=LIVEKIT_BUNDLE_SKIP set — self-host voice will not work in this build"
         );
-        fs::write(&bin_path, b"").unwrap();
+        fs::write(bin_path, b"").unwrap();
         return;
     }
 
-    if bin_path.exists()
-        && fs::metadata(&bin_path)
-            .map(|m| m.len() > 0)
-            .unwrap_or(false)
-    {
+    if bin_path.exists() && fs::metadata(bin_path).map(|m| m.len() > 0).unwrap_or(false) {
         return;
     }
 
     let version = env::var("LIVEKIT_BUNDLE_VERSION").unwrap_or_else(|_| DEFAULT_VERSION.into());
     let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap();
 
-    let result = match target_os.as_str() {
-        "macos" => build_from_source(&out_dir, &version, &bin_path),
-        _ => download_release(&target_os, &target_arch, &version, &bin_path),
+    let result = match target_os {
+        "macos" => build_from_source(out_dir, &version, bin_path),
+        _ => download_release(target_os, &target_arch, &version, bin_path),
     };
 
     // Fail the build rather than warn. The stub above is a *choice* the caller
@@ -84,9 +115,9 @@ fn main() {
     #[cfg(unix)]
     if bin_path.exists() {
         use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&bin_path).unwrap().permissions();
+        let mut perms = fs::metadata(bin_path).unwrap().permissions();
         perms.set_mode(0o755);
-        fs::set_permissions(&bin_path, perms).unwrap();
+        fs::set_permissions(bin_path, perms).unwrap();
     }
 }
 
