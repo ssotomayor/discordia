@@ -420,6 +420,25 @@ the top within each section.
   calibration step (the VU bar already draws the threshold marker against a
   live meter, so "speak normally" could place it) and settling the APM question
   first, since the answer changes what the default should be.
+
+  **Exposing DeepFilterNet's attenuation ceiling is *not* one of them, and that
+  was measured rather than argued.** The obvious theory when this gets worse
+  with noise cancellation on: the model can pull a hop down by
+  `ATTEN_LIM_DB` = 30, the gate judges the denoised hop, so a lower ceiling
+  would leave the gate more to open on. `DfTract` even has a live
+  `set_atten_lim`, read per hop, so it would have been a cheap setting to add.
+  Two runs against a real SFU say it would buy nothing. On matched input levels
+  — the one band with equal samples on both sides, 21 windows each — dropping
+  the ceiling from 30 dB to 12 dB moved gate drops from 21.2% to 17.6%, inside
+  the run-to-run variance seen all session, and the sign flips in the other two
+  bands. The reason is in the attenuation the model actually applies: −3.9 dB
+  average at a 30 dB ceiling, −2.7 dB at a 12 dB one. It is a ceiling, and
+  speech almost never reaches it, so lowering it moves about a decibel.
+  What the same runs show instead: drops track the *input* level and nothing
+  else. Below 0.05 raw peak, about half of all hops are gated whatever the
+  ceiling. That is this entry's problem, not the model's, and adding a fourth
+  interacting audio knob to chase one decibel would have made the settings
+  harder to reason about for no gain.
 - **libwebrtc's noise suppressor may not be running at all, which would mean
   DeepFilterNet-off is suppressor-*none*.** `apm_options` documents the
   contract — "exactly one suppressor should be in the path", libwebrtc's when
