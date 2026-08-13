@@ -289,6 +289,33 @@ the top within each section.
 
 ## Voice / audio
 
+- **A hung `IAudioClient::Initialize` wedges Windows system audio until the
+  process restarts.** `ActivationLease` is taken in `WinCapture::start` and
+  released when the capture thread ends. `activate` bounds its own wait at
+  `ACTIVATE_TIMEOUT`, but `init` — the `Initialize` call right after it — has no
+  timeout and no way to acquire one: it is a blocking FFI call. A thread stuck
+  there never ends, so the lease is never released and every later share is
+  refused with "still being captured by the previous share", correctly and
+  forever. Raised on the review of #44 and agreed to be a trade rather than a
+  regression: the code before the lease had the same wedge available to it *plus*
+  the heap corruption, and refusing captures beats corrupting the heap. It is
+  recorded because it is a real user-visible dead end with no recovery short of a
+  restart, and because the entry below closes it for free — with one blob per
+  activation there is no shared resource, so no lease, so nothing to wedge.
+  Half-measures are worse than none here: releasing the lease from
+  `WinCapture::start`'s own timeout arm would let the main thread retire the blob
+  concurrently with a capture thread that has not read it yet, and the two could
+  then settle on the same fresh allocation — the exact hazard, reintroduced by
+  the guard meant to prevent it.
+- **The activation-timeout path has never been executed.** `activate`'s
+  `WaitForSingleObject` giving up, and `retire_activation_params` with it, is
+  reasoned-about code: nobody has made WASAPI take longer than 5 s to answer, so
+  the branch that leaks a blob and hands the retry a fresh one has only ever run
+  in a unit test that calls it directly
+  (`a_retired_blob_is_never_handed_out_again`). Same class of gap as the one
+  `windows_loopback_delivers_real_samples` closed by being run once — that found
+  a heap corruption on its first execution. A fault-injection seam would settle
+  it; `server/tests/voice.rs`'s `ScriptedMinter` is the shape to copy.
 - **One activation blob is now shared by every Windows capture, and only
   sequencing keeps that to one holder at a time.** The fix for the heap
   corruption made `activation_params` a single process-wide allocation instead of
