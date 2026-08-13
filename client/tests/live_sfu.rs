@@ -309,16 +309,29 @@ fn tone_samples(n: usize) -> Vec<f32> {
 /// Feed a continuous tone the way the microphone path does: 10 ms frames of
 /// i16, handed to libwebrtc one at a time, in real time — the encoder and the
 /// jitter buffer both care about the clock.
-fn spawn_tone(source: NativeAudioSource) -> tokio::task::JoinHandle<()> {
+/// `noise` mixes white noise in at that peak amplitude — deterministic, from a
+/// plain LCG, so a run is reproducible and the workspace gains no dependency
+/// for six lines of arithmetic.
+fn spawn_tone(source: NativeAudioSource, noise: f32) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut phase = 0.0f32;
         let step = 2.0 * std::f32::consts::PI * TONE_HZ / SAMPLE_RATE as f32;
+        let mut seed = 0x2545_F491_4F6C_DD1Du64;
         loop {
             let data: Vec<i16> = (0..FRAME)
                 .map(|_| {
-                    let v = phase.sin() * AMPLITUDE;
+                    let mut v = phase.sin() * AMPLITUDE;
                     phase = (phase + step) % (2.0 * std::f32::consts::PI);
-                    (v * i16::MAX as f32) as i16
+                    if noise > 0.0 {
+                        seed = seed
+                            .wrapping_mul(6364136223846793005)
+                            .wrapping_add(1442695040888963407);
+                        // Top 24 bits to [-1, 1): the low bits of an LCG are
+                        // the ones with visible period.
+                        let u = (seed >> 40) as f32 / (1u32 << 23) as f32 - 1.0;
+                        v += u * noise;
+                    }
+                    (v.clamp(-1.0, 1.0) * i16::MAX as f32) as i16
                 })
                 .collect();
             let frame = livekit::webrtc::audio_frame::AudioFrame {
@@ -335,33 +348,71 @@ fn spawn_tone(source: NativeAudioSource) -> tokio::task::JoinHandle<()> {
     })
 }
 
-/// End-to-end audio quality and throughput with a synthesised source: a known
-/// tone in, the same tone measured coming out of the decoder.
+/// What a round trip is run with. Every field is a knob the real client sets,
+/// so a row of the sweep below is a configuration someone could actually ship.
+#[derive(Clone, Copy)]
+struct Config {
+    /// libwebrtc's echo canceller, noise suppressor and AGC, as one switch —
+    /// the three move together in `features::voice::set_apm`.
+    apm: bool,
+    /// Opus redundancy: a copy of the previous frame in every packet. On by
+    /// default in the SDK, which is why the client's measured send rate reads
+    /// as double its nominal one.
+    red: bool,
+    /// Discontinuous transmission: stop sending during silence.
+    dtx: bool,
+    /// `None` leaves the encoder to choose.
+    max_bitrate: Option<u64>,
+    /// Peak amplitude of white noise mixed in with the tone, 0 for none.
+    ///
+    /// The discriminator the first version of this sweep lacked. A pure sine
+    /// is the one signal that tells you nothing about a noise suppressor: it
+    /// measured identical with the APM on and off, which has two explanations
+    /// — the suppressor leaves a strong steady tone alone, or the options do
+    /// not reach this capture path at all — and no way to tell them apart.
+    /// Noise separates them, because a working suppressor must remove it.
+    noise: f32,
+}
+
+impl Config {
+    /// The baseline: APM off so what is measured is the transport and the
+    /// codec, SDK defaults for everything else.
+    fn transport_only() -> Self {
+        Self {
+            apm: false,
+            red: true,
+            dtx: true,
+            max_bitrate: None,
+            noise: 0.0,
+        }
+    }
+}
+
+/// One round trip's worth of numbers. Named rather than a tuple because the
+/// sweep prints them side by side and mixing two up would be silent.
+struct Metrics {
+    frames: usize,
+    samples: usize,
+    rate: f32,
+    r_in: f32,
+    r_out: f32,
+    db: f32,
+    purity_in: f32,
+    purity_out: f32,
+    band_in: f32,
+    band_out: f32,
+    h2: f32,
+    h3: f32,
+}
+
+/// Publish a tone into a fresh room under `cfg`, decode it back, and measure.
 ///
-/// This is the part a live call's counters cannot answer. "Frames pushed to
-/// webrtc" says the pipeline is moving, not that what arrives resembles what
-/// left — a resampler that quietly halves the rate, a stray gain stage, or an
-/// encoder configured for the wrong content would all keep those counters
-/// looking healthy.
-///
-/// Using a generated tone rather than a real microphone is the point: it is
-/// deterministic, it needs no hardware, and it captures nobody's room.
-///
-/// Baseline, three runs against bundled livekit-server 1.12.0 on loopback, so a
-/// later change has something to be compared against:
-///
-/// ```text
-/// effective rate   48120 Hz/ch   (+0.25% — the receiver adapting its clock)
-/// level            -0.59 .. -0.61 dB
-/// energy ±40 Hz    0.937 .. 0.940
-/// harmonics        0.0001 at 880 Hz, 0.0000 at 1320 Hz
-/// ```
-///
-/// The thresholds sit well below that on purpose: they are there to catch a
-/// path that broke, not to police the third decimal of a lossy codec.
-#[tokio::test]
-#[ignore = "needs a running LiveKit server; see the module docs"]
-async fn a_tone_survives_the_round_trip() {
+/// One implementation on purpose. The sweep exists to compare configurations
+/// against the baseline, and two measurement loops that drifted apart would
+/// compare nothing — the file's own rule is that a failing assertion means
+/// asking whether the measurement is wrong first, which only works while there
+/// is one measurement to ask about.
+async fn measure_round_trip(cfg: Config) -> Metrics {
     use futures_util::StreamExt as _;
     use livekit::webrtc::audio_stream::native::NativeAudioStream;
 
@@ -383,19 +434,16 @@ async fn a_tone_survives_the_round_trip() {
     .await
     .expect("listener connects");
 
-    // APM off, deliberately. `AudioSourceOptions::default()` leaves libwebrtc's
-    // echo canceller, noise suppressor and AGC on — which is right for a
-    // microphone and wrong for this measurement: a steady sine is precisely
-    // what a noise suppressor exists to remove, so it eats most of the tone and
-    // the number would say more about the suppressor than about the path. With
-    // them off, what is left is the transport and the codec, which is what this
-    // is for. The APM-on figure is reported below as a second reading.
-    let quiet = AudioSourceOptions {
-        echo_cancellation: false,
-        noise_suppression: false,
-        auto_gain_control: false,
+    // A steady sine is precisely what a noise suppressor exists to remove, so
+    // with the APM on the number says more about the suppressor than about the
+    // path. That is a reading worth having — it is what a real microphone
+    // publishes through — but it is not the baseline.
+    let opts = AudioSourceOptions {
+        echo_cancellation: cfg.apm,
+        noise_suppression: cfg.apm,
+        auto_gain_control: cfg.apm,
     };
-    let source = NativeAudioSource::new(quiet, SAMPLE_RATE, CHANNELS, 1000);
+    let source = NativeAudioSource::new(opts, SAMPLE_RATE, CHANNELS, 1000);
     let track = LocalAudioTrack::create_audio_track("tone", RtcAudioSource::Native(source.clone()));
     talker
         .local_participant()
@@ -403,12 +451,17 @@ async fn a_tone_survives_the_round_trip() {
             LocalTrack::Audio(track),
             TrackPublishOptions {
                 source: TrackSource::Microphone,
+                red: cfg.red,
+                dtx: cfg.dtx,
+                audio_encoding: cfg
+                    .max_bitrate
+                    .map(|max_bitrate| livekit::options::AudioEncoding { max_bitrate }),
                 ..Default::default()
             },
         )
         .await
         .expect("publish the tone");
-    let feeder = spawn_tone(source);
+    let feeder = spawn_tone(source, cfg.noise);
 
     let ev = wait_for(&mut listener_events, "listener", |ev| {
         matches!(ev, RoomEvent::TrackSubscribed { .. })
@@ -445,57 +498,210 @@ async fn a_tone_survives_the_round_trip() {
     let window = started.elapsed().saturating_sub(WARMUP).as_secs_f32();
     feeder.abort();
 
-    assert!(
-        received.len() > SAMPLE_RATE as usize,
-        "only {} samples in the steady-state window",
-        received.len()
-    );
-
     let sent = tone_samples(received.len());
     let (r_in, r_out) = (rms(&sent), rms(&received));
-    let db = 20.0 * (r_out / r_in).log10();
-    let purity_in = tone_purity(&sent, TONE_HZ);
-    let purity_out = tone_purity(&received, TONE_HZ);
-    let rate = received.len() as f32 / CHANNELS as f32 / window;
+    let m = Metrics {
+        frames,
+        samples: received.len(),
+        rate: received.len() as f32 / CHANNELS as f32 / window,
+        r_in,
+        r_out,
+        db: 20.0 * (r_out / r_in).log10(),
+        purity_in: tone_purity(&sent, TONE_HZ),
+        purity_out: tone_purity(&received, TONE_HZ),
+        band_in: band_energy(&sent, TONE_HZ, 40.0),
+        band_out: band_energy(&received, TONE_HZ, 40.0),
+        h2: tone_purity(&received, TONE_HZ * 2.0),
+        h3: tone_purity(&received, TONE_HZ * 3.0),
+    };
 
-    println!("frames decoded     : {frames}");
-    println!("samples analysed   : {}", received.len());
-    println!("effective rate     : {rate:.0} Hz/ch (nominal {SAMPLE_RATE})");
-    println!("RMS in / out       : {r_in:.4} / {r_out:.4}  ({db:+.2} dB)");
-    println!("tone purity in/out : {purity_in:.4} / {purity_out:.4}");
-    let band_in = band_energy(&sent, TONE_HZ, 40.0);
-    let band_out = band_energy(&received, TONE_HZ, 40.0);
-    println!("energy in ±40 Hz   : {band_in:.4} / {band_out:.4}");
-    println!(
-        "harmonics out      : 880 Hz {:.4}, 1320 Hz {:.4}",
-        tone_purity(&received, 880.0),
-        tone_purity(&received, 1320.0)
+    listener.close().await.ok();
+    talker.close().await.ok();
+    m
+}
+
+/// End-to-end audio quality and throughput with a synthesised source: a known
+/// tone in, the same tone measured coming out of the decoder.
+///
+/// This is the part a live call's counters cannot answer. "Frames pushed to
+/// webrtc" says the pipeline is moving, not that what arrives resembles what
+/// left — a resampler that quietly halves the rate, a stray gain stage, or an
+/// encoder configured for the wrong content would all keep those counters
+/// looking healthy.
+///
+/// Using a generated tone rather than a real microphone is the point: it is
+/// deterministic, it needs no hardware, and it captures nobody's room.
+///
+/// Baseline, three runs against bundled livekit-server 1.12.0 on loopback, so a
+/// later change has something to be compared against:
+///
+/// ```text
+/// effective rate   48120 Hz/ch   (+0.25% — the receiver adapting its clock)
+/// level            -0.59 .. -0.61 dB
+/// energy ±40 Hz    0.937 .. 0.940
+/// harmonics        0.0001 at 880 Hz, 0.0000 at 1320 Hz
+/// ```
+///
+/// The thresholds sit well below that on purpose: they are there to catch a
+/// path that broke, not to police the third decimal of a lossy codec.
+#[tokio::test]
+#[ignore = "needs a running LiveKit server; see the module docs"]
+async fn a_tone_survives_the_round_trip() {
+    let m = measure_round_trip(Config::transport_only()).await;
+
+    assert!(
+        m.samples > SAMPLE_RATE as usize,
+        "only {} samples in the steady-state window",
+        m.samples
     );
+
+    report("APM off (baseline)", &m);
 
     // Throughput. This far off would mean samples dropped or duplicated, which
     // is what a broken resampler looks like from here.
     assert!(
-        (rate - SAMPLE_RATE as f32).abs() < SAMPLE_RATE as f32 * 0.05,
-        "effective rate {rate:.0} Hz is more than 5% off nominal"
+        (m.rate - SAMPLE_RATE as f32).abs() < SAMPLE_RATE as f32 * 0.05,
+        "effective rate {:.0} Hz is more than 5% off nominal",
+        m.rate
     );
     // Level. Opus is lossy, not quiet: more than a few dB means a gain stage in
     // a path that should have none.
-    assert!(db.abs() < 3.0, "level moved by {db:+.2} dB end to end");
+    assert!(
+        m.db.abs() < 3.0,
+        "level moved by {:+.2} dB end to end",
+        m.db
+    );
     // Content. Most of the energy that comes out has to still be the tone.
     assert!(
-        band_out > 0.80,
+        m.band_out > 0.80,
         "only {:.1}% of the received energy is within 40 Hz of {TONE_HZ} — the \
          signal is not coming back as the tone that went in",
-        band_out * 100.0
+        m.band_out * 100.0
     );
     // And nothing non-linear: a clipping or distorting stage would put energy
     // on the harmonics, where there should be none.
     assert!(
-        tone_purity(&received, TONE_HZ * 2.0) < 0.02,
+        m.h2 < 0.02,
         "energy showed up at the second harmonic — something in the path is \
          distorting rather than merely coding"
     );
+}
 
-    listener.close().await.ok();
-    talker.close().await.ok();
+/// The baseline test's own output, factored out so a sweep row and the
+/// baseline are printed by the same code and can be read against each other.
+fn report(label: &str, m: &Metrics) {
+    println!("--- {label} ---");
+    println!("frames decoded     : {}", m.frames);
+    println!("samples analysed   : {}", m.samples);
+    println!(
+        "effective rate     : {:.0} Hz/ch (nominal {SAMPLE_RATE})",
+        m.rate
+    );
+    println!(
+        "RMS in / out       : {:.4} / {:.4}  ({:+.2} dB)",
+        m.r_in, m.r_out, m.db
+    );
+    println!(
+        "tone purity in/out : {:.4} / {:.4}",
+        m.purity_in, m.purity_out
+    );
+    println!("energy in ±40 Hz   : {:.4} / {:.4}", m.band_in, m.band_out);
+    println!(
+        "harmonics out      : 880 Hz {:.4}, 1320 Hz {:.4}",
+        m.h2, m.h3
+    );
+}
+
+/// The knobs, measured rather than argued about.
+///
+/// This exists because the baseline test's comment promised "the APM-on figure
+/// is reported below as a second reading" and no such reading was ever written
+/// — the claim sat in the file with nothing behind it. It now has a number, and
+/// so do the three encoder settings the client ships with but has never
+/// measured: Opus redundancy (`red`, on by default, and the reason the client's
+/// send rate reads as double its nominal), discontinuous transmission, and a
+/// capped bitrate.
+///
+/// Deliberately not an optimiser. Each row is one 5-second run on loopback, so
+/// the differences it can resolve are the large ones — a suppressor eating the
+/// signal, a bitrate that stops carrying the tone. Small differences between
+/// rows are noise, and treating them as a ranking would be reading the third
+/// decimal of a lossy codec, which the baseline's own thresholds refuse to do.
+///
+/// The only assertion is that every configuration still delivers audio. A knob
+/// that silences the path is a bug; a knob that costs 0.3 dB is a choice.
+///
+/// ```text
+/// cargo test -p dioxusfun --test live_sfu -- --ignored --nocapture the_knobs
+/// ```
+#[tokio::test]
+#[ignore = "needs a running LiveKit server; see the module docs"]
+async fn the_knobs_that_shape_voice_quality_are_measured() {
+    let base = Config::transport_only();
+    let rows: Vec<(&str, Config)> = vec![
+        ("APM off (baseline)", base),
+        ("APM on (mic-realistic)", Config { apm: true, ..base }),
+        ("red off", Config { red: false, ..base }),
+        ("dtx off", Config { dtx: false, ..base }),
+        (
+            "bitrate 16 kbps",
+            Config {
+                max_bitrate: Some(16_000),
+                ..base
+            },
+        ),
+        (
+            "bitrate 64 kbps",
+            Config {
+                max_bitrate: Some(64_000),
+                ..base
+            },
+        ),
+        // The pair that has to be read together: same noisy input, APM off
+        // then on. If the suppressor runs on this path, the second row keeps a
+        // larger share of its energy in the tone's band, because the noise
+        // spread across everything else is what got removed. If the two rows
+        // match, the APM is not reaching this capture path and the baseline's
+        // reason for switching it off is about something that never happened.
+        (
+            "noise 0.15, APM off",
+            Config {
+                noise: 0.15,
+                ..base
+            },
+        ),
+        (
+            "noise 0.15, APM on",
+            Config {
+                noise: 0.15,
+                apm: true,
+                ..base
+            },
+        ),
+    ];
+
+    let mut measured = Vec::new();
+    for (label, cfg) in rows {
+        let m = measure_round_trip(cfg).await;
+        report(label, &m);
+        assert!(
+            m.samples > SAMPLE_RATE as usize,
+            "{label}: only {} samples — this configuration stopped delivering \
+             audio, which is not a quality trade-off but a broken path",
+            m.samples
+        );
+        measured.push((label, m));
+    }
+
+    println!();
+    println!(
+        "{:<24} {:>9} {:>10} {:>10} {:>9}",
+        "configuration", "level dB", "band ±40", "purity", "h2"
+    );
+    for (label, m) in &measured {
+        println!(
+            "{label:<24} {:>+9.2} {:>10.4} {:>10.4} {:>9.4}",
+            m.db, m.band_out, m.purity_out, m.h2
+        );
+    }
 }
