@@ -75,7 +75,12 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
             w.mic_volume = saved.mic_volume.min(200);
             w.auto_gain_control = saved.auto_gain_control;
             w.noise_cancellation = saved.noise_cancellation;
-            w.denoise_atten_lim_db = saved.denoise_atten_lim_db.clamp(1, 100);
+            // The slider's own domain, not DeepFilterNet's. `mic_sensitivity`
+            // above clamps wider than its control because the two are in
+            // different units; this one is bound straight to the dB value, so
+            // a hand-edited 90 would print "90 dB max" beside a slider that
+            // cannot reach it — and be handed to the model regardless.
+            w.denoise_atten_lim_db = saved.denoise_atten_lim_db.clamp(6, 60);
             // Anything outside the two offered values means a hand-edited
             // settings.json; fall back rather than publish an odd bitrate.
             w.voice_bitrate_kbps = match saved.voice_bitrate_kbps {
