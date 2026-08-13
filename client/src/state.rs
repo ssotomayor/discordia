@@ -442,12 +442,26 @@ pub struct AppState {
     /// in the audio settings popover so the user can see mic input against
     /// where the threshold sits.
     pub mic_level: u32,
+    /// The same hop before DeepFilterNet, ×1000. Equal to `mic_level` when
+    /// noise cancellation is off; the gap between them is what the model is
+    /// removing, which is the only place a user can see it happening.
+    pub mic_level_pre: u32,
     /// Whether DeepFilterNet noise suppression runs on captured microphone
     /// audio before it is published. Persisted via `ClientSettings`.
     pub noise_cancellation: bool,
     /// Ceiling on DeepFilterNet's attenuation, in dB. See
     /// `ClientSettings::denoise_atten_lim_db`.
     pub denoise_atten_lim_db: u32,
+    /// Whether the microphone should be captured with the OS's own input
+    /// processing bypassed. Read when the capture is opened — the mode is fixed
+    /// for the life of a stream — so changing it restarts the voice session.
+    /// Persisted via `ClientSettings`.
+    pub bypass_system_audio_processing: bool,
+    /// Why that bypass isn't in effect, when it was asked for and didn't
+    /// happen. `Some` means the microphone is open on the ordinary path
+    /// regardless of the switch, which the panel says out loud rather than
+    /// leaving a lit toggle to imply otherwise.
+    pub mic_bypass_error: Option<String>,
     /// Opus bitrate for our microphone track, in kbit/s (24 or 48). Applied
     /// when the track is published, so a change takes effect on the next voice
     /// connect. Persisted via `ClientSettings`.
@@ -576,8 +590,11 @@ impl AppState {
             mic_volume: 100,
             auto_gain_control: true,
             mic_level: 0,
+            mic_level_pre: 0,
             noise_cancellation: false,
             denoise_atten_lim_db: 30,
+            bypass_system_audio_processing: false,
+            mic_bypass_error: None,
             // Keep in step with `settings::default_voice_bitrate_kbps`.
             voice_bitrate_kbps: 48,
             voice_quality: HashMap::new(),

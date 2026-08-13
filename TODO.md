@@ -620,6 +620,44 @@ the top within each section.
 
 ## Voice / audio
 
+- **"Bypass system audio processing" reports that raw mode was *asked for*, not
+  that the driver's effects are gone.** `rawmic::setup` sets
+  `AUDCLNT_STREAMOPTIONS_RAW` and reports the failure if `SetClientProperties`
+  refuses, which is the only signal WASAPI offers — there is no read-back
+  saying the APO chain is actually out of the path. Compare `ActiveVoice::
+  set_apm`, which writes the options and then reads them back precisely because
+  a write that silently does nothing is the failure mode worth catching, and
+  which found exactly that. So a driver that accepts the property and ignores it
+  leaves the switch lit over an unchanged signal, and nothing in the client can
+  tell. What would settle it is a measurement, not an API: the ignored
+  `client/tests/live_sfu.rs` sweep already analyses a tone through the real
+  path, and the same room noise recorded with the switch on and off would show
+  whether the endpoint's suppressor is still working. Until then the panel's
+  wording is a claim about what we requested.
+- **The raw path is Windows-only and Linux is not answered.** `rawmic::
+  supported()` is `cfg!(target_os = "windows")`, and the setting hides
+  elsewhere. macOS is genuinely nothing-to-do (cpal opens a plain HAL input
+  unit, so the system's mic modes never apply). Linux is not: PipeWire and
+  PulseAudio both routinely put `echo-cancel`/`rnnoise` modules in front of a
+  source, and a client that wants the unprocessed device has to select it
+  rather than ask for a flag. Nobody has run this repo's voice path on Linux
+  yet, so it is filed here rather than guessed at.
+- **The audio popover repeats one persist closure at four sliders.** Raised on
+  review of the PR that introduced them and deliberately not fixed there. Sound
+  effects, mic volume, sensitivity and the suppression ceiling each carry an
+  identical `onchange: move |_| crate::settings::save(&settings.read())` in
+  `channels.rs` — grep that line rather than trusting a number here, since this
+  entry has already outlived one set of them — and they all appeared at once because
+  they are the tail of moving the disk write off `oninput`, which is also why
+  the duplication is exact rather than four things that merely look alike.
+  One binding should serve all four: the closure captures nothing but
+  `settings`, and `Signal` is `Copy`, so the closure is too and can be handed to
+  every attribute. The only friction is that the event parameter then has to be
+  typed rather than inferred per site. Left out because it is a cleanup with no
+  behaviour attached to it, on a branch that was already reviewed — and because
+  the checkbox in that same panel persists the same way for a different reason
+  (it has no drag to wait for), so whatever shape this takes should not quietly
+  swallow that one too.
 - **The 30-vs-12 dB ceiling numbers cannot be re-run from the repo.** The entry
   below and `ClientSettings::denoise_atten_lim_db` both cite figures from a
   live session — 21.2% vs 17.6% gate drops, −3.9 dB vs −2.7 dB actually applied

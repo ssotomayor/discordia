@@ -11,6 +11,7 @@ mod net;
 mod portmap;
 mod profile;
 mod protocol;
+mod rawmic;
 mod rendezvous;
 mod session;
 mod settings;

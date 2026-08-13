@@ -75,11 +75,19 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
             w.mic_volume = saved.mic_volume.min(200);
             w.auto_gain_control = saved.auto_gain_control;
             w.noise_cancellation = saved.noise_cancellation;
+            // Honoured only where there is processing to bypass; a settings
+            // file carried over from a Windows machine must not leave a macOS
+            // session believing it captures raw.
+            w.bypass_system_audio_processing =
+                saved.bypass_system_audio_processing && crate::rawmic::supported();
             // The slider's own domain, not DeepFilterNet's. `mic_sensitivity`
             // above clamps wider than its control because the two are in
             // different units; this one is bound straight to the dB value, so
-            // a hand-edited 90 would print "90 dB max" beside a slider that
-            // cannot reach it — and be handed to the model regardless.
+            // without the clamp below a hand-edited 90 would print "90 dB max"
+            // beside a slider that cannot reach it — and be handed to the
+            // model regardless. It is the third use of the shared bounds, and
+            // the one worth naming: the other two guard a control the user is
+            // touching, this one guards a file they edited.
             w.denoise_atten_lim_db = saved.denoise_atten_lim_db.clamp(
                 crate::features::voice::DENOISE_ATTEN_LIM_DB_MIN,
                 crate::features::voice::DENOISE_ATTEN_LIM_DB_MAX,

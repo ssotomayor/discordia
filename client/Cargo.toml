@@ -116,6 +116,10 @@ windows = { version = "0.61", features = [
     "Win32_System_SystemInformation",
     "Win32_System_Threading",
     "Win32_System_Variant",
+    # `IMMDevice::OpenPropertyStore`, which is the only way to read an
+    # endpoint's friendly name — the name cpal reports and the one the device
+    # dropdown stores, so `rawmic` opens the microphone the user picked.
+    "Win32_UI_Shell_PropertiesSystem",
     # MessageBoxW, for the one error we cannot draw in our own UI: the missing
     # WebView2 runtime that would have drawn it (see src/webview2.rs).
     "Win32_UI_WindowsAndMessaging",

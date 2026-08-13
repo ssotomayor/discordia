@@ -978,6 +978,13 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
     let atten_lim_db = state.read().denoise_atten_lim_db;
     let mic_volume = state.read().mic_volume;
     let auto_gain_control = state.read().auto_gain_control;
+    // Only offered where the OS actually has processing on the capture — see
+    // `crate::rawmic`. `mic_bypass_error` is what the last attempt to open the
+    // device that way had to say, and it is `Some` exactly when the switch is
+    // on and the audio is not going through it.
+    let bypass_supported = crate::rawmic::supported();
+    let bypass_system_audio = state.read().bypass_system_audio_processing;
+    let bypass_error = state.read().mic_bypass_error.clone();
     let voice_bitrate_kbps = state.read().voice_bitrate_kbps;
     // Whether the transmit gate is currently open — the very same flag the
     // publish path acts on, so this can't claim something the audio isn't doing.
@@ -993,6 +1000,7 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
     let v_for_atten = voice.clone();
     let v_for_mic_volume = voice.clone();
     let v_for_agc = voice.clone();
+    let v_for_bypass = voice.clone();
     let v_for_bitrate = voice.clone();
 
     // Snapshot current voice phase so the popover can show reconnection state.
@@ -1002,6 +1010,12 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
     // reads 3-30% for ordinary speech and made the default threshold display as
     // "2%", which looks broken even when the audio is fine.
     let mic_level_pct = crate::features::voice::peak_to_meter_pct(mic_level);
+    // The same hop before DeepFilterNet. Only drawn when the model is on and
+    // actually taking something off — with it off the two are the same value
+    // and a second bar would be a ghost of the first, which reads as a bug.
+    let mic_level_pre = state.read().mic_level_pre;
+    let mic_level_pre_pct = crate::features::voice::peak_to_meter_pct(mic_level_pre);
+    let show_pre = noise_cancellation && mic_level_pre > mic_level;
     let threshold_pct = crate::features::voice::peak_to_meter_pct(mic_sensitivity);
     let sensitivity_display = crate::features::voice::peak_to_db_label(mic_sensitivity);
     let mic_level_display = crate::features::voice::peak_to_db_label(mic_level);
@@ -1359,16 +1373,34 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                     div {
                                         class: "relative w-full h-2 mt-1 rounded-full overflow-hidden",
                                         style: "background: var(--bg2);",
+                                        // What the microphone heard, drawn faint and
+                                        // underneath. The bright fill is what survived
+                                        // the model, so the faint part sticking out past
+                                        // it is exactly what noise cancellation removed —
+                                        // live, on your own voice.
+                                        if show_pre {
+                                            div {
+                                                class: "absolute inset-y-0 left-0 rounded-full transition-all duration-75",
+                                                style: "width: {mic_level_pre_pct}%; background: var(--text-dim); opacity: 0.35;",
+                                            }
+                                        }
                                         div {
-                                            class: "h-full rounded-full transition-all duration-75",
+                                            class: "absolute inset-y-0 left-0 rounded-full transition-all duration-75",
                                             style: "width: {mic_level_pct}%; background: linear-gradient(90deg, var(--up), var(--accent), var(--danger));",
                                         }
                                         // Threshold marker — white vertical line at the
-                                        // sensitivity position. When the fill passes it,
-                                        // the user is detected as speaking.
+                                        // sensitivity position. When the *bright* fill
+                                        // passes it the gate opens; the faint one is not
+                                        // what the gate judges, which is the whole point
+                                        // of drawing them apart.
                                         div {
                                             class: "absolute top-0 bottom-0 w-0.5 bg-white/70 pointer-events-none",
                                             style: "left: {threshold_pct}%;",
+                                        }
+                                    }
+                                    if show_pre {
+                                        span { class: "text-[10px] text-[var(--text-dim)] mt-0.5 block",
+                                            "Faint bar: before noise cancellation. The gap is what it removed."
                                         }
                                     }
                                 } else {
@@ -1470,6 +1502,42 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                         span { class: "text-[10px] mt-0.5 block", style: "color: var(--up);", "Transmitting" }
                                     } else {
                                         span { class: "text-[10px] text-[var(--text-dim)] mt-0.5 block", "Below threshold — not transmitting" }
+                                    }
+                                }
+                            }
+                            // Bypass the OS's own input processing. First among
+                            // the switches because it acts first: it decides
+                            // what the driver hands us, before anything below
+                            // has a signal to work on. Hidden where there is
+                            // nothing to bypass — see `crate::rawmic`.
+                            if bypass_supported {
+                                div { class: "mb-2",
+                                    label { class: "flex items-center gap-2 cursor-pointer select-none",
+                                        input {
+                                            r#type: "checkbox",
+                                            class: "accent-[var(--accent)]",
+                                            checked: bypass_system_audio,
+                                            onchange: move |e| {
+                                                let on = e.checked();
+                                                let mut next = settings.read().clone();
+                                                next.bypass_system_audio_processing = on;
+                                                settings.set(next.clone());
+                                                crate::settings::save(&next);
+                                                state.write().bypass_system_audio_processing = on;
+                                                v_for_bypass.send(crate::features::voice::VoiceCmd::SetBypassSystemProcessing { enabled: on });
+                                            },
+                                        }
+                                        span { class: "text-[11px] text-[var(--text-muted)] flex-1", "Bypass system audio processing" }
+                                    }
+                                    span { class: "text-[10px] text-[var(--text-dim)] mt-0.5 block",
+                                        "Skips the suppression and gain your audio driver applies before we hear anything, so only this app's processing touches your voice. Reopens the microphone."
+                                    }
+                                    // A lit switch over an unchanged audio path
+                                    // is the one thing this must never be.
+                                    if let Some(err) = bypass_error {
+                                        span { class: "text-[10px] mt-0.5 block", style: "color: var(--danger);",
+                                            "Couldn't bypass it: {err}. The microphone is open the usual way."
+                                        }
                                     }
                                 }
                             }
