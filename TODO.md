@@ -442,13 +442,30 @@ the top within each section.
   with it, and every bit of suppression the product has comes from
   DeepFilterNet.
 
+  **This is the default configuration, which is what makes it matter.**
+  `noise_cancellation` defaults to false — DeepFilterNet costs ~1.5% of a core
+  and users opt in — so `apm_options` turns libwebrtc's suppressor *on* for
+  every fresh install. That is the one arrangement where an inert APM costs
+  anything: with DeepFilterNet on, libwebrtc's is deliberately off anyway. So
+  a default install would have no suppressor, no AGC, and the mic-sensitivity
+  entry above sitting on a threshold chosen on the assumption that AGC lifts
+  quiet speech over it.
+
   **Not proven, and the gap is specific.** Band-energy share is not a
   perceptual measure; a suppressor that acts mostly between words could hide
   from it. One SNR (~10 dB) and one noise colour were tried. And AEC cannot be
   tested this way at all — it needs a far-end signal and an acoustic loop.
-  What would settle it: a capture with DeepFilterNet off, real speech, and a
-  spectrogram either side of the toggle. Do not delete this entry on the
-  strength of reading libwebrtc.
+  One difference between the measurement and the client, checked rather than
+  assumed: the sweep passes the options to `NativeAudioSource::new` while
+  `set_apm` calls `set_audio_options` later. Both reach the same `sys_handle`
+  and the same three-field struct, and the constructor is the *more* favourable
+  of the two — options in place before a frame is ever captured — so measuring
+  nothing there argues for the finding rather than against it.
+  Two things would settle it, cheapest first. `NativeAudioSource` exposes an
+  `audio_options()` getter: reading back what the native side believes it was
+  told separates "never stored" from "stored and ignored". Then a capture with
+  DeepFilterNet off, real speech, and a spectrogram either side of the toggle.
+  Do not delete this entry on the strength of reading libwebrtc.
 - **The transmit gate judges the denoised hop, so its operating point moves when
   suppression is toggled.** `denoise_gate_loop` runs the model first and gates
   what comes out, so switching DeepFilterNet on drops the signal the gate is
