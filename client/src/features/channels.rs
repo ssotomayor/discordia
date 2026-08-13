@@ -632,7 +632,15 @@ fn ConnectionStats() -> Element {
                                 // which is the question the row is for. The aim
                                 // rides along because it is the only half still
                                 // readable while the transmit gate is shut.
-                                title: "What the encoder produced, measured between readings (payload only, so the wire is a little higher) — it is aiming for {target_kbps} kbit/s",
+                                //
+                                // And it names RED, because the measurement
+                                // reading at roughly twice the aim is the
+                                // tooltip's own doing otherwise: the mic track
+                                // publishes with the SDK's `red` default, which
+                                // carries a copy of the previous frame in every
+                                // packet. Without that sentence the row looks
+                                // like the bitrate setting did not take.
+                                title: "What the encoder produced, measured between readings (payload only, so the wire is a little higher) — it is aiming for {target_kbps} kbit/s, and redundancy against packet loss roughly doubles what that costs",
                                 {rate_or_dash(*bitrate_kbps, "kbit/s out")}
                             }
                             span {
