@@ -538,6 +538,7 @@ fn VoiceChannelRow(
                                     // screen room only connects then), and you
                                     // can't watch your own share.
                                     can_watch: is_sharing && connected && !is_self,
+                                    can_watch_camera: vs.camera_on && connected && !is_self,
                                 }
                             }
                         }
@@ -680,6 +681,7 @@ fn VoiceOccupant(
     is_sharing: bool,
     has_camera: bool,
     can_watch: bool,
+    can_watch_camera: bool,
 ) -> Element {
     let mut state = use_app_state();
     let voice = use_voice_tx();
@@ -725,6 +727,11 @@ fn VoiceOccupant(
     let pk_slider = pubkey.clone();
     let pk_mute = pubkey.clone();
     let pk_watch = pubkey.clone();
+    let pk_camera = pubkey.clone();
+    // Which of this person's streams *we* currently have open, so each icon can
+    // show it and clicking again can close it.
+    let is_watching_screen = state.read().screen_viewing.as_deref() == Some(pubkey.as_str());
+    let is_watching_camera = state.read().cameras_watching.contains(&pubkey);
 
     rsx! {
         div { class: "px-2 py-0.5",
@@ -771,29 +778,74 @@ fn VoiceOccupant(
                         },
                     }
                 }
+                // What this person is broadcasting, one icon per stream, each its
+                // own switch. This replaced a single "live" text pill, which had
+                // no room to say *which* of the two was live once there were two
+                // — and gave a watcher no way to take one without the other.
+                //
+                // Red rather than the accent, and red in both states: the colour
+                // says "this person is broadcasting", which stays true whether or
+                // not you happen to be looking. Which ones *you* have open is
+                // said by the filled background instead.
                 if is_sharing {
                     button {
-                        class: "flex items-center gap-1 text-[9px] uppercase tracking-wider text-[var(--danger)] font-semibold disabled:opacity-70 disabled:cursor-default",
+                        class: if is_watching_screen {
+                            "w-5 h-5 flex items-center justify-center rounded text-[var(--danger)] bg-[var(--danger)]/20 shrink-0 disabled:opacity-70 disabled:cursor-default"
+                        } else {
+                            "w-5 h-5 flex items-center justify-center rounded text-[var(--danger)] hover:bg-[var(--danger)]/10 shrink-0 disabled:opacity-70 disabled:cursor-default"
+                        },
                         disabled: !can_watch,
-                        title: if can_watch { "Watch screen" } else { "Sharing screen" },
+                        title: if !can_watch {
+                            "Sharing their screen"
+                        } else if is_watching_screen {
+                            "Stop watching their screen"
+                        } else {
+                            "Watch their screen"
+                        },
                         onclick: move |_| {
                             if can_watch {
-                                state.write().screen_viewing = Some(pk_watch.clone());
+                                let mut s = state.write();
+                                // One screen at a time — the viewer is a single
+                                // large window, so choosing another replaces it.
+                                s.screen_viewing = if s.screen_viewing.as_deref() == Some(pk_watch.as_str()) {
+                                    None
+                                } else {
+                                    Some(pk_watch.clone())
+                                };
                             }
                         },
-                        span { class: "w-1.5 h-1.5 rounded-full bg-[var(--danger)] dxf-dot-pulse", style: "color:var(--danger);" }
-                        "live"
+                        dangerous_inner_html: crate::features::icons::SCREEN,
                     }
                 }
-                // Camera pill. Also the way back to the tile grid after closing
-                // it — without this, closing the window is a one-way door until
-                // somebody toggles their camera.
                 if has_camera && !is_self {
                     button {
-                        class: "w-4 h-4 flex items-center justify-center text-[var(--accent)]",
-                        title: "Show cameras",
+                        class: if is_watching_camera {
+                            "w-5 h-5 flex items-center justify-center rounded text-[var(--danger)] bg-[var(--danger)]/20 shrink-0 disabled:opacity-70 disabled:cursor-default"
+                        } else {
+                            "w-5 h-5 flex items-center justify-center rounded text-[var(--danger)] hover:bg-[var(--danger)]/10 shrink-0 disabled:opacity-70 disabled:cursor-default"
+                        },
+                        // Same gate as the screen icon, and for the same reason:
+                        // the webview only joins the room the video is in once
+                        // you are in the voice channel, so outside it a click
+                        // would mount a tile that never fills.
+                        disabled: !can_watch_camera,
+                        title: if !can_watch_camera {
+                            "Their camera is on — join the channel to watch"
+                        } else if is_watching_camera {
+                            "Hide their camera"
+                        } else {
+                            "Watch their camera"
+                        },
                         onclick: move |_| {
-                            state.write().cameras_open = true;
+                            if !can_watch_camera {
+                                return;
+                            }
+                            let mut s = state.write();
+                            // Cameras are small tiles in a shared grid, so these
+                            // accumulate rather than replacing one another.
+                            if !s.cameras_watching.remove(&pk_camera) {
+                                s.cameras_watching.insert(pk_camera.clone());
+                            }
                         },
                         dangerous_inner_html: crate::features::icons::CAMERA,
                     }

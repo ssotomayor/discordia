@@ -387,9 +387,15 @@ pub struct AppState {
     /// exists for this origin; the ids work regardless, so an unlabelled list is
     /// offered rather than withheld.
     pub available_cameras: Vec<CameraDevice>,
-    /// Whether the camera tile grid is on screen. Opened when the first camera
-    /// appears, closed when the last goes; the user may close it in between.
-    pub cameras_open: bool,
+    /// Whose cameras we have chosen to watch, by pubkey.
+    ///
+    /// Opt-in per person, deliberately — the same shape as `screen_viewing`,
+    /// which nobody is shown until they ask. An earlier version opened a grid of
+    /// *everyone's* camera as soon as one appeared, which both took the screen
+    /// over uninvited and pulled down video nobody had asked for. A set rather
+    /// than `screen_viewing`'s single `Option` because several small camera tiles
+    /// coexist happily, where two full-size shared screens do not.
+    pub cameras_watching: HashSet<String>,
     /// Whether this webview exposes `getUserMedia` at all. Unlike
     /// `screen_capture_available` there is no native fallback to consult — the
     /// camera is the webview on every platform.
@@ -537,7 +543,7 @@ impl AppState {
             camera_on: false,
             camera_starting: false,
             available_cameras: Vec::new(),
-            cameras_open: false,
+            cameras_watching: HashSet::new(),
             camera_capture_available: false,
             // Audio device prefs: empty by default (discover on demand).
             available_input_devices: Vec::new(),

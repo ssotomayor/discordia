@@ -184,7 +184,7 @@ pub fn CameraBridge() -> Element {
                 let mut w = state.write();
                 w.camera_on = false;
                 w.camera_starting = false;
-                w.cameras_open = false;
+                w.cameras_watching.clear();
             }
             had_token.set(has);
         }
@@ -444,15 +444,16 @@ fn CameraTile(pubkey: String) -> Element {
     }
 }
 
-/// Floating grid of everyone else's cameras in the current voice channel.
+/// Floating grid of the cameras you have chosen to watch.
 ///
 /// One window with a grid rather than one window per person: N windows means N
 /// drag positions to keep track of, and a screen that fills up on the fourth
 /// participant.
 ///
-/// Closing it is a real bandwidth control, not just a visual one — unmounting
-/// the tiles detaches their elements, and `adaptiveStream` then tells the SFU to
-/// stop sending video nobody is looking at.
+/// It shows only who is in `cameras_watching` — nobody appears uninvited. That
+/// is a bandwidth control as much as a courtesy one: a tile that is not mounted
+/// has no attached element, and `adaptiveStream` then tells the SFU not to send
+/// that video at all.
 #[component]
 pub fn CameraGridWindow() -> Element {
     let mut state = use_app_state();
@@ -463,8 +464,11 @@ pub fn CameraGridWindow() -> Element {
     let mut ph = use_signal(|| 360.0_f64);
     let mut drag = use_signal(|| None::<Drag>);
 
-    // Everyone in our channel with a camera, minus ourselves — our own picture
-    // is the self-preview, and subscribing to it would be a needless round trip.
+    // Intersected with who is *actually* publishing, not taken from the watch
+    // set alone: someone can turn their camera off while you are watching, and a
+    // tile pointed at a track that no longer exists sits on "Connecting…"
+    // forever. Never ourselves — our own picture is the self-preview, and
+    // subscribing to it would be a pointless round trip through the SFU.
     let others = use_memo(move || {
         let s = state.read();
         let Some(cid) = s.voice.channel_id else {
@@ -473,23 +477,11 @@ pub fn CameraGridWindow() -> Element {
         let me = s.self_user.as_ref().map(|u| u.pubkey.clone());
         s.cameras_in(cid)
             .into_iter()
-            .filter(|pk| Some(pk) != me.as_ref())
+            .filter(|pk| Some(pk) != me.as_ref() && s.cameras_watching.contains(pk))
             .collect::<Vec<_>>()
     });
 
-    // Open on the first camera to appear, close when the last one goes. In
-    // between the user is free to close it, and this must not reopen it — hence
-    // acting on the empty/non-empty *transition* rather than the count.
-    let mut had_any = use_signal(|| false);
-    use_effect(move || {
-        let any = !others().is_empty();
-        if any != *had_any.peek() {
-            state.write().cameras_open = any;
-            had_any.set(any);
-        }
-    });
-
-    if !state.read().cameras_open || others().is_empty() {
+    if others().is_empty() {
         return rsx! { Fragment {} };
     }
 
@@ -527,9 +519,14 @@ pub fn CameraGridWindow() -> Element {
                 span { class: "text-[11px] text-[var(--text)] truncate flex-1", "Cameras · {others().len()}" }
                 button {
                     class: "text-[11px] text-[var(--text-muted)] hover:text-[var(--accent)]",
+                    title: "Stop watching every camera",
                     onmousedown: move |e| {
                         e.stop_propagation();
-                        state.write().cameras_open = false;
+                        // Clears the whole watch set rather than hiding a window
+                        // that still holds subscriptions: the roster icons are
+                        // the switches, so the ✕ has to turn them all off or it
+                        // would lie about what is still being downloaded.
+                        state.write().cameras_watching.clear();
                     },
                     "✕"
                 }

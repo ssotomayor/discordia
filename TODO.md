@@ -349,6 +349,16 @@ the top within each section.
   uplinks actually do with camera + screen at the same time — two video uplinks
   is the case to measure, and on Windows both encoders live in one WebView2
   process.
+- **A `persistence` test failed once under a full-workspace run, undiagnosed.**
+  Seen exactly once in five `cargo test --workspace` runs while adding the camera
+  tests; three deliberate re-runs afterwards were clean, and both tests pass
+  alone. Not the temp-dir collision that `temp_data_dir`'s comment describes —
+  that helper is keyed by pid + nanos + counter and is genuinely unique. The
+  suspicion is a timing window rather than shared state: the camera tests each
+  spawn a gateway and use 700ms idle terminators, so the suite now runs more
+  concurrent servers than it did. Recorded rather than chased because there is no
+  captured assertion message to work from; the next occurrence should be run with
+  `--nocapture` and `RUST_BACKTRACE=1` before anything is changed.
 - **`GuildJoined` carries no `voice_states`.** Someone joining a guild
   mid-session sees no voice presence at all — camera, mute or speaking — until
   the next change. Pre-existing and unrelated to the camera, but the camera

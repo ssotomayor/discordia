@@ -819,7 +819,7 @@ fn apply(
                     // device; this is the UI half of the same event.
                     s.camera_on = false;
                     s.camera_starting = false;
-                    s.cameras_open = false;
+                    s.cameras_watching.clear();
                 }
             }
         }
