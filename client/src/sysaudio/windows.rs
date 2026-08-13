@@ -17,6 +17,7 @@
 //! 48 kHz, which is what the publish path wants, so the question never arises.
 
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc as std_mpsc;
 use std::time::{Duration, Instant};
 
@@ -113,6 +114,13 @@ impl WinCapture {
         tx: UnboundedSender<Vec<f32>>,
         fatal: UnboundedSender<String>,
     ) -> Result<Self, String> {
+        // Taken here rather than on the capture thread so the failure comes back
+        // as this function's `Err`. Taken on the thread, a tripped assert would
+        // drop `ready_tx` and reach the caller as the timeout below — the wrong
+        // story about the wrong thing. Moved into the closure, so it is released
+        // exactly when the capture thread ends.
+        let lease = ActivationLease::acquire()?;
+
         // SAFETY: creating an unnamed, manual-reset-free event.
         let shutdown = unsafe { CreateEventW(None, true, false, None) }
             .map_err(|e| format!("create shutdown event: {e}"))?;
@@ -124,7 +132,7 @@ impl WinCapture {
         let (ready_tx, ready_rx) = std_mpsc::channel::<Result<(), String>>();
         let thread = std::thread::Builder::new()
             .name("dxf-sysaudio-win".into())
-            .spawn(move || run(tx, fatal, shutdown, ready_tx))
+            .spawn(move || run(tx, fatal, shutdown, ready_tx, lease))
             .map_err(|e| format!("spawn capture thread: {e}"))?;
 
         match ready_rx.recv_timeout(ACTIVATE_TIMEOUT + Duration::from_secs(2)) {
@@ -175,6 +183,10 @@ fn run(
     fatal: UnboundedSender<String>,
     shutdown: SendHandle,
     ready: std_mpsc::Sender<Result<(), String>>,
+    // Owned for the whole thread — including every early return below, which is
+    // why it arrives as a parameter instead of being acquired here. The next
+    // capture cannot start until this drops.
+    _lease: ActivationLease,
 ) {
     // SAFETY: paired with CoUninitialize below.
     let com = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
@@ -307,14 +319,16 @@ fn setup() -> Result<Started, String> {
 /// our own PID, and a mode constant.
 ///
 /// Which means every activation is handed the same address, and nothing here
-/// serialises them. What keeps that to one holder at a time is sequencing
-/// elsewhere: `setup` drops its client before the PCM re-activation, `activate`
-/// waits out its own completion before returning, and
+/// serialises them. Sequencing elsewhere is what has always kept that to one
+/// holder at a time: `setup` drops its client before the PCM re-activation,
+/// `activate` waits out its own completion before returning, and
 /// `voice::ActiveVoice::set_system_audio` drops the previous capture — joining
-/// its thread in `WinCapture::drop` — before starting the next. A second capture
-/// that is *live* alongside another would break that with no compile error and a
-/// memory-corruption symptom, so it wants one allocation per activation, each
-/// leaked, before it lands. See `TODO.md`.
+/// its thread in `WinCapture::drop` — before starting the next. None of which
+/// this function could see, so `ActivationLease` now states it: a second *live*
+/// capture is refused with a message instead of quietly putting two activations
+/// on one address. That makes the regression loud, not impossible — the fix that
+/// makes it impossible is one allocation per activation, each leaked. See
+/// `TODO.md`.
 fn activation_params() -> *mut AUDIOCLIENT_ACTIVATION_PARAMS {
     // A `usize` because a raw pointer is neither `Send` nor `Sync`, and this is
     // reached from whichever thread starts a capture. Heap rather than a
@@ -337,6 +351,45 @@ fn activation_params() -> *mut AUDIOCLIENT_ACTIVATION_PARAMS {
             },
         })) as usize
     }) as *mut AUDIOCLIENT_ACTIVATION_PARAMS
+}
+
+static ACTIVATION_IN_USE: AtomicBool = AtomicBool::new(false);
+
+/// Held for as long as a capture is alive, so only one of them ever is.
+///
+/// The lifetime is the capture's and not `activate`'s on purpose: the engine
+/// keeps the blob pointer *after* activation returns — that is the whole reason
+/// the blob outlives the call — so what has to stay unique is the live client,
+/// not the call that produced it. The PCM fallback's second `activate` happens
+/// inside one lease and is meant to.
+struct ActivationLease;
+
+impl ActivationLease {
+    fn acquire() -> Result<Self, String> {
+        let free = ACTIVATION_IN_USE
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok();
+        // Loud in a test run, survivable in a user's: the debug assert names the
+        // regression for whoever wrote it, and release still refuses rather than
+        // handing the engine a second reference to one blob. Refusing a capture
+        // is a bad day; the alternative is the heap corruption this file exists
+        // to have fixed.
+        debug_assert!(
+            free,
+            "two live system-audio captures at once — they would share one \
+             activation blob; see `activation_params`"
+        );
+        if !free {
+            return Err("This computer's sound is already being captured by another share.".into());
+        }
+        Ok(Self)
+    }
+}
+
+impl Drop for ActivationLease {
+    fn drop(&mut self) {
+        ACTIVATION_IN_USE.store(false, Ordering::Release);
+    }
 }
 
 /// Ask the audio engine for a process-loopback client that excludes us.
@@ -600,6 +653,58 @@ mod tests {
 
     use tokio::sync::mpsc::unbounded_channel;
 
+    use super::ActivationLease;
+
+    /// Both tests below take the process-wide activation lease — one directly,
+    /// one through `sysaudio::start`. `--ignored` and the default run each pick
+    /// exactly one of them, but `--include-ignored` runs both, and cargo runs
+    /// them on threads. Without this they would race for the thing one of them
+    /// is asserting is exclusive.
+    ///
+    /// Tokio's mutex rather than `std`'s because one of the two holds it across
+    /// awaits, and it has no poisoning to unwrap past — a test that panics while
+    /// holding it leaves the other one able to take it.
+    static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    /// The one part of this module a CI runner can check.
+    ///
+    /// Everything else here needs an audio device, so the guard that keeps two
+    /// captures off one activation blob would otherwise only ever be exercised
+    /// on a developer's desktop — which is the same class of "nobody ran it"
+    /// that hid the crash below in the first place. This asserts the lease
+    /// itself, away from WASAPI: exclusive while held, granted again once
+    /// dropped.
+    ///
+    /// The `debug_assert!` in `acquire` is why the second attempt is checked
+    /// with `catch_unwind` rather than on its return value — under
+    /// `cfg(debug_assertions)`, which is how tests are built, it panics before
+    /// it can return the `Err` a release build would.
+    #[test]
+    fn one_live_capture_at_a_time() {
+        // Not in a runtime — this test is deliberately synchronous — so the
+        // blocking take is the right one and cannot deadlock a reactor.
+        let _serial = SERIAL.blocking_lock();
+        let held = ActivationLease::acquire().expect("nothing else holds it");
+
+        // Silenced around the call, not inside it: the assert firing is the pass
+        // condition, and its backtrace in the output would read like a failure.
+        // Restoring inside the closure would never run — the panic unwinds past
+        // it and leaves every later test's panic silent too.
+        let hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let second = std::panic::catch_unwind(|| ActivationLease::acquire().map(|_| ()));
+        std::panic::set_hook(hook);
+
+        assert!(
+            matches!(second, Err(_) | Ok(Err(_))),
+            "a second lease was granted while the first was live — two \
+             activations would share one blob"
+        );
+
+        drop(held);
+        ActivationLease::acquire().expect("the lease outlived its capture");
+    }
+
     /// Does this backend capture anything, and does the process survive asking?
     ///
     /// Nobody had checked. It landed in `94120de` and was corrected in
@@ -622,8 +727,9 @@ mod tests {
     /// cargo test -p dioxusfun -- --ignored --nocapture windows_loopback
     /// ```
     #[tokio::test]
-    #[ignore = "needs an audio device and a desktop session; currently aborts the process"]
+    #[ignore = "needs an audio device, a desktop session, and Windows build 20348+"]
     async fn windows_loopback_delivers_real_samples() {
+        let _serial = SERIAL.lock().await;
         assert!(
             crate::sysaudio::supported(),
             "unsupported on this build ({}); nothing to exercise",

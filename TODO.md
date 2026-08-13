@@ -289,11 +289,15 @@ the top within each section.
   returning, so those two activations are strictly sequential. Across shares,
   `set_system_audio` drops the previous `SystemAudioTrack` — and
   `WinCapture::drop` joins the capture thread — before starting the next, all on
-  one `&mut ActiveVoice`. So the invariant holds by construction and not by any
-  guard: `activation_params` is unsynchronised, so a second *live* capture (a
-  second simultaneous share, a second voice session) would put two activations on
-  one address with nothing to catch it — no compile error, no assertion, and the
-  symptom would be memory corruption rather than a wrong answer.
+  one `&mut ActiveVoice`. That held the invariant by construction and nothing
+  else, so a second *live* capture (a second simultaneous share, a second voice
+  session) would have put two activations on one address with nothing to catch
+  it — no compile error, no assertion, and memory corruption rather than a wrong
+  answer for a symptom. `ActivationLease` now states it: one lease per live
+  capture, held for the capture thread's whole life, and a second one asserts in
+  debug and returns a refusal in release. Which makes the regression loud, not
+  impossible — the blob is still shared, and the guard only guarantees nobody
+  reaches it twice at once through `WinCapture::start`.
   Benign as long as the blob is only read — the contents are identical and we
   never mutate them. It stops being benign if the engine *writes* back into it,
   which is why the allocation is on the heap rather than in a `static` that
