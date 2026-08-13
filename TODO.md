@@ -38,6 +38,33 @@ the top within each section.
   revisit the numbers (and maybe award XP for reactions/voice) once it's seen
   in use.
 
+## Security
+
+- **The gateway is plaintext, and `wss://` looks supported without being.**
+  `tokio-tungstenite` is pinned at 0.24 in the workspace `Cargo.toml` with **no
+  TLS backend in `Cargo.lock`** — no `native-tls`, no `rustls` among its
+  dependencies — so a `wss://` URL cannot be dialled at all. Meanwhile
+  `net.rs:48-53` and `:120-125` normalize `https://` to `wss://` and accept a
+  `wss://` scheme as valid input. The two together are the trap: an operator who
+  types a `wss://` address gets a connect failure with no hint that TLS was never
+  compiled in, and one who types `ws://` gets no warning at all.
+  So every gateway frame — messages, LiveKit tokens, presence — crosses the wire
+  in the clear on every path: to a rendezvous relay, across a LAN under
+  `allow_lan`, and to a remote server. `client/Info.plist` already states this
+  outright ("Nothing this app speaks is TLS"), where it is the justification for
+  disabling App Transport Security; it is recorded here as the security gap it is
+  rather than only as a bundling footnote.
+  Worth being clear about what is and is not exposed. Voice and screen-share
+  *media* are DTLS-SRTP encrypted in transit by WebRTC, so the gap is the control
+  channel — though media terminates at whichever SFU carries it, which is the
+  rendezvous's own when the relay is in use.
+  The fix is not a one-liner, which is why this is recorded rather than done: a
+  self-hosted server at a home IP has no domain and no CA, so it needs either
+  certificate pinning against the host's Nostr key — a custom verifier, whose
+  failure mode is the silent one where accepting everything looks like working —
+  or a transport that authenticates by public key. Both routes are being worked
+  out on a branch rather than here.
+
 ## Repo & CI
 
 - **No Windows clippy — the other half of the gap macOS just closed.** The
