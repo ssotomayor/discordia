@@ -218,6 +218,16 @@ the top within each section.
 
 ## Decentralization / rendezvous
 
+- **The macOS local-network grant is declared but never exercised.**
+  `client/Info.plist` now carries `NSLocalNetworkUsageDescription`, added
+  prophylactically alongside the App Transport Security fix rather than in
+  response to a failure. macOS 15+ gates LAN access behind a per-app grant that
+  an unbundled build inherits from the terminal, so the path that would prove
+  this — `allow_lan` self-hosting from a *bundled* app, with a friend joining
+  across the same network — has not been run. Two things to check when it is: that
+  the grant prompt appears at all (a missing usage description can mean silent
+  denial rather than a prompt), and that a denial surfaces as something better
+  than a connect timeout. Until then the key is insurance, not a verified fix.
 - **Reservation display fields are persisted but never read.** `claim_name`
   writes `name`, `description` and `public` into `reservations.json`, and
   `Registry::load` does deserialize the whole `Reservation` back — but `relay.rs`

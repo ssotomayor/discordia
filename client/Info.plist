@@ -37,6 +37,39 @@
   raised to 13.0 for ScreenCaptureKit — `sysaudio::scope()` already reports at
   runtime when system-audio capture is unavailable, which is the friendlier
   failure than refusing to launch.
+
+  WHY App Transport Security IS DISABLED FOR WEB CONTENT
+  The same dev/bundled asymmetry as the microphone, on the network instead of a
+  device. ATS is read from the *bundle's* Info.plist, and its default policy
+  refuses cleartext. Nothing this app speaks is TLS: the gateway, LiveKit and
+  the rendezvous are all `ws://`, to endpoints the user picks at runtime. Native
+  Rust sockets never consult ATS, so they are unaffected either way — WKWebView
+  loads do, which splits the two halves of screen sharing apart in a bundled
+  build only.
+
+  What that looks like when it bites, because it does not look like a network
+  policy: the webview cannot reach the SFU, so `dxScreen.connect` fails with
+  "could not establish signal connection: Load failed" the moment you join a
+  voice channel (which is when the screen token arrives, so the message looks
+  unrelated to sharing), every share renders black including your own preview,
+  and voice itself is fine because it never goes through WebKit. Under
+  `dx serve` there is no bundle to read a policy from, so none is enforced and
+  all of it works.
+
+  `NSAllowsArbitraryLoadsInWebContent` and not `NSAllowsArbitraryLoads`: every
+  cleartext load in question originates in the webview, and this key is scoped
+  to exactly those, leaving the default policy in force for anything the app
+  itself might fetch later. Apple's precedence rules also make the blanket key
+  ignored for web content whenever this one is present, so adding it would buy
+  nothing. A per-domain exception cannot work here at all — the hosts are a
+  self-host address, a rendezvous, or a friend's LAN IP, none of them known
+  until runtime.
+
+  NSLocalNetworkUsageDescription is prophylactic, not part of that fix: macOS 15
+  and later gate LAN access behind a per-app grant, and a bundled app needs its
+  own where an unbundled one inherits the terminal's. It is not what blocks a
+  public-IP SFU, but it is the same class of bug waiting for `allow_lan` self-
+  hosting and for friends joining across a LAN.
 -->
 <plist version="1.0">
 <dict>
@@ -62,8 +95,15 @@
 	<string>0.1.0</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>10.13</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoadsInWebContent</key>
+		<true/>
+	</dict>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Discordia connects to servers on your local network when you self-host or join one a friend is hosting.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Discordia uses your microphone for voice chat.</string>
 </dict>
