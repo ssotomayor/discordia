@@ -21,11 +21,19 @@
 //! `LIVEKIT_URL`, `LIVEKIT_API_KEY` and `LIVEKIT_API_SECRET` override the
 //! defaults, which match what the bundled server uses.
 //!
+//! Three tests, two jobs. `subscribe_only_identity_still_receives_audio` and
+//! `a_tone_survives_the_round_trip` assert: they have thresholds and they fail.
+//! `the_knobs_that_shape_voice_quality_are_measured` mostly reports — it runs
+//! the same round trip under APM, `red`, `dtx` and bitrate settings and prints
+//! them side by side, asserting only that each one still delivers audio, since
+//! a knob that silences the path is a bug while a knob that costs 0.3 dB is a
+//! choice. Read its output rather than its result.
+//!
 //! # Why this is here at all
 //!
 //! Worth stating, because everything about this file argues against itself:
 //! nothing in CI runs it — the test job covers four crates and `dioxusfun` is
-//! not among them, and both tests are `#[ignore]`d besides — and it is the only
+//! not among them, and every test here is `#[ignore]`d besides — and it is the only
 //! reason `livekit-api` and `uuid` appear in this package's dev-dependencies.
 //! By the usual rules it would live somewhere else, or nowhere.
 //!
