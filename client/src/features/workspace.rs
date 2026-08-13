@@ -83,8 +83,11 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
             // The slider's own domain, not DeepFilterNet's. `mic_sensitivity`
             // above clamps wider than its control because the two are in
             // different units; this one is bound straight to the dB value, so
-            // a hand-edited 90 would print "90 dB max" beside a slider that
-            // cannot reach it — and be handed to the model regardless.
+            // without the clamp below a hand-edited 90 would print "90 dB max"
+            // beside a slider that cannot reach it — and be handed to the
+            // model regardless. It is the third use of the shared bounds, and
+            // the one worth naming: the other two guard a control the user is
+            // touching, this one guards a file they edited.
             w.denoise_atten_lim_db = saved.denoise_atten_lim_db.clamp(
                 crate::features::voice::DENOISE_ATTEN_LIM_DB_MIN,
                 crate::features::voice::DENOISE_ATTEN_LIM_DB_MAX,
