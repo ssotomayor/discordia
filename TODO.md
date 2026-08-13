@@ -108,7 +108,7 @@ the top within each section.
   already compiles the client for clippy, so `cargo test -p dioxusfun -p
   dioxus-grid-layout` belongs in that job, not a new one. The `#[ignore]`d
   CVPixelBuffer test would stay ignored either way — that one is tracked
-  separately under Voice / audio.
+  separately under Screen sharing.
 - **The `dx` pin is not checked against `Cargo.lock`.** The CLI is now pinned to
   the crate version — `DIOXUS_CLI_VERSION` in `ci.yml`, and the same literal in
   `windows-release.yml` — which stops it drifting on every dx release. What is
@@ -380,11 +380,6 @@ the top within each section.
   but it hands back a `CGImage` — turning that into something the webview can
   render means an ImageIO/CoreGraphics encode to PNG and a `data:` URL per
   entry, so it is a real chunk of work rather than a field on the struct.
-- **Native window shares still carry the whole machine's audio.**
-  `sysaudio`'s macOS backend taps system-wide output, so sharing one window
-  sends every app's sound with it. Now that the picker knows *which* app was
-  chosen, ScreenCaptureKit can scope the audio to it — the missing piece the
-  Windows note below also wants, and on macOS the answer is now available.
 - **No self-preview picture on the native capture path.** The webview path shows
   the sharer their own outgoing video because the webview holds a local track to
   attach; the native publisher has no track in the webview, and LiveKit does not
@@ -399,7 +394,56 @@ the top within each section.
   if a native Windows path (WGC) buys something the picker doesn't — it would
   also give us the window/PID that `sysaudio`'s Windows note wants.
 
-## Screen sharing (live findings, macOS)
+- **A screen-room reconnect republishes the camera but not the share.**
+  The JS controller reconnects with exponential backoff when the screen room
+  drops. `connect()` now restores the *camera* on the far side of that, by
+  republishing the `MediaStreamTrack` it still holds — but every screen publish
+  path (`publishTrack`, `setScreenShareEnabled(true)`) still hangs off
+  `requestAndStartShare`, which only a click reaches. So a sharer who loses that
+  room gets a room with their face in it and no screen: the video stops reaching
+  viewers, `screen_sharing` stays true, and the badge goes on claiming a share
+  that is no longer happening until someone stops and starts it by hand.
+  The camera's fix is the shape to copy, and the reason it was easy there is the
+  reason it is harder here: a camera track can be republished as-is, whereas a
+  screen share has to be *re-acquired*, and `getDisplayMedia` needs a user
+  gesture a reconnect does not have. So this needs either the picker reopened, or
+  the original track held across the room the way the camera's is. The native
+  macOS path already sidesteps it, via the effect in `ScreenShareBridge` keyed on
+  the voice-session epoch. (Was recorded as "republishes nothing"; the camera
+  half stopped being true when `features::camera` landed.)
+- **Stream audio is subscribed on publication, not on watch.** Flagged in
+  `c86af67`'s review as "defer `set_subscribed` to watch-start", which would stop
+  every member of a channel pulling a share's audio whether or not they open the
+  watch window. Left as-is deliberately: `165f26d` connects early *precisely* so
+  the first second of a stream is not silent. Two defensible positions, and the
+  cost of the current one is only measurable with several watchers on one share.
+- **A peer on an older build cannot watch a natively captured share.** The macOS
+  publisher uses the `{pubkey}#video` identity (`17314c3`); older clients resolve
+  sharers by bare pubkey only, so they subscribe to nothing and sit on
+  "Connecting to stream…" with no error. Both ends need the newer build and
+  neither can tell. Same missing piece as "An old client that mutes reads as
+  deafened" under Voice / audio: nothing on this wire carries a version, so a
+  break can only be documented, never detected.
+- **The `CVPixelBuffer` double-release test never runs.** `sysvideo`'s regression
+  test drives a real capture into a real video source, and is `#[ignore]`d
+  because it needs a display and the Screen Recording grant. It guards the bug
+  that trapped inside `CFRelease` on the capture queue the instant a share
+  started — a memory error in `unsafe` FFI, which is the worst class to leave
+  uncovered. Needs a macOS runner with a display, or a hand-run checklist before
+  releases.
+- **A macOS watcher can get stuck on "Connecting to stream…" indefinitely.**
+  Reproduced once against a Windows sharer. Since then two of the candidates have
+  been removed rather than ruled out: `webAudioMix` was being passed to the
+  `Room` constructor, which governs subscription, and the SDK is no longer
+  fetched from a CDN at all — it is compiled into the binary, so "the JS did not
+  load" is now only possible as a bug in our own bundle. `RTCPeerConnection` and
+  `new Room()` were tested and work in the webview.
+  Still unreproduced since, so still open. The JS controller needs persistent
+  diagnostics — room participants, their publications, subscription state, and
+  whether `attach` found a track — reported back to Rust, so the next occurrence
+  explains itself instead of costing another guess-build-test cycle.
+
+### Share audio (sysaudio)
 
 - **macOS system-audio capture delivers nothing, and says it succeeded.**
   `sysaudio::start()` returns `Ok` and then produces zero samples, so a share
@@ -414,6 +458,10 @@ the top within each section.
   Whatever the cause, `start()` returning `Ok` for a capture that yields nothing
   is the part that must change: it should fail loudly, the way the Windows
   backend's `fatal` channel does.
+  macOS is the only platform where nobody has seen a sample. Windows is settled
+  the other way: `windows_loopback_delivers_real_samples` reaches a peak of ~0.35
+  against a tone from another process, and finding that took a heap-corruption
+  crash in `sysaudio::windows::activation_params` out with it.
   **Status unclear, and that is the actionable part.** `de01daf`
   ("fix(screen-share): restore macOS audio and stream recovery") rewrote 239
   lines of `sysaudio/macos.rs` afterwards and the backend now *has* a `fatal`
@@ -422,171 +470,26 @@ the top within each section.
   reporting. Do not delete this entry on the strength of reading the code. The
   measurement that closes it is the original one: play audio, share, count
   samples.
-- **A macOS watcher can get stuck on "Connecting to stream…" indefinitely.**
-  Reproduced once against a Windows sharer. Since then two of the candidates have
-  been removed rather than ruled out: `webAudioMix` was being passed to the
-  `Room` constructor, which governs subscription, and the SDK is no longer
-  fetched from a CDN at all — it is compiled into the binary, so "the JS did not
-  load" is now only possible as a bug in our own bundle. `RTCPeerConnection` and
-  `new Room()` were tested and work in the webview.
-  Still unreproduced since, so still open. The JS controller needs persistent
-  diagnostics — room participants, their publications, subscription state, and
-  whether `attach` found a track — reported back to Rust, so the next occurrence
-  explains itself instead of costing another guess-build-test cycle.
-
-## Voice / audio
-
-- **The 30-vs-12 dB ceiling numbers cannot be re-run from the repo.** The entry
-  below and `ClientSettings::denoise_atten_lim_db` both cite figures from a
-  live session — 21.2% vs 17.6% gate drops, −3.9 dB vs −2.7 dB actually applied
-  — and those figures are the whole argument for the control's existence and
-  its default. `the_knobs_that_shape_voice_quality_are_measured` sweeps `apm`,
-  `red`, `dtx` and `max_bitrate`; the ceiling is not a dimension in it, and
-  DeepFilterNet is not in the sweep at all. The house rule is that a claim
-  about voice quality has a number behind it; right now this one has a number
-  behind it that only one machine ever produced. Adding it as a sweep dimension
-  needs the noise-mixed signal the sweep already grew for the APM question — a
-  pure sine tells a denoiser as little as it told the APM.
-- **The default mic sensitivity cuts ordinary speech, and the thing meant to
-  save it is the APM that may not be running.** Reproduced end to end on a
-  two-machine LAN call: the far end heard the speaker's voice fading out and
-  coming back. `default_mic_sensitivity` is 50, and the scale is peak ×1000, so
-  the gate opens at **−26.0 dBFS** — 7.6 dB stricter than the 21 (−33.6 dBFS)
-  that `efcc23d`'s reporter was already having trouble with, and that was with
-  their input gain at 200% against this one's unity default.
-  Measured through the outbound packet rate, which is 50/s while the gate is
-  open and near zero while it is shut. Same speaker, same mic, same room, one
-  slider moved:
-
-  ```text
-  −26 dBFS (default)  50 19 14 43 4 6 38 50 50 44 51 … 26 … 12 … 5
-  −36 dBFS            50 50 40 51 50 50 50 50 50 51 50 50 50 50 51 …
-  ```
-
-  At the default the gate is shutting mid-phrase and reopening — not chattering
-  randomly, but cutting the quiet half of normal speech: word tails, unvoiced
-  consonants, the end of sentences. At −36 it holds through continuous speech,
-  29 of 30 samples at full rate.
-  The reason the default is set where it is appears to be the AGC. The comment
-  on `default_auto_gain_control` says it is on "because it rescues a quiet mic
-  without the user knowing there's a slider" — so a high gate threshold is
-  survivable *provided* something is lifting quiet speech over it. That is the
-  same `AudioSourceOptions` the entry below finds inert on this path. If that
-  finding holds, the rescue never happens and the default is exposed.
-  **Do not just lower the number.** −36 dBFS is one microphone, one room, one
-  voice; a different mic would want something else, and too low a threshold
-  sends room noise to everyone — which, with no working suppressor, nothing
-  else is holding back. The two candidates worth weighing are a first-run
-  calibration step (the VU bar already draws the threshold marker against a
-  live meter, so "speak normally" could place it) and settling the APM question
-  first, since the answer changes what the default should be.
-
-  **Exposing DeepFilterNet's attenuation ceiling is *not* one of them, and that
-  was measured rather than argued.** The obvious theory when this gets worse
-  with noise cancellation on: the model can pull a hop down by
-  `ATTEN_LIM_DB` = 30, the gate judges the denoised hop, so a lower ceiling
-  would leave the gate more to open on. `DfTract` even has a live
-  `set_atten_lim`, read per hop, so it would have been a cheap setting to add.
-  Two runs against a real SFU say it would buy nothing. On matched input levels
-  — the one band with equal samples on both sides, 21 windows each — dropping
-  the ceiling from 30 dB to 12 dB moved gate drops from 21.2% to 17.6%, inside
-  the run-to-run variance seen all session, and the sign flips in the other two
-  bands. The reason is in the attenuation the model actually applies: −3.9 dB
-  average at a 30 dB ceiling, −2.7 dB at a 12 dB one. It is a ceiling, and
-  speech almost never reaches it, so lowering it moves about a decibel.
-  What the same runs show instead: drops track the *input* level and nothing
-  else. Below 0.05 raw peak, about half of all hops are gated whatever the
-  ceiling. That is this entry's problem, not the model's, and adding a fourth
-  interacting audio knob to chase one decibel would have made the settings
-  harder to reason about for no gain.
-- **libwebrtc's noise suppressor may not be running at all, which would mean
-  DeepFilterNet-off is suppressor-*none*.** `apm_options` documents the
-  contract — "exactly one suppressor should be in the path", libwebrtc's when
-  DeepFilterNet is off — and applies it through
-  `NativeAudioSource::set_audio_options`. Measured through the same call, it
-  does nothing: eight runs of `the_knobs_that_shape_voice_quality_are_measured`
-  against the bundled SFU, white noise at 0.15 peak mixed into the 0.5 tone,
-  comparing the share of energy left in the tone's ±40 Hz band.
-
-  ```text
-  noise, APM off   0.8984  0.9068  0.9020  0.9046   mean 0.9030
-  noise, APM on    0.9035  0.9014  0.9045  0.9039   mean 0.9033
-  ```
-
-  A +0.0004 mean difference whose sign flips run to run. The instrument is not
-  blind — the noise itself moves the same number from 0.940 to 0.903, −0.037
-  with the same sign in every run, so it resolves an effect ten times smaller
-  than the one a working suppressor would have to produce.
-
-  The likely reading is that the APM does not run on a programmatically fed
-  `NativeAudioSource` — it is libwebrtc's *capture* pipeline, and nothing here
-  captures. If that is right, the toggle the UI offers is inert, AEC is inert
-  with it, and every bit of suppression the product has comes from
-  DeepFilterNet.
-
-  **This is the default configuration, which is what makes it matter.**
-  `noise_cancellation` defaults to false — DeepFilterNet costs ~1.5% of a core
-  and users opt in — so `apm_options` turns libwebrtc's suppressor *on* for
-  every fresh install. That is the one arrangement where an inert APM costs
-  anything: with DeepFilterNet on, libwebrtc's is deliberately off anyway. So
-  a default install would have no suppressor, no AGC, and the mic-sensitivity
-  entry above sitting on a threshold chosen on the assumption that AGC lifts
-  quiet speech over it.
-
-  **Not proven, and the gap is specific.** Band-energy share is not a
-  perceptual measure; a suppressor that acts mostly between words could hide
-  from it. One SNR (~10 dB) and one noise colour were tried. And AEC cannot be
-  tested this way at all — it needs a far-end signal and an acoustic loop.
-  The sweep is also coarser than the client on purpose, and it is worth being
-  exact about how: it moves echo cancellation, noise suppression and AGC
-  together, while `apm_options` pins AEC on always, derives noise suppression
-  from the inverse of the DeepFilterNet toggle, and passes AGC through from the
-  user. So the rows are not shippable configurations — they are the extremes,
-  chosen because if all-on and all-off cannot be told apart then nothing
-  between them is doing much either.
-  One further difference between the measurement and the client, checked rather
-  than assumed: the sweep passes the options to `NativeAudioSource::new` while
-  `set_apm` calls `set_audio_options` later. Both reach the same `sys_handle`
-  and the same three-field struct, and the constructor is the *more* favourable
-  of the two — options in place before a frame is ever captured — so measuring
-  nothing there argues for the finding rather than against it.
-  **Half of it is now settled: the options arrive.**
-  `the_apm_options_survive_the_round_trip_into_the_source` writes both
-  polarities through `set_audio_options` and reads them back with
-  `audio_options()`; they come back unchanged. So "never stored" is out, and
-  with it the possibility that this is our plumbing — `set_apm` writes where it
-  means to and the source keeps what it is given. What remains is stored and
-  not acted on, somewhere inside libwebrtc, on a source we feed frames to
-  directly rather than one it captures from.
-  That is a worse answer than the other branch would have been, because it is
-  not ours to fix. If the APM only runs inside libwebrtc's own capture
-  pipeline, no amount of setting these options will ever do anything on this
-  path, and the design has to stop relying on them: the AGC switch would be
-  decorative, the noise-suppression switch would be decorative whenever
-  DeepFilterNet is off, and the mic-sensitivity default above would need to
-  stand on its own rather than on a rescue that never comes.
-  What is left to establish, and it is now the whole question: whether
-  libwebrtc's APM runs at all for a `NativeAudioSource`. A capture with
-  DeepFilterNet off, real speech, and a spectrogram either side of the toggle
-  would show it from the outside. Reading libwebrtc's own source for where the
-  APM is attached would show it from the inside, and is probably faster — the
-  C++ in `webrtc-sys/src/audio_track.cpp` stores these into `options_`, and
-  what reads `options_` is the thread to pull. Do not delete this entry on the
-  strength of reading either one alone.
-- **The transmit gate judges the denoised hop, so its operating point moves when
-  suppression is toggled.** `denoise_gate_loop` runs the model first and gates
-  what comes out, so switching DeepFilterNet on drops the signal the gate is
-  measuring while the threshold the user calibrated by ear stays where it was.
-  `efcc23d` made that survivable — hysteresis, a released envelope, ramped
-  edges — and left the ordering alone on purpose: gating the raw signal would
-  hold the operating point still across the toggle, but it would also let a fan
-  the model removes hold the gate open, which is the reason the order is what it
-  is. Recorded here rather than only in that commit because it is a live
-  trade-off, not a closed one: the alternative is a threshold that is
-  re-derived when suppression changes, which keeps the ordering and removes the
-  jump. Same shape as the subscribe-on-publication entry below — two defensible
-  positions, and the cost of the current one is a recalibration the user has to
-  do by hand.
+- **Native window shares still carry the whole machine's audio.**
+  `sysaudio`'s macOS backend taps system-wide output, so sharing one window
+  sends every app's sound with it. Now that the picker knows *which* app was
+  chosen, ScreenCaptureKit can scope the audio to it — the missing piece the
+  Windows note below also wants, and on macOS the answer is now available.
+- **Window shares on Windows still depend on the picker.** Native capture only
+  takes over whole-screen picks: loopback is machine-wide, so using it for a
+  share the user scoped to a single window would leak every other app making
+  noise. WASAPI's `INCLUDE_TARGET_PROCESS_TREE` mode would fix this properly,
+  but `getDisplayMedia` never tells us which window (or PID) was picked, so
+  there is nothing to point it at. Until then a window share carries audio only
+  if the user ticks "Share audio" in the picker.
+- **No native system-audio capture on Linux.** `client/src/sysaudio/` has
+  backends for macOS (ScreenCaptureKit) and Windows (WASAPI process loopback);
+  Linux reports unsupported and falls back to whatever `getDisplayMedia` hands
+  back. A PipeWire backend would close it, but two things make it more than a
+  third copy of the same file: the `pipewire` crate is C bindings (a build and
+  runtime dependency the workspace otherwise avoids), and PipeWire has no
+  per-process exclusion, so a whole-screen capture would include our own output
+  and echo — the very thing the other two backends exist to prevent.
 - **Every Windows activation leaks its 12-byte blob, deliberately.**
   `activation_params` allocates one per `activate` call and never frees it,
   because the engine keeps the pointer and nothing documents for how long. So the
@@ -615,25 +518,99 @@ the top within each section.
   Rust's allocator both sit on the process heap, not because anything promises
   it. Measured on Windows 11 26200 and one machine; no other platform even
   compiles this file.
-- **macOS system audio is the one still untested; Windows is not.** The Windows
-  backend now demonstrably captures — `windows_loopback_delivers_real_samples`
-  reaches a peak of ~0.35 against a tone played from another process — after a
-  heap-corruption crash on `start()` was found and fixed (see
-  `sysaudio::windows::activation_params`). That leaves macOS as the platform
-  where nobody has seen a sample, which is the open finding further down.
-- **A screen-room reconnect republishes nothing, and the UI still says "live".**
-  The JS controller reconnects with exponential backoff when the screen room
-  drops, but `connect()` only wires handlers — every publish path
-  (`publishTrack`, `setScreenShareEnabled(true)`) hangs off
-  `requestAndStartShare`, which only a click reaches. So a sharer who loses that
-  room gets a fresh, empty room: video and audio both stop reaching viewers,
-  `screen_sharing` stays true, and the badge goes on claiming a share that is
-  no longer happening until someone stops and starts it by hand. Surfaced by
-  review of the `stopLocalShareAudio` teardown, which is the audio-shaped half
-  of it; the video half is the same gap and larger. Fixing it means recording
-  enough about the live share (target, quality, whether audio was wanted) to
-  re-publish on a fresh room — which the native path already does, via the
-  effect in `ScreenShareBridge` keyed on the voice-session epoch.
+
+## Voice / audio
+
+- **The 30-vs-12 dB ceiling numbers cannot be re-run from the repo.** The entry
+  below and `ClientSettings::denoise_atten_lim_db` both cite figures from a
+  live session — 21.2% vs 17.6% gate drops, −3.9 dB vs −2.7 dB actually applied
+  — and those figures are the whole argument for the control's existence and
+  its default. `the_knobs_that_shape_voice_quality_are_measured` sweeps `apm`,
+  `red`, `dtx` and `max_bitrate`; the ceiling is not a dimension in it, and
+  DeepFilterNet is not in the sweep at all. The house rule is that a claim
+  about voice quality has a number behind it; right now this one has a number
+  behind it that only one machine ever produced. Adding it as a sweep dimension
+  needs the noise-mixed signal the sweep already grew for the APM question — a
+  pure sine tells a denoiser as little as it told the APM.
+- **The default mic sensitivity cuts ordinary speech.** `default_mic_sensitivity`
+  is 50 and the scale is peak ×1000, so the gate opens at **−26.0 dBFS** — 7.6 dB
+  stricter than the 21 that `efcc23d`'s reporter was already struggling with, and
+  that was with their input gain at 200% against this one's unity default.
+  Reproduced on a two-machine LAN call: the far end heard the speaker fade out and
+  come back. Measured through the outbound packet rate, 50/s while the gate is
+  open and near zero while it is shut — same speaker, mic and room, one slider
+  moved:
+
+  ```text
+  −26 dBFS (default)  50 19 14 43 4 6 38 50 50 44 51 … 26 … 12 … 5
+  −36 dBFS            50 50 40 51 50 50 50 50 50 51 50 50 50 50 51 …
+  ```
+
+  So at the default the gate shuts mid-phrase and reopens, cutting word tails and
+  unvoiced consonants rather than chattering randomly.
+  **Do not just lower the number.** −36 is one mic in one room, and too low a
+  threshold sends room noise to everyone with no working suppressor holding it
+  back. The default was chosen on the assumption that AGC lifts quiet speech over
+  it — the entry below finds that AGC inert, so settle that first. The other
+  candidate is a first-run calibration: the VU bar already draws the threshold
+  against a live meter, so "speak normally" could place it.
+  **Already ruled out by measurement — do not retry it:** exposing
+  DeepFilterNet's `ATTEN_LIM_DB` ceiling. Dropping it 30 → 12 dB moved gate drops
+  21.2% → 17.6% on matched input levels, inside the run-to-run variance, and the
+  sign flipped in the other two bands. The model applies −3.9 dB on average at a
+  30 dB ceiling and −2.7 dB at a 12 dB one — it is a ceiling, and speech almost
+  never reaches it, so lowering it moves about a decibel. Drops track *input* level and
+  nothing else: below 0.05 raw peak, about half of all hops are gated whatever the
+  ceiling is.
+- **libwebrtc's noise suppressor may not run at all, which would make
+  DeepFilterNet-off suppressor-*none*.** `apm_options` documents the contract —
+  "exactly one suppressor should be in the path" — and applies it through
+  `NativeAudioSource::set_audio_options`. Measured through that call it does
+  nothing: eight runs of `the_knobs_that_shape_voice_quality_are_measured` against
+  the bundled SFU, white noise at 0.15 peak over the 0.5 tone, comparing the share
+  of energy left in the tone's ±40 Hz band.
+
+  ```text
+  noise, APM off   0.8984  0.9068  0.9020  0.9046   mean 0.9030
+  noise, APM on    0.9035  0.9014  0.9045  0.9039   mean 0.9033
+  ```
+
+  +0.0004, with the sign flipping run to run. The instrument is not blind: the
+  noise itself moves the same number 0.940 → 0.903, same sign every run, so it
+  resolves an effect ten times smaller than a working suppressor would produce.
+  **It matters because it is the default arrangement.** `noise_cancellation`
+  defaults to false, so `apm_options` turns libwebrtc's suppressor *on* for every
+  fresh install — the one configuration where an inert APM costs anything. A
+  default install would then have no suppressor, no AGC, and the mic-sensitivity
+  default above resting on a rescue that never comes.
+  **Half of it is settled: the options do arrive.**
+  `the_apm_options_survive_the_round_trip_into_the_source` writes both polarities
+  and reads them back unchanged, so this is not our plumbing. What remains is
+  stored-and-not-acted-on inside libwebrtc, on a source we feed frames to rather
+  than one it captures from — the worse branch, because it is not ours to fix and
+  would make the AGC switch decorative and the suppression switch decorative
+  whenever DeepFilterNet is off.
+  What would close it: a capture with DeepFilterNet off, real speech, and a
+  spectrogram either side of the toggle; or reading where libwebrtc attaches the
+  APM (`webrtc-sys/src/audio_track.cpp` stores into `options_`, and what reads
+  `options_` is the thread to pull). Band-energy share is not perceptual, only one
+  SNR (~10 dB) and noise colour was tried, and AEC cannot be tested this way at
+  all — so **do not delete this entry on the strength of reading either one
+  alone.**
+- **The transmit gate judges the denoised hop, so its operating point moves when
+  suppression is toggled.** `denoise_gate_loop` runs the model first and gates
+  what comes out, so switching DeepFilterNet on drops the signal the gate is
+  measuring while the threshold the user calibrated by ear stays where it was.
+  `efcc23d` made that survivable — hysteresis, a released envelope, ramped
+  edges — and left the ordering alone on purpose: gating the raw signal would
+  hold the operating point still across the toggle, but it would also let a fan
+  the model removes hold the gate open, which is the reason the order is what it
+  is. Recorded here rather than only in that commit because it is a live
+  trade-off, not a closed one: the alternative is a threshold that is
+  re-derived when suppression changes, which keeps the ordering and removes the
+  jump. Same shape as "Stream audio is subscribed on publication" under Screen
+  sharing — two defensible positions, and the cost of the current one is a
+  recalibration the user has to do by hand.
 - **Call audio degrades during a screen share, and nothing explains it.**
   Reported by a user. `c6cb994` measured the obvious suspect — the gain effect
   re-sending identical values, peaking at 12 sends/second — found it too small to
@@ -641,31 +618,12 @@ the top within each section.
   looked at it since. `dlog!` trace points for the share teardown are still in
   `features::voice` and `features::screenshare` from that investigation; use
   them.
-- **Stream audio is subscribed on publication, not on watch.** Flagged in
-  `c86af67`'s review as "defer `set_subscribed` to watch-start", which would stop
-  every member of a channel pulling a share's audio whether or not they open the
-  watch window. Left as-is deliberately: `165f26d` connects early *precisely* so
-  the first second of a stream is not silent. Two defensible positions, and the
-  cost of the current one is only measurable with several watchers on one share.
 - **An old client that mutes reads as deafened.** Before the deafen button
   existed the client sent `deafened: muted`, so on a current server every mute
   from such a peer now shows as a deafen to everyone else. `update_voice_flags`
   says so in a comment. The flag was equally wrong before `c2c6ff2`; what changed
   is that something renders it. There is no protocol version to key off, which is
   the actual gap.
-- **A peer on an older build cannot watch a natively captured share.** The macOS
-  publisher uses the `{pubkey}#video` identity (`17314c3`); older clients resolve
-  sharers by bare pubkey only, so they subscribe to nothing and sit on
-  "Connecting to stream…" with no error. Both ends need the newer build and
-  neither can tell. Same missing piece as the entry above: nothing on this wire
-  carries a version, so a break can only be documented, never detected.
-- **The `CVPixelBuffer` double-release test never runs.** `sysvideo`'s regression
-  test drives a real capture into a real video source, and is `#[ignore]`d
-  because it needs a display and the Screen Recording grant. It guards the bug
-  that trapped inside `CFRelease` on the capture queue the instant a share
-  started — a memory error in `unsafe` FFI, which is the worst class to leave
-  uncovered. Needs a macOS runner with a display, or a hand-run checklist before
-  releases.
 - **Force-quitting the app orphans the bundled SFU.** `LivekitSubprocess` relies
   on tokio's `kill_on_drop`, which only runs if the parent unwinds — a `SIGKILL`
   (force quit, or a debugger) leaves `livekit-server` running, reparented to
@@ -679,21 +637,6 @@ the top within each section.
   had to be killed by PID. `kill_on_drop` is a destructor, so any kill that
   skips unwinding — on any platform — leaves the child behind. That makes the
   "have the child watch for its parent" half of the fix the portable one.
-- **No native system-audio capture on Linux.** `client/src/sysaudio/` has
-  backends for macOS (ScreenCaptureKit) and Windows (WASAPI process loopback);
-  Linux reports unsupported and falls back to whatever `getDisplayMedia` hands
-  back. A PipeWire backend would close it, but two things make it more than a
-  third copy of the same file: the `pipewire` crate is C bindings (a build and
-  runtime dependency the workspace otherwise avoids), and PipeWire has no
-  per-process exclusion, so a whole-screen capture would include our own output
-  and echo — the very thing the other two backends exist to prevent.
-- **Window shares on Windows still depend on the picker.** Native capture only
-  takes over whole-screen picks: loopback is machine-wide, so using it for a
-  share the user scoped to a single window would leak every other app making
-  noise. WASAPI's `INCLUDE_TARGET_PROCESS_TREE` mode would fix this properly,
-  but `getDisplayMedia` never tells us which window (or PID) was picked, so
-  there is nothing to point it at. Until then a window share carries audio only
-  if the user ticks "Share audio" in the picker.
 - **Per-user volumes are session-scoped.** `AppState.user_volumes` /
   `stream_volumes` live for the run of the app, not across restarts. Persisting
   them means a keyed store that doesn't grow without bound (cap + LRU), which is
