@@ -58,6 +58,21 @@ pub struct ClientSettings {
     /// default: it costs ~1.5% of a core and users should opt into it.
     #[serde(default)]
     pub noise_cancellation: bool,
+    /// Ceiling on how far DeepFilterNet may pull a hop down, in dB. Only has
+    /// an effect while `noise_cancellation` is on.
+    ///
+    /// A ceiling rather than a strength dial: the model attenuates what it
+    /// judges to be noise, and this bounds how far it is allowed to go. Lower
+    /// leaves more of the original signal — including the quiet speech the
+    /// transmit gate needs to see — at the cost of removing less noise.
+    ///
+    /// Measured on one microphone in one room, moving this from 30 to 12
+    /// changed what the model actually applied by about a decibel, because
+    /// speech rarely reaches the ceiling at all. It is exposed because that
+    /// was one microphone: a noisier room, or a model that judges a given
+    /// voice more harshly, is where it would bite.
+    #[serde(default = "default_denoise_atten_lim_db")]
+    pub denoise_atten_lim_db: u32,
     /// Opus bitrate for the microphone track, in kbit/s. Only 24 and 48 are
     /// offered — 24 is LiveKit's speech preset, 48 is roughly what other voice
     /// chats spend on a talking head and is audibly better on low voices,
@@ -124,6 +139,11 @@ fn default_mic_volume() -> u16 {
     100
 }
 
+/// The model's own default, and what shipped before this was adjustable.
+fn default_denoise_atten_lim_db() -> u32 {
+    30
+}
+
 fn default_auto_gain_control() -> bool {
     true
 }
@@ -167,6 +187,7 @@ impl Default for ClientSettings {
             mic_volume: default_mic_volume(),
             auto_gain_control: default_auto_gain_control(),
             noise_cancellation: false,
+            denoise_atten_lim_db: default_denoise_atten_lim_db(),
             voice_bitrate_kbps: default_voice_bitrate_kbps(),
             layout_cells: Vec::new(),
             layout_free: Vec::new(),

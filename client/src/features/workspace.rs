@@ -75,6 +75,7 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
             w.mic_volume = saved.mic_volume.min(200);
             w.auto_gain_control = saved.auto_gain_control;
             w.noise_cancellation = saved.noise_cancellation;
+            w.denoise_atten_lim_db = saved.denoise_atten_lim_db.clamp(1, 100);
             // Anything outside the two offered values means a hand-edited
             // settings.json; fall back rather than publish an odd bitrate.
             w.voice_bitrate_kbps = match saved.voice_bitrate_kbps {

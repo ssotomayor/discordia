@@ -389,6 +389,9 @@ pub struct AppState {
     /// Whether DeepFilterNet noise suppression runs on captured microphone
     /// audio before it is published. Persisted via `ClientSettings`.
     pub noise_cancellation: bool,
+    /// Ceiling on DeepFilterNet's attenuation, in dB. See
+    /// `ClientSettings::denoise_atten_lim_db`.
+    pub denoise_atten_lim_db: u32,
     /// Opus bitrate for our microphone track, in kbit/s (24 or 48). Applied
     /// when the track is published, so a change takes effect on the next voice
     /// connect. Persisted via `ClientSettings`.
@@ -509,6 +512,7 @@ impl AppState {
             auto_gain_control: true,
             mic_level: 0,
             noise_cancellation: false,
+            denoise_atten_lim_db: 30,
             // Keep in step with `settings::default_voice_bitrate_kbps`.
             voice_bitrate_kbps: 48,
             voice_quality: HashMap::new(),
