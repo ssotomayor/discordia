@@ -97,6 +97,33 @@ const DRIFT_UNDERRUN_SECS: f64 = 0.03;
 /// usual compromise between "doesn't clip speech" and "doesn't leak the room".
 const GATE_HANGOVER_FRAMES: u32 = 30;
 
+/// How far below the opening threshold the gate will hold, in percent.
+///
+/// A gate that opens and closes at one level chatters on any signal sitting
+/// near it, and noise suppression is what puts a signal there: the gate judges
+/// the denoised hop, the model is allowed to pull a hop down by
+/// `denoise::ATTEN_LIM_DB`, and the material it pulls hardest — word tails,
+/// unvoiced consonants, breaths — is the quiet part of ordinary speech. Held to
+/// one threshold, that arrives at the far end as a voice that swells and drops.
+/// -6 dB of hysteresis is the standard answer.
+const GATE_CLOSE_RATIO_PCT: i32 = 50;
+
+/// Per-hop decay of the level the gate reads, in percent.
+///
+/// The gate follows a released envelope rather than each hop's own peak, so a
+/// single dip cannot start the hangover counting down. 75% per 10ms hop is
+/// about -2.5 dB a hop. It only ever makes the gate more permissive: on a
+/// rising signal the envelope *is* the peak, so the threshold marker still
+/// marks where the gate opens.
+const GATE_ENVELOPE_DECAY_PCT: i32 = 75;
+
+/// Length of the ramp applied when the gate opens or closes, in samples.
+///
+/// Dropping a frame outright takes the signal from full to nothing between one
+/// 10ms hop and the next, which is a click on the way out and a clipped
+/// consonant on the way in. 2.5ms is short enough not to soften a real onset.
+const GATE_RAMP_SAMPLES: usize = 120;
+
 /// How long to wait for a clean leave before giving up on it.
 const ROOM_CLOSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
@@ -1724,6 +1751,10 @@ fn denoise_gate_loop(
     let mut denoiser: Option<crate::denoise::Denoiser> = None;
     // Frames left before the gate closes. Non-zero = currently transmitting.
     let mut hangover = 0u32;
+    // Released peak the gate reads, and whether the previous hop was sent —
+    // together they are what turns an on/off gate into one with a ramp.
+    let mut envelope = 0i32;
+    let mut was_open = false;
     let mut gated = 0u64;
 
     while let Some(mut samples) = frame_rx.blocking_recv() {
@@ -1798,17 +1829,35 @@ fn denoise_gate_loop(
         // where the gate opens.
         let peak = peak_fixed(&samples);
         meter.bump_peak(peak);
-        if peak > controls.threshold.load(Ordering::Relaxed) {
+
+        // What the gate reads is the released envelope, not this hop alone.
+        envelope = peak.max(envelope * GATE_ENVELOPE_DECAY_PCT / 100);
+        let open_at = controls.threshold.load(Ordering::Relaxed);
+        // Once open, hold to a lower bar than it took to get there.
+        let hold_at = open_at * GATE_CLOSE_RATIO_PCT / 100;
+        let bar = if hangover > 0 { hold_at } else { open_at };
+        if envelope > bar {
             hangover = GATE_HANGOVER_FRAMES;
         } else {
             hangover = hangover.saturating_sub(1);
         }
         let open = hangover > 0;
         meter.open.store(open, Ordering::Relaxed);
-        if !open {
-            gated += 1;
-            continue;
+
+        match (was_open, open) {
+            // Steady state, and the common case.
+            (true, true) => {}
+            (false, true) => ramp(&mut samples, true),
+            // The closing hop is faded and *sent*, so the tail ends on zero
+            // rather than on whatever sample the cut landed on.
+            (true, false) => ramp(&mut samples, false),
+            (false, false) => {
+                gated += 1;
+                was_open = false;
+                continue;
+            }
         }
+        was_open = open;
 
         let data: Vec<i16> = samples
             .iter()
@@ -1822,6 +1871,28 @@ fn denoise_gate_loop(
         }
     }
     eprintln!("[voice] denoise/gate thread ended ({gated} frames gated)");
+}
+
+/// Fade a hop in or out over `GATE_RAMP_SAMPLES`, in place.
+///
+/// Applied to the hop the gate changes state on: rising, so an onset is not
+/// asserted at full level from a standing start; falling, so the last hop of a
+/// phrase ends on zero instead of on whatever sample the cut happened to land
+/// on. A hop shorter than the ramp uses its whole length.
+fn ramp(samples: &mut [f32], rising: bool) {
+    let n = GATE_RAMP_SAMPLES.min(samples.len());
+    if n == 0 {
+        return;
+    }
+    for (i, s) in samples.iter_mut().take(n).enumerate() {
+        let g = i as f32 / n as f32;
+        *s *= if rising { g } else { 1.0 - g };
+    }
+    // Everything past the ramp is silence on the way out, and untouched signal
+    // on the way in.
+    if !rising {
+        samples[n..].fill(0.0);
+    }
 }
 
 /// Map a peak (×1000 fixed point) to a 0..=100 meter position on a dB scale.
@@ -2960,12 +3031,27 @@ async fn consume_remote_track(
     // per remote participant that the allocator doesn't need to handle.
     let mut f32_buf: Vec<f32> = Vec::with_capacity(FRAME_SAMPLES * 4);
     let mut resampled_buf: Vec<f32> = Vec::with_capacity(FRAME_SAMPLES * 4);
+    // The lines below are where a silent participant is told from a working
+    // one, and with several tracks live "something is near-silent" is not an
+    // answer to that. Short pubkey plus any identity suffix, which is what
+    // separates someone's microphone from their screen's audio.
+    let who = {
+        let (pk, suffix) = identity
+            .split_once('#')
+            .map_or((identity.as_str(), ""), |(a, b)| (a, b));
+        let head: String = pk.chars().take(8).collect();
+        if suffix.is_empty() {
+            head
+        } else {
+            format!("{head}#{suffix}")
+        }
+    };
     let track_id = handle.add_track(identity, is_stream);
     let cap = (handle.device_rate / PLAYBACK_CAP_DIVISOR) as usize;
     while let Some(frame) = stream.next().await {
         if frames == 0 {
             eprintln!(
-                "[voice] remote-track first frame: {} samples @ {} Hz, ch={}",
+                "[voice] remote-track {who} first frame: {} samples @ {} Hz, ch={}",
                 frame.data.len(),
                 frame.sample_rate,
                 frame.num_channels,
@@ -3000,7 +3086,7 @@ async fn consume_remote_track(
         }
         if frames.is_multiple_of(500) {
             eprintln!(
-                "[voice] remote-track: {frames} frames, {sample_count} samples, peak={peak_recent} ({})",
+                "[voice] remote-track {who}: {frames} frames, {sample_count} samples, peak={peak_recent} ({})",
                 if peak_recent < 100 {
                     "near-silent"
                 } else if peak_recent < 1000 {
@@ -3015,12 +3101,75 @@ async fn consume_remote_track(
     // Drop this track's jitter buffer, otherwise a participant who left keeps
     // contributing silence to the mix (and leaks a buffer per rejoin).
     handle.remove_track(track_id);
-    eprintln!("[voice] remote-track stream ended after {frames} frames");
+    eprintln!("[voice] remote-track {who} stream ended after {frames} frames");
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The complaint that prompted the ramp and the hysteresis: with noise
+    /// suppression on, a listener heard the speaker's level swelling and
+    /// dropping. The gate reads the denoised hop, the model may pull one down
+    /// by 30 dB, and one threshold for both directions turns that into
+    /// chatter.
+    #[test]
+    fn the_gate_holds_below_the_level_it_opened_at() {
+        let open_at = 21; // the reporter's own sensitivity setting
+        let hold_at = open_at * GATE_CLOSE_RATIO_PCT / 100;
+        assert!(
+            hold_at < open_at,
+            "hysteresis has to hold below the opening"
+        );
+
+        // A denoised word tail: too quiet to have opened the gate, loud enough
+        // that cutting the speaker off mid-word would be wrong.
+        let tail = 14;
+        assert!(tail < open_at, "precondition: would not open the gate");
+        assert!(
+            tail > hold_at,
+            "a tail between the two bars is exactly what the hysteresis is for"
+        );
+    }
+
+    /// The envelope only ever makes the gate more permissive — otherwise the
+    /// threshold marker would stop marking where the gate opens.
+    #[test]
+    fn the_gate_envelope_never_reads_below_the_hop() {
+        let mut env = 0i32;
+        for peak in [0, 5, 900, 3, 0, 0, 40] {
+            env = peak.max(env * GATE_ENVELOPE_DECAY_PCT / 100);
+            assert!(env >= peak, "envelope {env} read under its own hop {peak}");
+        }
+        // And it decays rather than latching: 900 must not still be there.
+        assert!(env < 900, "envelope latched at the loudest hop it ever saw");
+    }
+
+    /// A fade that does not reach zero is the click it was added to remove.
+    #[test]
+    fn a_closing_ramp_ends_on_silence() {
+        let mut hop = vec![1.0f32; FRAME_SAMPLES];
+        ramp(&mut hop, false);
+        assert_eq!(hop[0], 1.0, "the fade starts at full level");
+        assert!(hop.iter().all(|s| *s <= 1.0 && *s >= 0.0));
+        assert!(
+            hop[GATE_RAMP_SAMPLES..].iter().all(|s| *s == 0.0),
+            "everything past the ramp has to be silence"
+        );
+
+        let mut hop = vec![1.0f32; FRAME_SAMPLES];
+        ramp(&mut hop, true);
+        assert_eq!(hop[0], 0.0, "the fade in starts at silence");
+        assert!(
+            hop[GATE_RAMP_SAMPLES..].iter().all(|s| *s == 1.0),
+            "past the ramp the signal is untouched"
+        );
+
+        // A hop shorter than the ramp must not panic on the slice.
+        let mut short = vec![1.0f32; GATE_RAMP_SAMPLES / 2];
+        ramp(&mut short, false);
+        assert_eq!(short[0], 1.0);
+    }
 
     /// The panel's own row is two deltas, and getting the arithmetic wrong is
     /// the failure that looks plausible: a rate is believable at any value, so
