@@ -436,6 +436,56 @@ the top within each section.
 
 ## Voice / audio
 
+- **The mic heartbeat task is never cancelled, so `dev.log` gains a second
+  liar every time the voice session is rebuilt.** `MicCapture::start` spawns
+  the 2s heartbeat with a bare `tokio::spawn` and keeps no handle;
+  `MicCapture::stop` drops the cpal stream and nothing else. `ActiveVoice`
+  already shows the shape it should have — `meter_task: Task` is stored and
+  `.cancel()`ed on the line above `self.mic.stop()`. So every teardown
+  (input/output device change, reconnect, rejoin) leaves the previous
+  heartbeat looping forever over an `Arc<GateStats>` nobody writes to any
+  more. This was survivable while it was one `eprintln!` on a console nobody
+  keeps. The `mic 2s raw=… after=… thr=… passed=… dropped=…` line added
+  alongside it is the opposite: it exists to be read *after* the call, and
+  after one mid-call device change the log interleaves a live line and a dead
+  all-zeros one every two seconds, with nothing in either naming which session
+  it came from — ambiguous in exactly the scenario you would open the log for.
+  Fix is a stored `JoinHandle` aborted in `stop()`, same as `meter_task`.
+- **The ceiling's 6..60 domain is written out in four places and enforced in
+  three.** The slider's `min`/`max`, its `oninput` clamp, the restore clamp in
+  `workspace.rs` and the doc comment on `VoiceCmd::SetDenoiseAttenLim` all
+  state the range independently, with nothing tying them together — which is
+  how the restore clamp shipped as `(1, 100)` in the first place and had to be
+  corrected in review. The service loop is the gap: `SetDenoiseAttenLim`
+  stores `db` verbatim into the atomic and into `AppState`, and it is the only
+  setter in `service_loop` that doesn't clamp — `SetSensitivity` does
+  `.clamp(1, 1000)`, `SetMicVolume` does `.min(200)`. Only the UI sends it
+  today, so nothing is broken; the point is that the next caller inherits no
+  guard. One `MIN`/`MAX` pair next to the variant, read by all four sites, plus
+  a clamp in the handler. While there: `AudioControls::new` is now six
+  positional arguments with `atten_lim_db` and `bitrate_kbps` adjacent and both
+  `u32`, which the compiler cannot tell apart if they are ever swapped.
+- **Every audio slider writes the whole of `settings.json` on every `oninput`,
+  synchronously, on the UI thread.** `settings::save` does `create_dir_all` +
+  `to_string_pretty` + `fs::write` of the entire file, and mic volume,
+  sensitivity and now the suppression ceiling all call it from `oninput` —
+  which fires once per integer step, so one drag of the ceiling across its
+  range is ~54 whole-file writes. Exactly the class of problem review caught on
+  the DSP thread for the same feature's `dlog!`, one thread over: the UI one is
+  not realtime, so it drops no audio, but it is still blocking disk I/O tied to
+  a drag. Persist on `onchange` (pointer-up) and leave `oninput` doing live
+  state plus the `VoiceCmd`, which is what makes the knob feel live anyway.
+- **The 30-vs-12 dB ceiling numbers cannot be re-run from the repo.** The entry
+  below and `ClientSettings::denoise_atten_lim_db` both cite figures from a
+  live session — 21.2% vs 17.6% gate drops, −3.9 dB vs −2.7 dB actually applied
+  — and those figures are the whole argument for the control's existence and
+  its default. `the_knobs_that_shape_voice_quality_are_measured` sweeps `apm`,
+  `red`, `dtx` and `max_bitrate`; the ceiling is not a dimension in it, and
+  DeepFilterNet is not in the sweep at all. The house rule is that a claim
+  about voice quality has a number behind it; right now this one has a number
+  behind it that only one machine ever produced. Adding it as a sweep dimension
+  needs the noise-mixed signal the sweep already grew for the APM question — a
+  pure sine tells a denoiser as little as it told the APM.
 - **The default mic sensitivity cuts ordinary speech, and the thing meant to
   save it is the APM that may not be running.** Reproduced end to end on a
   two-machine LAN call: the far end heard the speaker's voice fading out and
