@@ -2154,6 +2154,41 @@ fn spawn_stats_task(
                         RtcStats::InboundRtp(i) => Some(i),
                         _ => None,
                     }) {
+                        // A once-a-second time series, which the panel is not.
+                        // The panel keeps the newest reading, and on a path
+                        // that misbehaves in bursts — any Wi-Fi link — the
+                        // interesting part is the shape between readings, gone
+                        // by the time anyone looks.
+                        //
+                        // `rx` and `lost` are logged raw as well as through
+                        // `loss_pct`, because they are cumulative counters: the
+                        // percentage is a session average and cannot show a
+                        // ten-second spike at all. Differencing consecutive
+                        // lines gives the per-interval loss the average hides.
+                        crate::dlog!(
+                            "stats in {} loss={:.2}% jitter={:.1}ms buf={:.1}ms conceal={} rx={} lost={}",
+                            crate::identity::truncate_pubkey(&identity.0),
+                            {
+                                let total = s.received.packets_received
+                                    + s.received.packets_lost.max(0) as u64;
+                                if total == 0 {
+                                    0.0
+                                } else {
+                                    s.received.packets_lost.max(0) as f32 / total as f32 * 100.0
+                                }
+                            },
+                            s.received.jitter * 1000.0,
+                            if s.inbound.jitter_buffer_emitted_count == 0 {
+                                0.0
+                            } else {
+                                s.inbound.jitter_buffer_target_delay
+                                    / s.inbound.jitter_buffer_emitted_count as f64
+                                    * 1000.0
+                            },
+                            s.inbound.concealment_events,
+                            s.received.packets_received,
+                            s.received.packets_lost.max(0),
+                        );
                         next.insert(identity.0.clone(), inbound_stats(s));
                     }
                 }
@@ -2172,6 +2207,19 @@ fn spawn_stats_task(
                 let (packets, bytes) = (o.sent.packets_sent, o.sent.bytes_sent);
                 let rates = outbound_rates(prev_out, packets, bytes, now);
                 prev_out = Some((packets, bytes, now));
+                // The send side of the same series. `target` is what the
+                // encoder was told to aim for, so the pair is what says whether
+                // congestion control has pulled the real rate down under it —
+                // which is the first thing a bad link does and the panel only
+                // ever shows as a number that looks a bit low.
+                crate::dlog!(
+                    "stats out bitrate={} pkt/s={} target={}kbps sent={} bytes={}",
+                    rates.map_or("-".into(), |(_, kbit)| format!("{kbit:.0}kbps")),
+                    rates.map_or("-".into(), |(pkt, _)| format!("{pkt:.0}")),
+                    (o.outbound.target_bitrate / 1000.0).round() as u32,
+                    packets,
+                    bytes,
+                );
                 next.insert(
                     pk,
                     TrackStats::Outbound {

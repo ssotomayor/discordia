@@ -40,6 +40,32 @@ the top within each section.
 
 ## Repo & CI
 
+- **The Windows portable and setup ship the wrong icon.** Reported from a real
+  download: both carry an old icon rather than the Discordia mark. Worth
+  starting from the comment in `client/Dioxus.toml`, because it says this was
+  already diagnosed once — the CLI embeds the *first* `.ico` in the `icon` list
+  into the executable's resources, and with none listed it falls back to its own
+  bundled Dioxus logo, which is what shipped before. So the first question is
+  which artifact was downloaded: a pre-release from before that fix would show
+  exactly this, and the bug would be nothing but a stale download. If a current
+  build still does it, the `.ico` is reaching NSIS (`installer_icon`) and not the
+  executable, or not being regenerated when the artwork changed — the same
+  entry under Assets notes the `.icns` was last rebuilt by downscaling rather
+  than rasterising, so the icon set as a whole has drifted from `icon.svg`.
+- **Windows SmartScreen blocks the download as an unknown publisher.** Also
+  reported from a real machine: "Windows protected your PC", and it takes
+  More info → Run anyway to get past. Expected for unsigned binaries and
+  entirely a distribution problem rather than a code one, but it is the first
+  thing every new user meets, and "click through the malware warning" is a poor
+  first instruction for a project whose pitch is that you should not have to
+  trust the operator. Authenticode signing needs a certificate (OV is cheap and
+  still earns the warning until reputation accrues; EV clears it immediately and
+  costs materially more) — so this is a spend-money decision, not an
+  engineering one, which is why it belongs here rather than in a backlog of
+  fixes. macOS has the same shape and its own answer already half-built: the
+  bundle is signed with a *development* certificate, which is not notarisation
+  and will show Gatekeeper's version of this to anyone who is not the developer.
+
 - **CI runs none of the client's or grid-layout's tests.** The `test` job runs
   `cargo test` over four crates — protocol, server, bot SDK, rendezvous — and the
   comment above it says CI covers the server-side crates "where all the tests
@@ -329,6 +355,39 @@ the top within each section.
 
 ## Voice / audio
 
+- **The default mic sensitivity cuts ordinary speech, and the thing meant to
+  save it is the APM that may not be running.** Reproduced end to end on a
+  two-machine LAN call: the far end heard the speaker's voice fading out and
+  coming back. `default_mic_sensitivity` is 50, and the scale is peak ×1000, so
+  the gate opens at **−26.0 dBFS** — 7.6 dB stricter than the 21 (−33.6 dBFS)
+  that `efcc23d`'s reporter was already having trouble with, and that was with
+  their input gain at 200% against this one's unity default.
+  Measured through the outbound packet rate, which is 50/s while the gate is
+  open and near zero while it is shut. Same speaker, same mic, same room, one
+  slider moved:
+
+  ```text
+  −26 dBFS (default)  50 19 14 43 4 6 38 50 50 44 51 … 26 … 12 … 5
+  −36 dBFS            50 50 40 51 50 50 50 50 50 51 50 50 50 50 51 …
+  ```
+
+  At the default the gate is shutting mid-phrase and reopening — not chattering
+  randomly, but cutting the quiet half of normal speech: word tails, unvoiced
+  consonants, the end of sentences. At −36 it holds through continuous speech,
+  29 of 30 samples at full rate.
+  The reason the default is set where it is appears to be the AGC. The comment
+  on `default_auto_gain_control` says it is on "because it rescues a quiet mic
+  without the user knowing there's a slider" — so a high gate threshold is
+  survivable *provided* something is lifting quiet speech over it. That is the
+  same `AudioSourceOptions` the entry below finds inert on this path. If that
+  finding holds, the rescue never happens and the default is exposed.
+  **Do not just lower the number.** −36 dBFS is one microphone, one room, one
+  voice; a different mic would want something else, and too low a threshold
+  sends room noise to everyone — which, with no working suppressor, nothing
+  else is holding back. The two candidates worth weighing are a first-run
+  calibration step (the VU bar already draws the threshold marker against a
+  live meter, so "speak normally" could place it) and settling the APM question
+  first, since the answer changes what the default should be.
 - **The dev log says native system audio *stopped* while it is running, and
   never says it started.** Found in a live two-client session on Windows, and
   the two halves compound. `set_system_audio`'s only `dlog!` sits inside
