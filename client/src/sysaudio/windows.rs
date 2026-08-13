@@ -16,8 +16,7 @@
 //! does not support `GetMixFormat` — the format is ours to name. We name
 //! 48 kHz, which is what the publish path wants, so the question never arises.
 
-use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc as std_mpsc;
 use std::time::{Duration, Instant};
 
@@ -298,7 +297,7 @@ fn setup() -> Result<Started, String> {
     })
 }
 
-/// The activation blob, allocated once and never freed.
+/// The activation blob, allocated on demand and never freed.
 ///
 /// The engine keeps the pointer it is handed: freeing the block when `activate`
 /// returned is what made the first capture on any machine die with
@@ -310,29 +309,46 @@ fn setup() -> Result<Started, String> {
 /// the process — one 12-byte block for the whole run, since the contents never
 /// vary: our PID and a mode constant.
 ///
-/// So every activation gets the same address. `ActivationLease` is what keeps
-/// that to one holder at a time; making it impossible instead means one leaked
-/// allocation per activation. See `TODO.md`.
+/// So activations share an address, and `ActivationLease` is what keeps that to
+/// one live capture at a time. `retire` covers the one case the lease cannot
+/// see. See `TODO.md`.
 fn activation_params() -> *mut AUDIOCLIENT_ACTIVATION_PARAMS {
-    // A `usize` because a raw pointer is neither `Send` nor `Sync`. Heap rather
-    // than a `static` of the struct: a `static` could land in read-only memory,
-    // and an engine that writes back into the blob would fault on it.
-    static PARAMS: OnceLock<usize> = OnceLock::new();
-    *PARAMS.get_or_init(|| {
-        Box::into_raw(Box::new(AUDIOCLIENT_ACTIVATION_PARAMS {
-            ActivationType: AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
-            Anonymous: AUDIOCLIENT_ACTIVATION_PARAMS_0 {
-                ProcessLoopbackParams: AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS {
-                    // Excluding our own tree is the whole point: it drops this
-                    // app's playback — the call itself — before it can be
-                    // captured and sent back out, and covers a spawned LiveKit
-                    // with it.
-                    TargetProcessId: unsafe { GetCurrentProcessId() },
-                    ProcessLoopbackMode: PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE,
-                },
+    // Only ever reached with a lease held, so the read-then-write cannot race
+    // with itself. A `usize` because a raw pointer is neither `Send` nor `Sync`;
+    // heap rather than a `static` of the struct, which could land in read-only
+    // memory and fault an engine that writes back into the blob.
+    let existing = PARAMS.load(Ordering::Acquire);
+    if existing != 0 {
+        return existing as *mut AUDIOCLIENT_ACTIVATION_PARAMS;
+    }
+    let fresh = Box::into_raw(Box::new(AUDIOCLIENT_ACTIVATION_PARAMS {
+        ActivationType: AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
+        Anonymous: AUDIOCLIENT_ACTIVATION_PARAMS_0 {
+            ProcessLoopbackParams: AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS {
+                // Excluding our own tree is the whole point: it drops this app's
+                // playback — the call itself — before it can be captured and
+                // sent back out, and covers a spawned LiveKit with it.
+                TargetProcessId: unsafe { GetCurrentProcessId() },
+                ProcessLoopbackMode: PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE,
             },
-        })) as usize
-    }) as *mut AUDIOCLIENT_ACTIVATION_PARAMS
+        },
+    }));
+    PARAMS.store(fresh as usize, Ordering::Release);
+    fresh
+}
+
+static PARAMS: AtomicUsize = AtomicUsize::new(0);
+
+/// Stop handing out the current blob, leaking it.
+///
+/// For the activation that timed out: it was abandoned without waiting, so the
+/// engine may still read the address it was handed, at a time nobody can bound.
+/// `ActivationLease` cannot see that — it is released when the capture thread
+/// ends, which on that path is immediately — so a retry would put a second live
+/// activation on the same address. Retiring it costs 12 bytes and makes the
+/// retry allocate its own.
+fn retire_activation_params() {
+    PARAMS.store(0, Ordering::Release);
 }
 
 static ACTIVATION_IN_USE: AtomicBool = AtomicBool::new(false);
@@ -343,6 +359,10 @@ static ACTIVATION_IN_USE: AtomicBool = AtomicBool::new(false);
 /// after activation returns, so what has to stay unique is the live client, not
 /// the call that produced it. The PCM fallback's second `activate` sits inside
 /// one lease on purpose.
+///
+/// What it does *not* cover is an activation abandoned on timeout, which outlives
+/// the thread that gave up on it. That one is handled by taking its blob out of
+/// circulation instead — see `retire_activation_params`.
 struct ActivationLease;
 
 impl ActivationLease {
@@ -427,7 +447,9 @@ fn activate() -> Result<IAudioClient, String> {
         // signalling some unrelated kernel object instead of failing loudly.
         // Same trade `WinCapture::start` makes with its shutdown handle — a leak
         // on an already-failed path costs far less than a use-after-free. The
-        // blob needs nothing here: it is never freed on any path.
+        // blob is never freed either, but it does have to stop being the shared
+        // one: this activation is still holding it.
+        retire_activation_params();
         return Err("Windows didn't answer the audio-capture request in time.".into());
     }
     // SAFETY: the handler has run — it is what signalled this event — so nothing
@@ -665,6 +687,30 @@ mod tests {
 
         drop(held);
         ActivationLease::acquire().expect("the lease outlived its capture");
+    }
+
+    /// A timed-out activation keeps the blob it was handed, and the lease cannot
+    /// hold it back — it is released as soon as the capture thread gives up. So
+    /// the retry has to be handed a different address, which is the whole of
+    /// what `retire_activation_params` is for.
+    #[test]
+    fn a_retired_blob_is_never_handed_out_again() {
+        let _serial = SERIAL.blocking_lock();
+        // Held because `activation_params` is only ever reached under a lease,
+        // and this stands in for the capture that would be holding one.
+        let _lease = ActivationLease::acquire().expect("nothing else holds it");
+
+        let first = super::activation_params();
+        assert_eq!(first, super::activation_params(), "one blob per activation");
+
+        super::retire_activation_params();
+        let second = super::activation_params();
+        assert_ne!(
+            first, second,
+            "the retry was handed the address an abandoned activation may still \
+             be reading"
+        );
+        assert_eq!(second, super::activation_params(), "and it settles again");
     }
 
     /// Does this backend capture anything, and does the process survive asking?

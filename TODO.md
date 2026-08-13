@@ -305,7 +305,9 @@ the top within each section.
   forgets the address when the client it activated is released.
   Closing it without reintroducing the crash means going back to one allocation
   per activation and leaking each one deliberately: 12 bytes per share instead
-  of 12 per process. Cheap, and worth doing if a write is ever observed — or
+  of 12 per process — which is already what a timed-out activation costs, since
+  `retire_activation_params` takes its blob out of circulation rather than let a
+  retry share an address the engine may still be reading. Cheap, and worth doing if a write is ever observed — or
   ahead of whatever first makes two captures live at once, whichever comes first.
 - **The Windows blob's lifetime rule is measured, not documented.** Microsoft
   does not say how long `ActivateAudioInterfaceAsync` needs the `VT_BLOB` it is

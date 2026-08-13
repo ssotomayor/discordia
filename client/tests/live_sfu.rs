@@ -438,6 +438,11 @@ async fn a_tone_survives_the_round_trip() {
             received.extend(f.data.iter().map(|s| *s as f32 / i16::MAX as f32));
         }
     }
+    // Measured, not `TOTAL - WARMUP`: the loop also exits on a 2s stall or a
+    // stream that ends, and dividing a short sample count by the full nominal
+    // window would report the dropout as a rate error — pointing the failure at
+    // the resampler when the stream is what broke.
+    let window = started.elapsed().saturating_sub(WARMUP).as_secs_f32();
     feeder.abort();
 
     assert!(
@@ -451,7 +456,6 @@ async fn a_tone_survives_the_round_trip() {
     let db = 20.0 * (r_out / r_in).log10();
     let purity_in = tone_purity(&sent, TONE_HZ);
     let purity_out = tone_purity(&received, TONE_HZ);
-    let window = (TOTAL - WARMUP).as_secs_f32();
     let rate = received.len() as f32 / CHANNELS as f32 / window;
 
     println!("frames decoded     : {frames}");
