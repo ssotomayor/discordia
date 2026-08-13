@@ -222,7 +222,18 @@ impl AudioControls {
 #[derive(Default)]
 struct MicMeter {
     /// Peak since the last poll, ×1000 fixed point. Swapped to 0 on read.
+    ///
+    /// This is the hop the *gate* judged — after input gain and after
+    /// DeepFilterNet — so the threshold marker on the bar sits exactly where
+    /// the gate opens.
     peak: AtomicI32,
+    /// The same hop before DeepFilterNet, on the same scale.
+    ///
+    /// Kept beside `peak` so the bar can draw both: the gap between them is
+    /// what the model is taking off, live. Nothing else in the app can show
+    /// that, and it is the difference between "noise cancellation is on" and
+    /// seeing it eat the quiet half of your speech.
+    peak_pre: AtomicI32,
     /// True while the transmit gate is open.
     open: AtomicBool,
 }
@@ -1968,13 +1979,34 @@ fn denoise_gate_loop(
         // still move so a user who forgot they're muted can see the mic is
         // fine. No point running the model on audio nobody will hear.
         if muted.load(Ordering::Relaxed) {
-            meter.bump_peak(peak_fixed(&samples));
+            // Both peaks come off this one hop, and deliberately: the model
+            // never ran on it, so the bar must not draw a gap between them.
+            // Leaving `peak_pre` behind here is what let the ghost flash for a
+            // poll window after mute engages — stale pre-model audio measured
+            // against a freshly-reset post — claiming a suppression that never
+            // happened.
+            let peak = peak_fixed(&samples);
+            meter.bump_peak(peak);
+            meter.bump_peak_pre(peak);
             meter.open.store(false, Ordering::Relaxed);
             // The gate sees none of this, so it must not remember what came
             // before it either. See `GateState`.
             gate.silence();
             continue;
         }
+
+        // Before the model, after the gain — the other half of what the bar
+        // draws. Taken here rather than in the capture callback so both peaks
+        // are measured on the same hop, on the same scale, and a device with a
+        // different channel count or rate cannot make them disagree.
+        //
+        // Kept in hand because the model may not run: with suppression off the
+        // samples below are the very ones measured here, and folding 480 of
+        // them a second time, 100 times a second, on the realtime thread buys
+        // an identical number.
+        let peak_pre = peak_fixed(&samples);
+        meter.bump_peak_pre(peak_pre);
+        let mut denoised = false;
 
         // Noise suppression first: the gate should judge the signal the
         // listener will actually hear, so a fan the model removes shouldn't be
@@ -2024,6 +2056,7 @@ fn denoise_gate_loop(
                     stats.atten_lim_applied.store(want, Ordering::Relaxed);
                 }
                 d.process_hop(&mut samples);
+                denoised = true;
             }
         } else if denoiser.is_some() {
             // Release the model when switched off. Its state would be stale on
@@ -2037,8 +2070,14 @@ fn denoise_gate_loop(
 
         // Peak of the hop, on the same ×1000 fixed-point scale as the VU bar
         // and the threshold slider — so the marker the user drags sits exactly
-        // where the gate opens.
-        let peak = peak_fixed(&samples);
+        // where the gate opens. Only re-measured when the model actually
+        // touched the samples; otherwise it is the pre-model peak by
+        // definition, which is also why the bar draws no gap in that case.
+        let peak = if denoised {
+            peak_fixed(&samples)
+        } else {
+            peak_pre
+        };
         meter.bump_peak(peak);
         stats.peak_after.fetch_max(peak, Ordering::Relaxed);
 
@@ -2266,20 +2305,14 @@ async fn publish_loop(mut rx: UnboundedReceiver<Vec<i16>>, source: NativeAudioSo
 }
 
 impl MicMeter {
+    /// Raise the pre-model peak to `value` if it's louder. Reset on read.
+    fn bump_peak_pre(&self, value: i32) {
+        self.peak_pre.fetch_max(value, Ordering::Relaxed);
+    }
+
     /// Raise the stored peak to `value` if it's louder. Reset on read.
     fn bump_peak(&self, value: i32) {
-        let mut current = self.peak.load(Ordering::Relaxed);
-        while value > current {
-            match self.peak.compare_exchange_weak(
-                current,
-                value,
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => break,
-                Err(c) => current = c,
-            }
-        }
+        self.peak.fetch_max(value, Ordering::Relaxed);
     }
 }
 
@@ -2292,15 +2325,21 @@ fn spawn_meter_task(mut state: Signal<AppState>, meter: Arc<MicMeter>) -> Task {
     dioxus::prelude::spawn(async move {
         let mut last_speaking = false;
         let mut last_level = u32::MAX;
+        let mut last_level_pre = u32::MAX;
         loop {
             tokio::time::sleep(std::time::Duration::from_millis(150)).await;
             let level = meter.peak.swap(0, Ordering::Relaxed).clamp(0, 1000) as u32;
+            let level_pre = meter.peak_pre.swap(0, Ordering::Relaxed).clamp(0, 1000) as u32;
             let speaking = meter.open.load(Ordering::Relaxed);
             // Only write on change: this ticks 6x a second and every write
             // re-renders the app.
             if level != last_level {
                 last_level = level;
                 state.write().mic_level = level;
+            }
+            if level_pre != last_level_pre {
+                last_level_pre = level_pre;
+                state.write().mic_level_pre = level_pre;
             }
             if speaking != last_speaking {
                 last_speaking = speaking;
