@@ -59,6 +59,18 @@ re-encrypts. When the relay's SFU carries your call, the relay operator can see
 it. When your own bundled SFU carries it, you can — which is the same trust you
 already place in whoever runs the guild.
 
+**And when a rendezvous supplies an SFU, it carries *everyone* — including the
+host.** `url_for_client` returns the relay's URL unconditionally, ahead of any
+other logic, so it is handed to every participant rather than only to the remote
+ones. Your own voice and screen share leave your machine, reach the rendezvous,
+and come back to you; your locally bundled `livekit-server` is started and then
+serves nobody. So on that path it is not peer-to-peer, and not even
+friend-to-host: both endpoints are talking to a third machine. Whether a
+rendezvous supplies an SFU at all is up to its operator — one configured without
+LiveKit credentials supplies none, and media then tries to use the host's own
+(see `TODO.md`, which records that this path currently hands remote friends an
+address they cannot reach).
+
 **The host can read everything, deliberately.** Message content is stored
 readable in `host-data/`, which is what keeps search, moderation, the audit log
 and retention working. Encrypting content against the host would break all four

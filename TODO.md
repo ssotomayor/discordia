@@ -228,6 +228,30 @@ the top within each section.
 
 ## Decentralization / rendezvous
 
+- **A rendezvous with no shared SFU hands relayed friends a LAN address for
+  voice, which they cannot dial.** `explicit_url` is `None` when the rendezvous
+  supplies no `livekit_url`, so `url_for_client` falls back to deriving one from
+  the connection — and a friend proxied in by the relay reaches the gateway on
+  *loopback*, so the `lan_host` substitution fires and they are handed the host's
+  **LAN** address. Correct for a proxied friend who happens to be on the same
+  network; useless for one on the internet, which is the case the relay exists
+  for. The comment at that substitution says it is "so proxied friends get
+  something they can actually dial", which holds only for the LAN case.
+  The effect is that a rendezvous without a LiveKit gives relayed friends working
+  chat and voice that fails on an unreachable address, rather than voice that is
+  cleanly unavailable. Reasoned from the code, not reproduced — it needs one run
+  against a rendezvous started without `livekit_api_key` to confirm, and the
+  useful fix is probably to refuse to mint rather than mint something undialable.
+- **The bundled LiveKit is started even when the rendezvous supplies one, and
+  then never used.** `start_self_host` calls `spawn_livekit()` unconditionally
+  *before* registering, so the ~51 MB `livekit-server` subprocess comes up and
+  binds 7880 — and if the rendezvous returns a `livekit_url`, `explicit_url` wins
+  for every client and the local one serves nobody for the whole session. The
+  comment beside the registration already notes that precedence; what is missing
+  is deferring the spawn until it is known to be needed. Costs a process, a port
+  and a chunk of memory per self-host session, and the port is the part that can
+  actually bite: anything else expecting 7880 collides with an SFU nobody is
+  talking to.
 - **A self-hosted machine cannot be reached from the internet without the relay
   carrying the connection.** Today the choice is relay-or-nothing: a home machine
   has no dialable address, so `SessionMode::ByCode` always proxies through the
