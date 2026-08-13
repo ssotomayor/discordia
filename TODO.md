@@ -329,6 +329,38 @@ the top within each section.
 
 ## Voice / audio
 
+- **libwebrtc's noise suppressor may not be running at all, which would mean
+  DeepFilterNet-off is suppressor-*none*.** `apm_options` documents the
+  contract — "exactly one suppressor should be in the path", libwebrtc's when
+  DeepFilterNet is off — and applies it through
+  `NativeAudioSource::set_audio_options`. Measured through the same call, it
+  does nothing: eight runs of `the_knobs_that_shape_voice_quality_are_measured`
+  against the bundled SFU, white noise at 0.15 peak mixed into the 0.5 tone,
+  comparing the share of energy left in the tone's ±40 Hz band.
+
+  ```text
+  noise, APM off   0.8984  0.9068  0.9020  0.9046   mean 0.9030
+  noise, APM on    0.9035  0.9014  0.9045  0.9039   mean 0.9033
+  ```
+
+  A +0.0004 mean difference whose sign flips run to run. The instrument is not
+  blind — the noise itself moves the same number from 0.940 to 0.903, −0.037
+  with the same sign in every run, so it resolves an effect ten times smaller
+  than the one a working suppressor would have to produce.
+
+  The likely reading is that the APM does not run on a programmatically fed
+  `NativeAudioSource` — it is libwebrtc's *capture* pipeline, and nothing here
+  captures. If that is right, the toggle the UI offers is inert, AEC is inert
+  with it, and every bit of suppression the product has comes from
+  DeepFilterNet.
+
+  **Not proven, and the gap is specific.** Band-energy share is not a
+  perceptual measure; a suppressor that acts mostly between words could hide
+  from it. One SNR (~10 dB) and one noise colour were tried. And AEC cannot be
+  tested this way at all — it needs a far-end signal and an acoustic loop.
+  What would settle it: a capture with DeepFilterNet off, real speech, and a
+  spectrogram either side of the toggle. Do not delete this entry on the
+  strength of reading libwebrtc.
 - **The transmit gate judges the denoised hop, so its operating point moves when
   suppression is toggled.** `denoise_gate_loop` runs the model first and gates
   what comes out, so switching DeepFilterNet on drops the signal the gate is
