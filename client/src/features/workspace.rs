@@ -80,7 +80,10 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
             // different units; this one is bound straight to the dB value, so
             // a hand-edited 90 would print "90 dB max" beside a slider that
             // cannot reach it — and be handed to the model regardless.
-            w.denoise_atten_lim_db = saved.denoise_atten_lim_db.clamp(6, 60);
+            w.denoise_atten_lim_db = saved.denoise_atten_lim_db.clamp(
+                crate::features::voice::DENOISE_ATTEN_LIM_DB_MIN,
+                crate::features::voice::DENOISE_ATTEN_LIM_DB_MAX,
+            );
             // Anything outside the two offered values means a hand-edited
             // settings.json; fall back rather than publish an odd bitrate.
             w.voice_bitrate_kbps = match saved.voice_bitrate_kbps {

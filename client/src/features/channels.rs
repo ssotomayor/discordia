@@ -1242,14 +1242,17 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                             let val: u8 = e.value().parse().unwrap_or(70).min(100);
                                             let mut next = settings.read().clone();
                                             next.sfx_volume = val;
-                                            settings.set(next.clone());
-                                            crate::settings::save(&next);
+                                            settings.set(next);
                                             // Apply immediately to the live SFX engine.
                                             let v = val as f32 / 100.0;
                                             let _ = document::eval(&format!(
                                                 "window.dxSfx && window.dxSfx.setVolume({v});"
                                             ));
                                         },
+                                        // The write to disk waits for the drag to
+                                        // end — see the note on the sensitivity
+                                        // slider below.
+                                        onchange: move |_| crate::settings::save(&settings.read()),
                                     }
                                     span { class: "text-[10px] text-[var(--text-dim)] w-8 text-right", "{settings.read().sfx_volume}%" }
                                 }
@@ -1345,12 +1348,12 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                         let pct: u16 = e.value().parse().unwrap_or(100).min(200);
                                         let mut next = settings.read().clone();
                                         next.mic_volume = pct;
-                                        settings.set(next.clone());
-                                        crate::settings::save(&next);
+                                        settings.set(next);
                                         state.write().mic_volume = pct;
                                         let v = v_for_mic_volume.clone();
                                         v.send(crate::features::voice::VoiceCmd::SetMicVolume { percent: pct });
                                     },
+                                    onchange: move |_| crate::settings::save(&settings.read()),
                                 }
                                 if auto_gain_control && mic_volume != 100 {
                                     span { class: "text-[10px] text-[var(--text-dim)] mt-0.5 block",
@@ -1381,17 +1384,27 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                     oninput: move |e| {
                                         let pct: u32 = e.value().parse().unwrap_or(40).clamp(0, 100);
                                         let val = crate::features::voice::meter_pct_to_peak(pct);
-                                        // Persist to client settings
+                                        // Held in memory only. `oninput` fires once per
+                                        // step of the drag, and `settings::save`
+                                        // serialises and rewrites the whole of
+                                        // settings.json each time — one sweep of this
+                                        // slider was ~100 whole-file writes, blocking,
+                                        // on the UI thread.
                                         let mut next = settings.read().clone();
                                         next.mic_sensitivity = val;
-                                        settings.set(next.clone());
-                                        crate::settings::save(&next);
+                                        settings.set(next);
                                         // Update AppState + tell voice service (takes effect
                                         // on the next 150ms speaking-detection tick).
                                         state.write().mic_sensitivity = val;
                                         let v = v_for_sensitivity.clone();
                                         v.send(crate::features::voice::VoiceCmd::SetSensitivity { threshold: val });
                                     },
+                                    // The disk write, once, when the drag ends. The
+                                    // live half above is what makes the knob feel
+                                    // immediate; persistence never needed to be on
+                                    // that path. `change` is the event the selects in
+                                    // this same popover already persist on.
+                                    onchange: move |_| crate::settings::save(&settings.read()),
                                 }
                                 // Live gate state. Moving the slider past the
                                 // current level flips this within ~300ms, which
@@ -1472,22 +1485,25 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                     }
                                     input {
                                         r#type: "range",
-                                        min: "6",
-                                        max: "60",
+                                        min: "{crate::features::voice::DENOISE_ATTEN_LIM_DB_MIN}",
+                                        max: "{crate::features::voice::DENOISE_ATTEN_LIM_DB_MAX}",
                                         step: "1",
                                         value: "{atten_lim_db}",
                                         class: "w-full mt-1 accent-[var(--accent)]",
                                         oninput: move |e| {
-                                            let db: u32 = e.value().parse().unwrap_or(30).clamp(6, 60);
+                                            let db: u32 = e.value().parse().unwrap_or(30).clamp(
+                                                crate::features::voice::DENOISE_ATTEN_LIM_DB_MIN,
+                                                crate::features::voice::DENOISE_ATTEN_LIM_DB_MAX,
+                                            );
                                             let mut next = settings.read().clone();
                                             next.denoise_atten_lim_db = db;
-                                            settings.set(next.clone());
-                                            crate::settings::save(&next);
+                                            settings.set(next);
                                             state.write().denoise_atten_lim_db = db;
                                             // Live: the DSP thread reapplies it on the next hop, so
                                             // dragging this mid-sentence costs no model reload.
                                             v_for_atten.send(crate::features::voice::VoiceCmd::SetDenoiseAttenLim { db });
                                         },
+                                        onchange: move |_| crate::settings::save(&settings.read()),
                                     }
                                     span { class: "text-[10px] text-[var(--text-dim)] mt-0.5 block",
                                         "Lower keeps more of your voice, and more of the room with it."

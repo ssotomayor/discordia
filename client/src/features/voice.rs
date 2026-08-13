@@ -194,21 +194,20 @@ struct AudioControls {
 }
 
 impl AudioControls {
-    fn new(
-        threshold: u32,
-        mic_volume: u16,
-        agc: bool,
-        denoise: bool,
-        atten_lim_db: u32,
-        bitrate_kbps: u32,
-    ) -> Self {
+    /// Seed the live knobs from the settings the UI has already restored.
+    ///
+    /// Takes the state rather than six positional arguments: the list had
+    /// grown to two adjacent `u32`s (the ceiling and the bitrate) that the
+    /// compiler cannot tell apart, and every value here comes off this struct
+    /// at the one call site anyway.
+    fn from_state(s: &AppState) -> Self {
         Self {
-            threshold: Arc::new(AtomicI32::new(threshold as i32)),
-            mic_gain_pct: Arc::new(AtomicI32::new(mic_volume as i32)),
-            agc: Arc::new(AtomicBool::new(agc)),
-            denoise: Arc::new(AtomicBool::new(denoise)),
-            atten_lim_db: Arc::new(AtomicU32::new(atten_lim_db)),
-            bitrate_kbps: Arc::new(AtomicU32::new(bitrate_kbps)),
+            threshold: Arc::new(AtomicI32::new(s.mic_sensitivity as i32)),
+            mic_gain_pct: Arc::new(AtomicI32::new(s.mic_volume as i32)),
+            agc: Arc::new(AtomicBool::new(s.auto_gain_control)),
+            denoise: Arc::new(AtomicBool::new(s.noise_cancellation)),
+            atten_lim_db: Arc::new(AtomicU32::new(s.denoise_atten_lim_db)),
+            bitrate_kbps: Arc::new(AtomicU32::new(s.voice_bitrate_kbps)),
             stats_polling: Arc::new(AtomicBool::new(false)),
             deafened: Arc::new(AtomicBool::new(false)),
             gains: Arc::new(Mutex::new(HashMap::new())),
@@ -266,6 +265,22 @@ struct GateStats {
     atten_lim_applied: AtomicU32,
 }
 
+/// The domain of the suppression ceiling, in dB — the slider's bounds, the
+/// clamp on the command that carries it, and the clamp restoring it from
+/// `settings.json`.
+///
+/// One pair rather than a literal at each of those, because they shipped
+/// disagreeing: the restore clamped to `(1, 100)` against a slider declared
+/// `6..60`, so a hand-edited 90 survived, labelled itself "90 dB max" beside a
+/// control that could not reach it, and went to the model anyway.
+///
+/// Not DeepFilterNet's own range, which is wider. 6 is the least attenuation
+/// worth the model's CPU; past about 60 the ceiling stops being reachable by
+/// anything the model does to speech, so more of it is a longer slider with no
+/// audible other end.
+pub const DENOISE_ATTEN_LIM_DB_MIN: u32 = 6;
+pub const DENOISE_ATTEN_LIM_DB_MAX: u32 = 60;
+
 pub enum VoiceCmd {
     Connect {
         livekit_url: String,
@@ -297,9 +312,9 @@ pub enum VoiceCmd {
     SetSensitivity {
         threshold: u32,
     },
-    /// Ceiling on DeepFilterNet's attenuation, in dB (6..=60, the domain the
-    /// slider in `features::channels` offers). Picked up by the DSP thread on
-    /// its next hop — no model rebuild, so it can be dragged mid-sentence.
+    /// Ceiling on DeepFilterNet's attenuation, in dB — clamped to
+    /// `DENOISE_ATTEN_LIM_DB_MIN..=MAX`. Picked up by the DSP thread on its
+    /// next hop — no model rebuild, so it can be dragged mid-sentence.
     SetDenoiseAttenLim {
         db: u32,
     },
@@ -415,17 +430,7 @@ async fn service_loop(
     // already restored into AppState, then mutated in place by the commands
     // below. A reconnect rebuilds the pipeline around the *same* controls, so
     // sensitivity, noise cancellation and per-user volumes all survive it.
-    let controls = {
-        let s = state.read();
-        AudioControls::new(
-            s.mic_sensitivity,
-            s.mic_volume,
-            s.auto_gain_control,
-            s.noise_cancellation,
-            s.denoise_atten_lim_db,
-            s.voice_bitrate_kbps,
-        )
-    };
+    let controls = AudioControls::from_state(&state.read());
 
     while let Some(cmd) = rx.recv().await {
         match cmd {
@@ -576,6 +581,11 @@ async fn service_loop(
                 state.write().mic_sensitivity = threshold;
             }
             VoiceCmd::SetDenoiseAttenLim { db } => {
+                // Clamped here like every other setter in this match, so the
+                // service holds the domain whatever a caller sends. The slider
+                // clamps too; that is the UI keeping its own label honest, not
+                // this guard's justification.
+                let db = db.clamp(DENOISE_ATTEN_LIM_DB_MIN, DENOISE_ATTEN_LIM_DB_MAX);
                 // Stored only; the DSP thread owns the model and picks this up
                 // on its next hop. Reaching across to the model from here would
                 // need a lock on the audio path for a value that changes when a
@@ -2465,6 +2475,8 @@ struct MicCapture {
     /// Shared with the DSP thread, which is where muted frames are dropped
     /// (after metering, so the VU bar keeps working while muted).
     muted: Arc<AtomicBool>,
+    /// The 2s diagnostic loop, held only so `stop` can end it.
+    heartbeat: tokio::task::JoinHandle<()>,
 }
 
 impl MicCapture {
@@ -2616,10 +2628,17 @@ impl MicCapture {
 
         stream.play().map_err(|e| format!("play mic: {e}"))?;
 
-        // Heartbeat — reports loudest raw sample seen since last tick.
+        // Heartbeat — reports loudest raw sample seen since last tick. The
+        // handle is kept and aborted in `stop`: this outlives the capture
+        // otherwise, and a session is rebuilt on every device change, so the
+        // log would fill with a chorus of dead heartbeats reporting on
+        // `GateStats` nobody writes to any more — worst in `dev.log`, which is
+        // read after the fact and has nothing in a line saying which session
+        // it came from. `meter_task` on `ActiveVoice` is cancelled for the
+        // same reason, one line above the `stop` below it.
         let peak_log = raw_peak.clone();
         let frames_log = frames_pushed.clone();
-        tokio::spawn(async move {
+        let heartbeat = tokio::spawn(async move {
             let mut prev_frames = 0u64;
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
@@ -2677,11 +2696,22 @@ impl MicCapture {
         Ok(Self {
             _stream: stream,
             muted,
+            heartbeat,
         })
     }
 
-    fn stop(self) {
-        drop(self._stream);
+    /// Stop capturing. Both halves go with `self` — see `Drop`.
+    fn stop(self) {}
+}
+
+impl Drop for MicCapture {
+    /// Ends the heartbeat. Here rather than in `stop` because `stop` is not
+    /// the only way a capture goes away: `ActiveVoice::shutdown` calls it, but
+    /// a session that fails partway through building, or one dropped without
+    /// shutting down, just drops this — and a detached `tokio::spawn` has
+    /// nothing else that would ever end it.
+    fn drop(&mut self) {
+        self.heartbeat.abort();
     }
 }
 
