@@ -9,6 +9,10 @@ ureq = { version = "2", default-features = false, features = ["tls"] }
 flate2 = "1"
 tar = "0.4"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+# Digest of the bundled SFU, so `livekit_bundle` reads the answer instead of
+# hashing 49MB on the thread that opens self-host. Already a runtime dependency
+# below — this adds nothing to the tree.
+sha2 = "0.10"
 
 [dev-dependencies]
 # Drive both human and bot sides of the gateway in integration tests.
