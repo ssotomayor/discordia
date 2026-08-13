@@ -11,6 +11,7 @@ pub mod http;
 pub mod livekit;
 pub mod livekit_bundle;
 pub mod media;
+pub mod quic;
 pub mod state;
 pub mod store;
 

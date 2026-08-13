@@ -32,6 +32,12 @@ bs58 = "0.5"
 secp256k1 = { version = "0.29", default-features = false, features = ["std", "rand-std"] }
 hex = "0.4"
 
+# QUIC transport for the direct/private path (roadmap Stage 2, docs/NETWORKING.md).
+# Authentication is by public key by construction, which is the whole argument
+# for it over a self-signed TLS certificate and a hand-rolled verifier. Both the
+# gateway (accept) and the client (dial) need it.
+iroh = "1.0"
+
 # --- DeepFilterNet / tract inference stack ----------------------------------
 # Two reasons this can't run as a plain debug build (see client/src/denoise.rs):
 #
