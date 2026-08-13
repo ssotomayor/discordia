@@ -203,6 +203,9 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
             crate::features::screenshare::ScreenShareBridge {}
             crate::features::screenshare::ScreenSourcePicker {}
             crate::features::screenshare::ScreenSelfPreview {}
+            crate::features::camera::CameraBridge {}
+            crate::features::camera::CameraSelfPreview {}
+            crate::features::camera::CameraGridWindow {}
             crate::features::screenshare::ScreenWatchWindow {}
             crate::features::profiles::ProfileCard {}
             crate::features::chat::ImageViewer {}

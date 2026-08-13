@@ -26,7 +26,17 @@
   rejects the whole file for it — the same trap the script's `xmllint` check
   exists to catch.)
 
-  Only the microphone is listed, deliberately:
+  The camera entry is the same rule applied a second time, and it was added when
+  the camera button was. It is needed because the hardened runtime is on, exactly
+  as above; what differs is where the denial surfaces. Camera capture runs in the
+  webview rather than in our own process, so without this key `getUserMedia`
+  rejects inside WKWebView and the failure arrives as a JavaScript error about a
+  device, with nothing pointing at code signing. It pairs with
+  `NSCameraUsageDescription` in Info.plist: the plist declares the reason, this
+  file grants the capability, and a signed build needs both. Screen sharing needs
+  neither, which is why the two features fail so differently.
+
+  Only these two devices are listed, deliberately:
 
   * Screen and window capture need **no** entitlement. ScreenCaptureKit is gated
     purely by the Screen Recording TCC grant, so `sysvideo` works without one.
@@ -44,6 +54,8 @@
 <plist version="1.0">
 <dict>
 	<key>com.apple.security.device.audio-input</key>
+	<true/>
+	<key>com.apple.security.device.camera</key>
 	<true/>
 </dict>
 </plist>

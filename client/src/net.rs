@@ -814,6 +814,12 @@ fn apply(
                     s.screen_share_target = None;
                     s.screen_sharing = false;
                     s.screen_viewing = None;
+                    // The camera rides the same webview room. Clearing the token
+                    // is what makes the JS controller disconnect and release the
+                    // device; this is the UI half of the same event.
+                    s.camera_on = false;
+                    s.camera_starting = false;
+                    s.cameras_open = false;
                 }
             }
         }

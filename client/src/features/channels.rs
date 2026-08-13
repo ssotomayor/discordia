@@ -530,6 +530,10 @@ fn VoiceChannelRow(
                                     remote_deafened: vs.deafened,
                                     is_self,
                                     is_sharing,
+                                    // Straight off the voice state, because the
+                                    // server puts the camera flag there — no
+                                    // separate map to look it up in.
+                                    has_camera: vs.camera_on,
                                     // Watching needs you in the channel (the JS
                                     // screen room only connects then), and you
                                     // can't watch your own share.
@@ -674,6 +678,7 @@ fn VoiceOccupant(
     remote_deafened: bool,
     is_self: bool,
     is_sharing: bool,
+    has_camera: bool,
     can_watch: bool,
 ) -> Element {
     let mut state = use_app_state();
@@ -780,6 +785,19 @@ fn VoiceOccupant(
                         "live"
                     }
                 }
+                // Camera pill. Also the way back to the tile grid after closing
+                // it — without this, closing the window is a one-way door until
+                // somebody toggles their camera.
+                if has_camera && !is_self {
+                    button {
+                        class: "w-4 h-4 flex items-center justify-center text-[var(--accent)]",
+                        title: "Show cameras",
+                        onclick: move |_| {
+                            state.write().cameras_open = true;
+                        },
+                        dangerous_inner_html: crate::features::icons::CAMERA,
+                    }
+                }
             }
             if show_volume() && !is_self {
                 div { class: "flex items-center gap-1.5 mt-1 mb-0.5",
@@ -836,6 +854,9 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
     let native_capture = crate::sysvideo::supported();
     let self_pubkey = state.read().self_user.as_ref().map(|u| u.pubkey.clone());
     let sharing = state.read().screen_sharing;
+    let camera_on = state.read().camera_on;
+    let camera_starting = state.read().camera_starting;
+    let camera_capture_available = state.read().camera_capture_available;
     let name = self_username.clone().unwrap_or_else(|| "—".into());
     // Own level + progress in the CURRENTLY SELECTED guild (XP is per-guild).
     let (level, xp_pct) = {
@@ -894,6 +915,11 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
     let available_output_devices = state.read().available_output_devices.clone();
     let selected_input_device = state.read().selected_input_device.clone();
     let selected_output_device = state.read().selected_output_device.clone();
+    let available_cameras = state.read().available_cameras.clone();
+    // The camera choice lives only in settings, not mirrored into AppState: no
+    // background service needs it, unlike the audio devices the voice service
+    // is driven by.
+    let selected_camera_id = settings.read().camera_device_id.clone();
     let mic_sensitivity = state.read().mic_sensitivity;
     let mic_level = state.read().mic_level;
     let noise_cancellation = state.read().noise_cancellation;
@@ -948,6 +974,31 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                             title: "{phase_text}",
                         }
                         div { class: "flex-1" }
+                        // Camera toggle. Like the screen button, the capture call
+                        // happens inside this click gesture — see
+                        // `camera::toggle_camera` for why that matters even though
+                        // getUserMedia does not strictly require it.
+                        button {
+                            class: if camera_on {
+                                "w-7 h-7 flex items-center justify-center rounded text-[var(--accent)] transition-colors"
+                            } else {
+                                "w-7 h-7 flex items-center justify-center rounded text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors"
+                            },
+                            disabled: !camera_capture_available,
+                            title: if !camera_capture_available {
+                                "This build's webview has no camera support."
+                            } else if camera_starting {
+                                "Starting your camera…"
+                            } else if camera_on { "Turn your camera off" } else { "Turn your camera on" },
+                            onclick: move |_| {
+                                crate::features::camera::toggle_camera(state, settings, !camera_on);
+                            },
+                            dangerous_inner_html: if camera_on {
+                                crate::features::icons::CAMERA
+                            } else {
+                                crate::features::icons::CAMERA_OFF
+                            },
+                        }
                         // Screen share toggle. Calls getDisplayMedia inside this
                         // click gesture (must not be deferred to an effect).
                         button {
@@ -1065,6 +1116,11 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                         if now {
                             let v = v_for_audio_button.clone();
                             v.send(crate::features::voice::VoiceCmd::ListDevices);
+                            // Cameras come from the webview, not the voice
+                            // service, so they need their own refresh — and it
+                            // matters here because labels appear only after a
+                            // grant, which may have happened since last time.
+                            let _ = document::eval(&crate::features::camera::list_cameras_js());
                         }
                     },
                     dangerous_inner_html: crate::features::icons::GEAR,
@@ -1469,6 +1525,73 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                         "Applies the next time you join a voice channel."
                                     } else {
                                         "Higher sounds better on low voices and background music, and costs more upload."
+                                    }
+                                }
+                            }
+                            // ---- Video ----
+                            // Its own group rather than trailing off the end of
+                            // Transmission, which is about the *voice* encoder:
+                            // these two are the things that put a picture out.
+                            div { class: "mt-3 mb-1.5 pb-1 border-b border-[var(--border)]",
+                                span { class: "text-[10px] font-semibold uppercase tracking-wide text-[var(--text)]", "Video" }
+                            }
+                            // Camera device. A `<select>` here rather than a modal
+                            // like `ScreenSourcePicker`, because the two are
+                            // different kinds of choice: a screen *surface* is
+                            // picked per share from a list that only exists at
+                            // that moment, and the modal stands in for an OS
+                            // dialog ScreenCaptureKit does not provide. A camera
+                            // is a machine-level preference, chosen once and
+                            // remembered — which is exactly what Input and Output
+                            // above already are.
+                            div { class: "mb-2",
+                                span { class: "text-[11px] text-[var(--text-muted)]", "Camera" }
+                                select {
+                                    class: "w-full mt-1 bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)] rounded px-2 py-1 text-sm",
+                                    style: "color: var(--text); background: var(--panel-solid);",
+                                    onchange: move |e| {
+                                        let val = e.value();
+                                        let mut next = settings.read().clone();
+                                        next.camera_device_id = (!val.is_empty()).then(|| val.clone());
+                                        // Remember the label with the id: ids are
+                                        // origin-salted and can rotate between
+                                        // sessions, and the label is what recovers
+                                        // the choice when one does.
+                                        next.camera_device_label = state
+                                            .read()
+                                            .available_cameras
+                                            .iter()
+                                            .find(|d| d.id == val)
+                                            .map(|d| d.label.clone())
+                                            .filter(|l| !l.is_empty());
+                                        settings.set(next.clone());
+                                        crate::settings::save(&next);
+                                        // Restart a running camera onto the new
+                                        // device, from this handler — so the fresh
+                                        // getUserMedia rides the change event's
+                                        // own user activation.
+                                        if state.read().camera_on {
+                                            crate::features::camera::toggle_camera(state, settings, false);
+                                            crate::features::camera::toggle_camera(state, settings, true);
+                                        }
+                                    },
+                                    option { value: "", "System default" }
+                                    for (i, cam) in available_cameras.iter().enumerate() {
+                                        option {
+                                            selected: selected_camera_id.as_ref().map(|id| id == &cam.id).unwrap_or(false),
+                                            value: "{cam.id}",
+                                            // `enumerateDevices` withholds labels
+                                            // until a camera grant exists, so
+                                            // number them until one does rather
+                                            // than showing a row of blanks.
+                                            if cam.label.is_empty() { "Camera {i + 1}" } else { "{cam.label}" }
+                                        }
+                                    }
+                                }
+                                if !available_cameras.is_empty() && available_cameras.iter().all(|c| c.label.is_empty()) {
+                                    div {
+                                        class: "text-[10px] text-[var(--text-dim)] mt-1",
+                                        "Turn your camera on once to see device names."
                                     }
                                 }
                             }

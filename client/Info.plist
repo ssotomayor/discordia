@@ -70,6 +70,22 @@
   own where an unbundled one inherits the terminal's. It is not what blocks a
   public-IP SFU, but it is the same class of bug waiting for `allow_lan` self-
   hosting and for friends joining across a LAN.
+
+  WHY THE CAMERA NEEDS A REASON HERE *AND* AN ENTITLEMENT
+  `NSCameraUsageDescription` is the microphone story again, one device over: a
+  bundled app that asks for the camera without declaring why is denied silently,
+  and `dx serve` will not reproduce it because an unbundled binary inherits the
+  terminal's grant. Camera capture runs in the webview (`getUserMedia`, driven by
+  the LiveKit JS SDK), and WKWebView reads this key from the *bundle*, so a build
+  without it gets a permission error inside the webview rather than anything that
+  names a plist.
+
+  This key alone is NOT enough. Signed builds run under the hardened runtime, and
+  that denies device access unless the app also carries
+  `com.apple.security.device.camera`; see the long note in Entitlements.plist,
+  which is where the microphone's matching entry earns its place. Two files have
+  to agree for the camera to work in a signed bundle, and each fails in a way
+  that looks like the other.
 -->
 <plist version="1.0">
 <dict>
@@ -100,6 +116,8 @@
 		<key>NSAllowsArbitraryLoadsInWebContent</key>
 		<true/>
 	</dict>
+	<key>NSCameraUsageDescription</key>
+	<string>Discordia uses your camera when you turn it on in a voice channel.</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSLocalNetworkUsageDescription</key>

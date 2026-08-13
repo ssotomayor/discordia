@@ -1,5 +1,6 @@
 pub mod activities;
 pub mod appearance;
+pub mod camera;
 pub mod channels;
 pub mod chat;
 pub mod connect;

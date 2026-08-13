@@ -321,6 +321,45 @@ the top within each section.
   (`ClientMessage::UpdateUsername`) + server-side member-row mutation +
   broadcast.
 
+## Camera / video
+
+- **Screen-share presence should move onto `VoiceState`, like the camera's.**
+  The two features now announce themselves differently — camera by a
+  `camera_on` flag on `VoiceState`, screen share by a whole-set
+  `ScreenShareState` message keyed per channel — and `VoiceState` is the better
+  shape for three concrete reasons, not just tidiness. `ServerMessage::Ready`
+  carries `voice_states` and carries **no** screen-share snapshot, so a client
+  reconnecting into a channel where someone is already sharing sees no LIVE
+  badge until that person next toggles it (and reconnects are designed for — a
+  slow consumer is dropped on purpose). `set_screen_share` re-broadcasts its
+  whole sorted list even when nothing changed, where `update_camera` returns
+  `None`. And `screen_shares` leaks an empty `HashSet` per channel via
+  `entry().or_default()` even when *stopping*. Deferred because it is a wire
+  change to a working feature, not because the current shape is right.
+- **An old client can render a webcam in the screen tile.** Camera video shares
+  the screen room and the bare-pubkey identity, told apart only by
+  `TrackSource`; a client older than `features::camera` keys video tracks by
+  identity alone, so if someone is sharing a screen *and* a camera it will show
+  whichever arrived last. Nothing on the server can mitigate it — it is inherent
+  to reusing the room, which is the same property that made the camera cost no
+  new token or identity. Resolves itself as clients update.
+- **No camera quality control.** Fixed at 720p30 / 1.2 Mbit with simulcast on.
+  Screen sharing has a preset table (`QUALITY_PRESETS`) and a picker; the camera
+  has neither. Worth having once there is any evidence about what people's
+  uplinks actually do with camera + screen at the same time — two video uplinks
+  is the case to measure, and on Windows both encoders live in one WebView2
+  process.
+- **`GuildJoined` carries no `voice_states`.** Someone joining a guild
+  mid-session sees no voice presence at all — camera, mute or speaking — until
+  the next change. Pre-existing and unrelated to the camera, but the camera
+  badge makes it more visible.
+- **Windows shows WebView2's own camera prompt**, where macOS shows the TCC
+  prompt once. Expected (wry auto-allows only clipboard-read), and persistence
+  depends on the WebView2 user-data folder, but it is the kind of platform
+  difference that gets reported as a bug. `ICoreWebView2Profile4::
+  SetPermissionState` is the escape hatch if it misbehaves; `webview2-com-sys`
+  is already a dependency.
+
 ## Screen sharing
 
 - **The native picker has no thumbnails.** `ScreenSourcePicker` is a text list:

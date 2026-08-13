@@ -294,7 +294,7 @@ up early and needs defenses first.
 
 ## Explicitly deferred (tracked in TODO.md)
 
-Threads, camera video chat, E2EE DMs (NIP-44), cross-instance federation
+Threads, E2EE DMs (NIP-44), cross-instance federation
 features beyond identity, native mobile apps (post-PWA), official hosted
 instance.
 
@@ -315,7 +315,7 @@ Phantom/EVM wallet; we verify balance via RPC) — never as custody.
 
 ## Invariants to protect through all phases
 
-Hop-in/out voice channels + screenshare; the roles/moderation engine and its
+Hop-in/out voice channels + screenshare + camera; the roles/moderation engine and its
 security rules; the bot platform + intent filtering; Nostr identity everywhere
 (no bearer tokens, no ID verification); one-click embedded self-host never
 regresses.

@@ -113,6 +113,18 @@ pub struct ClientSettings {
     /// gain of every synthesized tone in `window.dxSfx`.
     #[serde(default = "default_sfx_volume")]
     pub sfx_volume: u8,
+    /// The camera to open, by `enumerateDevices` id. `None` = system default.
+    ///
+    /// Written back from what actually *opened*, not from what was asked for, so
+    /// a fallback to another camera never gets persisted as the user's choice.
+    #[serde(default)]
+    pub camera_device_id: Option<String>,
+    /// Its label, kept as the fallback matcher: deviceIds are origin-salted and
+    /// can rotate between sessions while labels usually do not. Unlike the audio
+    /// devices, which are named by a string that *is* the identity, a camera id
+    /// can go stale while the camera is still plugged in.
+    #[serde(default)]
+    pub camera_device_label: Option<String>,
 }
 
 pub fn default_screenshare_quality() -> String {
@@ -194,6 +206,8 @@ impl Default for ClientSettings {
             screenshare_quality: default_screenshare_quality(),
             screenshare_audio: default_screenshare_audio(),
             sfx_volume: default_sfx_volume(),
+            camera_device_id: None,
+            camera_device_label: None,
         }
     }
 }

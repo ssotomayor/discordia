@@ -234,6 +234,18 @@ pub struct ReplyDraft {
     pub excerpt: String,
 }
 
+/// One camera `enumerateDevices` offered us.
+///
+/// The label is carried alongside the id, and persisted with it, because
+/// deviceIds are origin-salted and can rotate between sessions while labels
+/// usually do not — so the label is the fallback matcher for a remembered
+/// choice. Same id-then-label rule the audio output follower already uses.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CameraDevice {
+    pub id: String,
+    pub label: String,
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub status: ConnectionStatus,
@@ -360,6 +372,28 @@ pub struct AppState {
     /// native path decides. Anything gating the share button reads this rather
     /// than asking about a webview API.
     pub screen_capture_available: bool,
+
+    // Camera. Captured in the webview on both platforms, published on the same
+    // connection as the screen room, so none of this touches the voice service.
+    /// Whether we are actually publishing a camera.
+    ///
+    /// Set when the JS reports `camera-started`, never from the click — the
+    /// capture can still be refused, and a button that lights before a track
+    /// exists is the bug the share path already learnt (`share-started`).
+    pub camera_on: bool,
+    /// A start is in flight: the click landed, `getUserMedia` has not answered.
+    pub camera_starting: bool,
+    /// Cameras this webview can open. `label` is empty until a camera grant
+    /// exists for this origin; the ids work regardless, so an unlabelled list is
+    /// offered rather than withheld.
+    pub available_cameras: Vec<CameraDevice>,
+    /// Whether the camera tile grid is on screen. Opened when the first camera
+    /// appears, closed when the last goes; the user may close it in between.
+    pub cameras_open: bool,
+    /// Whether this webview exposes `getUserMedia` at all. Unlike
+    /// `screen_capture_available` there is no native fallback to consult — the
+    /// camera is the webview on every platform.
+    pub camera_capture_available: bool,
 
     // Audio device preferences surfaced to the UI.
     /// Available input device names (populated by voice service on request).
@@ -500,6 +534,11 @@ impl AppState {
             screen_viewing: None,
             replying_to: None,
             screen_capture_available: false,
+            camera_on: false,
+            camera_starting: false,
+            available_cameras: Vec::new(),
+            cameras_open: false,
+            camera_capture_available: false,
             // Audio device prefs: empty by default (discover on demand).
             available_input_devices: Vec::new(),
             available_output_devices: Vec::new(),
@@ -624,6 +663,26 @@ impl AppState {
             .get(&channel_id)
             .map(|v| v.as_slice())
             .unwrap_or(&[])
+    }
+
+    /// Pubkeys with their camera on in a channel, sorted.
+    ///
+    /// Derived from `voice_states` rather than kept in a map of its own, because
+    /// the server puts `camera_on` on the voice state — so this is already
+    /// snapshot on connect and already cleared by every teardown, where
+    /// `screen_shares` needed its own message and its own cleanup.
+    ///
+    /// Sorted so a tile grid built from it does not reshuffle under the reader
+    /// when the roster's order changes for unrelated reasons.
+    pub fn cameras_in(&self, channel_id: Id) -> Vec<String> {
+        let mut out: Vec<String> = self
+            .voice_states
+            .iter()
+            .filter(|v| v.camera_on && v.channel_id == Some(channel_id))
+            .map(|v| v.user_pubkey.clone())
+            .collect();
+        out.sort();
+        out
     }
 
     /// Usernames currently typing in a channel (sorted, for a stable label).

@@ -950,6 +950,22 @@ pub async fn handle_connection(
                             ctx.state.deliver(targets, ServerMessage::VoiceStateUpdate(state));
                         }
                     }
+                    // No `is_guild_member` check, unlike `SetScreenShare` — and
+                    // that asymmetry is deliberate. `SetScreenShare` writes into
+                    // a channel-keyed map that nothing else gates, so it has to
+                    // check. `update_camera` can only touch a voice state that
+                    // already exists, and the only thing that creates one is
+                    // `JoinVoice`, which checks membership. Revocation is
+                    // covered too: kick/ban/leave run through `clear_voice`, so
+                    // the entry is gone before a stale flag could outlive the
+                    // membership. A non-member gets `None` and no frames.
+                    ClientMessage::SetCamera { on } => {
+                        let Some(u) = user.as_ref() else { continue };
+                        if let Some(state) = ctx.state.update_camera(&u.pubkey, on) {
+                            let targets = ctx.state.guild_member_pubkeys(state.guild_id);
+                            ctx.state.deliver(targets, ServerMessage::VoiceStateUpdate(state));
+                        }
+                    }
                     ClientMessage::CreateRole { guild_id, name, color, permissions } => {
                         let Some(u) = user.as_ref() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {

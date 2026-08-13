@@ -1,4 +1,5 @@
-//! End-to-end tests for the voice/screen-share token handshake.
+//! End-to-end tests for the voice/screen-share token handshake, and for voice
+//! *presence* — who is in a channel and what their camera is doing.
 //!
 //! `JoinVoice` is the only client message that mints LiveKit credentials, and
 //! until now nothing exercised it: the three screen-room identities, their
@@ -10,6 +11,11 @@
 //! the *server* hands out: which identities, which grants, and which frames on
 //! failure. Whether an SFU then lets a `can_publish: false` peer subscribe is a
 //! property of LiveKit, not of this code, and needs a live room.
+//!
+//! The camera tests at the bottom are the first coverage of the
+//! `VoiceStateUpdate` fan-out anywhere in the repo — `ScreenShareState`,
+//! `SetVoiceMute` and `SetSpeaking` still have none — so they pin the shape of
+//! that broadcast as much as they test the camera.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -114,8 +120,11 @@ async fn connect_user(url: &str, id: &BotIdentity, name: &str) -> Bot {
     session
 }
 
-/// Create a guild and a voice channel in it, returning the voice channel id.
-async fn voice_channel(owner: &mut Bot) -> Id {
+/// Create a guild and a voice channel in it, returning both ids.
+///
+/// The guild id is returned because the camera tests need a *second* member,
+/// and joining one means naming the guild.
+async fn voice_channel(owner: &mut Bot) -> (Id, Id) {
     owner
         .send(&ClientMessage::CreateGuild {
             name: "Voice Test".into(),
@@ -137,13 +146,14 @@ async fn voice_channel(owner: &mut Bot) -> Id {
         })
         .await
         .unwrap();
-    loop {
+    let channel_id = loop {
         if let ServerMessage::ChannelCreate(ch) = next_timeout(owner).await
             && ch.kind == ChannelKind::Voice
         {
             break ch.id;
         }
-    }
+    };
+    (guild_id, channel_id)
 }
 
 /// Drive a `JoinVoice` and collect what comes back, stopping once the gateway
@@ -215,7 +225,7 @@ async fn join_voice_mints_three_identities_with_the_right_grants() {
     let (url, _handle) = spawn_gateway(local_signing()).await;
     let id = BotIdentity::generate();
     let mut user = connect_user(&url, &id, "sharer").await;
-    let channel_id = voice_channel(&mut user).await;
+    let (_guild_id, channel_id) = voice_channel(&mut user).await;
 
     let frames = join_voice(&mut user, channel_id).await;
     assert!(has_voice_token(&frames), "no VoiceToken in {frames:?}");
@@ -270,7 +280,7 @@ async fn a_failed_screen_mint_reports_and_sends_no_token() {
     let (url, _handle) = spawn_gateway(delegated(|req| req.room.starts_with("screen-"))).await;
     let id = BotIdentity::generate();
     let mut user = connect_user(&url, &id, "sharer").await;
-    let channel_id = voice_channel(&mut user).await;
+    let (_guild_id, channel_id) = voice_channel(&mut user).await;
 
     let frames = join_voice(&mut user, channel_id).await;
 
@@ -297,7 +307,7 @@ async fn a_failed_video_mint_still_sends_the_frame_and_explains_itself() {
     let (url, _handle) = spawn_gateway(delegated(|req| req.identity.ends_with("#video"))).await;
     let id = BotIdentity::generate();
     let mut user = connect_user(&url, &id, "sharer").await;
-    let channel_id = voice_channel(&mut user).await;
+    let (_guild_id, channel_id) = voice_channel(&mut user).await;
 
     let frames = join_voice(&mut user, channel_id).await;
 
@@ -321,7 +331,7 @@ async fn a_failed_audio_mint_is_not_reported_to_the_user() {
     let (url, _handle) = spawn_gateway(delegated(|req| req.identity.ends_with("#audio"))).await;
     let id = BotIdentity::generate();
     let mut user = connect_user(&url, &id, "sharer").await;
-    let channel_id = voice_channel(&mut user).await;
+    let (_guild_id, channel_id) = voice_channel(&mut user).await;
 
     let frames = join_voice(&mut user, channel_id).await;
 
@@ -332,5 +342,198 @@ async fn a_failed_audio_mint_is_not_reported_to_the_user() {
     assert!(
         errors(&frames).is_empty(),
         "a working fallback should not raise an error: {frames:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Camera presence
+//
+// `SetCamera` rides `VoiceStateUpdate` rather than getting a whole-set message
+// of its own like `ScreenShareState`. These are the first tests of that fan-out
+// in the repo — nothing covers `ScreenShareState`, `SetVoiceMute` or
+// `SetSpeaking` at all — so they pin the shape as much as the feature.
+// ---------------------------------------------------------------------------
+
+/// Join a guild as a second member. Guilds are public by default, so no invite.
+async fn join_guild(session: &mut Bot, guild_id: Id) {
+    session
+        .send(&ClientMessage::JoinGuild {
+            guild_id,
+            accept: false,
+            pow_nonce: None,
+        })
+        .await
+        .unwrap();
+    loop {
+        if let ServerMessage::GuildJoined { guild, .. } = next_timeout(session).await
+            && guild.id == guild_id
+        {
+            break;
+        }
+    }
+}
+
+/// Wait for a `VoiceStateUpdate` about `pubkey`, ignoring everything else —
+/// joining voice emits member and voice traffic these tests do not care about.
+async fn next_voice_state(
+    session: &mut Bot,
+    pubkey: &str,
+) -> dioxusfun_server::protocol::VoiceState {
+    loop {
+        if let ServerMessage::VoiceStateUpdate(vs) = next_timeout(session).await
+            && vs.user_pubkey == pubkey
+        {
+            return vs;
+        }
+    }
+}
+
+/// Collect frames until the gateway goes quiet, for the negative assertions.
+/// Same reasoning as `join_voice`: silence is the only honest terminator when
+/// what you are asserting is that nothing was sent.
+async fn drain_quiet(session: &mut Bot) -> Vec<ServerMessage> {
+    let mut out = Vec::new();
+    while let Ok(Some(msg)) =
+        tokio::time::timeout(Duration::from_millis(700), session.next_event()).await
+    {
+        out.push(msg);
+    }
+    out
+}
+
+fn camera_states(frames: &[ServerMessage], pubkey: &str) -> Vec<bool> {
+    frames
+        .iter()
+        .filter_map(|m| match m {
+            ServerMessage::VoiceStateUpdate(vs) if vs.user_pubkey == pubkey => Some(vs.camera_on),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The happy path: a member's camera flag reaches the *other* people in the
+/// guild, which is the whole point of routing it through the server rather than
+/// letting the SFU's own track events speak for themselves.
+#[tokio::test]
+async fn camera_flag_reaches_the_other_members() {
+    let (url, _handle) = spawn_gateway(local_signing()).await;
+    let owner_id = BotIdentity::generate();
+    let member_id = BotIdentity::generate();
+    let mut owner = connect_user(&url, &owner_id, "owner").await;
+    let (guild_id, channel_id) = voice_channel(&mut owner).await;
+
+    let mut member = connect_user(&url, &member_id, "member").await;
+    join_guild(&mut member, guild_id).await;
+    let _ = join_voice(&mut member, channel_id).await;
+    let _ = drain_quiet(&mut owner).await;
+
+    member
+        .send(&ClientMessage::SetCamera { on: true })
+        .await
+        .unwrap();
+    let vs = next_voice_state(&mut owner, member_id.pubkey()).await;
+    assert!(vs.camera_on, "the owner should see the camera come on");
+    assert_eq!(
+        vs.channel_id,
+        Some(channel_id),
+        "and know which channel it is in"
+    );
+
+    member
+        .send(&ClientMessage::SetCamera { on: false })
+        .await
+        .unwrap();
+    let vs = next_voice_state(&mut owner, member_id.pubkey()).await;
+    assert!(!vs.camera_on, "and see it go off again");
+}
+
+/// The `..prev` trap in `clear_voice`. The tombstone must carry `camera_on:
+/// false`; a spread would carry a live `true` into a frame that says the user
+/// is in no channel at all.
+#[tokio::test]
+async fn leaving_voice_clears_the_camera() {
+    let (url, _handle) = spawn_gateway(local_signing()).await;
+    let owner_id = BotIdentity::generate();
+    let member_id = BotIdentity::generate();
+    let mut owner = connect_user(&url, &owner_id, "owner").await;
+    let (guild_id, channel_id) = voice_channel(&mut owner).await;
+
+    let mut member = connect_user(&url, &member_id, "member").await;
+    join_guild(&mut member, guild_id).await;
+    let _ = join_voice(&mut member, channel_id).await;
+    // Joining voice emits its own `VoiceStateUpdate` for this member; drain it,
+    // or the assertion below reads the join frame and sees a camera that has
+    // not been turned on yet.
+    let _ = drain_quiet(&mut owner).await;
+    member
+        .send(&ClientMessage::SetCamera { on: true })
+        .await
+        .unwrap();
+    let vs = next_voice_state(&mut owner, member_id.pubkey()).await;
+    assert!(vs.camera_on, "precondition: the camera is on");
+
+    member.send(&ClientMessage::LeaveVoice).await.unwrap();
+
+    let vs = next_voice_state(&mut owner, member_id.pubkey()).await;
+    assert_eq!(vs.channel_id, None, "precondition: this is the tombstone");
+    assert!(
+        !vs.camera_on,
+        "the tombstone must not carry a live camera flag"
+    );
+}
+
+/// `SetCamera` from someone who never joined voice must do nothing at all —
+/// this is what makes the missing `is_guild_member` check safe, since only
+/// `JoinVoice` (which checks) creates the state `update_camera` can touch.
+#[tokio::test]
+async fn camera_outside_voice_is_ignored() {
+    let (url, _handle) = spawn_gateway(local_signing()).await;
+    let owner_id = BotIdentity::generate();
+    let outsider_id = BotIdentity::generate();
+    let mut owner = connect_user(&url, &owner_id, "owner").await;
+    let (_guild_id, _channel_id) = voice_channel(&mut owner).await;
+
+    // Deliberately never joins the guild or voice.
+    let mut outsider = connect_user(&url, &outsider_id, "outsider").await;
+    let _ = drain_quiet(&mut owner).await;
+    outsider
+        .send(&ClientMessage::SetCamera { on: true })
+        .await
+        .unwrap();
+
+    let frames = drain_quiet(&mut owner).await;
+    assert!(
+        camera_states(&frames, outsider_id.pubkey()).is_empty(),
+        "a non-member's camera must not be announced: {frames:?}"
+    );
+}
+
+/// The dedupe in `update_camera`. Without it every redundant click fans out to
+/// every member of the guild, which is why no rate limiter is needed here.
+#[tokio::test]
+async fn a_repeated_camera_on_broadcasts_once() {
+    let (url, _handle) = spawn_gateway(local_signing()).await;
+    let owner_id = BotIdentity::generate();
+    let member_id = BotIdentity::generate();
+    let mut owner = connect_user(&url, &owner_id, "owner").await;
+    let (guild_id, channel_id) = voice_channel(&mut owner).await;
+
+    let mut member = connect_user(&url, &member_id, "member").await;
+    join_guild(&mut member, guild_id).await;
+    let _ = join_voice(&mut member, channel_id).await;
+    let _ = drain_quiet(&mut owner).await;
+
+    for _ in 0..3 {
+        member
+            .send(&ClientMessage::SetCamera { on: true })
+            .await
+            .unwrap();
+    }
+
+    let frames = drain_quiet(&mut owner).await;
+    assert_eq!(
+        camera_states(&frames, member_id.pubkey()),
+        vec![true],
+        "three identical toggles should announce once: {frames:?}"
     );
 }

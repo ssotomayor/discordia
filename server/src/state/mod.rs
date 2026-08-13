@@ -2235,6 +2235,13 @@ impl AppState {
             muted: prev.as_ref().map(|p| p.muted).unwrap_or(false),
             deafened: prev.as_ref().map(|p| p.deafened).unwrap_or(false),
             speaking: false,
+            // Reset, not carried over from `prev` like mute/deafen: the camera
+            // publishes into the *channel's* `screen-…` room, so a channel
+            // switch leaves the room it was published to. The webview has to
+            // republish into the new one, and until it does, claiming the
+            // camera is on would put a tile in front of everyone that never
+            // fills in.
+            camera_on: false,
         };
         if channel_id.is_some() {
             self.voice_states
@@ -2268,6 +2275,27 @@ impl AppState {
         Some(entry.clone())
     }
 
+    /// Flip a user's camera flag; `None` when it was already there.
+    ///
+    /// Modelled on `update_speaking` rather than `update_voice_flags`, and the
+    /// unchanged-means-`None` short-circuit is the reason why. A camera button
+    /// can be clicked as fast as a mouse allows, and every accepted call fans
+    /// out to *every member of the guild* — so collapsing no-ops here is what
+    /// keeps a spammed toggle from becoming a broadcast storm, without a rate
+    /// limiter. `set_screen_share` does re-broadcast its whole sorted list on a
+    /// redundant call; that is a wart, not a precedent.
+    ///
+    /// Returns `None` for a user with no voice state at all, which is what
+    /// gates this on membership: only `JoinVoice` creates one, and it checks.
+    pub fn update_camera(&self, user_pubkey: &str, on: bool) -> Option<VoiceState> {
+        let mut entry = self.voice_states.get_mut(user_pubkey)?;
+        if entry.camera_on == on {
+            return None;
+        }
+        entry.camera_on = on;
+        Some(entry.clone())
+    }
+
     pub fn update_speaking(&self, user_pubkey: &str, speaking: bool) -> Option<VoiceState> {
         let mut entry = self.voice_states.get_mut(user_pubkey)?;
         if entry.speaking == speaking {
@@ -2283,6 +2311,12 @@ impl AppState {
         Some(VoiceState {
             channel_id: None,
             speaking: false,
+            // Explicit, and it must stay explicit: `..prev` would carry a live
+            // `true` into the tombstone delivered to every guild member. Today
+            // the client drops the row once `channel_id` is None so nothing
+            // renders it, which is exactly what would make a stale camera flag
+            // here cost a debugging session rather than announce itself.
+            camera_on: false,
             ..prev
         })
     }

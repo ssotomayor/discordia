@@ -6,6 +6,12 @@
 //! the video just to hear a call. Who's sharing is tracked via our own protocol
 //! (`ScreenShareState`), not the JS layer.
 //!
+//! **`screen-…` is a misnomer now, and the name is load-bearing so it stays.**
+//! That room carries webcams too (`features::camera`), published on this same
+//! connection under the bare pubkey and told apart by `TrackSource`. Which is
+//! why every video track here is keyed by identity *and* source: one
+//! participant can be sending a screen and a face at once.
+//!
 //! Stream *audio* reaches the ear by one of two routes, and neither of them is
 //! this file's `<audio>` element unless the server is too old to offer the
 //! first. Either the sharer captured it natively (`sysaudio`) and published it
@@ -26,7 +32,10 @@ use crate::protocol::ClientMessage;
 use crate::state::{use_app_state, use_gateway};
 
 /// The JS controller. Idempotent so it's safe to prepend to every eval.
-const SCREEN_JS: &str = r#"
+///
+/// `pub(crate)` because `features::camera` drives the *same* `window.dxScreen`:
+/// the camera publishes on this connection, so it must not build a second one.
+pub(crate) const SCREEN_JS: &str = r#"
 window.dxScreen = window.dxScreen || (function () {
   let room = null;
   let desiredRoom = null;
@@ -37,9 +46,36 @@ window.dxScreen = window.dxScreen || (function () {
   // track is not that, so stopping the share has to stop it explicitly or the
   // machine's sound keeps going out over a share that visibly ended.
   let localShareAudio = null;
-  const tracks = {}; // identity -> video track
+  // The webcam, held across room restarts on purpose. Republishing a track we
+  // already hold calls no capture API, so it needs no user gesture — which is
+  // the only reason an automatic reconnect can restore video at all.
+  let localCameraTrack = null;
+  let localCameraStream = null;
+  let lastCameraOpts = {};
+  let cameraStarting = false;
+  // Video tracks are keyed by identity AND source, not identity alone. One
+  // participant can publish a screen and a webcam at once, and on Windows both
+  // come from the bare pubkey — so an identity-only map holds whichever arrived
+  // last and shows the webcam in the screen tile, or the reverse, depending on
+  // timing. `source` is a property of the publication, so it is read there
+  // rather than guessed from the identity.
+  const tracks = {}; // "identity\0kind" -> video track
   const audioTracks = {}; // identity -> audio track (screen-share sound)
-  const CONTAINERS = ['screenshare-self', 'screenshare-viewer'];
+  function trackKey(id, kind) { return id + '|' + kind; }
+  // Anything that is not explicitly a camera renders as the screen surface —
+  // including the empty source an older peer publishes, which used to be the
+  // only kind there was.
+  function kindOf(pub, track) {
+    const s = (pub && pub.source) || (track && track.source) || '';
+    return s === 'camera' ? 'camera' : 'screen';
+  }
+  // Which container is showing what. Replaces a fixed CONTAINERS list, because
+  // camera tiles are created and destroyed as people toggle. Keeping the
+  // element here is also what lets us `detach` it: `attachInto` used to drop
+  // elements by clearing innerHTML, which leaves them in the track's
+  // attachedElements forever, and adaptiveStream counts those when deciding
+  // whether anyone is still watching.
+  const attached = {}; // containerId -> { identity, kind, track, el }
   const LK = () => window.LivekitClient || window.LiveKitClient;
 
   // --- Screen-share audio -------------------------------------------------
@@ -161,12 +197,18 @@ window.dxScreen = window.dxScreen || (function () {
   function report(identity, present) {
     try { window.postMessage({ __dxf: 'stream-audio', identity: identity, present: !!present }, '*'); } catch (e) {}
   }
-  function attachInto(track, c) {
+  function attachInto(track, c, cid, identity, kind) {
+    const prev = attached[cid];
+    if (prev && prev.track && prev.el) { try { prev.track.detach(prev.el); } catch (e) {} }
     c.innerHTML = '';
     const el = track.attach();
     el.muted = true; el.autoplay = true; el.playsInline = true;
-    el.style.width = '100%'; el.style.height = '100%'; el.style.objectFit = 'contain'; el.style.background = '#000';
+    el.style.width = '100%'; el.style.height = '100%'; el.style.background = '#000';
+    // A shared screen must not be cropped — losing an edge loses content. A face
+    // in a fixed-ratio tile is the opposite: letterboxing it wastes the tile.
+    el.style.objectFit = kind === 'camera' ? 'cover' : 'contain';
     c.appendChild(el);
+    attached[cid] = { identity: identity, kind: kind, track: track, el: el };
   }
   // --- Identity suffixes ---------------------------------------------------
   // A share captured natively is published under `{pubkey}#video`, because the
@@ -182,19 +224,28 @@ window.dxScreen = window.dxScreen || (function () {
   // The video track for a sharer, whichever path captured it. Webview captures
   // land on the bare pubkey, native ones on the suffixed identity; a given
   // sharer only ever has one of the two.
-  function videoTrackFor(id) {
-    return tracks[id] || tracks[id + VIDEO_SUFFIX];
+  //
+  // `id` is always a BASE identity here. The suffix rule applies to screens
+  // only: a camera is always captured by the webview, so it has no suffixed
+  // form to look for.
+  function videoTrackFor(id, kind) {
+    if (kind === 'camera') return tracks[trackKey(id, 'camera')];
+    return tracks[trackKey(id, 'screen')] || tracks[trackKey(id + VIDEO_SUFFIX, 'screen')];
   }
-  // Re-render any container currently pointed at `identity`, which arrives here
-  // as the *publisher's* identity and so may carry the suffix.
-  function reattach(identity) {
+  // Re-render any container currently pointed at `identity` for this kind, which
+  // arrives here as the *publisher's* identity and so may carry the suffix.
+  function reattach(identity, kind) {
     const base = baseIdentity(identity);
-    CONTAINERS.forEach(function (cid) {
+    Object.keys(attached).forEach(function (cid) {
+      const a = attached[cid];
+      if (!a || a.identity !== base || a.kind !== kind) return;
       const c = document.getElementById(cid);
-      if (c && c.getAttribute('data-identity') === base) {
-        const t = videoTrackFor(base);
-        if (t) attachInto(t, c); else c.querySelectorAll('video').forEach(function (e) { e.remove(); });
-      }
+      // A camera tile can be unmounted by Dioxus without a detach call — the
+      // registry has to be pruned here or it grows for the whole session.
+      if (!c) { delete attached[cid]; return; }
+      const t = videoTrackFor(base, kind);
+      if (t) attachInto(t, c, cid, base, kind);
+      else c.querySelectorAll('video').forEach(function (e) { e.remove(); });
     });
   }
   async function ensureLib() { for (let i = 0; i < 100 && !LK(); i++) { await new Promise(function (r) { setTimeout(r, 100); }); } return !!LK(); }
@@ -205,9 +256,15 @@ window.dxScreen = window.dxScreen || (function () {
     for (const k in tracks) delete tracks[k];
     for (const k in audioTracks) delete audioTracks[k];
     detachAudio();
-    CONTAINERS.forEach(function (cid) {
+    Object.keys(attached).forEach(function (cid) {
+      const a = attached[cid];
+      if (a && a.track && a.el) { try { a.track.detach(a.el); } catch (e) {} }
       const c = document.getElementById(cid);
       if (c) c.querySelectorAll('video').forEach(function (e) { e.remove(); });
+      // Keep the entry: the container is still pointed at this identity and
+      // kind, so a reconnect that re-subscribes should refill it. Only the
+      // track and element are gone.
+      if (a) { a.track = null; a.el = null; }
     });
   }
   function scheduleReconnect() {
@@ -220,8 +277,21 @@ window.dxScreen = window.dxScreen || (function () {
     }, delay);
   }
   async function connect(url, token) {
+    const same = desiredRoom && desiredRoom.url === url && desiredRoom.token === token;
     desiredRoom = { url: url, token: token };
-    if (room) return;
+    if (room) {
+      if (same) return;
+      // A DIFFERENT token means a different channel's room. `if (room) return;`
+      // used to swallow that, so moving between voice channels left the webview
+      // attached to the room you left. Invisible while this connection only
+      // rendered other people's shares; now that it also publishes the camera,
+      // it would put your face in the channel you walked out of.
+      await stopLocalShareAudio();
+      const previous = room;
+      room = null;
+      try { await previous.disconnect(); } catch (e) {}
+      clearRemoteTracks();
+    }
     if (!(await ensureLib())) {
       console.warn('[dxScreen] livekit lib not loaded');
       reportRoomProblem('screen-room-error', 'LiveKit did not load');
@@ -273,8 +343,9 @@ window.dxScreen = window.dxScreen || (function () {
         return;
       }
       if (track.kind !== 'video') return;
-      tracks[participant.identity] = track;
-      reattach(participant.identity);
+      const kind = kindOf(pub, track);
+      tracks[trackKey(participant.identity, kind)] = track;
+      reattach(participant.identity, kind);
     });
     thisRoom.on(lk.RoomEvent.TrackUnsubscribed, function (track, pub, participant) {
       if (track.kind === 'audio') {
@@ -292,23 +363,30 @@ window.dxScreen = window.dxScreen || (function () {
         return;
       }
       if (track.kind !== 'video') return;
-      delete tracks[participant.identity];
-      reattach(participant.identity);
+      const kind = kindOf(pub, track);
+      delete tracks[trackKey(participant.identity, kind)];
+      reattach(participant.identity, kind);
     });
     thisRoom.on(lk.RoomEvent.LocalTrackPublished, function (pub) {
       if (!pub.track || pub.track.kind !== 'video') return;
-      tracks[thisRoom.localParticipant.identity] = pub.track;
-      reattach(thisRoom.localParticipant.identity);
+      const kind = kindOf(pub, pub.track);
+      tracks[trackKey(thisRoom.localParticipant.identity, kind)] = pub.track;
+      reattach(thisRoom.localParticipant.identity, kind);
     });
     thisRoom.on(lk.RoomEvent.LocalTrackUnpublished, function (pub) {
       if (!pub.track || pub.track.kind !== 'video') return;
-      delete tracks[thisRoom.localParticipant.identity];
-      reattach(thisRoom.localParticipant.identity);
-      // The user may have stopped sharing from the browser's native "Stop
-      // sharing" bar (which ends the track without going through our Stop
-      // button). Notify Rust so it can flip screen_sharing off and tell the
-      // server, otherwise the self-preview stays mounted showing nothing.
-      notifyShareEnded();
+      const kind = kindOf(pub, pub.track);
+      delete tracks[trackKey(thisRoom.localParticipant.identity, kind)];
+      reattach(thisRoom.localParticipant.identity, kind);
+      // Branch on kind, or turning the camera off ends the screen share: this
+      // arm fires for BOTH local video publications, and `notifyShareEnded`
+      // makes Rust clear `screen_sharing` and announce it to the whole channel.
+      //
+      // Either way the point is the same — the user may have stopped from
+      // outside our UI (the browser's own "Stop sharing" bar, or the OS taking
+      // the camera), which ends the track without going through our button. Rust
+      // has to hear about it or the preview stays mounted showing nothing.
+      if (kind === 'camera') notifyCameraEnded(); else notifyShareEnded();
     });
     try {
       await thisRoom.connect(url, token);
@@ -324,6 +402,17 @@ window.dxScreen = window.dxScreen || (function () {
     // setNativeStreamAudio would have run found nothing to sweep. Anyone already
     // publishing when we arrive is caught here.
     applyAudioSubscriptions();
+    // Restore the camera into the new room. This republishes a track we already
+    // hold rather than re-acquiring it, which is what makes an automatic
+    // reconnect able to bring video back without a user gesture.
+    if (localCameraTrack && localCameraTrack.readyState !== 'ended') {
+      try {
+        await thisRoom.localParticipant.publishTrack(localCameraTrack, cameraPublishOpts(lastCameraOpts));
+      } catch (e) {
+        console.warn('[dxScreen] camera republish failed', e);
+        notifyCameraEnded();
+      }
+    }
   }
   // Notify the Rust side that local screen sharing has ended (track stopped
   // or unpublished by the browser). We must use window.postMessage (NOT
@@ -353,18 +442,31 @@ window.dxScreen = window.dxScreen || (function () {
   function notifyShareEnded() {
     try { window.postMessage({ __dxf: 'screen-share-ended' }, '*'); } catch (e) { console.warn('[dxScreen] notifyShareEnded failed', e); }
   }
-  function attach(identity, cid) {
-    const c = document.getElementById(cid); if (!c) return;
+  function attach(identity, cid, kind, tries) {
+    kind = kind || 'screen';
+    const c = document.getElementById(cid);
+    if (!c) {
+      // Camera tiles are rendered by Dioxus in the same turn that asks for the
+      // attach, so the container can legitimately be a frame late. The two fixed
+      // screen containers never take this path.
+      if ((tries || 0) < 20) setTimeout(function () { attach(identity, cid, kind, (tries || 0) + 1); }, 50);
+      return;
+    }
     c.setAttribute('data-identity', identity);
-    const t = videoTrackFor(identity);
-    if (t) attachInto(t, c); else c.querySelectorAll('video').forEach(function (e) { e.remove(); });
-    if (!t) {
+    attached[cid] = { identity: identity, kind: kind, track: null, el: null };
+    const t = videoTrackFor(identity, kind);
+    if (t) attachInto(t, c, cid, identity, kind); else c.querySelectorAll('video').forEach(function (e) { e.remove(); });
+    if (!t && kind === 'screen') {
       // A publication can legitimately arrive after the watch window opens,
       // but waiting forever is not a state. Keep the identity check so an old
       // timeout cannot complain after the user switched to another stream.
+      //
+      // Screens only: this reports a problem whose advice is "the sharer's build
+      // is too old to publish where you can see it", which is wrong for a camera
+      // and would fire every time someone's camera is slow to arrive.
       setTimeout(function () {
         const current = document.getElementById(cid);
-        if (current && current.getAttribute('data-identity') === identity && !videoTrackFor(identity)) {
+        if (current && current.getAttribute('data-identity') === identity && !videoTrackFor(identity, 'screen')) {
           reportRoomProblem('screen-track-timeout', identity);
         }
       }, 10000);
@@ -379,6 +481,9 @@ window.dxScreen = window.dxScreen || (function () {
     if (cid === 'screenshare-viewer' && !nativeStreamAudio) attachAudio(identity);
   }
   function detach(cid) {
+    const a = attached[cid];
+    if (a && a.track && a.el) { try { a.track.detach(a.el); } catch (e) {} }
+    delete attached[cid];
     const c = document.getElementById(cid); if (!c) return;
     c.removeAttribute('data-identity');
     c.querySelectorAll('video').forEach(function (e) { e.remove(); });
@@ -689,19 +794,143 @@ window.dxScreen = window.dxScreen || (function () {
     if (!room) return;
     try { await room.localParticipant.setScreenShareEnabled(false); } catch (e) {}
   }
+  // --- Camera ---------------------------------------------------------------
+  // Unlike the screen, the camera is captured in the webview on BOTH platforms,
+  // and it publishes on this same connection: the bare-pubkey identity already
+  // holds `can_publish`, and LiveKit tells a camera from a screen by
+  // `TrackSource`, so no fourth identity and no extra token were needed.
+  function post(kind, extra) {
+    const m = Object.assign({ __dxf: kind }, extra || {});
+    try { window.postMessage(m, '*'); } catch (e) {}
+  }
+  function notifyCameraEnded() { post('camera-ended', {}); }
+  function cameraPublishOpts(o) {
+    const lk = LK();
+    return {
+      source: lk.Track.Source.Camera,
+      // Not the screen-share preset table: a face should stay fluid and may go
+      // soft, a screen is the reverse.
+      videoEncoding: { maxBitrate: o.bitrate || 1200000, maxFramerate: o.fps || 30 },
+      degradationPreference: 'maintain-framerate',
+      // On, unlike the screen path. A camera is watched in a small tile far more
+      // often than full size, and the low layer is what keeps a grid affordable.
+      simulcast: true,
+    };
+  }
+  // The local preview is a plain element over the raw stream, NOT a LiveKit
+  // attach: it has to work before the room exists and keep working if
+  // publishing fails, and it never goes near the SFU.
+  function attachLocalCamera(cid) {
+    const c = document.getElementById(cid || 'camera-self');
+    if (!c || !localCameraStream) return;
+    c.innerHTML = '';
+    const el = document.createElement('video');
+    el.srcObject = localCameraStream;
+    el.muted = true; el.autoplay = true; el.playsInline = true;
+    el.style.width = '100%'; el.style.height = '100%'; el.style.objectFit = 'cover'; el.style.background = '#000';
+    // Mirrored, and only here: you expect your own reflection, and nobody
+    // expects a mirrored stranger. Remote tiles must not carry this.
+    el.style.transform = 'scaleX(-1)';
+    c.appendChild(el);
+  }
+  function detachLocalCamera(cid) {
+    const c = document.getElementById(cid || 'camera-self');
+    if (c) c.querySelectorAll('video').forEach(function (e) { e.srcObject = null; e.remove(); });
+  }
+  async function startCamera(opts) {
+    if (cameraStarting) return;
+    cameraStarting = true;
+    try { return await startCameraInner(opts || {}); } finally { cameraStarting = false; }
+  }
+  async function startCameraInner(opts) {
+    if (!(navigator && navigator.mediaDevices && navigator.mediaDevices.getUserMedia)) {
+      post('camera-unavailable', {});
+      return;
+    }
+    if (localCameraTrack) await stopCamera();
+    lastCameraOpts = opts;
+    const base = { width: { ideal: opts.width || 1280 }, height: { ideal: opts.height || 720 }, frameRate: { ideal: opts.fps || 30 } };
+    // `exact` on the deviceId so a stale saved id fails loudly instead of
+    // silently opening a different camera; the next attempt drops it.
+    const attempts = opts.deviceId
+      ? [{ video: Object.assign({ deviceId: { exact: opts.deviceId } }, base) }, { video: base }, { video: true }]
+      : [{ video: base }, { video: true }];
+    let stream = null;
+    for (let i = 0; i < attempts.length; i++) {
+      try { stream = await navigator.mediaDevices.getUserMedia(attempts[i]); break; }
+      catch (e) {
+        if (isUserCancel(e)) { post('camera-denied', { name: String((e && e.name) || '') }); return; }
+        if (i === attempts.length - 1) { post('camera-error', { detail: String((e && e.message) || e) }); return; }
+      }
+    }
+    const vt = stream && stream.getVideoTracks()[0];
+    if (!vt) { post('camera-error', { detail: 'no video track' }); return; }
+    localCameraTrack = vt; localCameraStream = stream;
+    // Preview now, before the room and before publishing, so the picture is up
+    // while the connection is still settling.
+    attachLocalCamera('camera-self');
+    // Unplugged, or taken by another app. Same wiring the screen path uses for
+    // the browser's own "Stop sharing" bar.
+    vt.addEventListener('ended', function () { notifyCameraEnded(); });
+    for (let i = 0; i < 150 && !room; i++) await new Promise(function (r) { setTimeout(r, 100); });
+    if (!room) { await stopCamera(); post('camera-error', { detail: 'not connected to the stream room' }); return; }
+    try {
+      await room.localParticipant.publishTrack(vt, cameraPublishOpts(opts));
+      const s = (function () { try { return vt.getSettings(); } catch (e) { return {}; } })();
+      // Report what actually opened, not what was asked for, so a fallback does
+      // not get persisted as the user's choice.
+      post('camera-started', { deviceId: (s && s.deviceId) || '', label: vt.label || '' });
+      // Labels only become readable once a grant exists, and this is the moment
+      // one first does.
+      listCameras();
+    } catch (e) {
+      await stopCamera();
+      post('camera-error', { detail: String((e && e.message) || e) });
+    }
+  }
+  async function stopCamera() {
+    const vt = localCameraTrack;
+    localCameraTrack = null; localCameraStream = null;
+    detachLocalCamera('camera-self');
+    if (!vt) return;
+    // Unpublish before stopping, for the same reason stopLocalShareAudio does:
+    // a stopped-but-published track leaves viewers attached to a dead stream.
+    if (room) { try { await room.localParticipant.unpublishTrack(vt, true); } catch (e) {} }
+    try { vt.stop(); } catch (e) {}
+  }
+  async function listCameras() {
+    if (!(navigator && navigator.mediaDevices && navigator.mediaDevices.enumerateDevices)) { post('camera-devices', { devices: [] }); return; }
+    try {
+      const devs = await navigator.mediaDevices.enumerateDevices();
+      // `label` is empty until a camera grant exists for this origin. The ids
+      // still work, so an unlabelled list is offered rather than withheld and
+      // the UI names them positionally until a grant arrives.
+      post('camera-devices', {
+        devices: devs.filter(function (d) { return d.kind === 'videoinput'; })
+                     .map(function (d) { return { id: d.deviceId, label: d.label || '' }; }),
+      });
+    } catch (e) { post('camera-devices', { devices: [] }); }
+  }
+  try {
+    navigator.mediaDevices.addEventListener('devicechange', function () { listCameras(); });
+  } catch (e) {}
+
   async function disconnect() {
     desiredRoom = null;
     reconnectAttempt = 0;
     if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
     // Before `room` is cleared, so the unpublish still has somewhere to go.
     await stopLocalShareAudio();
+    // Leaving voice must put the camera light out. The capture is an OS-level
+    // grant that outlives the room, so dropping the room is not enough.
+    await stopCamera();
     const previous = room;
     room = null;
     if (previous) { try { await previous.disconnect(); } catch (e) {} }
     clearRemoteTracks();
-    CONTAINERS.forEach(detach);
+    Object.keys(attached).forEach(detach);
   }
-  return { connect: connect, attach: attach, detach: detach, requestAndStartShare: requestAndStartShare, stopShare: stopShare, disconnect: disconnect, setStreamVolume: setStreamVolume, setSink: setSink, setNativeStreamAudio: setNativeStreamAudio };
+  return { connect: connect, attach: attach, detach: detach, requestAndStartShare: requestAndStartShare, stopShare: stopShare, disconnect: disconnect, setStreamVolume: setStreamVolume, setSink: setSink, setNativeStreamAudio: setNativeStreamAudio, startCamera: startCamera, stopCamera: stopCamera, listCameras: listCameras, attachLocalCamera: attachLocalCamera };
 })();
 "#;
 
@@ -810,11 +1039,14 @@ pub fn share_js(on: bool, quality: &str, audio: bool) -> String {
     )
 }
 
-fn attach_js(identity: &str, container: &str) -> String {
-    format!("{SCREEN_JS}\nwindow.dxScreen.attach('{identity}','{container}');")
+/// Point a container at a publisher's video. `kind` is `"screen"` or
+/// `"camera"` — the same participant can be publishing both, so the container
+/// has to say which one it wants.
+pub(crate) fn attach_js(identity: &str, container: &str, kind: &str) -> String {
+    format!("{SCREEN_JS}\nwindow.dxScreen.attach('{identity}','{container}','{kind}');")
 }
 
-fn detach_js(container: &str) -> String {
+pub(crate) fn detach_js(container: &str) -> String {
     format!("{SCREEN_JS}\nwindow.dxScreen.detach('{container}');")
 }
 
@@ -1438,7 +1670,7 @@ pub fn ScreenSelfPreview() -> Element {
         let sh = sharing();
         if sh != *last.peek() {
             if sh && let Some(pk) = self_pk() {
-                let _ = document::eval(&attach_js(&pk, "screenshare-self"));
+                let _ = document::eval(&attach_js(&pk, "screenshare-self", "screen"));
             }
             last.set(sh);
         }
@@ -1550,7 +1782,9 @@ pub fn ScreenSelfPreview() -> Element {
 }
 
 #[derive(Clone, Copy, PartialEq)]
-enum Drag {
+/// Drag state for the floating windows. `pub(crate)` so `features::camera`'s
+/// two windows reuse it rather than declaring a third identical copy.
+pub(crate) enum Drag {
     Move { dx: f64, dy: f64 },
     Resize { px: f64, py: f64, w0: f64, h0: f64 },
 }
@@ -1586,7 +1820,7 @@ pub fn ScreenWatchWindow() -> Element {
                     let js = format!(
                         "{}\n{}",
                         stream_volume_js(gain),
-                        attach_js(pk, "screenshare-viewer"),
+                        attach_js(pk, "screenshare-viewer", "screen"),
                     );
                     drop(s);
                     let _ = document::eval(&js);

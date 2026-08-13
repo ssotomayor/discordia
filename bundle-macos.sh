@@ -2,7 +2,7 @@
 # Build the macOS .app + .dmg, code-signed if an identity is available.
 #
 # WHY SIGN AT ALL
-# macOS TCC records a Screen Recording / Microphone grant against the app's code
+# macOS TCC records a Screen Recording / Microphone / Camera grant against the app's code
 # signature. An ad-hoc signature is derived from the binary, so it changes on
 # every build, the grant no longer matches, and — because a record for the bundle
 # id already exists — macOS does not re-prompt. ScreenCaptureKit instead fails
@@ -69,10 +69,13 @@ else
   cat >&2 <<'WARN'
 warn: DISCORDIA_SIGNING_IDENTITY unset — building ad-hoc signed.
       The bundle will run, but macOS will treat it as a different app from your
-      last build, so Screen Recording and Microphone grants will not carry over.
-      Reset them with:
+      last build, so Screen Recording, Microphone and Camera grants will not
+      carry over. Reset them with:
         tccutil reset ScreenCapture com.discordia.app
         tccutil reset Microphone    com.discordia.app
+        tccutil reset Camera        com.discordia.app
+      Each prints one line per copy of the app registered under that bundle id,
+      so several lines is normal and means several copies exist, not an error.
 WARN
 fi
 

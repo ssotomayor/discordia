@@ -230,6 +230,41 @@ mod level_tests {
     }
 }
 
+#[cfg(test)]
+mod camera_wire_tests {
+    use super::{ClientMessage, VoiceState};
+
+    /// A `VoiceState` from a server older than the camera has no `camera_on`
+    /// key at all. `#[serde(default)]` is what stops that being a hard parse
+    /// error that would take the whole voice roster down, so it is worth a test
+    /// of its own: the attribute is one word, easily dropped in a refactor, and
+    /// nothing else here would notice.
+    #[test]
+    fn a_voice_state_without_camera_on_still_parses() {
+        let old = r#"{
+            "user_pubkey": "abc",
+            "guild_id": "00000000-0000-0000-0000-000000000001",
+            "channel_id": null,
+            "muted": false,
+            "deafened": false,
+            "speaking": true
+        }"#;
+        let vs: VoiceState = serde_json::from_str(old).expect("older server's frame still parses");
+        assert!(vs.speaking, "the fields that were there survive");
+        assert!(!vs.camera_on, "the absent one defaults to off, not on");
+    }
+
+    /// The tag/content envelope, not the field: a typo in the variant name is
+    /// invisible to the compiler on both sides but silently unroutable.
+    #[test]
+    fn set_camera_round_trips_over_the_wire() {
+        let json = serde_json::to_string(&ClientMessage::SetCamera { on: true }).unwrap();
+        assert_eq!(json, r#"{"op":"set_camera","d":{"on":true}}"#);
+        let back: ClientMessage = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back, ClientMessage::SetCamera { on: true }));
+    }
+}
+
 /// An emoji reaction on a message and the pubkeys who added it.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Reaction {
@@ -298,6 +333,23 @@ pub struct VoiceState {
     pub muted: bool,
     pub deafened: bool,
     pub speaking: bool,
+    /// True while this user is publishing a webcam into the `screen-{channel}`
+    /// room for the channel they are in.
+    ///
+    /// A per-user voice flag, alongside the others, rather than a whole-set
+    /// message shaped like `ScreenShareState`. That is not only tidier: `Ready`
+    /// carries `voice_states` and carries *no* screen-share snapshot, so a
+    /// client that connects while someone is already sharing learns nothing
+    /// until that person next toggles it. Riding here is what makes a
+    /// reconnecting client see cameras that were already on — and reconnects
+    /// are designed for, since a slow consumer is dropped on purpose.
+    ///
+    /// It also inherits every teardown the other flags have: leaving, being
+    /// disconnected, being kicked or banned, and channel deletion all clear the
+    /// whole `VoiceState`, where `screen_shares` needs four separate call sites
+    /// to do the same job.
+    #[serde(default)]
+    pub camera_on: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -859,6 +911,16 @@ pub enum ClientMessage {
     SetSpeaking {
         speaking: bool,
     },
+    /// Announce that the sender turned their webcam on or off.
+    ///
+    /// No `channel_id`, unlike `SetScreenShare`: the server reads it from the
+    /// sender's own voice state, so a client cannot claim a camera in a channel
+    /// it is not in. Ignored outright when the sender is not in voice — which
+    /// is also what gates it on guild membership, since only `JoinVoice`
+    /// creates a voice state and it checks.
+    SetCamera {
+        on: bool,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1060,6 +1122,18 @@ pub enum ServerMessage {
     /// Token for the webview JS client to join the screen-share room for a
     /// channel (sent alongside `VoiceToken` on join). Used to publish and to
     /// render screen *video*.
+    ///
+    /// It is also the token the **webcam** publishes under. Camera video
+    /// deliberately adds no fourth identity: this connection already holds
+    /// `can_publish` under the bare pubkey, and LiveKit tells a camera track
+    /// from a screen track by `TrackSource`, not by identity. That is why the
+    /// camera needed no new token, no new grant and no change to
+    /// `server::livekit` — do not "fix" it by minting one.
+    ///
+    /// The cost of sharing the identity is a mixed-version hazard the server
+    /// cannot mitigate: a client older than the camera keys video tracks by
+    /// identity alone, so it may render someone's webcam in the screen tile.
+    /// Inherent to reusing the room, and the same property that made this cheap.
     ScreenToken {
         channel_id: Id,
         livekit_url: String,

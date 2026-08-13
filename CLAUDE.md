@@ -34,7 +34,7 @@ flowchart LR
         Voice["features/voice.rs — native LiveKit SDK<br/>mic, playback mixer, voice room,<br/>audio-only screen-room subscriber,<br/>screen-video publisher"]
         SysAudio["sysaudio/ — native system-audio capture<br/>macOS ScreenCaptureKit · Windows WASAPI loopback"]
         SysVideo["sysvideo/ — native screen capture<br/>macOS ScreenCaptureKit (zero-copy CVPixelBuffer)"]
-        WebJS["features/screenshare.rs — webview JS bridge<br/>LiveKit JS SDK: renders all shares;<br/>captures video on Windows only"]
+        WebJS["features/screenshare.rs + features/camera.rs — webview JS bridge<br/>LiveKit JS SDK: renders all shares and cameras;<br/>captures screen on Windows only, camera everywhere"]
         UI --> Net
         SysAudio --> Voice
         SysVideo --> Voice
@@ -54,7 +54,7 @@ flowchart LR
 
     subgraph SFU["LiveKit SFU"]
         VoiceRoom["voice-{channel}<br/>native peers: mic + shared system audio"]
-        ScreenRoom["screen-{channel}<br/>webview peer (renders; captures on Windows, identity = pubkey)<br/>native peer (audio-only, identity = pubkey#audio)<br/>native peer (video publisher on macOS, identity = pubkey#video)"]
+        ScreenRoom["screen-{channel}<br/>webview peer (renders; screen on Windows + camera always, identity = pubkey)<br/>native peer (audio-only, identity = pubkey#audio)<br/>native peer (screen video publisher on macOS, identity = pubkey#video)"]
     end
 
     subgraph Rendezvous["rendezvous (optional discovery relay)"]
@@ -87,6 +87,18 @@ adding it makes `getDisplayMedia` appear. The native path stays because it is
 better here (no copy, no colour conversion, our own surface picker), not because
 the webview cannot. The webview still joins the room on both platforms, because
 it is what *renders* everyone else's share.
+
+**The camera is the exception to all of that: webview everywhere.** `client/src/
+features/camera.rs` captures with `getUserMedia` on macOS and Windows alike and
+publishes on the webview's *existing* connection, as `TrackSource::Camera`. That
+identity already holds publish rights, so the camera needed no fourth identity,
+no extra token, and no change to `server::livekit` — and `screen-{channel}` is
+now a misnomer for a room carrying faces as well as screens. The price is that
+every video track in the JS controller is keyed by identity **and** source: one
+participant can send both at once, and on Windows both come from the same
+identity. Who has a camera on rides `camera_on` on `VoiceState`, not LiveKit's
+track events, so it survives a reconnect and reaches people who are not in the
+channel to observe the publication themselves.
 
 ---
 
@@ -214,13 +226,13 @@ it is what *renders* everyone else's share.
   rendezvous. `rendezvous.rs` — the rendezvous client (control handshake +
   proxy bridging). `blossom.rs` — Nostr media upload for avatars/banners.
 - `features/*.rs` — UI, one module per surface: `guilds`, `channels`, `chat`,
-  `members`, `voice`, `screenshare`, `roles`, `guild_settings`, `integrations`
-  (bots), `profiles`, `connect`, `appearance`, `activities`.
+  `members`, `voice`, `screenshare`, `camera`, `roles`, `guild_settings`,
+  `integrations` (bots), `profiles`, `connect`, `appearance`, `activities`.
 - **One user joins the screen room under up to three identities, on purpose.**
   LiveKit allows only one connection per identity, so each job that needs its own
   connection needs its own suffix:
-  - bare `{pubkey}` — the webview. Renders every share; also *captures* on
-    Windows.
+  - bare `{pubkey}` — the webview. Renders every share; *captures* the screen on
+    Windows, and publishes the **camera** on every platform.
   - `{pubkey}#audio` — native, audio-only, `auto_subscribe: false`. Subscribes to
     stream audio so it plays through the same cpal device as voice. Its token is
     minted **without** publish rights, unlike the other two.
@@ -234,6 +246,11 @@ it is what *renders* everyone else's share.
   `screen_token_as` takes as an argument rather than inferring from the suffix.
   That only binds on the local mint; a rendezvous-delegated one signs its own
   grants (see `TODO.md`).
+
+  **The camera deliberately did not add a fourth.** It rides the bare identity
+  and is told apart by `TrackSource`, which is exactly why it cost no token, no
+  grant and no server change. If you are about to mint a `#camera` identity to
+  "fix" something, that is the thing to reconsider first.
 - **Screen-share audio has two paths into the same room, on purpose.** Both land
   in the same
   cpal mixer voice already uses, so stream audio follows the chosen output
@@ -303,8 +320,8 @@ dx serve --package dioxusfun
 
 # Package the macOS .app + .dmg. Use the script rather than `dx bundle` directly:
 # it passes the code-signing identity, which is what makes macOS keep its Screen
-# Recording / Microphone grants across rebuilds instead of treating every build
-# as a new app. The identity is per-developer and deliberately not in
+# Recording / Microphone / Camera grants across rebuilds instead of treating
+# every build as a new app. The identity is per-developer and deliberately not in
 # Dioxus.toml — naming one there breaks everyone else's build and all three CI
 # pre-release jobs, because dx hands it to `codesign`, which fails hard.
 DISCORDIA_SIGNING_IDENTITY="Apple Development: You (TEAMID)" ./bundle-macos.sh
