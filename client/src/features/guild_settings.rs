@@ -532,13 +532,37 @@ fn SafetyControls(
             }
             div { class: "max-h-32 overflow-y-auto space-y-0.5",
                 for e in entries().iter().rev().take(50).cloned() {
-                    div {
-                        key: "{e.at_ms}-{e.action}-{e.target}",
-                        class: "text-[10px] text-[var(--text-dim)] font-mono flex gap-2",
-                        span { class: "text-[var(--accent)]", "{e.action}" }
-                        span { class: "truncate", "{truncate_pubkey(&e.target)}" }
-                        if !e.detail.is_empty() {
-                            span { class: "truncate text-[var(--text-muted)]", "{e.detail}" }
+                    {
+                        // Who acted, by name where we know it. `actor_pubkey` has
+                        // been written by every `audit()` call and persisted since
+                        // the log existed, and nothing rendered it — so the log
+                        // answered "what happened to whom" and not "who did it",
+                        // which is the question an audit log is for.
+                        //
+                        // Resolved through the member list rather than shown raw,
+                        // like every other pubkey in the UI. It falls back to the
+                        // truncated key, which is the honest answer for an actor
+                        // who has since left the guild.
+                        let actor = state
+                            .read()
+                            .user_of(&e.actor_pubkey)
+                            .map(|u| u.username.clone())
+                            .unwrap_or_else(|| truncate_pubkey(&e.actor_pubkey));
+                        rsx! {
+                            div {
+                                key: "{e.at_ms}-{e.action}-{e.target}",
+                                class: "text-[10px] text-[var(--text-dim)] font-mono flex gap-2",
+                                span {
+                                    class: "truncate text-[var(--text-muted)] shrink-0",
+                                    title: "{e.actor_pubkey}",
+                                    "{actor}"
+                                }
+                                span { class: "text-[var(--accent)]", "{e.action}" }
+                                span { class: "truncate", "{truncate_pubkey(&e.target)}" }
+                                if !e.detail.is_empty() {
+                                    span { class: "truncate text-[var(--text-muted)]", "{e.detail}" }
+                                }
+                            }
                         }
                     }
                 }

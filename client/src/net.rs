@@ -781,6 +781,18 @@ fn apply(
                 }
             }
 
+            // Close the viewer if the person we are watching has stopped —
+            // whether they turned the share off, left, or were removed, since all
+            // three arrive as a voice state with `screen_sharing` false or a
+            // tombstone. The `ScreenShareState` arm does the same check, and a
+            // current server sends both; this one is what keeps the viewer honest
+            // if that legacy frame ever goes away.
+            if s.screen_viewing.as_deref() == Some(vs.user_pubkey.as_str())
+                && (!vs.screen_sharing || vs.channel_id.is_none())
+            {
+                s.screen_viewing = None;
+            }
+
             // Self updates propagate to local VoiceSession.
             if is_self {
                 // The server is the authority on these two and can disagree

@@ -346,10 +346,21 @@ pub struct VoiceState {
     ///
     /// It also inherits every teardown the other flags have: leaving, being
     /// disconnected, being kicked or banned, and channel deletion all clear the
-    /// whole `VoiceState`, where `screen_shares` needs four separate call sites
-    /// to do the same job.
+    /// whole `VoiceState`.
     #[serde(default)]
     pub camera_on: bool,
+    /// True while this user is sharing their screen in the channel they are in.
+    ///
+    /// The authoritative record — `ScreenShareState` is still sent alongside it,
+    /// but derived from this rather than from a map of its own. Moving it here
+    /// fixed three things at once: `Ready` carries `voice_states` and carried no
+    /// screen-share snapshot, so a client connecting while someone was already
+    /// sharing saw no LIVE badge until that person next toggled it; the old
+    /// setter re-broadcast its whole sorted list even when nothing had changed;
+    /// and its `entry().or_default()` left an empty `HashSet` per channel behind
+    /// even on *stop*.
+    #[serde(default)]
+    pub screen_sharing: bool,
 }
 
 // ---------------------------------------------------------------------------

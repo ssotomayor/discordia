@@ -769,21 +769,37 @@ pub async fn handle_connection(
                             bots: ctx.state.guild_installs(guild_id),
                         }).await;
                     }
-                    ClientMessage::SetScreenShare { channel_id, sharing } => {
+                    // `channel_id` is accepted and ignored. The flag lives on the
+                    // sender's own `VoiceState` now, so the channel comes from
+                    // there — a client cannot claim a share in a channel its
+                    // voice state says it is not in. The field stays on the wire
+                    // so a client older than this still talks to a new server;
+                    // serde drops what the struct does not name.
+                    //
+                    // No `is_guild_member` check for the same reason `SetCamera`
+                    // needs none: `update_screen_share` can only touch a voice
+                    // state that exists, and only `JoinVoice` creates one, and it
+                    // checks.
+                    ClientMessage::SetScreenShare { channel_id: _, sharing } => {
                         let Some(u) = user.as_ref() else { continue };
-                        // Members only — otherwise any connected user could flip
-                        // LIVE badges in guilds they don't belong to.
-                        let Some(gid) = ctx.state.channel_guild(channel_id) else { continue };
-                        if !ctx.state.is_guild_member(gid, &u.pubkey) {
+                        let Some(vs) = ctx.state.update_screen_share(&u.pubkey, sharing) else {
                             continue;
+                        };
+                        let targets = ctx.state.guild_member_pubkeys(vs.guild_id);
+                        let channel = vs.channel_id;
+                        ctx.state
+                            .deliver(targets.clone(), ServerMessage::VoiceStateUpdate(vs));
+                        // And the legacy frame, derived from the same source, for
+                        // clients older than `VoiceState::screen_sharing`.
+                        if let Some(cid) = channel {
+                            ctx.state.deliver(
+                                targets,
+                                ServerMessage::ScreenShareState {
+                                    channel_id: cid,
+                                    sharers: ctx.state.screen_sharers_in(cid),
+                                },
+                            );
                         }
-                        let sharers = ctx.state.set_screen_share(channel_id, &u.pubkey, sharing);
-                        // Tell the channel's guild who's live.
-                        let targets = ctx.state.guild_member_pubkeys(gid);
-                        ctx.state.deliver(
-                            targets,
-                            ServerMessage::ScreenShareState { channel_id, sharers },
-                        );
                     }
                     ClientMessage::JoinVoice { channel_id } => {
                         let Some(u) = user.as_ref() else {
@@ -930,11 +946,15 @@ pub async fn handle_connection(
                     }
                     ClientMessage::LeaveVoice => {
                         let Some(u) = user.as_ref() else { continue };
+                        // Captured before the clear: that is what ends the share.
+                        let was_sharing = sharing_in(&ctx.state, &u.pubkey);
                         if let Some(cleared) = ctx.state.clear_voice(&u.pubkey) {
                             let targets = ctx.state.guild_member_pubkeys(cleared.guild_id);
                             ctx.state.deliver(targets, ServerMessage::VoiceStateUpdate(cleared));
                         }
-                        broadcast_screen_clear(&ctx.state, &u.pubkey);
+                        if let Some((gid, cid)) = was_sharing {
+                            broadcast_screen_state(&ctx.state, gid, cid);
+                        }
                     }
                     ClientMessage::SetVoiceMute { muted, deafened } => {
                         let Some(u) = user.as_ref() else { continue };
@@ -1136,11 +1156,12 @@ pub async fn handle_connection(
                         if !limiter.allow() {
                             continue;
                         }
+                        let was_sharing = sharing_in(&ctx.state, &user_pubkey);
                         match ctx.state.kick_member(guild_id, &user_pubkey, &u.pubkey).await {
                             Ok(cleared_voice) => {
                                 tracing::info!(%guild_id, target = %user_pubkey, by = %u.username, "member kicked");
                                 ctx.state.audit(guild_id, &u.pubkey, "kick", &user_pubkey, "").await;
-                                removal_broadcasts(&ctx.state, guild_id, &user_pubkey, true, cleared_voice);
+                                removal_broadcasts(&ctx.state, guild_id, &user_pubkey, true, cleared_voice, was_sharing);
                             }
                             Err(e) => {
                                 let _ = send(&mut ws_tx, &ServerMessage::Error { message: e }).await;
@@ -1158,11 +1179,12 @@ pub async fn handle_connection(
                             continue;
                         }
                         let was_member = ctx.state.is_guild_member(guild_id, &user_pubkey);
+                        let was_sharing = sharing_in(&ctx.state, &user_pubkey);
                         match ctx.state.ban_member(guild_id, &user_pubkey, &u.pubkey).await {
                             Ok(cleared_voice) => {
                                 tracing::info!(%guild_id, target = %user_pubkey, by = %u.username, "member banned");
                                 ctx.state.audit(guild_id, &u.pubkey, "ban", &user_pubkey, "").await;
-                                removal_broadcasts(&ctx.state, guild_id, &user_pubkey, was_member, cleared_voice);
+                                removal_broadcasts(&ctx.state, guild_id, &user_pubkey, was_member, cleared_voice, was_sharing);
                                 // Refresh the moderator's ban panel.
                                 if let Ok(users) = ctx.state.ban_list(guild_id, &u.pubkey) {
                                     let _ = send(&mut ws_tx, &ServerMessage::GuildBans {
@@ -1224,10 +1246,11 @@ pub async fn handle_connection(
                             }).await;
                             continue;
                         };
+                        let was_sharing = sharing_in(&ctx.state, &u.pubkey);
                         match ctx.state.leave_guild(guild_id, &u.pubkey).await {
                             Ok(cleared_voice) => {
                                 tracing::info!(%guild_id, by = %u.username, "left guild");
-                                removal_broadcasts(&ctx.state, guild_id, &u.pubkey, true, cleared_voice);
+                                removal_broadcasts(&ctx.state, guild_id, &u.pubkey, true, cleared_voice, was_sharing);
                             }
                             Err(e) => {
                                 let _ = send(&mut ws_tx, &ServerMessage::Error { message: e }).await;
@@ -1490,12 +1513,15 @@ pub async fn handle_connection(
         .unregister_conn(conn_id, user.as_ref().map(|u| u.pubkey.as_str()));
 
     if let Some(u) = user {
+        let was_sharing = sharing_in(&ctx.state, &u.pubkey);
         if let Some(cleared) = ctx.state.clear_voice(&u.pubkey) {
             let targets = ctx.state.guild_member_pubkeys(cleared.guild_id);
             ctx.state
                 .deliver(targets, ServerMessage::VoiceStateUpdate(cleared));
         }
-        broadcast_screen_clear(&ctx.state, &u.pubkey);
+        if let Some((gid, cid)) = was_sharing {
+            broadcast_screen_state(&ctx.state, gid, cid);
+        }
         for (guild_id, user_pubkey) in ctx.state.mark_offline(&u.pubkey) {
             // Only the members of that guild should see the leave.
             let targets = ctx.state.guild_member_pubkeys(guild_id);
@@ -1598,12 +1624,16 @@ where
 /// guild down cleanly and reselects), the remaining members drop the roster
 /// row, any voice/screen presence in that guild is broadcast clear, and the
 /// public catalog refreshes (member count changed).
+/// `was_sharing` is read by the caller *before* the removal, because removing
+/// the member clears their voice state and the tombstone no longer names the
+/// channel their share was in — which the legacy `ScreenShareState` frame needs.
 fn removal_broadcasts(
     state: &crate::state::AppState,
     guild_id: crate::protocol::Id,
     target: &str,
     was_member: bool,
     cleared_voice: Option<crate::protocol::VoiceState>,
+    was_sharing: Option<(Id, Id)>,
 ) {
     // Compute the remaining audience AFTER removal so the target never
     // receives the roster frames meant for members.
@@ -1629,14 +1659,8 @@ fn removal_broadcasts(
         vs_targets.push(target.to_string());
         state.deliver(vs_targets, ServerMessage::VoiceStateUpdate(vs));
     }
-    for (channel_id, sharers) in state.clear_user_screen_shares_in_guild(guild_id, target) {
-        state.deliver(
-            rest.clone(),
-            ServerMessage::ScreenShareState {
-                channel_id,
-                sharers,
-            },
-        );
+    if let Some((gid, cid)) = was_sharing {
+        broadcast_screen_state(state, gid, cid);
     }
 }
 
@@ -1660,21 +1684,35 @@ fn broadcast_emojis(state: &crate::state::AppState, guild_id: Id) {
     state.deliver(targets, ServerMessage::GuildEmojis { guild_id, emojis });
 }
 
-/// Drop a user from every screen-share set and tell each affected channel's
-/// guild members the updated sharer list.
-fn broadcast_screen_clear(state: &crate::state::AppState, pubkey: &str) {
-    for (channel_id, sharers) in state.clear_user_screen_shares(pubkey) {
-        if let Some(gid) = state.channel_guild(channel_id) {
-            let targets = state.guild_member_pubkeys(gid);
-            state.deliver(
-                targets,
-                ServerMessage::ScreenShareState {
-                    channel_id,
-                    sharers,
-                },
-            );
-        }
+/// Where a user is sharing right now, if they are — `(guild, channel)`.
+///
+/// Read *before* their voice state is cleared, because clearing it is what ends
+/// the share and the tombstone no longer names the channel. Returns `None` when
+/// they were not sharing, which is what keeps a plain leave from broadcasting a
+/// sharer list that has not changed.
+fn sharing_in(state: &crate::state::AppState, pubkey: &str) -> Option<(Id, Id)> {
+    let vs = state.voice_states.get(pubkey)?;
+    if !vs.screen_sharing {
+        return None;
     }
+    vs.channel_id.map(|cid| (vs.guild_id, cid))
+}
+
+/// Tell a channel who is still sharing, after someone stopped.
+///
+/// The state itself needs no clearing — the flag rides `VoiceState`, so
+/// `clear_voice` already took it. This exists only to re-derive the legacy
+/// `ScreenShareState` frame for clients older than `VoiceState::screen_sharing`,
+/// which have no other way to drop the LIVE badge.
+fn broadcast_screen_state(state: &crate::state::AppState, guild_id: Id, channel_id: Id) {
+    let targets = state.guild_member_pubkeys(guild_id);
+    state.deliver(
+        targets,
+        ServerMessage::ScreenShareState {
+            channel_id,
+            sharers: state.screen_sharers_in(channel_id),
+        },
+    );
 }
 
 /// The set of pubkeys allowed to see activity in a channel: a guild's members

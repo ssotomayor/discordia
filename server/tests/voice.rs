@@ -537,3 +537,156 @@ async fn a_repeated_camera_on_broadcasts_once() {
         "three identical toggles should announce once: {frames:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Screen-share presence
+//
+// The flag moved from a channel-keyed `DashMap` onto `VoiceState`. The legacy
+// `ScreenShareState` frame is still sent, derived from the same source, because
+// nothing on this wire carries a version and dropping it would silently take the
+// LIVE badge away from any older client.
+// ---------------------------------------------------------------------------
+
+fn share_states(frames: &[ServerMessage], pubkey: &str) -> Vec<bool> {
+    frames
+        .iter()
+        .filter_map(|m| match m {
+            ServerMessage::VoiceStateUpdate(vs) if vs.user_pubkey == pubkey => {
+                Some(vs.screen_sharing)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn legacy_sharers(frames: &[ServerMessage]) -> Vec<Vec<String>> {
+    frames
+        .iter()
+        .filter_map(|m| match m {
+            ServerMessage::ScreenShareState { sharers, .. } => Some(sharers.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Both frames, from one toggle, agreeing — the legacy one derived from the new
+/// flag rather than from a map that could drift out of step with it.
+#[tokio::test]
+async fn sharing_announces_on_both_the_new_flag_and_the_legacy_frame() {
+    let (url, _handle) = spawn_gateway(local_signing()).await;
+    let owner_id = BotIdentity::generate();
+    let member_id = BotIdentity::generate();
+    let mut owner = connect_user(&url, &owner_id, "owner").await;
+    let (guild_id, channel_id) = voice_channel(&mut owner).await;
+
+    let mut member = connect_user(&url, &member_id, "member").await;
+    join_guild(&mut member, guild_id).await;
+    let _ = join_voice(&mut member, channel_id).await;
+    let _ = drain_quiet(&mut owner).await;
+
+    member
+        .send(&ClientMessage::SetScreenShare {
+            channel_id,
+            sharing: true,
+        })
+        .await
+        .unwrap();
+    let frames = drain_quiet(&mut owner).await;
+
+    assert_eq!(
+        share_states(&frames, member_id.pubkey()),
+        vec![true],
+        "the flag should reach the other member exactly once: {frames:?}"
+    );
+    assert_eq!(
+        legacy_sharers(&frames),
+        vec![vec![member_id.pubkey().to_string()]],
+        "and the legacy frame should carry the same person: {frames:?}"
+    );
+}
+
+/// The gap this migration exists to close: a member reconnecting while someone
+/// is *already* sharing used to learn nothing until that person next toggled it,
+/// because `Ready` carries `voice_states` and no screen-share snapshot. A
+/// reconnect rather than a fresh user because `Ready`'s roster is scoped to the
+/// guilds you are in — and reconnects are designed for here, since the transport
+/// drops a slow consumer on purpose.
+#[tokio::test]
+async fn a_reconnecting_member_sees_a_share_already_in_progress() {
+    let (url, _handle) = spawn_gateway(local_signing()).await;
+    let owner_id = BotIdentity::generate();
+    let sharer_id = BotIdentity::generate();
+    let mut owner = connect_user(&url, &owner_id, "owner").await;
+    let (guild_id, channel_id) = voice_channel(&mut owner).await;
+
+    let mut sharer = connect_user(&url, &sharer_id, "sharer").await;
+    join_guild(&mut sharer, guild_id).await;
+    let _ = join_voice(&mut sharer, channel_id).await;
+    sharer
+        .send(&ClientMessage::SetScreenShare {
+            channel_id,
+            sharing: true,
+        })
+        .await
+        .unwrap();
+    let _ = drain_quiet(&mut owner).await;
+
+    // The owner reconnects, as a client dropped by the transport would.
+    drop(owner);
+    let mut owner = Bot::connect_as_user(&url, &owner_id, "owner")
+        .await
+        .unwrap();
+    let ready = loop {
+        if let ServerMessage::Ready { voice_states, .. } = next_timeout(&mut owner).await {
+            break voice_states;
+        }
+    };
+
+    let sharing = ready
+        .iter()
+        .find(|v| v.user_pubkey == sharer_id.pubkey())
+        .map(|v| v.screen_sharing);
+    assert_eq!(
+        sharing,
+        Some(true),
+        "Ready's voice roster should say the share is live: {ready:?}"
+    );
+}
+
+/// The `..prev` trap, for the older of the two flags.
+#[tokio::test]
+async fn leaving_voice_clears_the_share() {
+    let (url, _handle) = spawn_gateway(local_signing()).await;
+    let owner_id = BotIdentity::generate();
+    let member_id = BotIdentity::generate();
+    let mut owner = connect_user(&url, &owner_id, "owner").await;
+    let (guild_id, channel_id) = voice_channel(&mut owner).await;
+
+    let mut member = connect_user(&url, &member_id, "member").await;
+    join_guild(&mut member, guild_id).await;
+    let _ = join_voice(&mut member, channel_id).await;
+    member
+        .send(&ClientMessage::SetScreenShare {
+            channel_id,
+            sharing: true,
+        })
+        .await
+        .unwrap();
+    let _ = drain_quiet(&mut owner).await;
+
+    member.send(&ClientMessage::LeaveVoice).await.unwrap();
+    let frames = drain_quiet(&mut owner).await;
+
+    assert!(
+        share_states(&frames, member_id.pubkey())
+            .last()
+            .map(|s| !s)
+            .unwrap_or(false),
+        "the tombstone must not carry a live share flag: {frames:?}"
+    );
+    assert_eq!(
+        legacy_sharers(&frames).last().cloned(),
+        Some(Vec::new()),
+        "and the legacy frame should go empty: {frames:?}"
+    );
+}

@@ -71,8 +71,6 @@ pub struct AppState {
     /// Voice state per user pubkey (global; a user can only be in one voice
     /// channel at a time across all guilds, same as Discord).
     pub voice_states: DashMap<String, VoiceState>,
-    /// Pubkeys currently screen-sharing, per channel.
-    pub screen_shares: DashMap<Id, std::collections::HashSet<String>>,
     /// Installed bots, indexed by bot pubkey then guild. Grants apply to
     /// connections that self-declare as bots (`Identify { bot: true }`); an
     /// install alone never restricts a human connection. Managed via
@@ -136,7 +134,6 @@ impl AppState {
             members: DashMap::new(),
             users: DashMap::new(),
             profiles: DashMap::new(),
-            screen_shares: DashMap::new(),
             bot_installs: DashMap::new(),
             roles: DashMap::new(),
             emojis: DashMap::new(),
@@ -554,56 +551,41 @@ impl AppState {
         Ok(updated)
     }
 
-    /// Mark a user sharing (or not) in a channel; returns the channel's current
-    /// sorted sharer list.
-    pub fn set_screen_share(&self, channel_id: Id, pubkey: &str, sharing: bool) -> Vec<String> {
-        let mut set = self.screen_shares.entry(channel_id).or_default();
-        if sharing {
-            set.insert(pubkey.to_string());
-        } else {
-            set.remove(pubkey);
+    /// Flip a user's screen-share flag; `None` when it was already there.
+    ///
+    /// Same shape as `update_camera`, and it replaced a channel-keyed
+    /// `DashMap<Id, HashSet<String>>`. Three things came off with that map: the
+    /// unchanged-means-`None` short-circuit here bounds the fan-out a spammed
+    /// toggle can cause, where the old setter re-broadcast its whole sorted list
+    /// on every redundant call; the map leaked an empty `HashSet` per channel
+    /// through `entry().or_default()` even when *stopping*; and teardown no
+    /// longer needs call sites of its own, because leaving, disconnecting, being
+    /// kicked and channel deletion all already clear the whole `VoiceState`.
+    pub fn update_screen_share(&self, user_pubkey: &str, sharing: bool) -> Option<VoiceState> {
+        let mut entry = self.voice_states.get_mut(user_pubkey)?;
+        if entry.screen_sharing == sharing {
+            return None;
         }
-        let mut list: Vec<String> = set.iter().cloned().collect();
+        entry.screen_sharing = sharing;
+        Some(entry.clone())
+    }
+
+    /// The sorted pubkeys sharing a screen in a channel, derived from the voice
+    /// states rather than stored.
+    ///
+    /// Only `ServerMessage::ScreenShareState` needs this. That message is kept
+    /// because dropping it would silently take the LIVE badge away from any
+    /// client older than `screen_sharing`, and nothing on this wire carries a
+    /// version to detect that with. Deriving it means the two can never disagree.
+    pub fn screen_sharers_in(&self, channel_id: Id) -> Vec<String> {
+        let mut list: Vec<String> = self
+            .voice_states
+            .iter()
+            .filter(|v| v.screen_sharing && v.channel_id == Some(channel_id))
+            .map(|v| v.user_pubkey.clone())
+            .collect();
         list.sort();
         list
-    }
-
-    /// Remove a user from the screen-share sets of ONE guild's channels (on
-    /// kick/ban/leave — their shares elsewhere are untouched). Returns the
-    /// affected `(channel, new sorted list)` pairs to broadcast.
-    pub fn clear_user_screen_shares_in_guild(
-        &self,
-        guild_id: Id,
-        pubkey: &str,
-    ) -> Vec<(Id, Vec<String>)> {
-        let mut affected = Vec::new();
-        for mut entry in self.screen_shares.iter_mut() {
-            let cid = *entry.key();
-            if self.channels.get(&cid).map(|c| c.guild_id) != Some(guild_id) {
-                continue;
-            }
-            if entry.value_mut().remove(pubkey) {
-                let mut list: Vec<String> = entry.value().iter().cloned().collect();
-                list.sort();
-                affected.push((cid, list));
-            }
-        }
-        affected
-    }
-
-    /// Remove a user from every screen-share set (on leave/disconnect).
-    /// Returns the affected `(channel, new sorted list)` pairs to broadcast.
-    pub fn clear_user_screen_shares(&self, pubkey: &str) -> Vec<(Id, Vec<String>)> {
-        let mut affected = Vec::new();
-        for mut entry in self.screen_shares.iter_mut() {
-            if entry.value_mut().remove(pubkey) {
-                let cid = *entry.key();
-                let mut list: Vec<String> = entry.value().iter().cloned().collect();
-                list.sort();
-                affected.push((cid, list));
-            }
-        }
-        affected
     }
 
     /// Snapshot of all known profiles.
@@ -1643,7 +1625,8 @@ impl AppState {
             .filter_map(|pk| self.clear_voice(pk))
             .collect();
         self.channels.remove(&channel_id);
-        self.screen_shares.remove(&channel_id);
+        // No screen-share map to prune: the flag rides `VoiceState`, and the
+        // `clear_voice` sweep above already took it with the occupants.
         if let Some(mut ids) = self.channels_by_guild.get_mut(&guild_id) {
             ids.retain(|c| *c != channel_id);
         }
@@ -2235,6 +2218,9 @@ impl AppState {
             muted: prev.as_ref().map(|p| p.muted).unwrap_or(false),
             deafened: prev.as_ref().map(|p| p.deafened).unwrap_or(false),
             speaking: false,
+            // Same reset, same reason as the camera below: a share publishes into
+            // the channel's own `screen-…` room, so switching channels leaves it.
+            screen_sharing: false,
             // Reset, not carried over from `prev` like mute/deafen: the camera
             // publishes into the *channel's* `screen-…` room, so a channel
             // switch leaves the room it was published to. The webview has to
@@ -2317,6 +2303,10 @@ impl AppState {
             // renders it, which is exactly what would make a stale camera flag
             // here cost a debugging session rather than announce itself.
             camera_on: false,
+            // Explicit for the same reason, and it matters more here: this flag
+            // is older and is rendered in two places, so a stale `true` would be
+            // visible rather than merely wrong.
+            screen_sharing: false,
             ..prev
         })
     }

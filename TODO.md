@@ -99,19 +99,28 @@ the top within each section.
   grows (notarisation requires the hardened runtime, which `--options runtime`
   already sets), and the notarise step should be gated on an env var the way
   `DISCORDIA_SIGNING_IDENTITY` is, so an unset credential still builds.
-- **`Discordia.html` is unreferenced.** 488,666 bytes at the repo root, titled
-  "Bundled Page", with its CSS and JS embedded. It arrived in `88d8f1d` — the
-  large roadmap-execution commit — and nothing in the workspace mentions it:
-  `git grep 'Discordia.html'` outside the file itself returns nothing. The
-  dead-code sweep in `03c7e48` removed `connect.mp3` and `discordia-logo.svg` and
-  did not touch this. Left in place because deleting another author's file on a
-  guess is worse than carrying it; whoever added it should say what it is.
-  It is not inert, either. Tailwind v4 scans the project on its own on top of the
-  `@source` in `assets/tailwind.css`, and this file is where the `.shadow` rule
-  in the committed `tailwind.out.css` comes from — nothing in `client/src`
-  produces it. Measured by regenerating with `source(none)`, which drops exactly
-  that rule. So an unreferenced 488 KB page is contributing a class to the CSS
-  compiled into the binary.
+- **`Discordia.html` should be named and moved, not deleted — it is the design
+  comp.** 488,666 bytes at the repo root, titled "Bundled Page", arrived in
+  `88d8f1d`, and referenced by nothing in the workspace. This entry used to ask
+  whoever added it to say what it is, and that is now answered: it contains
+  "100 day streak", "Send a tip", "Relay op" and "Key verified" — the exact
+  badges the design-adoption section describes as things "the design shows" — and
+  it is the only design asset in the repo. So the entries about the comp point at
+  this file, and deleting it would take their reference with it.
+  What is left is that nothing says so. It sits at the repo root under a
+  meaningless title, which is precisely why it read as dead weight. Moving it to
+  something like `docs/design/` and naming it would close this; the reason that
+  is deferred rather than done is that it is another author's file and its path
+  may be pasted somewhere outside the repo.
+  **The stray-CSS half of this entry was wrong and is fixed.** It claimed this
+  file was the source of an unused drop-shadow rule in the committed
+  `tailwind.out.css`. It was not — the rule survived excluding it. The evidence
+  behind the original claim was a `source(none)` build, which disables *every*
+  automatic source at once and so could not attribute the rule to any particular
+  one. `assets/tailwind.css` now builds with `source(none)` plus one explicit
+  `@source` over `src/**/*.rs`, which drops that rule and exactly nothing else
+  (measured). See the comment there: the funniest of the real culprits was this
+  file, whose own description of the rule was keeping it alive.
 
 ## Assets
 
@@ -142,12 +151,11 @@ the top within each section.
 
 ## Guild owner controls (roles, membership, moderation)
 
-- **The audit log records who acted and never shows it.**
-  `AuditEntry.actor_pubkey` is written by every `audit()` call and persisted,
-  but the panel in `guild_settings.rs` renders only time, action, target and
-  detail — nothing reads the actor. "Who did this" is the question an audit log
-  exists to answer. (`GuildEmoji.created_ms` and `.added_by` are write-only in
-  the same way, with less at stake.)
+- **`GuildEmoji.created_ms` and `.added_by` are written and never read.** Both
+  are persisted by the emoji upload path and nothing renders either, so "who
+  added this emoji, and when" is recorded and unanswerable. Same shape as the
+  audit log actor, which is now shown; less at stake here, which is why it was
+  not done in the same change.
 - **LiveKit force-eviction on kick.** A kicked user's client is told to hang up
   (cleared `VoiceStateUpdate`), but a malicious client keeps a valid LiveKit
   token until its TTL. Use the LiveKit RemoveParticipant API (or short TTLs)
@@ -298,19 +306,18 @@ the top within each section.
 
 ## Camera / video
 
-- **Screen-share presence should move onto `VoiceState`, like the camera's.**
-  The two features now announce themselves differently — camera by a
-  `camera_on` flag on `VoiceState`, screen share by a whole-set
-  `ScreenShareState` message keyed per channel — and `VoiceState` is the better
-  shape for three concrete reasons, not just tidiness. `ServerMessage::Ready`
-  carries `voice_states` and carries **no** screen-share snapshot, so a client
-  reconnecting into a channel where someone is already sharing sees no LIVE
-  badge until that person next toggles it (and reconnects are designed for — a
-  slow consumer is dropped on purpose). `set_screen_share` re-broadcasts its
-  whole sorted list even when nothing changed, where `update_camera` returns
-  `None`. And `screen_shares` leaks an empty `HashSet` per channel via
-  `entry().or_default()` even when *stopping*. Deferred because it is a wire
-  change to a working feature, not because the current shape is right.
+- **`ClientMessage::SetScreenShare` still carries a `channel_id` nothing reads.**
+  The flag moved onto `VoiceState`, so the server takes the channel from the
+  sender's own voice state and ignores the field. It is kept on the wire because
+  removing it would break a client older than the change: serde drops fields the
+  struct does not name, so an old client talking to a new server still works,
+  while the reverse would not. Removable once no old clients are expected — which
+  nothing on this wire can detect, so it is a judgement call rather than a check.
+- **`ScreenShareState` is now redundant for current clients.** It is still sent,
+  derived from `screen_sharing` on the voice states rather than from a map of its
+  own, purely so a client older than that flag keeps its LIVE badge. Same
+  removal condition, and the same inability to detect when it is met. Deriving it
+  at least means the two can no longer disagree.
 - **An old client can render a webcam in the screen tile.** Camera video shares
   the screen room and the bare-pubkey identity, told apart only by
   `TrackSource`; a client older than `features::camera` keys video tracks by

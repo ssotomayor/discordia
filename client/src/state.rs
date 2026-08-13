@@ -663,12 +663,33 @@ impl AppState {
             .unwrap_or(&[])
     }
 
-    /// Pubkeys sharing their screen in a channel.
-    pub fn screen_sharers_in(&self, channel_id: Id) -> &[String] {
-        self.screen_shares
-            .get(&channel_id)
-            .map(|v| v.as_slice())
-            .unwrap_or(&[])
+    /// Pubkeys sharing their screen in a channel, sorted.
+    ///
+    /// The union of two sources, deliberately. `VoiceState::screen_sharing` is
+    /// the current one and the only one that survives a reconnect, since `Ready`
+    /// carries the voice roster and no screen-share snapshot. `screen_shares` is
+    /// filled by `ScreenShareState`, which a server older than that flag is the
+    /// only thing still sending — so taking the union is what makes this client
+    /// work against both without needing to detect which it is talking to.
+    ///
+    /// Returns owned rather than a slice because there is no longer one stored
+    /// list to borrow.
+    pub fn screen_sharers_in(&self, channel_id: Id) -> Vec<String> {
+        let mut out: Vec<String> = self
+            .voice_states
+            .iter()
+            .filter(|v| v.screen_sharing && v.channel_id == Some(channel_id))
+            .map(|v| v.user_pubkey.clone())
+            .collect();
+        if let Some(legacy) = self.screen_shares.get(&channel_id) {
+            for pk in legacy {
+                if !out.contains(pk) {
+                    out.push(pk.clone());
+                }
+            }
+        }
+        out.sort();
+        out
     }
 
     /// Pubkeys with their camera on in a channel, sorted.
