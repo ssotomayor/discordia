@@ -77,7 +77,11 @@ fn chat_scroll_js(mode: &str) -> String {
     )
 }
 
-/// Drag-and-drop attachment bridge, evaluated by the composer.
+/// Attachment bridge for drag-and-drop *and* paste, evaluated by the composer.
+///
+/// Both routes end in the same `{ k: 'file' }` message and the same
+/// `pending_image` slot the "+" picker fills, so an image arrives identically
+/// however it was offered.
 ///
 /// Two things are worth knowing here:
 ///
@@ -123,14 +127,9 @@ const DROP_JS: &str = r#"
     depth = Math.max(0, depth - 1);
     if (depth === 0) sink({ k: 'over', v: false });
   }, false);
-  document.addEventListener('drop', function (e) {
-    e.preventDefault();
-    depth = 0;
-    sink({ k: 'over', v: false });
-    if (!inZone(e)) return;
-    var f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
-    if (!f) return;
-    if (f.type && f.type.indexOf('image/') !== 0) {
+  // Shared by drop and paste: both end in "one image file, as a data URL".
+  function readImage(f, typeChecked) {
+    if (!typeChecked && f.type && f.type.indexOf('image/') !== 0) {
       sink({ k: 'err', v: "That's not an image." });
       return;
     }
@@ -149,6 +148,44 @@ const DROP_JS: &str = r#"
     };
     r.onerror = function () { sink({ k: 'err', v: "Couldn't read that file." }); };
     r.readAsDataURL(f);
+  }
+
+  document.addEventListener('drop', function (e) {
+    e.preventDefault();
+    depth = 0;
+    sink({ k: 'over', v: false });
+    if (!inZone(e)) return;
+    var f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    if (!f) return;
+    readImage(f);
+  }, false);
+
+  // Cmd/Ctrl+V of an image, into the same `pending_image` slot the picker and a
+  // drop both fill. On `document` rather than the input, because the clipboard
+  // event goes to whatever has focus and the composer is not always it.
+  document.addEventListener('paste', function (e) {
+    // Scoped to the chat column, so an image pasted into a settings field or a
+    // profile editor is not quietly turned into a message attachment.
+    if (!inZone(e)) return;
+    var items = (e.clipboardData && e.clipboardData.items) || [];
+    var f = null;
+    for (var i = 0; i < items.length; i++) {
+      if (items[i].kind === 'file' && items[i].type && items[i].type.indexOf('image/') === 0) {
+        f = items[i].getAsFile();
+        break;
+      }
+    }
+    // No image on the clipboard: return WITHOUT preventDefault, or pasting
+    // ordinary text into the composer stops working — which is the far more
+    // common thing anyone does with Cmd+V.
+    if (!f) return;
+    // There is an image and we are taking it, so stop the webview also pasting
+    // its own representation (WebKit will otherwise drop a copy of the image, or
+    // its file name, into the text input).
+    e.preventDefault();
+    // Type already established by the loop above; a clipboard item can report a
+    // size of 0 until read, so let the size check speak for itself.
+    readImage(f, true);
   }, false);
 })();
 "#;
@@ -486,7 +523,12 @@ fn MessageRow(message: Message, grouped: bool) -> Element {
                         let full = img.clone();
                         rsx! {
                             img {
-                                class: "mt-1 rounded-md border border-[var(--border)] max-w-xs max-h-80 object-contain block hover:border-[var(--border-strong)] transition-colors",
+                                // Visible edge and an opaque backing. The old
+                                // `--border` is ~15% alpha of the accent, so a
+                                // screenshot — especially one with transparency —
+                                // bled into the message background with nothing
+                                // marking where the image stopped.
+                                class: "mt-1 rounded-md border border-[var(--border-strong)] bg-[var(--panel2)] max-w-xs max-h-80 object-contain block hover:border-[var(--accent)] transition-colors",
                                 style: "cursor: zoom-in;",
                                 src: "{img}",
                                 alt: "attachment",
@@ -991,7 +1033,13 @@ fn Composer(channel_id: Id, composer_label: String, drag_over: Signal<bool>) -> 
             if let Some(img) = pending_image() {
                 div { class: "mb-2 flex items-center gap-2",
                     img {
-                        class: "h-16 w-16 object-cover rounded border border-[var(--border)]",
+                        // `--border-strong` and an opaque backing, not the plain
+                        // `--border`, which is ~15% alpha of the accent and so
+                        // close to invisible that the thumbnail read as floating
+                        // loose in the message list. The background matters for
+                        // the same reason: a screenshot with transparency showed
+                        // the chat straight through itself.
+                        class: "h-16 w-16 object-cover rounded border border-[var(--border-strong)] bg-[var(--panel2)]",
                         src: "{img}",
                         alt: "pending attachment",
                     }
