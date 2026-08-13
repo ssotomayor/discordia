@@ -40,10 +40,46 @@ the top within each section.
 
 ## Security
 
+- **A gateway can run JavaScript in our webview, because its URL is pasted into
+  an eval unescaped.** `ScreenToken.livekit_url` and `token` arrive from the
+  server as free-form `String`s (`protocol/src/lib.rs:1148`), are stored verbatim
+  (`net.rs:861`), and are interpolated into single-quoted JS literals:
+  `document::eval(&format!("{SCREEN_JS}\nwindow.dxScreen.connect('{url}','{tok}');"))`
+  at `features/screenshare.rs:1083`. A `'` in the URL closes the literal and the
+  rest executes. Nothing validates or escapes either value on any path — checked
+  with `grep -rn "livekit_url" client/src`.
+  The threat model makes it reachable rather than theoretical: joining a
+  stranger's server by code is the headline use case, so a hostile gateway is an
+  *expected* actor, and the control channel is plaintext (see the entry below), so
+  a network attacker can inject the same bytes without running a server. What the
+  injected script gets is the webview: the `dioxus.send` bridge, the rendered DOM
+  (messages, usernames), and outbound network. Not the Nostr key — that lives in
+  Rust and on disk, never in the webview — which bounds the damage without
+  removing it.
+  **The fix is a pattern this file's own neighbours already use.**
+  `screenshare.rs:1065` and `camera.rs:44` both build their argument with
+  `serde_json::to_string(&device)` precisely because a device name can contain a
+  quote; the same call at the `connect`/`attach`/`detach` sites, interpolated
+  without surrounding quotes, closes this. The other eval sites pass hex pubkeys,
+  UUIDs and preset-table constants — safe because of where those come from, not
+  because anything checks them at the sink, so they are worth converting in the
+  same pass. Rejecting a `livekit_url` that does not parse as `ws(s)://` when it
+  arrives in `net.rs` would be the belt to that braces.
+  Found by the 2026-08 audit (`docs/AUDIT-2026-08.md`, A-01); the injection
+  primitive is confirmed by reading the format string and the wire type, but no
+  exploit was written, so the impact ceiling is reasoned rather than demonstrated.
+
 - **The gateway is plaintext, and `wss://` looks supported without being.**
-  `tokio-tungstenite` is pinned at 0.24 in the workspace `Cargo.toml` with **no
-  TLS backend in `Cargo.lock`** — no `native-tls`, no `rustls` among its
-  dependencies — so a `wss://` URL cannot be dialled at all. Meanwhile
+  `tokio-tungstenite` is pinned at 0.24 in the workspace `Cargo.toml` and built
+  **without a TLS feature** — `tungstenite 0.24`'s own dependency list carries no
+  TLS crate (`Cargo.lock:8262-8277`) — so a `wss://` URL cannot be dialled at all.
+  **This entry used to say there was "no TLS backend in `Cargo.lock`", and that
+  was wrong.** `rustls`, `tokio-rustls`, `native-tls` and `openssl` are all in the
+  lockfile, and `cargo tree -p dioxusfun -i rustls` shows rustls is already
+  compiled *into the client* — the workspace standardises on it for HTTP
+  (`Cargo.toml:27`, `reqwest` with `rustls-tls`). So enabling TLS on the gateway
+  socket costs no new dependency and no new supply-chain surface; only the hard
+  part below is actually hard. Meanwhile
   `net.rs:48-53` and `:120-125` normalize `https://` to `wss://` and accept a
   `wss://` scheme as valid input. The two together are the trap: an operator who
   types a `wss://` address gets a connect failure with no hint that TLS was never
@@ -78,6 +114,15 @@ the top within each section.
   and *those* findings cannot be enumerated from a Mac. So it needs one throwaway
   CI run with the step added to see the list, then a commit fixing them, then the
   step for real. Estimated from the macOS precedent: four findings, all trivial.
+  **And it is not only clippy: no `cargo test` runs on Windows in CI at all.**
+  `desktop-build` runs tests, `macos-build` runs clippy, `windows-build` runs
+  `cargo check` and stops — so the unit tests inside `sysaudio/windows.rs` and
+  `rawmic/windows.rs` execute nowhere automatically, and the ones that are not
+  `#[ignore]`d are as unrun as the ones that are. That half is a one-line step
+  with no findings to fix first, so it does not have to wait for the clippy work.
+  The two together leave 61 `unsafe` occurrences — the highest density in the
+  repo, on the platform with the most users, in the file that shipped a heap
+  corruption — with the weakest automated coverage of any platform.
 - **The Windows portable and setup ship the wrong icon.** Reported from a real
   download: both carry an old icon rather than the Discordia mark. Worth
   starting from the comment in `client/Dioxus.toml`, because it says this was
@@ -270,6 +315,38 @@ the top within each section.
   placeholder (see design-adoption section).
 
 ## Client UX
+
+- **A display name longer than 32 characters locks you out of every server, and
+  blames your signature for it.** The server canonicalises before it verifies —
+  `sanitize_username` (`connection.rs:1734`) trims and takes 32 chars, and
+  `connection.rs:93` feeds *that* to `auth::verify_identify` — while the client
+  signs the raw string (`net.rs:176-180`). Any name the sanitiser alters is
+  therefore signed over different bytes than the server checks, and the handshake
+  fails. Reproduced against a real gateway through the bot SDK, which signs
+  identically to the client:
+
+  ```text
+   5-char  'alice'    -> READY (stored username = "alice")
+  32-char             -> READY
+  33-char             -> ERROR: identify rejected: signature did not verify
+  padded '  bob  '    -> ERROR: identify rejected: signature did not verify
+  empty ''            -> ERROR: identify rejected: signature did not verify
+  ```
+
+  Only the length case is reachable from the client: `identity_setup.rs` trims at
+  all three entry points and disables the button on an empty name — but nothing
+  caps length, not the input (no `maxlength`, unlike the twelve other inputs that
+  have one) and not `Identity::set_display_name` (`identity.rs:239`, which stores
+  whatever it is given). The identity is written to disk before the first
+  connect, so relaunching does not help, and the error points at key corruption
+  rather than at the name.
+  **Fix the client's signing, not just the input.** `maxlength: 32` closes the
+  reachable path today, but the durable fix is that both ends canonicalise
+  through one shared helper — the sanitiser lives server-side, and the two
+  drifting apart is what caused this. Worth pairing with a server-side rejection
+  that names the problem: a non-canonical username currently fails as
+  "signature did not verify", which is true and useless.
+  Found by the 2026-08 audit (`docs/AUDIT-2026-08.md`, A-02).
 
 - **The Windows client is a console application, so every release ships a `cmd`
   window beside it.** Nothing in the workspace sets `windows_subsystem` — a grep
