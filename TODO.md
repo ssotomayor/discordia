@@ -329,6 +329,35 @@ the top within each section.
 
 ## Voice / audio
 
+- **The dev log says native system audio *stopped* while it is running, and
+  never says it started.** Found in a live two-client session on Windows, and
+  the two halves compound. `set_system_audio`'s only `dlog!` sits inside
+  `if !enabled`, which runs whether or not a capture was ever there — the
+  watching client, which never shared anything, wrote
+  `voice system audio stopped (capture dropped)` six times. The enable path,
+  which calls `sysaudio::start` and publishes the track, logs nothing at all.
+  So the sharer's log read:
+
+  ```text
+  voice system audio stopped (capture dropped)
+  ```
+
+  while the SFU showed that same process publishing a live `screen-audio`
+  track into the voice room. Anyone debugging "does my share carry sound"
+  gets told no by the log and yes by reality.
+  The comment on that line argues it earns its place — "if call audio stays
+  bad after a share ends, a capture that never actually stopped is the first
+  thing to rule out; this line says we asked". It cannot do that job while it
+  is also printed when nothing was asked to stop. Log the start, and make the
+  stop conditional on there having been a capture.
+- **`[net] VoiceStateUpdate(self)` prints the fields that never change and
+  omits the two that do.** It logs `channel_id`, `muted` and the local phase;
+  `VoiceState` also carries `speaking` and `deafened`, and `speaking` is what
+  moves during a call. Measured over a real 4-minute conversation: 68 frames,
+  66 of them textually identical to the one before, 2 distinct lines in total.
+  The frames are almost certainly speech transitions doing their job — the log
+  just cannot show it, and reads like a fan-out bug instead. Same species as
+  the `consume_remote_track` identity that `b585887` fixed.
 - **libwebrtc's noise suppressor may not be running at all, which would mean
   DeepFilterNet-off is suppressor-*none*.** `apm_options` documents the
   contract — "exactly one suppressor should be in the path", libwebrtc's when
