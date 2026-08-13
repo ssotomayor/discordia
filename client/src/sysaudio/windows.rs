@@ -16,7 +16,6 @@
 //! does not support `GetMixFormat` — the format is ours to name. We name
 //! 48 kHz, which is what the publish path wants, so the question never arises.
 
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc as std_mpsc;
 use std::time::{Duration, Instant};
 
@@ -113,11 +112,6 @@ impl WinCapture {
         tx: UnboundedSender<Vec<f32>>,
         fatal: UnboundedSender<String>,
     ) -> Result<Self, String> {
-        // Taken here, held by the capture thread: it releases when that thread
-        // ends, and a refusal still surfaces as this function's `Err` rather
-        // than as the timeout below.
-        let lease = ActivationLease::acquire()?;
-
         // SAFETY: creating an unnamed, manual-reset-free event.
         let shutdown = unsafe { CreateEventW(None, true, false, None) }
             .map_err(|e| format!("create shutdown event: {e}"))?;
@@ -129,7 +123,7 @@ impl WinCapture {
         let (ready_tx, ready_rx) = std_mpsc::channel::<Result<(), String>>();
         let thread = std::thread::Builder::new()
             .name("dxf-sysaudio-win".into())
-            .spawn(move || run(tx, fatal, shutdown, ready_tx, lease))
+            .spawn(move || run(tx, fatal, shutdown, ready_tx))
             .map_err(|e| format!("spawn capture thread: {e}"))?;
 
         match ready_rx.recv_timeout(ACTIVATE_TIMEOUT + Duration::from_secs(2)) {
@@ -180,9 +174,6 @@ fn run(
     fatal: UnboundedSender<String>,
     shutdown: SendHandle,
     ready: std_mpsc::Sender<Result<(), String>>,
-    // Released when this thread ends, early returns included — which is why it
-    // arrives as a parameter instead of being acquired here.
-    _lease: ActivationLease,
 ) {
     // SAFETY: paired with CoUninitialize below.
     let com = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
@@ -297,7 +288,7 @@ fn setup() -> Result<Started, String> {
     })
 }
 
-/// The activation blob, allocated on demand and never freed.
+/// A fresh activation blob, deliberately leaked.
 ///
 /// The engine keeps the pointer it is handed: freeing the block when `activate`
 /// returned is what made the first capture on any machine die with
@@ -305,24 +296,20 @@ fn setup() -> Result<Started, String> {
 /// padding by 64 bytes did not (so: not an overrun) and freeing through
 /// `CoTaskMemFree` did not either (so: not a mismatched allocator), and probing
 /// the allocator afterwards found the block untouched, so the engine still holds
-/// it. Nothing says for how long and there is no handle to hang it off, hence
-/// the process — one 12-byte block shared by every activation rather than one
-/// per share, since the contents never vary: our PID and a mode constant.
+/// it. Nothing says for how long, and there is no handle to hang it off.
 ///
-/// So activations share an address, and `ActivationLease` is what keeps that to
-/// one live capture at a time. `retire_activation_params` covers the one case
-/// the lease cannot see, and is the only reason there is ever more than one of
-/// these blocks. See `TODO.md`.
+/// So nobody frees it and nobody else gets it. One block per activation, 12
+/// bytes, never reused — which is what makes the question this file used to have
+/// to answer ("who else is holding this address, and are they done?") not a
+/// question. Sharing one process-wide blob saved those bytes and cost a lease, a
+/// retirement rule for abandoned activations, and a wedge with no recovery when
+/// a capture thread hung with the lease in hand. See `TODO.md`.
 fn activation_params() -> *mut AUDIOCLIENT_ACTIVATION_PARAMS {
-    // Only ever reached with a lease held, so the read-then-write cannot race
-    // with itself. A `usize` because a raw pointer is neither `Send` nor `Sync`;
-    // heap rather than a `static` of the struct, which could land in read-only
-    // memory and fault an engine that writes back into the blob.
-    let existing = PARAMS.load(Ordering::Acquire);
-    if existing != 0 {
-        return existing as *mut AUDIOCLIENT_ACTIVATION_PARAMS;
-    }
-    let fresh = Box::into_raw(Box::new(AUDIOCLIENT_ACTIVATION_PARAMS {
+    // Heap rather than a `static` of the struct, which could land in read-only
+    // memory and fault an engine that writes back into the blob. Whether it does
+    // stopped mattering when these stopped being shared, but the allocation is
+    // free to stay where nothing depends on the answer.
+    Box::into_raw(Box::new(AUDIOCLIENT_ACTIVATION_PARAMS {
         ActivationType: AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
         Anonymous: AUDIOCLIENT_ACTIVATION_PARAMS_0 {
             ProcessLoopbackParams: AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS {
@@ -333,65 +320,7 @@ fn activation_params() -> *mut AUDIOCLIENT_ACTIVATION_PARAMS {
                 ProcessLoopbackMode: PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE,
             },
         },
-    }));
-    PARAMS.store(fresh as usize, Ordering::Release);
-    fresh
-}
-
-static PARAMS: AtomicUsize = AtomicUsize::new(0);
-
-/// Stop handing out the current blob, leaking it.
-///
-/// For the activation that timed out: it was abandoned without waiting, so the
-/// engine may still read the address it was handed, at a time nobody can bound.
-/// `ActivationLease` cannot see that — it is released when the capture thread
-/// ends, which on that path is immediately — so a retry would put a second live
-/// activation on the same address. Retiring it costs 12 bytes and makes the
-/// retry allocate its own.
-fn retire_activation_params() {
-    PARAMS.store(0, Ordering::Release);
-}
-
-static ACTIVATION_IN_USE: AtomicBool = AtomicBool::new(false);
-
-/// Held for as long as a capture is alive, so only one of them ever is.
-///
-/// The capture's life and not `activate`'s: the engine keeps the blob pointer
-/// after activation returns, so what has to stay unique is the live client, not
-/// the call that produced it. The PCM fallback's second `activate` sits inside
-/// one lease on purpose.
-///
-/// What it does *not* cover is an activation abandoned on timeout, which outlives
-/// the thread that gave up on it. That one is handled by taking its blob out of
-/// circulation instead — see `retire_activation_params`.
-struct ActivationLease;
-
-impl ActivationLease {
-    /// An error and not an assertion, because a user can reach this without
-    /// anyone having written a bug: `WinCapture::start` gives up on a slow
-    /// activation and returns, but the thread it spawned lives on holding this
-    /// until its own wait expires, so a prompt retry finds it taken. Refusing
-    /// that one is right — the previous activation may still be reading the
-    /// blob — and panicking on it would not be.
-    fn acquire() -> Result<Self, String> {
-        if ACTIVATION_IN_USE
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
-        {
-            return Err(
-                "This computer's sound is still being captured by the previous share. Try \
-                 again in a moment."
-                    .into(),
-            );
-        }
-        Ok(Self)
-    }
-}
-
-impl Drop for ActivationLease {
-    fn drop(&mut self) {
-        ACTIVATION_IN_USE.store(false, Ordering::Release);
-    }
+    }))
 }
 
 /// Ask the audio engine for a process-loopback client that excludes us.
@@ -450,9 +379,9 @@ fn activate() -> Result<IAudioClient, String> {
         // signalling some unrelated kernel object instead of failing loudly.
         // Same trade `WinCapture::start` makes with its shutdown handle — a leak
         // on an already-failed path costs far less than a use-after-free. The
-        // blob is never freed either, but it does have to stop being the shared
-        // one: this activation is still holding it.
-        retire_activation_params();
+        // blob needs nothing here: it was this activation's alone and is already
+        // never freed, so an abandoned operation can hold it for as long as it
+        // likes.
         return Err("Windows didn't answer the audio-capture request in time.".into());
     }
     // SAFETY: the handler has run — it is what signalled this event — so nothing
@@ -654,59 +583,22 @@ mod tests {
 
     use tokio::sync::mpsc::unbounded_channel;
 
-    use super::ActivationLease;
-
-    /// Every test below takes the process-wide activation lease — two directly,
-    /// one through `sysaudio::start` — and `--include-ignored` runs them on
-    /// threads at once. Tokio's mutex because one holds it across awaits.
-    static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
     /// The one part of this module a CI runner can execute — everything else
     /// needs an audio device, which is the same "nobody ran it" that hid the
-    /// crash below. Asserts the lease away from WASAPI: exclusive while held,
-    /// granted again once dropped.
+    /// crash below.
+    ///
+    /// One address per activation is the whole safety argument now: an
+    /// activation the engine is still reading — including one abandoned on
+    /// timeout, which nothing can wait for — cannot be handed to anyone else,
+    /// because nobody else is ever given that address.
     #[test]
-    fn one_live_capture_at_a_time() {
-        // Not in a runtime, so the blocking take cannot deadlock a reactor.
-        let _serial = SERIAL.blocking_lock();
-        let held = ActivationLease::acquire().expect("nothing else holds it");
-
-        assert!(
-            ActivationLease::acquire().is_err(),
-            "a second lease was granted while the first was live — two \
-             activations would share one blob"
-        );
-
-        drop(held);
-        ActivationLease::acquire().expect("the lease outlived its capture");
-    }
-
-    /// A timed-out activation keeps the blob it was handed, and the lease cannot
-    /// hold it back — it is released as soon as the capture thread gives up. So
-    /// the retry has to be handed a different address, which is the whole of
-    /// what `retire_activation_params` is for.
-    #[test]
-    fn a_retired_blob_is_never_handed_out_again() {
-        let _serial = SERIAL.blocking_lock();
-        // Held because `activation_params` is only ever reached under a lease,
-        // and this stands in for the capture that would be holding one.
-        let _lease = ActivationLease::acquire().expect("nothing else holds it");
-
-        let first = super::activation_params();
-        assert_eq!(
-            first,
-            super::activation_params(),
-            "the same blob is meant to serve every activation"
-        );
-
-        super::retire_activation_params();
-        let second = super::activation_params();
+    fn every_activation_gets_its_own_blob() {
+        let (first, second) = (super::activation_params(), super::activation_params());
         assert_ne!(
             first, second,
-            "the retry was handed the address an abandoned activation may still \
-             be reading"
+            "two activations were handed one address; whichever the engine is \
+             still holding, the other one is a use-after-free waiting to happen"
         );
-        assert_eq!(second, super::activation_params(), "and it settles again");
     }
 
     /// Does this backend capture anything, and does the process survive asking?
@@ -726,7 +618,6 @@ mod tests {
     #[tokio::test]
     #[ignore = "needs an audio device, a desktop session, and Windows build 20348+"]
     async fn windows_loopback_delivers_real_samples() {
-        let _serial = SERIAL.lock().await;
         assert!(
             crate::sysaudio::supported(),
             "unsupported on this build ({}); nothing to exercise",

@@ -289,66 +289,25 @@ the top within each section.
 
 ## Voice / audio
 
-- **A hung `IAudioClient::Initialize` wedges Windows system audio until the
-  process restarts.** `ActivationLease` is taken in `WinCapture::start` and
-  released when the capture thread ends. `activate` bounds its own wait at
-  `ACTIVATE_TIMEOUT`, but `init` — the `Initialize` call right after it — has no
-  timeout and no way to acquire one: it is a blocking FFI call. A thread stuck
-  there never ends, so the lease is never released and every later share is
-  refused with "still being captured by the previous share", correctly and
-  forever. Raised on the review of #44 and agreed to be a trade rather than a
-  regression: the code before the lease had the same wedge available to it *plus*
-  the heap corruption, and refusing captures beats corrupting the heap. It is
-  recorded because it is a real user-visible dead end with no recovery short of a
-  restart, and because the entry below closes it for free — with one blob per
-  activation there is no shared resource, so no lease, so nothing to wedge.
-  Half-measures are worse than none here: releasing the lease from
-  `WinCapture::start`'s own timeout arm would let the main thread retire the blob
-  concurrently with a capture thread that has not read it yet, and the two could
-  then settle on the same fresh allocation — the exact hazard, reintroduced by
-  the guard meant to prevent it.
+- **Every Windows activation leaks its 12-byte blob, deliberately.**
+  `activation_params` allocates one per `activate` call and never frees it,
+  because the engine keeps the pointer and nothing documents for how long. So the
+  cost is 12 bytes per share — 24 when a share falls through to the PCM format —
+  rather than 12 for the process. That is the trade: a process-wide blob saved
+  those bytes and bought a lease, a retirement rule for activations abandoned on
+  timeout, and a dead end with no recovery when a capture thread hung holding the
+  lease. Unbounded in principle, since it scales with how many times a user
+  starts a share; a thousand shares in one run is 12 KB, so nothing here is
+  waiting on a fix. What would change the calculation is somewhere else starting
+  to activate in a loop.
 - **The activation-timeout path has never been executed.** `activate`'s
-  `WaitForSingleObject` giving up, and `retire_activation_params` with it, is
-  reasoned-about code: nobody has made WASAPI take longer than 5 s to answer, so
-  the branch that leaks a blob and hands the retry a fresh one has only ever run
-  in a unit test that calls it directly
-  (`a_retired_blob_is_never_handed_out_again`). Same class of gap as the one
-  `windows_loopback_delivers_real_samples` closed by being run once — that found
-  a heap corruption on its first execution. A fault-injection seam would settle
-  it; `server/tests/voice.rs`'s `ScriptedMinter` is the shape to copy.
-- **One activation blob is now shared by every Windows capture, and only
-  sequencing keeps that to one holder at a time.** The fix for the heap
-  corruption made `activation_params` a single process-wide allocation instead of
-  one per call, because the engine keeps the pointer and nothing says for how
-  long. Every activation is now handed the same address.
-  Nothing overlaps today, and the PCM fallback is not the counter-example this
-  entry used to claim it was: `setup()` drops the first client *before*
-  re-activating, and `activate` blocks on its own completion event before
-  returning, so those two activations are strictly sequential. Across shares,
-  `set_system_audio` drops the previous `SystemAudioTrack` — and
-  `WinCapture::drop` joins the capture thread — before starting the next, all on
-  one `&mut ActiveVoice`. That held the invariant by construction and nothing
-  else, so a second *live* capture (a second simultaneous share, a second voice
-  session) would have put two activations on one address with nothing to catch
-  it — no compile error, no assertion, and memory corruption rather than a wrong
-  answer for a symptom. `ActivationLease` now states it: one lease per live
-  capture, held for the capture thread's whole life, and a second one refused
-  with a message rather than granted. Which makes the regression loud, not
-  impossible — the blob is still shared, and the guard only guarantees nobody
-  reaches it twice at once through `WinCapture::start`. A capture abandoned on
-  activation timeout is outside what a lease can hold, and is covered separately
-  by `retire_activation_params`.
-  Benign as long as the blob is only read — the contents are identical and we
-  never mutate them. It stops being benign if the engine *writes* back into it,
-  which is why the allocation is on the heap rather than in a `static` that
-  could be read-only. Nobody has established which it is, nor whether the engine
-  forgets the address when the client it activated is released.
-  Closing it without reintroducing the crash means going back to one allocation
-  per activation and leaking each one deliberately: 12 bytes per share instead
-  of 12 per process — which is already what a timed-out activation costs, since
-  `retire_activation_params` takes its blob out of circulation rather than let a
-  retry share an address the engine may still be reading. Cheap, and worth doing if a write is ever observed — or
-  ahead of whatever first makes two captures live at once, whichever comes first.
+  `WaitForSingleObject` giving up is reasoned-about code: nobody has made WASAPI
+  take longer than 5 s to answer, so the branch that abandons an operation and
+  leaves it holding its blob has never run outside a reading of it. Same class of
+  gap as the one `windows_loopback_delivers_real_samples` closed by being run
+  once — that found a heap corruption on its first execution. A fault-injection
+  seam would settle it; `server/tests/voice.rs`'s `ScriptedMinter` is the shape
+  to copy.
 - **The Windows blob's lifetime rule is measured, not documented.** Microsoft
   does not say how long `ActivateAudioInterfaceAsync` needs the `VT_BLOB` it is
   handed. "As long as the process" comes from probing: the engine had not freed
