@@ -1002,6 +1002,12 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
     // reads 3-30% for ordinary speech and made the default threshold display as
     // "2%", which looks broken even when the audio is fine.
     let mic_level_pct = crate::features::voice::peak_to_meter_pct(mic_level);
+    // The same hop before DeepFilterNet. Only drawn when the model is on and
+    // actually taking something off — with it off the two are the same value
+    // and a second bar would be a ghost of the first, which reads as a bug.
+    let mic_level_pre = state.read().mic_level_pre;
+    let mic_level_pre_pct = crate::features::voice::peak_to_meter_pct(mic_level_pre);
+    let show_pre = noise_cancellation && mic_level_pre > mic_level;
     let threshold_pct = crate::features::voice::peak_to_meter_pct(mic_sensitivity);
     let sensitivity_display = crate::features::voice::peak_to_db_label(mic_sensitivity);
     let mic_level_display = crate::features::voice::peak_to_db_label(mic_level);
@@ -1359,16 +1365,34 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                     div {
                                         class: "relative w-full h-2 mt-1 rounded-full overflow-hidden",
                                         style: "background: var(--bg2);",
+                                        // What the microphone heard, drawn faint and
+                                        // underneath. The bright fill is what survived
+                                        // the model, so the faint part sticking out past
+                                        // it is exactly what noise cancellation removed —
+                                        // live, on your own voice.
+                                        if show_pre {
+                                            div {
+                                                class: "absolute inset-y-0 left-0 rounded-full transition-all duration-75",
+                                                style: "width: {mic_level_pre_pct}%; background: var(--text-dim); opacity: 0.35;",
+                                            }
+                                        }
                                         div {
-                                            class: "h-full rounded-full transition-all duration-75",
+                                            class: "absolute inset-y-0 left-0 rounded-full transition-all duration-75",
                                             style: "width: {mic_level_pct}%; background: linear-gradient(90deg, var(--up), var(--accent), var(--danger));",
                                         }
                                         // Threshold marker — white vertical line at the
-                                        // sensitivity position. When the fill passes it,
-                                        // the user is detected as speaking.
+                                        // sensitivity position. When the *bright* fill
+                                        // passes it the gate opens; the faint one is not
+                                        // what the gate judges, which is the whole point
+                                        // of drawing them apart.
                                         div {
                                             class: "absolute top-0 bottom-0 w-0.5 bg-white/70 pointer-events-none",
                                             style: "left: {threshold_pct}%;",
+                                        }
+                                    }
+                                    if show_pre {
+                                        span { class: "text-[10px] text-[var(--text-dim)] mt-0.5 block",
+                                            "Faint bar: before noise cancellation. The gap is what it removed."
                                         }
                                     }
                                 } else {

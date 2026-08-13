@@ -426,6 +426,10 @@ pub struct AppState {
     /// in the audio settings popover so the user can see mic input against
     /// where the threshold sits.
     pub mic_level: u32,
+    /// The same hop before DeepFilterNet, ×1000. Equal to `mic_level` when
+    /// noise cancellation is off; the gap between them is what the model is
+    /// removing, which is the only place a user can see it happening.
+    pub mic_level_pre: u32,
     /// Whether DeepFilterNet noise suppression runs on captured microphone
     /// audio before it is published. Persisted via `ClientSettings`.
     pub noise_cancellation: bool,
@@ -556,6 +560,7 @@ impl AppState {
             mic_volume: 100,
             auto_gain_control: true,
             mic_level: 0,
+            mic_level_pre: 0,
             noise_cancellation: false,
             denoise_atten_lim_db: 30,
             // Keep in step with `settings::default_voice_bitrate_kbps`.
