@@ -115,8 +115,6 @@ pub fn ConnectView(
         Tab::ByCode | Tab::Browse => code().trim().is_empty() || rendezvous_url().trim().is_empty(),
     };
 
-    let tab_key = format!("tab-{:?}", tab());
-
     // On macOS our titlebar is transparent + the content view extends to
     // the very top, so we leave room at the top for the traffic lights
     // (which sit at roughly y=12-32 from the window edge). Other OSes
@@ -230,7 +228,9 @@ pub fn ConnectView(
                     }
                 }
 
-                div { key: "{tab_key}", class: "fade-in flex-1",
+                // No `key:` — rsx! honours one only on a body root, so a nested
+                // one is dropped. See TODO.md.
+                div { class: "fade-in flex-1",
                 match tab() {
                     Tab::Browse => rsx! {
                         BrowseTab {

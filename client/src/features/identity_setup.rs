@@ -27,7 +27,6 @@ pub fn IdentitySetupView(on_done: EventHandler<Identity>) -> Element {
     let mut restore_phrase = use_signal(String::new);
     let mut private_key_input = use_signal(String::new);
 
-    let step_key = format!("step-{:?}", step());
     let mac_top_pad = if cfg!(target_os = "macos") {
         "pt-7"
     } else {
@@ -91,7 +90,7 @@ pub fn IdentitySetupView(on_done: EventHandler<Identity>) -> Element {
                     }
                 }
 
-                div { key: "{step_key}", class: "fade-in flex-1",
+                div { class: "fade-in flex-1",
                 match step() {
                     Step::Choose => rsx! {
                         div { class: "space-y-2",
