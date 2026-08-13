@@ -228,6 +228,27 @@ the top within each section.
 
 ## Decentralization / rendezvous
 
+- **A self-hosted machine cannot be reached from the internet without the relay
+  carrying the connection.** Today the choice is relay-or-nothing: a home machine
+  has no dialable address, so `SessionMode::ByCode` always proxies through the
+  rendezvous, and the relay's own SFU carries the media. `docs/NETWORKING.md` has
+  the full picture; the staged work is:
+  1. **Port mapping** (`igd-next` UPnP-IGD, `natpmp`) so a host obtains a real
+     address itself and friends reach it — and its own SFU — directly. The only
+     tier that involves no third party at all, and the only one that helps voice,
+     since no gateway transport carries LiveKit media. Narrow
+     `livekit_bundle.rs`'s 100-port UDP range to LiveKit's single-port mux first,
+     and flip `use_external_ip`, or there is nothing worth mapping.
+  2. **An encrypted, key-authenticated transport** (QUIC, `iroh` the candidate)
+     for the hosts port mapping cannot serve, and for the plaintext problem under
+     Security above. Note that "coordinator, never carrier" has to be *enforced*
+     — a relay that coordinates a punch will also carry the data when the punch
+     fails, so the setting means refusing a relayed connection rather than
+     assuming one will not happen.
+  3. **LiveKit E2EE** so a relayed call is unreadable to the SFU carrying it.
+     Key distribution is the work, and it must rekey on kick and ban.
+  Deferred as a whole because it is transport surgery that needs real-network
+  testing; being done on a branch rather than here.
 - **The macOS local-network grant is declared but never exercised.**
   `client/Info.plist` now carries `NSLocalNetworkUsageDescription`, added
   prophylactically alongside the App Transport Security fix rather than in

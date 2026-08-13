@@ -3,6 +3,12 @@
 Three rungs, by community size. All three run the same code and the same
 on-disk format — you can graduate by copying one directory.
 
+For **who can reach you and who can read your traffic** — what a rendezvous
+relay does and does not carry, and why a self-hosted machine is hard to reach
+from the internet at all — see [`NETWORKING.md`](NETWORKING.md). It is the
+companion to this page: this one is how to run a server, that one is what happens
+on the wire once you do.
+
 ## Rung 1 — one click (friend groups)
 
 Open the app → **Self-host** → Launch. The client spawns the gateway and the
