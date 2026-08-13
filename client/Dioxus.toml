@@ -59,7 +59,7 @@ info_plist_path = "Info.plist"
 # back — `codesign` exits 1 with "no identity found", which is how this was
 # learned. Pass it at the command line instead:
 #
-#   scripts/bundle-macos.sh          # reads DISCORDIA_SIGNING_IDENTITY
+#   ./bundle-macos.sh                # repo root; reads DISCORDIA_SIGNING_IDENTITY
 #
 # or by hand, with `--codesign true --apple-team-id "<identity>"
 # --apple-entitlements Entitlements.plist`.
