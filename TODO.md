@@ -62,9 +62,32 @@ the top within each section.
   still earns the warning until reputation accrues; EV clears it immediately and
   costs materially more) — so this is a spend-money decision, not an
   engineering one, which is why it belongs here rather than in a backlog of
-  fixes. macOS has the same shape and its own answer already half-built: the
-  bundle is signed with a *development* certificate, which is not notarisation
-  and will show Gatekeeper's version of this to anyone who is not the developer.
+  fixes. macOS has the same shape and the same kind of answer — see the next
+  entry, which has since been confirmed against a real recipient.
+- **The macOS build is not notarised, so anyone we send it to has to defeat
+  Gatekeeper by hand.** `bundle-macos.sh` signs the bundle and the DMG and
+  verifies the seal, but there is no `notarytool submit` / `xcrun stapler` step,
+  and the identity it signs with is an `Apple Development` certificate — a
+  development cert, which Gatekeeper does not trust for distribution. Any
+  transfer that stamps `com.apple.quarantine` (browser, chat app, AirDrop, Mail)
+  therefore fails first-launch assessment on the recipient's Mac, usually as
+  **"Discordia is damaged and can't be opened"** rather than anything mentioning
+  signatures. Workaround the recipient must run:
+  `xattr -dr com.apple.quarantine /Applications/Discordia.app`.
+  It has a second symptom that reads as a bug in our code: after granting Screen
+  Recording, macOS's own **Quit & Reopen** button silently fails, because the
+  relaunch is re-assessed and refused. The picker's error text now says so, which
+  is a label on the problem, not a fix.
+  Deferred because it is a purchase, not a code change: notarisation needs a
+  `Developer ID Application` certificate, i.e. a personal Apple Developer Program
+  membership. The only Developer ID in this machine's keychain belongs to an
+  employer and must not be used for this project. Note the currently-used
+  `Apple Development` cert is itself issued under that employer's team
+  (`299HJ3G3BP`) — worth resolving at the same time if the project should be free
+  of that association. When it does land: `Entitlements.plist` is the file that
+  grows (notarisation requires the hardened runtime, which `--options runtime`
+  already sets), and the notarise step should be gated on an env var the way
+  `DISCORDIA_SIGNING_IDENTITY` is, so an unset credential still builds.
 - **CI runs none of the client's or grid-layout's tests.** The `test` job runs
   `cargo test` over four crates — protocol, server, bot SDK, rendezvous — and the
   comment above it says CI covers the server-side crates "where all the tests

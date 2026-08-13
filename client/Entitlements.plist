@@ -11,10 +11,20 @@
   the plist usage description not being enough on its own. Setting
   `signing_identity` in Dioxus.toml *did* enable hardened runtime (codesign flag
   0x10000) and would have broken voice again in a way that looks exactly like the
-  TCC problem the signing was meant to fix. The `codesign` CLI path this
-  project uses does not enable it (flag 0x0), so today the entitlement is
-  belt-and-braces rather than load-bearing — and it is cheap insurance against
-  the next person turning hardened runtime on for notarisation.
+  TCC problem the signing was meant to fix.
+
+  **This entitlement is load-bearing on every signed build — do not remove it.**
+  An earlier version of this comment claimed the `codesign` CLI path leaves the
+  runtime off (flag 0x0) and that the entitlement was therefore belt-and-braces.
+  That was already false when written: `bundle-macos.sh` signs with the `options
+  runtime` flag, so a signed bundle has the hardened runtime on, and without this
+  key the mic is denied no matter what System Settings says. Verify rather than
+  trust either claim — `codesign -dvv` prints the flags.
+
+  (The flag is spelled without its leading dashes above on purpose: a literal
+  double-hyphen is illegal inside an XML comment, and codesign's AMFI parser
+  rejects the whole file for it — the same trap the script's `xmllint` check
+  exists to catch.)
 
   Only the microphone is listed, deliberately:
 

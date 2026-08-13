@@ -1256,7 +1256,9 @@ pub fn ScreenSourcePicker() -> Element {
                                 "Screen sharing needs the Screen Recording permission. Grant it in \
                                  System Settings › Privacy & Security › Screen & System Audio \
                                  Recording, then quit and reopen Discordia — macOS only re-reads it \
-                                 on launch."
+                                 on launch. If macOS offers to \"Quit & Reopen\" and Discordia does \
+                                 not come back, that is Gatekeeper refusing the relaunch, not a \
+                                 failed grant: just launch it again yourself."
                             }
                         }
                     },
