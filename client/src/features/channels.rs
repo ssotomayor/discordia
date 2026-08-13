@@ -978,6 +978,13 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
     let atten_lim_db = state.read().denoise_atten_lim_db;
     let mic_volume = state.read().mic_volume;
     let auto_gain_control = state.read().auto_gain_control;
+    // Only offered where the OS actually has processing on the capture — see
+    // `crate::rawmic`. `mic_bypass_error` is what the last attempt to open the
+    // device that way had to say, and it is `Some` exactly when the switch is
+    // on and the audio is not going through it.
+    let bypass_supported = crate::rawmic::supported();
+    let bypass_system_audio = state.read().bypass_system_audio_processing;
+    let bypass_error = state.read().mic_bypass_error.clone();
     let voice_bitrate_kbps = state.read().voice_bitrate_kbps;
     // Whether the transmit gate is currently open — the very same flag the
     // publish path acts on, so this can't claim something the audio isn't doing.
@@ -993,6 +1000,7 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
     let v_for_atten = voice.clone();
     let v_for_mic_volume = voice.clone();
     let v_for_agc = voice.clone();
+    let v_for_bypass = voice.clone();
     let v_for_bitrate = voice.clone();
 
     // Snapshot current voice phase so the popover can show reconnection state.
@@ -1470,6 +1478,42 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                         span { class: "text-[10px] mt-0.5 block", style: "color: var(--up);", "Transmitting" }
                                     } else {
                                         span { class: "text-[10px] text-[var(--text-dim)] mt-0.5 block", "Below threshold — not transmitting" }
+                                    }
+                                }
+                            }
+                            // Bypass the OS's own input processing. First among
+                            // the switches because it acts first: it decides
+                            // what the driver hands us, before anything below
+                            // has a signal to work on. Hidden where there is
+                            // nothing to bypass — see `crate::rawmic`.
+                            if bypass_supported {
+                                div { class: "mb-2",
+                                    label { class: "flex items-center gap-2 cursor-pointer select-none",
+                                        input {
+                                            r#type: "checkbox",
+                                            class: "accent-[var(--accent)]",
+                                            checked: bypass_system_audio,
+                                            onchange: move |e| {
+                                                let on = e.checked();
+                                                let mut next = settings.read().clone();
+                                                next.bypass_system_audio_processing = on;
+                                                settings.set(next.clone());
+                                                crate::settings::save(&next);
+                                                state.write().bypass_system_audio_processing = on;
+                                                v_for_bypass.send(crate::features::voice::VoiceCmd::SetBypassSystemProcessing { enabled: on });
+                                            },
+                                        }
+                                        span { class: "text-[11px] text-[var(--text-muted)] flex-1", "Bypass system audio processing" }
+                                    }
+                                    span { class: "text-[10px] text-[var(--text-dim)] mt-0.5 block",
+                                        "Skips the suppression and gain your audio driver applies before we hear anything, so only this app's processing touches your voice. Reopens the microphone."
+                                    }
+                                    // A lit switch over an unchanged audio path
+                                    // is the one thing this must never be.
+                                    if let Some(err) = bypass_error {
+                                        span { class: "text-[10px] mt-0.5 block", style: "color: var(--danger);",
+                                            "Couldn't bypass it: {err}. The microphone is open the usual way."
+                                        }
                                     }
                                 }
                             }

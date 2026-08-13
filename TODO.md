@@ -521,6 +521,28 @@ the top within each section.
 
 ## Voice / audio
 
+- **"Bypass system audio processing" reports that raw mode was *asked for*, not
+  that the driver's effects are gone.** `rawmic::setup` sets
+  `AUDCLNT_STREAMOPTIONS_RAW` and reports the failure if `SetClientProperties`
+  refuses, which is the only signal WASAPI offers — there is no read-back
+  saying the APO chain is actually out of the path. Compare `ActiveVoice::
+  set_apm`, which writes the options and then reads them back precisely because
+  a write that silently does nothing is the failure mode worth catching, and
+  which found exactly that. So a driver that accepts the property and ignores it
+  leaves the switch lit over an unchanged signal, and nothing in the client can
+  tell. What would settle it is a measurement, not an API: the ignored
+  `client/tests/live_sfu.rs` sweep already analyses a tone through the real
+  path, and the same room noise recorded with the switch on and off would show
+  whether the endpoint's suppressor is still working. Until then the panel's
+  wording is a claim about what we requested.
+- **The raw path is Windows-only and Linux is not answered.** `rawmic::
+  supported()` is `cfg!(target_os = "windows")`, and the setting hides
+  elsewhere. macOS is genuinely nothing-to-do (cpal opens a plain HAL input
+  unit, so the system's mic modes never apply). Linux is not: PipeWire and
+  PulseAudio both routinely put `echo-cancel`/`rnnoise` modules in front of a
+  source, and a client that wants the unprocessed device has to select it
+  rather than ask for a flag. Nobody has run this repo's voice path on Linux
+  yet, so it is filed here rather than guessed at.
 - **The 30-vs-12 dB ceiling numbers cannot be re-run from the repo.** The entry
   below and `ClientSettings::denoise_atten_lim_db` both cite figures from a
   live session — 21.2% vs 17.6% gate drops, −3.9 dB vs −2.7 dB actually applied

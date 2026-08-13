@@ -10,6 +10,7 @@ mod identity;
 mod net;
 mod profile;
 mod protocol;
+mod rawmic;
 mod rendezvous;
 mod session;
 mod settings;
