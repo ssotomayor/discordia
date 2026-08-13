@@ -289,11 +289,54 @@ the top within each section.
 
 ## Voice / audio
 
-The first four here were recorded only in commit messages until now. That is
-where deferred work goes to be forgotten: `c86af67` listed five review
-follow-ups in its body, three were still open a month later, and nothing was
-tracking them.
-
+- **One activation blob is now shared by every Windows capture, and only
+  sequencing keeps that to one holder at a time.** The fix for the heap
+  corruption made `activation_params` a single process-wide allocation instead of
+  one per call, because the engine keeps the pointer and nothing says for how
+  long. Every activation is now handed the same address.
+  Nothing overlaps today, and the PCM fallback is not the counter-example this
+  entry used to claim it was: `setup()` drops the first client *before*
+  re-activating, and `activate` blocks on its own completion event before
+  returning, so those two activations are strictly sequential. Across shares,
+  `set_system_audio` drops the previous `SystemAudioTrack` — and
+  `WinCapture::drop` joins the capture thread — before starting the next, all on
+  one `&mut ActiveVoice`. That held the invariant by construction and nothing
+  else, so a second *live* capture (a second simultaneous share, a second voice
+  session) would have put two activations on one address with nothing to catch
+  it — no compile error, no assertion, and memory corruption rather than a wrong
+  answer for a symptom. `ActivationLease` now states it: one lease per live
+  capture, held for the capture thread's whole life, and a second one refused
+  with a message rather than granted. Which makes the regression loud, not
+  impossible — the blob is still shared, and the guard only guarantees nobody
+  reaches it twice at once through `WinCapture::start`. A capture abandoned on
+  activation timeout is outside what a lease can hold, and is covered separately
+  by `retire_activation_params`.
+  Benign as long as the blob is only read — the contents are identical and we
+  never mutate them. It stops being benign if the engine *writes* back into it,
+  which is why the allocation is on the heap rather than in a `static` that
+  could be read-only. Nobody has established which it is, nor whether the engine
+  forgets the address when the client it activated is released.
+  Closing it without reintroducing the crash means going back to one allocation
+  per activation and leaking each one deliberately: 12 bytes per share instead
+  of 12 per process — which is already what a timed-out activation costs, since
+  `retire_activation_params` takes its blob out of circulation rather than let a
+  retry share an address the engine may still be reading. Cheap, and worth doing if a write is ever observed — or
+  ahead of whatever first makes two captures live at once, whichever comes first.
+- **The Windows blob's lifetime rule is measured, not documented.** Microsoft
+  does not say how long `ActivateAudioInterfaceAsync` needs the `VT_BLOB` it is
+  handed. "As long as the process" comes from probing: the engine had not freed
+  the block, and 64 same-size allocations afterwards never landed on its
+  address. If a future Windows *does* free it, we would be handing it a Rust
+  allocation to release — which works today only because `CoTaskMemAlloc` and
+  Rust's allocator both sit on the process heap, not because anything promises
+  it. Measured on Windows 11 26200 and one machine; no other platform even
+  compiles this file.
+- **macOS system audio is the one still untested; Windows is not.** The Windows
+  backend now demonstrably captures — `windows_loopback_delivers_real_samples`
+  reaches a peak of ~0.35 against a tone played from another process — after a
+  heap-corruption crash on `start()` was found and fixed (see
+  `sysaudio::windows::activation_params`). That leaves macOS as the platform
+  where nobody has seen a sample, which is the open finding further down.
 - **A screen-room reconnect republishes nothing, and the UI still says "live".**
   The JS controller reconnects with exponential backoff when the screen room
   drops, but `connect()` only wires handlers — every publish path
