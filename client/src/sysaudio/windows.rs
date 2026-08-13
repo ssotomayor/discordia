@@ -114,11 +114,9 @@ impl WinCapture {
         tx: UnboundedSender<Vec<f32>>,
         fatal: UnboundedSender<String>,
     ) -> Result<Self, String> {
-        // Taken here rather than on the capture thread so the failure comes back
-        // as this function's `Err`. Taken on the thread, a tripped assert would
-        // drop `ready_tx` and reach the caller as the timeout below — the wrong
-        // story about the wrong thing. Moved into the closure, so it is released
-        // exactly when the capture thread ends.
+        // Taken here, held by the capture thread: it releases when that thread
+        // ends, and a refusal still surfaces as this function's `Err` rather
+        // than as the timeout below.
         let lease = ActivationLease::acquire()?;
 
         // SAFETY: creating an unnamed, manual-reset-free event.
@@ -183,9 +181,8 @@ fn run(
     fatal: UnboundedSender<String>,
     shutdown: SendHandle,
     ready: std_mpsc::Sender<Result<(), String>>,
-    // Owned for the whole thread — including every early return below, which is
-    // why it arrives as a parameter instead of being acquired here. The next
-    // capture cannot start until this drops.
+    // Released when this thread ends, early returns included — which is why it
+    // arrives as a parameter instead of being acquired here.
     _lease: ActivationLease,
 ) {
     // SAFETY: paired with CoUninitialize below.
@@ -303,36 +300,22 @@ fn setup() -> Result<Started, String> {
 
 /// The activation blob, allocated once and never freed.
 ///
-/// The engine keeps the pointer it is handed. Releasing the block when
-/// `activate` returned is what made the very first capture on any machine die
-/// with `STATUS_HEAP_CORRUPTION` — measured, not guessed: leaking it made the
-/// crash go away and real samples arrive, padding the allocation by 64 bytes
-/// did not (so it is not an overrun), and freeing it through `CoTaskMemFree`
-/// instead of Rust's allocator did not either (so it is not a mismatched
-/// allocator). Probing the allocator afterwards settles which way round it is —
-/// 64 same-size allocations never land on our address and the contents stay
-/// intact, so the engine has not freed it. It is still holding it.
+/// The engine keeps the pointer it is handed: freeing the block when `activate`
+/// returned is what made the first capture on any machine die with
+/// `STATUS_HEAP_CORRUPTION`. Measured, not guessed — leaking it fixed the crash,
+/// padding by 64 bytes did not (so: not an overrun) and freeing through
+/// `CoTaskMemFree` did not either (so: not a mismatched allocator), and probing
+/// the allocator afterwards found the block untouched, so the engine still holds
+/// it. Nothing says for how long and there is no handle to hang it off, hence
+/// the process — one 12-byte block for the whole run, since the contents never
+/// vary: our PID and a mode constant.
 ///
-/// Nothing documents how long that has to last, and there is no handle to hang
-/// it off, so it lasts as long as the process. That costs one 12-byte block for
-/// the whole run rather than one per share, because the contents never vary:
-/// our own PID, and a mode constant.
-///
-/// Which means every activation is handed the same address, and nothing here
-/// serialises them. Sequencing elsewhere is what has always kept that to one
-/// holder at a time: `setup` drops its client before the PCM re-activation,
-/// `activate` waits out its own completion before returning, and
-/// `voice::ActiveVoice::set_system_audio` drops the previous capture — joining
-/// its thread in `WinCapture::drop` — before starting the next. None of which
-/// this function could see, so `ActivationLease` now states it: a second *live*
-/// capture is refused with a message instead of quietly putting two activations
-/// on one address. That makes the regression loud, not impossible — the fix that
-/// makes it impossible is one allocation per activation, each leaked. See
-/// `TODO.md`.
+/// So every activation gets the same address. `ActivationLease` is what keeps
+/// that to one holder at a time; making it impossible instead means one leaked
+/// allocation per activation. See `TODO.md`.
 fn activation_params() -> *mut AUDIOCLIENT_ACTIVATION_PARAMS {
-    // A `usize` because a raw pointer is neither `Send` nor `Sync`, and this is
-    // reached from whichever thread starts a capture. Heap rather than a
-    // `static` of the struct itself: a `static` could land in read-only memory,
+    // A `usize` because a raw pointer is neither `Send` nor `Sync`. Heap rather
+    // than a `static` of the struct: a `static` could land in read-only memory,
     // and an engine that writes back into the blob would fault on it.
     static PARAMS: OnceLock<usize> = OnceLock::new();
     *PARAMS.get_or_init(|| {
@@ -340,11 +323,10 @@ fn activation_params() -> *mut AUDIOCLIENT_ACTIVATION_PARAMS {
             ActivationType: AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
             Anonymous: AUDIOCLIENT_ACTIVATION_PARAMS_0 {
                 ProcessLoopbackParams: AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS {
-                    // Our own tree. Excluding it is the whole point: it drops
-                    // this app's playback — the call itself — before it can be
-                    // captured and sent back out. It also covers any child
-                    // process we spawn, which is what keeps a bundled LiveKit
-                    // out of the mix.
+                    // Excluding our own tree is the whole point: it drops this
+                    // app's playback — the call itself — before it can be
+                    // captured and sent back out, and covers a spawned LiveKit
+                    // with it.
                     TargetProcessId: unsafe { GetCurrentProcessId() },
                     ProcessLoopbackMode: PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE,
                 },
@@ -357,11 +339,10 @@ static ACTIVATION_IN_USE: AtomicBool = AtomicBool::new(false);
 
 /// Held for as long as a capture is alive, so only one of them ever is.
 ///
-/// The lifetime is the capture's and not `activate`'s on purpose: the engine
-/// keeps the blob pointer *after* activation returns — that is the whole reason
-/// the blob outlives the call — so what has to stay unique is the live client,
-/// not the call that produced it. The PCM fallback's second `activate` happens
-/// inside one lease and is meant to.
+/// The capture's life and not `activate`'s: the engine keeps the blob pointer
+/// after activation returns, so what has to stay unique is the live client, not
+/// the call that produced it. The PCM fallback's second `activate` sits inside
+/// one lease on purpose.
 struct ActivationLease;
 
 impl ActivationLease {
@@ -369,11 +350,9 @@ impl ActivationLease {
         let free = ACTIVATION_IN_USE
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_ok();
-        // Loud in a test run, survivable in a user's: the debug assert names the
-        // regression for whoever wrote it, and release still refuses rather than
-        // handing the engine a second reference to one blob. Refusing a capture
-        // is a bad day; the alternative is the heap corruption this file exists
-        // to have fixed.
+        // Loud where a developer will see it, survivable where a user is:
+        // refusing a capture is a bad day, and the alternative is the heap
+        // corruption this file exists to have fixed.
         debug_assert!(
             free,
             "two live system-audio captures at once — they would share one \
@@ -403,9 +382,9 @@ fn activate() -> Result<IAudioClient, String> {
     // `PropVariantClear` would hand a stack address to `CoTaskMemFree`. It
     // doesn't: the generated `PROPVARIANT` is a plain `repr(C)` union with no
     // `Drop`, and clearing is only ever explicit. Re-check that if the `windows`
-    // crate is bumped. Checked once already, on 0.61: after a live activation
-    // the variant still reads `VT_BLOB` with its original `cbSize`, so the
-    // engine does not clear it either.
+    // crate is bumped. Checked on 0.61: after a live activation the variant
+    // still reads `VT_BLOB` with its original `cbSize`, so the engine does not
+    // clear it either.
     let mut prop = PROPVARIANT::default();
     // SAFETY: writing the documented layout of a zeroed PROPVARIANT. The blob
     // outlives the process, never mind the call.
@@ -447,11 +426,8 @@ fn activate() -> Result<IAudioClient, String> {
         // let that `SetEvent` a handle value Windows has since recycled, quietly
         // signalling some unrelated kernel object instead of failing loudly.
         // Same trade `WinCapture::start` makes with its shutdown handle — a leak
-        // on an already-failed path costs far less than a use-after-free.
-        //
-        // The blob needs nothing here. It is never freed on any path, which is
-        // what this branch used to arrange by hand for itself alone — and the
-        // success path, which did not, is where the heap corruption came from.
+        // on an already-failed path costs far less than a use-after-free. The
+        // blob needs nothing here: it is never freed on any path.
         return Err("Windows didn't answer the audio-capture request in time.".into());
     }
     // SAFETY: the handler has run — it is what signalled this event — so nothing
@@ -656,40 +632,26 @@ mod tests {
     use super::ActivationLease;
 
     /// Both tests below take the process-wide activation lease — one directly,
-    /// one through `sysaudio::start`. `--ignored` and the default run each pick
-    /// exactly one of them, but `--include-ignored` runs both, and cargo runs
-    /// them on threads. Without this they would race for the thing one of them
-    /// is asserting is exclusive.
-    ///
-    /// Tokio's mutex rather than `std`'s because one of the two holds it across
-    /// awaits, and it has no poisoning to unwrap past — a test that panics while
-    /// holding it leaves the other one able to take it.
+    /// one through `sysaudio::start` — and `--include-ignored` runs them on
+    /// threads at once. Tokio's mutex because one holds it across awaits.
     static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-    /// The one part of this module a CI runner can check.
+    /// The one part of this module a CI runner can execute — everything else
+    /// needs an audio device, which is the same "nobody ran it" that hid the
+    /// crash below. Asserts the lease away from WASAPI: exclusive while held,
+    /// granted again once dropped.
     ///
-    /// Everything else here needs an audio device, so the guard that keeps two
-    /// captures off one activation blob would otherwise only ever be exercised
-    /// on a developer's desktop — which is the same class of "nobody ran it"
-    /// that hid the crash below in the first place. This asserts the lease
-    /// itself, away from WASAPI: exclusive while held, granted again once
-    /// dropped.
-    ///
-    /// The `debug_assert!` in `acquire` is why the second attempt is checked
-    /// with `catch_unwind` rather than on its return value — under
-    /// `cfg(debug_assertions)`, which is how tests are built, it panics before
-    /// it can return the `Err` a release build would.
+    /// `catch_unwind` rather than a return value because tests are built with
+    /// debug assertions, where `acquire` panics before it can return the `Err`
+    /// a release build would.
     #[test]
     fn one_live_capture_at_a_time() {
-        // Not in a runtime — this test is deliberately synchronous — so the
-        // blocking take is the right one and cannot deadlock a reactor.
+        // Not in a runtime, so the blocking take cannot deadlock a reactor.
         let _serial = SERIAL.blocking_lock();
         let held = ActivationLease::acquire().expect("nothing else holds it");
 
-        // Silenced around the call, not inside it: the assert firing is the pass
-        // condition, and its backtrace in the output would read like a failure.
-        // Restoring inside the closure would never run — the panic unwinds past
-        // it and leaves every later test's panic silent too.
+        // Silenced around the call, not inside it: a hook restored inside the
+        // closure would never run, leaving every later panic silent too.
         let hook = std::panic::take_hook();
         std::panic::set_hook(Box::new(|_| {}));
         let second = std::panic::catch_unwind(|| ActivationLease::acquire().map(|_| ()));
@@ -707,21 +669,14 @@ mod tests {
 
     /// Does this backend capture anything, and does the process survive asking?
     ///
-    /// Nobody had checked. It landed in `94120de` and was corrected in
-    /// `638746b` on review, both times on the strength of being read — and the
-    /// macOS backend, written the same way, returns `Ok` and then delivers zero
-    /// samples for its whole life, which is still open in `TODO.md`. That
-    /// failure is invisible from inside: `start()` succeeds, a track is
-    /// published, and it is silent forever.
-    ///
-    /// It found one on its first run, before it could get as far as the samples:
-    /// `start()` took the whole process down with STATUS_HEAP_CORRUPTION,
-    /// because the activation blob was freed while the engine still held it.
-    /// See `activation_params`. It passes now, with a peak around 0.35 against a
-    /// tone played from another process.
-    ///
-    /// `#[ignore]`d: needs an audio device, a desktop session, and Windows 10
-    /// build 20348 or newer — none of which a CI runner has.
+    /// Nobody had checked: it landed in `94120de` and was corrected in `638746b`
+    /// on review, both times on the strength of being read — and the macOS
+    /// backend, written the same way, returns `Ok` and then delivers zero samples
+    /// for its whole life, which is invisible from inside and still open in
+    /// `TODO.md`. This found worse on its first run: `start()` took the process
+    /// down with STATUS_HEAP_CORRUPTION, the activation blob having been freed
+    /// while the engine still held it (see `activation_params`). It passes now,
+    /// peak around 0.35 against a tone from another process.
     ///
     /// ```text
     /// cargo test -p dioxusfun -- --ignored --nocapture windows_loopback
@@ -738,13 +693,11 @@ mod tests {
 
         let (tx, mut rx) = unbounded_channel::<Vec<f32>>();
         let (fatal_tx, mut fatal_rx) = unbounded_channel::<String>();
-        // `target` is a macOS concern (which surface to scope the tap to); this
-        // backend takes the machine mix.
+        // `target` is a macOS concern; this backend takes the machine mix.
         let capture = crate::sysaudio::start(tx, fatal_tx, None).expect("start capture");
 
-        // From a *different* process, on purpose: the capture excludes our own
-        // process tree, so that a share does not echo the call it is published
-        // into. Noise this test made itself would be filtered out by design.
+        // A *different* process on purpose: the capture excludes our own tree,
+        // so noise this test made itself would be filtered out by design.
         let mut tone = Command::new("powershell")
             .args([
                 "-NoProfile",
@@ -776,8 +729,7 @@ mod tests {
         }
 
         let _ = tone.kill();
-        // Reaped rather than left behind: an unwaited child is a zombie for as
-        // long as this process lives, and clippy is right to say so.
+        // An unwaited child stays a zombie for as long as this process lives.
         let _ = tone.wait();
         drop(capture);
 
