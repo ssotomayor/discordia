@@ -338,7 +338,7 @@ pub fn sources() -> Result<Vec<Source>, String> {
             .filter(|(_, (_, n))| *n > 1)
             .map(|(pid, (name, n))| (pid, name, n))
             .collect();
-        apps.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
+        apps.sort_by_key(|(_, name, _)| name.to_lowercase());
         for (pid, name, n) in apps {
             out.push(Source {
                 target: Target::Application(pid),

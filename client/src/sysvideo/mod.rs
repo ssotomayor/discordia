@@ -66,6 +66,14 @@ impl Frame {
     ///
     /// So the caller gets a reference of its own to give away, and the `Frame`
     /// keeps releasing exactly the one it owns.
+    ///
+    /// Which is exactly why this takes `&self` and clippy's `wrong_self_convention`
+    /// is wrong about it: `into_` here describes what the *returned pointer* is
+    /// for, not that the `Frame` is consumed — consuming it is the double-release
+    /// this function exists to prevent. Silenced rather than obeyed. (Renaming it
+    /// to something without the `into_` prefix would also settle the lint and is
+    /// the tidier answer if anyone is touching these call sites anyway.)
+    #[allow(clippy::wrong_self_convention)]
     pub fn into_consumable_pixel_buffer(&self) -> *mut std::ffi::c_void {
         // `clone` retains; `into_raw` hands the pointer over without releasing.
         objc2_core_foundation::CFRetained::into_raw(self.buffer.clone())

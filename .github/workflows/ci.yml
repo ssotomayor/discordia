@@ -30,14 +30,38 @@ jobs:
       LIVEKIT_BUNDLE_SKIP: "1"
     steps:
       - uses: actions/checkout@v4
+
+      # Before the toolchain, because it needs nothing but the lockfile and it
+      # guards the release path: `DIOXUS_CLI_VERSION` and the `dioxus` crate were
+      # kept in step by comment alone, and drift is not loud. dx warns "dx and
+      # dioxus versions are incompatible!" and then bundles ANYWAY when the CLI
+      # is ahead, and fails outright when it is behind — which is how the Linux
+      # AppImage broke on the very commit that introduced the pin. Failing here
+      # costs seconds; the alternative is finding out in a bundle job, or not at
+      # all.
+      - name: dx pin matches Cargo.lock
+        run: |
+          lock=$(awk '/^name = "dioxus"$/{getline; gsub(/[",]/,""); print $3; exit}' Cargo.lock)
+          if [ -z "$lock" ]; then
+            echo "could not read the dioxus version out of Cargo.lock"; exit 1
+          fi
+          if [ "$lock" != "$DIOXUS_CLI_VERSION" ]; then
+            echo "DIOXUS_CLI_VERSION is $DIOXUS_CLI_VERSION but Cargo.lock resolves dioxus $lock."
+            echo "Bump the pin in ci.yml AND the literal in windows-release.yml."
+            exit 1
+          fi
+          echo "dx pin and Cargo.lock agree at $lock"
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
 
-      # The desktop client needs system GTK/WebKit to compile; CI covers the
-      # server-side crates (protocol, server, bot SDK, rendezvous) where all
-      # the tests live. The client is checked in the desktop-build job below.
+      # The desktop client needs system GTK/WebKit to compile, so its tests run
+      # in the desktop-build job below, which installs them. This job covers the
+      # four server-side crates. (It used to claim that was where "all the tests
+      # live" — that stopped being true long before anyone noticed, which is the
+      # whole reason the client's now run at all.)
       - name: Format
         run: cargo fmt --all --check
 
@@ -84,6 +108,23 @@ jobs:
           RUSTFLAGS: "-C debug-assertions=off"
         run: cargo clippy -p dioxusfun -p dioxus-grid-layout --all-targets -- -D warnings
 
+      # These two crates' tests had never been run by any job. They live here
+      # rather than in the `test` job because they need the GTK/WebKit deps
+      # installed above, and this job is the only one that has them.
+      #
+      # It is the first time CI *links* the client — clippy and check never do —
+      # so it costs more than the step above it looks like it should. What it
+      # buys: identity and NIP-06 derivation, the resampler and mixer
+      # arithmetic, the emoji shortcode scanner, the connection-stats rates, and
+      # the collision and clamping maths behind the panel layout. None of it
+      # platform-specific, all of it the kind that fails quietly.
+      #
+      # The `#[ignore]`d ones stay ignored and are tracked separately: the
+      # `CVPixelBuffer` double-release test needs a display and a Screen
+      # Recording grant, and is macOS-only besides.
+      - name: Tests (client + grid-layout)
+        run: cargo test -p dioxusfun -p dioxus-grid-layout
+
   # The Linux job above compiles the client, but never the `#[cfg(target_os =
   # "windows")]` half of it — and the release job that would is gated on `push`,
   # so a pull request can't tell whether the Windows-only code even builds. That
@@ -122,9 +163,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
       - uses: Swatinem/rust-cache@v2
-      - name: Check client
-        run: cargo check -p dioxusfun
+      # Clippy rather than `check`, because until now *nothing* linted the
+      # macOS-only half of the client: `sysvideo/` is entirely
+      # `#[cfg(target_os = "macos")]`, and so is `sysaudio/macos.rs`. The Linux
+      # job lints what it can compile, which is neither. Turning this on took
+      # four accumulated findings with it (a `sort_by` that wanted
+      # `sort_by_key`, two platform-conditional dead-code hits in
+      # `sysaudio::frames`, and a `wrong_self_convention` on
+      # `Frame::into_consumable_pixel_buffer` that is silenced on purpose — see
+      # the comment there before touching it).
+      #
+      # Clippy compiles what it lints, so this is still the compile check the
+      # job existed for. One build, not two.
+      - name: Clippy (client, macOS-only code)
+        run: cargo clippy -p dioxusfun --all-targets -- -D warnings
 
   tailwind:
     name: tailwind css is current

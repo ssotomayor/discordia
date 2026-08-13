@@ -40,6 +40,17 @@ the top within each section.
 
 ## Repo & CI
 
+- **No Windows clippy — the other half of the gap macOS just closed.** The
+  `macos-build` job now runs `cargo clippy -- -D warnings`, so the
+  `cfg(target_os = "macos")` half of the client is finally linted. `windows-build`
+  still runs `cargo check -p dioxusfun` and nothing else, which leaves
+  `sysaudio/windows.rs` — unsafe WASAPI FFI, the file that shipped a heap
+  corruption found only by running a test once — compiled but never linted by
+  anything. Same one-line change as the macOS job, with the same caveat that
+  turned that one into a two-step job: whatever it finds has to be fixed first,
+  and *those* findings cannot be enumerated from a Mac. So it needs one throwaway
+  CI run with the step added to see the list, then a commit fixing them, then the
+  step for real. Estimated from the macOS precedent: four findings, all trivial.
 - **The Windows portable and setup ship the wrong icon.** Reported from a real
   download: both carry an old icon rather than the Discordia mark. Worth
   starting from the comment in `client/Dioxus.toml`, because it says this was
@@ -88,42 +99,6 @@ the top within each section.
   grows (notarisation requires the hardened runtime, which `--options runtime`
   already sets), and the notarise step should be gated on an env var the way
   `DISCORDIA_SIGNING_IDENTITY` is, so an unset credential still builds.
-- **CI runs none of the client's or grid-layout's tests.** The `test` job runs
-  `cargo test` over four crates — protocol, server, bot SDK, rendezvous — and the
-  comment above it says CI covers the server-side crates "where all the tests
-  live". That stopped being true: on the Linux runner that would host them,
-  `cargo test -p dioxusfun` compiles 36 tests and `-p dioxus-grid-layout`
-  another 28 plus a doctest, so **65 tests exist that no job has ever run**.
-  (Counted with `cargo test -- --list`, not by grep. Windows compiles 38 of the
-  client's — the two `sysaudio::windows` ones do not exist elsewhere — and
-  passes 37, the loopback test being `#[ignore]`d. The number moves with the
-  platform, so re-measure rather than quoting this one.)
-  They cover identity and NIP-06 derivation, the resampler and mixer
-  arithmetic, the emoji shortcode scanner, the connection-stats rates, and the
-  collision and clamping maths behind the panel layout — none of it
-  platform-specific, all of it the kind that fails silently.
-  The reason for the split is real (the client needs GTK/WebKit to compile, and
-  the `test` job deliberately does not install them) but it points at the answer
-  rather than away from it: `desktop-build` already installs those deps and
-  already compiles the client for clippy, so `cargo test -p dioxusfun -p
-  dioxus-grid-layout` belongs in that job, not a new one. The `#[ignore]`d
-  CVPixelBuffer test would stay ignored either way — that one is tracked
-  separately under Screen sharing.
-- **The `dx` pin is not checked against `Cargo.lock`.** The CLI is now pinned to
-  the crate version — `DIOXUS_CLI_VERSION` in `ci.yml`, and the same literal in
-  `windows-release.yml` — which stops it drifting on every dx release. What is
-  left is that nothing verifies the pin still matches: bump `dioxus` and forget
-  these, and CI goes back to printing "dx and dioxus versions are incompatible!"
-  and bundling anyway. Two literals in two files, kept in step by comments. A
-  step that reads the `dioxus` version out of `Cargo.lock` and compares would
-  make it structural; `dx --version` is already run right after the install, so
-  it has the other half in hand.
-- **No macOS clippy.** CI now compiles the client on all three platforms, but
-  lints it only on Linux — so the `cfg(target_os = "macos")` half of the client,
-  which is where every ScreenCaptureKit and CoreVideo `unsafe` block lives, is
-  compiled and never linted. Turning `-D warnings` on for the darwin job means
-  landing whatever it finds blind, which is why it was not done in the same
-  change that added the job.
 - **`Discordia.html` is unreferenced.** 488,666 bytes at the repo root, titled
   "Bundled Page", with its CSS and JS embedded. It arrived in `88d8f1d` — the
   large roadmap-execution commit — and nothing in the workspace mentions it:
