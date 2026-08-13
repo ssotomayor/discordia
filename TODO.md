@@ -294,10 +294,12 @@ the top within each section.
   session) would have put two activations on one address with nothing to catch
   it — no compile error, no assertion, and memory corruption rather than a wrong
   answer for a symptom. `ActivationLease` now states it: one lease per live
-  capture, held for the capture thread's whole life, and a second one asserts in
-  debug and returns a refusal in release. Which makes the regression loud, not
+  capture, held for the capture thread's whole life, and a second one refused
+  with a message rather than granted. Which makes the regression loud, not
   impossible — the blob is still shared, and the guard only guarantees nobody
-  reaches it twice at once through `WinCapture::start`.
+  reaches it twice at once through `WinCapture::start`. A capture abandoned on
+  activation timeout is outside what a lease can hold, and is covered separately
+  by `retire_activation_params`.
   Benign as long as the blob is only read — the contents are identical and we
   never mutate them. It stops being benign if the engine *writes* back into it,
   which is why the allocation is on the heap rather than in a `static` that

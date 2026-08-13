@@ -306,12 +306,13 @@ fn setup() -> Result<Started, String> {
 /// `CoTaskMemFree` did not either (so: not a mismatched allocator), and probing
 /// the allocator afterwards found the block untouched, so the engine still holds
 /// it. Nothing says for how long and there is no handle to hang it off, hence
-/// the process — one 12-byte block for the whole run, since the contents never
-/// vary: our PID and a mode constant.
+/// the process — one 12-byte block shared by every activation rather than one
+/// per share, since the contents never vary: our PID and a mode constant.
 ///
 /// So activations share an address, and `ActivationLease` is what keeps that to
-/// one live capture at a time. `retire` covers the one case the lease cannot
-/// see. See `TODO.md`.
+/// one live capture at a time. `retire_activation_params` covers the one case
+/// the lease cannot see, and is the only reason there is ever more than one of
+/// these blocks. See `TODO.md`.
 fn activation_params() -> *mut AUDIOCLIENT_ACTIVATION_PARAMS {
     // Only ever reached with a lease held, so the read-then-write cannot race
     // with itself. A `usize` because a raw pointer is neither `Send` nor `Sync`;
@@ -366,20 +367,22 @@ static ACTIVATION_IN_USE: AtomicBool = AtomicBool::new(false);
 struct ActivationLease;
 
 impl ActivationLease {
+    /// An error and not an assertion, because a user can reach this without
+    /// anyone having written a bug: `WinCapture::start` gives up on a slow
+    /// activation and returns, but the thread it spawned lives on holding this
+    /// until its own wait expires, so a prompt retry finds it taken. Refusing
+    /// that one is right — the previous activation may still be reading the
+    /// blob — and panicking on it would not be.
     fn acquire() -> Result<Self, String> {
-        let free = ACTIVATION_IN_USE
+        if ACTIVATION_IN_USE
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_ok();
-        // Loud where a developer will see it, survivable where a user is:
-        // refusing a capture is a bad day, and the alternative is the heap
-        // corruption this file exists to have fixed.
-        debug_assert!(
-            free,
-            "two live system-audio captures at once — they would share one \
-             activation blob; see `activation_params`"
-        );
-        if !free {
-            return Err("This computer's sound is already being captured by another share.".into());
+            .is_err()
+        {
+            return Err(
+                "This computer's sound is still being captured by the previous share. Try \
+                 again in a moment."
+                    .into(),
+            );
         }
         Ok(Self)
     }
@@ -653,7 +656,7 @@ mod tests {
 
     use super::ActivationLease;
 
-    /// Both tests below take the process-wide activation lease — one directly,
+    /// Every test below takes the process-wide activation lease — two directly,
     /// one through `sysaudio::start` — and `--include-ignored` runs them on
     /// threads at once. Tokio's mutex because one holds it across awaits.
     static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -662,25 +665,14 @@ mod tests {
     /// needs an audio device, which is the same "nobody ran it" that hid the
     /// crash below. Asserts the lease away from WASAPI: exclusive while held,
     /// granted again once dropped.
-    ///
-    /// `catch_unwind` rather than a return value because tests are built with
-    /// debug assertions, where `acquire` panics before it can return the `Err`
-    /// a release build would.
     #[test]
     fn one_live_capture_at_a_time() {
         // Not in a runtime, so the blocking take cannot deadlock a reactor.
         let _serial = SERIAL.blocking_lock();
         let held = ActivationLease::acquire().expect("nothing else holds it");
 
-        // Silenced around the call, not inside it: a hook restored inside the
-        // closure would never run, leaving every later panic silent too.
-        let hook = std::panic::take_hook();
-        std::panic::set_hook(Box::new(|_| {}));
-        let second = std::panic::catch_unwind(|| ActivationLease::acquire().map(|_| ()));
-        std::panic::set_hook(hook);
-
         assert!(
-            matches!(second, Err(_) | Ok(Err(_))),
+            ActivationLease::acquire().is_err(),
             "a second lease was granted while the first was live — two \
              activations would share one blob"
         );
@@ -701,7 +693,11 @@ mod tests {
         let _lease = ActivationLease::acquire().expect("nothing else holds it");
 
         let first = super::activation_params();
-        assert_eq!(first, super::activation_params(), "one blob per activation");
+        assert_eq!(
+            first,
+            super::activation_params(),
+            "the same blob is meant to serve every activation"
+        );
 
         super::retire_activation_params();
         let second = super::activation_params();
