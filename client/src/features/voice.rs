@@ -2208,6 +2208,14 @@ fn spawn_stats_task(
                 let rates = outbound_rates(prev_out, packets, bytes, now);
                 prev_out = Some((packets, bytes, now));
                 let target_kbps = (o.outbound.target_bitrate / 1000.0).round() as u32;
+                // Split once and used by both, the way `target_kbps` already
+                // is. Nothing here can drift the way the inbound formulas
+                // could — `rates` is a single source and these only pick a
+                // field off it — but the log and the panel showing the same
+                // number should be visible in the code rather than left to two
+                // call sites happening to agree.
+                let bitrate_kbps = rates.map(|(_, kbit)| kbit);
+                let packets_per_sec = rates.map(|(pkt, _)| pkt);
                 // The send side of the same series. `target` is what the
                 // encoder was told to aim for, so the pair is what says whether
                 // congestion control has pulled the real rate down under it —
@@ -2215,16 +2223,16 @@ fn spawn_stats_task(
                 // ever shows as a number that looks a bit low.
                 crate::dlog!(
                     "stats out bitrate={} pkt/s={} target={target_kbps}kbps sent={} bytes={}",
-                    rates.map_or("-".into(), |(_, kbit)| format!("{kbit:.0}kbps")),
-                    rates.map_or("-".into(), |(pkt, _)| format!("{pkt:.0}")),
+                    bitrate_kbps.map_or("-".into(), |kbit| format!("{kbit:.0}kbps")),
+                    packets_per_sec.map_or("-".into(), |pkt| format!("{pkt:.0}")),
                     packets,
                     bytes,
                 );
                 next.insert(
                     pk,
                     TrackStats::Outbound {
-                        bitrate_kbps: rates.map(|(_, kbit)| kbit),
-                        packets_per_sec: rates.map(|(pkt, _)| pkt),
+                        bitrate_kbps,
+                        packets_per_sec,
                         target_kbps,
                     },
                 );
