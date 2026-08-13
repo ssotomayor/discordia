@@ -897,6 +897,7 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
     let mic_sensitivity = state.read().mic_sensitivity;
     let mic_level = state.read().mic_level;
     let noise_cancellation = state.read().noise_cancellation;
+    let atten_lim_db = state.read().denoise_atten_lim_db;
     let mic_volume = state.read().mic_volume;
     let auto_gain_control = state.read().auto_gain_control;
     let voice_bitrate_kbps = state.read().voice_bitrate_kbps;
@@ -911,6 +912,7 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
     let v_for_output_change = voice.clone();
     let v_for_sensitivity = voice.clone();
     let v_for_denoise = voice.clone();
+    let v_for_atten = voice.clone();
     let v_for_mic_volume = voice.clone();
     let v_for_agc = voice.clone();
     let v_for_bitrate = voice.clone();
@@ -1051,10 +1053,11 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                 crate::features::profiles::ProfileEditor {}
                 crate::features::appearance::AppearanceButton {}
 
-                // Audio settings button — opens a small popover to pick input/output.
+                // Settings button — opens a small popover, grouped by what each
+                // knob acts on: playback, capture, and what goes on the wire.
                 button {
                     class: "w-7 h-7 flex items-center justify-center rounded text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors",
-                    title: "Audio settings",
+                    title: "Settings",
                     onclick: move |_| {
                         let now = !show_audio_settings();
                         show_audio_settings.set(now);
@@ -1115,7 +1118,7 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                 let c = e.client_coordinates();
                                 audio_drag.set(Some(AudioDrag::Move { dx: c.x - audio_x(), dy: c.y - audio_y() }));
                             },
-                            span { class: "text-[11px] font-medium text-[var(--text)] flex-1", "Audio settings" }
+                            span { class: "text-[11px] font-medium text-[var(--text)] flex-1", "Settings" }
                             button {
                                 class: "text-[var(--text-dim)] hover:text-[var(--text)] text-base leading-none",
                                 onmousedown: move |e| e.stop_propagation(),
@@ -1136,6 +1139,69 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                 }
                             }
 
+                            // ---- Audio ----
+                            div { class: "mt-3 mb-1.5 pb-1 border-b border-[var(--border)]",
+                                span { class: "text-[10px] font-semibold uppercase tracking-wide text-[var(--text)]", "Audio" }
+                            }
+                            // Output device select
+                            div { class: "mb-2",
+                                span { class: "text-[11px] text-[var(--text-muted)]", "Output" }
+                                select {
+                                    class: "w-full mt-1 bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)] rounded px-2 py-1 text-sm disabled:opacity-60",
+                                    style: "color: var(--text); background: var(--panel-solid);",
+                                    disabled: "{reconnecting}",
+                                    onchange: move |e| {
+                                        let val = e.value();
+                                        let val_cloned = val.clone();
+                                        // Persist to client settings
+                                        let mut next = settings.read().clone();
+                                        if val_cloned.is_empty() { next.selected_output_device = None; } else { next.selected_output_device = Some(val_cloned.clone()); }
+                                        settings.set(next.clone());
+                                        crate::settings::save(&next);
+
+                                        let mut s = state.write();
+                                        s.selected_output_device = if val_cloned.is_empty() { None } else { Some(val_cloned.clone()) };
+                                        let v = v_for_output_change.clone();
+                                        v.send(crate::features::voice::VoiceCmd::SetDevices { input: None, output: s.selected_output_device.clone() });
+                                    },
+                                    option { value: "", "System default" }
+                                    for dev in available_output_devices.iter() {
+                                        option { selected: selected_output_device.as_ref().map(|n| n == dev).unwrap_or(false), value: "{dev}", "{dev}" }
+                                    }
+                                }
+                            }
+                            // Sound effects volume. Controls all synthesized UI
+                            // cues (connect, disconnect, mute, peer events, etc.).
+                            div { class: "mb-2",
+                                span { class: "text-[11px] text-[var(--text-muted)]", "Sound effects" }
+                                div { class: "flex items-center gap-2 mt-1",
+                                    input {
+                                        r#type: "range",
+                                        min: "0",
+                                        max: "100",
+                                        value: "{settings.read().sfx_volume}",
+                                        class: "flex-1 accent-[var(--accent)]",
+                                        title: "UI sound effects volume",
+                                        oninput: move |e| {
+                                            let val: u8 = e.value().parse().unwrap_or(70).min(100);
+                                            let mut next = settings.read().clone();
+                                            next.sfx_volume = val;
+                                            settings.set(next.clone());
+                                            crate::settings::save(&next);
+                                            // Apply immediately to the live SFX engine.
+                                            let v = val as f32 / 100.0;
+                                            let _ = document::eval(&format!(
+                                                "window.dxSfx && window.dxSfx.setVolume({v});"
+                                            ));
+                                        },
+                                    }
+                                    span { class: "text-[10px] text-[var(--text-dim)] w-8 text-right", "{settings.read().sfx_volume}%" }
+                                }
+                            }
+                            // ---- Microphone ----
+                            div { class: "mt-3 mb-1.5 pb-1 border-b border-[var(--border)]",
+                                span { class: "text-[10px] font-semibold uppercase tracking-wide text-[var(--text)]", "Microphone" }
+                            }
                             // Input device select
                             div { class: "mb-2",
                                 span { class: "text-[11px] text-[var(--text-muted)]", "Input" }
@@ -1336,6 +1402,46 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                     "Removes fans, keyboards and room noise (DeepFilterNet, ~1.5% CPU)."
                                 }
                             }
+                            // How far that model may pull a hop down. A ceiling, not a
+                            // strength dial — the model decides how much of it to use, and
+                            // on ordinary speech it rarely reaches even half. Measured on
+                            // one microphone, moving this from 30 to 12 changed what was
+                            // actually applied by about a decibel; it is here because that
+                            // was one microphone, and a noisier room is where it bites.
+                            if noise_cancellation {
+                                div { class: "mb-2",
+                                    div { class: "flex items-center justify-between",
+                                        span { class: "text-[11px] text-[var(--text-muted)]", "Suppression strength" }
+                                        span { class: "text-[10px] text-[var(--text-dim)]", "{atten_lim_db} dB max" }
+                                    }
+                                    input {
+                                        r#type: "range",
+                                        min: "6",
+                                        max: "60",
+                                        step: "1",
+                                        value: "{atten_lim_db}",
+                                        class: "w-full mt-1 accent-[var(--accent)]",
+                                        oninput: move |e| {
+                                            let db: u32 = e.value().parse().unwrap_or(30).clamp(6, 60);
+                                            let mut next = settings.read().clone();
+                                            next.denoise_atten_lim_db = db;
+                                            settings.set(next.clone());
+                                            crate::settings::save(&next);
+                                            state.write().denoise_atten_lim_db = db;
+                                            // Live: the DSP thread reapplies it on the next hop, so
+                                            // dragging this mid-sentence costs no model reload.
+                                            v_for_atten.send(crate::features::voice::VoiceCmd::SetDenoiseAttenLim { db });
+                                        },
+                                    }
+                                    span { class: "text-[10px] text-[var(--text-dim)] mt-0.5 block",
+                                        "Lower keeps more of your voice, and more of the room with it."
+                                    }
+                                }
+                            }
+                            // ---- Transmission ----
+                            div { class: "mt-3 mb-1.5 pb-1 border-b border-[var(--border)]",
+                                span { class: "text-[10px] font-semibold uppercase tracking-wide text-[var(--text)]", "Transmission" }
+                            }
                             // Outgoing voice quality. The encoder is configured
                             // when the mic track is published, so this can only
                             // land on the next join — said out loud below
@@ -1363,33 +1469,6 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                         "Applies the next time you join a voice channel."
                                     } else {
                                         "Higher sounds better on low voices and background music, and costs more upload."
-                                    }
-                                }
-                            }
-                            // Output device select
-                            div { class: "mb-2",
-                                span { class: "text-[11px] text-[var(--text-muted)]", "Output" }
-                                select {
-                                    class: "w-full mt-1 bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)] rounded px-2 py-1 text-sm disabled:opacity-60",
-                                    style: "color: var(--text); background: var(--panel-solid);",
-                                    disabled: "{reconnecting}",
-                                    onchange: move |e| {
-                                        let val = e.value();
-                                        let val_cloned = val.clone();
-                                        // Persist to client settings
-                                        let mut next = settings.read().clone();
-                                        if val_cloned.is_empty() { next.selected_output_device = None; } else { next.selected_output_device = Some(val_cloned.clone()); }
-                                        settings.set(next.clone());
-                                        crate::settings::save(&next);
-
-                                        let mut s = state.write();
-                                        s.selected_output_device = if val_cloned.is_empty() { None } else { Some(val_cloned.clone()) };
-                                        let v = v_for_output_change.clone();
-                                        v.send(crate::features::voice::VoiceCmd::SetDevices { input: None, output: s.selected_output_device.clone() });
-                                    },
-                                    option { value: "", "System default" }
-                                    for dev in available_output_devices.iter() {
-                                        option { selected: selected_output_device.as_ref().map(|n| n == dev).unwrap_or(false), value: "{dev}", "{dev}" }
                                     }
                                 }
                             }
@@ -1435,34 +1514,6 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                         },
                                     }
                                     span { class: "text-[11px] text-[var(--text-muted)] flex-1", "Share computer sound" }
-                                }
-                            }
-                            // Sound effects volume. Controls all synthesized UI
-                            // cues (connect, disconnect, mute, peer events, etc.).
-                            div { class: "mb-2",
-                                span { class: "text-[11px] text-[var(--text-muted)]", "Sound effects" }
-                                div { class: "flex items-center gap-2 mt-1",
-                                    input {
-                                        r#type: "range",
-                                        min: "0",
-                                        max: "100",
-                                        value: "{settings.read().sfx_volume}",
-                                        class: "flex-1 accent-[var(--accent)]",
-                                        title: "UI sound effects volume",
-                                        oninput: move |e| {
-                                            let val: u8 = e.value().parse().unwrap_or(70).min(100);
-                                            let mut next = settings.read().clone();
-                                            next.sfx_volume = val;
-                                            settings.set(next.clone());
-                                            crate::settings::save(&next);
-                                            // Apply immediately to the live SFX engine.
-                                            let v = val as f32 / 100.0;
-                                            let _ = document::eval(&format!(
-                                                "window.dxSfx && window.dxSfx.setVolume({v});"
-                                            ));
-                                        },
-                                    }
-                                    span { class: "text-[10px] text-[var(--text-dim)] w-8 text-right", "{settings.read().sfx_volume}%" }
                                 }
                             }
                             // Connection stats. Folded away and not persisted:

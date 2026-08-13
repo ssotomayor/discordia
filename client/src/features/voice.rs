@@ -168,6 +168,10 @@ struct AudioControls {
     agc: Arc<AtomicBool>,
     /// DeepFilterNet noise suppression on the captured mic signal.
     denoise: Arc<AtomicBool>,
+    /// Ceiling on how far that model may pull a hop down, in dB. Applied to a
+    /// loaded model on the next hop rather than at construction, so moving the
+    /// slider mid-sentence does not reload anything.
+    atten_lim_db: Arc<AtomicU32>,
     /// Opus bitrate for the mic track, in kbit/s. Read once, when the track is
     /// published — unlike the knobs above there is nothing to re-read per hop,
     /// because the encoder is configured at publish time.
@@ -190,12 +194,20 @@ struct AudioControls {
 }
 
 impl AudioControls {
-    fn new(threshold: u32, mic_volume: u16, agc: bool, denoise: bool, bitrate_kbps: u32) -> Self {
+    fn new(
+        threshold: u32,
+        mic_volume: u16,
+        agc: bool,
+        denoise: bool,
+        atten_lim_db: u32,
+        bitrate_kbps: u32,
+    ) -> Self {
         Self {
             threshold: Arc::new(AtomicI32::new(threshold as i32)),
             mic_gain_pct: Arc::new(AtomicI32::new(mic_volume as i32)),
             agc: Arc::new(AtomicBool::new(agc)),
             denoise: Arc::new(AtomicBool::new(denoise)),
+            atten_lim_db: Arc::new(AtomicU32::new(atten_lim_db)),
             bitrate_kbps: Arc::new(AtomicU32::new(bitrate_kbps)),
             stats_polling: Arc::new(AtomicBool::new(false)),
             deafened: Arc::new(AtomicBool::new(false)),
@@ -277,6 +289,10 @@ pub enum VoiceCmd {
         threshold: u32,
     },
     /// Toggle DeepFilterNet noise suppression on captured mic audio.
+    /// Ceiling on DeepFilterNet's attenuation, in dB.
+    SetDenoiseAttenLim {
+        db: u32,
+    },
     SetNoiseCancellation {
         enabled: bool,
     },
@@ -395,6 +411,7 @@ async fn service_loop(
             s.mic_volume,
             s.auto_gain_control,
             s.noise_cancellation,
+            s.denoise_atten_lim_db,
             s.voice_bitrate_kbps,
         )
     };
@@ -546,6 +563,14 @@ async fn service_loop(
                     .threshold
                     .store(threshold as i32, Ordering::Relaxed);
                 state.write().mic_sensitivity = threshold;
+            }
+            VoiceCmd::SetDenoiseAttenLim { db } => {
+                // Stored only; the DSP thread owns the model and picks this up
+                // on its next hop. Reaching across to the model from here would
+                // need a lock on the audio path for a value that changes when a
+                // user drags a slider.
+                controls.atten_lim_db.store(db, Ordering::Relaxed);
+                state.write().denoise_atten_lim_db = db;
             }
             VoiceCmd::SetNoiseCancellation { enabled } => {
                 eprintln!("[voice] SetNoiseCancellation enabled={enabled}");
@@ -1839,6 +1864,11 @@ fn denoise_gate_loop(
     stats: Arc<GateStats>,
 ) {
     let mut denoiser: Option<crate::denoise::Denoiser> = None;
+    // Ceiling currently applied to the loaded model. 0 is not a legal setting,
+    // so it doubles as "nothing applied yet" — which is also the state after
+    // the model is released, so a re-enable reapplies rather than trusting a
+    // value that belonged to an instance that no longer exists.
+    let mut applied_atten_lim = 0u32;
     let mut gate = GateState::default();
     let mut gated = 0u64;
 
@@ -1905,6 +1935,15 @@ fn denoise_gate_loop(
                 }
             }
             if let Some(d) = denoiser.as_mut() {
+                // Picked up here rather than pushed from the command loop: the
+                // model belongs to this thread, and a slider drag would
+                // otherwise need a lock on the audio path.
+                let want = controls.atten_lim_db.load(Ordering::Relaxed);
+                if want != applied_atten_lim {
+                    d.set_atten_lim(want as f32);
+                    applied_atten_lim = want;
+                    crate::dlog!("voice denoise attenuation ceiling {want} dB");
+                }
                 d.process_hop(&mut samples);
             }
         } else if denoiser.is_some() {
@@ -1913,6 +1952,7 @@ fn denoise_gate_loop(
             // looked like at the moment the user turned it off.
             eprintln!("[voice] noise cancellation off, releasing model");
             denoiser = None;
+            applied_atten_lim = 0;
         }
 
         // Peak of the hop, on the same ×1000 fixed-point scale as the VU bar

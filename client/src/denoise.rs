@@ -61,6 +61,15 @@ impl Denoiser {
         })
     }
 
+    /// Change the attenuation ceiling on a loaded model, in dB.
+    ///
+    /// Live: `DfTract` recomputes its linear floor and reads it on the next
+    /// hop, so this costs nothing and needs no reload — reconstructing the
+    /// model would take ~200 ms and drop the GRU state mid-sentence.
+    pub fn set_atten_lim(&mut self, db: f32) {
+        self.model.set_atten_lim(db);
+    }
+
     /// Denoise one hop in place. `frame` must be exactly `HOP` samples of mono
     /// 48 kHz audio in [-1, 1]; anything else is left untouched (a short frame
     /// is a pipeline bug, and passing the noisy audio through beats dropping
