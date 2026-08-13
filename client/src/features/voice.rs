@@ -216,6 +216,35 @@ struct MicMeter {
     open: AtomicBool,
 }
 
+/// What the DSP thread did with the hops it was handed, for the heartbeat.
+///
+/// Separate from `MicMeter` because that one is consumed by the VU bar — its
+/// peak is swapped to zero on read, so a second reader would steal frames from
+/// the meter and make the bar flicker.
+///
+/// These three exist together because no two of them answer the question
+/// alone, which a session spent measuring this the hard way established. The
+/// mic heartbeat's existing counter is incremented in the cpal callback, so it
+/// is *pre*-gate: it reports 200 of 200 hops during a stretch the gate was
+/// shut, because the microphone did deliver them. And the peak it prints is the
+/// raw one, while the gate judges the hop *after* DeepFilterNet has had it. So
+/// the two numbers that matter — how much the model took off, and how much the
+/// gate then dropped — were both invisible.
+#[derive(Default)]
+struct GateStats {
+    /// Hops the gate dropped since the last read.
+    dropped: AtomicU64,
+    /// Hops that reached the encoder since the last read.
+    passed: AtomicU64,
+    /// Loudest post-denoise hop since the last read, ×1000 fixed point — the
+    /// same scale as the threshold, so the pair reads directly against it.
+    peak_after: AtomicI32,
+    /// The threshold the gate last judged against, stashed here so the
+    /// heartbeat can print it beside the peaks without being handed
+    /// `AudioControls` of its own. The gate reads it every hop anyway.
+    threshold: AtomicI32,
+}
+
 pub enum VoiceCmd {
     Connect {
         livekit_url: String,
@@ -753,17 +782,21 @@ impl ActiveVoice {
         // The atomic only gates the DSP thread; the publication has its own
         // switch, and `set_muted` flips both — so a rebuilt session must too.
         local_audio_for_mute.rtc_track().set_enabled(!start_muted);
+        let gate_stats = Arc::new(GateStats::default());
         {
             let controls = controls.clone();
             let meter = meter.clone();
             let muted = muted.clone();
+            let gate_stats = gate_stats.clone();
             std::thread::Builder::new()
                 .name("dxf-mic-dsp".into())
-                .spawn(move || denoise_gate_loop(frame_rx, gated_tx, controls, meter, muted))
+                .spawn(move || {
+                    denoise_gate_loop(frame_rx, gated_tx, controls, meter, muted, gate_stats)
+                })
                 .map_err(|e| format!("spawn mic dsp thread: {e}"))?;
         }
         tokio::spawn(publish_loop(gated_rx, source.clone()));
-        let mic = MicCapture::start(frame_tx, state, muted)?;
+        let mic = MicCapture::start(frame_tx, state, muted, gate_stats)?;
         let meter_task = spawn_meter_task(state, meter);
 
         // Remote audio mixer.
@@ -1803,6 +1836,7 @@ fn denoise_gate_loop(
     controls: AudioControls,
     meter: Arc<MicMeter>,
     muted: Arc<AtomicBool>,
+    stats: Arc<GateStats>,
 ) {
     let mut denoiser: Option<crate::denoise::Denoiser> = None;
     let mut gate = GateState::default();
@@ -1886,8 +1920,11 @@ fn denoise_gate_loop(
         // where the gate opens.
         let peak = peak_fixed(&samples);
         meter.bump_peak(peak);
+        stats.peak_after.fetch_max(peak, Ordering::Relaxed);
 
-        let action = gate.step(peak, controls.threshold.load(Ordering::Relaxed));
+        let threshold = controls.threshold.load(Ordering::Relaxed);
+        stats.threshold.store(threshold, Ordering::Relaxed);
+        let action = gate.step(peak, threshold);
         // A ramping-out hop is still sent, but the gate is shut — the speaking
         // indicator should say so on the same frame the fade starts.
         meter.open.store(
@@ -1900,9 +1937,11 @@ fn denoise_gate_loop(
             GateAction::RampOut => ramp(&mut samples, false),
             GateAction::Drop => {
                 gated += 1;
+                stats.dropped.fetch_add(1, Ordering::Relaxed);
                 continue;
             }
         }
+        stats.passed.fetch_add(1, Ordering::Relaxed);
 
         let data: Vec<i16> = samples
             .iter()
@@ -2376,6 +2415,7 @@ impl MicCapture {
         frame_tx: tokio::sync::mpsc::UnboundedSender<Vec<f32>>,
         state: Signal<AppState>,
         muted: Arc<AtomicBool>,
+        gate_stats: Arc<GateStats>,
     ) -> Result<Self, String> {
         let host = cpal::default_host();
         // Prefer user-selected device (by name) if present in AppState.
@@ -2538,6 +2578,24 @@ impl MicCapture {
                 eprintln!(
                     "[voice] mic heartbeat: raw peak={p:.4} ({level}), frames pushed to webrtc={f} (+{})",
                     f - prev_frames
+                );
+                // The same window, from the other side of the DSP thread, and
+                // in `dev.log` rather than only on a console nobody keeps.
+                //
+                // `raw` is what the microphone delivered; `after` is what the
+                // gate actually judged, which is the same hop once
+                // DeepFilterNet has had it. The gap between them is the model's
+                // work, and reading it against `thr` says whether the gate had
+                // anything left to open on. `passed`/`dropped` is what it then
+                // decided — the count the heartbeat above cannot give, because
+                // its counter is incremented in the cpal callback, upstream of
+                // all of this.
+                let after = gate_stats.peak_after.swap(0, Ordering::Relaxed) as f32 / 1_000.0;
+                let passed = gate_stats.passed.swap(0, Ordering::Relaxed);
+                let dropped = gate_stats.dropped.swap(0, Ordering::Relaxed);
+                crate::dlog!(
+                    "mic 2s raw={p:.4} after={after:.4} thr={:.4} passed={passed} dropped={dropped}",
+                    gate_stats.threshold.load(Ordering::Relaxed) as f32 / 1_000.0,
                 );
                 prev_frames = f;
             }
