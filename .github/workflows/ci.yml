@@ -75,6 +75,15 @@ jobs:
       - name: Clippy (client + grid-layout)
         run: cargo clippy -p dioxusfun -p dioxus-grid-layout --all-targets -- -D warnings
 
+      # Second profile, different lint set: `unused_variables` and friends fire
+      # only with `debug_assertions` off, which nothing above compiles — that is
+      # how nine of them reached a published build (`c685828`). Costs a second
+      # compile, since the flag changes the fingerprint.
+      - name: Clippy (release profile)
+        env:
+          RUSTFLAGS: "-C debug-assertions=off"
+        run: cargo clippy -p dioxusfun -p dioxus-grid-layout --all-targets -- -D warnings
+
   # The Linux job above compiles the client, but never the `#[cfg(target_os =
   # "windows")]` half of it — and the release job that would is gated on `push`,
   # so a pull request can't tell whether the Windows-only code even builds. That

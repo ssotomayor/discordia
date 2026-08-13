@@ -65,14 +65,6 @@ the top within each section.
   step that reads the `dioxus` version out of `Cargo.lock` and compares would
   make it structural; `dx --version` is already run right after the install, so
   it has the other half in hand.
-- **A release-profile build is never linted.** `unused_variables` and friends
-  can fire with `debug_assertions` off and pass every gate: clippy is a cargo
-  dev-profile job, and the only thing that compiles the client in release is the
-  pre-release job, which runs on `push` and does not fail on warnings. That is
-  how nine of them reached a published build before anyone saw them (`c685828`).
-  A `RUSTFLAGS=-C debug-assertions=off cargo clippy -p dioxusfun` job would
-  close it; the two that survive that fix today (`tab_key`, `step_key`) have to
-  be understood first, or the job lands red.
 - **No macOS clippy.** CI now compiles the client on all three platforms, but
   lints it only on Linux — so the `cfg(target_os = "macos")` half of the client,
   which is where every ScreenCaptureKit and CoreVideo `unsafe` block lives, is
@@ -206,6 +198,25 @@ the top within each section.
 
 ## Client UX
 
+- **The fade-in never re-triggers on the connect and identity-setup panels.**
+  Both wrapped their switched content in `div { key: "…", class: "fade-in" }` so
+  that changing tab or step would replace the node and restart the CSS
+  animation. It never did, in any profile: `rsx!` represents a key only on the
+  **root** node of a body — `VNode::key` and `HotReloadedTemplate::key` are one
+  per body, and `TemplateNode::Element` has no key field at all — so a nested
+  key is dropped. Measured against dioxus 0.7.10 with a four-case probe: a root
+  element and a root component call both reference the key expression, both
+  nested forms do not. That is also why it hid since June — with
+  `debug_assertions` off the nested ones warn `unused variable`, and in debug
+  they do not, because the hot-reload literal pool captures every dynamic
+  literal in the block, dead keys included.
+  The dead attributes are gone, so the animation still plays on first mount and
+  nothing else changed. Restoring the re-trigger means putting the key where a
+  body root is — one per `match` arm, since each arm's `rsx!` is its own body —
+  and that is worth establishing before writing it: for a single non-list child,
+  nothing here showed that a changed key forces a remount rather than an
+  in-place diff. Keys elsewhere in the client all sit inside a `for`, where they
+  demonstrably work.
 - **Live-session username rename.** The identity card's edit affordance updates
   the local identity + persists it, but takes effect only on the next Connect.
   Mid-session renames need a new protocol message
