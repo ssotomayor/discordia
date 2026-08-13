@@ -1749,12 +1749,7 @@ fn denoise_gate_loop(
     muted: Arc<AtomicBool>,
 ) {
     let mut denoiser: Option<crate::denoise::Denoiser> = None;
-    // Frames left before the gate closes. Non-zero = currently transmitting.
-    let mut hangover = 0u32;
-    // Released peak the gate reads, and whether the previous hop was sent —
-    // together they are what turns an on/off gate into one with a ramp.
-    let mut envelope = 0i32;
-    let mut was_open = false;
+    let mut gate = GateState::default();
     let mut gated = 0u64;
 
     while let Some(mut samples) = frame_rx.blocking_recv() {
@@ -1781,7 +1776,9 @@ fn denoise_gate_loop(
         if muted.load(Ordering::Relaxed) {
             meter.bump_peak(peak_fixed(&samples));
             meter.open.store(false, Ordering::Relaxed);
-            hangover = 0;
+            // The gate sees none of this, so it must not remember what came
+            // before it either. See `GateState`.
+            gate.silence();
             continue;
         }
 
@@ -1805,6 +1802,10 @@ fn denoise_gate_loop(
                         if dropped > 0 {
                             eprintln!("[voice] dropped {dropped} hops queued during model load");
                         }
+                        // Same reason as the mute path: hops the gate never
+                        // saw, and the ones it did see were not denoised, so
+                        // its envelope is on the wrong scale for what follows.
+                        gate.silence();
                     }
                     Err(e) => {
                         eprintln!("[voice] noise cancellation unavailable: {e}");
@@ -1830,34 +1831,22 @@ fn denoise_gate_loop(
         let peak = peak_fixed(&samples);
         meter.bump_peak(peak);
 
-        // What the gate reads is the released envelope, not this hop alone.
-        envelope = peak.max(envelope * GATE_ENVELOPE_DECAY_PCT / 100);
-        let open_at = controls.threshold.load(Ordering::Relaxed);
-        // Once open, hold to a lower bar than it took to get there.
-        let hold_at = open_at * GATE_CLOSE_RATIO_PCT / 100;
-        let bar = if hangover > 0 { hold_at } else { open_at };
-        if envelope > bar {
-            hangover = GATE_HANGOVER_FRAMES;
-        } else {
-            hangover = hangover.saturating_sub(1);
-        }
-        let open = hangover > 0;
-        meter.open.store(open, Ordering::Relaxed);
-
-        match (was_open, open) {
-            // Steady state, and the common case.
-            (true, true) => {}
-            (false, true) => ramp(&mut samples, true),
-            // The closing hop is faded and *sent*, so the tail ends on zero
-            // rather than on whatever sample the cut landed on.
-            (true, false) => ramp(&mut samples, false),
-            (false, false) => {
+        let action = gate.step(peak, controls.threshold.load(Ordering::Relaxed));
+        // A ramping-out hop is still sent, but the gate is shut — the speaking
+        // indicator should say so on the same frame the fade starts.
+        meter.open.store(
+            matches!(action, GateAction::Pass | GateAction::RampIn),
+            Ordering::Relaxed,
+        );
+        match action {
+            GateAction::Pass => {}
+            GateAction::RampIn => ramp(&mut samples, true),
+            GateAction::RampOut => ramp(&mut samples, false),
+            GateAction::Drop => {
                 gated += 1;
-                was_open = false;
                 continue;
             }
         }
-        was_open = open;
 
         let data: Vec<i16> = samples
             .iter()
@@ -1871,6 +1860,70 @@ fn denoise_gate_loop(
         }
     }
     eprintln!("[voice] denoise/gate thread ended ({gated} frames gated)");
+}
+
+/// What the gate decided about the hop just measured.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum GateAction {
+    /// Send it as it is — the gate was already open and stays open.
+    Pass,
+    /// Send it faded in: the gate just opened.
+    RampIn,
+    /// Send it faded out: the gate just closed, and a phrase should end on
+    /// zero rather than on whatever sample the cut landed on.
+    RampOut,
+    /// Send nothing.
+    Drop,
+}
+
+/// The transmit gate's memory between hops.
+///
+/// A struct because the three fields have to move together, which is exactly
+/// what the first version of this got wrong: it reset the hangover counter when
+/// the mic was muted and left the envelope and the open flag alone. Unmuting
+/// into a quiet room then resumed from the level the user had last been
+/// *speaking* at — the envelope decays 25% a hop, so a peak of 900 is still
+/// over a threshold of 21 fifteen hops later — and the gate passed a third of a
+/// second of room noise before deciding it was silence. Review of #46 traced
+/// it. Anything that interrupts the audio the gate is watching has to say so
+/// through `silence`, not by poking one field.
+#[derive(Default)]
+struct GateState {
+    /// Frames left before the gate closes. Non-zero = currently transmitting.
+    hangover: u32,
+    /// Released peak, so a single dip cannot start the hangover counting down.
+    envelope: i32,
+    /// Whether the previous hop was sent — what the ramps key off.
+    was_open: bool,
+}
+
+impl GateState {
+    /// Forget everything, because the next hop does not continue the last one.
+    fn silence(&mut self) {
+        *self = Self::default();
+    }
+
+    /// Judge one hop's peak, on the ×1000 fixed-point scale the slider uses.
+    fn step(&mut self, peak: i32, open_at: i32) -> GateAction {
+        self.envelope = peak.max(self.envelope * GATE_ENVELOPE_DECAY_PCT / 100);
+        // Once open, hold to a lower bar than it took to get there.
+        let hold_at = open_at * GATE_CLOSE_RATIO_PCT / 100;
+        let bar = if self.hangover > 0 { hold_at } else { open_at };
+        if self.envelope > bar {
+            self.hangover = GATE_HANGOVER_FRAMES;
+        } else {
+            self.hangover = self.hangover.saturating_sub(1);
+        }
+        let open = self.hangover > 0;
+        let action = match (self.was_open, open) {
+            (true, true) => GateAction::Pass,
+            (false, true) => GateAction::RampIn,
+            (true, false) => GateAction::RampOut,
+            (false, false) => GateAction::Drop,
+        };
+        self.was_open = open;
+        action
+    }
 }
 
 /// Fade a hop in or out over `GATE_RAMP_SAMPLES`, in place.
@@ -3033,18 +3086,11 @@ async fn consume_remote_track(
     let mut resampled_buf: Vec<f32> = Vec::with_capacity(FRAME_SAMPLES * 4);
     // The lines below are where a silent participant is told from a working
     // one, and with several tracks live "something is near-silent" is not an
-    // answer to that. Short pubkey plus any identity suffix, which is what
-    // separates someone's microphone from their screen's audio.
-    let who = {
-        let (pk, suffix) = identity
-            .split_once('#')
-            .map_or((identity.as_str(), ""), |(a, b)| (a, b));
-        let head: String = pk.chars().take(8).collect();
-        if suffix.is_empty() {
-            head
-        } else {
-            format!("{head}#{suffix}")
-        }
+    // answer to that. The suffix is kept because it is what separates someone's
+    // microphone from their screen's audio — see `livekit::screen_audio_identity`.
+    let who = match identity.split_once('#') {
+        Some((pk, suffix)) => format!("{}#{suffix}", crate::identity::truncate_pubkey(pk)),
+        None => crate::identity::truncate_pubkey(&identity),
     };
     let track_id = handle.add_track(identity, is_stream);
     let cap = (handle.device_rate / PLAYBACK_CAP_DIVISOR) as usize;
@@ -3143,6 +3189,75 @@ mod tests {
         }
         // And it decays rather than latching: 900 must not still be there.
         assert!(env < 900, "envelope latched at the loudest hop it ever saw");
+    }
+
+    /// Review of #46, traced by hand before it was written down here: the first
+    /// version of the hysteresis reset the hangover counter on mute and left
+    /// the envelope and the open flag standing, so unmuting into a quiet room
+    /// resumed from the level the user had last been speaking at.
+    ///
+    /// The arithmetic is why it lasted long enough to hear. The envelope keeps
+    /// 75% a hop, so a peak of 900 is still above a threshold of 21 fifteen
+    /// hops later, and the hangover it keeps refreshing is another 30 — about a
+    /// third of a second of room noise, transmitted, right after the user
+    /// un-muted expecting to be heard only when they speak.
+    #[test]
+    fn muting_makes_the_gate_forget_the_level_it_was_hearing() {
+        let open_at = 21;
+        let mut gate = GateState::default();
+        for _ in 0..5 {
+            gate.step(900, open_at);
+        }
+        assert!(gate.was_open, "precondition: loud speech opened the gate");
+
+        gate.silence();
+
+        assert_eq!(
+            gate.step(5, open_at),
+            GateAction::Drop,
+            "a quiet hop after the mute was judged against the level from before it"
+        );
+    }
+
+    /// Without the reset, the same trace passes room noise for long enough to
+    /// be the bug this file's hysteresis was added to fix, in reverse.
+    #[test]
+    fn a_gate_that_kept_its_envelope_would_hold_open_for_a_third_of_a_second() {
+        let open_at = 21;
+        let mut gate = GateState::default();
+        for _ in 0..5 {
+            gate.step(900, open_at);
+        }
+        // The mute path as it was: hangover cleared, memory kept.
+        gate.hangover = 0;
+
+        let held = (0..100)
+            .take_while(|_| gate.step(5, open_at) != GateAction::Drop)
+            .count();
+        assert!(
+            held > 30,
+            "the trace in the review depends on this being long, not a hop or two; got {held}"
+        );
+    }
+
+    /// The ramps are what the state machine exists to place, so it has to place
+    /// exactly one of each around a phrase.
+    #[test]
+    fn one_ramp_in_at_the_start_and_one_ramp_out_at_the_end() {
+        let open_at = 21;
+        let mut gate = GateState::default();
+        assert_eq!(gate.step(900, open_at), GateAction::RampIn);
+        assert_eq!(gate.step(900, open_at), GateAction::Pass);
+
+        let tail: Vec<_> = (0..GATE_HANGOVER_FRAMES + 60)
+            .map(|_| gate.step(0, open_at))
+            .collect();
+        assert_eq!(
+            tail.iter().filter(|a| **a == GateAction::RampOut).count(),
+            1,
+            "the fade out has to happen once, not on every silent hop"
+        );
+        assert_eq!(*tail.last().unwrap(), GateAction::Drop);
     }
 
     /// A fade that does not reach zero is the click it was added to remove.
