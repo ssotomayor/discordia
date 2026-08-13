@@ -62,6 +62,7 @@ pub fn router(ctx: AppCtx) -> Router {
     Router::new()
         .route("/", get(root))
         .route("/discover", get(discover))
+        .route("/resolve/:code", get(resolve))
         .route("/voice-token", axum::routing::post(voice_token))
         .route("/control", get(control))
         .route("/join/:code", get(join))
@@ -71,11 +72,28 @@ pub fn router(ctx: AppCtx) -> Router {
 }
 
 async fn root() -> &'static str {
-    "dioxusfun-rendezvous. Endpoints: /discover, /control, /join/:code, /proxy/:session"
+    "dioxusfun-rendezvous. Endpoints: /discover, /resolve/:code, /control, /join/:code, /proxy/:session"
 }
 
 async fn discover(State(ctx): State<AppCtx>) -> Json<Vec<DiscoverEntry>> {
     Json(ctx.registry.discover())
+}
+
+/// What a joiner holding a code needs to know before dialling: chiefly whether
+/// this host published a direct address worth trying ahead of the relay.
+///
+/// Separate from `/discover` because that one is the public browse listing and
+/// deliberately omits unlisted hosts — while a code handed to friends is the
+/// case most likely to want the direct path. Matching `/join/{code}`, the code
+/// is compared case-insensitively.
+async fn resolve(
+    State(ctx): State<AppCtx>,
+    Path(code): Path<String>,
+) -> Result<Json<DiscoverEntry>, axum::http::StatusCode> {
+    ctx.registry
+        .lookup(&code.to_lowercase())
+        .map(Json)
+        .ok_or(axum::http::StatusCode::NOT_FOUND)
 }
 
 #[derive(serde::Deserialize)]

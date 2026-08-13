@@ -222,9 +222,19 @@ channel to observe the publication themselves.
   the same division Electron apps like Discord use. Targets are re-resolved from
   a fresh query on every start, because a window can close between the pick and
   the capture.
-- `host.rs` — self-host: spawn embedded server + LiveKit, register with
-  rendezvous. `rendezvous.rs` — the rendezvous client (control handshake +
-  proxy bridging). `blossom.rs` — Nostr media upload for avatars/banners.
+- `host.rs` — self-host: bind the gateway, ask the router for a way in, register
+  with the rendezvous, then decide whether a local LiveKit is needed at all (a
+  rendezvous with its own SFU wins, and the bundled one is not started). The
+  order is load-bearing: the bound port is what gets mapped and advertised.
+  `rendezvous.rs` — the rendezvous client (control handshake + proxy bridging).
+  `blossom.rs` — Nostr media upload for avatars/banners.
+- `portmap.rs` — UPnP-IGD then NAT-PMP, so a home machine obtains an address the
+  internet can dial (`docs/NETWORKING.md`, tier 1 — the only one involving
+  nobody else). Failure is the normal case and returns a sentence for the UI,
+  never an error that stops hosting. It also measures **hairpin NAT**, because
+  LiveKit replaces its LAN ICE candidate with the advertised address rather than
+  adding to it — so advertising one without checking would trade the LAN path
+  for the remote one.
 - `features/*.rs` — UI, one module per surface: `guilds`, `channels`, `chat`,
   `members`, `voice`, `screenshare`, `camera`, `roles`, `guild_settings`,
   `integrations` (bots), `profiles`, `connect`, `appearance`, `activities`.
@@ -278,7 +288,10 @@ channel to observe the publication themselves.
 ## Rendezvous anatomy (`rendezvous/src/`)
 
 - `relay.rs` — the three WS handlers: host `/control` (register), friend
-  `/join/{code}`, host `/proxy/{session}` (pairing). `lib.rs` — router & config.
+  `/join/{code}`, host `/proxy/{session}` (pairing). `lib.rs` — router & config,
+  plus two HTTP reads: `/discover` (public listing) and `/resolve/{code}` (one
+  live host by code, listed or not — how a joiner learns the direct address a
+  host advertised before deciding whether to use the relay at all).
 - `registry.rs` — **live hosts** (ephemeral, keyed by shortcode) vs **name
   reservations** (persistent JSON, owner-scoped, survive restart). `discover()`
   lists only live public hosts.

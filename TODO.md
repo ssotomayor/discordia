@@ -228,41 +228,30 @@ the top within each section.
 
 ## Decentralization / rendezvous
 
-- **A rendezvous with no shared SFU hands relayed friends a LAN address for
-  voice, which they cannot dial.** `explicit_url` is `None` when the rendezvous
-  supplies no `livekit_url`, so `url_for_client` falls back to deriving one from
-  the connection — and a friend proxied in by the relay reaches the gateway on
-  *loopback*, so the `lan_host` substitution fires and they are handed the host's
-  **LAN** address. Correct for a proxied friend who happens to be on the same
-  network; useless for one on the internet, which is the case the relay exists
-  for. The comment at that substitution says it is "so proxied friends get
-  something they can actually dial", which holds only for the LAN case.
-  The effect is that a rendezvous without a LiveKit gives relayed friends working
-  chat and voice that fails on an unreachable address, rather than voice that is
-  cleanly unavailable. Reasoned from the code, not reproduced — it needs one run
-  against a rendezvous started without `livekit_api_key` to confirm, and the
-  useful fix is probably to refuse to mint rather than mint something undialable.
-- **The bundled LiveKit is started even when the rendezvous supplies one, and
-  then never used.** `start_self_host` calls `spawn_livekit()` unconditionally
-  *before* registering, so the ~51 MB `livekit-server` subprocess comes up and
-  binds 7880 — and if the rendezvous returns a `livekit_url`, `explicit_url` wins
-  for every client and the local one serves nobody for the whole session. The
-  comment beside the registration already notes that precedence; what is missing
-  is deferring the spawn until it is known to be needed. Costs a process, a port
-  and a chunk of memory per self-host session, and the port is the part that can
-  actually bite: anything else expecting 7880 collides with an SFU nobody is
-  talking to.
+- **A relayed friend on an *unmapped* host still gets a LAN address for voice.**
+  The reported half is now confirmed rather than reasoned:
+  `server/tests/rendezvous_voice.rs` runs a real relay with no `livekit_api_key`
+  and shows it returns `livekit_url: null` and no mint grant, after which a
+  loopback-origin client is handed `ws://192.168.x.x:7880`.
+  Stage 1 fixes the case it can: a host with a port mapping now sets
+  `public_host`, which outranks `lan_host` for exactly those clients, so the
+  address handed out is one a friend anywhere can dial. Without a mapping the
+  old behaviour stands, and it is the least-bad of the three options — the
+  gateway cannot tell a proxied friend from the host's own client (both arrive
+  on loopback, because `bridge_friend` dials loopback), so refusing to mint
+  would take voice from the host itself and from LAN friends to spare a remote
+  friend a connect timeout.
+  Telling them apart needs a marker the bridge adds when it dials — a header on
+  that one request, which a remote friend cannot forge because our own code
+  makes it. With that, a proxied client with no public address could be told
+  "voice unavailable here" instead of being handed something undialable. Not
+  done in Stage 1 because it is a gateway-side change to a path the stage does
+  not otherwise touch.
 - **A self-hosted machine cannot be reached from the internet without the relay
-  carrying the connection.** Today the choice is relay-or-nothing: a home machine
-  has no dialable address, so `SessionMode::ByCode` always proxies through the
-  rendezvous, and the relay's own SFU carries the media. `docs/NETWORKING.md` has
-  the full picture; the staged work is:
-  1. **Port mapping** (`igd-next` UPnP-IGD, `natpmp`) so a host obtains a real
-     address itself and friends reach it — and its own SFU — directly. The only
-     tier that involves no third party at all, and the only one that helps voice,
-     since no gateway transport carries LiveKit media. Narrow
-     `livekit_bundle.rs`'s 100-port UDP range to LiveKit's single-port mux first,
-     and flip `use_external_ip`, or there is nothing worth mapping.
+  carrying the connection.** Stage 1 (port mapping) is **done** — see
+  `client/src/portmap.rs`, `docs/NETWORKING.md`. A host now asks its router for
+  a forward, advertises the result on `Register`, and a friend holding the code
+  races it against the relay. What is left:
   2. **An encrypted, key-authenticated transport** (QUIC, `iroh` the candidate)
      for the hosts port mapping cannot serve, and for the plaintext problem under
      Security above. Note that "coordinator, never carrier" has to be *enforced*
@@ -271,8 +260,59 @@ the top within each section.
      assuming one will not happen.
   3. **LiveKit E2EE** so a relayed call is unreadable to the SFU carrying it.
      Key distribution is the work, and it must rekey on kick and ban.
-  Deferred as a whole because it is transport surgery that needs real-network
-  testing; being done on a branch rather than here.
+  Both still need real-network testing, and stay on the branch rather than here.
+- **Stage 1's port mapping has never met a real router.** Everything in
+  `client/src/portmap.rs` is exercised only by unit tests over its pure parts
+  (`endpoint()`, `is_private`) — no test anywhere makes a UPnP or NAT-PMP
+  request, because doing so needs a router, and CI has none. Untested in
+  particular: that a mapping actually appears; that the renewal at half the
+  lease keeps it; that dropping the guard withdraws it; and that
+  `natpmp::new_tokio_natpmp()` finds the default gateway on Windows and macOS
+  (its `get_default_gateway` is per-platform). The check that matters most is
+  the negative one — that a router which refuses leaves hosting working and
+  says so in the banner, rather than failing the launch.
+- **Advertising an external IP to LiveKit costs the LAN path if the router does
+  not hairpin.** LiveKit *replaces* its host ICE candidate with `node_ip` rather
+  than adding to it — pion defaults host rewrites to `AddressRewriteReplace`
+  and LiveKit installs a catch-all rule (read out of
+  `mediatransportutil/pkg/rtcconfig/webrtc_config.go` and `pion/ice`'s
+  `agent_options.go`). So once an address is advertised, this machine and
+  everyone on its LAN must reach the SFU *through* it.
+  `portmap::probe_hairpin` measures whether that works before we advertise, but
+  it measures it over **TCP** against the gateway port, and infers UDP from it.
+  Most NATs hairpin the same way for both; some do not. The clean answer would
+  be a UDP echo through the mapped media port, which needs something on the
+  outside to echo — i.e. the third party tier 1 exists to avoid.
+- **`use_external_ip: true` is deliberately *not* set, contrary to the earlier
+  plan.** It resolves the address over STUN inside config validation and a
+  failure there is fatal, so a host with no internet — a LAN party — would get
+  no SFU at all rather than a LAN-only one. `node_ip` says the same thing
+  without the dependency, using the address the router already told us. If a
+  future change wants STUN back, that failure mode is the thing to handle.
+- **`/resolve/{code}` hands the host's IP to anyone who has the code.** That is
+  the point — it is how a friend tries the direct path — but it is worth
+  stating: the code is the capability, and it is a `adjective-animal-NN`
+  shortcode for anonymous hosts. Someone who guesses one learns a home IP
+  without connecting, where before they would have had to join through the
+  relay. A host that would rather stay hidden has to not advertise, and there is
+  currently no setting for that short of turning off direct connections
+  entirely.
+- **LiveKit's three ports are mapped even when the rendezvous supplies the
+  SFU.** The ordering that makes Stage 1 work — bind, map, register — settles
+  the mapping before the `Registered` frame says whether a local SFU is needed,
+  so a host on a relay with its own LiveKit opens 7880/7881/7882 at the router
+  and runs nothing behind them. Inbound connections are refused rather than
+  answered, so this is hygiene rather than exposure, but it is three holes for
+  no reason, and this file already carries one entry about ports opened for a
+  server nobody talks to. Fixing it means splitting `portmap::request` into a
+  gateway phase (before registering) and a media phase (after), with the guard
+  built from both.
+- **The direct/relay race abandons a rendezvous pairing when direct wins.**
+  `connect_preferring_direct` dials both at once and aborts the relay attempt
+  mid-handshake, which leaves the rendezvous holding a pending pairing and the
+  host a bridge task, until the 10s pairing timeout clears it. Harmless at one
+  join per person; worth revisiting if a host ever sees a burst of joins, since
+  every one of them briefly costs the relay a slot it will not use.
 - **The macOS local-network grant is declared but never exercised.**
   `client/Info.plist` now carries `NSLocalNetworkUsageDescription`, added
   prophylactically alongside the App Transport Security fix rather than in
@@ -283,6 +323,11 @@ the top within each section.
   the grant prompt appears at all (a missing usage description can mean silent
   denial rather than a prompt), and that a denial surfaces as something better
   than a connect timeout. Until then the key is insurance, not a verified fix.
+  Stage 1 gives it a second, earlier trigger: `portmap` opens with SSDP
+  multicast to 239.255.255.250 and a UDP request to the default gateway, both of
+  which the grant covers. So a denial now shows up as "no router accepted a port
+  mapping" — accurate about the symptom and silent about the cause, which is
+  worth watching for when that live test finally runs.
 - **Reservation display fields are persisted but never read.** `claim_name`
   writes `name`, `description` and `public` into `reservations.json`, and
   `Registry::load` does deserialize the whole `Reservation` back — but `relay.rs`

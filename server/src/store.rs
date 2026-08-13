@@ -743,6 +743,13 @@ impl Store {
 
     /// The most recent `limit` messages of a channel, oldest-first (the shape
     /// clients render). `before` (unix ms) paginates further back.
+    ///
+    /// The tiebreak is `rowid`, not `id`. Two messages sent inside the same
+    /// millisecond tie on `created_at`, and `id` is a random UUID — so their
+    /// order came out arbitrary, and differently on each fetch. `rowid` is
+    /// SQLite's own insertion counter, which is exactly the order they arrived
+    /// in. Found as a flaky assertion in `persistence.rs`; it is a real
+    /// ordering bug, not a test artefact.
     pub async fn history(
         &self,
         channel_id: Id,
@@ -756,7 +763,7 @@ impl Store {
                             image, reactions, reply_id, reply_author_pubkey,
                             reply_author_username, reply_excerpt, created_at
                      FROM messages WHERE channel_id = ? AND created_at < ?
-                     ORDER BY created_at DESC, id DESC LIMIT ?",
+                     ORDER BY created_at DESC, rowid DESC LIMIT ?",
                 )
                 .bind(channel_id.to_string())
                 .bind(cutoff)
@@ -770,7 +777,7 @@ impl Store {
                             image, reactions, reply_id, reply_author_pubkey,
                             reply_author_username, reply_excerpt, created_at
                      FROM messages WHERE channel_id = ?
-                     ORDER BY created_at DESC, id DESC LIMIT ?",
+                     ORDER BY created_at DESC, rowid DESC LIMIT ?",
                 )
                 .bind(channel_id.to_string())
                 .bind(limit as i64)

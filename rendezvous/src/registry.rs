@@ -28,6 +28,10 @@ pub struct HostEntry {
     pub name: Option<String>,
     pub description: Option<String>,
     pub public: bool,
+    /// Gateway URL the host says the internet can dial directly, when it
+    /// managed to obtain one. We store and hand it out verbatim: whether it
+    /// actually works is settled by the joiner trying it, not by us probing it.
+    pub endpoint: Option<String>,
     pub control_tx: tokio::sync::mpsc::UnboundedSender<RendezvousToHost>,
     /// Unix millis of the last frame we had from this host, refreshed by the
     /// control loop's heartbeat.
@@ -314,12 +318,7 @@ impl Registry {
             .hosts
             .iter()
             .filter(|h| h.value().public)
-            .map(|h| DiscoverEntry {
-                shortcode: h.key().clone(),
-                name: h.value().name.clone(),
-                description: h.value().description.clone(),
-                idle_secs: h.value().idle_secs(),
-            })
+            .map(|h| entry_for(h.key(), h.value()))
             .collect();
         entries.sort_by(|a, b| {
             let an = a.name.as_deref().unwrap_or("\u{FFFF}").to_lowercase();
@@ -327,6 +326,29 @@ impl Registry {
             an.cmp(&bn).then_with(|| a.shortcode.cmp(&b.shortcode))
         });
         entries
+    }
+
+    /// One live host by its join code, public or not.
+    ///
+    /// Unlisted on purpose: `discover()` answers "what may I browse", this
+    /// answers "I already have a code — how do I reach that host". A joiner
+    /// needs the second to try the direct address before the relay, and an
+    /// unlisted host is exactly the case where someone was handed a code.
+    /// Knowing the code already buys a relayed connection, so this hands out no
+    /// reachability that `/join/{code}` did not — only the host's address, which
+    /// is why a host that publishes none stays relay-only here too.
+    pub fn lookup(&self, code: &str) -> Option<DiscoverEntry> {
+        self.hosts.get(code).map(|h| entry_for(h.key(), h.value()))
+    }
+}
+
+fn entry_for(shortcode: &str, host: &HostEntry) -> DiscoverEntry {
+    DiscoverEntry {
+        shortcode: shortcode.to_string(),
+        name: host.name.clone(),
+        description: host.description.clone(),
+        idle_secs: host.idle_secs(),
+        endpoint: host.endpoint.clone(),
     }
 }
 

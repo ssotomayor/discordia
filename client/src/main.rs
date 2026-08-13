@@ -8,6 +8,7 @@ mod features;
 mod host;
 mod identity;
 mod net;
+mod portmap;
 mod profile;
 mod protocol;
 mod rendezvous;

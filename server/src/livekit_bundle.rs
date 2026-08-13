@@ -7,6 +7,7 @@
 //! the same baked-in copy.
 
 use std::fs;
+use std::net::IpAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -36,6 +37,16 @@ const LIVEKIT_BIN_NAME: &str = "livekit-server.exe";
 const LIVEKIT_BIN_NAME: &str = "livekit-server";
 
 pub const DEFAULT_LIVEKIT_PORT: u16 = 7880;
+/// ICE/TCP fallback, for peers whose network blocks UDP.
+pub const DEFAULT_LIVEKIT_TCP_PORT: u16 = 7881;
+/// **One** UDP port for all media, rather than a range.
+///
+/// LiveKit's single-port mux replaces the 100-port range this used to write.
+/// The range was never wrong, it was unmappable: asking a router for a hundred
+/// forwards is not a thing to do, so a self-hosted SFU had no dialable media
+/// path at all. One port is one mapping — which is what makes the port-mapping
+/// work in `client::portmap` worth anything.
+pub const DEFAULT_LIVEKIT_UDP_PORT: u16 = 7882;
 pub const DEFAULT_LIVEKIT_KEY: &str = "devkey";
 pub const DEFAULT_LIVEKIT_SECRET: &str = "secret-must-be-at-least-32-chars-long";
 
@@ -48,7 +59,32 @@ pub struct LivekitSubprocess {
 /// Write the bundled `livekit-server` binary + config to a temp dir and
 /// spawn it as a child process. Blocks until LiveKit is accepting TCP
 /// connections on its WebSocket port.
-pub async fn spawn_livekit() -> Result<LivekitSubprocess, String> {
+///
+/// `advertise_ip` is the address remote peers should be told to send media to —
+/// the public side of a port mapping. Pass `None` when there is no such address
+/// and LiveKit advertises the machine's own LAN address, which is what it has
+/// always done.
+///
+/// **It is `node_ip` and not `use_external_ip: true` on purpose**, even though
+/// the latter is the switch LiveKit's own docs name for this. Two reasons, both
+/// read out of the vendored source rather than assumed:
+///
+///  * `use_external_ip` makes `livekit-server` resolve its address over STUN
+///    *during config validation*, and a failure there is fatal — the process
+///    exits instead of starting. A LAN party with no internet, or a network that
+///    blocks STUN, would lose voice entirely rather than lose only the remote
+///    half of it. We already know the external address: the router told us when
+///    it granted the mapping, and that answer is better than a STUN reply.
+///  * It costs up to three 5-second STUN attempts before the port opens, which
+///    is longer than callers wait for it.
+///
+/// What both share is that LiveKit *replaces* the host ICE candidate with the
+/// advertised address rather than adding to it (pion defaults host rewrites to
+/// `AddressRewriteReplace`, and LiveKit installs a catch-all rule). So once an
+/// address is advertised, everyone — including this machine and anyone on its
+/// LAN — reaches the SFU through it, which only works if the router hairpins.
+/// That is why the caller probes for hairpinning before passing one in.
+pub async fn spawn_livekit(advertise_ip: Option<IpAddr>) -> Result<LivekitSubprocess, String> {
     if LIVEKIT_BIN.is_empty() {
         return Err("livekit-server binary not bundled in this build".into());
     }
@@ -81,13 +117,7 @@ pub async fn spawn_livekit() -> Result<LivekitSubprocess, String> {
     let path: PathBuf = dir.join(format!("{stem}-{digest}{ext}"));
 
     let config_path = dir.join("livekit.yaml");
-    let config = format!(
-        "port: {DEFAULT_LIVEKIT_PORT}\n\
-         bind_addresses:\n  - 0.0.0.0\n\
-         rtc:\n  tcp_port: 7881\n  port_range_start: 50000\n  port_range_end: 50100\n  use_external_ip: false\n\
-         keys:\n  {DEFAULT_LIVEKIT_KEY}: {DEFAULT_LIVEKIT_SECRET}\n\
-         logging:\n  level: info\n",
-    );
+    let config = config_yaml(advertise_ip);
 
     // Every file this needs to touch, on a thread that is allowed to wait. The
     // caller on the client side is the UI's own executor: a 49MB write there
@@ -156,6 +186,23 @@ pub async fn spawn_livekit() -> Result<LivekitSubprocess, String> {
     Ok(LivekitSubprocess { _child: child })
 }
 
+/// The config we hand `livekit-server`, kept out of `spawn_livekit` so its
+/// shape can be asserted without a subprocess.
+fn config_yaml(advertise_ip: Option<IpAddr>) -> String {
+    // `node_ip` is only written when we have one; left out, LiveKit derives it
+    // from the local interfaces exactly as before.
+    let node_ip = advertise_ip
+        .map(|ip| format!("  node_ip: {ip}\n"))
+        .unwrap_or_default();
+    format!(
+        "port: {DEFAULT_LIVEKIT_PORT}\n\
+         bind_addresses:\n  - 0.0.0.0\n\
+         rtc:\n  tcp_port: {DEFAULT_LIVEKIT_TCP_PORT}\n  udp_port: {DEFAULT_LIVEKIT_UDP_PORT}\n  use_external_ip: false\n{node_ip}\
+         keys:\n  {DEFAULT_LIVEKIT_KEY}: {DEFAULT_LIVEKIT_SECRET}\n\
+         logging:\n  level: info\n",
+    )
+}
+
 async fn wait_for_port(port: u16, timeout: Duration) -> Result<(), String> {
     let deadline = tokio::time::Instant::now() + timeout;
     let addr = format!("127.0.0.1:{port}");
@@ -167,5 +214,37 @@ async fn wait_for_port(port: u16, timeout: Duration) -> Result<(), String> {
             return Err(format!("{addr} not listening after {timeout:?}"));
         }
         tokio::time::sleep(Duration::from_millis(150)).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One UDP port and no range, because a range is unmappable — and no
+    /// `port_range_*` left behind, which LiveKit would prefer over the mux if
+    /// both were present.
+    #[test]
+    fn media_rides_a_single_udp_port() {
+        let yaml = config_yaml(None);
+        assert!(
+            yaml.contains(&format!("udp_port: {DEFAULT_LIVEKIT_UDP_PORT}")),
+            "{yaml}"
+        );
+        assert!(!yaml.contains("port_range"), "{yaml}");
+    }
+
+    /// Advertising is opt-in per spawn: without an address the config is the
+    /// one every non-mapped host has always had, so a machine that could not
+    /// map a port keeps LAN voice working exactly as before.
+    #[test]
+    fn node_ip_appears_only_when_advertising() {
+        assert!(!config_yaml(None).contains("node_ip"));
+
+        let yaml = config_yaml(Some("203.0.113.5".parse().unwrap()));
+        assert!(yaml.contains("node_ip: 203.0.113.5"), "{yaml}");
+        // Never both: `use_external_ip` would re-resolve over STUN at startup
+        // and take the process down with it when that fails.
+        assert!(yaml.contains("use_external_ip: false"), "{yaml}");
     }
 }

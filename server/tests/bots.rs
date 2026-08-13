@@ -22,13 +22,18 @@ async fn next_timeout(bot: &mut Bot) -> ServerMessage {
 /// Per-test ServerConfig: unique temp data dir (SQLite + media) so tests are
 /// hermetic and parallel-safe.
 fn test_config(operators: std::collections::HashSet<String>) -> dioxusfun_server::ServerConfig {
+    // Counter, not a clock: pid + nanos looks unique and is not —
+    // `8f95f22` found macOS resolving `as_nanos()` to about a
+    // microsecond, so two tests starting together shared a data dir
+    // and the second one met "database is locked" on a SQLite file the
+    // first already had open. `voice.rs` was fixed then; these four
+    // kept the old key and kept flaking.
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static N: AtomicU32 = AtomicU32::new(0);
     let dir = std::env::temp_dir().join(format!(
         "dioxusfun-test-{}-{}",
         std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
+        N.fetch_add(1, Ordering::Relaxed)
     ));
     dioxusfun_server::ServerConfig {
         livekit: LiveKitConfig::from_env(),

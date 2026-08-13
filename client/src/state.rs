@@ -46,6 +46,22 @@ pub struct SessionParams {
     pub identity: crate::identity::Identity,
 }
 
+/// Who carries the bytes of this connection.
+///
+/// Worth showing rather than inferring: a relayed connection means the relay
+/// operator can read everything on it, and a direct one means the host learned
+/// our address. Neither is wrong, but which one happened is not something a
+/// person should have to guess. See `docs/NETWORKING.md`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Transport {
+    /// Our own machine — self-host, over loopback.
+    Loopback,
+    /// Straight to the host: a typed URL, or an address it published.
+    Direct,
+    /// Through a rendezvous relay, which sees every frame.
+    Relayed,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectionStatus {
     Connecting,
@@ -471,6 +487,10 @@ pub struct AppState {
     pub stream_has_audio: HashSet<String>,
     /// Populated when running in self-host mode. None for remote connections.
     pub host_info: Option<HostInfo>,
+    /// Who is carrying this connection — which of `docs/NETWORKING.md`'s tiers
+    /// we ended up on. Set once the socket is up, since for a join by code that
+    /// is decided by a race rather than by the session parameters.
+    pub transport: Transport,
     /// Bot installs per guild, for the owner's Integrations dialog. Populated by
     /// `GuildIntegrations` (owner-only) in response to `FetchIntegrations` and
     /// after each install/uninstall.
@@ -568,6 +588,7 @@ impl AppState {
             stream_muted: HashSet::new(),
             stream_has_audio: HashSet::new(),
             host_info: None,
+            transport: Transport::Loopback,
             integrations: HashMap::new(),
             guild_emojis: HashMap::new(),
             emoji_images: HashMap::new(),

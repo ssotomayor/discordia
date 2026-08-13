@@ -11,7 +11,9 @@ use url::Url;
 use crate::features::voice::VoiceCmd;
 use crate::host::{HostHandle, start_self_host};
 use crate::protocol::{ClientMessage, Id, ServerMessage};
-use crate::state::{AppState, ConnectionStatus, GatewayTx, SessionMode, SessionParams, VoicePhase};
+use crate::state::{
+    AppState, ConnectionStatus, GatewayTx, SessionMode, SessionParams, Transport, VoicePhase,
+};
 
 /// Find a nonce such that SHA-256(challenge ++ nonce) has ≥ `bits` leading zero
 /// bits (the `Pow` join gate). Mirrors the server's `pow_ok`.
@@ -81,15 +83,31 @@ pub fn spawn_gateway(
     gateway_tx
 }
 
+/// Where to dial, and what to call the connection once it is up.
+enum Dial {
+    /// One address, no alternative: our own loopback gateway, or a URL someone
+    /// typed.
+    Single { url: String, transport: Transport },
+    /// The host published an address of its own. Try it, but not on its own —
+    /// see `connect_preferring_direct` for why both are dialled at once.
+    DirectOrRelay { direct: String, relay: String },
+}
+
 async fn resolve_session(
     mode: SessionMode,
     identity: crate::identity::Identity,
     state: &mut Signal<AppState>,
-) -> Result<(String, Option<HostHandle>), String> {
+) -> Result<(Dial, Option<HostHandle>), String> {
     match mode {
         SessionMode::Remote { server_url } => {
             let url = normalize_url(&server_url)?;
-            Ok((url, None))
+            Ok((
+                Dial::Single {
+                    url,
+                    transport: Transport::Direct,
+                },
+                None,
+            ))
         }
         SessionMode::SelfHost {
             allow_lan,
@@ -107,7 +125,13 @@ async fn resolve_session(
             let handle = start_self_host(allow_lan, rendezvous_url, publish, identity).await?;
             let url = normalize_url(&handle.info.local_url)?;
             state.write().host_info = Some(handle.info.clone());
-            Ok((url, Some(handle)))
+            Ok((
+                Dial::Single {
+                    url,
+                    transport: Transport::Loopback,
+                },
+                Some(handle),
+            ))
         }
         SessionMode::ByCode {
             rendezvous_url,
@@ -117,18 +141,128 @@ async fn resolve_session(
             if base.is_empty() {
                 return Err("rendezvous URL required".into());
             }
-            let with_scheme = if base.starts_with("ws://") || base.starts_with("wss://") {
-                base.to_string()
-            } else if let Some(rest) = base.strip_prefix("http://") {
-                format!("ws://{rest}")
-            } else if let Some(rest) = base.strip_prefix("https://") {
-                format!("wss://{rest}")
-            } else {
-                format!("ws://{base}")
-            };
-            let url = format!("{with_scheme}/join/{}", code.trim());
-            Ok((url, None))
+            let with_scheme = ws_scheme(base);
+            let code = code.trim();
+            let relay = format!("{with_scheme}/join/{code}");
+            // Ask the rendezvous whether this host published an address of its
+            // own. A relay that predates the field, or a host that obtained no
+            // address, simply leaves us with the relayed path we already had —
+            // so nothing here is allowed to turn into a join failure.
+            match direct_endpoint(&with_scheme, code).await {
+                Some(endpoint) => match normalize_url(&endpoint) {
+                    Ok(direct) => Ok((Dial::DirectOrRelay { direct, relay }, None)),
+                    Err(e) => {
+                        tracing::warn!(%endpoint, error = %e, "host advertised an unusable endpoint");
+                        Ok((
+                            Dial::Single {
+                                url: relay,
+                                transport: Transport::Relayed,
+                            },
+                            None,
+                        ))
+                    }
+                },
+                None => Ok((
+                    Dial::Single {
+                        url: relay,
+                        transport: Transport::Relayed,
+                    },
+                    None,
+                )),
+            }
         }
+    }
+}
+
+fn ws_scheme(base: &str) -> String {
+    if base.starts_with("ws://") || base.starts_with("wss://") {
+        base.to_string()
+    } else if let Some(rest) = base.strip_prefix("http://") {
+        format!("ws://{rest}")
+    } else if let Some(rest) = base.strip_prefix("https://") {
+        format!("wss://{rest}")
+    } else {
+        format!("ws://{base}")
+    }
+}
+
+/// The direct gateway URL a host published for this code, if any.
+///
+/// `/resolve/{code}` rather than `/discover`: the browse listing carries only
+/// hosts that opted into being public, and a code handed to friends is exactly
+/// the case that did not.
+async fn direct_endpoint(ws_base: &str, code: &str) -> Option<String> {
+    let http_base = if let Some(rest) = ws_base.strip_prefix("wss://") {
+        format!("https://{rest}")
+    } else if let Some(rest) = ws_base.strip_prefix("ws://") {
+        format!("http://{rest}")
+    } else {
+        ws_base.to_string()
+    };
+    let entry = reqwest::Client::new()
+        .get(format!("{http_base}/resolve/{code}"))
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await
+        .ok()?
+        .error_for_status()
+        .ok()?
+        .json::<crate::protocol::rendezvous::DiscoverEntry>()
+        .await
+        .ok()?;
+    entry.endpoint
+}
+
+type Ws =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+/// How long the direct address gets before we settle for the relay.
+///
+/// It is a ceiling, not a delay: a direct address that answers is taken the
+/// moment it answers. The ceiling exists because the interesting failure is not
+/// a refusal — that comes back in milliseconds — but a *black hole*: a port
+/// mapping that has since expired, or an address that was never right, drops
+/// the SYN and leaves the connect to run out the OS timeout, which is over a
+/// minute on macOS.
+const DIRECT_ATTEMPT: std::time::Duration = std::time::Duration::from_secs(4);
+
+/// Try the host's own address and the relay at once, and keep whichever
+/// answers, preferring the direct one.
+///
+/// Both are dialled together rather than in sequence because the failure that
+/// matters is silent (see `DIRECT_ATTEMPT`) — a friend must not stare at a
+/// spinner for a minute to discover a stale mapping. The cost is that a
+/// successful direct connection leaves the relay holding a pairing nobody
+/// claims; the rendezvous expires those in ten seconds, which is what that
+/// timeout is for.
+async fn connect_preferring_direct(direct: &str, relay: &str) -> Result<(Ws, Transport), String> {
+    eprintln!("[dioxusfun] trying {direct} directly, {relay} as fallback");
+    let relay_url = relay.to_string();
+    let relay_attempt =
+        tokio::spawn(async move { tokio_tungstenite::connect_async(&relay_url).await });
+
+    match tokio::time::timeout(DIRECT_ATTEMPT, tokio_tungstenite::connect_async(direct)).await {
+        Ok(Ok((ws, _))) => {
+            // Nothing is sent on the relay socket, so aborting mid-handshake
+            // costs the rendezvous a pairing slot it already knows how to
+            // expire.
+            relay_attempt.abort();
+            eprintln!("[dioxusfun] connected directly to {direct}");
+            return Ok((ws, Transport::Direct));
+        }
+        Ok(Err(e)) => {
+            tracing::info!(%direct, error = %e, "direct connection refused — using the relay")
+        }
+        Err(_) => tracing::info!(%direct, "direct connection timed out — using the relay"),
+    }
+
+    match relay_attempt.await {
+        Ok(Ok((ws, _))) => {
+            eprintln!("[dioxusfun] connected through the relay {relay}");
+            Ok((ws, Transport::Relayed))
+        }
+        Ok(Err(e)) => Err(format!("connect failed: {e}")),
+        Err(e) => Err(format!("connect failed: {e}")),
     }
 }
 
@@ -141,13 +275,20 @@ async fn run(
 ) -> Result<(), String> {
     // For self-host, brings up the embedded server first and binds its
     // shutdown to this task by holding the HostHandle in scope.
-    let (url, _host_handle) =
+    let (dial, _host_handle) =
         resolve_session(params.mode.clone(), params.identity.clone(), &mut state).await?;
-    eprintln!("[dioxusfun] connecting to {url}");
 
-    let (ws_stream, _) = tokio_tungstenite::connect_async(&url)
-        .await
-        .map_err(|e| format!("connect failed: {e}"))?;
+    let (ws_stream, transport) = match dial {
+        Dial::Single { url, transport } => {
+            eprintln!("[dioxusfun] connecting to {url}");
+            let (ws, _) = tokio_tungstenite::connect_async(&url)
+                .await
+                .map_err(|e| format!("connect failed: {e}"))?;
+            (ws, transport)
+        }
+        Dial::DirectOrRelay { direct, relay } => connect_preferring_direct(&direct, &relay).await?,
+    };
+    state.write().transport = transport;
     let (mut ws_tx, mut ws_rx) = ws_stream.split();
 
     // Wait for the server's Hello frame so we know what nonce to sign.
@@ -880,5 +1021,68 @@ fn apply(
             // handshake loop in `run()`. Anywhere else, ignore.
             tracing::warn!("ignoring late Hello frame from server");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A WebSocket server that completes the handshake and then says nothing.
+    /// Enough to answer "did this address connect", which is all the race asks.
+    async fn ws_server() -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let _ = tokio_tungstenite::accept_async(stream).await;
+                    // Hold the connection so the client's handshake completes.
+                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                });
+            }
+        });
+        format!("ws://{addr}/gateway")
+    }
+
+    /// A port nothing is listening on, which refuses immediately.
+    async fn dead_address() -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        format!("ws://{addr}/gateway")
+    }
+
+    /// The point of the whole exercise: when the host published an address that
+    /// works, the relay is not used — nobody in the middle sees the session.
+    #[tokio::test]
+    async fn direct_wins_when_it_answers() {
+        let direct = ws_server().await;
+        let relay = ws_server().await;
+        let (_ws, transport) = connect_preferring_direct(&direct, &relay).await.unwrap();
+        assert_eq!(transport, Transport::Direct);
+    }
+
+    /// And the fallback is the whole reason both are dialled: a mapping that
+    /// has expired, or a host that never had one, must still be joinable.
+    #[tokio::test]
+    async fn relay_carries_the_session_when_direct_is_refused() {
+        let direct = dead_address().await;
+        let relay = ws_server().await;
+        let (_ws, transport) = connect_preferring_direct(&direct, &relay).await.unwrap();
+        assert_eq!(transport, Transport::Relayed);
+    }
+
+    /// With neither reachable, the error is the relay's — the direct address is
+    /// the optimistic attempt, and reporting its failure would send someone
+    /// looking at the wrong end of the connection.
+    #[tokio::test]
+    async fn both_down_is_a_connect_failure() {
+        let direct = dead_address().await;
+        let relay = dead_address().await;
+        let err = connect_preferring_direct(&direct, &relay)
+            .await
+            .unwrap_err();
+        assert!(err.contains("connect failed"), "{err}");
     }
 }

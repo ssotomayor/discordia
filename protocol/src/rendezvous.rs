@@ -42,6 +42,16 @@ pub enum HostToRendezvous {
         /// browse tab.
         #[serde(default)]
         description: Option<String>,
+        /// A gateway URL this host believes the internet can dial directly —
+        /// the result of a port mapping (UPnP-IGD / NAT-PMP), or a manual
+        /// forward. `None` means "relay me": either the host obtained no
+        /// address, or it chose not to publish one.
+        ///
+        /// Advertising it is what lets a friend skip the relay, so it is also
+        /// what publishes the host's home IP to anyone who can read the
+        /// listing. That trade is the host's to make — see `docs/NETWORKING.md`.
+        #[serde(default)]
+        endpoint: Option<String>,
     },
 }
 
@@ -61,6 +71,14 @@ pub struct DiscoverEntry {
     /// every host as stale.
     #[serde(default)]
     pub idle_secs: u64,
+    /// The host's directly-dialable gateway URL, when it advertised one at
+    /// registration. A joiner races this against the relay and keeps whichever
+    /// answers, so `None` simply means "relay only" rather than an error.
+    ///
+    /// Older rendezvous builds don't send it; older clients ignore it. Both
+    /// directions degrade to the relayed path, which is what they already do.
+    #[serde(default)]
+    pub endpoint: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -108,6 +126,7 @@ mod tests {
             signature: Some("cd".repeat(64)),
             publish_public: true,
             description: None,
+            endpoint: None,
         })
         .unwrap();
         assert_eq!(json["op"], "register");
@@ -115,6 +134,57 @@ mod tests {
         assert_eq!(d["name"], "casa");
         assert_eq!(d["publish_public"], true);
         assert!(d["description"].is_null());
+    }
+
+    /// A host that obtained a public address puts it on the wire, and a
+    /// rendezvous that predates the field still parses the frame. Both halves
+    /// matter: the endpoint is what turns a relayed join into a direct one, and
+    /// a host that advertises one must not become unregisterable against an
+    /// older relay.
+    #[test]
+    fn endpoint_round_trips_and_is_optional() {
+        let json = serde_json::to_string(&HostToRendezvous::Register {
+            name: None,
+            pubkey: None,
+            signature: None,
+            publish_public: false,
+            description: None,
+            endpoint: Some("ws://203.0.113.5:9000".into()),
+        })
+        .unwrap();
+        let back: HostToRendezvous = serde_json::from_str(&json).unwrap();
+        let HostToRendezvous::Register { endpoint, .. } = back;
+        assert_eq!(endpoint.as_deref(), Some("ws://203.0.113.5:9000"));
+
+        // A frame from a client that has never heard of the field.
+        let old: HostToRendezvous =
+            serde_json::from_str(r#"{"op":"register","d":{"name":null}}"#).unwrap();
+        let HostToRendezvous::Register { endpoint, .. } = old;
+        assert!(endpoint.is_none());
+    }
+
+    /// The listing carries the endpoint through, and an entry from a relay that
+    /// never sends one is still readable — a client would otherwise fail to
+    /// decode the whole browse response over one absent field.
+    #[test]
+    fn discover_entry_endpoint_is_optional() {
+        let entry: DiscoverEntry = serde_json::from_str(
+            r#"{"shortcode":"brave-otter-07","name":null,"description":null}"#,
+        )
+        .unwrap();
+        assert!(entry.endpoint.is_none());
+        assert_eq!(entry.idle_secs, 0);
+
+        let with = DiscoverEntry {
+            shortcode: "casa".into(),
+            name: Some("Casa".into()),
+            description: None,
+            idle_secs: 3,
+            endpoint: Some("ws://203.0.113.5:9000".into()),
+        };
+        let back: DiscoverEntry =
+            serde_json::from_str(&serde_json::to_string(&with).unwrap()).unwrap();
+        assert_eq!(back, with);
     }
 
     /// A relay that omits an optional field — as `voice_token_grant` already

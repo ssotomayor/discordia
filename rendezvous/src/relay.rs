@@ -45,7 +45,15 @@ pub async fn handle_host_control(socket: WebSocket, registry: Arc<Registry>, cfg
                 signature,
                 publish_public,
                 description,
-            }) => (name, pubkey, signature, publish_public, description),
+                endpoint,
+            }) => (
+                name,
+                pubkey,
+                signature,
+                publish_public,
+                description,
+                endpoint,
+            ),
             Err(e) => {
                 send_err(&mut tx, &format!("invalid register frame: {e}")).await;
                 return;
@@ -61,7 +69,7 @@ pub async fn handle_host_control(socket: WebSocket, registry: Arc<Registry>, cfg
         }
         None => return,
     };
-    let (name, pubkey, signature, publish_public, description) = register;
+    let (name, pubkey, signature, publish_public, description, endpoint) = register;
 
     // Resolve a shortcode. A claimed name goes through the signed-ownership +
     // uniqueness path; no name falls back to an anonymous random shortcode.
@@ -109,13 +117,14 @@ pub async fn handle_host_control(socket: WebSocket, registry: Arc<Registry>, cfg
             }
         },
     };
-    tracing::info!(%shortcode, host = ?display_name, public = publish_public, "host registered");
+    tracing::info!(%shortcode, host = ?display_name, public = publish_public, direct = ?endpoint, "host registered");
 
     let (control_tx, mut control_rx) = tokio::sync::mpsc::unbounded_channel::<RendezvousToHost>();
     let host_entry = HostEntry {
         name: display_name,
         description,
         public: publish_public,
+        endpoint,
         control_tx,
         // Stamped properly by try_claim; this is just a starting value.
         last_seen_ms: Default::default(),

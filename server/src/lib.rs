@@ -100,10 +100,23 @@ pub async fn spawn(
     max_attempts: u16,
     cfg: ServerConfig,
 ) -> std::io::Result<ServerHandle> {
-    let ctx = build_context(cfg).await?;
-
     let listener = bind_with_fallback(preferred, max_attempts).await?;
+    spawn_on(listener, cfg).await
+}
+
+/// Serve on a listener the caller already bound.
+///
+/// Self-host needs the port before the gateway starts: it advertises a
+/// port-mapped address to the rendezvous at registration time, and a mapping
+/// has to name the port the gateway actually got — which, with the fallback
+/// above, is not necessarily the one asked for. Binding first and serving
+/// second is what makes that answerable in the right order.
+pub async fn spawn_on(
+    listener: tokio::net::TcpListener,
+    cfg: ServerConfig,
+) -> std::io::Result<ServerHandle> {
     let addr = listener.local_addr()?;
+    let ctx = build_context(cfg).await?;
     tracing::info!(%addr, "dioxusfun-server listening");
     let app = http::router(ctx);
 
@@ -116,7 +129,8 @@ pub async fn spawn(
     Ok(ServerHandle { addr, task })
 }
 
-async fn bind_with_fallback(
+/// Bind the first free port in `preferred..=preferred+max_attempts`.
+pub async fn bind_with_fallback(
     preferred: SocketAddr,
     max_attempts: u16,
 ) -> std::io::Result<tokio::net::TcpListener> {

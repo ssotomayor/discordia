@@ -226,6 +226,7 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
                     span { class: "dxf-display dxf-wordmark text-lg font-bold tracking-tight", "Discordia" }
                 }
                 HostBanner {}
+                TransportBadge {}
                 // Unplug / disconnect. Always present so the user can leave a
                 // server they've connected to. Empty reason → clean return to
                 // the connect screen (no error banner; see App::on_disconnect).
@@ -704,10 +705,15 @@ fn HostBanner() -> Element {
     let publish_error = info.publish_error.clone();
     let listed_public = info.listed_public;
     let has_shortcode = info.shortcode.is_some();
-    let (voice_label, voice_color) = if info.voice_bundled {
+    let reachability = info.reachability.clone();
+    // Whether voice works is "is there an SFU", not "did we start one" — a
+    // rendezvous that runs its own means we deliberately started nothing.
+    let (voice_label, voice_color) = if info.livekit_url.is_empty() {
+        ("voice unavailable", "text-[var(--warn)]")
+    } else if info.voice_bundled {
         ("voice ready", "text-[var(--success)]")
     } else {
-        ("voice unavailable", "text-[var(--warn)]")
+        ("voice via rendezvous", "text-[var(--success)]")
     };
 
     rsx! {
@@ -743,7 +749,93 @@ fn HostBanner() -> Element {
                 }
             }
             span { class: "flex-1" }
+            Reachability { reachability }
             span { class: "{voice_color}", "● {voice_label}" }
+        }
+    }
+}
+
+/// How far this host reaches, in the banner, with the reason when it is short.
+///
+/// A host that cannot be reached from the internet is the normal outcome behind
+/// carrier-grade NAT and on a router with UPnP off, and it used to be invisible:
+/// the only symptom was a friend failing to connect, which looks like the
+/// friend's problem. See `docs/NETWORKING.md`.
+#[component]
+fn Reachability(reachability: crate::host::Reachability) -> Element {
+    use crate::host::Reachability as R;
+    match reachability {
+        R::Direct {
+            endpoint,
+            method,
+            media,
+        } => {
+            let title = if media {
+                format!(
+                    "{method} mapped this machine's ports. Friends reach you at {endpoint} without the relay, voice included."
+                )
+            } else {
+                format!(
+                    "{method} mapped the chat port ({endpoint}), but not the voice ports — calls still go through a relay's SFU, or stay on this network."
+                )
+            };
+            rsx! {
+                span { class: "text-[var(--text-dim)]", "·" }
+                span { class: "text-[var(--success)]", title: "{title}",
+                    if media { "● reachable directly" } else { "● reachable directly (chat only)" }
+                }
+            }
+        }
+        R::LanOnly { reason } => rsx! {
+            span { class: "text-[var(--text-dim)]", "·" }
+            span { class: "text-[var(--warn)]",
+                title: "{reason} Friends elsewhere can still join by code — the rendezvous relays them.",
+                "● this network only"
+            }
+        },
+        R::LoopbackOnly => rsx! {
+            span { class: "text-[var(--text-dim)]", "·" }
+            span { class: "text-[var(--text-muted)]",
+                title: "Direct connections weren't enabled, so the gateway only listens on this machine. Friends can still join by code through the rendezvous.",
+                "● local only"
+            }
+        },
+    }
+}
+
+/// Who is carrying this connection, for anyone who is *not* hosting.
+///
+/// The distinction the badge exists for: a relayed connection is readable by
+/// whoever runs the relay, and a direct one is not — but neither announces
+/// itself, and a join by code can end up as either depending on a race.
+#[component]
+fn TransportBadge() -> Element {
+    let state = use_app_state();
+    let snapshot = state.read();
+    // Self-host has its own banner, which says more than this would.
+    if snapshot.host_info.is_some() {
+        return rsx! { Fragment {} };
+    }
+    let transport = snapshot.transport;
+    drop(snapshot);
+
+    let (label, color, title) = match transport {
+        crate::state::Transport::Loopback => return rsx! { Fragment {} },
+        crate::state::Transport::Direct => (
+            "direct",
+            "text-[var(--success)]",
+            "Connected straight to the host — no relay in the middle. The host can see your IP address.",
+        ),
+        crate::state::Transport::Relayed => (
+            "relayed",
+            "text-[var(--text-muted)]",
+            "Carried by a rendezvous relay, which can read everything on this connection. The host never learns your address.",
+        ),
+    };
+    rsx! {
+        span { class: "shrink-0 px-2 py-1 text-[10px] uppercase tracking-wider {color}",
+            title: "{title}",
+            "{label}"
         }
     }
 }

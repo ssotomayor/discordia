@@ -24,12 +24,17 @@ What a rendezvous supplies is **reachability**, not hosting:
 
 | | Your client | LAN friend | Friend over the internet |
 |---|---|---|---|
-| Self-host, no rendezvous | loopback | direct to your LAN IP (needs `allow_lan`) | **cannot reach you** |
-| Self-host + rendezvous | loopback | direct to your LAN IP | control relayed; media via the relay's SFU |
+| Self-host, no rendezvous, no mapping | loopback | direct to your LAN IP (needs direct connections enabled) | **cannot reach you** |
+| Self-host + rendezvous, no mapping | loopback | direct to your LAN IP | control relayed; media via the relay's SFU |
+| Self-host + a port mapping | loopback | direct | **direct**, if they have your code or your address |
 
-That last cell is the whole problem this document is about. A home machine has no
-address the internet can dial, so today the only way for a distant friend to
-reach you is for the rendezvous to carry the connection.
+The bottom row is Stage 1, and it is now implemented — `client/src/portmap.rs`
+asks the router for a forward, the resulting address rides on `Register`, and a
+friend joining by code races it against the relay (`net::connect_preferring_direct`).
+It is not universal and never can be: behind carrier-grade NAT, or on a router
+with UPnP and NAT-PMP both off, there is nothing to obtain, and such a host falls
+back to the middle row. **Which row you are on is shown in the host banner**, with
+the reason when it is not the one you wanted.
 
 The relay is a tunnel to your server, not a replacement for it: `run_adapter`
 dials your *own loopback gateway* and bridges it outward. The rendezvous stores a
@@ -63,13 +68,15 @@ already place in whoever runs the guild.
 host.** `url_for_client` returns the relay's URL unconditionally, ahead of any
 other logic, so it is handed to every participant rather than only to the remote
 ones. Your own voice and screen share leave your machine, reach the rendezvous,
-and come back to you; your locally bundled `livekit-server` is started and then
-serves nobody. So on that path it is not peer-to-peer, and not even
-friend-to-host: both endpoints are talking to a third machine. Whether a
-rendezvous supplies an SFU at all is up to its operator — one configured without
-LiveKit credentials supplies none, and media then tries to use the host's own
-(see `TODO.md`, which records that this path currently hands remote friends an
-address they cannot reach).
+and come back to you. So on that path it is not peer-to-peer, and not even
+friend-to-host: both endpoints are talking to a third machine. (The bundled
+`livekit-server` at least no longer starts in that case — it used to come up,
+bind 7880 and serve nobody for the whole session.) Whether a rendezvous supplies
+an SFU at all is up to its operator; one configured without LiveKit credentials
+supplies none, and media then uses the host's own — which works for a remote
+friend only if the host has a port mapping, and otherwise hands them a LAN
+address they cannot dial. That last case is confirmed in
+`server/tests/rendezvous_voice.rs` and recorded in `TODO.md`.
 
 **The host can read everything, deliberately.** Message content is stored
 readable in `host-data/`, which is what keeps search, moderation, the audit log
@@ -101,30 +108,53 @@ So there are three, and only the first involves nobody:
    what happens today, for everything.
 
 **Settings map onto these, and say which they are.** *Publish to rendezvous*
-gives you the directory, join codes and tier 3. A separate setting allows a
-coordinator for tier 2 — kept separate because a coordinator contacted silently
-is exactly the surprise this design exists to remove. With both off you get tier
-1 or nothing, and the app should say which, rather than failing obscurely.
+gives you the directory, join codes and tier 3. *Accept direct connections* is
+tier 1: it binds the gateway off loopback and lets the port mapping be
+attempted — a forward to a loopback-bound port lands on nothing, so the two
+cannot be separated. A further setting will allow a coordinator for tier 2, kept
+separate because a coordinator contacted silently is exactly the surprise this
+design exists to remove. With rendezvous off you get tier 1 or nothing, and the
+host banner says which, rather than leaving it to be inferred from a friend
+failing to connect.
 
 ---
 
 ## Roadmap
 
-### Stage 1 — port mapping
+### Stage 1 — port mapping · **done**
 
 The only tier-1 answer, self-contained, and the only stage that helps **voice**,
 since media is LiveKit on its own path and no gateway transport will carry it.
 
-Map the gateway and media ports (`igd-next` for UPnP-IGD, `natpmp`), advertise
-the result, and have friends try it before the relay. `SessionMode::Remote`
-already proves the direct path end to end, and `lan_host` already hands LiveKit a
-non-loopback address — so this is "advertise an address and try it first", not
-new transport work.
+What it does, in order (`client/src/host.rs::start_self_host`):
 
-**Narrow the ports first.** `livekit_bundle.rs` writes a 100-port UDP range and
-`use_external_ip: false` — a hundred mappings to request, in front of a server
-that will not advertise a public candidate anyway. LiveKit's single-port UDP mux
-makes it one mapping and one config line.
+1. **Bind the gateway first**, so the port to map and advertise is the port we
+   actually got — `bind_with_fallback` does not always give back the one asked
+   for. `dioxusfun_server::spawn_on` then serves on that same listener.
+2. **Ask the router** (`client/src/portmap.rs`): UPnP-IGD via `igd-next`, then
+   NAT-PMP. Four ports — the gateway, LiveKit's signalling and ICE/TCP ports,
+   and its UDP mux. A one-hour lease renewed at half, withdrawn on shutdown.
+   Failure is normal and never fatal.
+3. **Check for hairpin NAT** by connecting to our own new public address. This
+   decides whether LiveKit may advertise it, because LiveKit *replaces* its LAN
+   ICE candidate with the advertised one rather than adding to it — advertising
+   blind would trade the LAN path for the remote one.
+4. **Advertise** the address on `Register`; the rendezvous returns it from
+   `/discover` and from `/resolve/{code}`.
+5. **Race it** against the relay on the joining side, keeping whichever answers
+   and preferring direct. Both are dialled at once because the interesting
+   failure — a mapping that has since expired — is a black hole rather than a
+   refusal, and would otherwise cost a minute of OS timeout.
+
+**The ports were narrowed first.** `livekit_bundle.rs` wrote a 100-port UDP
+range — a hundred mappings to request — and now writes LiveKit's single-port UDP
+mux instead. External advertising is `node_ip` rather than `use_external_ip:
+true`, because the latter resolves over STUN during config validation and *exits
+the process* when that fails; the router already told us the address, so there is
+nothing to look up.
+
+Not verified anywhere in CI: that a mapping appears on a real router at all. See
+`TODO.md`.
 
 ### Stage 2 — an encrypted, key-authenticated transport
 
@@ -171,14 +201,18 @@ merely an honest one running less software.
 
 ## Trade-offs worth knowing before turning any of this on
 
-**A direct connection exposes your home IP** to everyone who joins. The relay
-hides it today, which is a feature for a guild open to strangers, not an
-accident. The default should stay relay for a publicly listed host, and direct
-for a code you handed to friends.
+**A direct connection exposes your home IP** to everyone who joins — and, since
+the address rides on the listing, to anyone who can read the listing or guess a
+shortcode. The relay hides it, which is a feature for a guild open to strangers,
+not an accident. As shipped, a host that obtains an address advertises it
+whether or not it is publicly listed; a host that would rather stay hidden turns
+off direct connections. Splitting those two is open work.
 
 **Port mapping asks your router to open a hole.** UPnP is widely enabled and
 widely criticised for exactly that reason. It is a per-host choice, and one an
-operator should make knowingly.
+operator should make knowingly — which is why *Accept direct connections* says
+so in as many words, rather than the mapping happening quietly behind a checkbox
+about the LAN.
 
 **Tier 1 is not universal.** Behind CGNAT there is no address to map, and no
 amount of local configuration changes that. Such a host needs tier 2 or 3, or is

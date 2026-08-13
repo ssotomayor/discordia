@@ -4,6 +4,7 @@
 
 use std::sync::Arc;
 
+use dioxusfun_protocol::rendezvous::DiscoverEntry;
 use dioxusfun_rendezvous::{AppCtx, Config, registry::Registry, router};
 use futures_util::{SinkExt, StreamExt};
 use secp256k1::{Keypair, Secp256k1, SecretKey};
@@ -81,6 +82,76 @@ async fn send_register(ws: &mut Ws, name: &str, pubkey: &str, signature: &str) {
         "d": { "name": name, "pubkey": pubkey, "signature": signature, "publish_public": false }
     });
     ws.send(Message::Text(frame.to_string())).await.unwrap();
+}
+
+/// An endpoint a host advertises has to survive the round trip to a friend who
+/// only holds a join code — that is the whole path a direct connection depends
+/// on, and it crosses two hops (`Register`, then `/resolve`) either of which
+/// could quietly drop the field.
+#[tokio::test]
+async fn an_advertised_endpoint_reaches_a_friend_holding_the_code() {
+    let (base, registry) = spawn_with(Config::default()).await;
+    let (secret, pubkey) = identity(11);
+
+    let (mut ws, nonce) = connect_control(&base).await;
+    let sig = sign(&secret, &nonce, &pubkey, "Casa");
+    let frame = serde_json::json!({
+        "op": "register",
+        "d": {
+            "name": "Casa", "pubkey": pubkey, "signature": sig,
+            // Unlisted on purpose: a code handed to friends is exactly the case
+            // that wants the direct path, and it never appears in `/discover`.
+            "publish_public": false,
+            "endpoint": "ws://203.0.113.5:9000",
+        }
+    });
+    ws.send(Message::Text(frame.to_string())).await.unwrap();
+    assert_eq!(next_json(&mut ws).await["op"], "registered");
+
+    let entry = registry.lookup("casa").expect("host is live");
+    assert_eq!(entry.endpoint.as_deref(), Some("ws://203.0.113.5:9000"));
+
+    // And over HTTP, which is how the client actually asks. The code is matched
+    // case-insensitively, like `/join`.
+    let http = base.replace("ws://", "http://");
+    let fetched: DiscoverEntry = reqwest::get(format!("{http}/resolve/CASA"))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(fetched.endpoint.as_deref(), Some("ws://203.0.113.5:9000"));
+    // Unlisted, so the browse listing must still not carry it.
+    assert!(registry.discover().is_empty());
+}
+
+/// A host that obtained no address is not an error and not a special case: the
+/// field is simply absent, and the joiner falls back to the relay.
+#[tokio::test]
+async fn a_host_without_an_endpoint_resolves_to_none() {
+    let (base, _registry) = spawn_with(Config::default()).await;
+    let (secret, pubkey) = identity(12);
+
+    let (mut ws, nonce) = connect_control(&base).await;
+    let sig = sign(&secret, &nonce, &pubkey, "Plain");
+    send_register(&mut ws, "Plain", &pubkey, &sig).await;
+    assert_eq!(next_json(&mut ws).await["op"], "registered");
+
+    let http = base.replace("ws://", "http://");
+    let fetched: DiscoverEntry = reqwest::get(format!("{http}/resolve/plain"))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(fetched.endpoint.is_none());
+
+    // An unknown code is a 404 rather than an empty entry, so a joiner can tell
+    // "no direct address" from "no such host".
+    let missing = reqwest::get(format!("{http}/resolve/nobody-here-01"))
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), reqwest::StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]

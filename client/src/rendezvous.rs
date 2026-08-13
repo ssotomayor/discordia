@@ -99,9 +99,14 @@ pub struct PublishOptions {
 ///
 /// `identity` signs the ownership proof when a name is claimed (`publish_name`
 /// set) — the rendezvous binds the name to this key and persists the claim.
+///
+/// `endpoint` is the gateway URL a port mapping made dialable, when there is
+/// one. Sending it is what lets a friend holding our code try us directly and
+/// keep the relay as a fallback; sending `None` keeps every friend relayed.
 pub async fn register(
     rendezvous_url: &str,
     options: PublishOptions,
+    endpoint: Option<String>,
     identity: &crate::identity::Identity,
 ) -> Result<(PublishInfo, ControlStream), String> {
     let base = rendezvous_url.trim_end_matches('/').to_string();
@@ -148,6 +153,7 @@ pub async fn register(
         signature,
         publish_public: options.publish_public,
         description: options.description,
+        endpoint,
     };
     let json = serde_json::to_string(&hello).map_err(|e| e.to_string())?;
     ws.send(WsMessage::Text(json))

@@ -18,6 +18,12 @@ sha2 = "0.10"
 # Drive both human and bot sides of the gateway in integration tests.
 dioxusfun-bot = { path = "../bot-sdk" }
 tokio = { workspace = true, features = ["full"] }
+# `rendezvous_voice.rs` runs a real relay against a real gateway: the claim
+# under test is what a *rendezvous without a shared SFU* leads the gateway to
+# hand out, and reasoning about it is exactly what left it unconfirmed.
+dioxusfun-rendezvous = { path = "../rendezvous" }
+tokio-tungstenite = { workspace = true }
+serde_json = { workspace = true }
 
 [dependencies]
 # Server-specific.

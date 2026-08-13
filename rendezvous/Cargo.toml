@@ -34,3 +34,7 @@ uuid = { workspace = true }
 [dev-dependencies]
 tokio-tungstenite = { workspace = true }
 secp256k1 = { workspace = true }
+# `/resolve/{code}` is an HTTP endpoint, and the client reaches it with reqwest —
+# so the test that pins its shape does too, rather than asserting on the
+# registry alone. Already in the workspace lockfile via the client and server.
+reqwest = { workspace = true }

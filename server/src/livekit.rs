@@ -43,6 +43,12 @@ pub struct LiveKitConfig {
     /// machine ("Connection refused"); the LAN address is at least reachable
     /// from the same network.
     pub lan_host: Option<String>,
+    /// This machine's *internet-facing* address, when a port mapping obtained
+    /// one. Preferred over `lan_host` for the same loopback-origin clients,
+    /// because it is the only one of the two a relayed friend somewhere else
+    /// can dial — and it is equally reachable from the LAN wherever the router
+    /// hairpins, which `client::portmap` checks before this is set.
+    pub public_host: Option<String>,
     pub api_key: String,
     pub api_secret: String,
     /// When set, tokens are minted by this delegate instead of signed locally
@@ -63,6 +69,7 @@ impl LiveKitConfig {
                 .unwrap_or_else(|_| "secret-must-be-at-least-32-chars-long".into()),
             minter: None,
             lan_host: None,
+            public_host: None,
         }
     }
 
@@ -79,10 +86,20 @@ impl LiveKitConfig {
         }
         let host = client_host.map(host_without_port).unwrap_or("127.0.0.1");
         // Loopback means "this connection reached us locally" — true for us,
-        // and also for anyone proxied in by the rendezvous. Prefer our LAN
-        // address so proxied friends get something they can actually dial.
-        let host = match (&self.lan_host, is_loopback(host)) {
-            (Some(lan), true) => lan.as_str(),
+        // and also for anyone proxied in by the rendezvous, because the relay
+        // adapter dials our gateway on loopback. The two are indistinguishable
+        // here, so the substituted address has to serve both.
+        //
+        // A public address serves both; the LAN one only serves a proxied
+        // friend who happens to be on this network, and hands everyone else an
+        // address they cannot dial (they then sit in a LiveKit connect timeout
+        // rather than being told voice is unavailable). It stays as the last
+        // resort because it is right for the two cases that are *not* remote —
+        // us, and a LAN friend — and dropping it would take voice away from
+        // both. See `TODO.md` for the part this does not fix.
+        let host = match (&self.public_host, &self.lan_host, is_loopback(host)) {
+            (Some(public), _, true) => public.as_str(),
+            (None, Some(lan), true) => lan.as_str(),
             _ => host,
         };
         format!("ws://{host}:{}", self.port)
@@ -270,6 +287,7 @@ mod tests {
             api_secret: "secret-long-enough-for-hs256-signing".into(),
             minter: None,
             lan_host: None,
+            public_host: None,
         };
         let channel = Id::new_v4();
         let verifier = TokenVerifier::with_api_key(&cfg.api_key, &cfg.api_secret);
@@ -324,6 +342,7 @@ mod tests {
             api_secret: "".into(),
             minter: None,
             lan_host: None,
+            public_host: None,
         };
         assert_eq!(
             cfg.url_for_client(Some("192.168.0.5:9000")),
@@ -340,6 +359,7 @@ mod tests {
             api_secret: "".into(),
             minter: None,
             lan_host: None,
+            public_host: None,
         };
         assert_eq!(
             cfg.url_for_client(Some("192.168.0.5:9000")),
@@ -359,11 +379,39 @@ mod tests {
             api_secret: "".into(),
             minter: None,
             lan_host: Some("192.168.0.61".into()),
+            public_host: None,
         };
         for h in ["127.0.0.1:9000", "localhost:9000", "[::1]:9000"] {
             assert_eq!(cfg.url_for_client(Some(h)), "ws://192.168.0.61:7880");
         }
         // A real LAN/remote host header is still honoured verbatim.
+        assert_eq!(
+            cfg.url_for_client(Some("192.168.0.99:9000")),
+            "ws://192.168.0.99:7880"
+        );
+    }
+
+    /// Once a port mapping exists, the substitution for a loopback-origin
+    /// client is the public address — the LAN one is only dialable by a friend
+    /// who turns out to be on this network, and the relay exists for the ones
+    /// who are not.
+    #[test]
+    fn public_host_outranks_lan_host() {
+        let cfg = LiveKitConfig {
+            explicit_url: None,
+            port: 7880,
+            api_key: "".into(),
+            api_secret: "".into(),
+            minter: None,
+            lan_host: Some("192.168.0.61".into()),
+            public_host: Some("203.0.113.5".into()),
+        };
+        assert_eq!(
+            cfg.url_for_client(Some("127.0.0.1:9000")),
+            "ws://203.0.113.5:7880"
+        );
+        // A client that reached us on a real address still keeps it: they
+        // already proved that address works by arriving on it.
         assert_eq!(
             cfg.url_for_client(Some("192.168.0.99:9000")),
             "ws://192.168.0.99:7880"
