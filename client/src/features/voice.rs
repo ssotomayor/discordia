@@ -1040,17 +1040,26 @@ impl ActiveVoice {
         {
             return Ok(());
         }
+        let had_capture = self.system_audio.is_some();
         if let Some(sa) = self.system_audio.take() {
             let _ = self.room.local_participant().unpublish_track(&sa.sid).await;
         }
         if !enabled {
-            eprintln!("[voice] system audio stopped");
-            // Dropping `_capture` is what stops the OS stream, and on macOS
-            // that's a fire-and-forget `stopCaptureWithCompletionHandler(None)`.
-            // If call audio stays bad after a share ends, a capture that never
-            // actually stopped is the first thing to rule out — this line says
-            // we asked.
-            crate::dlog!("voice system audio stopped (capture dropped)");
+            // Only when there was something to stop. Unconditional, this line
+            // fires on every disable — including the ones a client that never
+            // shared anything issues on joining — and a log that says a capture
+            // dropped when none existed cannot be evidence that one did.
+            // Measured in a two-client session: the watcher wrote it six times
+            // without ever sharing.
+            if had_capture {
+                eprintln!("[voice] system audio stopped");
+                // Dropping `_capture` is what stops the OS stream, and on macOS
+                // that's a fire-and-forget `stopCaptureWithCompletionHandler(None)`.
+                // If call audio stays bad after a share ends, a capture that never
+                // actually stopped is the first thing to rule out — this line says
+                // we asked.
+                crate::dlog!("voice system audio stopped (capture dropped)");
+            }
             return Ok(());
         }
         if !crate::sysaudio::supported() {
@@ -1134,6 +1143,14 @@ impl ActiveVoice {
             target,
         });
         eprintln!("[voice] system audio started");
+        // The half the durable record was missing. `eprintln!` reaches a
+        // console that a windowless release build does not have and that
+        // nobody scrolls back through anyway; `dev.log` is what gets read
+        // afterwards, and it only ever carried the stop. So the sharer's log
+        // could say a capture had dropped while the SFU showed that same
+        // process publishing `screen-audio` — the log answering "no" to the
+        // one question it exists to answer.
+        crate::dlog!("voice system audio started (target={target:?})");
         Ok(())
     }
 
@@ -1284,9 +1301,48 @@ impl ActiveVoice {
 
     /// Reconfigure libwebrtc's APM while the call is live — the suppressor
     /// handover and the AGC switch both land here.
+    /// Apply the APM settings, and record whether the native side kept them.
+    ///
+    /// The read-back is here because a measurement says these may do nothing.
+    /// A sweep against a real SFU moved echo cancellation, noise suppression
+    /// and AGC together, with white noise mixed into a tone, and the share of
+    /// energy left in the tone's band did not shift: means 0.9030 against
+    /// 0.9033 over eight runs, the sign flipping between them, while the noise
+    /// itself moved that number by ten times as much. See the entry in
+    /// `TODO.md`.
+    ///
+    /// That leaves two possibilities the measurement cannot separate — never
+    /// stored, or stored and ignored — and `audio_options()` separates them for
+    /// the cost of one call. If what comes back differs from what went in, the
+    /// options are not reaching the source and it is our plumbing. If it
+    /// matches, they are held and something downstream is not acting on them,
+    /// which is libwebrtc's business and a very different fix.
+    ///
+    /// Debug-only, like every `dlog!`: this is an open question, not
+    /// instrumentation a shipped client needs to carry.
     fn set_apm(&self, deepfilter_on: bool, agc: bool) {
-        self.source
-            .set_audio_options(apm_options(deepfilter_on, agc));
+        let want = apm_options(deepfilter_on, agc);
+        let (aec, ns, agc_on) = (
+            want.echo_cancellation,
+            want.noise_suppression,
+            want.auto_gain_control,
+        );
+        self.source.set_audio_options(want);
+        let got = self.source.audio_options();
+        crate::dlog!(
+            "voice apm set aec={aec} ns={ns} agc={agc_on} -> read back aec={} ns={} agc={} ({})",
+            got.echo_cancellation,
+            got.noise_suppression,
+            got.auto_gain_control,
+            if got.echo_cancellation == aec
+                && got.noise_suppression == ns
+                && got.auto_gain_control == agc_on
+            {
+                "kept"
+            } else {
+                "DIFFERS — the options are not reaching the source"
+            }
+        );
     }
 
     async fn set_muted(&mut self, muted: bool) {
@@ -3415,5 +3471,53 @@ mod tests {
     fn threshold_never_collapses_to_zero() {
         assert!(meter_pct_to_peak(0) >= 1);
         assert!(meter_pct_to_peak(1000) <= 1000);
+    }
+
+    /// Does `set_audio_options` reach the source at all?
+    ///
+    /// This exists to halve an open question. A sweep against a real SFU found
+    /// the APM making no measurable difference to noise on this path — eight
+    /// runs, means 0.9030 against 0.9033 with the sign flipping — and that has
+    /// two explanations the sweep cannot tell apart: the options never arrive,
+    /// or they arrive and nothing acts on them. Only the first is our bug.
+    ///
+    /// Needs no SFU, no room and no device: a `NativeAudioSource` is just an
+    /// object, and `audio_options()` reads back what it believes it holds. If
+    /// this fails, the client's `set_apm` is writing into nothing and the
+    /// suppressor question is answered. If it passes, the options are held and
+    /// the remaining suspect is downstream, inside libwebrtc — which the
+    /// `TODO.md` entry says how to chase.
+    ///
+    /// Deliberately asserts only the round trip. Whether libwebrtc *honours*
+    /// what it stored is not a property this can see, and pretending otherwise
+    /// is how the original claim went unchecked for so long.
+    #[test]
+    fn the_apm_options_survive_the_round_trip_into_the_source() {
+        use livekit::webrtc::audio_source::native::NativeAudioSource;
+        use livekit::webrtc::prelude::AudioSourceOptions;
+
+        let source =
+            NativeAudioSource::new(AudioSourceOptions::default(), SAMPLE_RATE, CHANNELS, 1000);
+
+        // Both directions, so a source that ignores writes and a source that
+        // reports a constant are both caught.
+        for (aec, ns, agc) in [(true, false, true), (false, true, false)] {
+            source.set_audio_options(AudioSourceOptions {
+                echo_cancellation: aec,
+                noise_suppression: ns,
+                auto_gain_control: agc,
+            });
+            let got = source.audio_options();
+            assert_eq!(
+                (
+                    got.echo_cancellation,
+                    got.noise_suppression,
+                    got.auto_gain_control
+                ),
+                (aec, ns, agc),
+                "the source did not keep what `set_audio_options` handed it, so \
+                 `set_apm` has been writing into nothing"
+            );
+        }
     }
 }

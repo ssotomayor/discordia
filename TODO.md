@@ -65,7 +65,6 @@ the top within each section.
   fixes. macOS has the same shape and its own answer already half-built: the
   bundle is signed with a *development* certificate, which is not notarisation
   and will show Gatekeeper's version of this to anyone who is not the developer.
-
 - **CI runs none of the client's or grid-layout's tests.** The `test` job runs
   `cargo test` over four crates — protocol, server, bot SDK, rendezvous — and the
   comment above it says CI covers the server-side crates "where all the tests
@@ -388,35 +387,6 @@ the top within each section.
   calibration step (the VU bar already draws the threshold marker against a
   live meter, so "speak normally" could place it) and settling the APM question
   first, since the answer changes what the default should be.
-- **The dev log says native system audio *stopped* while it is running, and
-  never says it started.** Found in a live two-client session on Windows, and
-  the two halves compound. `set_system_audio`'s only `dlog!` sits inside
-  `if !enabled`, which runs whether or not a capture was ever there — the
-  watching client, which never shared anything, wrote
-  `voice system audio stopped (capture dropped)` six times. The enable path,
-  which calls `sysaudio::start` and publishes the track, logs nothing at all.
-  So the sharer's log read:
-
-  ```text
-  voice system audio stopped (capture dropped)
-  ```
-
-  while the SFU showed that same process publishing a live `screen-audio`
-  track into the voice room. Anyone debugging "does my share carry sound"
-  gets told no by the log and yes by reality.
-  The comment on that line argues it earns its place — "if call audio stays
-  bad after a share ends, a capture that never actually stopped is the first
-  thing to rule out; this line says we asked". It cannot do that job while it
-  is also printed when nothing was asked to stop. Log the start, and make the
-  stop conditional on there having been a capture.
-- **`[net] VoiceStateUpdate(self)` prints the fields that never change and
-  omits the two that do.** It logs `channel_id`, `muted` and the local phase;
-  `VoiceState` also carries `speaking` and `deafened`, and `speaking` is what
-  moves during a call. Measured over a real 4-minute conversation: 68 frames,
-  66 of them textually identical to the one before, 2 distinct lines in total.
-  The frames are almost certainly speech transitions doing their job — the log
-  just cannot show it, and reads like a fan-out bug instead. Same species as
-  the `consume_remote_track` identity that `b585887` fixed.
 - **libwebrtc's noise suppressor may not be running at all, which would mean
   DeepFilterNet-off is suppressor-*none*.** `apm_options` documents the
   contract — "exactly one suppressor should be in the path", libwebrtc's when
@@ -468,11 +438,29 @@ the top within each section.
   and the same three-field struct, and the constructor is the *more* favourable
   of the two — options in place before a frame is ever captured — so measuring
   nothing there argues for the finding rather than against it.
-  Two things would settle it, cheapest first. `NativeAudioSource` exposes an
-  `audio_options()` getter: reading back what the native side believes it was
-  told separates "never stored" from "stored and ignored". Then a capture with
-  DeepFilterNet off, real speech, and a spectrogram either side of the toggle.
-  Do not delete this entry on the strength of reading libwebrtc.
+  **Half of it is now settled: the options arrive.**
+  `the_apm_options_survive_the_round_trip_into_the_source` writes both
+  polarities through `set_audio_options` and reads them back with
+  `audio_options()`; they come back unchanged. So "never stored" is out, and
+  with it the possibility that this is our plumbing — `set_apm` writes where it
+  means to and the source keeps what it is given. What remains is stored and
+  not acted on, somewhere inside libwebrtc, on a source we feed frames to
+  directly rather than one it captures from.
+  That is a worse answer than the other branch would have been, because it is
+  not ours to fix. If the APM only runs inside libwebrtc's own capture
+  pipeline, no amount of setting these options will ever do anything on this
+  path, and the design has to stop relying on them: the AGC switch would be
+  decorative, the noise-suppression switch would be decorative whenever
+  DeepFilterNet is off, and the mic-sensitivity default above would need to
+  stand on its own rather than on a rescue that never comes.
+  What is left to establish, and it is now the whole question: whether
+  libwebrtc's APM runs at all for a `NativeAudioSource`. A capture with
+  DeepFilterNet off, real speech, and a spectrogram either side of the toggle
+  would show it from the outside. Reading libwebrtc's own source for where the
+  APM is attached would show it from the inside, and is probably faster — the
+  C++ in `webrtc-sys/src/audio_track.cpp` stores these into `options_`, and
+  what reads `options_` is the thread to pull. Do not delete this entry on the
+  strength of reading either one alone.
 - **The transmit gate judges the denoised hop, so its operating point moves when
   suppression is toggled.** `denoise_gate_loop` runs the model first and gates
   what comes out, so switching DeepFilterNet on drops the signal the gate is
