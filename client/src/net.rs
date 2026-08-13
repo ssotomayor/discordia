@@ -743,10 +743,20 @@ fn apply(
             let self_pubkey = s.self_user.as_ref().map(|u| u.pubkey.clone());
             let is_self = self_pubkey.as_deref() == Some(vs.user_pubkey.as_str());
             if is_self {
+                // `speaking` and `deafened` are here because they are the two
+                // that move. Without them a normal conversation writes the same
+                // line over and over — measured at 68 frames and 2 distinct
+                // lines over four minutes — and reads like the server is
+                // resending state that never changed, which is what it cost the
+                // session that noticed: a wrong conclusion, held until someone
+                // opened `VoiceState` and saw which fields the log was leaving
+                // out.
                 crate::dlog!(
-                    "[net] VoiceStateUpdate(self) channel={:?} muted={} phase={:?}",
+                    "[net] VoiceStateUpdate(self) channel={:?} muted={} deafened={} speaking={} phase={:?}",
                     vs.channel_id,
                     vs.muted,
+                    vs.deafened,
+                    vs.speaking,
                     s.voice.phase
                 );
             }
