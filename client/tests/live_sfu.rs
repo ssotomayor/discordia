@@ -484,14 +484,16 @@ async fn a_tone_survives_the_round_trip() {
     // Content. Most of the energy that comes out has to still be the tone.
     assert!(
         band_out > 0.80,
-        "only {:.1}% of the received energy is within 40 Hz of {TONE_HZ} — the          signal is not coming back as the tone that went in",
+        "only {:.1}% of the received energy is within 40 Hz of {TONE_HZ} — the \
+         signal is not coming back as the tone that went in",
         band_out * 100.0
     );
     // And nothing non-linear: a clipping or distorting stage would put energy
     // on the harmonics, where there should be none.
     assert!(
         tone_purity(&received, TONE_HZ * 2.0) < 0.02,
-        "energy showed up at the second harmonic — something in the path is          distorting rather than merely coding"
+        "energy showed up at the second harmonic — something in the path is \
+         distorting rather than merely coding"
     );
 
     listener.close().await.ok();
