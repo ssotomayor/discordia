@@ -248,6 +248,7 @@ Smaller known gaps live in [TODO.md](TODO.md).
 | [docs/SELF_HOSTING.md](docs/SELF_HOSTING.md) | Running a server, from one click to a VPS. Environment reference and storage governance. |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Phase-by-phase status, run-modes, and the design stance behind them. |
 | [TODO.md](TODO.md) | Deliberately deferred work, with the reasoning. |
+| [docs/AUDIT-2026-08.md](docs/AUDIT-2026-08.md) | Evidence-based audit of the whole workspace: verified architecture, the history behind it, findings, and what the docs get wrong. |
 | [server/README.md](server/README.md) · [rendezvous/README.md](rendezvous/README.md) · [grid-layout/README.md](grid-layout/README.md) | Per-crate detail. |
 
 ## Contributing
