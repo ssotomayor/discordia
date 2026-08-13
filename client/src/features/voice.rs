@@ -322,6 +322,13 @@ pub enum VoiceCmd {
     SetNoiseCancellation {
         enabled: bool,
     },
+    /// Reopen the microphone with the OS's own input processing bypassed, or
+    /// without. Alone among the microphone switches this one restarts the
+    /// session: raw mode is settled when the device is opened (see
+    /// `crate::rawmic`), so there is no live stream to swap it under.
+    SetBypassSystemProcessing {
+        enabled: bool,
+    },
     /// Microphone input gain as a percentage (100 = unity). Takes effect on the
     /// next 10ms hop; no session rebuild.
     SetMicVolume {
@@ -527,33 +534,34 @@ async fn service_loop(
                 }
                 // If we're currently connected, restart the voice session so mic/playback
                 // are recreated using the newly selected devices.
-                if session.is_some()
-                    && let Some((ref url, ref tok, cid)) = last_connect.clone()
+                restart_session(
+                    &mut session,
+                    &last_connect,
+                    state,
+                    &controls,
+                    "device change",
+                )
+                .await;
+            }
+            VoiceCmd::SetBypassSystemProcessing { enabled } => {
+                eprintln!("[voice] SetBypassSystemProcessing enabled={enabled}");
                 {
-                    eprintln!("[voice] Reconnecting to apply device changes");
-                    if let Some(prev) = session.take() {
-                        prev.shutdown(state).await;
-                    }
-                    match ActiveVoice::connect(url, tok, cid, state, controls.clone()).await {
-                        Ok(active) => {
-                            eprintln!("[voice] reconnected ok");
-                            // update phase in its own small scope
-                            {
-                                let mut s = state.write();
-                                s.voice.phase = VoicePhase::Connected;
-                                s.voice_session_epoch += 1;
-                            }
-                            session = Some(active);
-                        }
-                        Err(e) => {
-                            eprintln!("[voice] reconnect FAILED: {e}");
-                            let mut s = state.write();
-                            s.voice.phase = VoicePhase::Error;
-                            s.voice.error = Some(format!("reconnect after device change: {e}"));
-                            s.voice.channel_id = None;
-                        }
-                    }
+                    let mut s = state.write();
+                    s.bypass_system_audio_processing = enabled;
+                    // Whatever the last attempt reported was about the mode we
+                    // are leaving.
+                    s.mic_bypass_error = None;
                 }
+                // Unlike the APM switches this cannot be swapped under a live
+                // stream: raw mode is fixed when the device is opened.
+                restart_session(
+                    &mut session,
+                    &last_connect,
+                    state,
+                    &controls,
+                    "microphone-processing change",
+                )
+                .await;
             }
             VoiceCmd::SetMute { muted } => {
                 eprintln!("[voice] SetMute muted={muted}");
@@ -701,6 +709,51 @@ async fn service_loop(
     }
     eprintln!("[voice] service loop ended (channel closed)");
     Ok(())
+}
+
+/// Rebuild the live session so a change to how the microphone is *opened*
+/// takes effect — which device, or whether the OS's processing is in the path.
+/// Both are settled when the stream is opened, so neither can be swapped under
+/// a running one, unlike every APM switch beside them.
+///
+/// Does nothing when there is no session: the new setting is read from
+/// `AppState` on the next connect anyway.
+async fn restart_session(
+    session: &mut Option<ActiveVoice>,
+    last_connect: &Option<(String, String, Id)>,
+    mut state: Signal<AppState>,
+    controls: &AudioControls,
+    why: &str,
+) {
+    if session.is_none() {
+        return;
+    }
+    let Some((url, tok, cid)) = last_connect.clone() else {
+        return;
+    };
+    eprintln!("[voice] Reconnecting to apply {why}");
+    if let Some(prev) = session.take() {
+        prev.shutdown(state).await;
+    }
+    match ActiveVoice::connect(&url, &tok, cid, state, controls.clone()).await {
+        Ok(active) => {
+            eprintln!("[voice] reconnected ok");
+            // update phase in its own small scope
+            {
+                let mut s = state.write();
+                s.voice.phase = VoicePhase::Connected;
+                s.voice_session_epoch += 1;
+            }
+            *session = Some(active);
+        }
+        Err(e) => {
+            eprintln!("[voice] reconnect FAILED: {e}");
+            let mut s = state.write();
+            s.voice.phase = VoicePhase::Error;
+            s.voice.error = Some(format!("reconnect after {why}: {e}"));
+            s.voice.channel_id = None;
+        }
+    }
 }
 
 /// Active voice session: holds the LiveKit Room plus the audio I/O streams.
@@ -2471,7 +2524,7 @@ fn outbound_rates(
 // ---------------------------------------------------------------------------
 
 struct MicCapture {
-    _stream: cpal::Stream,
+    _backend: MicBackend,
     /// Shared with the DSP thread, which is where muted frames are dropped
     /// (after metering, so the VU bar keeps working while muted).
     muted: Arc<AtomicBool>,
@@ -2479,16 +2532,150 @@ struct MicCapture {
     heartbeat: tokio::task::JoinHandle<()>,
 }
 
+/// Who opened the microphone. Both ends feed the same `forward_mic`, at the
+/// device's own rate and channel count — the difference is only whether the
+/// OS's input processing is in the path (see `crate::rawmic`).
+enum MicBackend {
+    // Both are held for their `Drop` and nothing else — dropping one is what
+    // stops the capture.
+    Cpal {
+        _stream: cpal::Stream,
+    },
+    #[cfg(target_os = "windows")]
+    Raw {
+        _capture: crate::rawmic::Capture,
+    },
+}
+
 impl MicCapture {
     fn start(
         frame_tx: tokio::sync::mpsc::UnboundedSender<Vec<f32>>,
-        state: Signal<AppState>,
+        mut state: Signal<AppState>,
         muted: Arc<AtomicBool>,
         gate_stats: Arc<GateStats>,
     ) -> Result<Self, String> {
+        let raw_peak = Arc::new(AtomicI32::new(0));
+        let frames_pushed = Arc::new(AtomicU64::new(0));
+        let selected = state.read().selected_input_device.clone();
+        // Whatever a previous session reported was about a capture that is gone.
+        state.write().mic_bypass_error = None;
+
+        // Raw first when it was asked for: it is another way to open the same
+        // device, so if it opens there is nothing left for cpal to do.
+        let backend = match Self::maybe_raw(&frame_tx, state, &selected, &raw_peak, &frames_pushed)
+        {
+            Some(raw) => raw,
+            None => Self::start_cpal(&frame_tx, selected, &raw_peak, &frames_pushed)?,
+        };
+
+        let heartbeat = Self::spawn_heartbeat(raw_peak, frames_pushed, gate_stats);
+        // Speaking detection and the VU bar now live on the publish task (see
+        // `publish_loop` / `spawn_meter_task`), which is the only place that
+        // sees the exact frames being transmitted. Running a second, separate
+        // threshold comparison here is what let the indicator and the actual
+        // audio disagree.
+        Ok(Self {
+            _backend: backend,
+            muted,
+            heartbeat,
+        })
+    }
+
+    /// The raw-mode backend, when the user asked for it and the device gave it.
+    ///
+    /// A refusal is not fatal — the microphone still works on the ordinary
+    /// path — but it is *recorded*, because a lit switch over an unchanged
+    /// audio path is exactly the kind of quiet lie this setting exists to
+    /// remove.
+    #[cfg(target_os = "windows")]
+    fn maybe_raw(
+        frame_tx: &tokio::sync::mpsc::UnboundedSender<Vec<f32>>,
+        mut state: Signal<AppState>,
+        selected: &Option<String>,
+        raw_peak: &Arc<AtomicI32>,
+        frames_pushed: &Arc<AtomicU64>,
+    ) -> Option<MicBackend> {
+        if !state.read().bypass_system_audio_processing {
+            return None;
+        }
+
+        // A capture that dies mid-call leaves the track published and simply
+        // quiet, which the speaker cannot see. Same treatment as a system-audio
+        // capture dying mid-share.
+        let (fatal_tx, mut fatal_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        dioxus::prelude::spawn(async move {
+            if let Some(e) = fatal_rx.recv().await {
+                eprintln!("[voice] raw mic died mid-call: {e}");
+                let mut s = state.write();
+                s.mic_bypass_error = Some(e.clone());
+                s.error_toast = Some(format!(
+                    "Your microphone stopped: {e}. Leave and rejoin the voice channel to \
+                     bring it back."
+                ));
+            }
+        });
+
+        let (frame_tx, raw_peak, frames_pushed) =
+            (frame_tx.clone(), raw_peak.clone(), frames_pushed.clone());
+        let sink: crate::rawmic::SinkBuilder = Box::new(move |rate: u32, channels: u32| {
+            // The very same downmix/resample/cut the cpal callbacks run — see
+            // `forward_mic`. Built here because the device's rate is only known
+            // once its client is initialised.
+            let accum: Arc<Mutex<Vec<f32>>> =
+                Arc::new(Mutex::new(Vec::with_capacity(FRAME_SAMPLES * 4)));
+            let resampler = Arc::new(Mutex::new(AudioResampler::new(rate, SAMPLE_RATE)));
+            if resampler.lock().is_some() {
+                eprintln!("[voice] mic: resampling {rate}Hz → {SAMPLE_RATE}Hz via rubato");
+            }
+            let mut mono_buf: Vec<f32> = Vec::with_capacity(1024);
+            let mut resampled_buf: Vec<f32> = Vec::with_capacity(1024);
+            let sink: crate::rawmic::Sink = Box::new(move |data: &[f32]| {
+                update_peak(&raw_peak, data);
+                let pushed = forward_mic(
+                    &frame_tx,
+                    data,
+                    channels,
+                    &accum,
+                    &resampler,
+                    &mut mono_buf,
+                    &mut resampled_buf,
+                );
+                frames_pushed.fetch_add(pushed as u64, Ordering::Relaxed);
+            });
+            sink
+        });
+
+        match crate::rawmic::Capture::start(selected.clone(), fatal_tx, sink) {
+            Ok(capture) => Some(MicBackend::Raw { _capture: capture }),
+            Err(e) => {
+                eprintln!("[voice] mic: raw capture unavailable ({e}); using the ordinary path");
+                state.write().mic_bypass_error = Some(e);
+                None
+            }
+        }
+    }
+
+    /// Nothing to bypass here, so nothing to try. See `crate::rawmic`.
+    #[cfg(not(target_os = "windows"))]
+    fn maybe_raw(
+        _frame_tx: &tokio::sync::mpsc::UnboundedSender<Vec<f32>>,
+        _state: Signal<AppState>,
+        _selected: &Option<String>,
+        _raw_peak: &Arc<AtomicI32>,
+        _frames_pushed: &Arc<AtomicU64>,
+    ) -> Option<MicBackend> {
+        None
+    }
+
+    fn start_cpal(
+        frame_tx: &tokio::sync::mpsc::UnboundedSender<Vec<f32>>,
+        selected: Option<String>,
+        raw_peak: &Arc<AtomicI32>,
+        frames_pushed: &Arc<AtomicU64>,
+    ) -> Result<MicBackend, String> {
+        let frame_tx = frame_tx.clone();
         let host = cpal::default_host();
         // Prefer user-selected device (by name) if present in AppState.
-        let selected = state.read().selected_input_device.clone();
         let device = if let Some(sel_name) = selected {
             // Try to find a device whose name matches the selected name.
             let mut found = None;
@@ -2521,9 +2708,7 @@ impl MicCapture {
             "[voice] mic: device={device_name} format={sample_format:?} rate={device_rate} ch={device_channels}"
         );
 
-        let raw_peak = Arc::new(AtomicI32::new(0));
         let raw_peak_cb = raw_peak.clone();
-        let frames_pushed = Arc::new(AtomicU64::new(0));
         let frames_pushed_cb = frames_pushed.clone();
 
         // Carry resampled samples across cpal callbacks so each frame we
@@ -2627,18 +2812,24 @@ impl MicCapture {
         .map_err(|e| format!("build_input_stream: {e}"))?;
 
         stream.play().map_err(|e| format!("play mic: {e}"))?;
+        Ok(MicBackend::Cpal { _stream: stream })
+    }
 
-        // Heartbeat — reports loudest raw sample seen since last tick. The
-        // handle is kept and aborted in `stop`: this outlives the capture
-        // otherwise, and a session is rebuilt on every device change, so the
-        // log would fill with a chorus of dead heartbeats reporting on
-        // `GateStats` nobody writes to any more — worst in `dev.log`, which is
-        // read after the fact and has nothing in a line saying which session
-        // it came from. `meter_task` on `ActiveVoice` is cancelled for the
-        // same reason, one line above the `stop` below it.
-        let peak_log = raw_peak.clone();
-        let frames_log = frames_pushed.clone();
-        let heartbeat = tokio::spawn(async move {
+    /// Heartbeat — reports loudest raw sample seen since last tick.
+    ///
+    /// The handle goes back to the caller and is aborted on drop: this outlives
+    /// the capture otherwise, and a session is rebuilt on every device change —
+    /// and now on every flip of the raw-capture switch — so the log would fill
+    /// with a chorus of dead heartbeats reporting on `GateStats` nobody writes
+    /// to any more. Worst in `dev.log`, which is read after the fact and has
+    /// nothing in a line saying which session it came from. `meter_task` on
+    /// `ActiveVoice` is cancelled for the same reason.
+    fn spawn_heartbeat(
+        peak_log: Arc<AtomicI32>,
+        frames_log: Arc<AtomicU64>,
+        gate_stats: Arc<GateStats>,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
             let mut prev_frames = 0u64;
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
@@ -2687,20 +2878,11 @@ impl MicCapture {
                 );
                 prev_frames = f;
             }
-        });
-        // Speaking detection and the VU bar now live on the publish task (see
-        // `publish_loop` / `spawn_meter_task`), which is the only place that
-        // sees the exact frames being transmitted. Running a second, separate
-        // threshold comparison here is what let the indicator and the actual
-        // audio disagree.
-        Ok(Self {
-            _stream: stream,
-            muted,
-            heartbeat,
         })
     }
 
-    /// Stop capturing. Both halves go with `self` — see `Drop`.
+    /// Stop capturing. Every half goes with `self` — the backend stops when it
+    /// is dropped, and the heartbeat ends in `Drop` below.
     fn stop(self) {}
 }
 
@@ -2723,6 +2905,10 @@ impl Drop for MicCapture {
 /// `mono_buf` and `resampled_buf` are caller-provided reusable buffers —
 /// allocating inside cpal's realtime callback can trigger a page fault or
 /// allocator lock and cause an xrun (dropout). Both are cleared at entry.
+///
+/// Called from cpal's callback and from `rawmic`'s pump thread, which is the
+/// point: the two backends differ in how the device is opened, not in what
+/// happens to the samples afterwards.
 fn forward_mic(
     frame_tx: &tokio::sync::mpsc::UnboundedSender<Vec<f32>>,
     samples: &[f32],

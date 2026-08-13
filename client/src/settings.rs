@@ -73,6 +73,17 @@ pub struct ClientSettings {
     /// voice more harshly, is where it would bite.
     #[serde(default = "default_denoise_atten_lim_db")]
     pub denoise_atten_lim_db: u32,
+    /// Capture the microphone in WASAPI raw mode, skipping the processing the
+    /// driver applies before any app sees a sample. Off by default: the
+    /// endpoint's effects are what the machine was tuned with, and turning them
+    /// off is a choice about which suppressor gets the signal — see
+    /// `crate::rawmic`.
+    ///
+    /// Windows-only, and the UI hides it elsewhere: macOS applies its mic modes
+    /// only to clients of the voice-processing audio unit, which cpal is not,
+    /// so there a capture is already raw.
+    #[serde(default)]
+    pub bypass_system_audio_processing: bool,
     /// Opus bitrate for the microphone track, in kbit/s. Only 24 and 48 are
     /// offered — 24 is LiveKit's speech preset, 48 is roughly what other voice
     /// chats spend on a talking head and is audibly better on low voices,
@@ -199,6 +210,7 @@ impl Default for ClientSettings {
             mic_volume: default_mic_volume(),
             auto_gain_control: default_auto_gain_control(),
             noise_cancellation: false,
+            bypass_system_audio_processing: false,
             denoise_atten_lim_db: default_denoise_atten_lim_db(),
             voice_bitrate_kbps: default_voice_bitrate_kbps(),
             layout_cells: Vec::new(),

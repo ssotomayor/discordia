@@ -199,6 +199,14 @@ channel to observe the publication themselves.
   a time. The tract crates are pinned and get a `[profile.dev.package]`
   optimisation override in the root `Cargo.toml` — read the comment there before
   bumping them, the model won't even load without it.
+- `rawmic/` — microphone capture with the OS's own input processing bypassed
+  (Windows: WASAPI raw mode, which cpal cannot ask for because the flag is set
+  before `Initialize`). Opens the same device the cpal path would and hands the
+  samples to the same `forward_mic`, so the two backends differ only in *how the
+  device is opened*. That is also why toggling it restarts the voice session:
+  raw is fixed at open time, unlike every APM switch beside it. `supported()`
+  gates the setting — macOS never had the processing in the path, so the switch
+  is hidden rather than inert.
 - `sysaudio/` — native system-audio capture for screen sharing, so a share
   carries the machine's sound without depending on the webview's picker.
   `scope()` says how far it reaches per platform (macOS: every share; Windows:

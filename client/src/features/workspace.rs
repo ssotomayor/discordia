@@ -75,6 +75,11 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
             w.mic_volume = saved.mic_volume.min(200);
             w.auto_gain_control = saved.auto_gain_control;
             w.noise_cancellation = saved.noise_cancellation;
+            // Honoured only where there is processing to bypass; a settings
+            // file carried over from a Windows machine must not leave a macOS
+            // session believing it captures raw.
+            w.bypass_system_audio_processing =
+                saved.bypass_system_audio_processing && crate::rawmic::supported();
             // The slider's own domain, not DeepFilterNet's. `mic_sensitivity`
             // above clamps wider than its control because the two are in
             // different units; this one is bound straight to the dB value, so
