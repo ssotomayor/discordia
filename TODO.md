@@ -455,8 +455,15 @@ the top within each section.
   perceptual measure; a suppressor that acts mostly between words could hide
   from it. One SNR (~10 dB) and one noise colour were tried. And AEC cannot be
   tested this way at all — it needs a far-end signal and an acoustic loop.
-  One difference between the measurement and the client, checked rather than
-  assumed: the sweep passes the options to `NativeAudioSource::new` while
+  The sweep is also coarser than the client on purpose, and it is worth being
+  exact about how: it moves echo cancellation, noise suppression and AGC
+  together, while `apm_options` pins AEC on always, derives noise suppression
+  from the inverse of the DeepFilterNet toggle, and passes AGC through from the
+  user. So the rows are not shippable configurations — they are the extremes,
+  chosen because if all-on and all-off cannot be told apart then nothing
+  between them is doing much either.
+  One further difference between the measurement and the client, checked rather
+  than assumed: the sweep passes the options to `NativeAudioSource::new` while
   `set_apm` calls `set_audio_options` later. Both reach the same `sys_handle`
   and the same three-field struct, and the constructor is the *more* favourable
   of the two — options in place before a frame is ever captured — so measuring

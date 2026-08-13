@@ -309,9 +309,14 @@ fn tone_samples(n: usize) -> Vec<f32> {
 /// Feed a continuous tone the way the microphone path does: 10 ms frames of
 /// i16, handed to libwebrtc one at a time, in real time — the encoder and the
 /// jitter buffer both care about the clock.
-/// `noise` mixes white noise in at that peak amplitude — deterministic, from a
-/// plain LCG, so a run is reproducible and the workspace gains no dependency
-/// for six lines of arithmetic.
+/// `noise` mixes white noise in at that peak amplitude, from a plain LCG so the
+/// sequence is fixed and two runs are comparable.
+///
+/// Not because it avoids a dependency — `rand` is already a direct dependency
+/// of this crate and offers seeded generators that would do as well. It is here
+/// because the seed is visible in the six lines below, and a sweep whose rows
+/// are compared against each other should not have its input hidden behind a
+/// generator whose stream could change with a version bump.
 fn spawn_tone(source: NativeAudioSource, noise: f32) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut phase = 0.0f32;
@@ -348,12 +353,27 @@ fn spawn_tone(source: NativeAudioSource, noise: f32) -> tokio::task::JoinHandle<
     })
 }
 
-/// What a round trip is run with. Every field is a knob the real client sets,
-/// so a row of the sweep below is a configuration someone could actually ship.
+/// What a round trip is run with.
+///
+/// `red`, `dtx` and `max_bitrate` are knobs the client sets as such. `apm` is
+/// not — see its own note.
 #[derive(Clone, Copy)]
 struct Config {
-    /// libwebrtc's echo canceller, noise suppressor and AGC, as one switch —
-    /// the three move together in `features::voice::set_apm`.
+    /// libwebrtc's echo canceller, noise suppressor and AGC, all three at once.
+    ///
+    /// Deliberately coarser than the client, which never sets them together:
+    /// `apm_options` pins `echo_cancellation` on always, derives
+    /// `noise_suppression` from the *inverse* of the DeepFilterNet toggle, and
+    /// passes `auto_gain_control` straight through from the user's own switch.
+    /// Three independent inputs, and no combination of them turns AEC off.
+    ///
+    /// All-on against all-off is still the right probe for the question this
+    /// sweep asks, which is whether the APM does anything on this path at all.
+    /// A difference between the client's actual arrangements would be smaller
+    /// and harder to read; if even the extremes are indistinguishable, no
+    /// arrangement between them can be doing much. What it cannot do is stand
+    /// in for a configuration someone ships — this row is an instrument
+    /// setting, not a product one.
     apm: bool,
     /// Opus redundancy: a copy of the previous frame in every packet. On by
     /// default in the SDK, which is why the client's measured send rate reads
