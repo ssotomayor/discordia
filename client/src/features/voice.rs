@@ -2165,31 +2165,31 @@ fn spawn_stats_task(
                         // percentage is a session average and cannot show a
                         // ten-second spike at all. Differencing consecutive
                         // lines gives the per-interval loss the average hides.
-                        crate::dlog!(
-                            "stats in {} loss={:.2}% jitter={:.1}ms buf={:.1}ms conceal={} rx={} lost={}",
-                            crate::identity::truncate_pubkey(&identity.0),
-                            {
-                                let total = s.received.packets_received
-                                    + s.received.packets_lost.max(0) as u64;
-                                if total == 0 {
-                                    0.0
-                                } else {
-                                    s.received.packets_lost.max(0) as f32 / total as f32 * 100.0
-                                }
-                            },
-                            s.received.jitter * 1000.0,
-                            if s.inbound.jitter_buffer_emitted_count == 0 {
-                                0.0
-                            } else {
-                                s.inbound.jitter_buffer_target_delay
-                                    / s.inbound.jitter_buffer_emitted_count as f64
-                                    * 1000.0
-                            },
-                            s.inbound.concealment_events,
-                            s.received.packets_received,
-                            s.received.packets_lost.max(0),
-                        );
-                        next.insert(identity.0.clone(), inbound_stats(s));
+                        // Logged from the same `inbound_stats` the panel gets,
+                        // rather than re-deriving the three formulas here: two
+                        // copies three lines apart would drift the first time
+                        // one of them is corrected, and the log is the copy
+                        // nobody would notice going wrong.
+                        let st = inbound_stats(s);
+                        if let TrackStats::Inbound {
+                            loss_pct,
+                            jitter_ms,
+                            buffer_ms,
+                            concealment_events,
+                        } = &st
+                        {
+                            crate::dlog!(
+                                "stats in {} loss={:.2}% jitter={:.1}ms buf={:.1}ms conceal={} rx={} lost={}",
+                                crate::identity::truncate_pubkey(&identity.0),
+                                loss_pct,
+                                jitter_ms,
+                                buffer_ms,
+                                concealment_events,
+                                s.received.packets_received,
+                                s.received.packets_lost.max(0),
+                            );
+                        }
+                        next.insert(identity.0.clone(), st);
                     }
                 }
             }
@@ -2207,16 +2207,16 @@ fn spawn_stats_task(
                 let (packets, bytes) = (o.sent.packets_sent, o.sent.bytes_sent);
                 let rates = outbound_rates(prev_out, packets, bytes, now);
                 prev_out = Some((packets, bytes, now));
+                let target_kbps = (o.outbound.target_bitrate / 1000.0).round() as u32;
                 // The send side of the same series. `target` is what the
                 // encoder was told to aim for, so the pair is what says whether
                 // congestion control has pulled the real rate down under it —
                 // which is the first thing a bad link does and the panel only
                 // ever shows as a number that looks a bit low.
                 crate::dlog!(
-                    "stats out bitrate={} pkt/s={} target={}kbps sent={} bytes={}",
+                    "stats out bitrate={} pkt/s={} target={target_kbps}kbps sent={} bytes={}",
                     rates.map_or("-".into(), |(_, kbit)| format!("{kbit:.0}kbps")),
                     rates.map_or("-".into(), |(pkt, _)| format!("{pkt:.0}")),
-                    (o.outbound.target_bitrate / 1000.0).round() as u32,
                     packets,
                     bytes,
                 );
@@ -2225,7 +2225,7 @@ fn spawn_stats_task(
                     TrackStats::Outbound {
                         bitrate_kbps: rates.map(|(_, kbit)| kbit),
                         packets_per_sec: rates.map(|(pkt, _)| pkt),
-                        target_kbps: (o.outbound.target_bitrate / 1000.0).round() as u32,
+                        target_kbps,
                     },
                 );
             }
