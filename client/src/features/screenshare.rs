@@ -211,9 +211,13 @@ window.dxScreen = window.dxScreen || (function () {
     const el = track.attach();
     el.muted = true; el.autoplay = true; el.playsInline = true;
     el.style.width = '100%'; el.style.height = '100%'; el.style.background = '#000';
-    // A shared screen must not be cropped — losing an edge loses content. A face
-    // in a fixed-ratio tile is the opposite: letterboxing it wastes the tile.
-    el.style.objectFit = kind === 'camera' ? 'cover' : 'contain';
+    // `contain` for both now. A shared screen must not be cropped — losing an
+    // edge loses content — and a camera tile used to be `cover` because it was
+    // a fixed 16/9 box that letterboxing would have wasted. The grid tiles are
+    // no longer fixed: they divide whatever the user has resized the window to,
+    // so a cell can be any shape, and `cover` on a tall one crops a face down
+    // to a nose. The self-preview keeps `cover` — see `attachLocalCamera`.
+    el.style.objectFit = 'contain';
     c.appendChild(el);
     attached[cid] = { identity: identity, kind: kind, track: track, el: el };
   }
@@ -925,6 +929,10 @@ window.dxScreen = window.dxScreen || (function () {
     const el = document.createElement('video');
     el.srcObject = localCameraStream;
     el.muted = true; el.autoplay = true; el.playsInline = true;
+    // `cover`, unlike the remote tiles: this window keeps a 16/9 shape by
+    // construction (`CameraSelfPreview` resizes on that ratio), so there is
+    // nothing to crop, and a self-view that letterboxes itself looks broken in
+    // a way a stranger's tile does not.
     el.style.width = '100%'; el.style.height = '100%'; el.style.objectFit = 'cover'; el.style.background = '#000';
     // Mirrored, and only here: you expect your own reflection, and nobody
     // expects a mirrored stranger. Remote tiles must not carry this.
