@@ -40,6 +40,10 @@ const GROUP_WINDOW_SECS: i64 = 300;
 /// - `prepend` — older history loaded above the viewport, hold position
 /// - `append`  — new message arrived, follow it only if anchored
 fn chat_scroll_js(mode: &str) -> String {
+    // One of three literals from the caller, so nothing hostile can reach this
+    // — it goes through the shared sink anyway, because that is what keeps the
+    // guarantee a property of the sink rather than of each caller.
+    let mode = crate::features::screenshare::js_str(mode);
     format!(
         r#"
 (function() {{
@@ -56,7 +60,7 @@ fn chat_scroll_js(mode: &str) -> String {
       el._dxfStick = gap <= 40;
     }}, {{ passive: true }});
   }}
-  var mode = '{mode}';
+  var mode = {mode};
   if (mode === 'channel') {{
     el.scrollTop = el.scrollHeight;
     el._dxfStick = true;
