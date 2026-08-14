@@ -1973,11 +1973,7 @@ pub fn ScreenWatchWindow() -> Element {
     let Some(pk) = viewing() else {
         return rsx! { Fragment {} };
     };
-    let name = state
-        .read()
-        .user_of(&pk)
-        .map(|u| u.username.clone())
-        .unwrap_or_else(|| crate::identity::truncate_pubkey(&pk));
+    let name = state.read().display_name(&pk);
 
     // Stream audio controls. Deliberately separate from the participant's voice
     // volume in the channel roster: someone's game audio and their microphone
