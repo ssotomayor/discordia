@@ -57,7 +57,11 @@ pub const ACTIVITIES: &[ActivityDef] = &[ActivityDef {
     id: "dice",
     name: "Dice Roller",
     icon: "🎲",
-    caps: &[Capability::UserRead, Capability::MessageSend],
+    caps: &[
+        Capability::UserRead,
+        Capability::ChannelRead,
+        Capability::MessageSend,
+    ],
     html: DICE_HTML,
 }];
 
@@ -366,8 +370,15 @@ fn handle_rpc(
 }
 
 /// Installed once: forwards every message from the activity iframe to Rust.
-/// Guards against double-wiring across hot reloads.
+///
+/// The listener is registered once per webview; the *sink* it calls is
+/// reassigned on every eval. Only the second half survives a remount — a
+/// listener closes over the `dioxus.send` of the eval that made it, and this
+/// component is rebuilt whenever the session is, so guarding registration alone
+/// leaves the live channel unregistered and the registered one dead. Same shape
+/// as `features::chat`'s drop handler, and the same bug the camera pump had.
 const BRIDGE_JS: &str = r#"
+window.__dxfActivitySink = function (m) { try { dioxus.send(m); } catch (err) {} };
 if (!window.__dxfActivityWired) {
   window.__dxfActivityWired = true;
   window.addEventListener('message', function (e) {
@@ -375,7 +386,7 @@ if (!window.__dxfActivityWired) {
     if (!f || e.source !== f.contentWindow) return;
     var d = e.data;
     if (!d || d.__dxf !== true) return;
-    try { dioxus.send(d); } catch (err) {}
+    if (window.__dxfActivitySink) window.__dxfActivitySink(d);
   });
 }
 "#;
@@ -402,6 +413,7 @@ const DICE_HTML: &str = r##"<!doctype html><html><head><meta charset="utf-8"><st
     <button id="roll">Roll</button>
     <button id="share" disabled>Share to chat</button>
   </div>
+  <div class="who" id="where"></div>
   <script>
     const dxf = (function () {
       let n = 0; const pending = {};
@@ -420,6 +432,7 @@ const DICE_HTML: &str = r##"<!doctype html><html><head><meta charset="utf-8"><st
       }
       return {
         getUser: function () { return call('user.get'); },
+        getChannel: function () { return call('channel.get'); },
         sendMessage: function (content) { return call('message.send', { content: content }); }
       };
     })();
@@ -428,11 +441,24 @@ const DICE_HTML: &str = r##"<!doctype html><html><head><meta charset="utf-8"><st
     const rollBtn = document.getElementById('roll');
     const shareBtn = document.getElementById('share');
     const whoEl = document.getElementById('who');
+    const whereEl = document.getElementById('where');
     const faces = ['⚀','⚁','⚂','⚃','⚄','⚅'];
     let last = 0;
 
     dxf.getUser().then(function (u) { whoEl.textContent = 'Hi, ' + u.username; })
        .catch(function () { whoEl.textContent = ''; });
+
+    // Where a share would land. Re-read after every send rather than once at
+    // launch, because `message.send` resolves the channel when the call fires,
+    // not when the activity opened — see the channel-binding entry in TODO.md.
+    // This makes that visible; it does not fix it. A change between this read
+    // and the next click is still unannounced.
+    function showWhere() {
+      dxf.getChannel()
+         .then(function (c) { whereEl.textContent = c && c.name ? 'shares go to #' + c.name : ''; })
+         .catch(function () { whereEl.textContent = ''; });
+    }
+    showWhere();
 
     rollBtn.addEventListener('click', function () {
       dieEl.classList.add('rolling');
@@ -448,7 +474,7 @@ const DICE_HTML: &str = r##"<!doctype html><html><head><meta charset="utf-8"><st
       if (!last) return;
       shareBtn.disabled = true;
       dxf.sendMessage('🎲 rolled a ' + last + '!')
-         .then(function () { shareBtn.textContent = 'Shared!'; setTimeout(function(){ shareBtn.textContent='Share to chat'; shareBtn.disabled=false; }, 1200); })
+         .then(function () { showWhere(); shareBtn.textContent = 'Shared!'; setTimeout(function(){ shareBtn.textContent='Share to chat'; shareBtn.disabled=false; }, 1200); })
          .catch(function (err) { shareBtn.textContent = 'Denied'; });
     });
   </script>

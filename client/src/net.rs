@@ -83,12 +83,16 @@ pub fn spawn_gateway(
     gateway_tx
 }
 
-/// The transport's view of the coordinator setting.
-fn coordination(allowed: bool) -> crate::quic::Coordination {
-    if allowed {
-        crate::quic::Coordination::CoordinatorOnly
-    } else {
-        crate::quic::Coordination::None
+/// Who, if anyone, may introduce us to this host.
+///
+/// Whatever relay the rendezvous runs, and nothing otherwise. There is no
+/// setting and no default: the third party is the one already chosen by
+/// choosing that rendezvous, and a rendezvous that runs none leaves its users
+/// on the relayed path rather than reaching for somebody else's servers.
+fn coordination(relay_url: Option<String>) -> crate::quic::Coordination {
+    match relay_url {
+        Some(url) => crate::quic::Coordination::Relay(url),
+        None => crate::quic::Coordination::None,
     }
 }
 
@@ -131,7 +135,6 @@ async fn resolve_session(
             publish_name,
             description,
             publish_public,
-            allow_coordinator,
         } => {
             let publish = crate::rendezvous::PublishOptions {
                 publish_name,
@@ -139,14 +142,7 @@ async fn resolve_session(
                 publish_public,
             };
             // We're hosting, so we own our Lobby.
-            let handle = start_self_host(
-                allow_lan,
-                rendezvous_url,
-                publish,
-                coordination(allow_coordinator),
-                identity,
-            )
-            .await?;
+            let handle = start_self_host(allow_lan, rendezvous_url, publish, identity).await?;
             let url = normalize_url(&handle.info.local_url)?;
             state.write().host_info = Some(handle.info.clone());
             Ok((
@@ -160,7 +156,6 @@ async fn resolve_session(
         SessionMode::ByCode {
             rendezvous_url,
             code,
-            allow_coordinator,
         } => {
             let base = rendezvous_url.trim().trim_end_matches('/');
             if base.is_empty() {
@@ -185,10 +180,11 @@ async fn resolve_session(
             let Some(entry) = resolve_host(&with_scheme, code).await else {
                 return relayed_only(relay);
             };
+            let coordinate = coordination(entry.relay_url.clone());
             let quic = entry
                 .transport_key
-                .filter(|_| !entry.transport_addrs.is_empty())
-                .map(|key| (key, entry.transport_addrs, coordination(allow_coordinator)));
+                .filter(|_| !entry.transport_addrs.is_empty() || coordinate.is_coordinated())
+                .map(|key| (key, entry.transport_addrs, coordinate));
             match entry.endpoint.as_deref().map(normalize_url) {
                 Some(Ok(direct)) => Ok((
                     Dial::DirectOrRelay {
@@ -305,11 +301,12 @@ async fn connect_best(
     if let Some((key, addrs, coordination)) = quic {
         // Its own, longer budget: a hole punch is a negotiation, not a connect,
         // and `DIRECT_ATTEMPT` was sized for the latter.
-        let budget = match coordination {
-            crate::quic::Coordination::None => DIRECT_ATTEMPT,
-            crate::quic::Coordination::CoordinatorOnly => PUNCH_ATTEMPT,
+        let budget = if coordination.is_coordinated() {
+            PUNCH_ATTEMPT
+        } else {
+            DIRECT_ATTEMPT
         };
-        match tokio::time::timeout(budget, dial_quic(&key, &addrs, coordination)).await {
+        match tokio::time::timeout(budget, dial_quic(&key, &addrs, &coordination)).await {
             Ok(Ok(socket)) => {
                 relay_attempt.abort();
                 eprintln!("[dioxusfun] connected over QUIC to {key}");
@@ -368,7 +365,7 @@ const QUIC_HANDSHAKE_URL: &str = "ws://127.0.0.1/gateway";
 async fn dial_quic(
     key: &str,
     addrs: &[String],
-    coordination: crate::quic::Coordination,
+    coordination: &crate::quic::Coordination,
 ) -> Result<Socket, String> {
     let endpoint_id = crate::quic::parse_endpoint_id(key)?;
     let addrs: Vec<_> = addrs
@@ -447,6 +444,9 @@ async fn run_session<S>(
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
+    // The identity has to be reachable from `apply`, which is where sealed
+    // media keys arrive and where only our own secret can open them.
+    state.write().identity = Some(params.identity.clone());
     let (mut ws_tx, mut ws_rx) = ws_stream.split();
 
     // Wait for the server's Hello frame so we know what nonce to sign.
@@ -489,6 +489,7 @@ where
         signature,
         // Human client — never bot-gated (bots self-declare via the SDK).
         bot: false,
+        client_version: crate::version::VERSION.to_string(),
     };
     let json = serde_json::to_string(&identify).map_err(|e| e.to_string())?;
     ws_tx
@@ -732,6 +733,7 @@ fn apply(
             members,
             roles,
             emojis,
+            voice_states,
         } => {
             // We created or joined this guild — add it (dedup) and jump to it.
             let gid = guild.id;
@@ -741,6 +743,12 @@ fn apply(
             s.roles.insert(gid, roles);
             s.guild_emojis.insert(gid, emojis);
             resolve_emoji_images(&mut s, tx);
+            // Replace rather than merge: the server sends this guild's whole
+            // voice roster, so anything we still hold for it is stale by
+            // definition. Scoped by `guild_id` so a voice session in another
+            // guild — including our own — survives joining this one.
+            s.voice_states.retain(|v| v.guild_id != gid);
+            s.voice_states.extend(voice_states);
             for ch in channels {
                 if !s.channels.iter().any(|c| c.id == ch.id) {
                     s.channels.push(ch);
@@ -910,6 +918,11 @@ fn apply(
             // us a targeted GuildDelete, which tears down the whole guild.)
             s.members
                 .retain(|m| !(m.guild_id == guild_id && m.user.pubkey == user_pubkey));
+            // Somebody who held the channel's media key no longer belongs here.
+            // The key cannot be taken back, so the channel moves to a new one
+            // and everything published from now on is beyond them. Whatever
+            // they already captured stays captured — see `mediakey`.
+            s.pending_rekey = true;
         }
         ServerMessage::GuildInvite { guild_id, code } => {
             s.invites.insert(guild_id, code);
@@ -1041,6 +1054,39 @@ fn apply(
                 .find(|m| m.guild_id == guild_id && m.user.pubkey == user_pubkey)
             {
                 m.online = false;
+            }
+        }
+        ServerMessage::MediaKey {
+            channel_id,
+            from,
+            epoch,
+            blob,
+        } => {
+            // Ours only if we can open it, and only if it is newer than what we
+            // hold. Both checks are cheap and both matter: the first is the
+            // whole security property, the second stops a late-arriving blob
+            // from an older epoch dragging the channel backwards onto a key a
+            // removed member still has.
+            let identity = s.identity.clone();
+            let Some(identity) = identity else { return };
+            let current = s.media_keys.get(&channel_id).map(|(e, _)| *e);
+            if current.is_some_and(|have| have >= epoch) {
+                tracing::debug!(%from, epoch, "ignoring a media key we have already moved past");
+                return;
+            }
+            match crate::mediakey::open(&blob, &from, epoch, &identity) {
+                Ok(key) => {
+                    tracing::info!(%from, epoch, "media key accepted");
+                    s.media_keys.insert(channel_id, (epoch, key));
+                    // Whatever we could not decrypt a moment ago, this is the
+                    // event most likely to have fixed it. If it did not, the
+                    // next frame sets the latch again.
+                    s.media_undecryptable = false;
+                    crate::e2ee::apply_key(&key);
+                }
+                // Not exceptional: a blob for somebody else, or from a member
+                // who left mid-rekey. We keep what we have.
+                Err(e) => tracing::warn!(%from, epoch, error = %e, "could not open a media key"),
             }
         }
         ServerMessage::VoiceStateUpdate(vs) => {

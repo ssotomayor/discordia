@@ -124,6 +124,24 @@ const TAILWIND_CSS: &str = include_str!("../assets/tailwind.out.css");
 /// checkable against upstream.
 const LIVEKIT_JS: &str = include_str!("../assets/livekit-client.umd.js");
 
+/// The E2EE worker, which the SDK needs and the UMD bundle does not contain.
+///
+/// LiveKit encrypts and decrypts frames on a worker thread, and the bundle
+/// expects the caller to supply one — `e2ee: { keyProvider, worker }`. It ships
+/// as a separate file, so it is vendored on the same terms as the SDK itself
+/// and pinned to the same 2.19.2:
+///
+/// ```text
+/// curl -sL https://cdn.jsdelivr.net/npm/livekit-client@2.19.2/dist/livekit-client.e2ee.worker.js | sha256sum
+/// f9e5289f11fe0a8f47245f041202fe85af8d2bf76a2e12b4bb3e19449464ba09
+/// ```
+///
+/// Handed to the page as a string rather than as a file because a `Worker`
+/// needs a URL and the webview has no origin to serve one from — `dxScreen`
+/// turns this into a blob URL at connect time. JSON-encoded on the way in so
+/// the script tag cannot be broken by its own contents.
+const LIVEKIT_E2EE_WORKER_JS: &str = include_str!("../assets/livekit-client.e2ee.worker.js");
+
 const BASE_CSS: &str = "
 /* Default (ember) palette. Per-theme overrides are applied inline on the app
    root by `theme_vars()`. The existing variable *names* are kept as the
@@ -500,6 +518,18 @@ pub fn App() -> Element {
     let mut error = use_signal(|| None::<String>);
     let last_session = use_signal(|| session::load().ok().flatten());
 
+    // Asked once per launch, from the app root rather than from the label that
+    // renders it: the label unmounts on connect and remounts on disconnect, so
+    // owning the check there would re-ask on every round trip and spend a
+    // 60/hour unauthenticated rate limit on a question whose answer cannot have
+    // changed. Silent on every failure — see `check_for_update`.
+    let mut update = use_signal(|| None::<crate::version::Update>);
+    use_future(move || async move {
+        if let Some(found) = crate::version::check_for_update().await {
+            update.set(Some(found));
+        }
+    });
+
     // Local appearance settings (theme + background). Shared via context so
     // the in-app Appearance panel can mutate them live.
     let settings = use_signal(crate::settings::load_or_default);
@@ -549,6 +579,32 @@ pub fn App() -> Element {
             if let Some(img) = background {
                 div { class: "app-bg-layer", style: "background-image: url('{img}');" }
                 div { class: "app-bg-layer", style: "background: rgba(0,0,0,{scrim});" }
+            }
+            // Which build this is, on the screens you see before connecting to
+            // anything — the first place someone reads a version, and the only
+            // one reachable when nothing works, which is when they need it.
+            //
+            // It stops at the door on purpose. In the workspace it would be
+            // permanent chrome answering a question nobody asks while chatting,
+            // and both bottom corners are already spoken for there: the layout
+            // controls on the right, the activity launcher on the left.
+            if session.read().is_none() {
+                div { class: "fixed bottom-3 right-3 z-40 flex items-center gap-2",
+                    crate::version::VersionLabel {}
+                    // Notifies, and stops there. The app has no Authenticode
+                    // certificate, so a self-updater would be handing the user
+                    // an unsigned binary it could not verify — a link they
+                    // follow deliberately is a different act from a binary
+                    // swapped underneath them.
+                    if let Some(u) = update() {
+                        button {
+                            class: "text-[10px] text-[var(--accent)] underline",
+                            title: "Opens the release page in your browser",
+                            onclick: move |_| open_external(&u.url),
+                            "{u.tag} available"
+                        }
+                    }
+                }
             }
             div { class: "app-shell",
             match (identity.read().clone(), session.read().clone()) {
@@ -652,6 +708,15 @@ fn AppHead() -> Element {
         // what `document::Script` renders as the tag's body, exactly as
         // `document::Style` does above.
         document::Script { {LIVEKIT_JS} }
+        // The worker source, parked on `window` for `dxScreen` to build a blob
+        // URL from when a key is configured. Unused otherwise — the same deal
+        // as the SDK beside it.
+        document::Script {
+            {format!(
+                "window.__dxfE2eeWorkerSrc = {};",
+                serde_json::to_string(LIVEKIT_E2EE_WORKER_JS).unwrap_or_else(|_| "null".into())
+            )}
+        }
         document::Style { {font_face_css()} }
         document::Style { {BASE_CSS} }
     }

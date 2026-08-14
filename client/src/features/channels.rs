@@ -514,10 +514,7 @@ fn VoiceChannelRow(
                 div { class: "ml-5 mt-0.5 space-y-0.5",
                     for vs in occupants.iter() {
                         {
-                            let name = users_by_id
-                                .user_of(&vs.user_pubkey)
-                                .map(|u| u.username.clone())
-                                .unwrap_or_else(|| crate::identity::truncate_pubkey(&vs.user_pubkey));
+                            let name = users_by_id.display_name(&vs.user_pubkey);
                             let is_self = self_pubkey.as_deref() == Some(vs.user_pubkey.as_str());
                             let is_sharing = sharers.iter().any(|p| p == &vs.user_pubkey);
                             rsx! {
@@ -589,13 +586,7 @@ fn ConnectionStats() -> Element {
         let s = state.read();
         s.voice_stats
             .iter()
-            .map(|(pk, st)| {
-                let name = s
-                    .user_of(pk)
-                    .map(|u| u.username.clone())
-                    .unwrap_or_else(|| crate::identity::truncate_pubkey(pk));
-                (name, *st)
-            })
+            .map(|(pk, st)| (s.display_name(pk), *st))
             .collect()
     };
     rows.sort_by(|a, b| a.0.cmp(&b.0));
@@ -896,6 +887,20 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
     let voice = use_voice_tx();
     let mut state = use_app_state();
     let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
+    // The disk write the audio popover's four sliders share, once each rather
+    // than four times over.
+    //
+    // They are identical because they are the tail of one change — moving the
+    // write off `oninput`, where it ran once per step of a drag — and not four
+    // things that happen to look alike. `Signal` is `Copy`, so a closure that
+    // captures nothing else is `Copy` too and one binding serves every site.
+    //
+    // Deliberately *not* extended to the checkboxes in the same popover. Those
+    // persist inside their own `onclick`, saving the value they just built
+    // rather than re-reading the signal, and they do it on click because a
+    // checkbox has no drag to wait for. Folding them in here would quietly
+    // change when they write, not just how it is spelled.
+    let persist_settings = move |_: FormEvent| crate::settings::save(&settings.read());
     // Whether a screen can be captured at all, by either path; populated by the
     // ScreenShareBridge.
     let screen_capture_available = state.read().screen_capture_available;
@@ -1318,7 +1323,7 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                         // The write to disk waits for the drag to
                                         // end — see the note on the sensitivity
                                         // slider below.
-                                        onchange: move |_| crate::settings::save(&settings.read()),
+                                        onchange: persist_settings,
                                     }
                                     span { class: "text-[10px] text-[var(--text-dim)] w-8 text-right", "{settings.read().sfx_volume}%" }
                                 }
@@ -1437,7 +1442,7 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                         let v = v_for_mic_volume.clone();
                                         v.send(crate::features::voice::VoiceCmd::SetMicVolume { percent: pct });
                                     },
-                                    onchange: move |_| crate::settings::save(&settings.read()),
+                                    onchange: persist_settings,
                                 }
                                 if auto_gain_control && mic_volume != 100 {
                                     span { class: "text-[10px] text-[var(--text-dim)] mt-0.5 block",
@@ -1488,7 +1493,7 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                     // immediate; persistence never needed to be on
                                     // that path. `change` is the event the selects in
                                     // this same popover already persist on.
-                                    onchange: move |_| crate::settings::save(&settings.read()),
+                                    onchange: persist_settings,
                                 }
                                 // Live gate state. Moving the slider past the
                                 // current level flips this within ~300ms, which
@@ -1623,7 +1628,7 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                             // dragging this mid-sentence costs no model reload.
                                             v_for_atten.send(crate::features::voice::VoiceCmd::SetDenoiseAttenLim { db });
                                         },
-                                        onchange: move |_| crate::settings::save(&settings.read()),
+                                        onchange: persist_settings,
                                     }
                                     span { class: "text-[10px] text-[var(--text-dim)] mt-0.5 block",
                                         "Lower keeps more of your voice, and more of the room with it."

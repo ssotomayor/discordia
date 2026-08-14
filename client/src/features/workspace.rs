@@ -215,6 +215,7 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
             crate::features::screenshare::ScreenSourcePicker {}
             crate::features::screenshare::ScreenSelfPreview {}
             crate::features::camera::CameraBridge {}
+            crate::mediakey::MediaKeyBridge {}
             crate::features::camera::CameraSelfPreview {}
             crate::features::camera::CameraGridWindow {}
             crate::features::screenshare::ScreenWatchWindow {}
@@ -235,6 +236,7 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
                 }
                 HostBanner {}
                 TransportBadge {}
+                EncryptionBadge {}
                 // Unplug / disconnect. Always present so the user can leave a
                 // server they've connected to. Empty reason → clean return to
                 // the connect screen (no error banner; see App::on_disconnect).
@@ -485,7 +487,13 @@ window.dxSfx = window.dxSfx || (function () {
 "#;
 
 fn sfx(name: &str) {
-    let _ = document::eval(&format!("{SFX_JS}\nwindow.dxSfx.play('{name}');"));
+    // Every caller passes a static literal today, so this is not a live
+    // injection path. It goes through `js_str` anyway because that function
+    // exists to make escaping a property of the *sink* rather than something
+    // re-derived per call site — and a sink that opted out is exactly where the
+    // next dynamic argument would land without anyone noticing.
+    let name = crate::features::screenshare::js_str(name);
+    let _ = document::eval(&format!("{SFX_JS}\nwindow.dxSfx.play({name});"));
 }
 
 #[component]
@@ -808,6 +816,52 @@ fn Reachability(reachability: crate::host::Reachability) -> Element {
                 "● local only"
             }
         },
+    }
+}
+
+/// Whether this call's media is encrypted, and whether that is currently
+/// working.
+///
+/// The second half is why this exists at all. End-to-end encrypted media fails
+/// as *silence*: frames arrive, decode to noise, and everything looks connected.
+/// Somebody in that state will check their microphone, their output device and
+/// their network before suspecting a key — so the one thing worth putting on
+/// screen is that the key is the problem.
+#[component]
+fn EncryptionBadge() -> Element {
+    let state = use_app_state();
+    let snapshot = state.read();
+    // Only meaningful in a call.
+    let in_voice = snapshot.voice.channel_id.is_some();
+    let has_key = snapshot
+        .voice
+        .channel_id
+        .is_some_and(|c| snapshot.media_keys.contains_key(&c));
+    let broken = snapshot.media_undecryptable;
+    drop(snapshot);
+
+    if !in_voice || (!has_key && !broken) {
+        return rsx! { Fragment {} };
+    }
+
+    let (label, color, title) = if broken {
+        (
+            "media undecryptable",
+            "text-[var(--danger)]",
+            "Encrypted media is arriving that this client cannot decrypt — usually a key that has not reached you yet. It often clears on its own within a second; if it does not, rejoin the channel.",
+        )
+    } else {
+        (
+            "media encrypted",
+            "text-[var(--success)]",
+            "Voice, screen share and camera are encrypted end to end. The SFU forwards frames it cannot decrypt — including one you run yourself.",
+        )
+    };
+    rsx! {
+        span { class: "shrink-0 px-2 py-1 text-[10px] uppercase tracking-wider {color}",
+            title: "{title}",
+            "{label}"
+        }
     }
 }
 

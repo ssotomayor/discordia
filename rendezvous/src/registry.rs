@@ -356,6 +356,9 @@ fn entry_for(shortcode: &str, host: &HostEntry) -> DiscoverEntry {
         endpoint: host.endpoint.clone(),
         transport_key: host.transport_key.clone(),
         transport_addrs: host.transport_addrs.clone(),
+        // Filled in by the router, which knows the deployment's own URL; the
+        // registry only knows about hosts.
+        relay_url: None,
     }
 }
 

@@ -49,6 +49,38 @@ the top within each section.
   direct address a port mapping produces, and the self-host client's own
   loopback socket. The entry below still describes those paths exactly.
 - **`wss://` looks supported without being.**
+  loopback socket. The entry below describes those paths, and its correction
+  about the lockfile makes the fix cheaper than this one assumed: rustls is
+  already compiled into the client, so TLS on the gateway socket is a feature
+  flag rather than a new dependency.
+- **A username may contain control characters, and nothing strips them.**
+  `protocol::canonical_username` trims and truncates to 32; it has never
+  filtered `is_control()`, and `auth::verify_identify` treats the name as opaque
+  bytes in the SHA-256 preimage — so `"al\nice"` is a perfectly valid, signable
+  display name that arrives intact.
+  It is not only usernames. Guild, channel and role names are the same shape —
+  `create_guild` only trims, and `sanitize_channel_name`/`sanitize_role` trim
+  and length-check without filtering — as are the pubkeys and the HTTP method,
+  path and upgrade header the request log repeats.
+  The log-forgery half is closed for all of them: **the rule in the server is
+  that only a type which cannot contain a line break is formatted with `%`** —
+  `Uuid`, `SocketAddr`, `StatusCode` — and every free-text value uses `?`, which
+  quotes and escapes. What remains is that the strings themselves are
+  unconstrained, so anything that ever renders them another way — a JSON log, an
+  export, a moderation tool — has to make the same choice again.
+  **The one deliberate exception is `%e` / `%err`.** Errors stay on `Display`
+  because `Debug` on an error chain is materially worse to read at 3am, and the
+  path is indirect: an error would have to embed attacker-supplied text
+  verbatim. Worth revisiting if a sqlx error is ever seen carrying a user value.
+  **The reason it is not simply filtered is the trap.** `canonical_username` is
+  the *signed preimage*, computed by both ends before signing and before
+  verifying. Adding a filter changes what a new server verifies, so a client
+  older than the change signs a different string and is refused — which is
+  exactly the lockout `A-02` cost this project once, recorded at length in that
+  function's own doc comment. Closing it properly means either accepting that
+  break for the rare name that contains a control character, or versioning the
+  canonicalisation. Both are decisions rather than edits.
+- **The gateway is plaintext, and `wss://` looks supported without being.**
   `tokio-tungstenite` is pinned at 0.24 in the workspace `Cargo.toml` and built
   **without a TLS feature** — `tungstenite 0.24`'s own dependency list carries no
   TLS crate (`Cargo.lock:8262-8277`) — so a `wss://` URL cannot be dialled at all.
@@ -82,24 +114,24 @@ the top within each section.
 
 ## Repo & CI
 
-- **No Windows clippy — the other half of the gap macOS just closed.** The
-  `macos-build` job now runs `cargo clippy -- -D warnings`, so the
-  `cfg(target_os = "macos")` half of the client is finally linted. `windows-build`
-  still runs `cargo check -p dioxusfun` and nothing else, which leaves
-  `sysaudio/windows.rs` — unsafe WASAPI FFI, the file that shipped a heap
-  corruption found only by running a test once — compiled but never linted by
-  anything. Same one-line change as the macOS job, with the same caveat that
-  turned that one into a two-step job: whatever it finds has to be fixed first,
-  and *those* findings cannot be enumerated from a Mac. So it needs one throwaway
-  CI run with the step added to see the list, then a commit fixing them, then the
-  step for real. Estimated from the macOS precedent: four findings, all trivial.
-  **The other half of this — that no `cargo test` ran on Windows at all — is
-  now fixed.** `windows-build` gained a `cargo test -p dioxusfun` step, so the
-  unit tests in `sysaudio/windows.rs` and `rawmic/windows.rs` finally execute
-  somewhere automatic instead of nowhere. That left clippy as the only remaining
-  gap over those 61 `unsafe` occurrences — still the highest density in the repo,
-  on the platform with the most users, in the file that shipped a heap
-  corruption.
+- **Windows clippy gates one profile of two.** `windows-build` now runs
+  `cargo clippy -p dioxusfun --all-targets -- -D warnings`, so the
+  `cfg(target_os = "windows")` half of the client — `sysaudio/windows.rs` and
+  `rawmic/windows.rs`, 61 `unsafe` WASAPI FFI sites — is finally linted. But
+  `desktop-build` runs clippy *twice*, once per profile, because
+  `unused_variables` and friends fire only with `debug_assertions` off, and
+  that is how nine of them reached a published build (`c685828`). Only the
+  first profile is gated here, so a regression of that class reachable only
+  under `-C debug-assertions=off` still goes uncaught on Windows.
+  Both profiles were run by hand on Windows 11 26200 before the gate landed and
+  found nothing, so this is a hole in the *gate*, not a known defect behind it.
+  **The trap when closing it:** do not copy `desktop-build`'s second-profile
+  step verbatim. Its step-level `RUSTFLAGS` *replaces* the job-level value
+  rather than adding to it, and `windows-build`'s job-level
+  `-C target-feature=+crt-static` is load-bearing — libwebrtc links the static
+  MSVC runtime, Rust defaults to the dynamic one, and dropping the flag fails
+  the link with LNK2038. Spell both flags out in the step. The cost to weigh is
+  that it doubles the slowest job in the matrix.
 - **The Windows portable and setup ship the wrong icon.** Reported from a real
   download: both carry an old icon rather than the Discordia mark. Worth
   starting from the comment in `client/Dioxus.toml`, because it says this was
@@ -200,11 +232,6 @@ the top within each section.
 
 ## Guild owner controls (roles, membership, moderation)
 
-- **`GuildEmoji.created_ms` and `.added_by` are written and never read.** Both
-  are persisted by the emoji upload path and nothing renders either, so "who
-  added this emoji, and when" is recorded and unanswerable. Same shape as the
-  audit log actor, which is now shown; less at stake here, which is why it was
-  not done in the same change.
 - **LiveKit force-eviction on kick.** A kicked user's client is told to hang up
   (cleared `VoiceStateUpdate`), but a malicious client keeps a valid LiveKit
   token until its TTL. Use the LiveKit RemoveParticipant API (or short TTLs)
@@ -226,12 +253,6 @@ the top within each section.
 
 ## Platform — bots (Tier 1) & activities (Tier 3)
 
-- **`Capability::ChannelRead` is unreachable.** The `channel.get` RPC arm is
-  guarded by it, but the only bundled activity declares
-  `[UserRead, MessageSend]`, so the guard is always false and the call falls
-  through to "permission denied". The sandbox shim doesn't expose `getChannel`
-  either. Either wire it into an activity that needs it, or drop the capability
-  — right now it reads as supported and isn't.
 - **Privileged-intent gate.** Today the owner can grant `message_content` /
   `members` freely. Discord reviews these past a scale threshold. At minimum
   add an extra confirm step in the install UI; longer term, a verification flow.
@@ -278,18 +299,67 @@ the top within each section.
      the coordinator tier behind its own setting and "coordinator, never
      carrier" enforced at both ends rather than assumed. What remains is that
      none of it has been run between two machines; see below.
-  3. **LiveKit E2EE** so a relayed call is unreadable to the SFU carrying it.
-     Key distribution is the work, and it must rekey on kick and ban. Untouched.
+  3. **LiveKit E2EE** — the mechanism is in (`client/src/e2ee.rs`), behind
+     `DISCORDIA_E2EE_KEY`. What remains is the half that makes it a feature:
+     distributing a per-channel key that no server holds, and rekeying it on
+     kick and ban. See the two entries below.
   The transport still needs real-network testing, and stays on the branch.
-- **Hole punching has never been exercised at all.** `Coordination::CoordinatorOnly`
-  builds the endpoint with iroh's default relays and then insists the resulting
-  path is direct — but no test reaches a relay, because reaching one needs the
-  internet. What is tested is the policy (`verdict`, four cases) and that
-  enforcement does not refuse a genuinely direct loopback connection. Unverified:
-  that a punch succeeds at all between two real NATs; that the refusal fires
-  when it does not; that `watch_for_relay_fallback` catches a mid-session slide
-  rather than sitting idle; and whether the 6-second `PUNCH_WINDOW` is long
-  enough for a real negotiation or merely long enough for a loopback one.
+- **The relay hop has no TLS, which leaks metadata to the network.** A
+  rendezvous advertises its relay as `http://host:7701`, and iroh's client
+  disables TLS for exactly that scheme. What crosses is already encrypted end to
+  end between the two endpoints, so the *content* is safe from both the relay
+  and the network — but an observer on the path sees which endpoint ids connect
+  to the relay and when, where TLS would have hidden that from everyone except
+  the relay operator. Closing it needs a certificate for the relay's hostname,
+  which means the deployment has a hostname — the same prerequisite the
+  plaintext gateway has under Security, and worth doing once for both.
+- **Media key distribution is written and has never run between two people.**
+  `client/src/mediakey.rs` seals a channel key per recipient (ECDH over the
+  Nostr identity keys, XChaCha20-Poly1305, epoch bound as associated data) and
+  the gateway routes blobs it cannot read. The sealing is well covered by unit
+  tests; the *orchestration* is not testable without two clients, and that is
+  where the doubt is: who generates when a channel is empty, who hands the key
+  to an arrival, whether the four-second wait is right, and whether two members
+  joining at the same instant both generate. The designated-sender rule (lowest
+  pubkey) makes that last one unlikely rather than impossible — two clients with
+  different views of the roster can both believe they are lowest.
+- **A rekey still interrupts the call it protects, and the proper fix is out of
+  reach.** The rekeying member now sends to everyone before adopting the new key
+  itself, which shrinks the gap to about one network hop — it does not close it.
+  The real answer is LiveKit's key *ring*: publish under a new index while still
+  accepting the old. The Rust side exposes it (`set_shared_key(key, index)`);
+  the JS `ExternalE2EEKeyProvider.setKey` takes a key and no index, and the
+  index only appears on `BaseKeyProvider.onSetEncryptionKey`, which means
+  reimplementing a key provider against minified internals of a vendored bundle.
+  Not worth it until a rekey has been watched happening and the gap measured —
+  it may well be imperceptible.
+- **Undecryptable media is now visible, but only what the webview sees.** The JS
+  room reports `EncryptionError` and the badge says so. The three native rooms
+  have their own signal (`RoomEvent::E2eeStateChanged`) which is not wired, so
+  voice failing to decrypt while camera succeeds would currently show nothing.
+  Same latch, one more producer.
+- **Nothing verifies that the two SDKs derive the same key.** They agree on
+  every parameter visible from this repo — ratchet salt `LKFrameEncryptionKey`,
+  PBKDF2/SHA-256, JS at 100 000 iterations — but the Rust side derives inside
+  libwebrtc, where the count cannot be read. A mismatch is silent: frames arrive
+  and decode to noise. No test can settle it; two machines with the same
+  passphrase can, and that is now possible.
+- **Hole punching works through CGNAT — verified 2026-08-14, between two
+  cities.** A host on a carrier-grade-NAT connection (no public address, port
+  mapping impossible) and a friend on an unrelated home network, both with the
+  coordinator setting on, connected over a *direct* QUIC path. The badge read
+  `private`, and that reading is trustworthy precisely because of the
+  enforcement: had the punch failed and the relay still been carrying it,
+  `require_direct` would have refused and the session would have fallen back to
+  the rendezvous. So tier 2 is real, and it is real in the hardest case the
+  design has to serve.
+  Still unverified, and now the list is short: that the **refusal** fires
+  correctly when a punch genuinely fails (we have never seen one fail); that
+  `watch_for_relay_fallback` catches a mid-session slide rather than sitting
+  idle; and that a direct path *survives* — long sessions, sleep, a network
+  change. The 6-second `PUNCH_WINDOW` is no longer a guess: the loopback round
+  trip measured 2s including relay discovery, and the real one landed inside the
+  window.
 - **The QUIC transport has never carried a session between two machines.** The
   tests in `server/src/quic.rs` stand both ends up in one process over loopback,
   which settles the protocol plumbing and nothing about the network: whether the
@@ -412,13 +482,18 @@ the top within each section.
   `Register` frame, so they survive a restart without being applied to anything.
   Fine if this is groundwork for an offline browse listing; dead weight
   otherwise.
-- **Screen tokens minted by a rendezvous ignore `can_publish`.** The local mint
-  now grants publish per identity, so the subscribe-only `{pubkey}#audio`
-  connection can no longer send. A gateway delegating to a rendezvous sends a
-  `MintRequest`, which carries no grants at all, and the relay signs its own
-  fixed set with publish on — so on that path the narrowing does not apply.
-  Closing it means a grants field on the rendezvous wire and a matching change in
-  `rendezvous/src/lib.rs`.
+- **A relay older than `can_publish` still grants publish, and nothing detects
+  it.** `MintRequest` now carries the flag and `POST /voice-token` honours it, so
+  a rendezvous-delegated mint narrows the subscribe-only `{pubkey}#audio`
+  connection the same way the local one does. But the field is
+  `#[serde(default = "publish_by_default")]` on the relay — `true` — because a
+  *host* older than it does not send it and must keep working. The mirror of
+  that: a *relay* older than it ignores the field and signs publish, exactly as
+  it did before, and the gateway gets a valid token back with no way to tell.
+  Same shape as "An old client that mutes reads as deafened" under Voice /
+  audio: nothing on this wire carries a version, so a mixed-version deployment
+  can only be documented, not detected. Closing it properly means versioning the
+  rendezvous protocol, which is a bigger decision than this field was.
 - **Name release / rename.** A host can *claim* a rendezvous name (proven by
   Schnorr signature, persisted) but there's no flow to release it or rename it —
   reservations are sticky once claimed. Add an owner-authenticated unclaim/rename
@@ -533,10 +608,6 @@ the top within each section.
   concurrent servers than it did. Recorded rather than chased because there is no
   captured assertion message to work from; the next occurrence should be run with
   `--nocapture` and `RUST_BACKTRACE=1` before anything is changed.
-- **`GuildJoined` carries no `voice_states`.** Someone joining a guild
-  mid-session sees no voice presence at all — camera, mute or speaking — until
-  the next change. Pre-existing and unrelated to the camera, but the camera
-  badge makes it more visible.
 - **Windows shows WebView2's own camera prompt**, where macOS shows the TCC
   prompt once. Expected (wry auto-allows only clipboard-read), and persistence
   depends on the WebView2 user-data folder, but it is the kind of platform
@@ -717,22 +788,6 @@ the top within each section.
   source, and a client that wants the unprocessed device has to select it
   rather than ask for a flag. Nobody has run this repo's voice path on Linux
   yet, so it is filed here rather than guessed at.
-- **The audio popover repeats one persist closure at four sliders.** Raised on
-  review of the PR that introduced them and deliberately not fixed there. Sound
-  effects, mic volume, sensitivity and the suppression ceiling each carry an
-  identical `onchange: move |_| crate::settings::save(&settings.read())` in
-  `channels.rs` — grep that line rather than trusting a number here, since this
-  entry has already outlived one set of them — and they all appeared at once because
-  they are the tail of moving the disk write off `oninput`, which is also why
-  the duplication is exact rather than four things that merely look alike.
-  One binding should serve all four: the closure captures nothing but
-  `settings`, and `Signal` is `Copy`, so the closure is too and can be handed to
-  every attribute. The only friction is that the event parameter then has to be
-  typed rather than inferred per site. Left out because it is a cleanup with no
-  behaviour attached to it, on a branch that was already reviewed — and because
-  the checkbox in that same panel persists the same way for a different reason
-  (it has no drag to wait for), so whatever shape this takes should not quietly
-  swallow that one too.
 - **The 30-vs-12 dB ceiling numbers cannot be re-run from the repo.** The entry
   below and `ClientSettings::denoise_atten_lim_db` both cite figures from a
   live session — 21.2% vs 17.6% gate drops, −3.9 dB vs −2.7 dB actually applied
@@ -836,19 +891,27 @@ the top within each section.
   says so in a comment. The flag was equally wrong before `c2c6ff2`; what changed
   is that something renders it. There is no protocol version to key off, which is
   the actual gap.
-- **Force-quitting the app orphans the bundled SFU.** `LivekitSubprocess` relies
-  on tokio's `kill_on_drop`, which only runs if the parent unwinds — a `SIGKILL`
-  (force quit, or a debugger) leaves `livekit-server` running, reparented to
-  launchd, holding port 7880. One was found alive more than a day after its
-  parent died, and a stale SFU squatting on the port is a confusing way for the
-  next session to fail. Sweep any `livekit-server` started from our own temp
-  directory before spawning, or have the child watch for its parent going away.
-  **Not macOS-specific**, which this entry used to imply by describing only the
-  launchd case. Reproduced on Windows: `taskkill /F` on `dioxusfun-server.exe`
-  left `livekit-server-<hash>.exe` alive and still `LISTENING` on 7880, and it
-  had to be killed by PID. `kill_on_drop` is a destructor, so any kill that
-  skips unwinding — on any platform — leaves the child behind. That makes the
-  "have the child watch for its parent" half of the fix the portable one.
+  **Half of that gap is now closed, in the direction that matters.** `Identify`
+  carries `client_version` and the server logs it, so an operator can count what
+  is connected — and a client old enough to have this bug is identifiable by
+  *absence*: it sends no version at all, and the log says `unknown`. What is
+  still missing is anything that could act on it. The field is self-declared and
+  unauthenticated (the signature covers `nonce || pubkey || username` and not
+  it), so it can inform a decision about whether these three compatibility
+  entries can be closed; it cannot gate behaviour per peer.
+- **Two app instances self-hosting on one machine fight over the SFU.** The
+  orphan reclaim added with `PID_FILE` cannot tell "the recorded SFU is a
+  leftover" from "the recorded SFU belongs to an instance that is still
+  running": both look like a live process with our image name. So a second
+  instance that self-hosts kills the first one's SFU and takes port 7880.
+  That configuration was already broken — the port, the temp directory and the
+  generated `livekit.yaml` are all fixed, so a second SFU could never have bound
+  anyway; before the reclaim, the second instance silently *shared* the first's.
+  It now fails differently rather than newly, which is why this is recorded
+  rather than treated as a regression. Closing it properly means either a lock
+  the running instance holds (and releases on any kind of exit, which is the
+  same problem one level down) or making the port configurable so two instances
+  can coexist.
 - **Per-user volumes are session-scoped.** `AppState.user_volumes` /
   `stream_volumes` live for the run of the app, not across restarts. Persisting
   them means a keyed store that doesn't grow without bound (cap + LRU), which is

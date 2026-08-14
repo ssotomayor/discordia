@@ -111,7 +111,7 @@ pub fn ImageEditor(
                        i.onload = () => dioxus.send({{ w: i.naturalWidth, h: i.naturalHeight }}); \
                        i.onerror = () => dioxus.send({{ w: 0, h: 0 }}); \
                        i.src = {}; }})()",
-                    serde_json::to_string(&src).unwrap_or_else(|_| "''".into())
+                    crate::features::screenshare::js_str(&src)
                 );
                 let mut eval = document::eval(&js);
                 if let Ok(v) = eval.recv::<Value>().await {
@@ -156,7 +156,11 @@ pub fn ImageEditor(
         }
         working.set(true);
         let (out_w, out_h) = shape.output();
-        let mime = shape.mime();
+        // A constant from `shape`'s own table, quoted through the shared sink
+        // like everything else that crosses into `document::eval` — the source
+        // image below already was, and having one of the two hand-built was how
+        // the pattern stayed alive.
+        let mime = crate::features::screenshare::js_str(shape.mime());
         // The same numbers the preview uses, mapped back into source pixels:
         // the frame centre sits at the image centre shifted by the pan, and the
         // frame covers `viewport / zoom` source pixels.
@@ -177,13 +181,13 @@ pub fn ImageEditor(
                  c.width = {out_w}; c.height = {out_h}; \
                  const x = c.getContext('2d'); \
                  x.imageSmoothingQuality = 'high'; \
-                 if ('{mime}' === 'image/jpeg') {{ x.fillStyle = '#ffffff'; x.fillRect(0,0,{out_w},{out_h}); }} \
+                 if ({mime} === 'image/jpeg') {{ x.fillStyle = '#ffffff'; x.fillRect(0,0,{out_w},{out_h}); }} \
                  x.drawImage(i, {sx}, {sy}, {sw}, {sh}, 0, 0, {out_w}, {out_h}); \
-                 dioxus.send(c.toDataURL('{mime}', 0.92)); \
+                 dioxus.send(c.toDataURL({mime}, 0.92)); \
                }} catch (e) {{ dioxus.send(''); }} }}; \
                i.onerror = () => dioxus.send(''); \
                i.src = {}; }})()",
-            serde_json::to_string(&src_for_apply).unwrap_or_else(|_| "''".into())
+            crate::features::screenshare::js_str(&src_for_apply)
         );
         let fallback = src_for_apply.clone();
         spawn(async move {

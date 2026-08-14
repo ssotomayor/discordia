@@ -83,7 +83,13 @@ pub async fn handle_connection(
                 }
 
                 match client_msg {
-                    ClientMessage::Identify { username, pubkey, signature, bot } => {
+                    ClientMessage::Identify {
+                        username,
+                        pubkey,
+                        signature,
+                        bot,
+                        client_version,
+                    } => {
                         if user.is_some() {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "already identified".into(),
@@ -137,7 +143,39 @@ pub async fn handle_connection(
                             let targets = ctx.state.guild_member_pubkeys(gid);
                             ctx.state.deliver(targets, ServerMessage::MemberJoin(member));
                         }
-                        tracing::info!(user = %new_user.username, pubkey = %new_user.pubkey, "identified");
+                        // The version is logged and stored nowhere. That is the
+                        // whole feature: an operator can count what is connected
+                        // without the server growing a field it never reads —
+                        // the shape three entries in TODO.md already complain
+                        // about. "unknown" rather than empty so the log line
+                        // does not read as a truncation.
+                        let client_version = sanitize_client_version(&client_version);
+                        let client_version = if client_version.is_empty() {
+                            "unknown".to_string()
+                        } else {
+                            client_version
+                        };
+                        // `?` and not `%`. The rule across this server: a value
+                        // is formatted with `%` only if its *type* cannot
+                        // contain a line break — `Uuid`, `SocketAddr`,
+                        // `StatusCode`. Every free-text value uses `?`, which
+                        // quotes and escapes: usernames, guild/channel/role
+                        // names, pubkeys, and the request log's method and path.
+                        //
+                        // Two different attacks need both defences. Stripping
+                        // control characters stops a peer starting a *new* log
+                        // line; but on one line a value like `1 user=admin`
+                        // still reads as two fields to anything parsing this
+                        // format, and quoting is what makes the boundary
+                        // unambiguous. Only `client_version` gets both — the
+                        // rest cannot be filtered without changing a signed
+                        // preimage or a stored name. See TODO.md.
+                        tracing::info!(
+                            user = ?new_user.username,
+                            pubkey = %new_user.pubkey,
+                            version = ?client_version,
+                            "identified"
+                        );
                         user = Some(new_user);
                     }
                     ClientMessage::FetchMessages { channel_id, limit, before_ms } => {
@@ -325,7 +363,7 @@ pub async fn handle_connection(
                         }
                         let (guild, channels, member, roles) =
                             ctx.state.create_guild(&name, template.as_deref(), &creator).await;
-                        tracing::info!(guild = %guild.name, by = %creator.username, "guild created");
+                        tracing::info!(guild = ?guild.name, by = ?creator.username, "guild created");
                         // The creator is the only member — hand the guild
                         // (channels + any template roles) to them directly. The
                         // public directory is fetched on demand (FetchCatalog),
@@ -335,8 +373,11 @@ pub async fn handle_connection(
                             channels,
                             members: vec![member],
                             roles,
-                            // A brand-new guild has no custom emoji yet.
+                            // A brand-new guild has no custom emoji yet, and
+                            // nobody has had the chance to be in its voice
+                            // channels either.
                             emojis: Vec::new(),
+                            voice_states: Vec::new(),
                         }).await.is_err() {
                             break;
                         }
@@ -432,7 +473,7 @@ pub async fn handle_connection(
                         let targets = ctx.state.guild_member_pubkeys(guild_id);
                         match ctx.state.delete_guild(guild_id, &u.pubkey).await {
                             Ok(()) => {
-                                tracing::info!(%guild_id, by = %u.username, "guild deleted");
+                                tracing::info!(%guild_id, by = ?u.username, "guild deleted");
                                 ctx.state.deliver(targets, ServerMessage::GuildDelete { guild_id });
                             }
                             Err(e) => {
@@ -705,7 +746,7 @@ pub async fn handle_connection(
                             guild_id, &bot_pubkey, &name, permissions, intents, &u.pubkey,
                         ).await {
                             Ok((install, member)) => {
-                                tracing::info!(%guild_id, bot = %bot_pubkey, by = %u.username, "bot installed");
+                                tracing::info!(%guild_id, bot = ?bot_pubkey, by = ?u.username, "bot installed");
                                 // Surface the bot in every member's roster.
                                 let targets = ctx.state.guild_member_pubkeys(guild_id);
                                 ctx.state.deliver(targets, ServerMessage::MemberJoin(member));
@@ -733,7 +774,7 @@ pub async fn handle_connection(
                         let targets = ctx.state.guild_member_pubkeys(guild_id);
                         match ctx.state.uninstall_bot(guild_id, &bot_pubkey, &u.pubkey).await {
                             Ok(()) => {
-                                tracing::info!(%guild_id, bot = %bot_pubkey, by = %u.username, "bot uninstalled");
+                                tracing::info!(%guild_id, bot = ?bot_pubkey, by = ?u.username, "bot uninstalled");
                                 // Removal, not offline — clients drop the row.
                                 ctx.state.deliver(
                                     targets,
@@ -979,6 +1020,29 @@ pub async fn handle_connection(
                     // covered too: kick/ban/leave run through `clear_voice`, so
                     // the entry is gone before a stale flag could outlive the
                     // membership. A non-member gets `None` and no frames.
+                    ClientMessage::ShareMediaKey { channel_id, to, epoch, blob } => {
+                        let Some(u) = user.as_ref() else { continue };
+                        // Both ends must be in the guild that owns the channel.
+                        // The blob is sealed, so this is not what keeps it
+                        // secret — it is what stops the gateway being a way to
+                        // push payloads at people who never asked.
+                        let Some(guild_id) = ctx.state.channel_guild(channel_id) else {
+                            continue;
+                        };
+                        let members = ctx.state.guild_member_pubkeys(guild_id);
+                        if !members.contains(&u.pubkey) || !members.contains(&to) {
+                            continue;
+                        }
+                        ctx.state.deliver(
+                            vec![to],
+                            ServerMessage::MediaKey {
+                                channel_id,
+                                from: u.pubkey.clone(),
+                                epoch,
+                                blob,
+                            },
+                        );
+                    }
                     ClientMessage::SetCamera { on } => {
                         let Some(u) = user.as_ref() else { continue };
                         if let Some(state) = ctx.state.update_camera(&u.pubkey, on) {
@@ -998,7 +1062,7 @@ pub async fn handle_connection(
                         }
                         match ctx.state.create_role(guild_id, &name, color, permissions, &u.pubkey).await {
                             Ok(role) => {
-                                tracing::info!(%guild_id, role = %role.name, by = %u.username, "role created");
+                                tracing::info!(%guild_id, role = ?role.name, by = ?u.username, "role created");
                                 let targets = ctx.state.guild_member_pubkeys(guild_id);
                                 ctx.state.deliver(targets, ServerMessage::GuildRoles {
                                     guild_id,
@@ -1113,7 +1177,7 @@ pub async fn handle_connection(
                         };
                         match ctx.state.set_guild_visibility(guild_id, visibility, &u.pubkey).await {
                             Ok(guild) => {
-                                tracing::info!(%guild_id, ?visibility, by = %u.username, "guild visibility set");
+                                tracing::info!(%guild_id, ?visibility, by = ?u.username, "guild visibility set");
                                 let targets = ctx.state.guild_member_pubkeys(guild_id);
                                 ctx.state.deliver(targets, ServerMessage::GuildUpdate(guild));
                                 // Visibility changes show up in the directory on
@@ -1159,7 +1223,7 @@ pub async fn handle_connection(
                         let was_sharing = sharing_in(&ctx.state, &user_pubkey);
                         match ctx.state.kick_member(guild_id, &user_pubkey, &u.pubkey).await {
                             Ok(cleared_voice) => {
-                                tracing::info!(%guild_id, target = %user_pubkey, by = %u.username, "member kicked");
+                                tracing::info!(%guild_id, target = ?user_pubkey, by = ?u.username, "member kicked");
                                 ctx.state.audit(guild_id, &u.pubkey, "kick", &user_pubkey, "").await;
                                 removal_broadcasts(&ctx.state, guild_id, &user_pubkey, true, cleared_voice, was_sharing);
                             }
@@ -1182,7 +1246,7 @@ pub async fn handle_connection(
                         let was_sharing = sharing_in(&ctx.state, &user_pubkey);
                         match ctx.state.ban_member(guild_id, &user_pubkey, &u.pubkey).await {
                             Ok(cleared_voice) => {
-                                tracing::info!(%guild_id, target = %user_pubkey, by = %u.username, "member banned");
+                                tracing::info!(%guild_id, target = ?user_pubkey, by = ?u.username, "member banned");
                                 ctx.state.audit(guild_id, &u.pubkey, "ban", &user_pubkey, "").await;
                                 removal_broadcasts(&ctx.state, guild_id, &user_pubkey, was_member, cleared_voice, was_sharing);
                                 // Refresh the moderator's ban panel.
@@ -1249,7 +1313,7 @@ pub async fn handle_connection(
                         let was_sharing = sharing_in(&ctx.state, &u.pubkey);
                         match ctx.state.leave_guild(guild_id, &u.pubkey).await {
                             Ok(cleared_voice) => {
-                                tracing::info!(%guild_id, by = %u.username, "left guild");
+                                tracing::info!(%guild_id, by = ?u.username, "left guild");
                                 removal_broadcasts(&ctx.state, guild_id, &u.pubkey, true, cleared_voice, was_sharing);
                             }
                             Err(e) => {
@@ -1269,7 +1333,7 @@ pub async fn handle_connection(
                         }
                         match ctx.state.create_channel(guild_id, &name, kind, topic, &u.pubkey).await {
                             Ok(channel) => {
-                                tracing::info!(%guild_id, channel = %channel.name, by = %u.username, "channel created");
+                                tracing::info!(%guild_id, channel = ?channel.name, by = ?u.username, "channel created");
                                 let targets = ctx.state.guild_member_pubkeys(guild_id);
                                 ctx.state.deliver(targets, ServerMessage::ChannelCreate(channel));
                             }
@@ -1310,7 +1374,7 @@ pub async fn handle_connection(
                         }
                         match ctx.state.delete_channel(channel_id, &u.pubkey).await {
                             Ok((guild_id, evicted)) => {
-                                tracing::info!(%guild_id, %channel_id, by = %u.username, "channel deleted");
+                                tracing::info!(%guild_id, %channel_id, by = ?u.username, "channel deleted");
                                 let targets = ctx.state.guild_member_pubkeys(guild_id);
                                 ctx.state.deliver(
                                     targets.clone(),
@@ -1365,7 +1429,7 @@ pub async fn handle_connection(
                         };
                         match ctx.state.transfer_ownership(guild_id, &new_owner_pubkey, &u.pubkey).await {
                             Ok(guild) => {
-                                tracing::info!(%guild_id, to = %new_owner_pubkey, by = %u.username, "ownership transferred");
+                                tracing::info!(%guild_id, to = ?new_owner_pubkey, by = ?u.username, "ownership transferred");
                                 // Clients re-derive the crown/menus from the
                                 // updated owner_pubkey — no extra frame needed.
                                 let targets = ctx.state.guild_member_pubkeys(guild_id);
@@ -1407,7 +1471,7 @@ pub async fn handle_connection(
                         };
                         match ctx.state.set_guild_retention(guild_id, days, &u.pubkey).await {
                             Ok(guild) => {
-                                tracing::info!(%guild_id, ?days, by = %u.username, "guild retention set");
+                                tracing::info!(%guild_id, ?days, by = ?u.username, "guild retention set");
                                 let targets = ctx.state.guild_member_pubkeys(guild_id);
                                 ctx.state.deliver(targets, ServerMessage::GuildUpdate(guild));
                             }
@@ -1442,7 +1506,7 @@ pub async fn handle_connection(
                         };
                         match ctx.state.set_panic_mode(guild_id, on, &u.pubkey).await {
                             Ok(guild) => {
-                                tracing::info!(%guild_id, on, by = %u.username, "panic mode set");
+                                tracing::info!(%guild_id, on, by = ?u.username, "panic mode set");
                                 let targets = ctx.state.guild_member_pubkeys(guild_id);
                                 ctx.state.deliver(targets, ServerMessage::GuildUpdate(guild));
                             }
@@ -1533,7 +1597,7 @@ pub async fn handle_connection(
                 },
             );
         }
-        tracing::info!(user = %u.username, "client disconnected");
+        tracing::info!(user = ?u.username, "client disconnected");
     }
 }
 
@@ -1742,6 +1806,71 @@ fn sanitize_username(raw: &str) -> String {
     crate::protocol::canonical_username(raw)
 }
 
+/// Longest self-declared version we will repeat, **in bytes**. Generous against
+/// the ~20 the real ones use (`v0.1.0-pre.223`, `bot-sdk/0.1.0`), tight enough
+/// that a peer cannot write a paragraph to our disk on every connect.
+///
+/// Bytes and not characters, because bytes are what the justification above is
+/// about. Counting characters let 64 four-byte codepoints through as 256 bytes
+/// — four times the budget, for a string nobody reads as text anyway. Every
+/// real value is ASCII, so the two units agree wherever it matters.
+const MAX_CLIENT_VERSION_BYTES: usize = 64;
+
+/// Make a self-declared version string safe to repeat into a log line.
+///
+/// **This comment used to claim `username` had the same treatment via
+/// `sanitize_username`, and that was wrong.** `canonical_username` trims and
+/// truncates; it has never filtered control characters, and `verify_identify`
+/// takes the name as opaque bytes — so `"al\nice"` reaches the log intact. The
+/// signature commits to it either way. Every username log site is therefore
+/// formatted with `?` rather than `%`; see the note there.
+///
+/// `client_version` needs its own cap regardless: it is unauthenticated by
+/// design, written on every identify, and unlike a username it has no length
+/// bound anywhere upstream. The server's subscriber is the plain-text
+/// `tracing_subscriber::fmt()`, which escapes nothing, so an embedded newline
+/// turns one field into a forged log line — CWE-117 — and a forged line defeats
+/// the only thing this field exists for, which is counting what is connected.
+///
+/// Control characters are stripped *before* the cap, so a run of them cannot
+/// consume the budget and leave nothing behind.
+fn sanitize_client_version(raw: &str) -> String {
+    let mut out = String::with_capacity(MAX_CLIENT_VERSION_BYTES);
+    for c in raw.trim().chars().filter(|c| !breaks_a_line(*c)) {
+        if out.len() + c.len_utf8() > MAX_CLIENT_VERSION_BYTES {
+            // `break`, not `continue`. A shorter character later in the string
+            // would still fit the budget, but taking it would make the result a
+            // filtered subset rather than a prefix — a truncated string should
+            // read as the start of what was sent, not as a scramble of it.
+            break;
+        }
+        out.push(c);
+    }
+    // Trimmed a second time, in place, because filtering can *expose* padding
+    // the first trim could not see: `"\u{0} v1.0"` has no leading whitespace
+    // until the NUL is removed. Done with `truncate`/`drain` rather than
+    // `.trim().to_string()` so this allocates once instead of twice.
+    out.truncate(out.trim_end().len());
+    out.drain(..out.len() - out.trim_start().len());
+    out
+}
+
+/// Characters that can end a line somewhere downstream.
+///
+/// `char::is_control()` alone is not that set, which is the trap. It covers
+/// category Cc — `\n`, `\r`, ESC, and U+0085 — and stops there. **U+2028 LINE
+/// SEPARATOR and U+2029 PARAGRAPH SEPARATOR are Zl and Zp**, so `is_control()`
+/// returns false for them and they would survive a filter built on it alone.
+///
+/// Whether they *render* as a break depends on the consumer — some viewers and
+/// log processors honour them, `tracing_subscriber::fmt()` does not — which is
+/// exactly why they belong here rather than in a judgement call at each sink.
+/// The point of this function is that a peer cannot end a line; a character
+/// that ends one for *somebody* qualifies.
+fn breaks_a_line(c: char) -> bool {
+    c.is_control() || c == '\u{2028}' || c == '\u{2029}'
+}
+
 /// True if `bot_pubkey` is installed in `channel_id`'s guild with `perm`. DM
 /// channels (no guild) never grant a bot anything.
 fn bot_can(
@@ -1847,7 +1976,7 @@ where
 {
     let (guild, channels, members, roles) = bundle;
     let guild_id = guild.id;
-    tracing::info!(%guild_id, by = %joiner.username, "guild joined");
+    tracing::info!(%guild_id, by = ?joiner.username, "guild joined");
 
     let mut targets = state.guild_member_pubkeys(guild_id);
     targets.retain(|p| p != &joiner.pubkey);
@@ -1864,6 +1993,10 @@ where
         }),
     );
     let emojis = state.emojis_of(guild_id);
+    // Taken after `MemberJoin` has gone out but before the joiner's own bundle
+    // is sent, so it cannot miss someone who was already in a voice channel —
+    // the case this exists for.
+    let voice_states = state.voice_states_in(guild_id);
     if send(
         ws_tx,
         &ServerMessage::GuildJoined {
@@ -1872,6 +2005,7 @@ where
             members,
             roles,
             emojis,
+            voice_states,
         },
     )
     .await
@@ -2019,5 +2153,114 @@ impl RateLimiter {
         }
         self.hits.push_back(now);
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MAX_CLIENT_VERSION_BYTES, sanitize_client_version};
+
+    /// The injection this exists to stop. A peer choosing its own version
+    /// string must not be able to write a second log line, or a second field.
+    #[test]
+    fn a_version_cannot_forge_a_log_line() {
+        let forged = "v1.0\nINFO identified user=admin pubkey=deadbeef version=v1.0";
+        let clean = sanitize_client_version(forged);
+        assert!(!clean.contains('\n'), "newline survived: {clean:?}");
+        assert!(!clean.contains('\r'));
+        assert!(
+            !clean.chars().any(|c| c.is_control()),
+            "a control character survived: {clean:?}"
+        );
+
+        // The Unicode separators, which `is_control()` does *not* cover — they
+        // are categories Zl and Zp, not Cc, so a filter written on
+        // `is_control()` alone lets them straight through.
+        for sep in ['\u{2028}', '\u{2029}'] {
+            let forged = format!("v1.0{sep}INFO identified user=admin");
+            let clean = sanitize_client_version(&forged);
+            assert!(
+                !clean.contains(sep),
+                "U+{:04X} survived: {clean:?}",
+                sep as u32
+            );
+        }
+        // What is left is one line, and the log site quotes it — so the
+        // remaining `key=value` text cannot read as fields of its own.
+        assert!(clean.starts_with("v1.0"));
+    }
+
+    /// Unbounded is the other half: this is written on every identify, by
+    /// anyone who can open a socket.
+    #[test]
+    fn a_version_is_capped() {
+        let long = "a".repeat(10_000);
+        assert_eq!(
+            sanitize_client_version(&long).len(),
+            MAX_CLIENT_VERSION_BYTES
+        );
+    }
+
+    /// Control characters are stripped *before* the cap. Filtering after it
+    /// would let a run of them eat the whole budget and leave nothing, turning
+    /// a hostile string into an indistinguishable "unknown".
+    ///
+    /// **The padding must not be whitespace.** An earlier version of this test
+    /// padded with `\n`, which the `raw.trim()` at the top of the function
+    /// removes before `filter`/`take` ever run — so it passed with the two
+    /// steps in either order and pinned nothing. Verified by swapping them:
+    /// the newline version stayed green, this one fails. NUL is not Unicode
+    /// whitespace, so it survives the trim and actually reaches the cap.
+    #[test]
+    fn control_characters_do_not_consume_the_cap() {
+        let padded = format!(
+            "{}v0.1.0-pre.223",
+            "\u{0}".repeat(MAX_CLIENT_VERSION_BYTES * 2)
+        );
+        assert_eq!(sanitize_client_version(&padded), "v0.1.0-pre.223");
+
+        // The other way to survive the first trim: be whitespace, but interior.
+        // Same branch, reached from the opposite direction — `trim()` leaves
+        // these alone because they are not at an edge.
+        let interior = format!("v0.1.0{}pre.223", "\n".repeat(MAX_CLIENT_VERSION_BYTES * 2));
+        assert_eq!(sanitize_client_version(&interior), "v0.1.0pre.223");
+    }
+
+    /// Why the function trims twice. Filtering can *expose* padding the first
+    /// trim could not see, because a control character is not whitespace and
+    /// stands between it and the edge.
+    #[test]
+    fn filtering_does_not_leave_exposed_padding() {
+        assert_eq!(sanitize_client_version("\u{0} v0.1.0 \u{0}"), "v0.1.0");
+    }
+
+    /// The cap is bytes, and this is the input that tells the two units apart.
+    /// `Chars::take(64)` would have let 64 four-byte codepoints through as 256
+    /// bytes — four times the budget the constant's own doc justifies in terms
+    /// of what a peer can write to disk per connection.
+    #[test]
+    fn the_cap_counts_bytes_not_characters() {
+        let wide = "🙂".repeat(1000);
+        let clean = sanitize_client_version(&wide);
+        assert!(
+            clean.len() <= MAX_CLIENT_VERSION_BYTES,
+            "{} bytes, over the {MAX_CLIENT_VERSION_BYTES}-byte budget",
+            clean.len()
+        );
+        // Spent in whole characters: the budget divides exactly here, and a
+        // string that stopped mid-codepoint could not exist as a `String` at
+        // all — the loop breaks rather than slicing.
+        assert_eq!(clean.chars().count(), MAX_CLIENT_VERSION_BYTES / 4);
+    }
+
+    /// The ordinary values still pass through untouched — a sanitiser that
+    /// mangles the real input answers nothing.
+    #[test]
+    fn real_versions_survive_unchanged() {
+        for v in ["v0.1.0-pre.223", "0.1.0-dev+a1b2c3d", "bot-sdk/0.1.0"] {
+            assert_eq!(sanitize_client_version(v), v);
+        }
+        // Absent stays absent, so the caller's "unknown" branch still fires.
+        assert_eq!(sanitize_client_version("   "), "");
     }
 }

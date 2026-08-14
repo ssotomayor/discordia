@@ -218,6 +218,10 @@ impl Bot {
             pubkey: identity.pubkey().to_string(),
             signature,
             bot,
+            // Prefixed, because the server logs this next to desktop-client
+            // versions and `0.1.0` on its own would say nothing about which of
+            // the two it came from.
+            client_version: concat!("bot-sdk/", env!("CARGO_PKG_VERSION")).to_string(),
         };
         let mut bot = Bot {
             write,

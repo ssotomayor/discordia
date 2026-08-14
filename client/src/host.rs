@@ -89,10 +89,6 @@ pub async fn start_self_host(
     allow_lan: bool,
     rendezvous_url: Option<String>,
     publish: crate::rendezvous::PublishOptions,
-    // Whether a coordinator may introduce friends we cannot reach directly.
-    // Only ever an introduction: a connection the coordinator ends up carrying
-    // is refused at both ends (`dioxusfun_server::quic::require_direct`).
-    coordination: dioxusfun_server::quic::Coordination,
     // The host's own identity: its pubkey becomes the operator of the seeded
     // Lobby (so the person running the server can moderate it — it's their
     // machine), and it signs the rendezvous name-ownership proof.
@@ -117,13 +113,22 @@ pub async fn start_self_host(
         .local_addr()
         .map_err(|e| format!("embedded server: {e}"))?;
 
+    // Who may introduce us, asked before anything is bound: it is a property of
+    // the rendezvous, and there is no separate setting for it. A rendezvous
+    // that runs no relay leaves us uncoordinated rather than sending us to a
+    // public one nobody chose.
+    let coordination = match rendezvous_url.as_deref() {
+        Some(url) => crate::rendezvous::coordination_offered(url).await,
+        None => dioxusfun_server::quic::Coordination::None,
+    };
+
     // The QUIC endpoint binds before the mapping and before registration, for
     // the same reason the TCP listener does: its UDP port is one of the things
     // to map, and its key and address are what get advertised. Nothing is
     // served on it until the router exists, further down.
     let transport_secret = crate::quic::secret_for(&identity);
     let quic_endpoint =
-        match dioxusfun_server::quic::bind_quic(Some(transport_secret), coordination).await {
+        match dioxusfun_server::quic::bind_quic(Some(transport_secret), &coordination).await {
             Ok(ep) => Some(ep),
             Err(e) => {
                 // Not fatal: the TCP gateway is unaffected, and a host without the
@@ -205,7 +210,7 @@ pub async fn start_self_host(
     // With a coordinator allowed, wait briefly for the endpoint to reach its
     // home relay — that URL is how a friend gets introduced, and advertising the
     // key without it leaves them nothing to be introduced *through*.
-    if coordination == dioxusfun_server::quic::Coordination::CoordinatorOnly
+    if coordination.is_coordinated()
         && let Some(ep) = quic_endpoint.as_ref()
     {
         let _ = tokio::time::timeout(std::time::Duration::from_secs(5), ep.online()).await;

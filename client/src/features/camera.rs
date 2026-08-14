@@ -198,14 +198,28 @@ pub fn CameraBridge() -> Element {
         async move {
             // Its own listener and its own guard flag: sharing the share pump's
             // would mean one `if` deciding which messages either feature sees.
+            // The sink is reassigned on *every* eval; the listener is registered
+            // once. That split is the whole point, and it is the shape
+            // `features::chat`'s drop handler already uses.
+            //
+            // A listener holds the `dioxus.send` of the eval that created it,
+            // and this component is remounted whenever the session is — a
+            // disconnect sets `session` to None and the workspace is rebuilt.
+            // The webview is never reloaded, so a guard on registration alone
+            // meant the second mount registered nothing and the first mount's
+            // send was already dead: every camera message from then on
+            // disappeared into the `catch`, for the life of the process. The
+            // symptom was a camera that started, previewed, published, and was
+            // never announced to anyone — "Starting your camera…" forever.
             let bridge_js = r#"
+            window.__dxfCameraSink = function (m) { try { dioxus.send(m); } catch (err) {} };
             if (!window.__dxfCameraWired) {
               window.__dxfCameraWired = true;
               var KINDS = ['camera-started','camera-ended','camera-denied','camera-error','camera-unavailable','camera-devices'];
               window.addEventListener('message', function (e) {
                 var d = e.data;
-                if (d && KINDS.indexOf(d.__dxf) !== -1) {
-                  try { dioxus.send(d); } catch (err) {}
+                if (d && KINDS.indexOf(d.__dxf) !== -1 && window.__dxfCameraSink) {
+                  window.__dxfCameraSink(d);
                 }
               });
             }
@@ -406,12 +420,7 @@ fn CameraTile(pubkey: String) -> Element {
     let state: Signal<crate::state::AppState> = use_app_state();
     let cid = format!("camera-{pubkey}");
 
-    let name = {
-        let s = state.read();
-        s.user_of(&pubkey)
-            .map(|u| u.username.clone())
-            .unwrap_or_else(|| crate::identity::truncate_pubkey(&pubkey))
-    };
+    let name = state.read().display_name(&pubkey);
 
     let attach_pk = pubkey.clone();
     let attach_cid = cid.clone();

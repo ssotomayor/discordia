@@ -16,7 +16,28 @@ async fn main() {
         .parse()
         .expect("DIOXUSFUN_RENDEZVOUS_ADDR must be host:port");
 
+    // The iroh relay this deployment runs, if any. Set
+    // DIOXUSFUN_RENDEZVOUS_RELAY_URL to what a *client* should dial — the bind
+    // address is usually a wildcard and would tell clients to dial themselves.
+    //
+    // Unset means this rendezvous coordinates nothing, and its users fall back
+    // to the WebSocket proxy. That is deliberate: the alternative is quietly
+    // handing them to a public relay they never chose.
+    let relay_url = std::env::var("DIOXUSFUN_RENDEZVOUS_RELAY_URL").ok();
+    let relay_bind: SocketAddr = std::env::var("DIOXUSFUN_RENDEZVOUS_RELAY_ADDR")
+        .unwrap_or_else(|_| {
+            format!(
+                "0.0.0.0:{}",
+                dioxusfun_rendezvous::relay_server::DEFAULT_RELAY_PORT
+            )
+        })
+        .parse()
+        .expect("DIOXUSFUN_RENDEZVOUS_RELAY_ADDR must be host:port");
+    // Held for the process lifetime; dropping it stops the relay.
+    let _relay = dioxusfun_rendezvous::relay_server::spawn(relay_bind, relay_url.clone()).await;
+
     let config = Config {
+        relay_url,
         livekit_url: std::env::var("LIVEKIT_URL").ok(),
         // Handed to hosts so the voice tokens they mint validate against the
         // shared SFU. Without them a host signs with its built-in dev
@@ -26,6 +47,7 @@ async fn main() {
         ..Config::default()
     };
     tracing::info!(
+        ?config.relay_url,
         ?config.livekit_url,
         shared_credentials = config.livekit_api_secret.is_some(),
         "rendezvous configured"

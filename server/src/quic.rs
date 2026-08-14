@@ -40,14 +40,39 @@ pub const GATEWAY_ALPN: &[u8] = b"dioxusfun/gateway/1";
 /// This is `docs/NETWORKING.md`'s tier 1 / tier 2 line, and it is a setting
 /// rather than a default because contacting a coordinator silently is exactly
 /// the surprise the design exists to remove.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Coordination {
     /// Nobody else. Peers reach each other at addresses they were told, or not
     /// at all.
     None,
-    /// A relay may introduce the two ends so they can punch a hole — and then
-    /// it is *required to step out*. See [`require_direct`].
-    CoordinatorOnly,
+    /// This relay may introduce the two ends so they can punch a hole — and
+    /// then it is *required to step out*. See [`require_direct`].
+    ///
+    /// Always a named relay, never a default: the third party doing the
+    /// introducing has to be one somebody chose. In practice it is the one the
+    /// user's own rendezvous runs, handed over at registration, so there is no
+    /// separate address to configure and no public relay to fall back to.
+    Relay(String),
+}
+
+impl Coordination {
+    /// Whether anything at all is being asked of a third party.
+    pub fn is_coordinated(&self) -> bool {
+        matches!(self, Coordination::Relay(_))
+    }
+
+    /// The relay map for a named relay, or `None` for no coordination.
+    pub fn relay_mode(&self) -> Result<iroh::RelayMode, String> {
+        match self {
+            Coordination::None => Ok(iroh::RelayMode::Disabled),
+            Coordination::Relay(url) => {
+                let url: iroh::RelayUrl = url
+                    .parse()
+                    .map_err(|e| format!("bad relay url {url}: {e}"))?;
+                Ok(iroh::RelayMode::Custom(iroh::RelayMap::from_iter([url])))
+            }
+        }
+    }
 }
 
 /// How long to wait for hole punching to produce a direct path.
@@ -89,18 +114,18 @@ impl PathSummary {
 /// fails, and the connection still works — which is precisely why it has to be
 /// refused rather than assumed away. Honouring the setting means checking, and
 /// then saying no.
-pub fn verdict(summary: PathSummary, coordination: Coordination) -> Result<(), String> {
+pub fn verdict(summary: PathSummary, coordination: &Coordination) -> Result<(), String> {
     match coordination {
         // Nothing to enforce: with no relay configured there is no other kind
         // of path this connection could be riding on.
         Coordination::None => Ok(()),
-        Coordination::CoordinatorOnly if summary.direct_selected => Ok(()),
-        Coordination::CoordinatorOnly if summary.direct_available => Err(
+        Coordination::Relay(_) if summary.direct_selected => Ok(()),
+        Coordination::Relay(_) if summary.direct_available => Err(
             "a direct path exists but the connection is not using it — refusing rather than \
              letting the relay carry the session"
                 .into(),
         ),
-        Coordination::CoordinatorOnly => Err(
+        Coordination::Relay(_) => Err(
             "hole punching did not produce a direct path, so this connection would be carried \
              by the relay. It was refused: the coordinator was allowed to introduce us, not to \
              read what we say."
@@ -116,9 +141,9 @@ pub fn verdict(summary: PathSummary, coordination: Coordination) -> Result<(), S
 /// because the caller knows whether it has anything better to fall back to.
 pub async fn require_direct(
     conn: &iroh::endpoint::Connection,
-    coordination: Coordination,
+    coordination: &Coordination,
 ) -> Result<(), String> {
-    if coordination == Coordination::None {
+    if !coordination.is_coordinated() {
         return Ok(());
     }
     let deadline = tokio::time::Instant::now() + PUNCH_WINDOW;
@@ -140,8 +165,8 @@ pub async fn require_direct(
 /// theoretical: iroh will move traffic back to the relay when a direct path
 /// degrades, so a session that began direct can quietly become a relayed one
 /// while the UI still says otherwise. Spawned for the life of the connection.
-pub fn watch_for_relay_fallback(conn: iroh::endpoint::Connection, coordination: Coordination) {
-    if coordination == Coordination::None {
+pub fn watch_for_relay_fallback(conn: iroh::endpoint::Connection, coordination: &Coordination) {
+    if !coordination.is_coordinated() {
         return;
     }
     tokio::spawn(async move {
@@ -193,7 +218,7 @@ impl QuicHandle {
 /// Relay-assisted connections are a later stage precisely because they involve
 /// someone else, and that has to be a choice rather than a default.
 pub async fn serve_quic(router: Router, secret: Option<SecretKey>) -> Result<QuicHandle, String> {
-    serve_on(bind_quic(secret, Coordination::None).await?, router)
+    serve_on(bind_quic(secret, &Coordination::None).await?, router)
 }
 
 /// Bind the endpoint without serving anything on it yet.
@@ -205,16 +230,18 @@ pub async fn serve_quic(router: Router, secret: Option<SecretKey>) -> Result<Qui
 /// still being assembled.
 pub async fn bind_quic(
     secret: Option<SecretKey>,
-    coordination: Coordination,
+    coordination: &Coordination,
 ) -> Result<Endpoint, String> {
     // `Minimal` contacts nothing; `N0` brings relays and address lookup, which
     // is what makes a hole punch possible and is also the third party the
     // setting exists to gate.
-    let mut builder = match coordination {
-        Coordination::None => Endpoint::builder(presets::Minimal),
-        Coordination::CoordinatorOnly => Endpoint::builder(presets::N0),
-    }
-    .alpns(vec![GATEWAY_ALPN.to_vec()]);
+    // `Minimal` throughout: it sets only the mandatory crypto provider and
+    // contacts nothing. The relay, when there is one, is named explicitly —
+    // `presets::N0` would silently bring in n0's public servers and their
+    // discovery service, which is the arrangement this replaced.
+    let mut builder = Endpoint::builder(presets::Minimal)
+        .alpns(vec![GATEWAY_ALPN.to_vec()])
+        .relay_mode(coordination.relay_mode()?);
     if let Some(secret) = secret {
         builder = builder.secret_key(secret);
     }
@@ -232,6 +259,7 @@ pub fn serve_on_with(
     router: Router,
     coordination: Coordination,
 ) -> Result<QuicHandle, String> {
+    let coordination = std::sync::Arc::new(coordination);
     let endpoint_id = endpoint.id();
     let sockets = endpoint.bound_sockets();
     tracing::info!(%endpoint_id, ?sockets, "gateway listening on QUIC");
@@ -240,8 +268,9 @@ pub fn serve_on_with(
     let task = tokio::spawn(async move {
         while let Some(incoming) = accepting.accept().await {
             let router = router.clone();
+            let coordination = coordination.clone();
             tokio::spawn(async move {
-                if let Err(e) = serve_connection(incoming, router, coordination).await {
+                if let Err(e) = serve_connection(incoming, router, &coordination).await {
                     tracing::debug!(error = %e, "quic connection ended");
                 }
             });
@@ -283,7 +312,7 @@ pub fn dialable_addrs(sockets: &[SocketAddr]) -> Vec<SocketAddr> {
 async fn serve_connection(
     incoming: iroh::endpoint::Incoming,
     router: Router,
-    coordination: Coordination,
+    coordination: &Coordination,
 ) -> Result<(), String> {
     let conn = incoming.await.map_err(|e| format!("handshake: {e}"))?;
     let remote = conn.remote_id();
@@ -468,15 +497,19 @@ mod tests {
             direct_available: true,
         };
 
+        // A named relay, as one always is now: the third party has to be one
+        // somebody chose, so there is no "coordinated by whoever".
+        let coordinated = Coordination::Relay("https://relay.example/".into());
+
         // With no coordinator there is no relay to fall back to, so nothing is
         // refused — a connection that exists at all is direct by construction.
-        assert!(verdict(relayed, Coordination::None).is_ok());
-        assert!(verdict(direct, Coordination::None).is_ok());
+        assert!(verdict(relayed, &Coordination::None).is_ok());
+        assert!(verdict(direct, &Coordination::None).is_ok());
 
         // With one, only a selected direct path passes.
-        assert!(verdict(direct, Coordination::CoordinatorOnly).is_ok());
+        assert!(verdict(direct, &coordinated).is_ok());
 
-        let refused = verdict(relayed, Coordination::CoordinatorOnly).unwrap_err();
+        let refused = verdict(relayed, &coordinated).unwrap_err();
         assert!(refused.contains("refused"), "{refused}");
         // The message has to say what happened and why, because this is a
         // working connection being turned away — a bare failure would look like
@@ -486,7 +519,7 @@ mod tests {
         // And the subtle one: a direct path existing is not the same as it
         // being used. Traffic on the relay is traffic the relay can read,
         // whatever else was negotiated alongside it.
-        assert!(verdict(punched_but_unused, Coordination::CoordinatorOnly).is_err());
+        assert!(verdict(punched_but_unused, &coordinated).is_err());
     }
 
     /// A loopback connection has a direct path and no relay, so enforcement is
@@ -499,7 +532,7 @@ mod tests {
         let (_ep, conn, _io) = open_stream(&handle).await;
 
         assert!(
-            require_direct(&conn, Coordination::CoordinatorOnly)
+            require_direct(&conn, &Coordination::Relay("https://relay.example/".into()))
                 .await
                 .is_ok()
         );

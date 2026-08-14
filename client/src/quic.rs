@@ -53,28 +53,27 @@ pub fn parse_transport_addr(raw: &str) -> Option<TransportAddr> {
 
 /// Open a gateway stream to `endpoint_id` at one of `addrs`.
 ///
-/// `coordination` decides whether anyone else is involved. `None` contacts
-/// nothing: the addresses are the ones the host published, and a host that has
-/// moved is simply unreachable rather than quietly found again through a third
-/// party. `CoordinatorOnly` lets a relay introduce the two ends so they can
-/// punch a hole — and then *insists* the result is direct, refusing the
-/// connection if the relay is still carrying it. That refusal is the entire
-/// difference between tier 2 and tier 3 (`docs/NETWORKING.md`).
+/// `coordination` decides whether anyone else is involved, and *who*. `None`
+/// contacts nothing: the addresses are the ones the host published, and a host
+/// that has moved is simply unreachable rather than quietly found again through
+/// a third party. `Relay(url)` lets that named relay — in practice the one the
+/// user's own rendezvous runs — introduce the two ends so they can punch a
+/// hole, and then *insists* the result is direct, refusing the connection if the
+/// relay is still carrying it. That refusal is the entire difference between
+/// tier 2 and tier 3 (`docs/NETWORKING.md`).
 pub async fn dial(
     endpoint_id: EndpointId,
     addrs: &[TransportAddr],
-    coordination: Coordination,
+    coordination: &Coordination,
 ) -> Result<(GatewayIo, ConnectionGuard), String> {
-    if addrs.is_empty() && coordination == Coordination::None {
+    if addrs.is_empty() && !coordination.is_coordinated() {
         return Err("the host published a key but no address to reach it at".into());
     }
-    let endpoint = match coordination {
-        Coordination::None => Endpoint::builder(presets::Minimal),
-        Coordination::CoordinatorOnly => Endpoint::builder(presets::N0),
-    }
-    .bind()
-    .await
-    .map_err(|e| format!("quic bind: {e}"))?;
+    let endpoint = Endpoint::builder(presets::Minimal)
+        .relay_mode(coordination.relay_mode()?)
+        .bind()
+        .await
+        .map_err(|e| format!("quic bind: {e}"))?;
 
     // The key is the destination; the addresses are only hints about where to
     // send the packets. A wrong address fails to connect, a wrong key fails to

@@ -20,6 +20,9 @@ bs58 = { workspace = true }
 # The host side of this protocol is spoken by the client, so the wire types
 # live in the shared crate instead of here.
 dioxusfun-protocol = { workspace = true }
+# Runs in-process (see src/relay_server.rs): one service to deploy, and the
+# rendezvous knows its own relay's address without being told.
+iroh-relay = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tower-http = { workspace = true }

@@ -30,19 +30,11 @@ pub enum SessionMode {
         description: Option<String>,
         /// Opt in to the public listing.
         publish_public: bool,
-        /// Allow a coordinator (an iroh relay) to introduce us to friends whose
-        /// network we cannot reach directly — and *only* introduce: a
-        /// connection it ends up carrying is refused. Separate from
-        /// `rendezvous_url` on purpose; see `docs/NETWORKING.md`.
-        allow_coordinator: bool,
     },
     /// Join someone else's host by shortcode through a rendezvous server.
     ByCode {
         rendezvous_url: String,
         code: String,
-        /// As above, from the joining side.
-        #[serde(default)]
-        allow_coordinator: bool,
     },
 }
 
@@ -513,6 +505,36 @@ pub struct AppState {
     /// screen-audio track; the webview reports it only in the fallback case
     /// where the server sent no `audio_token`.
     pub stream_has_audio: HashSet<String>,
+    /// Media has arrived that we could not decrypt — almost always a key that
+    /// has not reached us yet.
+    ///
+    /// Cleared when a new key is adopted, because that is the event most likely
+    /// to fix it. A latch rather than a counter: the UI question is "is
+    /// something wrong right now", and one failed frame and a thousand mean the
+    /// same thing to the person who cannot hear anybody.
+    pub media_undecryptable: bool,
+    /// Set when a member is removed from a guild, cleared once the media key
+    /// has been rolled.
+    ///
+    /// A flag rather than a direct call because `apply` has no gateway to send
+    /// on and no async to await — it mutates state and returns. `MediaKeyBridge`
+    /// watches this and does the work.
+    pub pending_rekey: bool,
+    /// Our own keypair, for the paths that need to do crypto with it rather
+    /// than merely name us — opening a media key sealed to us, and sealing one
+    /// for somebody else. Set when the session starts.
+    ///
+    /// `self_user` names who we are; this is what proves it.
+    pub identity: Option<crate::identity::Identity>,
+    /// The media key in force for each voice channel we hold one for, with the
+    /// epoch it arrived under.
+    ///
+    /// Held here rather than passed around because four separate LiveKit
+    /// connections need it and a rekey has to reach all of them — see
+    /// `crate::mediakey` for how it gets here, and `crate::e2ee` for where it
+    /// goes. Never persisted: a key that outlived the session would outlive the
+    /// membership it was scoped to.
+    pub media_keys: HashMap<Id, (u32, [u8; 32])>,
     /// Populated when running in self-host mode. None for remote connections.
     pub host_info: Option<HostInfo>,
     /// Who is carrying this connection — which of `docs/NETWORKING.md`'s tiers
@@ -618,6 +640,10 @@ impl AppState {
             stream_volumes: HashMap::new(),
             stream_muted: HashSet::new(),
             stream_has_audio: HashSet::new(),
+            media_undecryptable: false,
+            pending_rekey: false,
+            identity: None,
+            media_keys: HashMap::new(),
             host_info: None,
             transport: Transport::Loopback,
             integrations: HashMap::new(),
@@ -899,6 +925,22 @@ impl AppState {
             .find(|m| m.user.pubkey == pubkey)
             .map(|m| &m.user)
     }
+
+    /// What to show for a pubkey: their username, or a truncated key.
+    ///
+    /// The fallback is the honest answer rather than a placeholder — an
+    /// audit-log actor or an emoji uploader who has since left the guild is not
+    /// in `members` any more, and the key is still who they were.
+    ///
+    /// Here rather than inline at each site because the pair `user_of` +
+    /// `truncate_pubkey` is the whole rule, and it is spelled out identically
+    /// in several places. Anything that changes it later — nicknames, a
+    /// per-guild display name — should have one place to change.
+    pub fn display_name(&self, pubkey: &str) -> String {
+        self.user_of(pubkey)
+            .map(|u| u.username.clone())
+            .unwrap_or_else(|| crate::identity::truncate_pubkey(pubkey))
+    }
 }
 
 #[derive(Clone)]
@@ -1043,5 +1085,35 @@ mod tests {
         assert_eq!(v.toggle_deafen(), (true, true));
         v.deafened = true;
         assert_eq!(v.toggle_deafen(), (true, false));
+    }
+
+    /// The fallback is the point of the helper: seven call sites spelled this
+    /// out identically, and the honest answer for someone no longer in
+    /// `members` is their key, not a placeholder.
+    #[test]
+    fn display_name_falls_back_to_the_truncated_key() {
+        let mut s = AppState::empty();
+        let known = "a".repeat(64);
+        let stranger = "b".repeat(64);
+        s.members.push(member(&known, true));
+
+        assert_eq!(s.display_name(&known), format!("u-{known}"));
+        assert_eq!(
+            s.display_name(&stranger),
+            crate::identity::truncate_pubkey(&stranger)
+        );
+    }
+
+    /// `user_of` answers for the logged-in user before it looks at `members`,
+    /// and `display_name` inherits that — otherwise your own name would read as
+    /// a truncated key in any guild whose roster has not arrived yet.
+    #[test]
+    fn display_name_resolves_the_logged_in_user_without_a_roster() {
+        let mut s = AppState::empty();
+        let me = "c".repeat(64);
+        s.self_user = Some(user(&me));
+
+        assert!(s.members.is_empty());
+        assert_eq!(s.display_name(&me), format!("u-{me}"));
     }
 }

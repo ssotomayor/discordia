@@ -33,6 +33,15 @@ jobs:
   windows-bundle:
     name: bundle windows client
     runs-on: windows-latest
+    env:
+      # Stamped into the binary by the client's build.rs, so the version on
+      # screen is the tag this bundle gets attached to.
+      #
+      # Only on the tag path. This workflow also runs manually from a branch,
+      # where `ref_name` is the branch and there is no release to name — the
+      # empty string is what build.rs treats as unset, and the build then calls
+      # itself `-dev` rather than claiming a release that does not exist.
+      DISCORDIA_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

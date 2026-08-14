@@ -46,13 +46,31 @@ pub const MAX_USERNAME_LEN: usize = 32;
 /// a trailing space that a single leading trim never saw, and then the server's
 /// trim would produce a different string than the client signed. See the test.
 pub fn canonical_username(raw: &str) -> String {
-    let truncated: String = raw.trim().chars().take(MAX_USERNAME_LEN).collect();
+    let truncated = truncate_username(raw.trim());
     let trimmed = truncated.trim();
     if trimmed.is_empty() {
         "anonymous".to_string()
     } else {
         trimmed.to_string()
     }
+}
+
+/// The length half of `canonical_username`, on its own — the rule for *where* a
+/// name stops, without the trimming that only makes sense once it is finished.
+///
+/// It is public because an input field has to stop the user in the same place
+/// the wire will, and it cannot borrow HTML's `maxlength` to do it: that
+/// attribute counts UTF-16 code units while this counts scalar values, so an
+/// astral character (most emoji) spends two of the former and one of the
+/// latter, and a `maxlength` of 32 cuts an emoji name off at 16. Sharing the
+/// count is the same argument as sharing the canonicalisation — the two ends
+/// disagreeing about what "32 characters" means is what this whole function
+/// pair exists to prevent.
+///
+/// Trimming is deliberately not part of it: a caller running this on every
+/// keystroke would delete the space between two words the moment it was typed.
+pub fn truncate_username(raw: &str) -> String {
+    raw.chars().take(MAX_USERNAME_LEN).collect()
 }
 
 /// Whether a guild appears in the public directory or is joinable only by
@@ -262,7 +280,7 @@ mod level_tests {
 
 #[cfg(test)]
 mod username_tests {
-    use super::{MAX_USERNAME_LEN, canonical_username};
+    use super::{MAX_USERNAME_LEN, canonical_username, truncate_username};
 
     /// The property the `Identify` handshake actually rests on. The client
     /// canonicalises and signs; the server canonicalises what it received and
@@ -321,6 +339,34 @@ mod username_tests {
     fn multibyte_names_are_cut_by_character() {
         let out = canonical_username(&"🙂".repeat(40));
         assert_eq!(out.chars().count(), MAX_USERNAME_LEN);
+    }
+
+    /// What an input field needs from this module, and the reason it cannot use
+    /// HTML's `maxlength` instead: 32 emoji are 32 characters here and 64 code
+    /// units there, so the attribute would stop the user at half the allowance.
+    #[test]
+    fn truncation_counts_characters_where_maxlength_counts_code_units() {
+        let out = truncate_username(&"😀".repeat(40));
+        assert_eq!(out.chars().count(), MAX_USERNAME_LEN);
+        assert_eq!(out.encode_utf16().count(), MAX_USERNAME_LEN * 2);
+    }
+
+    /// The half a field runs on every keystroke must not trim, or the space
+    /// between two words disappears as it is typed.
+    #[test]
+    fn truncation_leaves_whitespace_alone() {
+        assert_eq!(truncate_username("john "), "john ");
+        assert_eq!(truncate_username("  "), "  ");
+    }
+
+    /// A name the field already stopped is one `canonical_username` will not
+    /// shorten again — what the user sees is what gets signed.
+    #[test]
+    fn a_truncated_name_is_not_cut_a_second_time_at_signing() {
+        for raw in ["alice", &"a".repeat(60), &"😀".repeat(60), "ünïcøde"] {
+            let typed = truncate_username(raw);
+            assert_eq!(canonical_username(&typed), typed.trim());
+        }
     }
 }
 
@@ -696,6 +742,27 @@ pub enum ClientMessage {
         /// by "installing" their pubkey in a throwaway guild.
         #[serde(default)]
         bot: bool,
+        /// What build the peer says it is running — the client's stamped
+        /// version (`v0.1.0-pre.223`, `0.1.0-dev+sha`) or `bot-sdk/x.y.z`.
+        ///
+        /// **Self-declared and unauthenticated**, like `bot`. The signature
+        /// covers `nonce || pubkey || username` and not this, so it is evidence
+        /// of what a peer *claims* and nothing more. That is enough for what it
+        /// exists for — seeing the spread of versions actually connected — and
+        /// deliberately not enough to gate anything on.
+        ///
+        /// Because it is attacker-chosen, the server trims it, strips control
+        /// characters and caps it before repeating it anywhere — see
+        /// `sanitize_client_version`. An unbounded string with an embedded
+        /// newline is a forged log line, and a forged line would defeat the
+        /// counting this field is for.
+        ///
+        /// Empty from any client older than the field, which is the answer
+        /// "it did not say" rather than a version. Three entries in `TODO.md`
+        /// turn on not knowing whether such clients are still out there; this
+        /// makes that countable instead of guessed at.
+        #[serde(default)]
+        client_version: String,
     },
     FetchMessages {
         channel_id: Id,
@@ -1023,6 +1090,26 @@ pub enum ClientMessage {
     /// it is not in. Ignored outright when the sender is not in voice — which
     /// is also what gates it on guild membership, since only `JoinVoice`
     /// creates a voice state and it checks.
+    /// Hand a channel's media key to one member, sealed to their pubkey.
+    ///
+    /// The server routes this and cannot read it — the payload is encrypted to
+    /// a secret derived from the two identity keys, which is the whole point:
+    /// end-to-end encrypted media is worth nothing if the server holds the key
+    /// (`client::mediakey`).
+    ///
+    /// Routed only to a member of the same guild as the channel, and only from
+    /// one. That check is not about confidentiality, which the sealing already
+    /// handles; it is so the gateway cannot be used to spray blobs at strangers.
+    ShareMediaKey {
+        channel_id: Id,
+        /// Recipient's x-only pubkey (64-char hex).
+        to: String,
+        /// Monotonic per channel. A member removed from the guild keeps the key
+        /// they had, so the survivors move up an epoch and leave it behind.
+        epoch: u32,
+        /// Hex `nonce ‖ ciphertext`. Opaque here by construction.
+        blob: String,
+    },
     SetCamera {
         on: bool,
     },
@@ -1097,6 +1184,17 @@ pub enum ServerMessage {
         /// The guild's custom-emoji catalog (images fetched on demand).
         #[serde(default)]
         emojis: Vec<GuildEmoji>,
+        /// Live voice presence in this guild: who is in which voice channel,
+        /// and their mute/deafen/speaking/camera/screen flags.
+        ///
+        /// `Ready` has carried this since voice existed; this variant did not,
+        /// so a client that joined a guild mid-session saw an empty voice
+        /// roster — no occupants, no camera or LIVE badges — until whoever was
+        /// already in there next changed something. The snapshot is scoped to
+        /// this guild only, which is the same rule `Ready` applies across all
+        /// of them: voice presence is visible only inside a guild you are in.
+        #[serde(default)]
+        voice_states: Vec<VoiceState>,
     },
     /// A guild was deleted by its owner. Delivered to the (former) members so
     /// they drop it from local state.
@@ -1219,6 +1317,18 @@ pub enum ServerMessage {
         sharers: Vec<String>,
     },
     VoiceStateUpdate(VoiceState),
+    /// A channel's media key, sealed to us by another member.
+    ///
+    /// Delivered verbatim from `ShareMediaKey`, with the sender named so the
+    /// recipient can derive the same shared secret. A client that cannot open
+    /// it keeps whatever key it already had.
+    MediaKey {
+        channel_id: Id,
+        /// Sender's x-only pubkey (64-char hex).
+        from: String,
+        epoch: u32,
+        blob: String,
+    },
     VoiceToken {
         channel_id: Id,
         livekit_url: String,
@@ -1276,4 +1386,66 @@ pub enum ServerMessage {
     Error {
         message: String,
     },
+}
+
+#[cfg(test)]
+mod identify_wire_tests {
+    use super::ClientMessage;
+
+    /// An `Identify` from a client older than `client_version` has no such key.
+    /// `#[serde(default)]` is what keeps that a successful handshake rather than
+    /// a parse error that would lock every existing install out of every
+    /// updated server — the exact population this field exists to measure.
+    #[test]
+    fn an_identify_without_a_version_still_parses() {
+        let old = r#"{
+            "op": "identify",
+            "d": {
+                "username": "alice",
+                "pubkey": "ab",
+                "signature": "cd",
+                "bot": false
+            }
+        }"#;
+        let msg: ClientMessage =
+            serde_json::from_str(old).expect("an older client's handshake still parses");
+        match msg {
+            ClientMessage::Identify {
+                username,
+                client_version,
+                ..
+            } => {
+                assert_eq!(username, "alice", "the fields that were there survive");
+                assert!(
+                    client_version.is_empty(),
+                    "an absent version is empty — 'it did not say', not a version"
+                );
+            }
+            other => panic!("parsed as {other:?}"),
+        }
+    }
+
+    /// And that the field is actually on the wire when set. The signature covers
+    /// `nonce || pubkey || username` and not this, so nothing else in the
+    /// handshake would notice if it silently stopped being sent.
+    #[test]
+    fn a_version_survives_the_round_trip() {
+        let json = serde_json::to_string(&ClientMessage::Identify {
+            username: "alice".into(),
+            pubkey: "ab".into(),
+            signature: "cd".into(),
+            bot: false,
+            client_version: "v0.1.0-pre.223".into(),
+        })
+        .unwrap();
+        assert!(json.contains("v0.1.0-pre.223"), "not on the wire: {json}");
+
+        let back: ClientMessage = serde_json::from_str(&json).unwrap();
+        match back {
+            ClientMessage::Identify { client_version, .. } => {
+                assert_eq!(client_version, "v0.1.0-pre.223")
+            }
+            other => panic!("parsed as {other:?}"),
+        }
+    }
 }

@@ -1,12 +1,14 @@
 mod app;
 mod blossom;
 mod denoise;
+mod e2ee;
 #[macro_use]
 mod devlog;
 mod emoji;
 mod features;
 mod host;
 mod identity;
+mod mediakey;
 mod net;
 mod portmap;
 mod profile;
@@ -19,6 +21,7 @@ mod settings;
 mod state;
 mod sysaudio;
 mod sysvideo;
+mod version;
 #[cfg(target_os = "windows")]
 mod webview2;
 

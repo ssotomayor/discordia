@@ -814,7 +814,10 @@ impl ActiveVoice {
         state: Signal<AppState>,
         controls: AudioControls,
     ) -> Result<Self, String> {
-        let (room, mut events) = Room::connect(livekit_url, token, RoomOptions::default())
+        // `RoomOptions` is `#[non_exhaustive]`, so it is built by mutation.
+        let mut options = RoomOptions::default();
+        options.encryption = crate::e2ee::room_options();
+        let (room, mut events) = Room::connect(livekit_url, token, options)
             .await
             .map_err(|e| format!("livekit connect: {e}"))?;
         let room = Arc::new(room);
@@ -1593,6 +1596,7 @@ impl ScreenVideoRoom {
         // shares we watch — subscribing here as well would download every
         // stream in the channel a second time.
         options.auto_subscribe = false;
+        options.encryption = crate::e2ee::room_options();
         let (room, mut events) = Room::connect(url, token, options)
             .await
             .map_err(|e| format!("livekit connect: {e}"))?;
@@ -1769,6 +1773,7 @@ impl ScreenAudioRoom {
         // *video* down as well — the exact cost the separate screen room exists
         // to keep away from native peers.
         options.auto_subscribe = false;
+        options.encryption = crate::e2ee::room_options();
         let (room, mut events) = Room::connect(url, token, options)
             .await
             .map_err(|e| format!("livekit connect: {e}"))?;

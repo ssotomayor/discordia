@@ -24,7 +24,7 @@ use std::time::Duration;
 use dioxusfun_bot::{Bot, BotIdentity};
 use dioxusfun_server::livekit::{
     BoxFuture, LiveKitConfig, MintRequest, VoiceTokenMinter, screen_audio_identity,
-    screen_video_identity,
+    screen_room_name, screen_video_identity,
 };
 use dioxusfun_server::protocol::{ChannelKind, ClientMessage, Id, ServerMessage};
 use livekit_api::access_token::TokenVerifier;
@@ -57,8 +57,11 @@ fn test_config(livekit: LiveKitConfig) -> dioxusfun_server::ServerConfig {
     }
 }
 
-/// A config that signs locally, which is the only path where `can_publish`
-/// reaches the token — a delegated minter takes no grants (see TODO.md).
+/// A config that signs locally, so the grants can be read straight out of the
+/// JWT. The delegated path carries the same answers now, but a scripted minter
+/// returns a placeholder string rather than a real token — see
+/// `a_delegated_mint_is_told_which_connection_may_publish`, which asserts on
+/// what the seam is *handed* instead.
 fn local_signing() -> LiveKitConfig {
     LiveKitConfig {
         explicit_url: Some("ws://127.0.0.1:7880".into()),
@@ -89,6 +92,28 @@ impl VoiceTokenMinter for ScriptedMinter {
                 Ok(format!("token-for-{}-as-{}", req.room, req.identity))
             }
         })
+    }
+}
+
+/// A minter that records what it was asked for and always succeeds.
+///
+/// The delegated path is the one that used to drop `can_publish` on the floor —
+/// it sent room, identity and name and nothing else, so the relay signed its own
+/// fixed grants with publish on. What this seam *receives* is therefore the
+/// thing worth pinning; what the relay then does with it is asserted on the
+/// relay's own side, in `dioxusfun-rendezvous`.
+struct RecordingMinter {
+    seen: Arc<std::sync::Mutex<Vec<(String, String, bool)>>>,
+}
+
+impl VoiceTokenMinter for RecordingMinter {
+    fn mint<'a>(&'a self, req: MintRequest) -> BoxFuture<'a, Result<String, String>> {
+        self.seen.lock().expect("recording minter poisoned").push((
+            req.room.clone(),
+            req.identity.clone(),
+            req.can_publish,
+        ));
+        Box::pin(async move { Ok(format!("token-for-{}-as-{}", req.room, req.identity)) })
     }
 }
 
@@ -356,7 +381,12 @@ async fn a_failed_audio_mint_is_not_reported_to_the_user() {
 // ---------------------------------------------------------------------------
 
 /// Join a guild as a second member. Guilds are public by default, so no invite.
-async fn join_guild(session: &mut Bot, guild_id: Id) {
+///
+/// Returns the voice presence the joiner was handed, which most callers ignore.
+async fn join_guild(
+    session: &mut Bot,
+    guild_id: Id,
+) -> Vec<dioxusfun_server::protocol::VoiceState> {
     session
         .send(&ClientMessage::JoinGuild {
             guild_id,
@@ -366,10 +396,14 @@ async fn join_guild(session: &mut Bot, guild_id: Id) {
         .await
         .unwrap();
     loop {
-        if let ServerMessage::GuildJoined { guild, .. } = next_timeout(session).await
+        if let ServerMessage::GuildJoined {
+            guild,
+            voice_states,
+            ..
+        } = next_timeout(session).await
             && guild.id == guild_id
         {
-            break;
+            break voice_states;
         }
     }
 }
@@ -689,5 +723,127 @@ async fn leaving_voice_clears_the_share() {
         legacy_sharers(&frames).last().cloned(),
         Some(Vec::new()),
         "and the legacy frame should go empty: {frames:?}"
+    );
+}
+
+/// The grants a delegated mint is told to ask for.
+///
+/// `screen_token_as` has taken `can_publish` per identity since the local mint
+/// stopped handing publish rights to the subscribe-only `#audio` connection.
+/// That answer used to stop at the delegation seam: `MintRequest` carried room,
+/// identity and name, so a gateway hosting through a rendezvous got a relay's
+/// own fixed grants with publish on — and the narrowing applied to
+/// self-signing deployments only.
+///
+/// This asserts the three screen-room mints now carry the same answers the
+/// local path signs, which `join_voice_mints_three_identities_with_the_right_grants`
+/// checks on the other side of the same `if`.
+#[tokio::test]
+async fn a_delegated_mint_is_told_which_connection_may_publish() {
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let cfg = LiveKitConfig {
+        minter: Some(Arc::new(RecordingMinter { seen: seen.clone() })),
+        ..local_signing()
+    };
+    let (url, _handle) = spawn_gateway(cfg).await;
+    let id = BotIdentity::generate();
+    let mut user = connect_user(&url, &id, "sharer").await;
+    let (_guild_id, channel_id) = voice_channel(&mut user).await;
+
+    let frames = join_voice(&mut user, channel_id).await;
+    assert!(errors(&frames).is_empty(), "unexpected errors: {frames:?}");
+
+    let seen = seen.lock().expect("recording minter poisoned").clone();
+    let screen = screen_room_name(channel_id);
+    let pubkey = id.pubkey();
+    let asked = |identity: &str| {
+        seen.iter()
+            .find(|(room, who, _)| room == &screen && who == identity)
+            .map(|(_, _, can_publish)| *can_publish)
+            .unwrap_or_else(|| panic!("no mint for {identity} in {screen}: {seen:?}"))
+    };
+
+    // Renders every share, and captures on Windows.
+    assert!(asked(pubkey), "the webview identity has to publish");
+    // Feeds stream audio into the cpal mixer, and sends nothing.
+    assert!(
+        !asked(&screen_audio_identity(pubkey)),
+        "the subscribe-only identity must not be granted publish"
+    );
+    // Publishes natively captured screen video.
+    assert!(
+        asked(&screen_video_identity(pubkey)),
+        "the native video publisher has to publish"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Voice presence in the join bundle
+//
+// `Ready` has carried `voice_states` since voice existed; `GuildJoined` carried
+// guild, channels, members, roles and emoji, and no voice presence at all. So a
+// client that joined a guild mid-session rendered an empty voice roster — no
+// occupants, no camera or LIVE badges, no mute state — until whoever was
+// already in there next changed something.
+// ---------------------------------------------------------------------------
+
+/// The gap itself: someone already in voice is visible to a member who joins
+/// afterwards, without waiting for a `VoiceStateUpdate` that may never come.
+#[tokio::test]
+async fn joining_a_guild_shows_who_is_already_in_voice() {
+    let (url, _handle) = spawn_gateway(local_signing()).await;
+    let owner_id = BotIdentity::generate();
+    let member_id = BotIdentity::generate();
+    let mut owner = connect_user(&url, &owner_id, "owner").await;
+    let (guild_id, channel_id) = voice_channel(&mut owner).await;
+
+    // The owner is in voice with their camera on *before* anyone else arrives,
+    // and stops toggling anything — which is what makes the roster the only
+    // way the joiner could learn about them.
+    let _ = join_voice(&mut owner, channel_id).await;
+    owner
+        .send(&ClientMessage::SetCamera { on: true })
+        .await
+        .unwrap();
+    let vs = next_voice_state(&mut owner, owner_id.pubkey()).await;
+    assert!(vs.camera_on, "precondition: the owner's camera is on");
+
+    let mut member = connect_user(&url, &member_id, "member").await;
+    let voice_states = join_guild(&mut member, guild_id).await;
+
+    let seen = voice_states
+        .iter()
+        .find(|v| v.user_pubkey == owner_id.pubkey())
+        .unwrap_or_else(|| panic!("GuildJoined carried no state for the owner: {voice_states:?}"));
+    assert_eq!(seen.guild_id, guild_id);
+    assert_eq!(
+        seen.channel_id,
+        Some(channel_id),
+        "the joiner should know which voice channel they are in"
+    );
+    assert!(seen.camera_on, "and that their camera is on");
+}
+
+/// And the scoping. `voice_states_in` filters by guild for the same reason
+/// `snapshot_for` does: sharing one guild with someone says nothing about where
+/// else on the server they are. Without the filter this frame would hand every
+/// joiner the location of everyone in voice anywhere.
+#[tokio::test]
+async fn the_join_bundle_does_not_disclose_other_guilds() {
+    let (url, _handle) = spawn_gateway(local_signing()).await;
+    let owner_id = BotIdentity::generate();
+    let member_id = BotIdentity::generate();
+    let mut owner = connect_user(&url, &owner_id, "owner").await;
+    let (elsewhere, elsewhere_channel) = voice_channel(&mut owner).await;
+    let (joined_guild, _) = voice_channel(&mut owner).await;
+
+    let _ = join_voice(&mut owner, elsewhere_channel).await;
+
+    let mut member = connect_user(&url, &member_id, "member").await;
+    let voice_states = join_guild(&mut member, joined_guild).await;
+
+    assert!(
+        voice_states.is_empty(),
+        "joining {joined_guild} disclosed voice presence in {elsewhere}: {voice_states:?}"
     );
 }

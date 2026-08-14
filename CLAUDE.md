@@ -152,10 +152,16 @@ channel to observe the publication themselves.
   64-char hex (x-only). Client keys live in `client/src/identity.rs`
   (`Identity::sign_hex(msg)` = Schnorr over `SHA256(msg)`).
 - The **Identify handshake**: server sends `Hello { nonce }`; client replies
-  `Identify { username, pubkey, signature, bot }` where `signature` is Schnorr
-  over `SHA256(nonce || pubkey || username)`. Verified in `server/src/auth.rs`
-  (`verify_identify`). This same challenge/sign/verify pattern is reused for
-  **rendezvous name ownership** (`rendezvous/src/verify.rs`).
+  `Identify { username, pubkey, signature, bot, client_version }` where
+  `signature` is Schnorr over `SHA256(nonce || pubkey || username)`. Verified in
+  `server/src/auth.rs` (`verify_identify`). This same challenge/sign/verify
+  pattern is reused for **rendezvous name ownership**
+  (`rendezvous/src/verify.rs`).
+  Note what the signature covers and what it does not: `bot` and
+  `client_version` are **self-declared and unauthenticated**. That is deliberate
+  for both — bot-ness because inferring it from installs would be an attack (see
+  the comment at the handler), and the version because it exists to be counted
+  in a log, not to gate anything. Neither is evidence.
 - There is **no password/account system** — your key *is* your account.
   Anti-abuse is per-guild: join gates (rules / proof-of-work), panic-mode
   lockdown, slowmode, bans, audit log (all Phase 4, in `state/mod.rs` +
@@ -252,6 +258,14 @@ channel to observe the publication themselves.
   LiveKit replaces its LAN ICE candidate with the advertised address rather than
   adding to it — so advertising one without checking would trade the LAN path
   for the remote one.
+- `version.rs` — which build this is, stamped by `client/build.rs` at compile
+  time. **Not `CARGO_PKG_VERSION`**, which is `0.1.0` in every release ever
+  published: the release number lives in the tag CI creates and used to stop
+  there. CI sets `DISCORDIA_VERSION` to exactly that tag on the three
+  publishing jobs — and deliberately *not* at workflow level, because a check
+  job that inherited it would build a binary claiming to be a release nobody
+  published. `version.rs` has a test that fails if that happens. Everything
+  else calls itself `0.1.0-dev+<sha>`.
 - `features/*.rs` — UI, one module per surface: `guilds`, `channels`, `chat`,
   `members`, `voice`, `screenshare`, `camera`, `roles`, `guild_settings`,
   `integrations` (bots), `profiles`, `connect`, `appearance`, `activities`.
@@ -271,8 +285,10 @@ channel to observe the publication themselves.
   place, `attach`/`reattach` in the JS controller. Adding a fourth identity means
   teaching those two functions about it — and deciding what it may publish, which
   `screen_token_as` takes as an argument rather than inferring from the suffix.
-  That only binds on the local mint; a rendezvous-delegated one signs its own
-  grants (see `TODO.md`).
+  That answer rides `MintRequest::can_publish` across the delegation seam too, so
+  it binds on the local mint *and* on a rendezvous-delegated one — with the
+  caveat that a relay older than that field ignores it and grants publish, which
+  nothing on this wire can detect (see `TODO.md`).
 
   **The camera deliberately did not add a fourth.** It rides the bare identity
   and is told apart by `TrackSource`, which is exactly why it cost no token, no

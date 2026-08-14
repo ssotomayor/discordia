@@ -2,6 +2,11 @@
 name = "dioxusfun"
 version = "0.1.0"
 edition = "2024"
+# Read at compile time by `version::releases_url` to decide *whose* releases the
+# update check asks about. A fork that changes this line checks its own; one
+# that does not, checks nobody's, because an unrecognised host disables the
+# check rather than defaulting to ours.
+repository = "https://github.com/ssotomayor/discordia"
 
 [dependencies]
 # Dioxus-specific deps (not shared with server/rendezvous, no need to hoist).
@@ -36,6 +41,10 @@ bech32 = "0.11"
 bip39 = "2"
 hmac = "0.12"
 sha2 = "0.10"
+# Sealing a channel's media key to one recipient (see src/mediakey.rs).
+# XChaCha20-Poly1305 for its 24-byte nonce: the key is sealed once per member
+# per rekey with a random nonce, and a 96-bit one is not comfortable for that.
+chacha20poly1305 = "0.10"
 dirs = "5"
 rand = "0.8"
 
