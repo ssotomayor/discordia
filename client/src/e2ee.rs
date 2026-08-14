@@ -108,8 +108,25 @@ fn provider() -> &'static livekit::e2ee::key_provider::KeyProvider {
     static PROVIDER: std::sync::OnceLock<livekit::e2ee::key_provider::KeyProvider> =
         std::sync::OnceLock::new();
     PROVIDER.get_or_init(|| {
-        livekit::e2ee::key_provider::KeyProvider::new(
+        // `with_shared_key`, never `new`. The difference is one boolean deep in
+        // libwebrtc's options — `shared_key` — and it is fixed at construction.
+        // `new` builds a provider in *per-participant* mode, where every frame
+        // cryptor looks its key up by the remote participant's identity; a
+        // shared key set on such a provider is simply never consulted. Both
+        // ends then report themselves as encrypting, publish and receive frames
+        // quite happily, and neither can decode a syllable of the other.
+        //
+        // That cost three test sessions across two cities to find, because
+        // every symptom pointed at key *distribution*, which was by then
+        // working perfectly.
+        //
+        // The key here is a placeholder. It is never used: `register_room`
+        // leaves a room disabled until a real key exists, and `apply_key`
+        // replaces this one before enabling anything. The constructor simply
+        // has no way to say "shared, key to follow".
+        livekit::e2ee::key_provider::KeyProvider::with_shared_key(
             livekit::e2ee::key_provider::KeyProviderOptions::default(),
+            vec![0u8; crate::mediakey::KEY_LEN],
         )
     })
 }
@@ -243,6 +260,39 @@ pub fn room_options() -> Option<livekit::e2ee::E2eeOptions> {
 #[cfg(test)]
 mod tests {
     use super::usable_key;
+
+    /// The provider must be built in *shared key* mode, and the two modes are
+    /// told apart only by a flag fixed at construction.
+    ///
+    /// A provider from `KeyProvider::new` looks up a key per participant
+    /// identity, so a shared key set on it is never consulted: both peers
+    /// report themselves as encrypting, frames flow, and neither can decode the
+    /// other. This asserts the observable difference so the constructor cannot
+    /// be swapped back by anyone tidying up.
+    #[test]
+    fn the_provider_is_in_shared_key_mode() {
+        use livekit::e2ee::key_provider::{KeyProvider, KeyProviderOptions};
+
+        let key = vec![7u8; 32];
+        let shared = KeyProvider::with_shared_key(KeyProviderOptions::default(), key.clone());
+        assert_eq!(
+            shared.get_shared_key(0),
+            Some(key.clone()),
+            "a shared provider holds the key it was given"
+        );
+
+        let per_participant = KeyProvider::new(KeyProviderOptions::default());
+        per_participant.set_shared_key(key.clone(), 0);
+        assert_ne!(
+            per_participant.get_shared_key(0),
+            Some(key),
+            "if this ever matches, the two modes are indistinguishable here and \
+             this test protects nothing — check the SDK before trusting it"
+        );
+
+        // And ours is the first kind.
+        assert!(super::provider().get_shared_key(0).is_some());
+    }
 
     /// An empty or blank variable is not a key — see `usable_key`. Tested on
     /// the real function rather than through the environment, which
