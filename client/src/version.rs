@@ -10,14 +10,47 @@
 //!   was published under. Paste it into a report and the artifact is findable.
 //! - `0.1.0-dev+a1b2c3d` — anything else. Nobody downloaded this.
 
+use std::time::Duration;
+
 use dioxus::prelude::*;
 
 /// The version string this binary was built with.
 pub const VERSION: &str = env!("DISCORDIA_VERSION");
 
-/// Where releases are published. Listed, not `/releases/latest` — see
-/// `newest_release`.
-const RELEASES_URL: &str = "https://api.github.com/repos/ssotomayor/discordia/releases";
+/// How long to wait for GitHub before giving up.
+///
+/// A blackholed network — captive portal, a firewall that accepts the handshake
+/// and then says nothing — would otherwise leave this one-shot task pending for
+/// the life of the app. Nothing awaits it, so that is invisible rather than
+/// harmful, but "silent on every failure" should mean the failure *happens*.
+/// Shorter than `blossom`'s 30s because nobody is waiting on the answer.
+const CHECK_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The releases endpoint for whichever repository this build came from.
+///
+/// Derived from the crate's `repository` field rather than hardcoded, because
+/// hardcoding it is only correct for one build. A fork shipping its own
+/// binaries would have inherited an update check against **this** repo — no
+/// error, no log, just a button pointing users at unrelated releases, or one
+/// that never appears because upstream is behind them.
+///
+/// Anything that is not a `github.com/owner/name` URL disables the check.
+/// Failing closed is the point: a fork on GitLab should get no notice rather
+/// than someone else's.
+fn releases_url_from(repository: &str) -> Option<String> {
+    let slug = repository
+        .trim()
+        .trim_end_matches('/')
+        .trim_end_matches(".git")
+        .strip_prefix("https://github.com/")?;
+    // Exactly one slash: `owner/name`, not a path into a file or a bare owner.
+    (slug.matches('/').count() == 1 && !slug.ends_with('/'))
+        .then(|| format!("https://api.github.com/repos/{slug}/releases"))
+}
+
+fn releases_url() -> Option<String> {
+    releases_url_from(env!("CARGO_PKG_REPOSITORY"))
+}
 
 /// A published release newer than this build.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -79,26 +112,54 @@ fn newest_release(releases: Vec<Release>, mine: u64) -> Option<Update> {
 /// unsigned binary it could not verify. A link the user follows deliberately is
 /// a different act from a binary the app swaps underneath them.
 ///
-/// Silent on every failure — no network, a rate limit (60/hour unauthenticated,
-/// per IP), a shape we do not recognise. Being unable to check is not news; the
-/// user came here to use the app.
+/// Silent **to the user** on every failure — no network, a rate limit (60/hour
+/// unauthenticated, per IP), a shape we do not recognise. Being unable to check
+/// is not news; the user came here to use the app.
+///
+/// Not silent to a developer, though, and that distinction is the whole reason
+/// for the `eprintln!`s. Without them a malformed URL, a TLS failure and
+/// "GitHub changed the response shape" all collapse into the same invisible
+/// `None` as "you are up to date" — indistinguishable from a working check, so
+/// a broken one could ship unnoticed for months. Same `[tag] message` shape the
+/// rest of the client uses.
 pub async fn check_for_update() -> Option<Update> {
     // A dev build has nothing to compare against, and telling someone who
     // compiled the tree that a release exists is noise rather than news.
     let mine = is_release().then(|| release_number(VERSION))??;
+    let url = releases_url().or_else(|| {
+        eprintln!(
+            "[update] no update check: {:?} is not a github.com/owner/name repository",
+            env!("CARGO_PKG_REPOSITORY")
+        );
+        None
+    })?;
 
-    let res = reqwest::Client::new()
-        .get(RELEASES_URL)
+    let client = reqwest::Client::builder()
+        .timeout(CHECK_TIMEOUT)
+        .build()
+        .inspect_err(|e| eprintln!("[update] could not build the http client: {e}"))
+        .ok()?;
+    let res = client
+        .get(&url)
         // GitHub rejects API requests with no User-Agent outright.
         .header("User-Agent", format!("Discordia/{VERSION}"))
         .header("Accept", "application/vnd.github+json")
         .send()
         .await
+        .inspect_err(|e| eprintln!("[update] request to {url} failed: {e}"))
         .ok()?;
     if !res.status().is_success() {
+        // The one worth reading twice: 403 here is the unauthenticated rate
+        // limit, not a permissions problem.
+        eprintln!("[update] {url} answered {}", res.status());
         return None;
     }
-    newest_release(res.json().await.ok()?, mine)
+    let releases = res
+        .json()
+        .await
+        .inspect_err(|e| eprintln!("[update] could not read the releases listing: {e}"))
+        .ok()?;
+    newest_release(releases, mine)
 }
 
 /// Whether this build came from CI and corresponds to a published release.
@@ -157,6 +218,61 @@ mod tests {
             html_url: format!("https://example.invalid/{tag}"),
             draft: false,
         }
+    }
+
+    /// A fork gets its own releases, or none — never ours.
+    #[test]
+    fn the_endpoint_follows_the_repository_field() {
+        let ours = "https://api.github.com/repos/ssotomayor/discordia/releases";
+        assert_eq!(
+            releases_url_from("https://github.com/ssotomayor/discordia").as_deref(),
+            Some(ours)
+        );
+        // The shapes a `repository` field is written in.
+        for variant in [
+            "https://github.com/ssotomayor/discordia/",
+            "https://github.com/ssotomayor/discordia.git",
+            "  https://github.com/ssotomayor/discordia  ",
+        ] {
+            assert_eq!(
+                releases_url_from(variant).as_deref(),
+                Some(ours),
+                "did not normalise {variant:?}"
+            );
+        }
+        // A fork's own.
+        assert_eq!(
+            releases_url_from("https://github.com/someone/fork").as_deref(),
+            Some("https://api.github.com/repos/someone/fork/releases")
+        );
+    }
+
+    /// Anything we cannot read as `github.com/owner/name` disables the check.
+    /// Failing closed is the point — a fork elsewhere should get no notice
+    /// rather than somebody else's.
+    #[test]
+    fn an_unrecognised_repository_disables_the_check() {
+        for bad in [
+            "",
+            "https://gitlab.com/someone/thing",
+            "https://github.com/owner",
+            "https://github.com/owner/name/tree/master",
+            "git@github.com:owner/name.git",
+            "http://github.com/owner/name",
+        ] {
+            assert_eq!(releases_url_from(bad), None, "accepted {bad:?}");
+        }
+    }
+
+    /// And that this build's own field is one we accept — a typo there would
+    /// silently disable the feature everywhere.
+    #[test]
+    fn this_build_has_a_usable_repository() {
+        assert!(
+            releases_url().is_some(),
+            "CARGO_PKG_REPOSITORY is {:?}",
+            env!("CARGO_PKG_REPOSITORY")
+        );
     }
 
     /// The trap this whole comparison exists to avoid. CI names releases after
