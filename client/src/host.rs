@@ -63,6 +63,9 @@ pub struct HostInfo {
 pub struct HostHandle {
     pub info: HostInfo,
     gateway: Option<ServerHandle>,
+    /// The QUIC front door. Held, never read: dropping it stops accepting on
+    /// the key friends were told to dial, which is the whole job.
+    _quic: Option<dioxusfun_server::quic::QuicHandle>,
     livekit: Option<LivekitSubprocess>,
     rendezvous_task: Option<tokio::task::JoinHandle<()>>,
     /// Holds the port mappings open; dropping it hands them back.
@@ -110,6 +113,25 @@ pub async fn start_self_host(
         .local_addr()
         .map_err(|e| format!("embedded server: {e}"))?;
 
+    // The QUIC endpoint binds before the mapping and before registration, for
+    // the same reason the TCP listener does: its UDP port is one of the things
+    // to map, and its key and address are what get advertised. Nothing is
+    // served on it until the router exists, further down.
+    let transport_secret = crate::quic::secret_for(&identity);
+    let quic_endpoint = match dioxusfun_server::quic::bind_quic(Some(transport_secret)).await {
+        Ok(ep) => Some(ep),
+        Err(e) => {
+            // Not fatal: the TCP gateway is unaffected, and a host without the
+            // QUIC path is exactly what every host was until now.
+            eprintln!("[host] quic unavailable: {e}");
+            tracing::warn!(error = %e, "quic endpoint not bound");
+            None
+        }
+    };
+    let quic_port = quic_endpoint
+        .as_ref()
+        .and_then(|ep| ep.bound_sockets().first().map(|s| s.port()));
+
     // Tier 1: ask the router for a way in. Attempted whether or not a
     // rendezvous is involved — it is the one path that needs nobody else — but
     // only when the gateway is actually listening off-loopback, since a forward
@@ -122,6 +144,7 @@ pub async fn start_self_host(
                     media_tcp: DEFAULT_LIVEKIT_PORT,
                     media_tcp_ice: DEFAULT_LIVEKIT_TCP_PORT,
                     media_udp: DEFAULT_LIVEKIT_UDP_PORT,
+                    quic_udp: quic_port,
                 };
                 match portmap::request(local_ip, ports).await {
                     Ok((mapped, guard)) => {
@@ -170,6 +193,27 @@ pub async fn start_self_host(
         .filter(|m| m.media && m.hairpin)
         .map(|m| m.public_ip);
 
+    // What to tell a joiner about the QUIC path: the key it must authenticate
+    // against, and the addresses worth trying. The public address goes first
+    // when we have one — a friend elsewhere can only use that one, and a friend
+    // on this network will fail it fast and fall to the LAN address behind it.
+    let transport = quic_endpoint.as_ref().and_then(|ep| {
+        let port = quic_port?;
+        let mut addrs = Vec::new();
+        if let Some(m) = mapped.as_ref().filter(|m| m.quic) {
+            addrs.push(SocketAddr::new(m.public_ip, port).to_string());
+        }
+        if let Some(ip) = local_ipv4() {
+            addrs.push(SocketAddr::new(IpAddr::V4(ip), port).to_string());
+        }
+        // A key with nowhere to try it is worse than no key: the joiner would
+        // spend its patience on a path that cannot work.
+        (!addrs.is_empty()).then(|| crate::rendezvous::TransportAdvert {
+            key: ep.id().to_string(),
+            addrs,
+        })
+    });
+
     // Register with rendezvous first so we know which LiveKit URL to hand
     // to clients. If the rendezvous operator runs a shared LiveKit, that
     // URL takes precedence over our local subprocess.
@@ -181,7 +225,7 @@ pub async fn start_self_host(
     let listed_public = publish.publish_public;
     if let Some(url) = rendezvous_url {
         let endpoint = mapped.as_ref().map(|m| m.endpoint());
-        match crate::rendezvous::register(&url, publish, endpoint, &identity).await {
+        match crate::rendezvous::register(&url, publish, endpoint, transport, &identity).await {
             Ok((info, control)) => {
                 eprintln!(
                     "[host] rendezvous registered: shortcode={} livekit_url={:?}",
@@ -260,9 +304,29 @@ pub async fn start_self_host(
         operators,
         data_dir: crate::identity::config_dir().join("host-data"),
     };
-    let gateway = dioxusfun_server::spawn_on(listener, cfg)
+    let router = dioxusfun_server::build_router(cfg)
         .await
         .map_err(|e| format!("embedded server: {e}"))?;
+
+    // The QUIC endpoint serves the very same router the TCP listener does, so
+    // the two front doors cannot drift apart — a route added for one is a route
+    // for both, because there is only one.
+    let quic =
+        quic_endpoint.and_then(
+            |ep| match dioxusfun_server::quic::serve_on(ep, router.clone()) {
+                Ok(handle) => {
+                    eprintln!("[host] quic gateway at key {}", handle.endpoint_id);
+                    Some(handle)
+                }
+                Err(e) => {
+                    eprintln!("[host] quic not serving: {e}");
+                    tracing::warn!(error = %e, "quic front door not started");
+                    None
+                }
+            },
+        );
+
+    let gateway = dioxusfun_server::serve_router(listener, router);
     let local_url = format!("ws://127.0.0.1:{}", gateway_addr.port());
     let lan_url = lan_url_for(gateway_addr.port()).unwrap_or_else(|| local_url.clone());
 
@@ -301,6 +365,7 @@ pub async fn start_self_host(
             reachability,
         },
         gateway: Some(gateway),
+        _quic: quic,
         livekit,
         rendezvous_task,
         _port_mapping: port_mapping,

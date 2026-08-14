@@ -56,7 +56,13 @@ pub struct SessionParams {
 pub enum Transport {
     /// Our own machine — self-host, over loopback.
     Loopback,
-    /// Straight to the host: a typed URL, or an address it published.
+    /// Straight to the host over QUIC, encrypted, with the host authenticated
+    /// by its public key. The only one of these that is both direct *and*
+    /// unreadable to the hops in between.
+    Private,
+    /// Straight to the host, in the clear: a typed `ws://` URL, or a plaintext
+    /// address it published. Nobody is relaying it, and everybody on the path
+    /// can read it.
     Direct,
     /// Through a rendezvous relay, which sees every frame.
     Relayed,

@@ -22,6 +22,9 @@ local-ip-address = "0.6"
 # — a host behind carrier-grade NAT gets neither, which is a supported outcome,
 # not an error.
 igd-next = { version = "0.17", features = ["aio_tokio"] }
+# The QUIC transport's client half (src/quic.rs). The server half lives in
+# dioxusfun-server, which this crate already embeds for self-host.
+iroh = { workspace = true }
 natpmp = { version = "0.5", default-features = false, features = ["tokio"] }
 reqwest = { workspace = true }
 # Crypto identity: Nostr secp256k1/Schnorr keypair derived from a BIP39

@@ -21,13 +21,18 @@ pub fn fresh_nonce() -> String {
 }
 
 /// Verify that `signature` is a valid Schnorr signature over
-/// `SHA256(nonce || pubkey_hex || name)` from the key matching `pubkey_hex`
+/// `SHA256(nonce || pubkey_hex || bound)` from the key matching `pubkey_hex`
 /// (64-char hex x-only Nostr pubkey; `signature_hex` is 128-char hex).
+///
+/// `bound` is whatever the key is vouching for. Two things use this: the
+/// claimed *name*, and the *transport key* a host publishes for the QUIC
+/// path — different payloads, identical proof, and the nonce is what stops
+/// either signature being replayed as the other on a later connection.
 pub fn verify_ownership(
     pubkey_hex: &str,
     signature_hex: &str,
     nonce: &str,
-    name: &str,
+    bound: &str,
 ) -> Result<(), String> {
     let pubkey_bytes = hex::decode(pubkey_hex).map_err(|e| format!("pubkey not hex: {e}"))?;
     let xonly = XOnlyPublicKey::from_slice(&pubkey_bytes)
@@ -37,10 +42,10 @@ pub fn verify_ownership(
     let sig =
         Signature::from_slice(&sig_bytes).map_err(|e| format!("invalid schnorr signature: {e}"))?;
 
-    let mut message = Vec::with_capacity(nonce.len() + pubkey_hex.len() + name.len());
+    let mut message = Vec::with_capacity(nonce.len() + pubkey_hex.len() + bound.len());
     message.extend_from_slice(nonce.as_bytes());
     message.extend_from_slice(pubkey_hex.as_bytes());
-    message.extend_from_slice(name.as_bytes());
+    message.extend_from_slice(bound.as_bytes());
     let digest: [u8; 32] = Sha256::digest(&message).into();
     let msg = Message::from_digest(digest);
 

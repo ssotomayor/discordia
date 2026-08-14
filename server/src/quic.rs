@@ -66,15 +66,26 @@ impl QuicHandle {
 /// Relay-assisted connections are a later stage precisely because they involve
 /// someone else, and that has to be a choice rather than a default.
 pub async fn serve_quic(router: Router, secret: Option<SecretKey>) -> Result<QuicHandle, String> {
+    serve_on(bind_quic(secret).await?, router)
+}
+
+/// Bind the endpoint without serving anything on it yet.
+///
+/// Split from `serve_on` for the same reason `bind_with_fallback` is split from
+/// `spawn_on`: a self-hosting client has to advertise its key and UDP port
+/// *before* it has a router to serve — the port needs mapping and the address
+/// goes out with the registration, both of which happen while the gateway is
+/// still being assembled.
+pub async fn bind_quic(secret: Option<SecretKey>) -> Result<Endpoint, String> {
     let mut builder = Endpoint::builder(presets::Minimal).alpns(vec![GATEWAY_ALPN.to_vec()]);
     if let Some(secret) = secret {
         builder = builder.secret_key(secret);
     }
-    let endpoint = builder
-        .bind()
-        .await
-        .map_err(|e| format!("quic bind: {e}"))?;
+    builder.bind().await.map_err(|e| format!("quic bind: {e}"))
+}
 
+/// Start accepting on an endpoint bound earlier.
+pub fn serve_on(endpoint: Endpoint, router: Router) -> Result<QuicHandle, String> {
     let endpoint_id = endpoint.id();
     let sockets = endpoint.bound_sockets();
     tracing::info!(%endpoint_id, ?sockets, "gateway listening on QUIC");

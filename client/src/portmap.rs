@@ -58,6 +58,14 @@ pub struct Ports {
     pub media_tcp_ice: u16,
     /// LiveKit's single-port UDP mux — the actual audio and video.
     pub media_udp: u16,
+    /// The QUIC transport's UDP port, when one is bound.
+    ///
+    /// Mapped here rather than left to iroh's own port mapper so that one
+    /// module owns every hole we ask for, and so a renumbering is noticed the
+    /// same way the media ports' is — an advertised address whose port the
+    /// router quietly changed is unreachable in exactly the way that looks like
+    /// the host being offline.
+    pub quic_udp: Option<u16>,
 }
 
 /// What the router agreed to.
@@ -79,6 +87,10 @@ pub struct Mapped {
     /// `7882 → 41234` produces a config that looks fine and drops every packet,
     /// so a renumbered media port is reported as "not mapped" instead.
     pub media: bool,
+    /// Whether the QUIC transport's UDP port was mapped at its own number, so
+    /// the key-authenticated path is reachable from outside and not only on
+    /// this network.
+    pub quic: bool,
     /// Whether this machine can reach its own public address — "hairpin NAT".
     ///
     /// Not a curiosity: LiveKit *replaces* its host ICE candidate with the
@@ -151,6 +163,16 @@ async fn finish(
         .await
         .map_err(|e| format!("the router refused to forward the gateway port: {e}"))?;
 
+    // The QUIC port is mapped alongside the media ports and judged the same
+    // way — same number back, or it does not count.
+    let quic_ok = match ports.quic_udp {
+        Some(port) => matches!(
+            router.add(PortMappingProtocol::UDP, local_ip, port).await,
+            Ok(external) if external == port
+        ),
+        None => false,
+    };
+
     let media = {
         let mut all_ok = true;
         for (proto, port) in [
@@ -184,6 +206,7 @@ async fn finish(
         public_ip,
         gateway_port,
         media,
+        quic: quic_ok,
         hairpin,
     };
     Ok((mapped, keep_alive(router, local_ip, ports, gateway_port)))
@@ -227,7 +250,7 @@ fn keep_alive(
         loop {
             tokio::select! {
                 _ = renew.tick() => {
-                    for (proto, internal, external) in all {
+                    for &(proto, internal, external) in &all {
                         match router.add(proto, local_ip, internal).await {
                             // A renewal that comes back on a different external
                             // port is a mapping we are no longer advertising —
@@ -438,6 +461,7 @@ mod tests {
             public_ip: ip,
             gateway_port: 9000,
             media: true,
+            quic: true,
             hairpin: true,
         };
         assert_eq!(

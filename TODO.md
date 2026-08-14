@@ -40,7 +40,15 @@ the top within each section.
 
 ## Security
 
-- **The gateway is plaintext, and `wss://` looks supported without being.**
+- **The gateway is plaintext on every path but QUIC.** Stage 2 added an
+  encrypted, key-authenticated transport (`server/src/quic.rs`,
+  `client/src/quic.rs`) and a joiner holding a code prefers it — but it is only
+  reachable when the host advertised a transport key, which needs a rendezvous
+  registration and an address that works. Everything else still crosses the wire
+  in the clear: the relay, `allow_lan`, a typed `ws://` URL, the plaintext
+  direct address a port mapping produces, and the self-host client's own
+  loopback socket. The entry below still describes those paths exactly.
+- **`wss://` looks supported without being.**
   `tokio-tungstenite` is pinned at 0.24 in the workspace `Cargo.toml` with **no
   TLS backend in `Cargo.lock`** — no `native-tls`, no `rustls` among its
   dependencies — so a `wss://` URL cannot be dialled at all. Meanwhile
@@ -261,6 +269,15 @@ the top within each section.
   3. **LiveKit E2EE** so a relayed call is unreadable to the SFU carrying it.
      Key distribution is the work, and it must rekey on kick and ban.
   Both still need real-network testing, and stay on the branch rather than here.
+- **The QUIC transport has never carried a session between two machines.** The
+  tests in `server/src/quic.rs` stand both ends up in one process over loopback,
+  which settles the protocol plumbing and nothing about the network: whether the
+  UDP port survives a real NAT, whether the advertised addresses are the right
+  ones, and whether a joiner on another network actually prefers the QUIC path
+  are all unverified. `iroh` is also configured with no relay and no discovery,
+  so a host whose addresses are wrong is simply unreachable on that path rather
+  than found another way — which is intended, and makes the address advertising
+  the thing to check first.
 - **Stage 1's port mapping has never met a real router.** Everything in
   `client/src/portmap.rs` is exercised only by unit tests over its pure parts
   (`endpoint()`, `is_private`) — no test anywhere makes a UPnP or NAT-PMP
@@ -289,6 +306,16 @@ the top within each section.
   no SFU at all rather than a LAN-only one. `node_ip` says the same thing
   without the dependency, using the address the router already told us. If a
   future change wants STUN back, that failure mode is the thing to handle.
+- **A joiner cannot verify the transport key belongs to the host it expects.**
+  The rendezvous verifies the Schnorr signature binding a transport key to the
+  account key that registered it, and refuses to publish an unattested pair — so
+  no *other host* can point friends at its own key. But the joiner takes the
+  relay's word for which key belongs to a code: it has no independent expectation
+  of the host's Nostr pubkey, so a malicious rendezvous could hand out its own
+  key and proxy the session. Two ways to close it, neither done: return the
+  owner pubkey and signature from `/resolve` so a client that *was* told the npub
+  out of band can check, and pin the key on first join (trust on first use) so a
+  later substitution is at least noisy.
 - **`/resolve/{code}` hands the host's IP to anyone who has the code.** That is
   the point — it is how a friend tries the direct path — but it is worth
   stating: the code is the capability, and it is a `adjective-animal-NN`
@@ -308,7 +335,7 @@ the top within each section.
   gateway phase (before registering) and a media phase (after), with the guard
   built from both.
 - **The direct/relay race abandons a rendezvous pairing when direct wins.**
-  `connect_preferring_direct` dials both at once and aborts the relay attempt
+  `connect_best` dials them at once and aborts the relay attempt
   mid-handshake, which leaves the rendezvous holding a pending pairing and the
   host a bridge task, until the 10s pairing timeout clears it. Harmless at one
   join per person; worth revisiting if a host ever sees a burst of joins, since

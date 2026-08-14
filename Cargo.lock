@@ -2418,6 +2418,7 @@ dependencies = [
  "hmac",
  "igd-next",
  "image",
+ "iroh",
  "livekit",
  "livekit-api 0.4.24",
  "local-ip-address",

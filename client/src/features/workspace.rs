@@ -829,10 +829,15 @@ fn TransportBadge() -> Element {
 
     let (label, color, title) = match transport {
         crate::state::Transport::Loopback => return rsx! { Fragment {} },
+        crate::state::Transport::Private => (
+            "private",
+            "text-[var(--success)]",
+            "Connected straight to the host over an encrypted QUIC transport, with the host authenticated by its public key. Nobody in between can read this connection. The host can see your IP address.",
+        ),
         crate::state::Transport::Direct => (
             "direct",
-            "text-[var(--success)]",
-            "Connected straight to the host — no relay in the middle. The host can see your IP address.",
+            "text-[var(--warn)]",
+            "Connected straight to the host — no relay in the middle — but in the clear: every hop on the path can read this connection. The host can see your IP address.",
         ),
         crate::state::Transport::Relayed => (
             "relayed",

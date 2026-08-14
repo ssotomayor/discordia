@@ -52,6 +52,30 @@ pub enum HostToRendezvous {
         /// listing. That trade is the host's to make — see `docs/NETWORKING.md`.
         #[serde(default)]
         endpoint: Option<String>,
+        /// The host's QUIC transport key, which a friend dials *instead of* an
+        /// address: the address only says where to send the packets.
+        ///
+        /// A separate key from `pubkey` because it is on a different curve —
+        /// ed25519 for the transport, secp256k1 for the account — so this says
+        /// nothing on its own about whose host it is. `transport_signature` is
+        /// what ties them together.
+        #[serde(default)]
+        transport_key: Option<String>,
+        /// Schnorr signature over `SHA256(nonce || pubkey || transport_key)`,
+        /// against the same `Challenge` nonce the name claim uses.
+        ///
+        /// Without it a host could advertise somebody else's transport key, or
+        /// a name's owner could be impersonated by anyone able to register —
+        /// the point of the whole transport being authenticated is lost if the
+        /// key it authenticates against is unattested.
+        #[serde(default)]
+        transport_signature: Option<String>,
+        /// UDP addresses the transport is listening on, most useful first.
+        ///
+        /// Hints, not identity: a joiner tries them and the key decides whether
+        /// whatever answers is the right host.
+        #[serde(default)]
+        transport_addrs: Vec<String>,
     },
 }
 
@@ -79,6 +103,14 @@ pub struct DiscoverEntry {
     /// directions degrade to the relayed path, which is what they already do.
     #[serde(default)]
     pub endpoint: Option<String>,
+    /// The host's QUIC transport key and where to try it. Present only when the
+    /// host advertised one *and* proved it belongs to the key that owns the
+    /// registration — an unverified pair is dropped at registration rather than
+    /// passed on for a joiner to worry about.
+    #[serde(default)]
+    pub transport_key: Option<String>,
+    #[serde(default)]
+    pub transport_addrs: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -127,6 +159,9 @@ mod tests {
             publish_public: true,
             description: None,
             endpoint: None,
+            transport_key: None,
+            transport_signature: None,
+            transport_addrs: Vec::new(),
         })
         .unwrap();
         assert_eq!(json["op"], "register");
@@ -150,6 +185,9 @@ mod tests {
             publish_public: false,
             description: None,
             endpoint: Some("ws://203.0.113.5:9000".into()),
+            transport_key: None,
+            transport_signature: None,
+            transport_addrs: Vec::new(),
         })
         .unwrap();
         let back: HostToRendezvous = serde_json::from_str(&json).unwrap();
@@ -181,6 +219,8 @@ mod tests {
             description: None,
             idle_secs: 3,
             endpoint: Some("ws://203.0.113.5:9000".into()),
+            transport_key: None,
+            transport_addrs: Vec::new(),
         };
         let back: DiscoverEntry =
             serde_json::from_str(&serde_json::to_string(&with).unwrap()).unwrap();

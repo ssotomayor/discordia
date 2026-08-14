@@ -135,6 +135,31 @@ impl Identity {
 
     /// Schnorr-sign a message (hashed to 32 bytes with SHA-256); returns hex.
     /// The server hashes identically and verifies.
+    /// A stable 32-byte seed for this identity's *transport* key.
+    ///
+    /// The QUIC transport authenticates peers by an ed25519 key, which is not
+    /// the secp256k1 key that is your account — a second key, needed on a
+    /// different curve. Deriving it from the first rather than generating and
+    /// storing one means a host keeps the same transport identity across
+    /// restarts and reinstalls, so a friend who saved your address is still
+    /// reaching *you* and not a stranger who took the address over.
+    ///
+    /// Domain-separated so this hash can never collide with anything else we
+    /// sign or derive, and one-way, so handing out the transport key tells
+    /// nobody anything about the Nostr secret.
+    ///
+    /// The two keys are still only *asserted* to belong together — the binding
+    /// is a signature over the transport key, made by the Nostr key, verified
+    /// where it is published. Derivation makes the key stable; the signature is
+    /// what makes it yours.
+    pub fn transport_seed(&self) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update(b"dioxusfun/quic-transport/v1");
+        h.update(self.secret.secret_bytes());
+        h.finalize().into()
+    }
+
     pub fn sign_hex(&self, message: &[u8]) -> String {
         let secp = Secp256k1::new();
         let keypair = Keypair::from_secret_key(&secp, &self.secret);

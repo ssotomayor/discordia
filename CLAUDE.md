@@ -176,6 +176,11 @@ channel to observe the publication themselves.
   join gates, slowmode, raid detection, audit log live here.
 - `store.rs` — SQLite schema + all persistence. `LoadedState` is the boot
   snapshot. Designed to also back Postgres later (only SQLite impl exists).
+- `quic.rs` — the second front door: the *same* axum router served over iroh
+  QUIC bi-streams, WebSocket upgrade and all. Encrypted, and the host is
+  authenticated by its public key rather than by a certificate we would have to
+  verify ourselves. `build_router`/`serve_router` in `lib.rs` exist so both
+  doors share one router and cannot drift apart.
 - `media.rs` — content-addressed blob store (see #3 above).
 - `auth.rs` — Schnorr verification. `archive.rs` — guild export/import
   (`export_guild`/`import_guild`, fresh IDs, pubkeys preserved).
@@ -236,6 +241,10 @@ channel to observe the publication themselves.
   order is load-bearing: the bound port is what gets mapped and advertised.
   `rendezvous.rs` — the rendezvous client (control handshake + proxy bridging).
   `blossom.rs` — Nostr media upload for avatars/banners.
+- `quic.rs` — the client half of the QUIC transport: derive the transport key
+  from the Nostr identity (stable, one-way), dial a host by key, hand the stream
+  to the ordinary WebSocket handshake. `net::connect_best` prefers it over both
+  plaintext paths, which is why the UI can say `private` rather than `direct`.
 - `portmap.rs` — UPnP-IGD then NAT-PMP, so a home machine obtains an address the
   internet can dial (`docs/NETWORKING.md`, tier 1 — the only one involving
   nobody else). Failure is the normal case and returns a sentence for the UI,

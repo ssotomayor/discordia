@@ -32,6 +32,11 @@ pub struct HostEntry {
     /// managed to obtain one. We store and hand it out verbatim: whether it
     /// actually works is settled by the joiner trying it, not by us probing it.
     pub endpoint: Option<String>,
+    /// The host's QUIC transport key, and where to try reaching it. Only ever
+    /// set when the registering key signed for it (see `relay.rs`), so anything
+    /// here has been attested.
+    pub transport_key: Option<String>,
+    pub transport_addrs: Vec<String>,
     pub control_tx: tokio::sync::mpsc::UnboundedSender<RendezvousToHost>,
     /// Unix millis of the last frame we had from this host, refreshed by the
     /// control loop's heartbeat.
@@ -349,6 +354,8 @@ fn entry_for(shortcode: &str, host: &HostEntry) -> DiscoverEntry {
         description: host.description.clone(),
         idle_secs: host.idle_secs(),
         endpoint: host.endpoint.clone(),
+        transport_key: host.transport_key.clone(),
+        transport_addrs: host.transport_addrs.clone(),
     }
 }
 

@@ -46,6 +46,9 @@ pub async fn handle_host_control(socket: WebSocket, registry: Arc<Registry>, cfg
                 publish_public,
                 description,
                 endpoint,
+                transport_key,
+                transport_signature,
+                transport_addrs,
             }) => (
                 name,
                 pubkey,
@@ -53,6 +56,9 @@ pub async fn handle_host_control(socket: WebSocket, registry: Arc<Registry>, cfg
                 publish_public,
                 description,
                 endpoint,
+                transport_key,
+                transport_signature,
+                transport_addrs,
             ),
             Err(e) => {
                 send_err(&mut tx, &format!("invalid register frame: {e}")).await;
@@ -69,7 +75,40 @@ pub async fn handle_host_control(socket: WebSocket, registry: Arc<Registry>, cfg
         }
         None => return,
     };
-    let (name, pubkey, signature, publish_public, description, endpoint) = register;
+    let (
+        name,
+        pubkey,
+        signature,
+        publish_public,
+        description,
+        endpoint,
+        transport_key,
+        transport_signature,
+        transport_addrs,
+    ) = register;
+
+    // A transport key is published only if the registering key vouches for it.
+    // Unattested, it would be an invitation to point friends at somebody else's
+    // host — the transport authenticates whoever holds that key, so publishing
+    // one nobody proved ownership of moves the trust problem rather than
+    // solving it. The pair is dropped rather than the registration refused: a
+    // host with an unusable transport key is still perfectly good over the
+    // relay, and this way an older or misconfigured client degrades instead of
+    // being locked out.
+    let transport = match (&transport_key, &pubkey, &transport_signature) {
+        (Some(key), Some(pk), Some(sig)) => match verify::verify_ownership(pk, sig, &nonce, key) {
+            Ok(()) => Some((key.clone(), transport_addrs)),
+            Err(e) => {
+                tracing::warn!(error = %e, "transport key not attested — publishing without it");
+                None
+            }
+        },
+        (Some(_), _, _) => {
+            tracing::warn!("transport key offered without a pubkey and signature — ignoring");
+            None
+        }
+        _ => None,
+    };
 
     // Resolve a shortcode. A claimed name goes through the signed-ownership +
     // uniqueness path; no name falls back to an anonymous random shortcode.
@@ -125,6 +164,8 @@ pub async fn handle_host_control(socket: WebSocket, registry: Arc<Registry>, cfg
         description,
         public: publish_public,
         endpoint,
+        transport_key: transport.as_ref().map(|(k, _)| k.clone()),
+        transport_addrs: transport.map(|(_, a)| a).unwrap_or_default(),
         control_tx,
         // Stamped properly by try_claim; this is just a starting value.
         last_seen_ms: Default::default(),

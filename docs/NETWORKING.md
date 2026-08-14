@@ -30,7 +30,7 @@ What a rendezvous supplies is **reachability**, not hosting:
 
 The bottom row is Stage 1, and it is now implemented — `client/src/portmap.rs`
 asks the router for a forward, the resulting address rides on `Register`, and a
-friend joining by code races it against the relay (`net::connect_preferring_direct`).
+friend joining by code races it against the relay (`net::connect_best`).
 It is not universal and never can be: behind carrier-grade NAT, or on a router
 with UPnP and NAT-PMP both off, there is nothing to obtain, and such a host falls
 back to the middle row. **Which row you are on is shown in the host banner**, with
@@ -47,16 +47,22 @@ messages.
 
 | | Control (messages, presence, tokens) | Voice / screen video |
 |---|---|---|
-| **Anyone on the network path** | **Readable.** The gateway is plaintext — see the caveat below | Encrypted in transit (WebRTC DTLS-SRTP) |
+| **Anyone on the network path** | **Readable on the `ws://` paths**, encrypted on the QUIC one — see the caveat below | Encrypted in transit (WebRTC DTLS-SRTP) |
 | **A rendezvous relay, when used** | **Readable** | **Readable** — its SFU decrypts and re-encrypts |
 | **The host** | Readable | Readable |
 | **A LAN friend, on your wifi** | **Readable** — `allow_lan` is plaintext too | Encrypted in transit |
 
-**The gateway is not encrypted.** `tokio-tungstenite` is pinned with no TLS
-backend, so `wss://` cannot be dialled even though the client accepts the scheme.
-This is tracked in `TODO.md` under Security and is the first thing on the roadmap
-below. Until it is fixed, "direct connection" and "private connection" are not
-the same thing — a direct plaintext socket is still readable by every hop.
+**The gateway is not encrypted over TCP.** `tokio-tungstenite` is pinned with no
+TLS backend, so `wss://` cannot be dialled even though the client accepts the
+scheme. That is still true of every `ws://` path: the relay, the LAN, a typed
+URL, and the plaintext direct address a port mapping produces.
+
+**It is encrypted over QUIC**, which Stage 2 added. A host that publishes a
+transport key is reachable at `dioxusfun/gateway/1` over an encrypted connection
+where the *host* is authenticated by its public key — and a joiner holding a code
+prefers that path over every other. So "direct" and "private" are now different
+things the UI names differently: `private` is the QUIC path, `direct` is a
+plaintext socket that merely has no relay in the middle.
 
 **Media is encrypted in transit but terminates at an SFU.** WebRTC always
 encrypts on the wire. But an SFU is not a pipe: it decrypts, routes and
@@ -158,7 +164,19 @@ Not verified anywhere in CI: that a mapping appears on a real router at all. See
 
 ### Stage 2 — an encrypted, key-authenticated transport
 
-Two jobs, only one of them reachability.
+Two jobs, only one of them reachability. **The first is done; the second is not.**
+
+What exists: `server::quic` serves the ordinary axum router over iroh QUIC
+bi-streams — WebSocket upgrade included, so the gateway protocol is unchanged and
+`/media/{name}` came along for free. `client::quic` dials it. The host's
+transport key is derived from its Nostr identity (stable across restarts,
+one-way, so it leaks nothing), advertised through the rendezvous with a Schnorr
+signature binding it to the account key, and published only if that signature
+checks out. A joiner racing candidates prefers it over both plaintext paths.
+
+`presets::Minimal` — no relay, no discovery. A peer reaches a host because it
+was told an address, and nothing else is contacted. That is deliberate: the
+remaining half of this stage is the part that involves someone else.
 
 **Encryption**, needed regardless of anything else here. The obstacle is that a
 home-IP host has no domain and no CA, so ordinary TLS means a self-signed
@@ -168,8 +186,12 @@ working. Preferring a reviewed library over hand-rolled verification is the whol
 argument for a QUIC transport (`iroh` is the candidate) where authentication is
 by public key by construction.
 
-**Coordinated hole punching** for tier 2, and dial-by-public-key, so a join code
-becomes the host's node key: no IP, no domain, no port forwarding.
+**Coordinated hole punching** for tier 2 — still to do. Dial-by-public-key is in
+place, but the addresses still have to be reachable on their own: iroh is
+configured with no relay and no discovery, so a host behind a NAT that port
+mapping cannot open is not found by this path either. Turning that on means
+contacting a coordinator, which is exactly the choice this design refuses to make
+silently.
 
 The WebSocket stays — `SessionMode::Remote`, LAN, and any future browser client
 use it, and a domain-hosted server behind a reverse proxy already has real TLS.

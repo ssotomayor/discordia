@@ -90,7 +90,14 @@ enum Dial {
     Single { url: String, transport: Transport },
     /// The host published an address of its own. Try it, but not on its own —
     /// see `connect_preferring_direct` for why both are dialled at once.
-    DirectOrRelay { direct: String, relay: String },
+    DirectOrRelay {
+        /// The host's QUIC key and where to try it, when it published one.
+        /// Preferred over everything else: it is the only candidate that is
+        /// both direct *and* private.
+        quic: Option<(String, Vec<String>)>,
+        direct: String,
+        relay: String,
+    },
 }
 
 async fn resolve_session(
@@ -148,27 +155,46 @@ async fn resolve_session(
             // own. A relay that predates the field, or a host that obtained no
             // address, simply leaves us with the relayed path we already had —
             // so nothing here is allowed to turn into a join failure.
-            match direct_endpoint(&with_scheme, code).await {
-                Some(endpoint) => match normalize_url(&endpoint) {
-                    Ok(direct) => Ok((Dial::DirectOrRelay { direct, relay }, None)),
-                    Err(e) => {
-                        tracing::warn!(%endpoint, error = %e, "host advertised an unusable endpoint");
-                        Ok((
-                            Dial::Single {
-                                url: relay,
-                                transport: Transport::Relayed,
-                            },
-                            None,
-                        ))
-                    }
-                },
-                None => Ok((
+            let relayed_only = |relay: String| {
+                Ok((
                     Dial::Single {
                         url: relay,
                         transport: Transport::Relayed,
                     },
                     None,
+                ))
+            };
+            let Some(entry) = resolve_host(&with_scheme, code).await else {
+                return relayed_only(relay);
+            };
+            let quic = entry
+                .transport_key
+                .filter(|_| !entry.transport_addrs.is_empty())
+                .map(|key| (key, entry.transport_addrs));
+            match entry.endpoint.as_deref().map(normalize_url) {
+                Some(Ok(direct)) => Ok((
+                    Dial::DirectOrRelay {
+                        quic,
+                        direct,
+                        relay,
+                    },
+                    None,
                 )),
+                Some(Err(e)) => {
+                    tracing::warn!(error = %e, "host advertised an unusable endpoint");
+                    relayed_only(relay)
+                }
+                // A key with no plaintext twin still races — against the relay
+                // alone, which is the pairing that matters most anyway.
+                None if quic.is_some() => Ok((
+                    Dial::DirectOrRelay {
+                        quic,
+                        direct: relay.clone(),
+                        relay,
+                    },
+                    None,
+                )),
+                None => relayed_only(relay),
             }
         }
     }
@@ -186,12 +212,16 @@ fn ws_scheme(base: &str) -> String {
     }
 }
 
-/// The direct gateway URL a host published for this code, if any.
+/// What a host published for this code — its direct address, its transport key,
+/// or neither.
 ///
 /// `/resolve/{code}` rather than `/discover`: the browse listing carries only
 /// hosts that opted into being public, and a code handed to friends is exactly
 /// the case that did not.
-async fn direct_endpoint(ws_base: &str, code: &str) -> Option<String> {
+async fn resolve_host(
+    ws_base: &str,
+    code: &str,
+) -> Option<crate::protocol::rendezvous::DiscoverEntry> {
     let http_base = if let Some(rest) = ws_base.strip_prefix("wss://") {
         format!("https://{rest}")
     } else if let Some(rest) = ws_base.strip_prefix("ws://") {
@@ -199,7 +229,7 @@ async fn direct_endpoint(ws_base: &str, code: &str) -> Option<String> {
     } else {
         ws_base.to_string()
     };
-    let entry = reqwest::Client::new()
+    reqwest::Client::new()
         .get(format!("{http_base}/resolve/{code}"))
         .timeout(std::time::Duration::from_secs(5))
         .send()
@@ -209,8 +239,7 @@ async fn direct_endpoint(ws_base: &str, code: &str) -> Option<String> {
         .ok()?
         .json::<crate::protocol::rendezvous::DiscoverEntry>()
         .await
-        .ok()?;
-    entry.endpoint
+        .ok()
 }
 
 type Ws =
@@ -226,50 +255,89 @@ type Ws =
 /// minute on macOS.
 const DIRECT_ATTEMPT: std::time::Duration = std::time::Duration::from_secs(4);
 
-/// Try the host's own address and the relay at once, and keep whichever
-/// answers, preferring the direct one.
+/// Try every way in at once and keep the best one that answers.
 ///
-/// Both are dialled together rather than in sequence because the failure that
-/// matters is silent (see `DIRECT_ATTEMPT`) — a friend must not stare at a
+/// Ranked, not first-past-the-post: the QUIC path is preferred whenever it
+/// works, because it is the only candidate that is direct *and* private — the
+/// plaintext one is a direct socket every hop on the path can read. The relay
+/// is last, and it is the only one that hands a third party the conversation.
+///
+/// All of them are dialled together rather than in sequence because the failure
+/// that matters is silent (see `DIRECT_ATTEMPT`) — a friend must not stare at a
 /// spinner for a minute to discover a stale mapping. The cost is that a
 /// successful direct connection leaves the relay holding a pairing nobody
 /// claims; the rendezvous expires those in ten seconds, which is what that
 /// timeout is for.
-async fn connect_preferring_direct(direct: &str, relay: &str) -> Result<(Ws, Transport), String> {
-    eprintln!("[dioxusfun] trying {direct} directly, {relay} as fallback");
+async fn connect_best(
+    quic: Option<(String, Vec<String>)>,
+    direct: &str,
+    relay: &str,
+) -> Result<(Socket, Transport), String> {
     let relay_url = relay.to_string();
     let relay_attempt =
         tokio::spawn(async move { tokio_tungstenite::connect_async(&relay_url).await });
 
-    match tokio::time::timeout(DIRECT_ATTEMPT, tokio_tungstenite::connect_async(direct)).await {
-        Ok(Ok((ws, _))) => {
-            // Nothing is sent on the relay socket, so aborting mid-handshake
-            // costs the rendezvous a pairing slot it already knows how to
-            // expire.
-            relay_attempt.abort();
-            eprintln!("[dioxusfun] connected directly to {direct}");
-            return Ok((ws, Transport::Direct));
+    // The private path first, and on its own clock: if it answers, nothing else
+    // is worth having.
+    if let Some((key, addrs)) = quic {
+        match tokio::time::timeout(DIRECT_ATTEMPT, dial_quic(&key, &addrs)).await {
+            Ok(Ok(socket)) => {
+                relay_attempt.abort();
+                eprintln!("[dioxusfun] connected over QUIC to {key}");
+                return Ok((socket, Transport::Private));
+            }
+            Ok(Err(e)) => tracing::info!(error = %e, "quic path unavailable — trying the rest"),
+            Err(_) => tracing::info!("quic path timed out — trying the rest"),
         }
-        Ok(Err(e)) => {
-            tracing::info!(%direct, error = %e, "direct connection refused — using the relay")
+    }
+
+    if direct != relay {
+        eprintln!("[dioxusfun] trying {direct} directly, {relay} as fallback");
+        match tokio::time::timeout(DIRECT_ATTEMPT, tokio_tungstenite::connect_async(direct)).await {
+            Ok(Ok((ws, _))) => {
+                // Nothing is sent on the relay socket, so aborting mid-handshake
+                // costs the rendezvous a pairing slot it already knows how to
+                // expire.
+                relay_attempt.abort();
+                eprintln!("[dioxusfun] connected directly to {direct}");
+                return Ok((Socket::Tcp(ws), Transport::Direct));
+            }
+            Ok(Err(e)) => {
+                tracing::info!(%direct, error = %e, "direct connection refused — using the relay")
+            }
+            Err(_) => tracing::info!(%direct, "direct connection timed out — using the relay"),
         }
-        Err(_) => tracing::info!(%direct, "direct connection timed out — using the relay"),
     }
 
     match relay_attempt.await {
         Ok(Ok((ws, _))) => {
             eprintln!("[dioxusfun] connected through the relay {relay}");
-            Ok((ws, Transport::Relayed))
+            Ok((Socket::Tcp(ws), Transport::Relayed))
         }
         Ok(Err(e)) => Err(format!("connect failed: {e}")),
         Err(e) => Err(format!("connect failed: {e}")),
     }
 }
 
+/// Open the gateway over QUIC: dial the key, then run the ordinary WebSocket
+/// client handshake on the stream it gives back.
+async fn dial_quic(key: &str, addrs: &[String]) -> Result<Socket, String> {
+    let endpoint_id = crate::quic::parse_endpoint_id(key)?;
+    let addrs: Vec<std::net::SocketAddr> = addrs.iter().filter_map(|a| a.parse().ok()).collect();
+    let (io, guard) = crate::quic::dial(endpoint_id, &addrs).await?;
+    // The Host header is cosmetic here — there is no name behind a QUIC key, and
+    // the gateway only reads it to derive a LiveKit URL, which the host answers
+    // from its own configuration for this path.
+    let (ws, _) = tokio_tungstenite::client_async("ws://gateway.quic/gateway", io)
+        .await
+        .map_err(|e| format!("websocket over quic: {e}"))?;
+    Ok(Socket::Quic(ws, guard))
+}
+
 async fn run(
     params: SessionParams,
     tx: &UnboundedSender<ClientMessage>,
-    mut rx: UnboundedReceiver<ClientMessage>,
+    rx: UnboundedReceiver<ClientMessage>,
     mut state: Signal<AppState>,
     voice_tx: &UnboundedSender<VoiceCmd>,
 ) -> Result<(), String> {
@@ -284,11 +352,53 @@ async fn run(
             let (ws, _) = tokio_tungstenite::connect_async(&url)
                 .await
                 .map_err(|e| format!("connect failed: {e}"))?;
-            (ws, transport)
+            (Socket::Tcp(ws), transport)
         }
-        Dial::DirectOrRelay { direct, relay } => connect_preferring_direct(&direct, &relay).await?,
+        Dial::DirectOrRelay {
+            quic,
+            direct,
+            relay,
+        } => connect_best(quic, &direct, &relay).await?,
     };
     state.write().transport = transport;
+
+    // The two transports carry the same frames over different stream types, so
+    // the session below is generic and this is the only place that knows which
+    // one won. The QUIC guard rides along in the enum because dropping it would
+    // close the connection under the socket.
+    match ws_stream {
+        Socket::Tcp(ws) => run_session(ws, params, tx, rx, state, voice_tx).await,
+        Socket::Quic(ws, _guard) => run_session(ws, params, tx, rx, state, voice_tx).await,
+    }
+}
+
+/// A gateway socket, whichever transport carried it.
+enum Socket {
+    Tcp(Ws),
+    /// The WebSocket plus the QUIC connection underneath it, which has to
+    /// outlive the session.
+    Quic(
+        tokio_tungstenite::WebSocketStream<crate::quic::GatewayIo>,
+        crate::quic::ConnectionGuard,
+    ),
+}
+
+/// The session proper: Identify, then frames until the socket closes.
+///
+/// Generic over the stream so the QUIC and TCP paths share every line of it —
+/// the gateway protocol is the same protocol either way, and a second copy of
+/// this loop is exactly the kind of thing that drifts.
+async fn run_session<S>(
+    ws_stream: tokio_tungstenite::WebSocketStream<S>,
+    params: SessionParams,
+    tx: &UnboundedSender<ClientMessage>,
+    mut rx: UnboundedReceiver<ClientMessage>,
+    mut state: Signal<AppState>,
+    voice_tx: &UnboundedSender<VoiceCmd>,
+) -> Result<(), String>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
     let (mut ws_tx, mut ws_rx) = ws_stream.split();
 
     // Wait for the server's Hello frame so we know what nonce to sign.
@@ -1059,7 +1169,7 @@ mod tests {
     async fn direct_wins_when_it_answers() {
         let direct = ws_server().await;
         let relay = ws_server().await;
-        let (_ws, transport) = connect_preferring_direct(&direct, &relay).await.unwrap();
+        let (_ws, transport) = connect_best(None, &direct, &relay).await.unwrap();
         assert_eq!(transport, Transport::Direct);
     }
 
@@ -1069,8 +1179,28 @@ mod tests {
     async fn relay_carries_the_session_when_direct_is_refused() {
         let direct = dead_address().await;
         let relay = ws_server().await;
-        let (_ws, transport) = connect_preferring_direct(&direct, &relay).await.unwrap();
+        let (_ws, transport) = connect_best(None, &direct, &relay).await.unwrap();
         assert_eq!(transport, Transport::Relayed);
+    }
+
+    /// A QUIC key that cannot be reached must not strand the join: the plaintext
+    /// paths are still there, and the point of racing is that no single
+    /// candidate can hold the session hostage.
+    #[tokio::test]
+    async fn an_unreachable_quic_key_falls_through_to_the_rest() {
+        let direct = ws_server().await;
+        let relay = ws_server().await;
+        // A syntactically valid key nobody is listening on, at a dead address.
+        let key = iroh::SecretKey::generate().public().to_string();
+        let dead = dead_address().await;
+        let addr = dead
+            .trim_start_matches("ws://")
+            .trim_end_matches("/gateway");
+
+        let (_ws, transport) = connect_best(Some((key, vec![addr.to_string()])), &direct, &relay)
+            .await
+            .unwrap();
+        assert_eq!(transport, Transport::Direct);
     }
 
     /// With neither reachable, the error is the relay's — the direct address is
@@ -1080,9 +1210,10 @@ mod tests {
     async fn both_down_is_a_connect_failure() {
         let direct = dead_address().await;
         let relay = dead_address().await;
-        let err = connect_preferring_direct(&direct, &relay)
-            .await
-            .unwrap_err();
+        let err = match connect_best(None, &direct, &relay).await {
+            Ok(_) => panic!("connected to two dead addresses"),
+            Err(e) => e,
+        };
         assert!(err.contains("connect failed"), "{err}");
     }
 }
