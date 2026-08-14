@@ -46,13 +46,31 @@ pub const MAX_USERNAME_LEN: usize = 32;
 /// a trailing space that a single leading trim never saw, and then the server's
 /// trim would produce a different string than the client signed. See the test.
 pub fn canonical_username(raw: &str) -> String {
-    let truncated: String = raw.trim().chars().take(MAX_USERNAME_LEN).collect();
+    let truncated = truncate_username(raw.trim());
     let trimmed = truncated.trim();
     if trimmed.is_empty() {
         "anonymous".to_string()
     } else {
         trimmed.to_string()
     }
+}
+
+/// The length half of `canonical_username`, on its own — the rule for *where* a
+/// name stops, without the trimming that only makes sense once it is finished.
+///
+/// It is public because an input field has to stop the user in the same place
+/// the wire will, and it cannot borrow HTML's `maxlength` to do it: that
+/// attribute counts UTF-16 code units while this counts scalar values, so an
+/// astral character (most emoji) spends two of the former and one of the
+/// latter, and a `maxlength` of 32 cuts an emoji name off at 16. Sharing the
+/// count is the same argument as sharing the canonicalisation — the two ends
+/// disagreeing about what "32 characters" means is what this whole function
+/// pair exists to prevent.
+///
+/// Trimming is deliberately not part of it: a caller running this on every
+/// keystroke would delete the space between two words the moment it was typed.
+pub fn truncate_username(raw: &str) -> String {
+    raw.chars().take(MAX_USERNAME_LEN).collect()
 }
 
 /// Whether a guild appears in the public directory or is joinable only by
@@ -262,7 +280,7 @@ mod level_tests {
 
 #[cfg(test)]
 mod username_tests {
-    use super::{MAX_USERNAME_LEN, canonical_username};
+    use super::{MAX_USERNAME_LEN, canonical_username, truncate_username};
 
     /// The property the `Identify` handshake actually rests on. The client
     /// canonicalises and signs; the server canonicalises what it received and
@@ -321,6 +339,34 @@ mod username_tests {
     fn multibyte_names_are_cut_by_character() {
         let out = canonical_username(&"🙂".repeat(40));
         assert_eq!(out.chars().count(), MAX_USERNAME_LEN);
+    }
+
+    /// What an input field needs from this module, and the reason it cannot use
+    /// HTML's `maxlength` instead: 32 emoji are 32 characters here and 64 code
+    /// units there, so the attribute would stop the user at half the allowance.
+    #[test]
+    fn truncation_counts_characters_where_maxlength_counts_code_units() {
+        let out = truncate_username(&"😀".repeat(40));
+        assert_eq!(out.chars().count(), MAX_USERNAME_LEN);
+        assert_eq!(out.encode_utf16().count(), MAX_USERNAME_LEN * 2);
+    }
+
+    /// The half a field runs on every keystroke must not trim, or the space
+    /// between two words disappears as it is typed.
+    #[test]
+    fn truncation_leaves_whitespace_alone() {
+        assert_eq!(truncate_username("john "), "john ");
+        assert_eq!(truncate_username("  "), "  ");
+    }
+
+    /// A name the field already stopped is one `canonical_username` will not
+    /// shorten again — what the user sees is what gets signed.
+    #[test]
+    fn a_truncated_name_is_not_cut_a_second_time_at_signing() {
+        for raw in ["alice", &"a".repeat(60), &"😀".repeat(60), "ünïcøde"] {
+            let typed = truncate_username(raw);
+            assert_eq!(canonical_username(&typed), typed.trim());
+        }
     }
 }
 

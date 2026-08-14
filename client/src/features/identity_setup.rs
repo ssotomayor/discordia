@@ -179,14 +179,32 @@ pub fn IdentitySetupView(on_done: EventHandler<Identity>) -> Element {
                                     input {
                                         class: INPUT,
                                         r#type: "text",
-                                        // The server stores at most this much,
-                                        // and both ends now sign the truncated
-                                        // form — but let the field say so
-                                        // rather than silently shortening a
-                                        // name the user typed in full.
-                                        maxlength: crate::protocol::MAX_USERNAME_LEN as i64,
                                         value: "{display_name}",
-                                        oninput: move |e| display_name.set(e.value()),
+                                        // The server stores at most this much
+                                        // and both ends now sign the truncated
+                                        // form — so the field stops there too
+                                        // rather than silently shortening a
+                                        // name the user typed in full. See
+                                        // `truncate_username` for why it is not
+                                        // the `maxlength` attribute doing it.
+                                        //
+                                        // Clamping on input rather than in the
+                                        // attribute means the 33rd keystroke
+                                        // sets `display_name` to the string it
+                                        // already held, so the field only stays
+                                        // in step because Dioxus re-applies
+                                        // `value` even when the diff says it
+                                        // did not change: it is declared
+                                        // `value: String volatile` in
+                                        // `dioxus-html`'s element table, and
+                                        // `dioxus-core`'s `diff/node.rs` writes
+                                        // an attribute `if volatile ||
+                                        // attribute_changed`. That is a
+                                        // framework guarantee this code leans
+                                        // on and cannot test from here — what
+                                        // gets signed is right either way.
+
+                                        oninput: move |e| display_name.set(crate::protocol::truncate_username(&e.value())),
                                     }
                                 }
 
@@ -232,9 +250,10 @@ pub fn IdentitySetupView(on_done: EventHandler<Identity>) -> Element {
                                     class: INPUT,
                                     r#type: "text",
                                     placeholder: "your-handle",
-                                    maxlength: crate::protocol::MAX_USERNAME_LEN as i64,
                                     value: "{display_name}",
-                                    oninput: move |e| display_name.set(e.value()),
+                                    // Truncated here, not by `maxlength` —
+                                    // see `protocol::truncate_username`.
+                                    oninput: move |e| display_name.set(crate::protocol::truncate_username(&e.value())),
                                 }
                             }
                             button {
@@ -284,9 +303,10 @@ pub fn IdentitySetupView(on_done: EventHandler<Identity>) -> Element {
                                     class: INPUT,
                                     r#type: "text",
                                     placeholder: "your-handle",
-                                    maxlength: crate::protocol::MAX_USERNAME_LEN as i64,
                                     value: "{display_name}",
-                                    oninput: move |e| display_name.set(e.value()),
+                                    // Truncated here, not by `maxlength` —
+                                    // see `protocol::truncate_username`.
+                                    oninput: move |e| display_name.set(crate::protocol::truncate_username(&e.value())),
                                 }
                             }
                             div { class: "text-[10px] text-[var(--warn)] border border-[var(--edge)] rounded-lg p-2.5 leading-relaxed",

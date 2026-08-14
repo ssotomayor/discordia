@@ -511,7 +511,13 @@ fn IdentityCard(
                             r#type: "text",
                             value: "{draft}",
                             autofocus: true,
-                            oninput: move |e| draft.set(e.value()),
+                            // This field had no cap at all, so a long rename
+                            // reached `set_display_name` in full and was cut
+                            // down at signing time with nothing on screen
+                            // saying so. Same rule as the setup fields — see
+                            // `protocol::truncate_username` for why the
+                            // `maxlength` attribute cannot express it.
+                            oninput: move |e| draft.set(crate::protocol::truncate_username(&e.value())),
                             onkeydown: move |e| {
                                 let key = e.key().to_string();
                                 if key == "Enter" {
