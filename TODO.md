@@ -47,8 +47,6 @@ the top within each section.
   registration and an address that works. Everything else still crosses the wire
   in the clear: the relay, `allow_lan`, a typed `ws://` URL, the plaintext
   direct address a port mapping produces, and the self-host client's own
-  loopback socket. The entry below still describes those paths exactly.
-- **`wss://` looks supported without being.**
   loopback socket. The entry below describes those paths, and its correction
   about the lockfile makes the fix cheaper than this one assumed: rustls is
   already compiled into the client, so TLS on the gateway socket is a feature
