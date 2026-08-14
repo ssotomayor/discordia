@@ -126,8 +126,18 @@ pub async fn start_self_host(
     // the same reason the TCP listener does: its UDP port is one of the things
     // to map, and its key and address are what get advertised. Nothing is
     // served on it until the router exists, further down.
-    let transport_secret = crate::quic::secret_for(&identity);
-    let quic_endpoint =
+    //
+    // Gated on the same setting as the TCP bind, and that is not a detail.
+    // QUIC serves the same router; a door left open here would accept direct
+    // connections from anyone holding the key, while the checkbox that is
+    // supposed to govern exactly that sits unticked. Worse, the key and address
+    // would still be advertised, so a coordinator could introduce a stranger to
+    // a host that asked to be reachable by nobody.
+    let quic_endpoint = if !allow_lan {
+        eprintln!("[host] direct connections are off — not opening the QUIC door either");
+        None
+    } else {
+        let transport_secret = crate::quic::secret_for(&identity);
         match dioxusfun_server::quic::bind_quic(Some(transport_secret), &coordination).await {
             Ok(ep) => Some(ep),
             Err(e) => {
@@ -137,7 +147,8 @@ pub async fn start_self_host(
                 tracing::warn!(error = %e, "quic endpoint not bound");
                 None
             }
-        };
+        }
+    };
     let quic_port = quic_endpoint
         .as_ref()
         .and_then(|ep| ep.bound_sockets().first().map(|s| s.port()));
