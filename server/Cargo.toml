@@ -33,7 +33,15 @@ rand = "0.8"
 
 # Persistence (Phase 1): SQLite via sqlx. Postgres lands behind the same
 # Store seam in a later phase (see docs/ROADMAP.md).
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "macros"] }
+#
+# No `macros` feature on purpose. `store.rs` builds every statement with the
+# runtime API — `sqlx::query(…)` and friends, 49 call sites — and uses neither
+# `query!` nor `#[derive(FromRow)]`, which are the only things that feature
+# provides. Carrying it cost a *second, host-side* build of `sqlx-core`,
+# `tokio` and `serde_json` for the proc macro: 14 of this crate's duplicate
+# compilations, for nothing anyone called. Adding it back is fine — just check
+# first that something actually needs a compile-time-checked query.
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }
 # Media blob store: decode data-URLs into content-addressed files.
 base64 = "0.22"
 # Error type for guild export/import (bridges sqlx + validation errors).
