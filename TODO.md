@@ -269,6 +269,15 @@ the top within each section.
      distributing a per-channel key that no server holds, and rekeying it on
      kick and ban. See the two entries below.
   The transport still needs real-network testing, and stays on the branch.
+- **The relay hop has no TLS, which leaks metadata to the network.** A
+  rendezvous advertises its relay as `http://host:7701`, and iroh's client
+  disables TLS for exactly that scheme. What crosses is already encrypted end to
+  end between the two endpoints, so the *content* is safe from both the relay
+  and the network — but an observer on the path sees which endpoint ids connect
+  to the relay and when, where TLS would have hidden that from everyone except
+  the relay operator. Closing it needs a certificate for the relay's hostname,
+  which means the deployment has a hostname — the same prerequisite the
+  plaintext gateway has under Security, and worth doing once for both.
 - **Media key distribution is written and has never run between two people.**
   `client/src/mediakey.rs` seals a channel key per recipient (ECDH over the
   Nostr identity keys, XChaCha20-Poly1305, epoch bound as associated data) and
