@@ -143,7 +143,16 @@ pub fn register_room(room: &std::sync::Arc<livekit::Room>) {
     // undecryptable to everyone, including a peer doing exactly the same thing.
     let have_key = ACTIVE.lock().expect("e2ee key lock").is_some();
     room.e2ee_manager().set_enabled(have_key);
-    tracing::debug!(encrypted = have_key, "room registered for media keys");
+    // At `info`, because whether *this* room is encrypting is the one fact that
+    // decides whether anyone can hear this peer, and it has been guessed at
+    // across three test sessions. `enabled()` is read back from the manager
+    // rather than echoed from the line above, so it reports what the SDK
+    // believes rather than what we asked for.
+    tracing::info!(
+        encrypting = room.e2ee_manager().enabled(),
+        have_key,
+        "media room registered"
+    );
 }
 
 /// Adopt a channel key: hand it to every native room, and to the webview.
@@ -176,9 +185,15 @@ pub fn apply_key(key: &[u8; crate::mediakey::KEY_LEN]) {
     {
         let mut rooms = ROOMS.lock().expect("e2ee room list");
         rooms.retain(|r| r.strong_count() > 0);
+        let mut switched = 0usize;
         for room in rooms.iter().filter_map(|r| r.upgrade()) {
             room.e2ee_manager().set_enabled(true);
+            switched += 1;
         }
+        // Zero here means the key arrived before any room existed, which is
+        // normal for whoever generates it — the rooms enable themselves when
+        // they register. Zero *after* a call is up is the bug this reports.
+        tracing::info!(rooms = switched, "media key applied to live rooms");
     }
     let js = format!(
         "{}\nwindow.dxScreen.setE2eeKey({});",

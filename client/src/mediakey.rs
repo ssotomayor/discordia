@@ -219,6 +219,34 @@ use dioxus::prelude::*;
 use crate::protocol::{ClientMessage, Id};
 use crate::state::{use_app_state, use_gateway};
 
+/// What we have already handed to whom, so the same key is not sent twice.
+///
+/// The effect that sends keys reads `AppState`, so it re-runs on anything that
+/// touches it — a speaking flag, a mic level, a heartbeat. Without a ledger
+/// that meant re-sealing and re-sending the key to every member several times a
+/// second, which is not merely wasteful: the gateway's outbound queue per
+/// connection is bounded, and overflowing it drops the connection. A member was
+/// flooded off voice by the mechanism meant to let them hear it.
+///
+/// Keyed by channel and recipient, holding the epoch last sent. A rekey raises
+/// the epoch and so sends again, which is the one case that must not be
+/// suppressed.
+static SENT: std::sync::Mutex<Option<std::collections::HashMap<(Id, String), u32>>> =
+    std::sync::Mutex::new(None);
+
+/// Whether this key still needs sending to this member.
+fn needs_send(channel: Id, to: &str, epoch: u32) -> bool {
+    let mut guard = SENT.lock().expect("media key ledger");
+    let sent = guard.get_or_insert_with(std::collections::HashMap::new);
+    match sent.get(&(channel, to.to_string())) {
+        Some(&already) if already >= epoch => false,
+        _ => {
+            sent.insert((channel, to.to_string()), epoch);
+            true
+        }
+    }
+}
+
 /// How long a joiner waits to be given the channel's key before generating one.
 ///
 /// Someone already in the channel should send it within a round trip. Waiting
@@ -333,6 +361,9 @@ pub fn MediaKeyBridge() -> Element {
                     return;
                 }
                 for to in others {
+                    if !needs_send(channel, to, epoch) {
+                        continue;
+                    }
                     match seal(&key, to, epoch, &identity) {
                         Ok(blob) => {
                             tracing::info!(%to, epoch, "sending the media key");
@@ -396,7 +427,7 @@ pub fn MediaKeyBridge() -> Element {
                     state.write().media_keys.insert(channel, (1, key));
                     crate::e2ee::apply_key(&key);
                     for to in present_in(&state.peek(), channel) {
-                        if to == me {
+                        if to == me || !needs_send(channel, &to, 1) {
                             continue;
                         }
                         if let Ok(blob) = seal(&key, &to, 1, &identity) {
@@ -468,7 +499,7 @@ pub fn rekey_after_removal(
     // reachable without reimplementing a key provider against minified
     // internals. Recorded in TODO.md rather than half-done here.
     for to in &present {
-        if to == &me {
+        if to == &me || !needs_send(channel, to, next) {
             continue;
         }
         match seal(&key, to, next, &identity) {
@@ -505,5 +536,37 @@ mod orchestration_tests {
     #[test]
     fn nobody_is_responsible_for_an_empty_channel() {
         assert_eq!(designated(std::iter::empty()), None);
+    }
+
+    /// The ledger that stopped a member being flooded off voice.
+    ///
+    /// The sending effect re-runs on any change to `AppState` — a speaking
+    /// flag is enough — so "send the key to everyone present" ran several
+    /// times a second. What must survive that is the rekey: a raised epoch has
+    /// to go out even though the same recipient was written to a moment ago.
+    #[test]
+    fn a_key_is_sent_once_per_epoch_per_member() {
+        use super::needs_send;
+        let channel = crate::protocol::Id::new_v4();
+        let other = crate::protocol::Id::new_v4();
+
+        assert!(needs_send(channel, "alice", 1), "first send must go");
+        assert!(
+            !needs_send(channel, "alice", 1),
+            "the same epoch must not repeat"
+        );
+        assert!(
+            needs_send(channel, "bob", 1),
+            "a different member still needs it"
+        );
+        assert!(
+            needs_send(channel, "alice", 2),
+            "a rekey must always go out"
+        );
+        assert!(!needs_send(channel, "alice", 2));
+        // An older epoch arriving late must not re-open the gate.
+        assert!(!needs_send(channel, "alice", 1));
+        // Channels are tracked apart, or joining a second one would go silent.
+        assert!(needs_send(other, "alice", 1));
     }
 }

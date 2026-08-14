@@ -1097,14 +1097,24 @@ fn apply(
             // keeping its own. Whoever loses adopts and stops publishing under
             // the key nobody else has.
             let me = s.self_user.as_ref().map(|u| u.pubkey.clone());
-            let current = s.media_keys.get(&channel_id).map(|(e, _)| *e);
-            let take = supersedes(current, epoch, &from, me.as_deref());
-            if !take {
+            let have = s.media_keys.get(&channel_id).copied();
+            if !supersedes(have.map(|(e, _)| e), epoch, &from, me.as_deref()) {
                 tracing::debug!(%from, epoch, "ignoring a media key that does not supersede ours");
                 return;
             }
             match crate::mediakey::open(&blob, &from, epoch, &identity) {
                 Ok(key) => {
+                    // Opened, and it supersedes — but is it *news*? A member
+                    // re-sending the key we already run is the common case, and
+                    // treating it as an adoption was a livelock: it wrote state,
+                    // which re-ran the effect that sends keys, which sent this
+                    // one straight back. Dozens of round trips a second, until
+                    // the gateway's bounded outbound queue dropped somebody off
+                    // voice entirely.
+                    if have == Some((epoch, key)) {
+                        tracing::trace!(%from, epoch, "already running this key");
+                        return;
+                    }
                     tracing::info!(%from, epoch, "media key accepted");
                     s.media_keys.insert(channel_id, (epoch, key));
                     // Whatever we could not decrypt a moment ago, this is the
