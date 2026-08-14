@@ -1038,6 +1038,12 @@ pub fn native_settings(quality: &str) -> crate::sysvideo::Settings {
 /// safe because of where they come from rather than because anything checked
 /// them here. They go through this too, so the safety is a property of the sink
 /// and no longer has to be re-derived per call site.
+///
+/// Two call sites do not use this and are not exceptions to it: `start_camera_js`
+/// and `stream_sink_js` take an `Option<&str>` and hand the option itself to
+/// `serde_json::to_string`, because "no device chosen" has to arrive in the JS
+/// as `null` and not as `""` — a distinction a `&str` sink cannot carry. Same
+/// escaping, one type wider.
 pub(crate) fn js_str(s: &str) -> String {
     // `to_string` on a `str` only fails if serde itself is broken; an empty
     // literal keeps the surrounding script syntactically valid either way.

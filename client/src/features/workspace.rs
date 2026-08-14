@@ -484,7 +484,13 @@ window.dxSfx = window.dxSfx || (function () {
 "#;
 
 fn sfx(name: &str) {
-    let _ = document::eval(&format!("{SFX_JS}\nwindow.dxSfx.play('{name}');"));
+    // Every caller passes a static literal today, so this is not a live
+    // injection path. It goes through `js_str` anyway because that function
+    // exists to make escaping a property of the *sink* rather than something
+    // re-derived per call site — and a sink that opted out is exactly where the
+    // next dynamic argument would land without anyone noticing.
+    let name = crate::features::screenshare::js_str(name);
+    let _ = document::eval(&format!("{SFX_JS}\nwindow.dxSfx.play({name});"));
 }
 
 #[component]
