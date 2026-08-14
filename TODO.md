@@ -40,7 +40,25 @@ the top within each section.
 
 ## Security
 
-- **The gateway is plaintext, and `wss://` looks supported without being.**
+- **A username may contain control characters, and nothing strips them.**
+  `protocol::canonical_username` trims and truncates to 32; it has never
+  filtered `is_control()`, and `auth::verify_identify` treats the name as opaque
+  bytes in the SHA-256 preimage — so `"al\nice"` is a perfectly valid, signable
+  display name that arrives intact.
+  The log-forgery half is closed: every username site in
+  `gateway/connection.rs` formats with `?` rather than `%`, so a newline is
+  escaped rather than starting a fabricated line. What remains is that the
+  string itself is unconstrained, and anything else that ever renders it —
+  a future JSON log, an export, a moderation tool — would have to remember the
+  same thing.
+  **The reason it is not simply filtered is the trap.** `canonical_username` is
+  the *signed preimage*, computed by both ends before signing and before
+  verifying. Adding a filter changes what a new server verifies, so a client
+  older than the change signs a different string and is refused — which is
+  exactly the lockout `A-02` cost this project once, recorded at length in that
+  function's own doc comment. Closing it properly means either accepting that
+  break for the rare name that contains a control character, or versioning the
+  canonicalisation. Both are decisions rather than edits.
   `tokio-tungstenite` is pinned at 0.24 in the workspace `Cargo.toml` and built
   **without a TLS feature** — `tungstenite 0.24`'s own dependency list carries no
   TLS crate (`Cargo.lock:8262-8277`) — so a `wss://` URL cannot be dialled at all.
