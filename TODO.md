@@ -74,24 +74,6 @@ the top within each section.
 
 ## Repo & CI
 
-- **No Windows clippy — the other half of the gap macOS just closed.** The
-  `macos-build` job now runs `cargo clippy -- -D warnings`, so the
-  `cfg(target_os = "macos")` half of the client is finally linted. `windows-build`
-  still runs `cargo check -p dioxusfun` and nothing else, which leaves
-  `sysaudio/windows.rs` — unsafe WASAPI FFI, the file that shipped a heap
-  corruption found only by running a test once — compiled but never linted by
-  anything. Same one-line change as the macOS job, with the same caveat that
-  turned that one into a two-step job: whatever it finds has to be fixed first,
-  and *those* findings cannot be enumerated from a Mac. So it needs one throwaway
-  CI run with the step added to see the list, then a commit fixing them, then the
-  step for real. Estimated from the macOS precedent: four findings, all trivial.
-  **The other half of this — that no `cargo test` ran on Windows at all — is
-  now fixed.** `windows-build` gained a `cargo test -p dioxusfun` step, so the
-  unit tests in `sysaudio/windows.rs` and `rawmic/windows.rs` finally execute
-  somewhere automatic instead of nowhere. That left clippy as the only remaining
-  gap over those 61 `unsafe` occurrences — still the highest density in the repo,
-  on the platform with the most users, in the file that shipped a heap
-  corruption.
 - **The Windows portable and setup ship the wrong icon.** Reported from a real
   download: both carry an old icon rather than the Discordia mark. Worth
   starting from the comment in `client/Dioxus.toml`, because it says this was
