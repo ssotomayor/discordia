@@ -299,20 +299,7 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
                 // floating corner: this one is taken by the layout controls and
                 // the other by the activity launcher, so a new one would have
                 // had to go somewhere it does not belong.
-                //
-                // Deliberately selectable. Its whole job is to be pasted into a
-                // report — for a CI build it is the exact tag of the GitHub
-                // release, so it identifies the artifact rather than merely
-                // describing it.
-                span {
-                    class: "text-[10px] text-[var(--text-dim)]",
-                    title: if crate::version::is_release() {
-                        "This build's release tag on GitHub"
-                    } else {
-                        "A local build — no release was published for it"
-                    },
-                    "{crate::version::VERSION}"
-                }
+                crate::version::VersionLabel {}
                 // Reset is only offered while editing — it is the way back from
                 // a layout you've made a mess of, including a window dragged
                 // somewhere awkward in Free mode.
