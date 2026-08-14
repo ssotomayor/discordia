@@ -192,11 +192,6 @@ the top within each section.
 
 ## Guild owner controls (roles, membership, moderation)
 
-- **`GuildEmoji.created_ms` and `.added_by` are written and never read.** Both
-  are persisted by the emoji upload path and nothing renders either, so "who
-  added this emoji, and when" is recorded and unanswerable. Same shape as the
-  audit log actor, which is now shown; less at stake here, which is why it was
-  not done in the same change.
 - **LiveKit force-eviction on kick.** A kicked user's client is told to hang up
   (cleared `VoiceStateUpdate`), but a malicious client keeps a valid LiveKit
   token until its TTL. Use the LiveKit RemoveParticipant API (or short TTLs)
