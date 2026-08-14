@@ -152,10 +152,16 @@ channel to observe the publication themselves.
   64-char hex (x-only). Client keys live in `client/src/identity.rs`
   (`Identity::sign_hex(msg)` = Schnorr over `SHA256(msg)`).
 - The **Identify handshake**: server sends `Hello { nonce }`; client replies
-  `Identify { username, pubkey, signature, bot }` where `signature` is Schnorr
-  over `SHA256(nonce || pubkey || username)`. Verified in `server/src/auth.rs`
-  (`verify_identify`). This same challenge/sign/verify pattern is reused for
-  **rendezvous name ownership** (`rendezvous/src/verify.rs`).
+  `Identify { username, pubkey, signature, bot, client_version }` where
+  `signature` is Schnorr over `SHA256(nonce || pubkey || username)`. Verified in
+  `server/src/auth.rs` (`verify_identify`). This same challenge/sign/verify
+  pattern is reused for **rendezvous name ownership**
+  (`rendezvous/src/verify.rs`).
+  Note what the signature covers and what it does not: `bot` and
+  `client_version` are **self-declared and unauthenticated**. That is deliberate
+  for both — bot-ness because inferring it from installs would be an attack (see
+  the comment at the handler), and the version because it exists to be counted
+  in a log, not to gate anything. Neither is evidence.
 - There is **no password/account system** — your key *is* your account.
   Anti-abuse is per-guild: join gates (rules / proof-of-work), panic-mode
   lockdown, slowmode, bans, audit log (all Phase 4, in `state/mod.rs` +

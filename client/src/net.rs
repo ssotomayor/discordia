@@ -190,6 +190,7 @@ async fn run(
         signature,
         // Human client — never bot-gated (bots self-declare via the SDK).
         bot: false,
+        client_version: crate::version::VERSION.to_string(),
     };
     let json = serde_json::to_string(&identify).map_err(|e| e.to_string())?;
     ws_tx
