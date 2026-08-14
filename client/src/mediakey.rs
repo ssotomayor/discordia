@@ -227,15 +227,18 @@ use crate::state::{use_app_state, use_gateway};
 /// a call whose key changed once at the start.
 const KEY_WAIT: std::time::Duration = std::time::Duration::from_secs(4);
 
-/// Who, of the members present, should *generate* a key when nobody has one.
+/// Who, of the members present, drives a *rekey* after somebody is removed.
 ///
-/// The lowest pubkey. Any deterministic rule works as long as every client
-/// computes the same one; this one needs no coordination, no election and no
-/// state.
+/// The lowest pubkey — deterministic, needing no coordination and no state.
+/// Exclusivity is worth having here because a removal is a discrete event every
+/// remaining member observes at once, and without a rule each of them would
+/// mint a key for the same event.
 ///
-/// Deliberately not used for deciding who *hands the key on* — see the comment
-/// at the `Some` arm below. Holding the key and being lowest are different
-/// facts, and conflating them left two members on two different keys.
+/// It is deliberately **not** used for the two jobs it used to do. Handing an
+/// existing key to an arrival is gated on *holding* the key, because being
+/// lowest says nothing about having one. And generating a first key is no
+/// longer exclusive at all: `net::supersedes` makes two keys converge, so the
+/// worse failure is a member who waits for a key nobody was going to send.
 ///
 /// `None` when the set is empty, which is the caller's cue that there is nobody
 /// to be responsible.
@@ -325,14 +328,21 @@ pub fn MediaKeyBridge() -> Element {
                     .map(String::as_str)
                     .filter(|p| *p != me)
                     .collect();
+                if others.is_empty() {
+                    tracing::debug!(%channel, epoch, "hold the key; nobody else here yet");
+                    return;
+                }
                 for to in others {
                     match seal(&key, to, epoch, &identity) {
-                        Ok(blob) => send.send(ClientMessage::ShareMediaKey {
-                            channel_id: channel,
-                            to: to.to_string(),
-                            epoch,
-                            blob,
-                        }),
+                        Ok(blob) => {
+                            tracing::info!(%to, epoch, "sending the media key");
+                            send.send(ClientMessage::ShareMediaKey {
+                                channel_id: channel,
+                                to: to.to_string(),
+                                epoch,
+                                blob,
+                            })
+                        }
                         Err(e) => {
                             tracing::warn!(%to, error = %e, "could not seal the media key")
                         }
@@ -354,17 +364,35 @@ pub fn MediaKeyBridge() -> Element {
                         if state.peek().media_keys.contains_key(&channel) {
                             return;
                         }
-                        // Still nobody — but only one of us should conclude
-                        // that, or we would all generate a different key.
-                        let present = present_in(&state.peek(), channel);
-                        if designated(present.iter().map(String::as_str)) != Some(me.as_str()) {
-                            return;
-                        }
+                        // Still nobody, so generate one — *whoever we are*.
+                        //
+                        // This used to defer to the lowest pubkey, on the
+                        // reasoning that two members generating two keys would
+                        // be a disaster. It was: two epoch-1 keys that could
+                        // never converge. But that is fixed at the receiving
+                        // end now (`net::supersedes` breaks a tie by pubkey),
+                        // and with convergence in place the exclusivity is not
+                        // only unnecessary, it is harmful — it means a member
+                        // who never receives a key also never makes one, and
+                        // sits silent forever waiting for a client that had no
+                        // reason to send.
+                        //
+                        // Generating too often costs a brief second key that
+                        // both sides then agree to discard. Generating too
+                        // rarely costs the call.
+                        tracing::info!(
+                            %channel,
+                            "no key arrived while waiting — making one rather than waiting longer"
+                        );
                     }
                     // Epoch 1: the first key a channel has had this session. A
                     // rekey counts up from whatever we were last given.
                     let key = generate();
-                    tracing::info!(%channel, "generating a media key — nobody else offered one");
+                    tracing::info!(
+                        %channel,
+                        alone,
+                        "generating a media key — nobody else offered one"
+                    );
                     state.write().media_keys.insert(channel, (1, key));
                     crate::e2ee::apply_key(&key);
                     for to in present_in(&state.peek(), channel) {

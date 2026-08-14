@@ -1027,12 +1027,23 @@ pub async fn handle_connection(
                         // secret — it is what stops the gateway being a way to
                         // push payloads at people who never asked.
                         let Some(guild_id) = ctx.state.channel_guild(channel_id) else {
+                            tracing::warn!(%channel_id, "media key for a channel with no guild");
                             continue;
                         };
                         let members = ctx.state.guild_member_pubkeys(guild_id);
                         if !members.contains(&u.pubkey) || !members.contains(&to) {
+                            // Logged rather than dropped in silence: this is the
+                            // one place a key can vanish without either client
+                            // being able to tell, and a member list that does
+                            // not contain somebody who is plainly in the channel
+                            // is worth seeing.
+                            tracing::warn!(
+                                from = %u.pubkey, %to, %guild_id,
+                                "refusing to route a media key: sender or recipient is not a guild member"
+                            );
                             continue;
                         }
+                        tracing::info!(from = %u.pubkey, %to, epoch, "routing a media key");
                         ctx.state.deliver(
                             vec![to],
                             ServerMessage::MediaKey {
