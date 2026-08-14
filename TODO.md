@@ -256,13 +256,18 @@ the top within each section.
   `Register` frame, so they survive a restart without being applied to anything.
   Fine if this is groundwork for an offline browse listing; dead weight
   otherwise.
-- **Screen tokens minted by a rendezvous ignore `can_publish`.** The local mint
-  now grants publish per identity, so the subscribe-only `{pubkey}#audio`
-  connection can no longer send. A gateway delegating to a rendezvous sends a
-  `MintRequest`, which carries no grants at all, and the relay signs its own
-  fixed set with publish on — so on that path the narrowing does not apply.
-  Closing it means a grants field on the rendezvous wire and a matching change in
-  `rendezvous/src/lib.rs`.
+- **A relay older than `can_publish` still grants publish, and nothing detects
+  it.** `MintRequest` now carries the flag and `POST /voice-token` honours it, so
+  a rendezvous-delegated mint narrows the subscribe-only `{pubkey}#audio`
+  connection the same way the local one does. But the field is
+  `#[serde(default = "publish_by_default")]` on the relay — `true` — because a
+  *host* older than it does not send it and must keep working. The mirror of
+  that: a *relay* older than it ignores the field and signs publish, exactly as
+  it did before, and the gateway gets a valid token back with no way to tell.
+  Same shape as "An old client that mutes reads as deafened" under Voice /
+  audio: nothing on this wire carries a version, so a mixed-version deployment
+  can only be documented, not detected. Closing it properly means versioning the
+  rendezvous protocol, which is a bigger decision than this field was.
 - **Name release / rename.** A host can *claim* a rendezvous name (proven by
   Schnorr signature, persisted) but there's no flow to release it or rename it —
   reservations are sticky once claimed. Add an owner-authenticated unclaim/rename
