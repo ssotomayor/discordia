@@ -313,6 +313,22 @@ the top within each section.
   no SFU at all rather than a LAN-only one. `node_ip` says the same thing
   without the dependency, using the address the router already told us. If a
   future change wants STUN back, that failure mode is the thing to handle.
+- **The transport badge describes your own socket, not the conversation.** Tiers
+  are per connection: one member can be `private` over QUIC while another is
+  `relayed`, in the same guild, at the same time. That is correct — a friend
+  whose punch fails should still get in — but the privacy of a *group* chat is
+  the weakest of its connections, not yours. Your badge says `private` while
+  everything you send is read by the relay carrying somebody else.
+  Nothing anywhere says so. The gateway does not even record which front door a
+  connection arrived through — after the `Host` fix a QUIC peer presents
+  loopback, which is indistinguishable from a proxied one — so it cannot warn
+  the room, and the member list has no notion of it.
+  Closing it needs the gateway to know its own transport per connection (the
+  QUIC front door would have to mark it, the same marker the proxy case wants),
+  a field on the member/presence wire, and a UI that says "3 of 5 here are
+  relayed" rather than only describing you. Worth doing before anyone is told
+  this app gives them private group chat, because right now it gives them a
+  private *connection* and lets them infer the rest.
 - **A QUIC peer is handed the LAN address for voice, like a proxied friend.**
   The QUIC handshake presents `127.0.0.1` as its `Host` so `url_for_client`
   substitutes rather than echoes (an invented hostname became a LiveKit URL that
