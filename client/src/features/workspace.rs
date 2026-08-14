@@ -305,7 +305,7 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
                 // release, so it identifies the artifact rather than merely
                 // describing it.
                 span {
-                    class: "text-[10px] text-[var(--text-dim)] mr-1",
+                    class: "text-[10px] text-[var(--text-dim)]",
                     title: if crate::version::is_release() {
                         "This build's release tag on GitHub"
                     } else {
