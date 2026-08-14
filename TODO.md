@@ -123,6 +123,13 @@ the top within each section.
   The two together leave 61 `unsafe` occurrences — the highest density in the
   repo, on the platform with the most users, in the file that shipped a heap
   corruption — with the weakest automated coverage of any platform.
+  **The other half of this — that no `cargo test` ran on Windows at all — is
+  now fixed.** `windows-build` gained a `cargo test -p dioxusfun` step, so the
+  unit tests in `sysaudio/windows.rs` and `rawmic/windows.rs` finally execute
+  somewhere automatic instead of nowhere. That left clippy as the only remaining
+  gap over those 61 `unsafe` occurrences — still the highest density in the repo,
+  on the platform with the most users, in the file that shipped a heap
+  corruption.
 - **The Windows portable and setup ship the wrong icon.** Reported from a real
   download: both carry an old icon rather than the Discordia mark. Worth
   starting from the comment in `client/Dioxus.toml`, because it says this was

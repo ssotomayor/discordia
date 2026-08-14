@@ -145,6 +145,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Check client
         run: cargo check -p dioxusfun
+      # `sysaudio/windows.rs` and `rawmic/windows.rs` are 61 unsafe WASAPI FFI
+      # sites that compile nowhere else, and one of them shipped a heap
+      # corruption that only running its test ever caught. Until this step there
+      # was no `cargo test` on Windows at all, so those tests executed nowhere.
+      # The hardware-gated ones stay `#[ignore]`d — a runner has no audio device
+      # — but the rest now run on every push.
+      - name: Tests (client, Windows-only code)
+        run: cargo test -p dioxusfun
 
   # And the same hole on the other side. `client/src/sysvideo/macos.rs` and
   # `client/src/sysaudio/macos.rs` are unsafe FFI against ScreenCaptureKit and

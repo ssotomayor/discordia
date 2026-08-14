@@ -1024,6 +1024,26 @@ pub fn native_settings(quality: &str) -> crate::sysvideo::Settings {
     }
 }
 
+/// Quote a string into a JavaScript literal, escaping whatever is in it.
+///
+/// Every `&str` that crosses into `document::eval` goes through this, and the
+/// reason is that some of these values are the *server's* to choose:
+/// `livekit_url` and the token arrive on `ScreenToken` as free-form strings,
+/// and an invite code is minted server-side. Hand-building `'{url}'` meant a
+/// single `'` closed the literal and the remainder ran as script — from a host
+/// you connected to by code, which is the product's headline use case, or from
+/// anyone on the path while the gateway is still plaintext.
+///
+/// The rest of the arguments (hex pubkeys, UUIDs, preset-table constants) were
+/// safe because of where they come from rather than because anything checked
+/// them here. They go through this too, so the safety is a property of the sink
+/// and no longer has to be re-derived per call site.
+pub(crate) fn js_str(s: &str) -> String {
+    // `to_string` on a `str` only fails if serde itself is broken; an empty
+    // literal keeps the surrounding script syntactically valid either way.
+    serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into())
+}
+
 /// `quality` and `audio` apply to starting a share; stopping ignores both.
 pub fn share_js(on: bool, quality: &str, audio: bool) -> String {
     // When starting, call the user-gesture variant that prompts getDisplayMedia
@@ -1033,9 +1053,10 @@ pub fn share_js(on: bool, quality: &str, audio: bool) -> String {
     }
     let (w, h, fps, bitrate, hint, degradation) = quality_preset(quality);
     let mode = native_audio_mode();
+    let (hint, degradation, mode) = (js_str(hint), js_str(degradation), js_str(mode));
     format!(
         "{SCREEN_JS}\nwindow.dxScreen.requestAndStartShare({{width:{w},height:{h},fps:{fps},\
-         bitrate:{bitrate},hint:'{hint}',degradation:'{degradation}',audio:{audio},nativeAudio:'{mode}'}});"
+         bitrate:{bitrate},hint:{hint},degradation:{degradation},audio:{audio},nativeAudio:{mode}}});"
     )
 }
 
@@ -1043,11 +1064,13 @@ pub fn share_js(on: bool, quality: &str, audio: bool) -> String {
 /// `"camera"` — the same participant can be publishing both, so the container
 /// has to say which one it wants.
 pub(crate) fn attach_js(identity: &str, container: &str, kind: &str) -> String {
-    format!("{SCREEN_JS}\nwindow.dxScreen.attach('{identity}','{container}','{kind}');")
+    let (identity, container, kind) = (js_str(identity), js_str(container), js_str(kind));
+    format!("{SCREEN_JS}\nwindow.dxScreen.attach({identity},{container},{kind});")
 }
 
 pub(crate) fn detach_js(container: &str) -> String {
-    format!("{SCREEN_JS}\nwindow.dxScreen.detach('{container}');")
+    let container = js_str(container);
+    format!("{SCREEN_JS}\nwindow.dxScreen.detach({container});")
 }
 
 /// Set the local playback gain for the screen-share stream we're watching.
@@ -1080,8 +1103,10 @@ pub fn ScreenShareBridge() -> Element {
         if t != *last.peek() {
             match &t {
                 Some((url, tok)) => {
+                    // Both of these are the server's to choose — see `js_str`.
+                    let (url, tok) = (js_str(url), js_str(tok));
                     let _ = document::eval(&format!(
-                        "{SCREEN_JS}\nwindow.dxScreen.connect('{url}','{tok}');"
+                        "{SCREEN_JS}\nwindow.dxScreen.connect({url},{tok});"
                     ));
                 }
                 None => {
@@ -2075,5 +2100,88 @@ pub fn ScreenWatchWindow() -> Element {
                 },
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod js_escaping_tests {
+    use super::{attach_js, js_str, share_js};
+
+    /// The shape that made this necessary: `livekit_url` arrives from the
+    /// gateway as a free-form string and used to be pasted into `'{url}'`. A
+    /// single quote closed the literal and everything after it ran as script —
+    /// from a host you joined by code, or from anyone on the path while the
+    /// gateway is plaintext.
+    #[test]
+    fn a_quote_in_a_server_string_cannot_close_the_literal() {
+        // Note what is *not* asserted: that the payload text disappears. JSON
+        // does not escape `'`, and it no longer needs to — the emitted literal
+        // is double-quoted, so an apostrophe is ordinary data. The property
+        // that matters is that the value stays one closed literal, whichever
+        // quote character the attacker reaches for.
+        for hostile in [
+            "ws://x');alert(1);//",    // breaks the old single-quoted form
+            "ws://x\");alert(1);//",   // and the double-quoted one
+            "ws://x\\\");alert(1);//", // and a pre-escaped attempt at it
+        ] {
+            let quoted = js_str(hostile);
+
+            assert!(
+                quoted.starts_with('"') && quoted.ends_with('"'),
+                "one complete JS string literal: {quoted}"
+            );
+            // Every `"` inside is backslash-escaped, so none of them terminates
+            // the literal early — which is what makes the surrounding script
+            // un-splittable.
+            let inner = &quoted[1..quoted.len() - 1];
+            let mut chars = inner.chars().peekable();
+            while let Some(c) = chars.next() {
+                if c == '\\' {
+                    chars.next(); // consume whatever it escapes
+                } else {
+                    assert_ne!(c, '"', "a bare quote escaped the literal: {quoted}");
+                }
+            }
+            // And it is still the same bytes — data, not code.
+            let back: String = serde_json::from_str(&quoted).expect("valid literal");
+            assert_eq!(back, hostile);
+        }
+    }
+
+    /// Round-trips as *data*, which is the other half of the requirement: the
+    /// escaping must not corrupt legitimate values.
+    #[test]
+    fn escaping_preserves_the_value() {
+        for raw in [
+            "wss://sfu.example.com:7880",
+            "a'b",
+            "a\"b",
+            "back\\slash",
+            "new\nline",
+            "</script>",
+            "🙂",
+        ] {
+            let parsed: String =
+                serde_json::from_str(&js_str(raw)).expect("still valid JSON/JS string");
+            assert_eq!(parsed, raw, "value survived escaping unchanged");
+        }
+    }
+
+    /// The call sites, not just the helper — a future edit could reintroduce a
+    /// hand-built literal at either one.
+    #[test]
+    fn the_call_sites_emit_quoted_arguments() {
+        let js = attach_js("pk#video", "screen-tile", "screen");
+        assert!(
+            js.contains(r#"attach("pk#video","screen-tile","screen")"#),
+            "attach passes JSON-quoted arguments: {}",
+            js.lines().last().unwrap_or_default()
+        );
+
+        let js = share_js(true, "high", true);
+        assert!(
+            !js.contains("hint:'"),
+            "no hand-built single-quoted literals remain in share_js"
+        );
     }
 }

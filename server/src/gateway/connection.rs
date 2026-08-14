@@ -1731,12 +1731,15 @@ fn channel_audience(
 // Hex-color validation lives in `state::is_hex_color` (shared with role colors).
 use crate::state::is_hex_color;
 
+/// Canonicalise a username the same way the client does before it signs.
+///
+/// This used to be its own trim-and-truncate here, and that was the bug: the
+/// server canonicalised before verifying while the client signed the raw
+/// string, so a name this altered could never authenticate. The definition now
+/// lives in `protocol` so there is exactly one of it — see
+/// `protocol::canonical_username`.
 fn sanitize_username(raw: &str) -> String {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return "anonymous".into();
-    }
-    trimmed.chars().take(32).collect()
+    crate::protocol::canonical_username(raw)
 }
 
 /// True if `bot_pubkey` is installed in `channel_id`'s guild with `perm`. DM

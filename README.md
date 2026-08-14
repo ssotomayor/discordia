@@ -57,6 +57,12 @@ output gain.
 just the tab's: ScreenCaptureKit on macOS, WASAPI loopback on Windows. Stream
 audio plays through the same output device as voice.
 
+**Camera** — share your webcam in a voice channel, with a per-stream switch in
+the roster so you can watch one person's face and someone else's screen at once.
+Who has a camera on rides the voice state rather than LiveKit's track events, so
+it survives a reconnect and reaches people who aren't in the channel to see the
+publication themselves.
+
 **Guilds and moderation** — roles and a server-enforced permission engine, bans,
 per-channel slowmode, panic-mode lockdown with automatic raid detection, a
 persistent audit log, and join gates (open / rules / SHA-256 proof-of-work) so a
@@ -89,7 +95,7 @@ flowchart LR
         Voice["features/voice.rs — native LiveKit SDK<br/>mic, playback mixer, voice room,<br/>audio-only screen-room subscriber,<br/>screen-video publisher"]
         SysAudio["sysaudio/ — native system-audio capture<br/>macOS ScreenCaptureKit · Windows WASAPI loopback"]
         SysVideo["sysvideo/ — native screen capture<br/>macOS ScreenCaptureKit"]
-        WebJS["features/screenshare.rs — webview JS bridge<br/>LiveKit JS SDK: renders every share;<br/>captures video on Windows"]
+        WebJS["features/screenshare.rs + features/camera.rs — webview JS bridge<br/>LiveKit JS SDK: renders all shares and cameras;<br/>captures screen on Windows only, camera everywhere"]
         UI --> Net
         SysAudio --> Voice
         SysVideo --> Voice
@@ -109,7 +115,7 @@ flowchart LR
 
     subgraph SFU["LiveKit SFU"]
         VoiceRoom["voice-{channel}<br/>native peers: mic + shared system audio"]
-        ScreenRoom["screen-{channel}<br/>webview peer (renders; captures on Windows, identity = pubkey)<br/>native peer (audio-only, identity = pubkey#audio)<br/>native peer (video on macOS, identity = pubkey#video)"]
+        ScreenRoom["screen-{channel}<br/>webview peer (renders; screen on Windows + camera always, identity = pubkey)<br/>native peer (audio-only, identity = pubkey#audio)<br/>native peer (video on macOS, identity = pubkey#video)"]
     end
 
     subgraph Rendezvous["rendezvous (optional discovery relay)"]
@@ -146,6 +152,13 @@ A few load-bearing decisions the diagram implies:
   sound follows your chosen output device instead of the webview's, and on macOS
   a native `#video` peer publishes frames captured through ScreenCaptureKit.
   Which side captures video is per-platform, not a preference.
+- **The camera deliberately did not add a fourth identity.** It publishes on the
+  webview's existing connection as a `TrackSource::Camera` track, which the bare
+  identity already had the rights for — so it cost no extra token, no new grant
+  and no server change. If you are about to mint a `#camera` identity to fix
+  something, that is the decision to reconsider first. The price paid instead is
+  that video tracks have to be keyed by identity *and* source, since one
+  participant can send a screen and a face at the same time.
 
 ---
 

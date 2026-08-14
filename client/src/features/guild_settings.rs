@@ -316,8 +316,12 @@ pub fn GuildSettingsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element 
                                 class: "rounded px-2 py-1 text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors",
                                 onclick: move |_| {
                                     if let Some(code) = invite() {
+                                        // The code is minted server-side, so it
+                                        // is not ours to trust into a literal.
+                                        let code =
+                                            crate::features::screenshare::js_str(&code);
                                         let js = format!(
-                                            "navigator.clipboard && navigator.clipboard.writeText('{code}');"
+                                            "navigator.clipboard && navigator.clipboard.writeText({code});"
                                         );
                                         let _ = document::eval(&js);
                                         copied.set(true);
