@@ -155,14 +155,19 @@ pub async fn handle_connection(
                         } else {
                             client_version
                         };
-                        // `?` and not `%`: Debug quotes the value and escapes
-                        // it. Stripping control characters stops a peer starting
-                        // a *new* log line, but on one line a value like
-                        // `1 user=admin` still reads as two fields to anything
-                        // parsing this format. Quoting is what makes the field
-                        // boundary unambiguous, so both are needed.
+                        // `?` and not `%`, here and at every username site in
+                        // this file: Debug quotes the value and escapes it.
+                        //
+                        // Two different attacks need both defences. Stripping
+                        // control characters stops a peer starting a *new* log
+                        // line; but on one line a value like `1 user=admin`
+                        // still reads as two fields to anything parsing this
+                        // format, and quoting is what makes the boundary
+                        // unambiguous. Usernames get only the second, because
+                        // the first cannot be added without changing the signed
+                        // preimage — see TODO.md.
                         tracing::info!(
-                            user = %new_user.username,
+                            user = ?new_user.username,
                             pubkey = %new_user.pubkey,
                             version = ?client_version,
                             "identified"
@@ -354,7 +359,7 @@ pub async fn handle_connection(
                         }
                         let (guild, channels, member, roles) =
                             ctx.state.create_guild(&name, template.as_deref(), &creator).await;
-                        tracing::info!(guild = %guild.name, by = %creator.username, "guild created");
+                        tracing::info!(guild = %guild.name, by = ?creator.username, "guild created");
                         // The creator is the only member — hand the guild
                         // (channels + any template roles) to them directly. The
                         // public directory is fetched on demand (FetchCatalog),
@@ -464,7 +469,7 @@ pub async fn handle_connection(
                         let targets = ctx.state.guild_member_pubkeys(guild_id);
                         match ctx.state.delete_guild(guild_id, &u.pubkey).await {
                             Ok(()) => {
-                                tracing::info!(%guild_id, by = %u.username, "guild deleted");
+                                tracing::info!(%guild_id, by = ?u.username, "guild deleted");
                                 ctx.state.deliver(targets, ServerMessage::GuildDelete { guild_id });
                             }
                             Err(e) => {
@@ -737,7 +742,7 @@ pub async fn handle_connection(
                             guild_id, &bot_pubkey, &name, permissions, intents, &u.pubkey,
                         ).await {
                             Ok((install, member)) => {
-                                tracing::info!(%guild_id, bot = %bot_pubkey, by = %u.username, "bot installed");
+                                tracing::info!(%guild_id, bot = %bot_pubkey, by = ?u.username, "bot installed");
                                 // Surface the bot in every member's roster.
                                 let targets = ctx.state.guild_member_pubkeys(guild_id);
                                 ctx.state.deliver(targets, ServerMessage::MemberJoin(member));
@@ -765,7 +770,7 @@ pub async fn handle_connection(
                         let targets = ctx.state.guild_member_pubkeys(guild_id);
                         match ctx.state.uninstall_bot(guild_id, &bot_pubkey, &u.pubkey).await {
                             Ok(()) => {
-                                tracing::info!(%guild_id, bot = %bot_pubkey, by = %u.username, "bot uninstalled");
+                                tracing::info!(%guild_id, bot = %bot_pubkey, by = ?u.username, "bot uninstalled");
                                 // Removal, not offline — clients drop the row.
                                 ctx.state.deliver(
                                     targets,
@@ -1030,7 +1035,7 @@ pub async fn handle_connection(
                         }
                         match ctx.state.create_role(guild_id, &name, color, permissions, &u.pubkey).await {
                             Ok(role) => {
-                                tracing::info!(%guild_id, role = %role.name, by = %u.username, "role created");
+                                tracing::info!(%guild_id, role = %role.name, by = ?u.username, "role created");
                                 let targets = ctx.state.guild_member_pubkeys(guild_id);
                                 ctx.state.deliver(targets, ServerMessage::GuildRoles {
                                     guild_id,
@@ -1145,7 +1150,7 @@ pub async fn handle_connection(
                         };
                         match ctx.state.set_guild_visibility(guild_id, visibility, &u.pubkey).await {
                             Ok(guild) => {
-                                tracing::info!(%guild_id, ?visibility, by = %u.username, "guild visibility set");
+                                tracing::info!(%guild_id, ?visibility, by = ?u.username, "guild visibility set");
                                 let targets = ctx.state.guild_member_pubkeys(guild_id);
                                 ctx.state.deliver(targets, ServerMessage::GuildUpdate(guild));
                                 // Visibility changes show up in the directory on
@@ -1191,7 +1196,7 @@ pub async fn handle_connection(
                         let was_sharing = sharing_in(&ctx.state, &user_pubkey);
                         match ctx.state.kick_member(guild_id, &user_pubkey, &u.pubkey).await {
                             Ok(cleared_voice) => {
-                                tracing::info!(%guild_id, target = %user_pubkey, by = %u.username, "member kicked");
+                                tracing::info!(%guild_id, target = %user_pubkey, by = ?u.username, "member kicked");
                                 ctx.state.audit(guild_id, &u.pubkey, "kick", &user_pubkey, "").await;
                                 removal_broadcasts(&ctx.state, guild_id, &user_pubkey, true, cleared_voice, was_sharing);
                             }
@@ -1214,7 +1219,7 @@ pub async fn handle_connection(
                         let was_sharing = sharing_in(&ctx.state, &user_pubkey);
                         match ctx.state.ban_member(guild_id, &user_pubkey, &u.pubkey).await {
                             Ok(cleared_voice) => {
-                                tracing::info!(%guild_id, target = %user_pubkey, by = %u.username, "member banned");
+                                tracing::info!(%guild_id, target = %user_pubkey, by = ?u.username, "member banned");
                                 ctx.state.audit(guild_id, &u.pubkey, "ban", &user_pubkey, "").await;
                                 removal_broadcasts(&ctx.state, guild_id, &user_pubkey, was_member, cleared_voice, was_sharing);
                                 // Refresh the moderator's ban panel.
@@ -1281,7 +1286,7 @@ pub async fn handle_connection(
                         let was_sharing = sharing_in(&ctx.state, &u.pubkey);
                         match ctx.state.leave_guild(guild_id, &u.pubkey).await {
                             Ok(cleared_voice) => {
-                                tracing::info!(%guild_id, by = %u.username, "left guild");
+                                tracing::info!(%guild_id, by = ?u.username, "left guild");
                                 removal_broadcasts(&ctx.state, guild_id, &u.pubkey, true, cleared_voice, was_sharing);
                             }
                             Err(e) => {
@@ -1301,7 +1306,7 @@ pub async fn handle_connection(
                         }
                         match ctx.state.create_channel(guild_id, &name, kind, topic, &u.pubkey).await {
                             Ok(channel) => {
-                                tracing::info!(%guild_id, channel = %channel.name, by = %u.username, "channel created");
+                                tracing::info!(%guild_id, channel = %channel.name, by = ?u.username, "channel created");
                                 let targets = ctx.state.guild_member_pubkeys(guild_id);
                                 ctx.state.deliver(targets, ServerMessage::ChannelCreate(channel));
                             }
@@ -1342,7 +1347,7 @@ pub async fn handle_connection(
                         }
                         match ctx.state.delete_channel(channel_id, &u.pubkey).await {
                             Ok((guild_id, evicted)) => {
-                                tracing::info!(%guild_id, %channel_id, by = %u.username, "channel deleted");
+                                tracing::info!(%guild_id, %channel_id, by = ?u.username, "channel deleted");
                                 let targets = ctx.state.guild_member_pubkeys(guild_id);
                                 ctx.state.deliver(
                                     targets.clone(),
@@ -1397,7 +1402,7 @@ pub async fn handle_connection(
                         };
                         match ctx.state.transfer_ownership(guild_id, &new_owner_pubkey, &u.pubkey).await {
                             Ok(guild) => {
-                                tracing::info!(%guild_id, to = %new_owner_pubkey, by = %u.username, "ownership transferred");
+                                tracing::info!(%guild_id, to = %new_owner_pubkey, by = ?u.username, "ownership transferred");
                                 // Clients re-derive the crown/menus from the
                                 // updated owner_pubkey — no extra frame needed.
                                 let targets = ctx.state.guild_member_pubkeys(guild_id);
@@ -1439,7 +1444,7 @@ pub async fn handle_connection(
                         };
                         match ctx.state.set_guild_retention(guild_id, days, &u.pubkey).await {
                             Ok(guild) => {
-                                tracing::info!(%guild_id, ?days, by = %u.username, "guild retention set");
+                                tracing::info!(%guild_id, ?days, by = ?u.username, "guild retention set");
                                 let targets = ctx.state.guild_member_pubkeys(guild_id);
                                 ctx.state.deliver(targets, ServerMessage::GuildUpdate(guild));
                             }
@@ -1474,7 +1479,7 @@ pub async fn handle_connection(
                         };
                         match ctx.state.set_panic_mode(guild_id, on, &u.pubkey).await {
                             Ok(guild) => {
-                                tracing::info!(%guild_id, on, by = %u.username, "panic mode set");
+                                tracing::info!(%guild_id, on, by = ?u.username, "panic mode set");
                                 let targets = ctx.state.guild_member_pubkeys(guild_id);
                                 ctx.state.deliver(targets, ServerMessage::GuildUpdate(guild));
                             }
@@ -1565,7 +1570,7 @@ pub async fn handle_connection(
                 },
             );
         }
-        tracing::info!(user = %u.username, "client disconnected");
+        tracing::info!(user = ?u.username, "client disconnected");
     }
 }
 
@@ -1781,13 +1786,19 @@ const MAX_CLIENT_VERSION_LEN: usize = 64;
 
 /// Make a self-declared version string safe to repeat into a log line.
 ///
-/// `username` has had this treatment since the beginning, via
-/// `sanitize_username`. `client_version` arrived without it and needs it more,
-/// not less: it is unauthenticated by design, it is written on every identify,
-/// and the server's subscriber is the plain-text `tracing_subscriber::fmt()`,
-/// which escapes nothing. An embedded newline turns one field into a forged log
-/// line — CWE-117 — and a forged line defeats the only thing this field exists
-/// for, which is counting what is actually connected.
+/// **This comment used to claim `username` had the same treatment via
+/// `sanitize_username`, and that was wrong.** `canonical_username` trims and
+/// truncates; it has never filtered control characters, and `verify_identify`
+/// takes the name as opaque bytes — so `"al\nice"` reaches the log intact. The
+/// signature commits to it either way. Every username log site is therefore
+/// formatted with `?` rather than `%`; see the note there.
+///
+/// `client_version` needs its own cap regardless: it is unauthenticated by
+/// design, written on every identify, and unlike a username it has no length
+/// bound anywhere upstream. The server's subscriber is the plain-text
+/// `tracing_subscriber::fmt()`, which escapes nothing, so an embedded newline
+/// turns one field into a forged log line — CWE-117 — and a forged line defeats
+/// the only thing this field exists for, which is counting what is connected.
 ///
 /// Control characters are stripped *before* the cap, so a run of them cannot
 /// consume the budget and leave nothing behind.
@@ -1906,7 +1917,7 @@ where
 {
     let (guild, channels, members, roles) = bundle;
     let guild_id = guild.id;
-    tracing::info!(%guild_id, by = %joiner.username, "guild joined");
+    tracing::info!(%guild_id, by = ?joiner.username, "guild joined");
 
     let mut targets = state.guild_member_pubkeys(guild_id);
     targets.retain(|p| p != &joiner.pubkey);
