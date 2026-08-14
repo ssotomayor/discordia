@@ -39,7 +39,13 @@ pub const KEY_VAR: &str = "DISCORDIA_E2EE_KEY";
 pub const OFF_VAR: &str = "DISCORDIA_E2EE";
 
 /// Whether media encryption is allowed to run at all.
-fn enabled() -> bool {
+///
+/// Public because the webview has to know it *before* a key exists: LiveKit's
+/// JS SDK can only be given a key provider in the `Room` constructor, so the
+/// decision "will this room ever encrypt" is taken at connect time, long before
+/// the channel key usually arrives. `off` is the only answer that lets it skip
+/// building one.
+pub fn enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| {
         let on = !matches!(
@@ -221,7 +227,15 @@ pub fn apply_key(key: &[u8; crate::mediakey::KEY_LEN]) {
 }
 
 /// The key rooms should connect with, if any.
-fn current_key() -> Option<String> {
+///
+/// Public for the webview's sake. It used to be handed `shared_key()`, which
+/// reads the developer env var and nothing else — so on the real path, where
+/// the key is distributed by `crate::mediakey`, the webview connected with
+/// `null` and never encrypted anything. The native rooms did, which is a
+/// mismatch with no error attached to it: a macOS screen share (published
+/// natively, encrypted) arrived at a peer's webview as noise, and every camera
+/// everywhere went out in the clear.
+pub fn current_key() -> Option<String> {
     if let Some(k) = ACTIVE.lock().expect("e2ee key lock").clone() {
         return Some(k);
     }

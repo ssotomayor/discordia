@@ -311,26 +311,27 @@ the top within each section.
   the relay operator. Closing it needs a certificate for the relay's hostname,
   which means the deployment has a hostname — the same prerequisite the
   plaintext gateway has under Security, and worth doing once for both.
-- **The webview room is never encrypted, so macOS screen shares are
-  unreadable.** Verified live 2026-08-14, with voice working. `SCREEN_JS`'s
-  `connect(url, tok, key)` is handed `e2ee::shared_key()`, which reads only the
-  `DISCORDIA_E2EE_KEY` env var and never the *distributed* key — so with no env
-  var the webview connects with `null`, builds no key provider, and
-  `setE2eeKey` returns early for the rest of the session (`if (!e2eeKey ||
-  !e2eeProvider) return`).
-  The consequences are asymmetric and were reported exactly that way: a macOS
-  host publishes screen video from the **native** `#video` room, which *is*
-  encrypted, into a room whose webviews cannot decrypt it — black picture, noise
-  in the preview, and `EncryptionError: … but room does not have encryption
-  enabled!`. A Windows peer captures screen in the webview, so their share is
-  unencrypted and renders fine. Cameras ride the webview everywhere, so they are
-  unencrypted too — which is a privacy gap, not only a rendering one.
-  The fix mirrors what the native side already does (`3506fde`): construct the
-  `lk.Room` with `e2ee: { keyProvider, worker }` *always*, call
-  `setE2EEEnabled(false)` until a key exists, and have `setE2eeKey` enable it.
-  LiveKit's JS cannot attach a key provider to a Room after construction, which
-  is why the current lazy approach cannot work. `connect` must also be passed
-  `e2ee::current_key()` rather than `shared_key()`.
+- **The webview room now encrypts, and that has not been seen work.** The bug
+  is fixed — the webview built its Room without a key provider unless
+  `DISCORDIA_E2EE_KEY` was set, so on the distributed-key path it stayed in the
+  clear for the whole session while every native room encrypted; a macOS share
+  (published natively, encrypted) reached it as a black picture and
+  `EncryptionError: … but room does not have encryption enabled!`, and cameras
+  went out unencrypted everywhere. The Room is now always built with a provider
+  when `DISCORDIA_E2EE` is not `off`, disabled until a key lands.
+  What has not been run: the fixed path between two machines. The three things
+  to watch, because each fails as a picture rather than as an error — a macOS
+  share rendering on a Windows peer, the reverse, and a camera in both
+  directions.
+- **Nothing tells the user their media is unencrypted, in either direction.**
+  A room that connects and never receives a key publishes in the clear, which
+  is the correct behaviour and is indistinguishable in the UI from an encrypted
+  one. The client knows: `e2ee::enabled()`, whether a key was ever adopted, and
+  `EncryptionError` from both SDKs. It is a badge, next to the transport one,
+  and the reason it is not written yet is that the transport badge already has
+  an entry below saying it describes one socket rather than the room — the same
+  mistake is available here, where a member has up to four connections and they
+  can disagree.
 - **Media key distribution is written and has never run between two people.**
   `client/src/mediakey.rs` seals a channel key per recipient (ECDH over the
   Nostr identity keys, XChaCha20-Poly1305, epoch bound as associated data) and

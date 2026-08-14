@@ -49,11 +49,11 @@ window.dxScreen = window.dxScreen || (function () {
   // The webcam, held across room restarts on purpose. Republishing a track we
   // already hold calls no capture API, so it needs no user gesture — which is
   // the only reason an automatic reconnect can restore video at all.
-  // The E2EE passphrase for this session, and the provider awaiting it while a
-  // Room is being built. Held at module scope because `connect` runs again on
-  // every reconnect and the key must survive that.
+  // The E2EE passphrase for this session, and whether encryption is to run at
+  // all. Held at module scope because `connect` runs again on every reconnect
+  // and both must survive that.
   let e2eeKey = null;
-  let pendingKeyProvider = null;
+  let e2eeOn = false;
   // Kept past connect so a rekey can reach a live room.
   let e2eeProvider = null;
   let localCameraTrack = null;
@@ -280,13 +280,19 @@ window.dxScreen = window.dxScreen || (function () {
     reconnectAttempt++;
     reconnectTimer = setTimeout(function () {
       reconnectTimer = null;
-      if (desiredRoom && !room) connect(desiredRoom.url, desiredRoom.token);
+      // The key and the encryption flag ride `desiredRoom` rather than being
+      // re-read here, because a reconnect that dropped them would rebuild the
+      // Room without a key provider — and the SDK cannot attach one after
+      // construction, so the room would stay in the clear until the user
+      // rejoined the channel.
+      if (desiredRoom && !room) connect(desiredRoom.url, desiredRoom.token, desiredRoom.key, desiredRoom.e2ee);
     }, delay);
   }
-  async function connect(url, token, key) {
+  async function connect(url, token, key, encrypt) {
     e2eeKey = key || null;
+    e2eeOn = !!encrypt;
     const same = desiredRoom && desiredRoom.url === url && desiredRoom.token === token;
-    desiredRoom = { url: url, token: token };
+    desiredRoom = { url: url, token: token, key: key || null, e2ee: e2eeOn };
     if (room) {
       if (same) return;
       // A DIFFERENT token means a different channel's room. `if (room) return;`
@@ -312,20 +318,30 @@ window.dxScreen = window.dxScreen || (function () {
     // "Connecting to stream…" — the Room constructor governs subscription, so
     // an audio nicety has no business changing it. Volume is capped at 100%
     // via the element instead; a working picture beats a louder one.
-    // E2EE, when a key was handed down (roadmap Stage 3). The worker has to be
-    // constructed here rather than reused: the SDK ties one to a Room, and this
-    // function builds a fresh Room on every reconnect.
+    // E2EE (roadmap Stage 3). The worker has to be constructed here rather than
+    // reused: the SDK ties one to a Room, and this function builds a fresh Room
+    // on every reconnect.
     //
     // `ExternalE2EEKeyProvider` with the same passphrase the native rooms use.
     // The salt and derivation are both SDKs' defaults, which is what lets a
     // frame published by the Rust side be decrypted by this one — the two never
     // negotiate, they only happen to agree, so a mismatch shows up as noise
     // rather than as an error.
+    //
+    // **Built whenever encryption is on, key or no key** — the mirror of what
+    // `e2ee::room_options` does natively. This used to be gated on `e2eeKey`,
+    // and the key is almost never there yet at connect time: it is distributed
+    // over the gateway and arrives after the room is up. So the room was built
+    // without a provider, and `setE2eeKey` could not add one afterwards — the
+    // JS SDK only accepts it in the constructor — leaving the webview in the
+    // clear for the whole session while every native room encrypted. The peer's
+    // symptom was a black screen and "Encrypted screen_share track received …
+    // but room does not have encryption enabled".
     const opts = { adaptiveStream: true, dynacast: true };
-    if (e2eeKey && !window.__dxfE2eeWorkerSrc) {
+    if (e2eeOn && !window.__dxfE2eeWorkerSrc) {
       console.error('[dxScreen] e2ee requested but the worker source is missing');
       post('e2ee-error', { detail: 'the encryption worker was not injected' });
-    } else if (e2eeKey) {
+    } else if (e2eeOn) {
       try {
         const provider = new lk.ExternalE2EEKeyProvider();
         opts.e2ee = {
@@ -336,12 +352,15 @@ window.dxScreen = window.dxScreen || (function () {
             )
           ),
         };
-        pendingKeyProvider = provider;
         e2eeProvider = provider;
       } catch (e) {
+        e2eeProvider = null;
         console.error('[dxScreen] could not set up e2ee', e);
         post('e2ee-error', { detail: String((e && e.message) || e) });
       }
+    } else {
+      // No provider on this Room, so nothing may pretend a later key will work.
+      e2eeProvider = null;
     }
     const thisRoom = new lk.Room(opts);
     room = thisRoom;
@@ -353,17 +372,26 @@ window.dxScreen = window.dxScreen || (function () {
       console.error('[dxScreen] encryption error', err);
       post('e2ee-undecryptable', { detail: String((err && err.message) || err) });
     });
-    if (e2eeKey && pendingKeyProvider) {
-      // setKey before enabling, so the first frames are not published under a
-      // key nobody has.
+    if (e2eeProvider) {
+      // Set the state explicitly both ways, for the same reason `register_room`
+      // does natively: a Room built with e2ee options considers itself enabled,
+      // and a room enabled before a key exists publishes its first frames under
+      // the provider's empty key — undecryptable to everyone, including a peer
+      // doing exactly the same thing. Disabled until a key lands; `setE2eeKey`
+      // turns it on.
       try {
-        await pendingKeyProvider.setKey(e2eeKey);
-        await thisRoom.setE2EEEnabled(true);
+        if (e2eeKey) {
+          // setKey before enabling, so the first frames are not published under
+          // a key nobody has.
+          await e2eeProvider.setKey(e2eeKey);
+          await thisRoom.setE2EEEnabled(true);
+        } else {
+          await thisRoom.setE2EEEnabled(false);
+        }
       } catch (e) {
         console.error('[dxScreen] enabling e2ee failed', e);
         post('e2ee-error', { detail: String((e && e.message) || e) });
       }
-      pendingKeyProvider = null;
     }
     thisRoom.on(lk.RoomEvent.Disconnected, function (reason) {
       console.warn('[dxScreen] room disconnected', reason);
@@ -972,6 +1000,10 @@ window.dxScreen = window.dxScreen || (function () {
   // SDKs derive independently and would silently disagree otherwise.
   async function setE2eeKey(key) {
     e2eeKey = key || null;
+    // Also on `desiredRoom`, which is what a reconnect rebuilds from — the key
+    // has to survive one, and this may be the only place it was ever seen if it
+    // arrived after connect (which is the normal case).
+    if (desiredRoom) desiredRoom.key = e2eeKey;
     if (!e2eeKey || !e2eeProvider) return;
     try {
       await e2eeProvider.setKey(e2eeKey);
@@ -1206,11 +1238,20 @@ pub fn ScreenShareBridge() -> Element {
                     let (url, tok) = (js_str(url), js_str(tok));
                     // The media key is quoted the same way and for a stronger
                     // reason: it is a secret, and `null` when there is none.
-                    let key = crate::e2ee::shared_key()
-                        .map(js_str)
+                    //
+                    // `current_key`, not `shared_key`: the latter reads only the
+                    // developer env var, so on the real path — a key distributed
+                    // by `mediakey` — the webview connected with `null` forever.
+                    let key = crate::e2ee::current_key()
+                        .map(|k| js_str(&k))
                         .unwrap_or_else(|| "null".into());
+                    // And whether to build a key provider at all, which is a
+                    // separate question from whether a key exists yet: the key
+                    // usually arrives after this room is up, and the JS SDK
+                    // takes a provider only in the Room constructor.
+                    let encrypt = crate::e2ee::enabled();
                     let _ = document::eval(&format!(
-                        "{SCREEN_JS}\nwindow.dxScreen.connect({url},{tok},{key});"
+                        "{SCREEN_JS}\nwindow.dxScreen.connect({url},{tok},{key},{encrypt});"
                     ));
                 }
                 None => {
