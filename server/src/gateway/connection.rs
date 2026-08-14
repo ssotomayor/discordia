@@ -2182,6 +2182,12 @@ mod tests {
             "\u{0}".repeat(MAX_CLIENT_VERSION_LEN * 2)
         );
         assert_eq!(sanitize_client_version(&padded), "v0.1.0-pre.223");
+
+        // The other way to survive the first trim: be whitespace, but interior.
+        // Same branch, reached from the opposite direction — `trim()` leaves
+        // these alone because they are not at an edge.
+        let interior = format!("v0.1.0{}pre.223", "\n".repeat(MAX_CLIENT_VERSION_LEN * 2));
+        assert_eq!(sanitize_client_version(&interior), "v0.1.0pre.223");
     }
 
     /// Why the function trims twice. Filtering can *expose* padding the first
