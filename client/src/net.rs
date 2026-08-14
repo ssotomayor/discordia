@@ -433,6 +433,7 @@ fn apply(
             members,
             roles,
             emojis,
+            voice_states,
         } => {
             // We created or joined this guild — add it (dedup) and jump to it.
             let gid = guild.id;
@@ -442,6 +443,12 @@ fn apply(
             s.roles.insert(gid, roles);
             s.guild_emojis.insert(gid, emojis);
             resolve_emoji_images(&mut s, tx);
+            // Replace rather than merge: the server sends this guild's whole
+            // voice roster, so anything we still hold for it is stale by
+            // definition. Scoped by `guild_id` so a voice session in another
+            // guild — including our own — survives joining this one.
+            s.voice_states.retain(|v| v.guild_id != gid);
+            s.voice_states.extend(voice_states);
             for ch in channels {
                 if !s.channels.iter().any(|c| c.id == ch.id) {
                     s.channels.push(ch);

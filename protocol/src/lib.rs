@@ -1143,6 +1143,17 @@ pub enum ServerMessage {
         /// The guild's custom-emoji catalog (images fetched on demand).
         #[serde(default)]
         emojis: Vec<GuildEmoji>,
+        /// Live voice presence in this guild: who is in which voice channel,
+        /// and their mute/deafen/speaking/camera/screen flags.
+        ///
+        /// `Ready` has carried this since voice existed; this variant did not,
+        /// so a client that joined a guild mid-session saw an empty voice
+        /// roster — no occupants, no camera or LIVE badges — until whoever was
+        /// already in there next changed something. The snapshot is scoped to
+        /// this guild only, which is the same rule `Ready` applies across all
+        /// of them: voice presence is visible only inside a guild you are in.
+        #[serde(default)]
+        voice_states: Vec<VoiceState>,
     },
     /// A guild was deleted by its owner. Delivered to the (former) members so
     /// they drop it from local state.
