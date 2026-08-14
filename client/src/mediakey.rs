@@ -227,12 +227,15 @@ use crate::state::{use_app_state, use_gateway};
 /// a call whose key changed once at the start.
 const KEY_WAIT: std::time::Duration = std::time::Duration::from_secs(4);
 
-/// Who, of the members present, is responsible for handing the key on.
+/// Who, of the members present, should *generate* a key when nobody has one.
 ///
 /// The lowest pubkey. Any deterministic rule works as long as every client
-/// computes the same one; this one needs no coordination, no election, and no
-/// state — which matters because the alternative is every member sealing the
-/// key to every newcomer at once.
+/// computes the same one; this one needs no coordination, no election and no
+/// state.
+///
+/// Deliberately not used for deciding who *hands the key on* — see the comment
+/// at the `Some` arm below. Holding the key and being lowest are different
+/// facts, and conflating them left two members on two different keys.
 ///
 /// `None` when the set is empty, which is the caller's cue that there is nobody
 /// to be responsible.
@@ -302,19 +305,26 @@ pub fn MediaKeyBridge() -> Element {
         };
 
         match held {
-            // We hold the key: hand it to anyone here who may not, but only if
-            // we are the one responsible for doing so. Sealing is per recipient,
-            // so without a rule every member would seal to every newcomer.
+            // We hold the key: hand it to everyone else here.
+            //
+            // **Not gated on being the designated member**, and that was a bug
+            // with a symptom worth remembering: the rule used to be "only the
+            // lowest pubkey hands the key on", which says nothing about whether
+            // the lowest pubkey *has* one. A host who generated the key while
+            // alone, then had somebody join whose pubkey sorted lower, would sit
+            // on it and send nothing — and the newcomer, finding itself lowest,
+            // would generate a second key. Two keys, both rooms encrypting,
+            // silence in both directions.
+            //
+            // Holding the key is the only qualification that matters. Duplicate
+            // sends are harmless: a recipient that already has this epoch
+            // ignores it.
             Some((epoch, key)) => {
                 let others: Vec<&str> = present
                     .iter()
                     .map(String::as_str)
                     .filter(|p| *p != me)
                     .collect();
-                let responsible = designated(present.iter().map(String::as_str)) == Some(&me);
-                if !responsible {
-                    return;
-                }
                 for to in others {
                     match seal(&key, to, epoch, &identity) {
                         Ok(blob) => send.send(ClientMessage::ShareMediaKey {

@@ -83,6 +83,22 @@ pub fn spawn_gateway(
     gateway_tx
 }
 
+/// Whether an arriving media key should replace the one we hold.
+///
+/// Newer epochs win. An *equal* epoch is the case that matters and used to be
+/// rejected outright, which is how two members ended up on two different keys
+/// hearing nothing from each other: two clients can each generate an epoch 1
+/// for the same channel, and nothing about the number tells them apart. Equal
+/// epochs are therefore broken by pubkey, lowest wins — the same rule both ends
+/// compute, so both converge instead of each keeping its own.
+fn supersedes(have: Option<u32>, epoch: u32, from: &str, me: Option<&str>) -> bool {
+    match (have, me) {
+        (None, _) => true,
+        (Some(have), Some(mine)) if epoch == have => from < mine,
+        (Some(have), _) => epoch > have,
+    }
+}
+
 /// Who, if anyone, may introduce us to this host.
 ///
 /// Whatever relay the rendezvous runs, and nothing otherwise. There is no
@@ -1069,9 +1085,22 @@ fn apply(
             // removed member still has.
             let identity = s.identity.clone();
             let Some(identity) = identity else { return };
+            // Newer epochs always win. An *equal* epoch is the interesting
+            // case, and it used to be ignored outright — which is how two
+            // members ended up on two different keys and heard nothing from
+            // each other. Two clients can both generate an epoch 1 for the same
+            // channel (each believing nobody else would), and nothing about the
+            // number distinguishes them.
+            //
+            // So equal epochs are broken by pubkey, lowest wins: the same rule
+            // both ends compute, so both converge on one key instead of each
+            // keeping its own. Whoever loses adopts and stops publishing under
+            // the key nobody else has.
+            let me = s.self_user.as_ref().map(|u| u.pubkey.clone());
             let current = s.media_keys.get(&channel_id).map(|(e, _)| *e);
-            if current.is_some_and(|have| have >= epoch) {
-                tracing::debug!(%from, epoch, "ignoring a media key we have already moved past");
+            let take = supersedes(current, epoch, &from, me.as_deref());
+            if !take {
+                tracing::debug!(%from, epoch, "ignoring a media key that does not supersede ours");
                 return;
             }
             match crate::mediakey::open(&blob, &from, epoch, &identity) {
@@ -1260,6 +1289,31 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         drop(listener);
         format!("ws://{addr}/gateway")
+    }
+
+    /// Two members can each generate an epoch 1 for the same channel, and the
+    /// rule that decides between them has to be one both compute the same way
+    /// — otherwise each keeps its own key and neither hears the other, which is
+    /// exactly what happened on the first two-machine test.
+    #[test]
+    fn an_equal_epoch_is_broken_by_pubkey_so_both_sides_converge() {
+        let mine = Some("bbbb");
+
+        // Nothing held: anything is an improvement.
+        assert!(supersedes(None, 1, "cccc", mine));
+
+        // Same epoch, lower sender: adopt. Same epoch, higher sender: keep.
+        // The pair together is what makes it converge — for any two members,
+        // exactly one adopts.
+        assert!(supersedes(Some(1), 1, "aaaa", mine));
+        assert!(!supersedes(Some(1), 1, "cccc", mine));
+
+        // Newer always wins, whoever sent it; older never does.
+        assert!(supersedes(Some(1), 2, "cccc", mine));
+        assert!(!supersedes(Some(2), 1, "aaaa", mine));
+
+        // Our own key can never be superseded by itself echoing back.
+        assert!(!supersedes(Some(3), 3, "bbbb", mine));
     }
 
     /// The QUIC handshake has to present a host the gateway will substitute,
