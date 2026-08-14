@@ -542,16 +542,7 @@ fn SafetyControls(
                         // the log existed, and nothing rendered it — so the log
                         // answered "what happened to whom" and not "who did it",
                         // which is the question an audit log is for.
-                        //
-                        // Resolved through the member list rather than shown raw,
-                        // like every other pubkey in the UI. It falls back to the
-                        // truncated key, which is the honest answer for an actor
-                        // who has since left the guild.
-                        let actor = state
-                            .read()
-                            .user_of(&e.actor_pubkey)
-                            .map(|u| u.username.clone())
-                            .unwrap_or_else(|| truncate_pubkey(&e.actor_pubkey));
+                        let actor = state.read().display_name(&e.actor_pubkey);
                         rsx! {
                             div {
                                 key: "{e.at_ms}-{e.action}-{e.target}",
@@ -828,15 +819,7 @@ fn EmojiSettings(guild_id: Id) -> Element {
                     let id = e.id;
                     let code = e.shortcode.clone();
                     let is_renaming = renaming() == Some(id);
-                    // Same treatment the audit log's actor gets: resolved
-                    // through the member list, falling back to the truncated
-                    // key, which is the honest answer for someone who has since
-                    // left the guild.
-                    let adder = state
-                        .read()
-                        .user_of(&e.added_by)
-                        .map(|u| u.username.clone())
-                        .unwrap_or_else(|| truncate_pubkey(&e.added_by));
+                    let adder = state.read().display_name(&e.added_by);
                     let provenance = emoji_provenance(&e.added_by, &adder, e.created_ms);
                     rsx! {
                         div { key: "{e.id}", class: "flex items-center gap-2 py-1",

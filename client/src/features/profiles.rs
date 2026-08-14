@@ -174,10 +174,7 @@ pub fn ProfileCard() -> Element {
     let Some(pubkey) = snapshot.profile_card.clone() else {
         return rsx! { Fragment {} };
     };
-    let name = snapshot
-        .user_of(&pubkey)
-        .map(|u| u.username.clone())
-        .unwrap_or_else(|| crate::identity::truncate_pubkey(&pubkey));
+    let name = snapshot.display_name(&pubkey);
     let bio = snapshot
         .profile_of(&pubkey)
         .and_then(|p| p.bio.clone())

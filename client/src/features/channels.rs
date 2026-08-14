@@ -514,10 +514,7 @@ fn VoiceChannelRow(
                 div { class: "ml-5 mt-0.5 space-y-0.5",
                     for vs in occupants.iter() {
                         {
-                            let name = users_by_id
-                                .user_of(&vs.user_pubkey)
-                                .map(|u| u.username.clone())
-                                .unwrap_or_else(|| crate::identity::truncate_pubkey(&vs.user_pubkey));
+                            let name = users_by_id.display_name(&vs.user_pubkey);
                             let is_self = self_pubkey.as_deref() == Some(vs.user_pubkey.as_str());
                             let is_sharing = sharers.iter().any(|p| p == &vs.user_pubkey);
                             rsx! {
@@ -589,13 +586,7 @@ fn ConnectionStats() -> Element {
         let s = state.read();
         s.voice_stats
             .iter()
-            .map(|(pk, st)| {
-                let name = s
-                    .user_of(pk)
-                    .map(|u| u.username.clone())
-                    .unwrap_or_else(|| crate::identity::truncate_pubkey(pk));
-                (name, *st)
-            })
+            .map(|(pk, st)| (s.display_name(pk), *st))
             .collect()
     };
     rows.sort_by(|a, b| a.0.cmp(&b.0));
