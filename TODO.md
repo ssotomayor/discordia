@@ -59,6 +59,7 @@ the top within each section.
   function's own doc comment. Closing it properly means either accepting that
   break for the rare name that contains a control character, or versioning the
   canonicalisation. Both are decisions rather than edits.
+- **The gateway is plaintext, and `wss://` looks supported without being.**
   `tokio-tungstenite` is pinned at 0.24 in the workspace `Cargo.toml` and built
   **without a TLS feature** — `tungstenite 0.24`'s own dependency list carries no
   TLS crate (`Cargo.lock:8262-8277`) — so a `wss://` URL cannot be dialled at all.

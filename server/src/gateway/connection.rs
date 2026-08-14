@@ -1805,11 +1805,27 @@ const MAX_CLIENT_VERSION_LEN: usize = 64;
 fn sanitize_client_version(raw: &str) -> String {
     raw.trim()
         .chars()
-        .filter(|c| !c.is_control())
+        .filter(|c| !breaks_a_line(*c))
         .take(MAX_CLIENT_VERSION_LEN)
         .collect::<String>()
         .trim()
         .to_string()
+}
+
+/// Characters that can end a line somewhere downstream.
+///
+/// `char::is_control()` alone is not that set, which is the trap. It covers
+/// category Cc — `\n`, `\r`, ESC, and U+0085 — and stops there. **U+2028 LINE
+/// SEPARATOR and U+2029 PARAGRAPH SEPARATOR are Zl and Zp**, so `is_control()`
+/// returns false for them and they would survive a filter built on it alone.
+///
+/// Whether they *render* as a break depends on the consumer — some viewers and
+/// log processors honour them, `tracing_subscriber::fmt()` does not — which is
+/// exactly why they belong here rather than in a judgement call at each sink.
+/// The point of this function is that a peer cannot end a line; a character
+/// that ends one for *somebody* qualifies.
+fn breaks_a_line(c: char) -> bool {
+    c.is_control() || c == '\u{2028}' || c == '\u{2029}'
 }
 
 /// True if `bot_pubkey` is installed in `channel_id`'s guild with `perm`. DM
@@ -2113,6 +2129,19 @@ mod tests {
             !clean.chars().any(|c| c.is_control()),
             "a control character survived: {clean:?}"
         );
+
+        // The Unicode separators, which `is_control()` does *not* cover — they
+        // are categories Zl and Zp, not Cc, so a filter written on
+        // `is_control()` alone lets them straight through.
+        for sep in ['\u{2028}', '\u{2029}'] {
+            let forged = format!("v1.0{sep}INFO identified user=admin");
+            let clean = sanitize_client_version(&forged);
+            assert!(
+                !clean.contains(sep),
+                "U+{:04X} survived: {clean:?}",
+                sep as u32
+            );
+        }
         // What is left is one line, and the log site quotes it — so the
         // remaining `key=value` text cannot read as fields of its own.
         assert!(clean.starts_with("v1.0"));
