@@ -24,7 +24,7 @@ use std::time::Duration;
 use dioxusfun_bot::{Bot, BotIdentity};
 use dioxusfun_server::livekit::{
     BoxFuture, LiveKitConfig, MintRequest, VoiceTokenMinter, screen_audio_identity,
-    screen_video_identity,
+    screen_room_name, screen_video_identity,
 };
 use dioxusfun_server::protocol::{ChannelKind, ClientMessage, Id, ServerMessage};
 use livekit_api::access_token::TokenVerifier;
@@ -57,8 +57,11 @@ fn test_config(livekit: LiveKitConfig) -> dioxusfun_server::ServerConfig {
     }
 }
 
-/// A config that signs locally, which is the only path where `can_publish`
-/// reaches the token — a delegated minter takes no grants (see TODO.md).
+/// A config that signs locally, so the grants can be read straight out of the
+/// JWT. The delegated path carries the same answers now, but a scripted minter
+/// returns a placeholder string rather than a real token — see
+/// `a_delegated_mint_is_told_which_connection_may_publish`, which asserts on
+/// what the seam is *handed* instead.
 fn local_signing() -> LiveKitConfig {
     LiveKitConfig {
         explicit_url: Some("ws://127.0.0.1:7880".into()),
@@ -88,6 +91,28 @@ impl VoiceTokenMinter for ScriptedMinter {
                 Ok(format!("token-for-{}-as-{}", req.room, req.identity))
             }
         })
+    }
+}
+
+/// A minter that records what it was asked for and always succeeds.
+///
+/// The delegated path is the one that used to drop `can_publish` on the floor —
+/// it sent room, identity and name and nothing else, so the relay signed its own
+/// fixed grants with publish on. What this seam *receives* is therefore the
+/// thing worth pinning; what the relay then does with it is asserted on the
+/// relay's own side, in `dioxusfun-rendezvous`.
+struct RecordingMinter {
+    seen: Arc<std::sync::Mutex<Vec<(String, String, bool)>>>,
+}
+
+impl VoiceTokenMinter for RecordingMinter {
+    fn mint<'a>(&'a self, req: MintRequest) -> BoxFuture<'a, Result<String, String>> {
+        self.seen.lock().expect("recording minter poisoned").push((
+            req.room.clone(),
+            req.identity.clone(),
+            req.can_publish,
+        ));
+        Box::pin(async move { Ok(format!("token-for-{}-as-{}", req.room, req.identity)) })
     }
 }
 
@@ -688,5 +713,56 @@ async fn leaving_voice_clears_the_share() {
         legacy_sharers(&frames).last().cloned(),
         Some(Vec::new()),
         "and the legacy frame should go empty: {frames:?}"
+    );
+}
+
+/// The grants a delegated mint is told to ask for.
+///
+/// `screen_token_as` has taken `can_publish` per identity since the local mint
+/// stopped handing publish rights to the subscribe-only `#audio` connection.
+/// That answer used to stop at the delegation seam: `MintRequest` carried room,
+/// identity and name, so a gateway hosting through a rendezvous got a relay's
+/// own fixed grants with publish on — and the narrowing applied to
+/// self-signing deployments only.
+///
+/// This asserts the three screen-room mints now carry the same answers the
+/// local path signs, which `join_voice_mints_three_identities_with_the_right_grants`
+/// checks on the other side of the same `if`.
+#[tokio::test]
+async fn a_delegated_mint_is_told_which_connection_may_publish() {
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let cfg = LiveKitConfig {
+        minter: Some(Arc::new(RecordingMinter { seen: seen.clone() })),
+        ..local_signing()
+    };
+    let (url, _handle) = spawn_gateway(cfg).await;
+    let id = BotIdentity::generate();
+    let mut user = connect_user(&url, &id, "sharer").await;
+    let (_guild_id, channel_id) = voice_channel(&mut user).await;
+
+    let frames = join_voice(&mut user, channel_id).await;
+    assert!(errors(&frames).is_empty(), "unexpected errors: {frames:?}");
+
+    let seen = seen.lock().expect("recording minter poisoned").clone();
+    let screen = screen_room_name(channel_id);
+    let pubkey = id.pubkey();
+    let asked = |identity: &str| {
+        seen.iter()
+            .find(|(room, who, _)| room == &screen && who == identity)
+            .map(|(_, _, can_publish)| *can_publish)
+            .unwrap_or_else(|| panic!("no mint for {identity} in {screen}: {seen:?}"))
+    };
+
+    // Renders every share, and captures on Windows.
+    assert!(asked(pubkey), "the webview identity has to publish");
+    // Feeds stream audio into the cpal mixer, and sends nothing.
+    assert!(
+        !asked(&screen_audio_identity(pubkey)),
+        "the subscribe-only identity must not be granted publish"
+    );
+    // Publishes natively captured screen video.
+    assert!(
+        asked(&screen_video_identity(pubkey)),
+        "the native video publisher has to publish"
     );
 }

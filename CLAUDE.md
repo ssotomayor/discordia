@@ -252,8 +252,10 @@ channel to observe the publication themselves.
   place, `attach`/`reattach` in the JS controller. Adding a fourth identity means
   teaching those two functions about it — and deciding what it may publish, which
   `screen_token_as` takes as an argument rather than inferring from the suffix.
-  That only binds on the local mint; a rendezvous-delegated one signs its own
-  grants (see `TODO.md`).
+  That answer rides `MintRequest::can_publish` across the delegation seam too, so
+  it binds on the local mint *and* on a rendezvous-delegated one — with the
+  caveat that a relay older than that field ignores it and grants publish, which
+  nothing on this wire can detect (see `TODO.md`).
 
   **The camera deliberately did not add a fourth.** It rides the bare identity
   and is told apart by `TrackSource`, which is exactly why it cost no token, no
