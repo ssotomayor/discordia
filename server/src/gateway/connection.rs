@@ -1807,13 +1807,19 @@ const MAX_CLIENT_VERSION_LEN: usize = 64;
 /// Control characters are stripped *before* the cap, so a run of them cannot
 /// consume the budget and leave nothing behind.
 fn sanitize_client_version(raw: &str) -> String {
-    raw.trim()
+    let mut out: String = raw
+        .trim()
         .chars()
         .filter(|c| !breaks_a_line(*c))
         .take(MAX_CLIENT_VERSION_LEN)
-        .collect::<String>()
-        .trim()
-        .to_string()
+        .collect();
+    // Trimmed a second time, in place, because filtering can *expose* padding
+    // the first trim could not see: `"\u{0} v1.0"` has no leading whitespace
+    // until the NUL is removed. Done with `truncate`/`drain` rather than
+    // `.trim().to_string()` so this allocates once instead of twice.
+    out.truncate(out.trim_end().len());
+    out.drain(..out.len() - out.trim_start().len());
+    out
 }
 
 /// Characters that can end a line somewhere downstream.
@@ -2162,10 +2168,28 @@ mod tests {
     /// Control characters are stripped *before* the cap. Filtering after it
     /// would let a run of them eat the whole budget and leave nothing, turning
     /// a hostile string into an indistinguishable "unknown".
+    ///
+    /// **The padding must not be whitespace.** An earlier version of this test
+    /// padded with `\n`, which the `raw.trim()` at the top of the function
+    /// removes before `filter`/`take` ever run — so it passed with the two
+    /// steps in either order and pinned nothing. Verified by swapping them:
+    /// the newline version stayed green, this one fails. NUL is not Unicode
+    /// whitespace, so it survives the trim and actually reaches the cap.
     #[test]
     fn control_characters_do_not_consume_the_cap() {
-        let padded = format!("{}v0.1.0-pre.223", "\n".repeat(MAX_CLIENT_VERSION_LEN * 2));
+        let padded = format!(
+            "{}v0.1.0-pre.223",
+            "\u{0}".repeat(MAX_CLIENT_VERSION_LEN * 2)
+        );
         assert_eq!(sanitize_client_version(&padded), "v0.1.0-pre.223");
+    }
+
+    /// Why the function trims twice. Filtering can *expose* padding the first
+    /// trim could not see, because a control character is not whitespace and
+    /// stands between it and the edge.
+    #[test]
+    fn filtering_does_not_leave_exposed_padding() {
+        assert_eq!(sanitize_client_version("\u{0} v0.1.0 \u{0}"), "v0.1.0");
     }
 
     /// The ordinary values still pass through untouched — a sanitiser that
