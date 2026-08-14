@@ -292,14 +292,8 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
                 }
             }
 
-            // Floating layout controls, and which build this is. Always
-            // visible, subtle.
+            // Floating layout controls. Always visible, subtle.
             div { class: "fixed bottom-3 right-3 z-40 flex items-center gap-1.5",
-                // Riding the existing cluster rather than claiming a third
-                // floating corner: this one is taken by the layout controls and
-                // the other by the activity launcher, so a new one would have
-                // had to go somewhere it does not belong.
-                crate::version::VersionLabel {}
                 // Reset is only offered while editing — it is the way back from
                 // a layout you've made a mess of, including a window dragged
                 // somewhere awkward in Free mode.

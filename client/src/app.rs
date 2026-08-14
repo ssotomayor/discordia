@@ -552,11 +552,12 @@ pub fn App() -> Element {
             }
             // Which build this is, on the screens you see before connecting to
             // anything — the first place someone reads a version, and the only
-            // one they can reach without a working server.
+            // one reachable when nothing works, which is when they need it.
             //
-            // Only there: once `WorkspaceView` is up it renders its own copy
-            // inside the layout-controls cluster, and a fixed badge would land
-            // on top of it. The workspace holds both bottom corners already.
+            // It stops at the door on purpose. In the workspace it would be
+            // permanent chrome answering a question nobody asks while chatting,
+            // and both bottom corners are already spoken for there: the layout
+            // controls on the right, the activity launcher on the left.
             if session.read().is_none() {
                 div { class: "fixed bottom-3 right-3 z-40",
                     crate::version::VersionLabel {}
