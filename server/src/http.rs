@@ -60,7 +60,7 @@ async fn log_request(req: Request<axum::body::Body>, next: Next) -> impl IntoRes
         .unwrap_or("-")
         .to_string();
     let response = next.run(req).await;
-    tracing::info!(%method, %path, %upgrade, status = %response.status(), "request");
+    tracing::info!(?method, ?path, ?upgrade, status = %response.status(), "request");
     response
 }
 
