@@ -142,9 +142,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
       - uses: Swatinem/rust-cache@v2
-      - name: Check client
-        run: cargo check -p dioxusfun
+      # Clippy rather than `check`, for the same reason the macOS job below uses
+      # it: nothing linted the `cfg(target_os = "windows")` half of the client,
+      # which is where `sysaudio/windows.rs` and `rawmic/windows.rs` live. The
+      # Linux job lints what it can compile, and that is neither. Clippy
+      # compiles what it lints, so this is still the compile check this job
+      # existed for — one build, not two — and `--all-targets` adds the test
+      # modules in those two files, which `cargo check` was not looking at.
+      #
+      # Unlike the macOS job, turning this on took **no** findings with it. Both
+      # profiles were run on a Windows 11 26200 host before the gate went in —
+      # this one, and `-C debug-assertions=off`, which is the pair the Linux job
+      # runs because `unused_variables` and friends fire only under the second.
+      # Zero either way, so this step gates code that already passes it rather
+      # than accompanying a fix.
+      - name: Clippy (client, Windows-only code)
+        run: cargo clippy -p dioxusfun --all-targets -- -D warnings
       # `sysaudio/windows.rs` and `rawmic/windows.rs` are 61 unsafe WASAPI FFI
       # sites that compile nowhere else, and one of them shipped a heap
       # corruption that only running its test ever caught. Until this step there
