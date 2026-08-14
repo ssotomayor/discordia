@@ -24,6 +24,11 @@
 //! # all without a second GUI client — run this somewhere, dial it from
 //! # somewhere else.
 //! cargo run -p dioxusfun-server --example reach -- --listen
+//!
+//! # through a relay, which has to be named — ask your rendezvous:
+//! #   curl http://your-rendezvous:7700/config
+//! cargo run -p dioxusfun-server --example reach -- \
+//!     --coordinated http://your-rendezvous:7701 --key <endpoint-id>
 //! ```
 //!
 //! Build it with `LIVEKIT_BUNDLE_SKIP=1` — it never hosts voice, and without
@@ -45,19 +50,27 @@ async fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     // `--coordinated` may appear anywhere; pull it out before anything else
     // reads positionally.
-    let coordination = if let Some(i) = args.iter().position(|a| a == "--coordinated") {
-        args.remove(i);
-        Coordination::CoordinatorOnly
-    } else {
-        Coordination::None
+    // `--coordinated <relay-url>`: the relay has to be named, because there is
+    // no default any more. In practice it is the one your rendezvous reports at
+    // `GET /config`.
+    let coordination = match args.iter().position(|a| a == "--coordinated") {
+        Some(i) => {
+            args.remove(i);
+            if i >= args.len() {
+                eprintln!("--coordinated needs a relay url (see your rendezvous' /config)");
+                std::process::exit(2);
+            }
+            Coordination::Relay(args.remove(i))
+        }
+        None => Coordination::None,
     };
     if args.is_empty() {
         eprintln!(
             "usage:\n\
              \x20 reach <ws://host:port>\n\
-             \x20 reach --key <endpoint-id> [ip:port …] [--coordinated]\n\
-             \x20 reach --listen [--coordinated]\n\n\
-             --coordinated lets an iroh relay introduce the two ends (tier 2), and then\n\
+             \x20 reach --key <endpoint-id> [ip:port …] [--coordinated <relay-url>]\n\
+             \x20 reach --listen [--coordinated <relay-url>]\n\n\
+             --coordinated names a relay to introduce the two ends (tier 2), and then\n\
              insists the result is a direct path — a connection the relay is still\n\
              carrying is refused rather than used."
         );
@@ -117,14 +130,14 @@ async fn listen(coordination: Coordination) {
     .await
     .expect("build router");
 
-    let endpoint = dioxusfun_server::quic::bind_quic(None, coordination)
+    let endpoint = dioxusfun_server::quic::bind_quic(None, &coordination)
         .await
         .expect("bind quic");
 
     // With a coordinator allowed, wait to reach a relay before printing
     // anything: until then there is no introduction on offer, and the only
     // addresses are ones this network can use.
-    if coordination == Coordination::CoordinatorOnly {
+    if coordination.is_coordinated() {
         println!("reaching a relay …");
         let _ = tokio::time::timeout(Duration::from_secs(20), endpoint.online()).await;
         let relays: Vec<String> = endpoint
@@ -144,12 +157,12 @@ async fn listen(coordination: Coordination) {
     }
 
     let key = endpoint.id();
-    let handle =
-        dioxusfun_server::quic::serve_on_with(endpoint, router, coordination).expect("serve quic");
+    let handle = dioxusfun_server::quic::serve_on_with(endpoint, router, coordination.clone())
+        .expect("serve quic");
     println!("\nlistening as {key}\n");
-    if coordination == Coordination::CoordinatorOnly {
+    if coordination.is_coordinated() {
         // No address: being findable by key alone is the thing under test.
-        println!("  dial from anywhere:  reach --coordinated --key {key}");
+        println!("  dial from anywhere:  reach --coordinated <relay-url> --key {key}");
     } else {
         for addr in dioxusfun_server::quic::dialable_addrs(&handle.sockets) {
             println!(
@@ -197,7 +210,7 @@ async fn reach_quic(
     let parsed: Vec<SocketAddr> = addrs.iter().filter_map(|a| a.parse().ok()).collect();
     // Coordinated, the key is enough: the relay knows where the host is, which
     // is the entire point. Uncoordinated, an address is all we have.
-    if parsed.is_empty() && coordination == Coordination::None {
+    if parsed.is_empty() && !coordination.is_coordinated() {
         return Err("no usable ip:port addresses given".into());
     }
     println!("dialling key {key} at {parsed:?} (coordination: {coordination:?}) …");
@@ -207,13 +220,11 @@ async fn reach_quic(
     // discovery: a connection quietly rescued by a third party would prove the
     // opposite of what is being asked. Coordinated is the other test entirely —
     // let the relay introduce us, then check what we actually got.
-    let endpoint = match coordination {
-        Coordination::None => Endpoint::builder(presets::Minimal),
-        Coordination::CoordinatorOnly => Endpoint::builder(presets::N0),
-    }
-    .bind()
-    .await
-    .map_err(|e| format!("local quic bind: {e}"))?;
+    let endpoint = Endpoint::builder(presets::Minimal)
+        .relay_mode(coordination.relay_mode()?)
+        .bind()
+        .await
+        .map_err(|e| format!("local quic bind: {e}"))?;
     let addr = EndpointAddr::new(endpoint_id).with_addrs(parsed.into_iter().map(TransportAddr::Ip));
 
     let conn = tokio::time::timeout(TIMEOUT, endpoint.connect(addr, GATEWAY_ALPN))
@@ -228,7 +239,7 @@ async fn reach_quic(
 
     // The tier-2 question, asked out loud: a relay that arranged this will carry
     // it just as happily, and it would work — so the refusal is the test.
-    if let Err(refusal) = require_direct(&conn, coordination).await {
+    if let Err(refusal) = require_direct(&conn, &coordination).await {
         return Err(format!(
             "REFUSED (correctly, if the punch failed): {refusal}"
         ));

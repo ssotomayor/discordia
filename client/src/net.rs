@@ -83,12 +83,16 @@ pub fn spawn_gateway(
     gateway_tx
 }
 
-/// The transport's view of the coordinator setting.
-fn coordination(allowed: bool) -> crate::quic::Coordination {
-    if allowed {
-        crate::quic::Coordination::CoordinatorOnly
-    } else {
-        crate::quic::Coordination::None
+/// Who, if anyone, may introduce us to this host.
+///
+/// Whatever relay the rendezvous runs, and nothing otherwise. There is no
+/// setting and no default: the third party is the one already chosen by
+/// choosing that rendezvous, and a rendezvous that runs none leaves its users
+/// on the relayed path rather than reaching for somebody else's servers.
+fn coordination(relay_url: Option<String>) -> crate::quic::Coordination {
+    match relay_url {
+        Some(url) => crate::quic::Coordination::Relay(url),
+        None => crate::quic::Coordination::None,
     }
 }
 
@@ -131,7 +135,6 @@ async fn resolve_session(
             publish_name,
             description,
             publish_public,
-            allow_coordinator,
         } => {
             let publish = crate::rendezvous::PublishOptions {
                 publish_name,
@@ -139,14 +142,7 @@ async fn resolve_session(
                 publish_public,
             };
             // We're hosting, so we own our Lobby.
-            let handle = start_self_host(
-                allow_lan,
-                rendezvous_url,
-                publish,
-                coordination(allow_coordinator),
-                identity,
-            )
-            .await?;
+            let handle = start_self_host(allow_lan, rendezvous_url, publish, identity).await?;
             let url = normalize_url(&handle.info.local_url)?;
             state.write().host_info = Some(handle.info.clone());
             Ok((
@@ -160,7 +156,6 @@ async fn resolve_session(
         SessionMode::ByCode {
             rendezvous_url,
             code,
-            allow_coordinator,
         } => {
             let base = rendezvous_url.trim().trim_end_matches('/');
             if base.is_empty() {
@@ -185,10 +180,11 @@ async fn resolve_session(
             let Some(entry) = resolve_host(&with_scheme, code).await else {
                 return relayed_only(relay);
             };
+            let coordinate = coordination(entry.relay_url.clone());
             let quic = entry
                 .transport_key
-                .filter(|_| !entry.transport_addrs.is_empty())
-                .map(|key| (key, entry.transport_addrs, coordination(allow_coordinator)));
+                .filter(|_| !entry.transport_addrs.is_empty() || coordinate.is_coordinated())
+                .map(|key| (key, entry.transport_addrs, coordinate));
             match entry.endpoint.as_deref().map(normalize_url) {
                 Some(Ok(direct)) => Ok((
                     Dial::DirectOrRelay {
@@ -305,11 +301,12 @@ async fn connect_best(
     if let Some((key, addrs, coordination)) = quic {
         // Its own, longer budget: a hole punch is a negotiation, not a connect,
         // and `DIRECT_ATTEMPT` was sized for the latter.
-        let budget = match coordination {
-            crate::quic::Coordination::None => DIRECT_ATTEMPT,
-            crate::quic::Coordination::CoordinatorOnly => PUNCH_ATTEMPT,
+        let budget = if coordination.is_coordinated() {
+            PUNCH_ATTEMPT
+        } else {
+            DIRECT_ATTEMPT
         };
-        match tokio::time::timeout(budget, dial_quic(&key, &addrs, coordination)).await {
+        match tokio::time::timeout(budget, dial_quic(&key, &addrs, &coordination)).await {
             Ok(Ok(socket)) => {
                 relay_attempt.abort();
                 eprintln!("[dioxusfun] connected over QUIC to {key}");
@@ -368,7 +365,7 @@ const QUIC_HANDSHAKE_URL: &str = "ws://127.0.0.1/gateway";
 async fn dial_quic(
     key: &str,
     addrs: &[String],
-    coordination: crate::quic::Coordination,
+    coordination: &crate::quic::Coordination,
 ) -> Result<Socket, String> {
     let endpoint_id = crate::quic::parse_endpoint_id(key)?;
     let addrs: Vec<_> = addrs

@@ -30,19 +30,11 @@ pub enum SessionMode {
         description: Option<String>,
         /// Opt in to the public listing.
         publish_public: bool,
-        /// Allow a coordinator (an iroh relay) to introduce us to friends whose
-        /// network we cannot reach directly — and *only* introduce: a
-        /// connection it ends up carrying is refused. Separate from
-        /// `rendezvous_url` on purpose; see `docs/NETWORKING.md`.
-        allow_coordinator: bool,
     },
     /// Join someone else's host by shortcode through a rendezvous server.
     ByCode {
         rendezvous_url: String,
         code: String,
-        /// As above, from the joining side.
-        #[serde(default)]
-        allow_coordinator: bool,
     },
 }
 

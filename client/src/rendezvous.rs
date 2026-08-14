@@ -87,6 +87,48 @@ impl dioxusfun_server::livekit::VoiceTokenMinter for RendezvousMinter {
     }
 }
 
+/// Ask a rendezvous whether it will introduce peers, and through what.
+///
+/// One HTTP GET before anything is bound. A rendezvous that runs no relay — or
+/// is too old to have the endpoint — answers nothing, and the caller does no
+/// coordination at all. That is the deliberate shape: the only third party that
+/// can introduce you is the one you already chose by using it.
+pub async fn coordination_offered(rendezvous_url: &str) -> dioxusfun_server::quic::Coordination {
+    #[derive(serde::Deserialize)]
+    struct Offered {
+        #[serde(default)]
+        relay_url: Option<String>,
+    }
+    let http = if let Some(rest) = rendezvous_url.strip_prefix("wss://") {
+        format!("https://{rest}")
+    } else if let Some(rest) = rendezvous_url.strip_prefix("ws://") {
+        format!("http://{rest}")
+    } else {
+        rendezvous_url.to_string()
+    };
+    let fetched = reqwest::Client::new()
+        .get(format!("{}/config", http.trim_end_matches('/')))
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await
+        .ok()
+        .and_then(|r| r.error_for_status().ok());
+    let relay = match fetched {
+        Some(r) => r.json::<Offered>().await.ok().and_then(|o| o.relay_url),
+        None => None,
+    };
+    match relay {
+        Some(url) => {
+            eprintln!("[host] rendezvous offers a coordinator at {url}");
+            dioxusfun_server::quic::Coordination::Relay(url)
+        }
+        None => {
+            eprintln!("[host] rendezvous offers no coordinator — no hole punching");
+            dioxusfun_server::quic::Coordination::None
+        }
+    }
+}
+
 /// The QUIC transport key a host advertises, and where to try it.
 #[derive(Debug, Clone)]
 pub struct TransportAdvert {
@@ -217,6 +259,7 @@ pub async fn register(
                 shortcode,
                 livekit_url,
                 voice_token_grant,
+                ..
             } => {
                 let info = PublishInfo {
                     shortcode,

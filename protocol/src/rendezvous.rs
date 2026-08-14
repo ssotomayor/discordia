@@ -111,6 +111,10 @@ pub struct DiscoverEntry {
     pub transport_key: Option<String>,
     #[serde(default)]
     pub transport_addrs: Vec<String>,
+    /// The iroh relay to be introduced through, when this rendezvous runs one.
+    /// A joiner needs it for the same reason the host did.
+    #[serde(default)]
+    pub relay_url: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -134,6 +138,14 @@ pub enum RendezvousToHost {
         /// LiveKit URL the host should hand to clients in JoinVoice responses.
         /// Provided when the rendezvous operator runs a shared LiveKit alongside.
         livekit_url: Option<String>,
+        /// The iroh relay this rendezvous runs, if it runs one.
+        ///
+        /// Hole punching needs somebody to introduce two peers, and this says
+        /// who. Absent, a host does no coordination at all rather than falling
+        /// back to a public relay nobody chose — the whole point of it arriving
+        /// here is that the third party is the one the user already picked.
+        #[serde(default)]
+        relay_url: Option<String>,
     },
     NewFriend {
         session_id: String,
@@ -221,6 +233,7 @@ mod tests {
             endpoint: Some("ws://203.0.113.5:9000".into()),
             transport_key: None,
             transport_addrs: Vec::new(),
+            relay_url: None,
         };
         let back: DiscoverEntry =
             serde_json::from_str(&serde_json::to_string(&with).unwrap()).unwrap();
@@ -242,10 +255,12 @@ mod tests {
                 shortcode,
                 voice_token_grant,
                 livekit_url,
+                relay_url,
             } => {
                 assert_eq!(shortcode, "brave-otter-07");
                 assert!(voice_token_grant.is_none());
                 assert!(livekit_url.is_none());
+                assert!(relay_url.is_none());
             }
             other => panic!("parsed as {other:?}"),
         }

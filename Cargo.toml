@@ -37,6 +37,9 @@ hex = "0.4"
 # for it over a self-signed TLS certificate and a hand-rolled verifier. Both the
 # gateway (accept) and the client (dial) need it.
 iroh = "1.0"
+# The relay half of the same stack, so a rendezvous can coordinate hole punching
+# itself instead of sending its users to somebody else's servers.
+iroh-relay = { version = "1.0", default-features = false, features = ["server"] }
 
 # --- DeepFilterNet / tract inference stack ----------------------------------
 # Two reasons this can't run as a plain debug build (see client/src/denoise.rs):

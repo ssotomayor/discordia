@@ -42,7 +42,6 @@ pub fn ConnectView(
     let mut rendezvous_url = use_signal(|| default_rendezvous.clone());
     let mut code = use_signal(String::new);
 
-    let mut allow_coordinator = use_signal(|| false);
     let mut publish_name = use_signal(String::new);
     let mut description = use_signal(String::new);
     let mut publish_public = use_signal(|| true);
@@ -78,7 +77,6 @@ pub fn ConnectView(
                         publish_name: if pn.is_empty() { None } else { Some(pn) },
                         description: if desc.is_empty() { None } else { Some(desc) },
                         publish_public: publish_to_rendezvous() && publish_public(),
-                        allow_coordinator: allow_coordinator(),
                     },
                     username: name,
                     identity: identity_for_submit.clone(),
@@ -94,7 +92,6 @@ pub fn ConnectView(
                     mode: SessionMode::ByCode {
                         rendezvous_url: r,
                         code: c,
-                        allow_coordinator: allow_coordinator(),
                     },
                     username: name,
                     identity: identity_for_submit.clone(),
@@ -261,10 +258,6 @@ pub fn ConnectView(
                                 selected: rendezvous_url(),
                                 on_select: move |u: String| rendezvous_url.set(u),
                             }
-                            CoordinatorToggle {
-                                allowed: allow_coordinator(),
-                                on_toggle: move |v| allow_coordinator.set(v),
-                            }
                         }
                     },
                     Tab::SelfHost => rsx! {
@@ -295,10 +288,6 @@ pub fn ConnectView(
                                 // the LAN. The banner says which you ended up
                                 // with once hosting starts.
                                 "Friends on this network can reach you, and Discordia asks your router (UPnP / NAT-PMP) to let friends elsewhere in without the relay. Your home IP becomes visible to anyone who joins that way."
-                            }
-                            CoordinatorToggle {
-                                allowed: allow_coordinator(),
-                                on_toggle: move |v| allow_coordinator.set(v),
                             }
                             if publish_to_rendezvous() {
                                 div { class: "pl-3 border-l border-[var(--border)] space-y-2",
@@ -472,32 +461,6 @@ fn RendezvousPicker(selected: String, on_select: EventHandler<String>) -> Elemen
                         }
                     }
                 }
-            }
-        }
-    }
-}
-
-/// The tier-2 switch, worded as what it actually permits.
-///
-/// Deliberately its own control rather than a line item under "publish to
-/// rendezvous": those are different third parties doing different jobs, and a
-/// coordinator contacted silently is the surprise `docs/NETWORKING.md` exists
-/// to remove. The promise in the sub-text is enforced, not aspirational — a
-/// connection the coordinator ends up carrying is refused at both ends.
-#[component]
-fn CoordinatorToggle(allowed: bool, on_toggle: EventHandler<bool>) -> Element {
-    rsx! {
-        div { class: "space-y-1",
-            label { class: "flex items-center gap-2 cursor-pointer text-[var(--text)] text-xs",
-                input {
-                    r#type: "checkbox",
-                    checked: allowed,
-                    oninput: move |e| on_toggle.call(e.value() == "true"),
-                }
-                "Let a coordinator introduce us"
-            }
-            div { class: "text-[10px] text-[var(--text-dim)] pl-6",
-                "For networks where neither side can be reached directly. A public relay tells each side where the other is, then steps out — and if it ends up carrying the connection instead, the connection is refused rather than used. It learns that you connected, never what you say."
             }
         }
     }

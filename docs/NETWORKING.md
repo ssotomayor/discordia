@@ -193,10 +193,21 @@ working. Preferring a reviewed library over hand-rolled verification is the whol
 argument for a QUIC transport (`iroh` is the candidate) where authentication is
 by public key by construction.
 
-**Coordinated hole punching** for tier 2, behind its own setting — *Let a
-coordinator introduce us*, on the self-host and by-code panels. With it off,
-nothing is contacted: the addresses a host published are the only way in. With
-it on, an iroh relay tells each side where the other is so they can punch a hole.
+**Coordinated hole punching** for tier 2, with **no setting at all**. The
+coordinator is whatever relay your rendezvous runs, reported at `GET /config`
+and used automatically. A rendezvous that runs none offers no coordination, and
+its users fall back to the proxy.
+
+That is a deliberate reversal of an earlier design, which had a checkbox and
+n0's public relays behind it. Two problems with that: it asked a networking
+question of people who should not have to answer one, and the honest answer to
+"may a third party introduce you" was already given when they chose a
+rendezvous. Contacting *somebody else's* servers was the part that needed
+consent; contacting the box you already picked does not. So the rendezvous runs
+its own relay (`rendezvous/src/relay_server.rs`, in-process — one service, one
+address to configure), and there is no fallback to a public one. A deployment
+that has not enabled it is less capable and says so, rather than quietly
+reaching elsewhere.
 
 **"Coordinator, never carrier" is enforced, not assumed.** This is the part that
 would otherwise quietly become tier 3: a relay that arranges a punch will carry

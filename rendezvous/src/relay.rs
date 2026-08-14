@@ -187,6 +187,7 @@ pub async fn handle_host_control(socket: WebSocket, registry: Arc<Registry>, cfg
         shortcode: shortcode.clone(),
         livekit_url: cfg.livekit_url.clone(),
         voice_token_grant,
+        relay_url: cfg.relay_url.clone(),
     };
     if let Ok(json) = serde_json::to_string(&registered)
         && tx.send(Message::Text(json)).await.is_err()
