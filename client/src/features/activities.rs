@@ -57,7 +57,11 @@ pub const ACTIVITIES: &[ActivityDef] = &[ActivityDef {
     id: "dice",
     name: "Dice Roller",
     icon: "🎲",
-    caps: &[Capability::UserRead, Capability::MessageSend],
+    caps: &[
+        Capability::UserRead,
+        Capability::ChannelRead,
+        Capability::MessageSend,
+    ],
     html: DICE_HTML,
 }];
 
@@ -402,6 +406,7 @@ const DICE_HTML: &str = r##"<!doctype html><html><head><meta charset="utf-8"><st
     <button id="roll">Roll</button>
     <button id="share" disabled>Share to chat</button>
   </div>
+  <div class="who" id="where"></div>
   <script>
     const dxf = (function () {
       let n = 0; const pending = {};
@@ -420,6 +425,7 @@ const DICE_HTML: &str = r##"<!doctype html><html><head><meta charset="utf-8"><st
       }
       return {
         getUser: function () { return call('user.get'); },
+        getChannel: function () { return call('channel.get'); },
         sendMessage: function (content) { return call('message.send', { content: content }); }
       };
     })();
@@ -428,11 +434,24 @@ const DICE_HTML: &str = r##"<!doctype html><html><head><meta charset="utf-8"><st
     const rollBtn = document.getElementById('roll');
     const shareBtn = document.getElementById('share');
     const whoEl = document.getElementById('who');
+    const whereEl = document.getElementById('where');
     const faces = ['⚀','⚁','⚂','⚃','⚄','⚅'];
     let last = 0;
 
     dxf.getUser().then(function (u) { whoEl.textContent = 'Hi, ' + u.username; })
        .catch(function () { whoEl.textContent = ''; });
+
+    // Where a share would land. Re-read after every send rather than once at
+    // launch, because `message.send` resolves the channel when the call fires,
+    // not when the activity opened — see the channel-binding entry in TODO.md.
+    // This makes that visible; it does not fix it. A change between this read
+    // and the next click is still unannounced.
+    function showWhere() {
+      dxf.getChannel()
+         .then(function (c) { whereEl.textContent = c && c.name ? 'shares go to #' + c.name : ''; })
+         .catch(function () { whereEl.textContent = ''; });
+    }
+    showWhere();
 
     rollBtn.addEventListener('click', function () {
       dieEl.classList.add('rolling');
@@ -448,7 +467,7 @@ const DICE_HTML: &str = r##"<!doctype html><html><head><meta charset="utf-8"><st
       if (!last) return;
       shareBtn.disabled = true;
       dxf.sendMessage('🎲 rolled a ' + last + '!')
-         .then(function () { shareBtn.textContent = 'Shared!'; setTimeout(function(){ shareBtn.textContent='Share to chat'; shareBtn.disabled=false; }, 1200); })
+         .then(function () { showWhere(); shareBtn.textContent = 'Shared!'; setTimeout(function(){ shareBtn.textContent='Share to chat'; shareBtn.disabled=false; }, 1200); })
          .catch(function (err) { shareBtn.textContent = 'Denied'; });
     });
   </script>

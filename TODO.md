@@ -213,12 +213,6 @@ the top within each section.
 
 ## Platform — bots (Tier 1) & activities (Tier 3)
 
-- **`Capability::ChannelRead` is unreachable.** The `channel.get` RPC arm is
-  guarded by it, but the only bundled activity declares
-  `[UserRead, MessageSend]`, so the guard is always false and the call falls
-  through to "permission denied". The sandbox shim doesn't expose `getChannel`
-  either. Either wire it into an activity that needs it, or drop the capability
-  — right now it reads as supported and isn't.
 - **Privileged-intent gate.** Today the owner can grant `message_content` /
   `members` freely. Discord reviews these past a scale threshold. At minimum
   add an extra confirm step in the install UI; longer term, a verification flow.
