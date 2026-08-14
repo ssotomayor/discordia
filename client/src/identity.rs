@@ -133,8 +133,6 @@ impl Identity {
         }
     }
 
-    /// Schnorr-sign a message (hashed to 32 bytes with SHA-256); returns hex.
-    /// The server hashes identically and verifies.
     /// A stable 32-byte seed for this identity's *transport* key.
     ///
     /// The QUIC transport authenticates peers by an ed25519 key, which is not
@@ -160,6 +158,47 @@ impl Identity {
         h.finalize().into()
     }
 
+    /// A secret this identity shares with exactly one other pubkey, and nobody
+    /// else — the basis for sealing a channel's media key to one member.
+    ///
+    /// ECDH over secp256k1, then a domain-separated hash. Two details are not
+    /// free choices:
+    ///
+    /// **Parity.** A Nostr pubkey is x-only: 32 bytes, with the y-coordinate
+    /// dropped. Reconstructing a point needs a parity byte, and both sides must
+    /// pick the same one or they derive different secrets. Even (`0x02`) is what
+    /// NIP-04 and NIP-44 settled on, so it is what this uses.
+    ///
+    /// **The x-coordinate only.** `shared_secret_point` returns x‖y; the y half
+    /// is discarded before hashing, again matching the Nostr convention. Mixing
+    /// it in would be just as secure and interoperate with nothing.
+    ///
+    /// The hash is the domain separator's whole job: this secret must never
+    /// coincide with one derived for another purpose from the same pair of keys.
+    pub fn shared_secret_with(&self, their_pubkey_hex: &str) -> Result<[u8; 32], String> {
+        use sha2::{Digest, Sha256};
+
+        let their_bytes =
+            hex::decode(their_pubkey_hex).map_err(|e| format!("pubkey not hex: {e}"))?;
+        if their_bytes.len() != 32 {
+            return Err("a nostr pubkey is 32 bytes".into());
+        }
+        // x-only -> compressed point, even parity by convention.
+        let mut compressed = [0u8; 33];
+        compressed[0] = 0x02;
+        compressed[1..].copy_from_slice(&their_bytes);
+        let point = PublicKey::from_slice(&compressed)
+            .map_err(|e| format!("not a point on the curve: {e}"))?;
+
+        let xy = secp256k1::ecdh::shared_secret_point(&point, &self.secret);
+        let mut h = Sha256::new();
+        h.update(b"dioxusfun/media-key/v1");
+        h.update(&xy[..32]);
+        Ok(h.finalize().into())
+    }
+
+    /// Schnorr-sign a message (hashed to 32 bytes with SHA-256); returns hex.
+    /// The server hashes identically and verifies.
     pub fn sign_hex(&self, message: &[u8]) -> String {
         let secp = Secp256k1::new();
         let keypair = Keypair::from_secret_key(&secp, &self.secret);

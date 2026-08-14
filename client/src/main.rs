@@ -8,6 +8,7 @@ mod emoji;
 mod features;
 mod host;
 mod identity;
+mod mediakey;
 mod net;
 mod portmap;
 mod profile;

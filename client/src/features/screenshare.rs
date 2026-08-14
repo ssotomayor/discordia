@@ -54,6 +54,8 @@ window.dxScreen = window.dxScreen || (function () {
   // every reconnect and the key must survive that.
   let e2eeKey = null;
   let pendingKeyProvider = null;
+  // Kept past connect so a rekey can reach a live room.
+  let e2eeProvider = null;
   let localCameraTrack = null;
   let localCameraStream = null;
   let lastCameraOpts = {};
@@ -335,6 +337,7 @@ window.dxScreen = window.dxScreen || (function () {
           ),
         };
         pendingKeyProvider = provider;
+        e2eeProvider = provider;
       } catch (e) {
         console.error('[dxScreen] could not set up e2ee', e);
         post('e2ee-error', { detail: String((e && e.message) || e) });
@@ -956,6 +959,20 @@ window.dxScreen = window.dxScreen || (function () {
       post('camera-error', { detail: String((e && e.message) || e) });
     }
   }
+  // Adopt a new media key on a room that is already connected. Same value the
+  // native rooms take, and in the same form — a hex string — because the two
+  // SDKs derive independently and would silently disagree otherwise.
+  async function setE2eeKey(key) {
+    e2eeKey = key || null;
+    if (!e2eeKey || !e2eeProvider) return;
+    try {
+      await e2eeProvider.setKey(e2eeKey);
+      if (room) await room.setE2EEEnabled(true);
+    } catch (e) {
+      console.error('[dxScreen] rekey failed', e);
+      post('e2ee-error', { detail: String((e && e.message) || e) });
+    }
+  }
   async function stopCamera() {
     const vt = localCameraTrack;
     localCameraTrack = null; localCameraStream = null;
@@ -998,7 +1015,7 @@ window.dxScreen = window.dxScreen || (function () {
     clearRemoteTracks();
     Object.keys(attached).forEach(detach);
   }
-  return { connect: connect, attach: attach, detach: detach, requestAndStartShare: requestAndStartShare, stopShare: stopShare, disconnect: disconnect, setStreamVolume: setStreamVolume, setSink: setSink, setNativeStreamAudio: setNativeStreamAudio, startCamera: startCamera, stopCamera: stopCamera, listCameras: listCameras, attachLocalCamera: attachLocalCamera };
+  return { connect: connect, attach: attach, detach: detach, requestAndStartShare: requestAndStartShare, stopShare: stopShare, disconnect: disconnect, setStreamVolume: setStreamVolume, setSink: setSink, setNativeStreamAudio: setNativeStreamAudio, startCamera: startCamera, stopCamera: stopCamera, listCameras: listCameras, attachLocalCamera: attachLocalCamera, setE2eeKey: setE2eeKey };
 })();
 "#;
 

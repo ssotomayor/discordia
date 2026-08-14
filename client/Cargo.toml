@@ -36,6 +36,10 @@ bech32 = "0.11"
 bip39 = "2"
 hmac = "0.12"
 sha2 = "0.10"
+# Sealing a channel's media key to one recipient (see src/mediakey.rs).
+# XChaCha20-Poly1305 for its 24-byte nonce: the key is sealed once per member
+# per rekey with a random nonce, and a 96-bit one is not comfortable for that.
+chacha20poly1305 = "0.10"
 dirs = "5"
 rand = "0.8"
 

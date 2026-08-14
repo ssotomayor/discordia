@@ -929,6 +929,26 @@ pub enum ClientMessage {
     /// it is not in. Ignored outright when the sender is not in voice — which
     /// is also what gates it on guild membership, since only `JoinVoice`
     /// creates a voice state and it checks.
+    /// Hand a channel's media key to one member, sealed to their pubkey.
+    ///
+    /// The server routes this and cannot read it — the payload is encrypted to
+    /// a secret derived from the two identity keys, which is the whole point:
+    /// end-to-end encrypted media is worth nothing if the server holds the key
+    /// (`client::mediakey`).
+    ///
+    /// Routed only to a member of the same guild as the channel, and only from
+    /// one. That check is not about confidentiality, which the sealing already
+    /// handles; it is so the gateway cannot be used to spray blobs at strangers.
+    ShareMediaKey {
+        channel_id: Id,
+        /// Recipient's x-only pubkey (64-char hex).
+        to: String,
+        /// Monotonic per channel. A member removed from the guild keeps the key
+        /// they had, so the survivors move up an epoch and leave it behind.
+        epoch: u32,
+        /// Hex `nonce ‖ ciphertext`. Opaque here by construction.
+        blob: String,
+    },
     SetCamera {
         on: bool,
     },
@@ -1125,6 +1145,18 @@ pub enum ServerMessage {
         sharers: Vec<String>,
     },
     VoiceStateUpdate(VoiceState),
+    /// A channel's media key, sealed to us by another member.
+    ///
+    /// Delivered verbatim from `ShareMediaKey`, with the sender named so the
+    /// recipient can derive the same shared secret. A client that cannot open
+    /// it keeps whatever key it already had.
+    MediaKey {
+        channel_id: Id,
+        /// Sender's x-only pubkey (64-char hex).
+        from: String,
+        epoch: u32,
+        blob: String,
+    },
     VoiceToken {
         channel_id: Id,
         livekit_url: String,

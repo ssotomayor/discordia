@@ -59,6 +59,76 @@ fn usable_key(raw: Option<String>) -> Option<String> {
     raw.filter(|k| !k.trim().is_empty())
 }
 
+/// The passphrase every room actually uses, whatever its source.
+///
+/// Two sources now: `DISCORDIA_E2EE_KEY`, which is the developer path, and a
+/// channel key distributed by `crate::mediakey`, which is the real one. A
+/// distributed key wins — it is the one the other members are using.
+///
+/// **Always a hex string, never raw bytes.** The two SDKs derive their frame
+/// keys from whatever they are handed, and they never compare notes: the JS
+/// side takes a string, the Rust side takes bytes, and handing one the raw 32
+/// bytes while the other gets 64 hex characters produces two different keys and
+/// a call where nobody can hear anyone. Hex on both sides removes the question.
+static ACTIVE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// One key provider for the whole process, so a rekey reaches every native room
+/// at once.
+///
+/// A member holds up to three native connections in a channel — voice, the
+/// subscribe-only `#audio` identity, the `#video` publisher — and they must
+/// move to a new key together. Three providers would mean three chances to miss
+/// one, and missing one is silence rather than an error.
+fn provider() -> &'static livekit::e2ee::key_provider::KeyProvider {
+    static PROVIDER: std::sync::OnceLock<livekit::e2ee::key_provider::KeyProvider> =
+        std::sync::OnceLock::new();
+    PROVIDER.get_or_init(|| {
+        livekit::e2ee::key_provider::KeyProvider::new(
+            livekit::e2ee::key_provider::KeyProviderOptions::default(),
+        )
+    })
+}
+
+/// Adopt a channel key: hand it to every native room, and to the webview.
+///
+/// Called when a sealed key is opened. Idempotent, because the same key can
+/// arrive twice — two members can both decide they are the one to send it.
+pub fn apply_key(key: &[u8; crate::mediakey::KEY_LEN]) {
+    let hex_key = hex::encode(key);
+    {
+        let mut active = ACTIVE.lock().expect("e2ee key lock");
+        if active.as_deref() == Some(hex_key.as_str()) {
+            return;
+        }
+        *active = Some(hex_key.clone());
+    }
+    tracing::info!("adopting a new media key");
+    // Index 0 throughout: a ring is only worth its bookkeeping if members can
+    // disagree about which slot is current, and an epoch already answers that
+    // at a level where everyone can see it.
+    provider().set_shared_key(hex_key.as_bytes().to_vec(), 0);
+    let js = format!(
+        "{}\nwindow.dxScreen.setE2eeKey({});",
+        crate::features::screenshare::SCREEN_JS,
+        serde_json::to_string(&hex_key).unwrap_or_else(|_| "null".into())
+    );
+    let _ = dioxus::document::eval(&js);
+}
+
+/// The key rooms should connect with, if any.
+fn current_key() -> Option<String> {
+    if let Some(k) = ACTIVE.lock().expect("e2ee key lock").clone() {
+        return Some(k);
+    }
+    shared_key().map(hex_or_literal)
+}
+
+/// The developer key is used as typed; a distributed key is already hex. Both
+/// end up as a string both SDKs see identically.
+fn hex_or_literal(key: &str) -> String {
+    key.to_string()
+}
+
 /// `RoomOptions.encryption` for a native room, when a key is configured.
 ///
 /// Applied to all three native connections — voice, the screen room's
@@ -66,13 +136,11 @@ fn usable_key(raw: Option<String>) -> Option<String> {
 /// room where one participant is encrypting and another is not is a room where
 /// people simply cannot hear each other, with nothing to say why.
 pub fn room_options() -> Option<livekit::e2ee::E2eeOptions> {
-    let key = shared_key()?;
+    let key = current_key()?;
+    provider().set_shared_key(key.as_bytes().to_vec(), 0);
     Some(livekit::e2ee::E2eeOptions {
         encryption_type: livekit::e2ee::EncryptionType::Gcm,
-        key_provider: livekit::e2ee::key_provider::KeyProvider::with_shared_key(
-            livekit::e2ee::key_provider::KeyProviderOptions::default(),
-            key.as_bytes().to_vec(),
-        ),
+        key_provider: provider().clone(),
     })
 }
 

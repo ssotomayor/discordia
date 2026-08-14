@@ -979,6 +979,29 @@ pub async fn handle_connection(
                     // covered too: kick/ban/leave run through `clear_voice`, so
                     // the entry is gone before a stale flag could outlive the
                     // membership. A non-member gets `None` and no frames.
+                    ClientMessage::ShareMediaKey { channel_id, to, epoch, blob } => {
+                        let Some(u) = user.as_ref() else { continue };
+                        // Both ends must be in the guild that owns the channel.
+                        // The blob is sealed, so this is not what keeps it
+                        // secret — it is what stops the gateway being a way to
+                        // push payloads at people who never asked.
+                        let Some(guild_id) = ctx.state.channel_guild(channel_id) else {
+                            continue;
+                        };
+                        let members = ctx.state.guild_member_pubkeys(guild_id);
+                        if !members.contains(&u.pubkey) || !members.contains(&to) {
+                            continue;
+                        }
+                        ctx.state.deliver(
+                            vec![to],
+                            ServerMessage::MediaKey {
+                                channel_id,
+                                from: u.pubkey.clone(),
+                                epoch,
+                                blob,
+                            },
+                        );
+                    }
                     ClientMessage::SetCamera { on } => {
                         let Some(u) = user.as_ref() else { continue };
                         if let Some(state) = ctx.state.update_camera(&u.pubkey, on) {

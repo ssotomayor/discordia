@@ -513,6 +513,28 @@ pub struct AppState {
     /// screen-audio track; the webview reports it only in the fallback case
     /// where the server sent no `audio_token`.
     pub stream_has_audio: HashSet<String>,
+    /// Set when a member is removed from a guild, cleared once the media key
+    /// has been rolled.
+    ///
+    /// A flag rather than a direct call because `apply` has no gateway to send
+    /// on and no async to await — it mutates state and returns. `MediaKeyBridge`
+    /// watches this and does the work.
+    pub pending_rekey: bool,
+    /// Our own keypair, for the paths that need to do crypto with it rather
+    /// than merely name us — opening a media key sealed to us, and sealing one
+    /// for somebody else. Set when the session starts.
+    ///
+    /// `self_user` names who we are; this is what proves it.
+    pub identity: Option<crate::identity::Identity>,
+    /// The media key in force for each voice channel we hold one for, with the
+    /// epoch it arrived under.
+    ///
+    /// Held here rather than passed around because four separate LiveKit
+    /// connections need it and a rekey has to reach all of them — see
+    /// `crate::mediakey` for how it gets here, and `crate::e2ee` for where it
+    /// goes. Never persisted: a key that outlived the session would outlive the
+    /// membership it was scoped to.
+    pub media_keys: HashMap<Id, (u32, [u8; 32])>,
     /// Populated when running in self-host mode. None for remote connections.
     pub host_info: Option<HostInfo>,
     /// Who is carrying this connection — which of `docs/NETWORKING.md`'s tiers
@@ -618,6 +640,9 @@ impl AppState {
             stream_volumes: HashMap::new(),
             stream_muted: HashSet::new(),
             stream_has_audio: HashSet::new(),
+            pending_rekey: false,
+            identity: None,
+            media_keys: HashMap::new(),
             host_info: None,
             transport: Transport::Loopback,
             integrations: HashMap::new(),

@@ -447,6 +447,9 @@ async fn run_session<S>(
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
+    // The identity has to be reachable from `apply`, which is where sealed
+    // media keys arrive and where only our own secret can open them.
+    state.write().identity = Some(params.identity.clone());
     let (mut ws_tx, mut ws_rx) = ws_stream.split();
 
     // Wait for the server's Hello frame so we know what nonce to sign.
@@ -905,6 +908,11 @@ fn apply(
             // us a targeted GuildDelete, which tears down the whole guild.)
             s.members
                 .retain(|m| !(m.guild_id == guild_id && m.user.pubkey == user_pubkey));
+            // Somebody who held the channel's media key no longer belongs here.
+            // The key cannot be taken back, so the channel moves to a new one
+            // and everything published from now on is beyond them. Whatever
+            // they already captured stays captured — see `mediakey`.
+            s.pending_rekey = true;
         }
         ServerMessage::GuildInvite { guild_id, code } => {
             s.invites.insert(guild_id, code);
@@ -1036,6 +1044,35 @@ fn apply(
                 .find(|m| m.guild_id == guild_id && m.user.pubkey == user_pubkey)
             {
                 m.online = false;
+            }
+        }
+        ServerMessage::MediaKey {
+            channel_id,
+            from,
+            epoch,
+            blob,
+        } => {
+            // Ours only if we can open it, and only if it is newer than what we
+            // hold. Both checks are cheap and both matter: the first is the
+            // whole security property, the second stops a late-arriving blob
+            // from an older epoch dragging the channel backwards onto a key a
+            // removed member still has.
+            let identity = s.identity.clone();
+            let Some(identity) = identity else { return };
+            let current = s.media_keys.get(&channel_id).map(|(e, _)| *e);
+            if current.is_some_and(|have| have >= epoch) {
+                tracing::debug!(%from, epoch, "ignoring a media key we have already moved past");
+                return;
+            }
+            match crate::mediakey::open(&blob, &from, epoch, &identity) {
+                Ok(key) => {
+                    tracing::info!(%from, epoch, "media key accepted");
+                    s.media_keys.insert(channel_id, (epoch, key));
+                    crate::e2ee::apply_key(&key);
+                }
+                // Not exceptional: a blob for somebody else, or from a member
+                // who left mid-rekey. We keep what we have.
+                Err(e) => tracing::warn!(%from, epoch, error = %e, "could not open a media key"),
             }
         }
         ServerMessage::VoiceStateUpdate(vs) => {
