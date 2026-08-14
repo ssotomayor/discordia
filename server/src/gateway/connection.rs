@@ -1783,10 +1783,15 @@ fn sanitize_username(raw: &str) -> String {
     crate::protocol::canonical_username(raw)
 }
 
-/// Longest self-declared version we will repeat. Generous against the ~20
-/// characters the real ones use (`v0.1.0-pre.223`, `bot-sdk/0.1.0`), tight
-/// enough that a peer cannot write a paragraph to our disk on every connect.
-const MAX_CLIENT_VERSION_LEN: usize = 64;
+/// Longest self-declared version we will repeat, **in bytes**. Generous against
+/// the ~20 the real ones use (`v0.1.0-pre.223`, `bot-sdk/0.1.0`), tight enough
+/// that a peer cannot write a paragraph to our disk on every connect.
+///
+/// Bytes and not characters, because bytes are what the justification above is
+/// about. Counting characters let 64 four-byte codepoints through as 256 bytes
+/// — four times the budget, for a string nobody reads as text anyway. Every
+/// real value is ASCII, so the two units agree wherever it matters.
+const MAX_CLIENT_VERSION_BYTES: usize = 64;
 
 /// Make a self-declared version string safe to repeat into a log line.
 ///
@@ -1807,12 +1812,17 @@ const MAX_CLIENT_VERSION_LEN: usize = 64;
 /// Control characters are stripped *before* the cap, so a run of them cannot
 /// consume the budget and leave nothing behind.
 fn sanitize_client_version(raw: &str) -> String {
-    let mut out: String = raw
-        .trim()
-        .chars()
-        .filter(|c| !breaks_a_line(*c))
-        .take(MAX_CLIENT_VERSION_LEN)
-        .collect();
+    let mut out = String::with_capacity(MAX_CLIENT_VERSION_BYTES);
+    for c in raw.trim().chars().filter(|c| !breaks_a_line(*c)) {
+        if out.len() + c.len_utf8() > MAX_CLIENT_VERSION_BYTES {
+            // `break`, not `continue`. A shorter character later in the string
+            // would still fit the budget, but taking it would make the result a
+            // filtered subset rather than a prefix — a truncated string should
+            // read as the start of what was sent, not as a scramble of it.
+            break;
+        }
+        out.push(c);
+    }
     // Trimmed a second time, in place, because filtering can *expose* padding
     // the first trim could not see: `"\u{0} v1.0"` has no leading whitespace
     // until the NUL is removed. Done with `truncate`/`drain` rather than
@@ -2125,7 +2135,7 @@ impl RateLimiter {
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_CLIENT_VERSION_LEN, sanitize_client_version};
+    use super::{MAX_CLIENT_VERSION_BYTES, sanitize_client_version};
 
     /// The injection this exists to stop. A peer choosing its own version
     /// string must not be able to write a second log line, or a second field.
@@ -2162,7 +2172,10 @@ mod tests {
     #[test]
     fn a_version_is_capped() {
         let long = "a".repeat(10_000);
-        assert_eq!(sanitize_client_version(&long).len(), MAX_CLIENT_VERSION_LEN);
+        assert_eq!(
+            sanitize_client_version(&long).len(),
+            MAX_CLIENT_VERSION_BYTES
+        );
     }
 
     /// Control characters are stripped *before* the cap. Filtering after it
@@ -2179,14 +2192,14 @@ mod tests {
     fn control_characters_do_not_consume_the_cap() {
         let padded = format!(
             "{}v0.1.0-pre.223",
-            "\u{0}".repeat(MAX_CLIENT_VERSION_LEN * 2)
+            "\u{0}".repeat(MAX_CLIENT_VERSION_BYTES * 2)
         );
         assert_eq!(sanitize_client_version(&padded), "v0.1.0-pre.223");
 
         // The other way to survive the first trim: be whitespace, but interior.
         // Same branch, reached from the opposite direction — `trim()` leaves
         // these alone because they are not at an edge.
-        let interior = format!("v0.1.0{}pre.223", "\n".repeat(MAX_CLIENT_VERSION_LEN * 2));
+        let interior = format!("v0.1.0{}pre.223", "\n".repeat(MAX_CLIENT_VERSION_BYTES * 2));
         assert_eq!(sanitize_client_version(&interior), "v0.1.0pre.223");
     }
 
@@ -2196,6 +2209,25 @@ mod tests {
     #[test]
     fn filtering_does_not_leave_exposed_padding() {
         assert_eq!(sanitize_client_version("\u{0} v0.1.0 \u{0}"), "v0.1.0");
+    }
+
+    /// The cap is bytes, and this is the input that tells the two units apart.
+    /// `Chars::take(64)` would have let 64 four-byte codepoints through as 256
+    /// bytes — four times the budget the constant's own doc justifies in terms
+    /// of what a peer can write to disk per connection.
+    #[test]
+    fn the_cap_counts_bytes_not_characters() {
+        let wide = "🙂".repeat(1000);
+        let clean = sanitize_client_version(&wide);
+        assert!(
+            clean.len() <= MAX_CLIENT_VERSION_BYTES,
+            "{} bytes, over the {MAX_CLIENT_VERSION_BYTES}-byte budget",
+            clean.len()
+        );
+        // Spent in whole characters: the budget divides exactly here, and a
+        // string that stopped mid-codepoint could not exist as a `String` at
+        // all — the loop breaks rather than slicing.
+        assert_eq!(clean.chars().count(), MAX_CLIENT_VERSION_BYTES / 4);
     }
 
     /// The ordinary values still pass through untouched — a sanitiser that
