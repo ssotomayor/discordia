@@ -62,7 +62,13 @@ it."
   CI, and named maintainers are features; racing to a distributed cluster is
   an anti-feature.
 
-## Run-modes (one binary, chosen by config)
+## Run-modes (one binary — *intended* shape, not a shipped selector)
+
+There is no mode switch today: the server reads `DIOXUSFUN_ADDR`,
+`DIOXUSFUN_DATA_DIR`, `DIOXUSFUN_OPERATORS` and the `LIVEKIT_*` set
+(`docs/SELF_HOSTING.md` is the authoritative list, and it matches the code), and
+what distinguishes `embedded` from `standalone` today is who spawns the process,
+not a config value. The table is the target.
 
 | Mode | Who it's for | Storage | Bus | Voice | Install |
 |---|---|---|---|---|---|
@@ -70,9 +76,23 @@ it."
 | `standalone` | small→mid communities | SQLite or Postgres | in-process | bundled LiveKit or shared/Cloud | one binary / `docker compose up` |
 | `cluster` | giants (tens of thousands) | Postgres | NATS + Redis presence | LiveKit cluster/Cloud | real ops (N nodes + LB) — **deferred until demanded** |
 
-Two seams make this possible, both introduced in Phase 1/5:
-- **`Store`** — durable state (async trait; SQLite or Postgres via `DATABASE_URL`).
-- **`Bus`** — event delivery (`LocalBus` in-process; `NatsBus` only in cluster mode).
+Two seams have to exist for this, and it is worth being exact about how much of
+each one does today — the 2026-08 audit found this section claiming both as
+built, which made cluster mode look closer than it is:
+
+- **`Store`** — durable state. **A concrete struct** (`server/src/store.rs`), not
+  a trait. Its API shape and TEXT/INTEGER encodings were deliberately chosen to
+  be portable to Postgres, so the design work is done; extracting the trait is
+  not, and neither is `DATABASE_URL`, which nothing reads yet.
+- **`Bus`** — event delivery. **No such trait exists.** What Phase 5a actually
+  shipped is a per-connection routing table inside `AppState`: `deliver()` is
+  O(recipient connections) via a pubkey→conn index, `broadcast()` is rare. That
+  solved the fan-out problem it was aimed at, on one node, which is why it is
+  marked done above — but `LocalBus`/`NatsBus` are Phase-7 work that has not
+  started.
+
+Neither gap blocks anything today; both are in front of Phase 7 rather than
+behind it.
 
 ## Central helpers (opt-in, each also self-hostable)
 
@@ -125,9 +145,11 @@ security-sensitive sub-problems get first-class attention:
 
 ## Phase 2 — Deployable standalone + pagination
 
-- Run-mode/config resolution (`DIOXUSFUN_MODE`, `DATABASE_URL`, `BUS_URL`,
-  `LIVEKIT_URL`, `DIOXUSFUN_OPERATORS`, optional `discordia.toml`).
-  `client/src/host.rs` embedded path unchanged.
+- Run-mode/config resolution. **Partly shipped:** `LIVEKIT_URL` and
+  `DIOXUSFUN_OPERATORS` exist and are documented; `DIOXUSFUN_MODE`,
+  `DATABASE_URL`, `BUS_URL` and `discordia.toml` do **not** — nothing in the
+  workspace reads them, and they arrive with the backends they select rather
+  than before. `client/src/host.rs` embedded path unchanged.
 - Deploy artifacts: Dockerfile + `docker-compose.yml` (gateway + Postgres +
   LiveKit), single-binary+SQLite path with systemd example,
   `docs/SELF_HOSTING.md`.
@@ -205,9 +227,14 @@ defensible *before* any large-scale ambition:
 
 Everything cluster mode would need, delivered as single-node wins first:
 
-- **`Bus` trait + topic subscriptions** (`user:{pubkey}`, `guild:{id}`)
-  replacing broadcast-everything; `LocalBus` implementation. Fan-out becomes
-  O(guild members), not O(connections). Bot intent-filtering stays at egress.
+- **Targeted fan-out replacing broadcast-everything.** Fan-out becomes
+  O(recipients), not O(connections); bot intent-filtering stays at egress.
+  ✅ **shipped, but not as the `Bus` trait this bullet used to promise** — the
+  delivered form is a per-connection routing table in `AppState` keyed by a
+  pubkey→conn index. It buys the single-node win the phase was for. The `Bus`
+  trait, topic subscriptions (`user:{pubkey}`, `guild:{id}`) and `LocalBus` are
+  the *extraction*, and they are only worth doing when `NatsBus` needs them —
+  so they now sit in Phase 7 rather than being counted as done here.
 - **Event sequence numbers + delta sync**: per-topic monotonic seq in the
   protocol; clients resume with `since` cursors instead of full `Ready`
   snapshots. Jittered reconnect/backoff. Kills the reconnect-stampede and
@@ -256,9 +283,17 @@ Everything cluster mode would need, delivered as single-node wins first:
 
 ## Phase 7 — Cluster mode (demand-gated)
 
-Built **only when a real community's growth demands it** — Phase 5 already
-did the protocol work, so this is infrastructure, not redesign:
+Built **only when a real community's growth demands it** — Phase 5 did the
+protocol work, so the addressing is settled. It is **not** purely infrastructure
+though, and this section used to imply it was: both seams are still concrete
+types, so the extractions land here.
 
+- **Extract the two seams first.** `Store` becomes a trait with a Postgres impl
+  behind `DATABASE_URL` (the `$1`-vs-`?` placeholder split means per-backend
+  queries or a query layer); the routing table in `AppState` becomes a `Bus`
+  trait with topic subscriptions and a `LocalBus`, so `NatsBus` has something to
+  implement. Neither is hard — the APIs were designed for it — but neither is
+  done, and nothing downstream can start until they are.
 - `NatsBus`; presence/voice/typing to Redis (heartbeat TTLs); stateless
   gateway nodes behind an LB; graceful drain, backpressure, metrics.
 - Ops runbook + docker-compose→k8s manifests; load harness to ~20k sockets.
