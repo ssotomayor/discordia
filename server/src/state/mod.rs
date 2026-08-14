@@ -588,6 +588,20 @@ impl AppState {
         list
     }
 
+    /// Live voice presence inside one guild.
+    ///
+    /// The single-guild counterpart of the filter `snapshot_for` runs across
+    /// every guild you are in — `GuildJoined` needs exactly one, because that
+    /// is the only guild the joiner has just gained the right to see voice
+    /// presence for.
+    pub fn voice_states_in(&self, guild_id: Id) -> Vec<VoiceState> {
+        self.voice_states
+            .iter()
+            .filter(|v| v.guild_id == guild_id)
+            .map(|v| v.value().clone())
+            .collect()
+    }
+
     /// Snapshot of all known profiles.
     pub fn profiles_snapshot(&self) -> Vec<Profile> {
         self.profiles.iter().map(|p| p.value().clone()).collect()

@@ -60,13 +60,27 @@ LiveKit URL handed to clients.
 | `LIVEKIT_PORT` | `7880` | port used when deriving the LiveKit URL for clients (the bundled SFU always spawns on 7880) |
 | `DIOXUSFUN_LIVEKIT_AUTOSPAWN` | `1` | set `0` when LiveKit runs separately |
 
+Rendezvous relay (`dioxusfun-rendezvous`, a separate binary — see
+`rendezvous/README.md`):
+
+| Var | Default | Meaning |
+|---|---|---|
+| `DIOXUSFUN_RENDEZVOUS_ADDR` | `0.0.0.0:7700` | relay bind address |
+| `DIOXUSFUN_RENDEZVOUS_DATA_DIR` | `./rendezvous-data` | persisted name reservations (`reservations.json`) |
+
 Compose-only: `PUBLIC_HOST` (see `.env.example`) is read by
 `docker-compose.yml`, not by the server — it builds the `LIVEKIT_URL` above.
 
 Client-side, for reference: `DIOXUSFUN_CONFIG_DIR` relocates the identity, dev
 log and settings, and `DIOXUSFUN_RENDEZVOUS_URL` presets the rendezvous the
 Self-host tab offers. Build-time, `LIVEKIT_BUNDLE_SKIP=1` skips fetching the
-LiveKit binary — useful for CI, but the resulting build cannot host voice.
+LiveKit binary — useful for CI, but the resulting build cannot host voice — and
+`LIVEKIT_BUNDLE_VERSION` (default `1.12.0`, `server/build.rs`) pins which
+`livekit-server` release gets embedded. Also build-time, `DISCORDIA_VERSION`
+(`client/build.rs`) is the version the client reports in its corner and, when
+set, must be exactly the tag the artifact is published under — CI sets it on the
+three publishing jobs. Left unset, the build calls itself `<crate>-dev+<sha>`,
+which is what a local build should say.
 
 ### Storage governance
 

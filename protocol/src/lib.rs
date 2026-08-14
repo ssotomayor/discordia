@@ -25,6 +25,54 @@ pub struct User {
     pub username: String,
 }
 
+/// Longest a display name may be. Enforced by the server, which is why it
+/// lives here rather than in either client.
+pub const MAX_USERNAME_LEN: usize = 32;
+
+/// The one definition of what a username looks like once it is on the wire.
+///
+/// It lives in `protocol` because **both ends have to agree, and for a while
+/// they did not.** The `Identify` signature covers the username, and the server
+/// canonicalised before verifying while the client signed what the user typed —
+/// so any name this function would alter got signed over different bytes than
+/// the server checked, and the handshake failed with "signature did not
+/// verify". A display name of 33 characters locked that identity out of every
+/// server, pointing the user at their key instead of their name. Both sides now
+/// call this before signing and before verifying.
+///
+/// **It must stay idempotent** — `f(f(x)) == f(x)` — because that property is
+/// what makes the two calls agree. That is also why the trim is repeated after
+/// the truncation and not just before it: cutting a 33-character name can leave
+/// a trailing space that a single leading trim never saw, and then the server's
+/// trim would produce a different string than the client signed. See the test.
+pub fn canonical_username(raw: &str) -> String {
+    let truncated = truncate_username(raw.trim());
+    let trimmed = truncated.trim();
+    if trimmed.is_empty() {
+        "anonymous".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// The length half of `canonical_username`, on its own — the rule for *where* a
+/// name stops, without the trimming that only makes sense once it is finished.
+///
+/// It is public because an input field has to stop the user in the same place
+/// the wire will, and it cannot borrow HTML's `maxlength` to do it: that
+/// attribute counts UTF-16 code units while this counts scalar values, so an
+/// astral character (most emoji) spends two of the former and one of the
+/// latter, and a `maxlength` of 32 cuts an emoji name off at 16. Sharing the
+/// count is the same argument as sharing the canonicalisation — the two ends
+/// disagreeing about what "32 characters" means is what this whole function
+/// pair exists to prevent.
+///
+/// Trimming is deliberately not part of it: a caller running this on every
+/// keystroke would delete the space between two words the moment it was typed.
+pub fn truncate_username(raw: &str) -> String {
+    raw.chars().take(MAX_USERNAME_LEN).collect()
+}
+
 /// Whether a guild appears in the public directory or is joinable only by
 /// invite code.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -226,6 +274,98 @@ mod level_tests {
             let l = level_progress(xp).0;
             assert!(l >= last);
             last = l;
+        }
+    }
+}
+
+#[cfg(test)]
+mod username_tests {
+    use super::{MAX_USERNAME_LEN, canonical_username, truncate_username};
+
+    /// The property the `Identify` handshake actually rests on. The client
+    /// canonicalises and signs; the server canonicalises what it received and
+    /// verifies. Those two agree only if applying this twice is the same as
+    /// applying it once — so this is the test that keeps the handshake working,
+    /// not a style check on the helper.
+    #[test]
+    fn canonicalising_is_idempotent() {
+        for raw in [
+            "alice",
+            "  bob  ",
+            "",
+            "   ",
+            &"a".repeat(33),
+            &"a".repeat(200),
+            // The case a single leading trim misses: truncation lands on a
+            // space, so the result would still need trimming.
+            &format!("{} b", "a".repeat(31)),
+            &format!("{}   tail", "x".repeat(30)),
+            "🙂🙂🙂",
+            &"🙂".repeat(40),
+        ] {
+            let once = canonical_username(raw);
+            let twice = canonical_username(&once);
+            assert_eq!(once, twice, "not idempotent for {raw:?}");
+        }
+    }
+
+    #[test]
+    fn canonical_output_is_always_wire_legal() {
+        for raw in ["", "   ", "alice", &"a".repeat(99), &"🙂".repeat(99)] {
+            let out = canonical_username(raw);
+            assert!(!out.is_empty(), "never empty (would be unnamed on screen)");
+            assert_eq!(out.trim(), out, "no surrounding whitespace survives");
+            assert!(
+                out.chars().count() <= MAX_USERNAME_LEN,
+                "counted in chars, not bytes — {out:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_name_that_needs_nothing_is_left_alone() {
+        assert_eq!(canonical_username("alice"), "alice");
+        assert_eq!(canonical_username(&"b".repeat(32)), "b".repeat(32));
+    }
+
+    #[test]
+    fn an_empty_name_becomes_anonymous_rather_than_nothing() {
+        assert_eq!(canonical_username("   "), "anonymous");
+    }
+
+    /// Truncation counts characters, so a multi-byte name is not cut mid-glyph
+    /// (which would not even be valid UTF-8 with a byte-wise slice).
+    #[test]
+    fn multibyte_names_are_cut_by_character() {
+        let out = canonical_username(&"🙂".repeat(40));
+        assert_eq!(out.chars().count(), MAX_USERNAME_LEN);
+    }
+
+    /// What an input field needs from this module, and the reason it cannot use
+    /// HTML's `maxlength` instead: 32 emoji are 32 characters here and 64 code
+    /// units there, so the attribute would stop the user at half the allowance.
+    #[test]
+    fn truncation_counts_characters_where_maxlength_counts_code_units() {
+        let out = truncate_username(&"😀".repeat(40));
+        assert_eq!(out.chars().count(), MAX_USERNAME_LEN);
+        assert_eq!(out.encode_utf16().count(), MAX_USERNAME_LEN * 2);
+    }
+
+    /// The half a field runs on every keystroke must not trim, or the space
+    /// between two words disappears as it is typed.
+    #[test]
+    fn truncation_leaves_whitespace_alone() {
+        assert_eq!(truncate_username("john "), "john ");
+        assert_eq!(truncate_username("  "), "  ");
+    }
+
+    /// A name the field already stopped is one `canonical_username` will not
+    /// shorten again — what the user sees is what gets signed.
+    #[test]
+    fn a_truncated_name_is_not_cut_a_second_time_at_signing() {
+        for raw in ["alice", &"a".repeat(60), &"😀".repeat(60), "ünïcøde"] {
+            let typed = truncate_username(raw);
+            assert_eq!(canonical_username(&typed), typed.trim());
         }
     }
 }
@@ -602,6 +742,27 @@ pub enum ClientMessage {
         /// by "installing" their pubkey in a throwaway guild.
         #[serde(default)]
         bot: bool,
+        /// What build the peer says it is running — the client's stamped
+        /// version (`v0.1.0-pre.223`, `0.1.0-dev+sha`) or `bot-sdk/x.y.z`.
+        ///
+        /// **Self-declared and unauthenticated**, like `bot`. The signature
+        /// covers `nonce || pubkey || username` and not this, so it is evidence
+        /// of what a peer *claims* and nothing more. That is enough for what it
+        /// exists for — seeing the spread of versions actually connected — and
+        /// deliberately not enough to gate anything on.
+        ///
+        /// Because it is attacker-chosen, the server trims it, strips control
+        /// characters and caps it before repeating it anywhere — see
+        /// `sanitize_client_version`. An unbounded string with an embedded
+        /// newline is a forged log line, and a forged line would defeat the
+        /// counting this field is for.
+        ///
+        /// Empty from any client older than the field, which is the answer
+        /// "it did not say" rather than a version. Three entries in `TODO.md`
+        /// turn on not knowing whether such clients are still out there; this
+        /// makes that countable instead of guessed at.
+        #[serde(default)]
+        client_version: String,
     },
     FetchMessages {
         channel_id: Id,
@@ -1023,6 +1184,17 @@ pub enum ServerMessage {
         /// The guild's custom-emoji catalog (images fetched on demand).
         #[serde(default)]
         emojis: Vec<GuildEmoji>,
+        /// Live voice presence in this guild: who is in which voice channel,
+        /// and their mute/deafen/speaking/camera/screen flags.
+        ///
+        /// `Ready` has carried this since voice existed; this variant did not,
+        /// so a client that joined a guild mid-session saw an empty voice
+        /// roster — no occupants, no camera or LIVE badges — until whoever was
+        /// already in there next changed something. The snapshot is scoped to
+        /// this guild only, which is the same rule `Ready` applies across all
+        /// of them: voice presence is visible only inside a guild you are in.
+        #[serde(default)]
+        voice_states: Vec<VoiceState>,
     },
     /// A guild was deleted by its owner. Delivered to the (former) members so
     /// they drop it from local state.
@@ -1194,12 +1366,17 @@ pub enum ServerMessage {
         /// Third token for the same room, used by the native client to *publish*
         /// screen **video** where the webview cannot capture it at all.
         ///
-        /// WKWebView does not expose `navigator.mediaDevices`, so on macOS
-        /// `getDisplayMedia` is not merely restricted — the API is absent, and
-        /// the webview capture path in `features::screenshare` can never run.
-        /// The native client captures via ScreenCaptureKit instead and needs its
-        /// own identity to publish under, for the same reason `audio_token`
-        /// does: one connection per identity per room.
+        /// On macOS the client captures natively, through ScreenCaptureKit, and
+        /// needs its own identity to publish under for the same reason
+        /// `audio_token` does: one connection per identity per room.
+        ///
+        /// This comment used to say WKWebView cannot expose
+        /// `navigator.mediaDevices` at all. That diagnosis was ours and it was
+        /// wrong — the API was missing because our bundle lacked
+        /// `NSMicrophoneUsageDescription`, and adding it makes `getDisplayMedia`
+        /// appear. The native path stays because it is better here (no copy, no
+        /// colour conversion, our own surface picker), not because the webview
+        /// is incapable. See `client/src/sysvideo/` for the full correction.
         ///
         /// Empty from servers that predate it, in which case a client with no
         /// webview capture simply cannot share.
@@ -1209,4 +1386,66 @@ pub enum ServerMessage {
     Error {
         message: String,
     },
+}
+
+#[cfg(test)]
+mod identify_wire_tests {
+    use super::ClientMessage;
+
+    /// An `Identify` from a client older than `client_version` has no such key.
+    /// `#[serde(default)]` is what keeps that a successful handshake rather than
+    /// a parse error that would lock every existing install out of every
+    /// updated server — the exact population this field exists to measure.
+    #[test]
+    fn an_identify_without_a_version_still_parses() {
+        let old = r#"{
+            "op": "identify",
+            "d": {
+                "username": "alice",
+                "pubkey": "ab",
+                "signature": "cd",
+                "bot": false
+            }
+        }"#;
+        let msg: ClientMessage =
+            serde_json::from_str(old).expect("an older client's handshake still parses");
+        match msg {
+            ClientMessage::Identify {
+                username,
+                client_version,
+                ..
+            } => {
+                assert_eq!(username, "alice", "the fields that were there survive");
+                assert!(
+                    client_version.is_empty(),
+                    "an absent version is empty — 'it did not say', not a version"
+                );
+            }
+            other => panic!("parsed as {other:?}"),
+        }
+    }
+
+    /// And that the field is actually on the wire when set. The signature covers
+    /// `nonce || pubkey || username` and not this, so nothing else in the
+    /// handshake would notice if it silently stopped being sent.
+    #[test]
+    fn a_version_survives_the_round_trip() {
+        let json = serde_json::to_string(&ClientMessage::Identify {
+            username: "alice".into(),
+            pubkey: "ab".into(),
+            signature: "cd".into(),
+            bot: false,
+            client_version: "v0.1.0-pre.223".into(),
+        })
+        .unwrap();
+        assert!(json.contains("v0.1.0-pre.223"), "not on the wire: {json}");
+
+        let back: ClientMessage = serde_json::from_str(&json).unwrap();
+        match back {
+            ClientMessage::Identify { client_version, .. } => {
+                assert_eq!(client_version, "v0.1.0-pre.223")
+            }
+            other => panic!("parsed as {other:?}"),
+        }
+    }
 }

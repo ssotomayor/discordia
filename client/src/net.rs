@@ -470,7 +470,12 @@ where
 
     // Schnorr-sign nonce || pubkey || username with the Nostr identity key and
     // send the Identify response.
-    let username = params.username.clone();
+    // Sign what the server will store, not what the user typed. The server
+    // canonicalises before it verifies, so signing the raw string meant any
+    // name it would alter — anything past 32 chars — failed the handshake as
+    // "signature did not verify", which reads as a broken key rather than a
+    // long name. One definition, in `protocol`, called by both ends.
+    let username = crate::protocol::canonical_username(&params.username);
     let pubkey = params.identity.pubkey.clone();
     let mut to_sign = Vec::with_capacity(nonce.len() + pubkey.len() + username.len());
     to_sign.extend_from_slice(nonce.as_bytes());
@@ -484,6 +489,7 @@ where
         signature,
         // Human client — never bot-gated (bots self-declare via the SDK).
         bot: false,
+        client_version: crate::version::VERSION.to_string(),
     };
     let json = serde_json::to_string(&identify).map_err(|e| e.to_string())?;
     ws_tx
@@ -727,6 +733,7 @@ fn apply(
             members,
             roles,
             emojis,
+            voice_states,
         } => {
             // We created or joined this guild — add it (dedup) and jump to it.
             let gid = guild.id;
@@ -736,6 +743,12 @@ fn apply(
             s.roles.insert(gid, roles);
             s.guild_emojis.insert(gid, emojis);
             resolve_emoji_images(&mut s, tx);
+            // Replace rather than merge: the server sends this guild's whole
+            // voice roster, so anything we still hold for it is stale by
+            // definition. Scoped by `guild_id` so a voice session in another
+            // guild — including our own — survives joining this one.
+            s.voice_states.retain(|v| v.guild_id != gid);
+            s.voice_states.extend(voice_states);
             for ch in channels {
                 if !s.channels.iter().any(|c| c.id == ch.id) {
                     s.channels.push(ch);

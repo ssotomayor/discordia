@@ -316,8 +316,12 @@ pub fn GuildSettingsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element 
                                 class: "rounded px-2 py-1 text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors",
                                 onclick: move |_| {
                                     if let Some(code) = invite() {
+                                        // The code is minted server-side, so it
+                                        // is not ours to trust into a literal.
+                                        let code =
+                                            crate::features::screenshare::js_str(&code);
                                         let js = format!(
-                                            "navigator.clipboard && navigator.clipboard.writeText('{code}');"
+                                            "navigator.clipboard && navigator.clipboard.writeText({code});"
                                         );
                                         let _ = document::eval(&js);
                                         copied.set(true);
@@ -538,16 +542,7 @@ fn SafetyControls(
                         // the log existed, and nothing rendered it — so the log
                         // answered "what happened to whom" and not "who did it",
                         // which is the question an audit log is for.
-                        //
-                        // Resolved through the member list rather than shown raw,
-                        // like every other pubkey in the UI. It falls back to the
-                        // truncated key, which is the honest answer for an actor
-                        // who has since left the guild.
-                        let actor = state
-                            .read()
-                            .user_of(&e.actor_pubkey)
-                            .map(|u| u.username.clone())
-                            .unwrap_or_else(|| truncate_pubkey(&e.actor_pubkey));
+                        let actor = state.read().display_name(&e.actor_pubkey);
                         rsx! {
                             div {
                                 key: "{e.at_ms}-{e.action}-{e.target}",
@@ -661,6 +656,34 @@ fn ImagePickButton(
 /// too-big file is refused here with a message instead of bouncing back as a
 /// generic error.
 const MAX_EMOJI_BYTES: usize = 256_000;
+
+/// The "added by X · date" line under an emoji's shortcode, or `None` when
+/// there is nothing honest to say.
+///
+/// `added_by` and `created_ms` are both written by the upload path and were
+/// both unread by anything until now — so "who added this emoji, and when" was
+/// recorded and unanswerable. They are also both *optional in storage*:
+/// `guild_emojis` declares `added_by TEXT NOT NULL DEFAULT ''` and `created_ms
+/// INTEGER NOT NULL DEFAULT 0`, so a row written before those columns existed
+/// carries an empty key and the Unix epoch. Rendering that verbatim would
+/// claim the emoji was added by nobody on 1 January 1970, which is worse than
+/// saying nothing — hence four cases rather than one format string.
+///
+/// The date is UTC, like every other timestamp the client renders: `Message::
+/// created_at` is a `DateTime<Utc>` and `chat.rs` formats it without
+/// converting.
+fn emoji_provenance(added_by: &str, adder: &str, created_ms: i64) -> Option<String> {
+    let when = (created_ms > 0)
+        .then(|| chrono::DateTime::from_timestamp_millis(created_ms))
+        .flatten()
+        .map(|t| t.format("%Y-%m-%d").to_string());
+    match (added_by.is_empty(), when) {
+        (false, Some(when)) => Some(format!("added by {adder} · {when}")),
+        (false, None) => Some(format!("added by {adder}")),
+        (true, Some(when)) => Some(format!("added {when}")),
+        (true, None) => None,
+    }
+}
 
 /// Custom-emoji management for a guild. Needs `ManageEmojis` — which the guild
 /// owner implicitly holds, like every other permission. The server re-checks
@@ -796,6 +819,8 @@ fn EmojiSettings(guild_id: Id) -> Element {
                     let id = e.id;
                     let code = e.shortcode.clone();
                     let is_renaming = renaming() == Some(id);
+                    let adder = state.read().display_name(&e.added_by);
+                    let provenance = emoji_provenance(&e.added_by, &adder, e.created_ms);
                     rsx! {
                         div { key: "{e.id}", class: "flex items-center gap-2 py-1",
                             if url.is_empty() {
@@ -826,7 +851,16 @@ fn EmojiSettings(guild_id: Id) -> Element {
                                     "Save"
                                 }
                             } else {
-                                span { class: "text-xs text-[var(--text)] flex-1 font-mono", ":{code}:" }
+                                div { class: "flex-1 min-w-0",
+                                    div { class: "text-xs text-[var(--text)] font-mono truncate", ":{code}:" }
+                                    if let Some(line) = provenance {
+                                        div {
+                                            class: "text-[10px] text-[var(--text-dim)] truncate",
+                                            title: "{e.added_by}",
+                                            "{line}"
+                                        }
+                                    }
+                                }
                                 button {
                                     class: "text-[10px] uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--text)] transition-colors",
                                     onclick: move |_| {
@@ -849,5 +883,49 @@ fn EmojiSettings(guild_id: Id) -> Element {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::emoji_provenance;
+
+    /// 2026-08-14T12:00:00Z — midday, so the assertions cannot pass by landing
+    /// on a boundary the formatter rounds either way.
+    const WHEN: i64 = 1_786_708_800_000;
+
+    #[test]
+    fn a_complete_record_names_both() {
+        assert_eq!(
+            emoji_provenance("abc", "alice", WHEN).as_deref(),
+            Some("added by alice · 2026-08-14")
+        );
+    }
+
+    /// The `DEFAULT ''` / `DEFAULT 0` columns. A row from before those existed
+    /// must not be rendered as "added by nobody on 1 January 1970" — each half
+    /// drops out on its own, and a row with neither says nothing at all.
+    #[test]
+    fn missing_halves_drop_out_rather_than_lying() {
+        assert_eq!(
+            emoji_provenance("abc", "alice", 0).as_deref(),
+            Some("added by alice")
+        );
+        assert_eq!(
+            emoji_provenance("", "", WHEN).as_deref(),
+            Some("added 2026-08-14")
+        );
+        assert_eq!(emoji_provenance("", "", 0), None);
+    }
+
+    /// A negative timestamp is a pre-epoch date, which nothing in this codebase
+    /// can legitimately produce — `created_ms` is stamped from
+    /// `Utc::now().timestamp_millis()`. Treated as absent rather than rendered.
+    #[test]
+    fn a_pre_epoch_timestamp_is_treated_as_absent() {
+        assert_eq!(
+            emoji_provenance("abc", "alice", -1).as_deref(),
+            Some("added by alice")
+        );
     }
 }

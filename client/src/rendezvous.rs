@@ -69,6 +69,12 @@ impl dioxusfun_server::livekit::VoiceTokenMinter for RendezvousMinter {
                     "room": req.room,
                     "identity": req.identity,
                     "name": req.name,
+                    // The subscribe-only `#audio` connection asks for a token
+                    // that cannot send. A relay older than this field ignores
+                    // it and grants publish, which is what it does today — so
+                    // sending it costs nothing against an old relay and closes
+                    // the gap against a current one.
+                    "can_publish": req.can_publish,
                 }))
                 .send()
                 .await

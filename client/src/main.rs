@@ -21,6 +21,7 @@ mod settings;
 mod state;
 mod sysaudio;
 mod sysvideo;
+mod version;
 #[cfg(target_os = "windows")]
 mod webview2;
 

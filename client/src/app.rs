@@ -518,6 +518,18 @@ pub fn App() -> Element {
     let mut error = use_signal(|| None::<String>);
     let last_session = use_signal(|| session::load().ok().flatten());
 
+    // Asked once per launch, from the app root rather than from the label that
+    // renders it: the label unmounts on connect and remounts on disconnect, so
+    // owning the check there would re-ask on every round trip and spend a
+    // 60/hour unauthenticated rate limit on a question whose answer cannot have
+    // changed. Silent on every failure — see `check_for_update`.
+    let mut update = use_signal(|| None::<crate::version::Update>);
+    use_future(move || async move {
+        if let Some(found) = crate::version::check_for_update().await {
+            update.set(Some(found));
+        }
+    });
+
     // Local appearance settings (theme + background). Shared via context so
     // the in-app Appearance panel can mutate them live.
     let settings = use_signal(crate::settings::load_or_default);
@@ -567,6 +579,32 @@ pub fn App() -> Element {
             if let Some(img) = background {
                 div { class: "app-bg-layer", style: "background-image: url('{img}');" }
                 div { class: "app-bg-layer", style: "background: rgba(0,0,0,{scrim});" }
+            }
+            // Which build this is, on the screens you see before connecting to
+            // anything — the first place someone reads a version, and the only
+            // one reachable when nothing works, which is when they need it.
+            //
+            // It stops at the door on purpose. In the workspace it would be
+            // permanent chrome answering a question nobody asks while chatting,
+            // and both bottom corners are already spoken for there: the layout
+            // controls on the right, the activity launcher on the left.
+            if session.read().is_none() {
+                div { class: "fixed bottom-3 right-3 z-40 flex items-center gap-2",
+                    crate::version::VersionLabel {}
+                    // Notifies, and stops there. The app has no Authenticode
+                    // certificate, so a self-updater would be handing the user
+                    // an unsigned binary it could not verify — a link they
+                    // follow deliberately is a different act from a binary
+                    // swapped underneath them.
+                    if let Some(u) = update() {
+                        button {
+                            class: "text-[10px] text-[var(--accent)] underline",
+                            title: "Opens the release page in your browser",
+                            onclick: move |_| open_external(&u.url),
+                            "{u.tag} available"
+                        }
+                    }
+                }
             }
             div { class: "app-shell",
             match (identity.read().clone(), session.read().clone()) {

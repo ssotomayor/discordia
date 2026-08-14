@@ -174,10 +174,7 @@ pub fn ProfileCard() -> Element {
     let Some(pubkey) = snapshot.profile_card.clone() else {
         return rsx! { Fragment {} };
     };
-    let name = snapshot
-        .user_of(&pubkey)
-        .map(|u| u.username.clone())
-        .unwrap_or_else(|| crate::identity::truncate_pubkey(&pubkey));
+    let name = snapshot.display_name(&pubkey);
     let bio = snapshot
         .profile_of(&pubkey)
         .and_then(|p| p.bio.clone())
@@ -287,7 +284,8 @@ pub fn ProfileCard() -> Element {
                             button {
                                 class: "text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--edge)] rounded-md px-2 py-0.5 hover:border-[var(--accent)] transition-colors",
                                 onclick: move |_| {
-                                    let js = format!("navigator.clipboard && navigator.clipboard.writeText('{copy_pubkey}');");
+                                    let pk = crate::features::screenshare::js_str(&copy_pubkey);
+                                    let js = format!("navigator.clipboard && navigator.clipboard.writeText({pk});");
                                     let _ = document::eval(&js);
                                 },
                                 "Copy"

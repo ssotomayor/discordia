@@ -57,7 +57,8 @@ pub fn list_cameras_js() -> String {
 }
 
 fn attach_local_camera_js(container: &str) -> String {
-    format!("{SCREEN_JS}\nwindow.dxScreen.attachLocalCamera('{container}');")
+    let container = crate::features::screenshare::js_str(container);
+    format!("{SCREEN_JS}\nwindow.dxScreen.attachLocalCamera({container});")
 }
 
 /// Which camera to open: the remembered id if it is still present, else the one
@@ -419,12 +420,7 @@ fn CameraTile(pubkey: String) -> Element {
     let state: Signal<crate::state::AppState> = use_app_state();
     let cid = format!("camera-{pubkey}");
 
-    let name = {
-        let s = state.read();
-        s.user_of(&pubkey)
-            .map(|u| u.username.clone())
-            .unwrap_or_else(|| crate::identity::truncate_pubkey(&pubkey))
-    };
+    let name = state.read().display_name(&pubkey);
 
     let attach_pk = pubkey.clone();
     let attach_cid = cid.clone();

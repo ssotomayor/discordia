@@ -142,9 +142,41 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
       - uses: Swatinem/rust-cache@v2
-      - name: Check client
-        run: cargo check -p dioxusfun
+      # Clippy rather than `check`, for the same reason the macOS job below uses
+      # it: nothing linted the `cfg(target_os = "windows")` half of the client,
+      # which is where `sysaudio/windows.rs` and `rawmic/windows.rs` live. The
+      # Linux job lints what it can compile, and that is neither. Clippy
+      # compiles what it lints, so this is still the compile check this job
+      # existed for — one build, not two — and `--all-targets` adds the test
+      # modules in those two files, which `cargo check` was not looking at.
+      #
+      # Unlike the macOS job, turning this on took **no** findings with it. Both
+      # profiles were run on a Windows 11 26200 host before the gate went in —
+      # this one, and `-C debug-assertions=off`, which is the pair the Linux job
+      # runs because `unused_variables` and friends fire only under the second.
+      # Zero either way, so this step gates code that already passes it rather
+      # than accompanying a fix.
+      #
+      # Only the first profile is *gated*, which leaves the second half open —
+      # tracked in TODO.md rather than only here. If you are the one adding it:
+      # do NOT copy `desktop-build`'s second-profile step verbatim. Its
+      # step-level `RUSTFLAGS` replaces the job-level value rather than adding
+      # to it, and this job's job-level value is load-bearing — dropping
+      # `+crt-static` puts libwebrtc's /MT back against Rust's /MD and the link
+      # fails with LNK2038. Spell both flags out in the step.
+      - name: Clippy (client, Windows-only code)
+        run: cargo clippy -p dioxusfun --all-targets -- -D warnings
+      # `sysaudio/windows.rs` and `rawmic/windows.rs` are 61 unsafe WASAPI FFI
+      # sites that compile nowhere else, and one of them shipped a heap
+      # corruption that only running its test ever caught. Until this step there
+      # was no `cargo test` on Windows at all, so those tests executed nowhere.
+      # The hardware-gated ones stay `#[ignore]`d — a runner has no audio device
+      # — but the rest now run on every push.
+      - name: Tests (client, Windows-only code)
+        run: cargo test -p dioxusfun
 
   # And the same hole on the other side. `client/src/sysvideo/macos.rs` and
   # `client/src/sysaudio/macos.rs` are unsafe FFI against ScreenCaptureKit and
@@ -217,6 +249,14 @@ jobs:
     name: pre-release · server+client (linux · x86_64)
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    env:
+      # The exact tag `publish-prerelease` will create below, handed to the
+      # client's build.rs so the string on screen names the release someone can
+      # actually go and find. Set per publishing job rather than at workflow
+      # level on purpose: a check job that inherited it would produce a binary
+      # claiming to be a published release when nothing was published, and
+      # `version.rs` has a test that fails if that ever happens.
+      DISCORDIA_VERSION: v0.1.0-pre.${{ github.run_number }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -287,6 +327,8 @@ jobs:
       # libwebrtc links the STATIC MSVC runtime (/MT); Rust defaults to /MD and
       # the two collide (LNK2038). Same flag as windows-release.yml.
       RUSTFLAGS: "-C target-feature=+crt-static"
+      # See prerelease-linux.
+      DISCORDIA_VERSION: v0.1.0-pre.${{ github.run_number }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -373,6 +415,9 @@ jobs:
     name: pre-release · server+client (macos · arm64)
     if: github.event_name == 'push'
     runs-on: macos-latest           # macOS 14 = Apple Silicon (M1)
+    env:
+      # See prerelease-linux.
+      DISCORDIA_VERSION: v0.1.0-pre.${{ github.run_number }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

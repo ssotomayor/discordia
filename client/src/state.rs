@@ -925,6 +925,22 @@ impl AppState {
             .find(|m| m.user.pubkey == pubkey)
             .map(|m| &m.user)
     }
+
+    /// What to show for a pubkey: their username, or a truncated key.
+    ///
+    /// The fallback is the honest answer rather than a placeholder — an
+    /// audit-log actor or an emoji uploader who has since left the guild is not
+    /// in `members` any more, and the key is still who they were.
+    ///
+    /// Here rather than inline at each site because the pair `user_of` +
+    /// `truncate_pubkey` is the whole rule, and it is spelled out identically
+    /// in several places. Anything that changes it later — nicknames, a
+    /// per-guild display name — should have one place to change.
+    pub fn display_name(&self, pubkey: &str) -> String {
+        self.user_of(pubkey)
+            .map(|u| u.username.clone())
+            .unwrap_or_else(|| crate::identity::truncate_pubkey(pubkey))
+    }
 }
 
 #[derive(Clone)]
@@ -1069,5 +1085,35 @@ mod tests {
         assert_eq!(v.toggle_deafen(), (true, true));
         v.deafened = true;
         assert_eq!(v.toggle_deafen(), (true, false));
+    }
+
+    /// The fallback is the point of the helper: seven call sites spelled this
+    /// out identically, and the honest answer for someone no longer in
+    /// `members` is their key, not a placeholder.
+    #[test]
+    fn display_name_falls_back_to_the_truncated_key() {
+        let mut s = AppState::empty();
+        let known = "a".repeat(64);
+        let stranger = "b".repeat(64);
+        s.members.push(member(&known, true));
+
+        assert_eq!(s.display_name(&known), format!("u-{known}"));
+        assert_eq!(
+            s.display_name(&stranger),
+            crate::identity::truncate_pubkey(&stranger)
+        );
+    }
+
+    /// `user_of` answers for the logged-in user before it looks at `members`,
+    /// and `display_name` inherits that — otherwise your own name would read as
+    /// a truncated key in any guild whose roster has not arrived yet.
+    #[test]
+    fn display_name_resolves_the_logged_in_user_without_a_roster() {
+        let mut s = AppState::empty();
+        let me = "c".repeat(64);
+        s.self_user = Some(user(&me));
+
+        assert!(s.members.is_empty());
+        assert_eq!(s.display_name(&me), format!("u-{me}"));
     }
 }

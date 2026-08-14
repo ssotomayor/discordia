@@ -11,6 +11,18 @@ pub struct MintRequest {
     pub room: String,
     pub identity: String,
     pub name: String,
+    /// Whether this connection may send anything at all.
+    ///
+    /// The local mint has asked this per identity since `screen_token_as` grew
+    /// the argument — the `#audio` connection only subscribes. This carries the
+    /// same answer across the delegation seam, which previously dropped it: the
+    /// relay signed its own fixed grant set with publish on, so the narrowing
+    /// applied on a self-signed gateway and not on a rendezvous-delegated one.
+    ///
+    /// Like `screen_token_as`, this is the caller's answer rather than
+    /// something inferred from the identity string — a grant should never be
+    /// read by parsing a suffix.
+    pub can_publish: bool,
 }
 
 pub type BoxFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
@@ -159,6 +171,9 @@ pub async fn voice_token(
                 room: room_name(channel_id),
                 identity: user_pubkey.to_string(),
                 name: username.to_string(),
+                // Voice is symmetric: everyone in a voice channel talks. Same
+                // grant `mint_token` signs locally.
+                can_publish: true,
             })
             .await
         }
@@ -194,11 +209,16 @@ pub fn screen_video_identity(user_pubkey: &str) -> String {
 /// `can_publish` is the caller's answer to "does this connection ever send
 /// anything?". One of the three does not: the `#audio` identity only subscribes.
 ///
-/// **It only binds on the local path.** A gateway delegating to a rendezvous
-/// sends a `MintRequest`, which carries no grants — the relay signs with its own
-/// fixed set, publish included. Narrowing that too means a field on the
-/// rendezvous wire, which is why it is recorded in TODO.md rather than done
-/// here.
+/// **It binds on both paths.** It used to bind only on the local one: a gateway
+/// delegating to a rendezvous sent a `MintRequest` carrying no grants, and the
+/// relay signed its own fixed set with publish on — so the narrowing that stops
+/// a subscribe-only connection from sending simply did not apply to anyone
+/// hosting through a relay. The answer now rides `MintRequest::can_publish`.
+///
+/// One caveat survives, and it is a deployment one rather than a code one: a
+/// relay older than that field ignores it and grants publish, exactly as it does
+/// today. Nothing on this wire carries a version, so the gateway cannot detect
+/// it.
 pub async fn screen_token_as(
     cfg: &LiveKitConfig,
     identity: &str,
@@ -212,6 +232,7 @@ pub async fn screen_token_as(
                 room: screen_room_name(channel_id),
                 identity: identity.to_string(),
                 name: username.to_string(),
+                can_publish,
             })
             .await
         }
