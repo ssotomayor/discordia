@@ -49,6 +49,11 @@ window.dxScreen = window.dxScreen || (function () {
   // The webcam, held across room restarts on purpose. Republishing a track we
   // already hold calls no capture API, so it needs no user gesture — which is
   // the only reason an automatic reconnect can restore video at all.
+  // The E2EE passphrase for this session, and the provider awaiting it while a
+  // Room is being built. Held at module scope because `connect` runs again on
+  // every reconnect and the key must survive that.
+  let e2eeKey = null;
+  let pendingKeyProvider = null;
   let localCameraTrack = null;
   let localCameraStream = null;
   let lastCameraOpts = {};
@@ -276,7 +281,8 @@ window.dxScreen = window.dxScreen || (function () {
       if (desiredRoom && !room) connect(desiredRoom.url, desiredRoom.token);
     }, delay);
   }
-  async function connect(url, token) {
+  async function connect(url, token, key) {
+    e2eeKey = key || null;
     const same = desiredRoom && desiredRoom.url === url && desiredRoom.token === token;
     desiredRoom = { url: url, token: token };
     if (room) {
@@ -304,8 +310,50 @@ window.dxScreen = window.dxScreen || (function () {
     // "Connecting to stream…" — the Room constructor governs subscription, so
     // an audio nicety has no business changing it. Volume is capped at 100%
     // via the element instead; a working picture beats a louder one.
-    const thisRoom = new lk.Room({ adaptiveStream: true, dynacast: true });
+    // E2EE, when a key was handed down (roadmap Stage 3). The worker has to be
+    // constructed here rather than reused: the SDK ties one to a Room, and this
+    // function builds a fresh Room on every reconnect.
+    //
+    // `ExternalE2EEKeyProvider` with the same passphrase the native rooms use.
+    // The salt and derivation are both SDKs' defaults, which is what lets a
+    // frame published by the Rust side be decrypted by this one — the two never
+    // negotiate, they only happen to agree, so a mismatch shows up as noise
+    // rather than as an error.
+    const opts = { adaptiveStream: true, dynacast: true };
+    if (e2eeKey && !window.__dxfE2eeWorkerSrc) {
+      console.error('[dxScreen] e2ee requested but the worker source is missing');
+      post('e2ee-error', { detail: 'the encryption worker was not injected' });
+    } else if (e2eeKey) {
+      try {
+        const provider = new lk.ExternalE2EEKeyProvider();
+        opts.e2ee = {
+          keyProvider: provider,
+          worker: new Worker(
+            URL.createObjectURL(
+              new Blob([window.__dxfE2eeWorkerSrc], { type: 'application/javascript' })
+            )
+          ),
+        };
+        pendingKeyProvider = provider;
+      } catch (e) {
+        console.error('[dxScreen] could not set up e2ee', e);
+        post('e2ee-error', { detail: String((e && e.message) || e) });
+      }
+    }
+    const thisRoom = new lk.Room(opts);
     room = thisRoom;
+    if (e2eeKey && pendingKeyProvider) {
+      // setKey before enabling, so the first frames are not published under a
+      // key nobody has.
+      try {
+        await pendingKeyProvider.setKey(e2eeKey);
+        await thisRoom.setE2EEEnabled(true);
+      } catch (e) {
+        console.error('[dxScreen] enabling e2ee failed', e);
+        post('e2ee-error', { detail: String((e && e.message) || e) });
+      }
+      pendingKeyProvider = null;
+    }
     thisRoom.on(lk.RoomEvent.Disconnected, function (reason) {
       console.warn('[dxScreen] room disconnected', reason);
       // Ignore a late event from a room already replaced by a newer attempt.
@@ -1100,8 +1148,13 @@ pub fn ScreenShareBridge() -> Element {
         if t != *last.peek() {
             match &t {
                 Some((url, tok)) => {
+                    // The same passphrase the native rooms use. Quoted through
+                    // serde rather than interpolated: it is user-supplied and
+                    // has no business being pasted into a JS literal.
+                    let key = serde_json::to_string(&crate::e2ee::shared_key())
+                        .unwrap_or_else(|_| "null".into());
                     let _ = document::eval(&format!(
-                        "{SCREEN_JS}\nwindow.dxScreen.connect('{url}','{tok}');"
+                        "{SCREEN_JS}\nwindow.dxScreen.connect('{url}','{tok}',{key});"
                     ));
                 }
                 None => {
@@ -1301,7 +1354,7 @@ pub fn ScreenShareBridge() -> Element {
               window.__dxfShareEndWired = true;
               window.addEventListener('message', function (e) {
                 var d = e.data;
-                if (d && (d.__dxf === 'screen-share-ended' || d.__dxf === 'share-started' || d.__dxf === 'share-audio' || d.__dxf === 'share-unavailable' || d.__dxf === 'share-echo-risk' || d.__dxf === 'stream-audio' || d.__dxf === 'screen-room-error' || d.__dxf === 'screen-room-reconnecting' || d.__dxf === 'screen-track-timeout') && window.__dxfShareSink) {
+                if (d && (d.__dxf === 'screen-share-ended' || d.__dxf === 'share-started' || d.__dxf === 'share-audio' || d.__dxf === 'share-unavailable' || d.__dxf === 'share-echo-risk' || d.__dxf === 'stream-audio' || d.__dxf === 'screen-room-error' || d.__dxf === 'screen-room-reconnecting' || d.__dxf === 'screen-track-timeout' || d.__dxf === 'e2ee-error') && window.__dxfShareSink) {
                   window.__dxfShareSink(d);
                 }
               });
@@ -1400,6 +1453,21 @@ pub fn ScreenShareBridge() -> Element {
                                 "Connected to the stream room, but no video arrived. Make sure the sharer is running the latest Discordia build and restart the share."
                                     .into(),
                             );
+                    }
+                    // Encryption was asked for and could not be set up. Loud,
+                    // because the alternative is a call that connects and
+                    // carries nothing anyone can decode — the failure mode
+                    // end-to-end encryption has instead of an error.
+                    Some("e2ee-error") => {
+                        let detail = msg
+                            .get("detail")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown error");
+                        eprintln!("[screen] e2ee setup failed: {detail}");
+                        state.write().error_toast = Some(format!(
+                            "Encryption could not be enabled for this call ({detail}). \
+                             Others will not be able to hear or see you."
+                        ));
                     }
                     // Our own share: did the platform give us any audio to
                     // send? Silence here is a platform limit, not a bug we
