@@ -348,6 +348,21 @@ async fn connect_best(
     }
 }
 
+/// The URL used for the WebSocket handshake once a QUIC stream is open.
+///
+/// There is no hostname behind a QUIC key, so this is invented — but it is not
+/// arbitrary, because the gateway reads the `Host` header to decide which
+/// LiveKit URL to hand back. A made-up name like `gateway.quic` sails through
+/// `url_for_client` untouched and produces `ws://gateway.quic:7880`, an address
+/// that resolves nowhere; the symptom would be voice failing to connect, on the
+/// one configuration where voice is supposed to be direct.
+///
+/// Loopback is the honest answer. It is what the gateway already means by "this
+/// connection did not arrive on an address you can hand back" — the same
+/// substitution a rendezvous-proxied friend gets — so a QUIC peer is offered
+/// the host's public address, or its LAN address, rather than a fiction.
+const QUIC_HANDSHAKE_URL: &str = "ws://127.0.0.1/gateway";
+
 /// Open the gateway over QUIC: dial the key, then run the ordinary WebSocket
 /// client handshake on the stream it gives back.
 async fn dial_quic(
@@ -361,10 +376,7 @@ async fn dial_quic(
         .filter_map(|a| crate::quic::parse_transport_addr(a))
         .collect();
     let (io, guard) = crate::quic::dial(endpoint_id, &addrs, coordination).await?;
-    // The Host header is cosmetic here — there is no name behind a QUIC key, and
-    // the gateway only reads it to derive a LiveKit URL, which the host answers
-    // from its own configuration for this path.
-    let (ws, _) = tokio_tungstenite::client_async("ws://gateway.quic/gateway", io)
+    let (ws, _) = tokio_tungstenite::client_async(QUIC_HANDSHAKE_URL, io)
         .await
         .map_err(|e| format!("websocket over quic: {e}"))?;
     Ok(Socket::Quic(ws, guard))
@@ -1197,6 +1209,18 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         drop(listener);
         format!("ws://{addr}/gateway")
+    }
+
+    /// The QUIC handshake has to present a host the gateway will substitute,
+    /// not one it will echo back. An invented hostname passes through
+    /// `url_for_client` unchanged and becomes a LiveKit URL that resolves
+    /// nowhere — which only shows up as voice failing, and only on the
+    /// configuration where the host serves its own SFU.
+    #[test]
+    fn the_quic_handshake_presents_a_loopback_host() {
+        let url = url::Url::parse(QUIC_HANDSHAKE_URL).unwrap();
+        assert_eq!(url.host_str(), Some("127.0.0.1"));
+        assert_eq!(url.path(), "/gateway");
     }
 
     /// The point of the whole exercise: when the host published an address that

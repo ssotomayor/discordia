@@ -313,6 +313,17 @@ the top within each section.
   no SFU at all rather than a LAN-only one. `node_ip` says the same thing
   without the dependency, using the address the router already told us. If a
   future change wants STUN back, that failure mode is the thing to handle.
+- **A QUIC peer is handed the LAN address for voice, like a proxied friend.**
+  The QUIC handshake presents `127.0.0.1` as its `Host` so `url_for_client`
+  substitutes rather than echoes (an invented hostname became a LiveKit URL that
+  resolved nowhere). That puts a QUIC peer in the same bucket as a
+  rendezvous-proxied one: it gets `public_host` if a port mapping produced one,
+  and otherwise the LAN address — which a remote peer cannot dial. So a host
+  with no mapping can have private *chat* over QUIC and no working voice, and
+  the two facts are reported separately in the banner rather than as one. The
+  fix is the same proxy-marker this file already wants for the relayed case:
+  something that tells the gateway "this connection came from outside" so it can
+  refuse to mint rather than mint something undialable.
 - **A joiner cannot verify the transport key belongs to the host it expects.**
   The rendezvous verifies the Schnorr signature binding a transport key to the
   account key that registered it, and refuses to publish an unattested pair — so
