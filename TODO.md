@@ -665,19 +665,19 @@ the top within each section.
   says so in a comment. The flag was equally wrong before `c2c6ff2`; what changed
   is that something renders it. There is no protocol version to key off, which is
   the actual gap.
-- **Force-quitting the app orphans the bundled SFU.** `LivekitSubprocess` relies
-  on tokio's `kill_on_drop`, which only runs if the parent unwinds — a `SIGKILL`
-  (force quit, or a debugger) leaves `livekit-server` running, reparented to
-  launchd, holding port 7880. One was found alive more than a day after its
-  parent died, and a stale SFU squatting on the port is a confusing way for the
-  next session to fail. Sweep any `livekit-server` started from our own temp
-  directory before spawning, or have the child watch for its parent going away.
-  **Not macOS-specific**, which this entry used to imply by describing only the
-  launchd case. Reproduced on Windows: `taskkill /F` on `dioxusfun-server.exe`
-  left `livekit-server-<hash>.exe` alive and still `LISTENING` on 7880, and it
-  had to be killed by PID. `kill_on_drop` is a destructor, so any kill that
-  skips unwinding — on any platform — leaves the child behind. That makes the
-  "have the child watch for its parent" half of the fix the portable one.
+- **Two app instances self-hosting on one machine fight over the SFU.** The
+  orphan reclaim added with `PID_FILE` cannot tell "the recorded SFU is a
+  leftover" from "the recorded SFU belongs to an instance that is still
+  running": both look like a live process with our image name. So a second
+  instance that self-hosts kills the first one's SFU and takes port 7880.
+  That configuration was already broken — the port, the temp directory and the
+  generated `livekit.yaml` are all fixed, so a second SFU could never have bound
+  anyway; before the reclaim, the second instance silently *shared* the first's.
+  It now fails differently rather than newly, which is why this is recorded
+  rather than treated as a regression. Closing it properly means either a lock
+  the running instance holds (and releases on any kind of exit, which is the
+  same problem one level down) or making the port configurable so two instances
+  can coexist.
 - **Per-user volumes are session-scoped.** `AppState.user_volumes` /
   `stream_volumes` live for the run of the app, not across restarts. Persisting
   them means a keyed store that doesn't grow without bound (cap + LRU), which is
