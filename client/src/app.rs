@@ -550,6 +550,18 @@ pub fn App() -> Element {
                 div { class: "app-bg-layer", style: "background-image: url('{img}');" }
                 div { class: "app-bg-layer", style: "background: rgba(0,0,0,{scrim});" }
             }
+            // Which build this is, on the screens you see before connecting to
+            // anything — the first place someone reads a version, and the only
+            // one they can reach without a working server.
+            //
+            // Only there: once `WorkspaceView` is up it renders its own copy
+            // inside the layout-controls cluster, and a fixed badge would land
+            // on top of it. The workspace holds both bottom corners already.
+            if session.read().is_none() {
+                div { class: "fixed bottom-3 right-3 z-40",
+                    crate::version::VersionLabel {}
+                }
+            }
             div { class: "app-shell",
             match (identity.read().clone(), session.read().clone()) {
                 (None, _) => rsx! {

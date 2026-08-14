@@ -10,6 +10,8 @@
 //!   was published under. Paste it into a report and the artifact is findable.
 //! - `0.1.0-dev+a1b2c3d` — anything else. Nobody downloaded this.
 
+use dioxus::prelude::*;
+
 /// The version string this binary was built with.
 pub const VERSION: &str = env!("DISCORDIA_VERSION");
 
@@ -21,6 +23,31 @@ pub const VERSION: &str = env!("DISCORDIA_VERSION");
 /// releases, but nothing here should break the day it stops being.
 pub fn is_release() -> bool {
     !VERSION.contains("-dev")
+}
+
+/// The build string, styled but **not positioned** — the caller decides where
+/// it sits, because the two places it appears want different things.
+///
+/// On the connect and identity screens it is a fixed badge in an otherwise
+/// empty corner. In the workspace it is one item inside the layout-controls
+/// cluster, whose `gap` already spaces it; a second fixed corner there would
+/// land on top of that cluster or on the activity launcher, which hold the only
+/// two corners the workspace has.
+///
+/// Selectable on purpose: its whole job is to be pasted into a report.
+#[component]
+pub fn VersionLabel() -> Element {
+    rsx! {
+        span {
+            class: "text-[10px] text-[var(--text-dim)]",
+            title: if is_release() {
+                "This build's release tag on GitHub"
+            } else {
+                "A local build — no release was published for it"
+            },
+            "{VERSION}"
+        }
+    }
 }
 
 #[cfg(test)]
