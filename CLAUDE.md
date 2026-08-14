@@ -233,6 +233,14 @@ channel to observe the publication themselves.
 - `host.rs` — self-host: spawn embedded server + LiveKit, register with
   rendezvous. `rendezvous.rs` — the rendezvous client (control handshake +
   proxy bridging). `blossom.rs` — Nostr media upload for avatars/banners.
+- `version.rs` — which build this is, stamped by `client/build.rs` at compile
+  time. **Not `CARGO_PKG_VERSION`**, which is `0.1.0` in every release ever
+  published: the release number lives in the tag CI creates and used to stop
+  there. CI sets `DISCORDIA_VERSION` to exactly that tag on the three
+  publishing jobs — and deliberately *not* at workflow level, because a check
+  job that inherited it would build a binary claiming to be a release nobody
+  published. `version.rs` has a test that fails if that happens. Everything
+  else calls itself `0.1.0-dev+<sha>`.
 - `features/*.rs` — UI, one module per surface: `guilds`, `channels`, `chat`,
   `members`, `voice`, `screenshare`, `camera`, `roles`, `guild_settings`,
   `integrations` (bots), `profiles`, `connect`, `appearance`, `activities`.

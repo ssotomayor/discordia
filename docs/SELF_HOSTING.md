@@ -70,7 +70,11 @@ log and settings, and `DIOXUSFUN_RENDEZVOUS_URL` presets the rendezvous the
 Self-host tab offers. Build-time, `LIVEKIT_BUNDLE_SKIP=1` skips fetching the
 LiveKit binary — useful for CI, but the resulting build cannot host voice — and
 `LIVEKIT_BUNDLE_VERSION` (default `1.12.0`, `server/build.rs`) pins which
-`livekit-server` release gets embedded.
+`livekit-server` release gets embedded. Also build-time, `DISCORDIA_VERSION`
+(`client/build.rs`) is the version the client reports in its corner and, when
+set, must be exactly the tag the artifact is published under — CI sets it on the
+three publishing jobs. Left unset, the build calls itself `<crate>-dev+<sha>`,
+which is what a local build should say.
 
 ### Storage governance
 
