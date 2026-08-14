@@ -83,6 +83,15 @@ pub fn spawn_gateway(
     gateway_tx
 }
 
+/// The transport's view of the coordinator setting.
+fn coordination(allowed: bool) -> crate::quic::Coordination {
+    if allowed {
+        crate::quic::Coordination::CoordinatorOnly
+    } else {
+        crate::quic::Coordination::None
+    }
+}
+
 /// Where to dial, and what to call the connection once it is up.
 enum Dial {
     /// One address, no alternative: our own loopback gateway, or a URL someone
@@ -94,7 +103,7 @@ enum Dial {
         /// The host's QUIC key and where to try it, when it published one.
         /// Preferred over everything else: it is the only candidate that is
         /// both direct *and* private.
-        quic: Option<(String, Vec<String>)>,
+        quic: Option<(String, Vec<String>, crate::quic::Coordination)>,
         direct: String,
         relay: String,
     },
@@ -122,6 +131,7 @@ async fn resolve_session(
             publish_name,
             description,
             publish_public,
+            allow_coordinator,
         } => {
             let publish = crate::rendezvous::PublishOptions {
                 publish_name,
@@ -129,7 +139,14 @@ async fn resolve_session(
                 publish_public,
             };
             // We're hosting, so we own our Lobby.
-            let handle = start_self_host(allow_lan, rendezvous_url, publish, identity).await?;
+            let handle = start_self_host(
+                allow_lan,
+                rendezvous_url,
+                publish,
+                coordination(allow_coordinator),
+                identity,
+            )
+            .await?;
             let url = normalize_url(&handle.info.local_url)?;
             state.write().host_info = Some(handle.info.clone());
             Ok((
@@ -143,6 +160,7 @@ async fn resolve_session(
         SessionMode::ByCode {
             rendezvous_url,
             code,
+            allow_coordinator,
         } => {
             let base = rendezvous_url.trim().trim_end_matches('/');
             if base.is_empty() {
@@ -170,7 +188,7 @@ async fn resolve_session(
             let quic = entry
                 .transport_key
                 .filter(|_| !entry.transport_addrs.is_empty())
-                .map(|key| (key, entry.transport_addrs));
+                .map(|key| (key, entry.transport_addrs, coordination(allow_coordinator)));
             match entry.endpoint.as_deref().map(normalize_url) {
                 Some(Ok(direct)) => Ok((
                     Dial::DirectOrRelay {
@@ -255,6 +273,11 @@ type Ws =
 /// minute on macOS.
 const DIRECT_ATTEMPT: std::time::Duration = std::time::Duration::from_secs(4);
 
+/// The same, for a coordinated attempt. Longer because a hole punch is a
+/// negotiation with a third party in the middle of it, and because the
+/// enforcement that follows waits to see whether the result is really direct.
+const PUNCH_ATTEMPT: std::time::Duration = std::time::Duration::from_secs(12);
+
 /// Try every way in at once and keep the best one that answers.
 ///
 /// Ranked, not first-past-the-post: the QUIC path is preferred whenever it
@@ -269,7 +292,7 @@ const DIRECT_ATTEMPT: std::time::Duration = std::time::Duration::from_secs(4);
 /// claims; the rendezvous expires those in ten seconds, which is what that
 /// timeout is for.
 async fn connect_best(
-    quic: Option<(String, Vec<String>)>,
+    quic: Option<(String, Vec<String>, crate::quic::Coordination)>,
     direct: &str,
     relay: &str,
 ) -> Result<(Socket, Transport), String> {
@@ -279,8 +302,14 @@ async fn connect_best(
 
     // The private path first, and on its own clock: if it answers, nothing else
     // is worth having.
-    if let Some((key, addrs)) = quic {
-        match tokio::time::timeout(DIRECT_ATTEMPT, dial_quic(&key, &addrs)).await {
+    if let Some((key, addrs, coordination)) = quic {
+        // Its own, longer budget: a hole punch is a negotiation, not a connect,
+        // and `DIRECT_ATTEMPT` was sized for the latter.
+        let budget = match coordination {
+            crate::quic::Coordination::None => DIRECT_ATTEMPT,
+            crate::quic::Coordination::CoordinatorOnly => PUNCH_ATTEMPT,
+        };
+        match tokio::time::timeout(budget, dial_quic(&key, &addrs, coordination)).await {
             Ok(Ok(socket)) => {
                 relay_attempt.abort();
                 eprintln!("[dioxusfun] connected over QUIC to {key}");
@@ -321,10 +350,17 @@ async fn connect_best(
 
 /// Open the gateway over QUIC: dial the key, then run the ordinary WebSocket
 /// client handshake on the stream it gives back.
-async fn dial_quic(key: &str, addrs: &[String]) -> Result<Socket, String> {
+async fn dial_quic(
+    key: &str,
+    addrs: &[String],
+    coordination: crate::quic::Coordination,
+) -> Result<Socket, String> {
     let endpoint_id = crate::quic::parse_endpoint_id(key)?;
-    let addrs: Vec<std::net::SocketAddr> = addrs.iter().filter_map(|a| a.parse().ok()).collect();
-    let (io, guard) = crate::quic::dial(endpoint_id, &addrs).await?;
+    let addrs: Vec<_> = addrs
+        .iter()
+        .filter_map(|a| crate::quic::parse_transport_addr(a))
+        .collect();
+    let (io, guard) = crate::quic::dial(endpoint_id, &addrs, coordination).await?;
     // The Host header is cosmetic here — there is no name behind a QUIC key, and
     // the gateway only reads it to derive a LiveKit URL, which the host answers
     // from its own configuration for this path.
@@ -1197,9 +1233,8 @@ mod tests {
             .trim_start_matches("ws://")
             .trim_end_matches("/gateway");
 
-        let (_ws, transport) = connect_best(Some((key, vec![addr.to_string()])), &direct, &relay)
-            .await
-            .unwrap();
+        let quic = Some((key, vec![addr.to_string()], crate::quic::Coordination::None));
+        let (_ws, transport) = connect_best(quic, &direct, &relay).await.unwrap();
         assert_eq!(transport, Transport::Direct);
     }
 

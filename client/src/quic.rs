@@ -13,7 +13,8 @@
 
 use std::net::SocketAddr;
 
-use dioxusfun_server::quic::GATEWAY_ALPN;
+pub use dioxusfun_server::quic::Coordination;
+use dioxusfun_server::quic::{GATEWAY_ALPN, require_direct, watch_for_relay_fallback};
 use iroh::endpoint::presets;
 use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey, TransportAddr};
 
@@ -37,34 +38,61 @@ pub fn parse_endpoint_id(raw: &str) -> Result<EndpointId, String> {
         .map_err(|e| format!("bad endpoint key: {e}"))
 }
 
+/// Parse one advertised address.
+///
+/// Two shapes travel in the same list because they are the same kind of hint:
+/// `1.2.3.4:41234` is somewhere to send packets, and `https://relay.example/`
+/// is somewhere to be introduced. Anything else is dropped rather than
+/// rejected — one unusable entry should not cost a host its other addresses.
+pub fn parse_transport_addr(raw: &str) -> Option<TransportAddr> {
+    if let Ok(sock) = raw.parse::<SocketAddr>() {
+        return Some(TransportAddr::Ip(sock));
+    }
+    raw.parse::<iroh::RelayUrl>().ok().map(TransportAddr::Relay)
+}
+
 /// Open a gateway stream to `endpoint_id` at one of `addrs`.
 ///
-/// **No relay and no discovery** (`presets::Minimal`), matching the host side:
-/// the addresses are the ones the host published, and nothing else is contacted
-/// to reach it. A host that has moved is simply unreachable here rather than
-/// quietly found again through a third party — which is the distinction the
-/// whole document is about, and it should not be made by a default.
+/// `coordination` decides whether anyone else is involved. `None` contacts
+/// nothing: the addresses are the ones the host published, and a host that has
+/// moved is simply unreachable rather than quietly found again through a third
+/// party. `CoordinatorOnly` lets a relay introduce the two ends so they can
+/// punch a hole — and then *insists* the result is direct, refusing the
+/// connection if the relay is still carrying it. That refusal is the entire
+/// difference between tier 2 and tier 3 (`docs/NETWORKING.md`).
 pub async fn dial(
     endpoint_id: EndpointId,
-    addrs: &[SocketAddr],
+    addrs: &[TransportAddr],
+    coordination: Coordination,
 ) -> Result<(GatewayIo, ConnectionGuard), String> {
-    if addrs.is_empty() {
+    if addrs.is_empty() && coordination == Coordination::None {
         return Err("the host published a key but no address to reach it at".into());
     }
-    let endpoint = Endpoint::builder(presets::Minimal)
-        .bind()
-        .await
-        .map_err(|e| format!("quic bind: {e}"))?;
+    let endpoint = match coordination {
+        Coordination::None => Endpoint::builder(presets::Minimal),
+        Coordination::CoordinatorOnly => Endpoint::builder(presets::N0),
+    }
+    .bind()
+    .await
+    .map_err(|e| format!("quic bind: {e}"))?;
 
     // The key is the destination; the addresses are only hints about where to
     // send the packets. A wrong address fails to connect, a wrong key fails to
     // authenticate, and neither can be mistaken for success.
-    let addr =
-        EndpointAddr::new(endpoint_id).with_addrs(addrs.iter().copied().map(TransportAddr::Ip));
+    let addr = EndpointAddr::new(endpoint_id).with_addrs(addrs.iter().cloned());
     let conn = endpoint
         .connect(addr, GATEWAY_ALPN)
         .await
         .map_err(|e| format!("quic connect: {e}"))?;
+
+    // A coordinator was allowed to introduce us. Whether it is now carrying the
+    // conversation is a different question, and this is where it gets asked —
+    // before a single frame crosses.
+    require_direct(&conn, coordination).await.inspect_err(|_| {
+        conn.close(1u32.into(), b"relayed connection refused");
+    })?;
+    watch_for_relay_fallback(conn.clone(), coordination);
+
     let (send, recv) = conn
         .open_bi()
         .await

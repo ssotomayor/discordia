@@ -89,6 +89,10 @@ pub async fn start_self_host(
     allow_lan: bool,
     rendezvous_url: Option<String>,
     publish: crate::rendezvous::PublishOptions,
+    // Whether a coordinator may introduce friends we cannot reach directly.
+    // Only ever an introduction: a connection the coordinator ends up carrying
+    // is refused at both ends (`dioxusfun_server::quic::require_direct`).
+    coordination: dioxusfun_server::quic::Coordination,
     // The host's own identity: its pubkey becomes the operator of the seeded
     // Lobby (so the person running the server can moderate it — it's their
     // machine), and it signs the rendezvous name-ownership proof.
@@ -118,16 +122,17 @@ pub async fn start_self_host(
     // to map, and its key and address are what get advertised. Nothing is
     // served on it until the router exists, further down.
     let transport_secret = crate::quic::secret_for(&identity);
-    let quic_endpoint = match dioxusfun_server::quic::bind_quic(Some(transport_secret)).await {
-        Ok(ep) => Some(ep),
-        Err(e) => {
-            // Not fatal: the TCP gateway is unaffected, and a host without the
-            // QUIC path is exactly what every host was until now.
-            eprintln!("[host] quic unavailable: {e}");
-            tracing::warn!(error = %e, "quic endpoint not bound");
-            None
-        }
-    };
+    let quic_endpoint =
+        match dioxusfun_server::quic::bind_quic(Some(transport_secret), coordination).await {
+            Ok(ep) => Some(ep),
+            Err(e) => {
+                // Not fatal: the TCP gateway is unaffected, and a host without the
+                // QUIC path is exactly what every host was until now.
+                eprintln!("[host] quic unavailable: {e}");
+                tracing::warn!(error = %e, "quic endpoint not bound");
+                None
+            }
+        };
     let quic_port = quic_endpoint
         .as_ref()
         .and_then(|ep| ep.bound_sockets().first().map(|s| s.port()));
@@ -197,6 +202,15 @@ pub async fn start_self_host(
     // against, and the addresses worth trying. The public address goes first
     // when we have one — a friend elsewhere can only use that one, and a friend
     // on this network will fail it fast and fall to the LAN address behind it.
+    // With a coordinator allowed, wait briefly for the endpoint to reach its
+    // home relay — that URL is how a friend gets introduced, and advertising the
+    // key without it leaves them nothing to be introduced *through*.
+    if coordination == dioxusfun_server::quic::Coordination::CoordinatorOnly
+        && let Some(ep) = quic_endpoint.as_ref()
+    {
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), ep.online()).await;
+    }
+
     let transport = quic_endpoint.as_ref().and_then(|ep| {
         let port = quic_port?;
         let mut addrs = Vec::new();
@@ -206,6 +220,13 @@ pub async fn start_self_host(
         if let Some(ip) = local_ipv4() {
             addrs.push(SocketAddr::new(IpAddr::V4(ip), port).to_string());
         }
+        // The relay URL rides in the same list: it is the same kind of hint —
+        // somewhere to be introduced rather than somewhere to send packets —
+        // and the joiner tells them apart by parsing.
+        addrs.extend(ep.addr().addrs.iter().filter_map(|a| match a {
+            iroh::TransportAddr::Relay(url) => Some(url.to_string()),
+            _ => None,
+        }));
         // A key with nowhere to try it is worse than no key: the joiner would
         // spend its patience on a path that cannot work.
         (!addrs.is_empty()).then(|| crate::rendezvous::TransportAdvert {

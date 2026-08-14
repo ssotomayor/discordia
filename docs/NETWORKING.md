@@ -109,15 +109,17 @@ So there are three, and only the first involves nobody:
    carrier-grade NAT, where your ISP does not give you a public address at all.
 2. **Coordinated, not carried.** A coordinator arranges a direct connection, then
    steps out. It learns that two peers connected; it never sees what they
-   exchange.
+   exchange. Implemented, off by default, and enforced by refusing the
+   connection when the coordinator turns out to still be in the path.
 3. **Relayed.** The direct attempt failed, and a relay carries the data. This is
-   what happens today, for everything.
+   the rendezvous proxy, and it is still what happens when the tiers above
+   cannot.
 
 **Settings map onto these, and say which they are.** *Publish to rendezvous*
 gives you the directory, join codes and tier 3. *Accept direct connections* is
 tier 1: it binds the gateway off loopback and lets the port mapping be
 attempted — a forward to a loopback-bound port lands on nothing, so the two
-cannot be separated. A further setting will allow a coordinator for tier 2, kept
+cannot be separated. *Let a coordinator introduce us* is tier 2, kept
 separate because a coordinator contacted silently is exactly the surprise this
 design exists to remove. With rendezvous off you get tier 1 or nothing, and the
 host banner says which, rather than leaving it to be inferred from a friend
@@ -186,12 +188,20 @@ working. Preferring a reviewed library over hand-rolled verification is the whol
 argument for a QUIC transport (`iroh` is the candidate) where authentication is
 by public key by construction.
 
-**Coordinated hole punching** for tier 2 — still to do. Dial-by-public-key is in
-place, but the addresses still have to be reachable on their own: iroh is
-configured with no relay and no discovery, so a host behind a NAT that port
-mapping cannot open is not found by this path either. Turning that on means
-contacting a coordinator, which is exactly the choice this design refuses to make
-silently.
+**Coordinated hole punching** for tier 2, behind its own setting — *Let a
+coordinator introduce us*, on the self-host and by-code panels. With it off,
+nothing is contacted: the addresses a host published are the only way in. With
+it on, an iroh relay tells each side where the other is so they can punch a hole.
+
+**"Coordinator, never carrier" is enforced, not assumed.** This is the part that
+would otherwise quietly become tier 3: a relay that arranges a punch will carry
+the data just as happily when the punch fails, and the connection *works* either
+way. So both ends check — `require_direct` waits for a direct path and refuses
+the connection when it does not appear, and `watch_for_relay_fallback` closes a
+session that later slides back onto the relay, because iroh moves traffic back
+when a direct path degrades and a session that began direct does not stay that
+way by itself. The refusal is deliberate and it is visible: the host is reported
+unreachable rather than reached slowly.
 
 The WebSocket stays — `SessionMode::Remote`, LAN, and any future browser client
 use it, and a domain-hosted server behind a reverse proxy already has real TLS.

@@ -627,6 +627,7 @@ fn session_key(p: &SessionParams) -> String {
         SessionMode::ByCode {
             rendezvous_url,
             code,
+            ..
         } => {
             format!("bycode:{rendezvous_url}:{code}")
         }

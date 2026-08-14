@@ -24,6 +24,7 @@
 //! the same QUIC connection without a second handshake.
 
 use std::net::SocketAddr;
+use std::time::Duration;
 
 use axum::Router;
 use iroh::endpoint::presets;
@@ -33,6 +34,132 @@ use iroh::{Endpoint, EndpointId, SecretKey};
 /// `protocol`: it names the transport contract, and a peer that speaks a
 /// different one should be refused at the handshake rather than after it.
 pub const GATEWAY_ALPN: &[u8] = b"dioxusfun/gateway/1";
+
+/// Whether a third party may help two peers find each other.
+///
+/// This is `docs/NETWORKING.md`'s tier 1 / tier 2 line, and it is a setting
+/// rather than a default because contacting a coordinator silently is exactly
+/// the surprise the design exists to remove.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Coordination {
+    /// Nobody else. Peers reach each other at addresses they were told, or not
+    /// at all.
+    None,
+    /// A relay may introduce the two ends so they can punch a hole — and then
+    /// it is *required to step out*. See [`require_direct`].
+    CoordinatorOnly,
+}
+
+/// How long to wait for hole punching to produce a direct path.
+///
+/// A relayed path comes up almost immediately and a direct one follows it, so
+/// this is the window in which the punch either succeeds or has not. Long
+/// enough for a round of candidates, short enough that a person is still
+/// waiting rather than gone.
+const PUNCH_WINDOW: Duration = Duration::from_secs(6);
+
+/// What a connection's paths add up to, reduced to the two facts the policy
+/// turns on.
+///
+/// A separate type because iroh's `PathList` borrows the connection and cannot
+/// be constructed by hand — reducing first is what lets the decision below be
+/// tested without a live relay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PathSummary {
+    /// A direct IP path exists and is the one in use.
+    pub direct_selected: bool,
+    /// A direct path exists at all, selected or not.
+    pub direct_available: bool,
+}
+
+impl PathSummary {
+    fn of(conn: &iroh::endpoint::Connection) -> Self {
+        let paths = conn.paths();
+        Self {
+            direct_selected: paths.iter().any(|p| p.is_ip() && p.is_selected()),
+            direct_available: paths.iter().any(|p| p.is_ip()),
+        }
+    }
+}
+
+/// Whether this connection may carry a session, under `coordination`.
+///
+/// **This is the whole difference between tier 2 and tier 3.** A relay that
+/// coordinates a hole punch will just as happily carry the data when the punch
+/// fails, and the connection still works — which is precisely why it has to be
+/// refused rather than assumed away. Honouring the setting means checking, and
+/// then saying no.
+pub fn verdict(summary: PathSummary, coordination: Coordination) -> Result<(), String> {
+    match coordination {
+        // Nothing to enforce: with no relay configured there is no other kind
+        // of path this connection could be riding on.
+        Coordination::None => Ok(()),
+        Coordination::CoordinatorOnly if summary.direct_selected => Ok(()),
+        Coordination::CoordinatorOnly if summary.direct_available => Err(
+            "a direct path exists but the connection is not using it — refusing rather than \
+             letting the relay carry the session"
+                .into(),
+        ),
+        Coordination::CoordinatorOnly => Err(
+            "hole punching did not produce a direct path, so this connection would be carried \
+             by the relay. It was refused: the coordinator was allowed to introduce us, not to \
+             read what we say."
+                .into(),
+        ),
+    }
+}
+
+/// Wait for hole punching to produce a direct path, then insist on it.
+///
+/// Returns once a direct path is selected, or an error once the window closes.
+/// The connection is left open either way — closing it is the caller's decision,
+/// because the caller knows whether it has anything better to fall back to.
+pub async fn require_direct(
+    conn: &iroh::endpoint::Connection,
+    coordination: Coordination,
+) -> Result<(), String> {
+    if coordination == Coordination::None {
+        return Ok(());
+    }
+    let deadline = tokio::time::Instant::now() + PUNCH_WINDOW;
+    loop {
+        let summary = PathSummary::of(conn);
+        if summary.direct_selected {
+            return Ok(());
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return verdict(summary, coordination);
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+
+/// Kill the connection if it ever falls back onto the relay.
+///
+/// Checking once at the start is not enough and the difference is not
+/// theoretical: iroh will move traffic back to the relay when a direct path
+/// degrades, so a session that began direct can quietly become a relayed one
+/// while the UI still says otherwise. Spawned for the life of the connection.
+pub fn watch_for_relay_fallback(conn: iroh::endpoint::Connection, coordination: Coordination) {
+    if coordination == Coordination::None {
+        return;
+    }
+    tokio::spawn(async move {
+        use futures_util::StreamExt;
+        let mut paths = conn.paths_stream();
+        while let Some(list) = paths.next().await {
+            let direct_selected = list.iter().any(|p| p.is_ip() && p.is_selected());
+            if !direct_selected {
+                tracing::warn!(
+                    "connection fell back to the relay — closing, because a coordinator was \
+                     allowed to introduce us and not to carry us"
+                );
+                conn.close(1u32.into(), b"relay fallback refused");
+                return;
+            }
+        }
+    });
+}
 
 /// A bound QUIC endpoint serving the gateway.
 pub struct QuicHandle {
@@ -66,7 +193,7 @@ impl QuicHandle {
 /// Relay-assisted connections are a later stage precisely because they involve
 /// someone else, and that has to be a choice rather than a default.
 pub async fn serve_quic(router: Router, secret: Option<SecretKey>) -> Result<QuicHandle, String> {
-    serve_on(bind_quic(secret).await?, router)
+    serve_on(bind_quic(secret, Coordination::None).await?, router)
 }
 
 /// Bind the endpoint without serving anything on it yet.
@@ -76,8 +203,18 @@ pub async fn serve_quic(router: Router, secret: Option<SecretKey>) -> Result<Qui
 /// *before* it has a router to serve — the port needs mapping and the address
 /// goes out with the registration, both of which happen while the gateway is
 /// still being assembled.
-pub async fn bind_quic(secret: Option<SecretKey>) -> Result<Endpoint, String> {
-    let mut builder = Endpoint::builder(presets::Minimal).alpns(vec![GATEWAY_ALPN.to_vec()]);
+pub async fn bind_quic(
+    secret: Option<SecretKey>,
+    coordination: Coordination,
+) -> Result<Endpoint, String> {
+    // `Minimal` contacts nothing; `N0` brings relays and address lookup, which
+    // is what makes a hole punch possible and is also the third party the
+    // setting exists to gate.
+    let mut builder = match coordination {
+        Coordination::None => Endpoint::builder(presets::Minimal),
+        Coordination::CoordinatorOnly => Endpoint::builder(presets::N0),
+    }
+    .alpns(vec![GATEWAY_ALPN.to_vec()]);
     if let Some(secret) = secret {
         builder = builder.secret_key(secret);
     }
@@ -86,6 +223,15 @@ pub async fn bind_quic(secret: Option<SecretKey>) -> Result<Endpoint, String> {
 
 /// Start accepting on an endpoint bound earlier.
 pub fn serve_on(endpoint: Endpoint, router: Router) -> Result<QuicHandle, String> {
+    serve_on_with(endpoint, router, Coordination::None)
+}
+
+/// As [`serve_on`], enforcing `coordination` on every connection accepted.
+pub fn serve_on_with(
+    endpoint: Endpoint,
+    router: Router,
+    coordination: Coordination,
+) -> Result<QuicHandle, String> {
     let endpoint_id = endpoint.id();
     let sockets = endpoint.bound_sockets();
     tracing::info!(%endpoint_id, ?sockets, "gateway listening on QUIC");
@@ -95,7 +241,7 @@ pub fn serve_on(endpoint: Endpoint, router: Router) -> Result<QuicHandle, String
         while let Some(incoming) = accepting.accept().await {
             let router = router.clone();
             tokio::spawn(async move {
-                if let Err(e) = serve_connection(incoming, router).await {
+                if let Err(e) = serve_connection(incoming, router, coordination).await {
                     tracing::debug!(error = %e, "quic connection ended");
                 }
             });
@@ -137,9 +283,20 @@ pub fn dialable_addrs(sockets: &[SocketAddr]) -> Vec<SocketAddr> {
 async fn serve_connection(
     incoming: iroh::endpoint::Incoming,
     router: Router,
+    coordination: Coordination,
 ) -> Result<(), String> {
     let conn = incoming.await.map_err(|e| format!("handshake: {e}"))?;
     let remote = conn.remote_id();
+
+    // Enforced on this side too, not only the dialling one. Otherwise the
+    // guarantee is only as good as the other end's build, and the relay would
+    // still end up carrying a session somebody asked it not to.
+    if let Err(e) = require_direct(&conn, coordination).await {
+        tracing::warn!(%remote, error = %e, "refusing a relayed connection");
+        conn.close(1u32.into(), b"relayed connection refused");
+        return Err(e);
+    }
+    watch_for_relay_fallback(conn.clone(), coordination);
     tracing::info!(%remote, "quic peer connected");
 
     loop {
@@ -286,6 +443,67 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(parsed["op"], "hello", "got {text}");
         assert!(parsed["d"]["nonce"].as_str().is_some_and(|n| !n.is_empty()));
+
+        handle.shutdown().await;
+    }
+
+    /// The tier-2 promise, stated as a table.
+    ///
+    /// A relay that arranges a hole punch will carry the data just as happily
+    /// when the punch fails, and the connection *works* either way — which is
+    /// exactly why "coordinator, never carrier" has to be a refusal and not an
+    /// assumption. These are the four cases that decide it.
+    #[test]
+    fn a_coordinator_may_introduce_but_not_carry() {
+        let direct = PathSummary {
+            direct_selected: true,
+            direct_available: true,
+        };
+        let relayed = PathSummary {
+            direct_selected: false,
+            direct_available: false,
+        };
+        let punched_but_unused = PathSummary {
+            direct_selected: false,
+            direct_available: true,
+        };
+
+        // With no coordinator there is no relay to fall back to, so nothing is
+        // refused — a connection that exists at all is direct by construction.
+        assert!(verdict(relayed, Coordination::None).is_ok());
+        assert!(verdict(direct, Coordination::None).is_ok());
+
+        // With one, only a selected direct path passes.
+        assert!(verdict(direct, Coordination::CoordinatorOnly).is_ok());
+
+        let refused = verdict(relayed, Coordination::CoordinatorOnly).unwrap_err();
+        assert!(refused.contains("refused"), "{refused}");
+        // The message has to say what happened and why, because this is a
+        // working connection being turned away — a bare failure would look like
+        // the host being offline.
+        assert!(refused.contains("relay"), "{refused}");
+
+        // And the subtle one: a direct path existing is not the same as it
+        // being used. Traffic on the relay is traffic the relay can read,
+        // whatever else was negotiated alongside it.
+        assert!(verdict(punched_but_unused, Coordination::CoordinatorOnly).is_err());
+    }
+
+    /// A loopback connection has a direct path and no relay, so enforcement is
+    /// a no-op — the check must not refuse the case it is meant to allow.
+    #[tokio::test]
+    async fn enforcement_passes_a_genuinely_direct_connection() {
+        let handle = serve_quic(gateway_router().await, None)
+            .await
+            .expect("serve quic");
+        let (_ep, conn, _io) = open_stream(&handle).await;
+
+        assert!(
+            require_direct(&conn, Coordination::CoordinatorOnly)
+                .await
+                .is_ok()
+        );
+        assert!(PathSummary::of(&conn).direct_selected);
 
         handle.shutdown().await;
     }

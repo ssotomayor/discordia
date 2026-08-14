@@ -260,15 +260,22 @@ the top within each section.
   `client/src/portmap.rs`, `docs/NETWORKING.md`. A host now asks its router for
   a forward, advertises the result on `Register`, and a friend holding the code
   races it against the relay. What is left:
-  2. **An encrypted, key-authenticated transport** (QUIC, `iroh` the candidate)
-     for the hosts port mapping cannot serve, and for the plaintext problem under
-     Security above. Note that "coordinator, never carrier" has to be *enforced*
-     — a relay that coordinates a punch will also carry the data when the punch
-     fails, so the setting means refusing a relayed connection rather than
-     assuming one will not happen.
+  2. **An encrypted, key-authenticated transport** — done. QUIC via `iroh`, with
+     the coordinator tier behind its own setting and "coordinator, never
+     carrier" enforced at both ends rather than assumed. What remains is that
+     none of it has been run between two machines; see below.
   3. **LiveKit E2EE** so a relayed call is unreadable to the SFU carrying it.
-     Key distribution is the work, and it must rekey on kick and ban.
-  Both still need real-network testing, and stay on the branch rather than here.
+     Key distribution is the work, and it must rekey on kick and ban. Untouched.
+  The transport still needs real-network testing, and stays on the branch.
+- **Hole punching has never been exercised at all.** `Coordination::CoordinatorOnly`
+  builds the endpoint with iroh's default relays and then insists the resulting
+  path is direct — but no test reaches a relay, because reaching one needs the
+  internet. What is tested is the policy (`verdict`, four cases) and that
+  enforcement does not refuse a genuinely direct loopback connection. Unverified:
+  that a punch succeeds at all between two real NATs; that the refusal fires
+  when it does not; that `watch_for_relay_fallback` catches a mid-session slide
+  rather than sitting idle; and whether the 6-second `PUNCH_WINDOW` is long
+  enough for a real negotiation or merely long enough for a loopback one.
 - **The QUIC transport has never carried a session between two machines.** The
   tests in `server/src/quic.rs` stand both ends up in one process over loopback,
   which settles the protocol plumbing and nothing about the network: whether the
