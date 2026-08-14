@@ -249,6 +249,14 @@ jobs:
     name: pre-release · server+client (linux · x86_64)
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    env:
+      # The exact tag `publish-prerelease` will create below, handed to the
+      # client's build.rs so the string on screen names the release someone can
+      # actually go and find. Set per publishing job rather than at workflow
+      # level on purpose: a check job that inherited it would produce a binary
+      # claiming to be a published release when nothing was published, and
+      # `version.rs` has a test that fails if that ever happens.
+      DISCORDIA_VERSION: v0.1.0-pre.${{ github.run_number }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -319,6 +327,8 @@ jobs:
       # libwebrtc links the STATIC MSVC runtime (/MT); Rust defaults to /MD and
       # the two collide (LNK2038). Same flag as windows-release.yml.
       RUSTFLAGS: "-C target-feature=+crt-static"
+      # See prerelease-linux.
+      DISCORDIA_VERSION: v0.1.0-pre.${{ github.run_number }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -405,6 +415,9 @@ jobs:
     name: pre-release · server+client (macos · arm64)
     if: github.event_name == 'push'
     runs-on: macos-latest           # macOS 14 = Apple Silicon (M1)
+    env:
+      # See prerelease-linux.
+      DISCORDIA_VERSION: v0.1.0-pre.${{ github.run_number }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
