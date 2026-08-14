@@ -45,12 +45,20 @@ the top within each section.
   filtered `is_control()`, and `auth::verify_identify` treats the name as opaque
   bytes in the SHA-256 preimage — so `"al\nice"` is a perfectly valid, signable
   display name that arrives intact.
-  The log-forgery half is closed: every username site in
-  `gateway/connection.rs` formats with `?` rather than `%`, so a newline is
-  escaped rather than starting a fabricated line. What remains is that the
-  string itself is unconstrained, and anything else that ever renders it —
-  a future JSON log, an export, a moderation tool — would have to remember the
-  same thing.
+  It is not only usernames. Guild, channel and role names are the same shape —
+  `create_guild` only trims, and `sanitize_channel_name`/`sanitize_role` trim
+  and length-check without filtering — as are the pubkeys and the HTTP method,
+  path and upgrade header the request log repeats.
+  The log-forgery half is closed for all of them: **the rule in the server is
+  that only a type which cannot contain a line break is formatted with `%`** —
+  `Uuid`, `SocketAddr`, `StatusCode` — and every free-text value uses `?`, which
+  quotes and escapes. What remains is that the strings themselves are
+  unconstrained, so anything that ever renders them another way — a JSON log, an
+  export, a moderation tool — has to make the same choice again.
+  **The one deliberate exception is `%e` / `%err`.** Errors stay on `Display`
+  because `Debug` on an error chain is materially worse to read at 3am, and the
+  path is indirect: an error would have to embed attacker-supplied text
+  verbatim. Worth revisiting if a sqlx error is ever seen carrying a user value.
   **The reason it is not simply filtered is the trap.** `canonical_username` is
   the *signed preimage*, computed by both ends before signing and before
   verifying. Adding a filter changes what a new server verifies, so a client
