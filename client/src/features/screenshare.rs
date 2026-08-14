@@ -799,6 +799,17 @@ window.dxScreen = window.dxScreen || (function () {
   // and it publishes on this same connection: the bare-pubkey identity already
   // holds `can_publish`, and LiveKit tells a camera from a screen by
   // `TrackSource`, so no fourth identity and no extra token were needed.
+  // Reject a promise that has taken too long, so a caller can report something
+  // rather than waiting forever. `Promise.race` and not `AbortController`: the
+  // SDK calls being wrapped take no signal.
+  function withTimeout(promise, ms, message) {
+    return Promise.race([
+      promise,
+      new Promise(function (_, reject) {
+        setTimeout(function () { reject(new Error(message)); }, ms);
+      }),
+    ]);
+  }
   function post(kind, extra) {
     const m = Object.assign({ __dxf: kind }, extra || {});
     try { window.postMessage(m, '*'); } catch (e) {}
@@ -875,7 +886,16 @@ window.dxScreen = window.dxScreen || (function () {
     for (let i = 0; i < 150 && !room; i++) await new Promise(function (r) { setTimeout(r, 100); });
     if (!room) { await stopCamera(); post('camera-error', { detail: 'not connected to the stream room' }); return; }
     try {
-      await room.localParticipant.publishTrack(vt, cameraPublishOpts(opts));
+      // Bounded, because nothing else bounds it. A publish that never settles
+      // leaves the button lit and the label reading "Starting your camera…"
+      // with no error anywhere — the failure reports itself as nothing at all,
+      // which is the hardest kind to act on. Fifteen seconds is far beyond a
+      // healthy publish and well short of a person's patience.
+      await withTimeout(
+        room.localParticipant.publishTrack(vt, cameraPublishOpts(opts)),
+        15000,
+        'publishing the camera track timed out'
+      );
       const s = (function () { try { return vt.getSettings(); } catch (e) { return {}; } })();
       // Report what actually opened, not what was asked for, so a fallback does
       // not get persisted as the user's choice.
@@ -1271,13 +1291,18 @@ pub fn ScreenShareBridge() -> Element {
         let mut state = state;
         let gateway = gateway_end.clone();
         async move {
+            // Sink reassigned per eval, listener registered once — see the
+            // matching comment in `features::camera`. The screen pump has the
+            // same remount hazard and would have gone deaf in the same way,
+            // silently, after the first reconnect.
             let bridge_js = r#"
+            window.__dxfShareSink = function (m) { try { dioxus.send(m); } catch (err) {} };
             if (!window.__dxfShareEndWired) {
               window.__dxfShareEndWired = true;
               window.addEventListener('message', function (e) {
                 var d = e.data;
-                if (d && (d.__dxf === 'screen-share-ended' || d.__dxf === 'share-started' || d.__dxf === 'share-audio' || d.__dxf === 'share-unavailable' || d.__dxf === 'share-echo-risk' || d.__dxf === 'stream-audio' || d.__dxf === 'screen-room-error' || d.__dxf === 'screen-room-reconnecting' || d.__dxf === 'screen-track-timeout')) {
-                  try { dioxus.send(d); } catch (err) {}
+                if (d && (d.__dxf === 'screen-share-ended' || d.__dxf === 'share-started' || d.__dxf === 'share-audio' || d.__dxf === 'share-unavailable' || d.__dxf === 'share-echo-risk' || d.__dxf === 'stream-audio' || d.__dxf === 'screen-room-error' || d.__dxf === 'screen-room-reconnecting' || d.__dxf === 'screen-track-timeout') && window.__dxfShareSink) {
+                  window.__dxfShareSink(d);
                 }
               });
             }
