@@ -57,7 +57,8 @@ pub fn list_cameras_js() -> String {
 }
 
 fn attach_local_camera_js(container: &str) -> String {
-    format!("{SCREEN_JS}\nwindow.dxScreen.attachLocalCamera('{container}');")
+    let container = crate::features::screenshare::js_str(container);
+    format!("{SCREEN_JS}\nwindow.dxScreen.attachLocalCamera({container});")
 }
 
 /// Which camera to open: the remembered id if it is still present, else the one

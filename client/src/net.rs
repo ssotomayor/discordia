@@ -458,7 +458,12 @@ where
 
     // Schnorr-sign nonce || pubkey || username with the Nostr identity key and
     // send the Identify response.
-    let username = params.username.clone();
+    // Sign what the server will store, not what the user typed. The server
+    // canonicalises before it verifies, so signing the raw string meant any
+    // name it would alter — anything past 32 chars — failed the handshake as
+    // "signature did not verify", which reads as a broken key rather than a
+    // long name. One definition, in `protocol`, called by both ends.
+    let username = crate::protocol::canonical_username(&params.username);
     let pubkey = params.identity.pubkey.clone();
     let mut to_sign = Vec::with_capacity(nonce.len() + pubkey.len() + username.len());
     to_sign.extend_from_slice(nonce.as_bytes());

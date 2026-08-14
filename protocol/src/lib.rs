@@ -25,6 +25,36 @@ pub struct User {
     pub username: String,
 }
 
+/// Longest a display name may be. Enforced by the server, which is why it
+/// lives here rather than in either client.
+pub const MAX_USERNAME_LEN: usize = 32;
+
+/// The one definition of what a username looks like once it is on the wire.
+///
+/// It lives in `protocol` because **both ends have to agree, and for a while
+/// they did not.** The `Identify` signature covers the username, and the server
+/// canonicalised before verifying while the client signed what the user typed —
+/// so any name this function would alter got signed over different bytes than
+/// the server checked, and the handshake failed with "signature did not
+/// verify". A display name of 33 characters locked that identity out of every
+/// server, pointing the user at their key instead of their name. Both sides now
+/// call this before signing and before verifying.
+///
+/// **It must stay idempotent** — `f(f(x)) == f(x)` — because that property is
+/// what makes the two calls agree. That is also why the trim is repeated after
+/// the truncation and not just before it: cutting a 33-character name can leave
+/// a trailing space that a single leading trim never saw, and then the server's
+/// trim would produce a different string than the client signed. See the test.
+pub fn canonical_username(raw: &str) -> String {
+    let truncated: String = raw.trim().chars().take(MAX_USERNAME_LEN).collect();
+    let trimmed = truncated.trim();
+    if trimmed.is_empty() {
+        "anonymous".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 /// Whether a guild appears in the public directory or is joinable only by
 /// invite code.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -227,6 +257,70 @@ mod level_tests {
             assert!(l >= last);
             last = l;
         }
+    }
+}
+
+#[cfg(test)]
+mod username_tests {
+    use super::{MAX_USERNAME_LEN, canonical_username};
+
+    /// The property the `Identify` handshake actually rests on. The client
+    /// canonicalises and signs; the server canonicalises what it received and
+    /// verifies. Those two agree only if applying this twice is the same as
+    /// applying it once — so this is the test that keeps the handshake working,
+    /// not a style check on the helper.
+    #[test]
+    fn canonicalising_is_idempotent() {
+        for raw in [
+            "alice",
+            "  bob  ",
+            "",
+            "   ",
+            &"a".repeat(33),
+            &"a".repeat(200),
+            // The case a single leading trim misses: truncation lands on a
+            // space, so the result would still need trimming.
+            &format!("{} b", "a".repeat(31)),
+            &format!("{}   tail", "x".repeat(30)),
+            "🙂🙂🙂",
+            &"🙂".repeat(40),
+        ] {
+            let once = canonical_username(raw);
+            let twice = canonical_username(&once);
+            assert_eq!(once, twice, "not idempotent for {raw:?}");
+        }
+    }
+
+    #[test]
+    fn canonical_output_is_always_wire_legal() {
+        for raw in ["", "   ", "alice", &"a".repeat(99), &"🙂".repeat(99)] {
+            let out = canonical_username(raw);
+            assert!(!out.is_empty(), "never empty (would be unnamed on screen)");
+            assert_eq!(out.trim(), out, "no surrounding whitespace survives");
+            assert!(
+                out.chars().count() <= MAX_USERNAME_LEN,
+                "counted in chars, not bytes — {out:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_name_that_needs_nothing_is_left_alone() {
+        assert_eq!(canonical_username("alice"), "alice");
+        assert_eq!(canonical_username(&"b".repeat(32)), "b".repeat(32));
+    }
+
+    #[test]
+    fn an_empty_name_becomes_anonymous_rather_than_nothing() {
+        assert_eq!(canonical_username("   "), "anonymous");
+    }
+
+    /// Truncation counts characters, so a multi-byte name is not cut mid-glyph
+    /// (which would not even be valid UTF-8 with a byte-wise slice).
+    #[test]
+    fn multibyte_names_are_cut_by_character() {
+        let out = canonical_username(&"🙂".repeat(40));
+        assert_eq!(out.chars().count(), MAX_USERNAME_LEN);
     }
 }
 
@@ -1162,12 +1256,17 @@ pub enum ServerMessage {
         /// Third token for the same room, used by the native client to *publish*
         /// screen **video** where the webview cannot capture it at all.
         ///
-        /// WKWebView does not expose `navigator.mediaDevices`, so on macOS
-        /// `getDisplayMedia` is not merely restricted — the API is absent, and
-        /// the webview capture path in `features::screenshare` can never run.
-        /// The native client captures via ScreenCaptureKit instead and needs its
-        /// own identity to publish under, for the same reason `audio_token`
-        /// does: one connection per identity per room.
+        /// On macOS the client captures natively, through ScreenCaptureKit, and
+        /// needs its own identity to publish under for the same reason
+        /// `audio_token` does: one connection per identity per room.
+        ///
+        /// This comment used to say WKWebView cannot expose
+        /// `navigator.mediaDevices` at all. That diagnosis was ours and it was
+        /// wrong — the API was missing because our bundle lacked
+        /// `NSMicrophoneUsageDescription`, and adding it makes `getDisplayMedia`
+        /// appear. The native path stays because it is better here (no copy, no
+        /// colour conversion, our own surface picker), not because the webview
+        /// is incapable. See `client/src/sysvideo/` for the full correction.
         ///
         /// Empty from servers that predate it, in which case a client with no
         /// webview capture simply cannot share.

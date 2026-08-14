@@ -49,9 +49,16 @@ the top within each section.
   direct address a port mapping produces, and the self-host client's own
   loopback socket. The entry below still describes those paths exactly.
 - **`wss://` looks supported without being.**
-  `tokio-tungstenite` is pinned at 0.24 in the workspace `Cargo.toml` with **no
-  TLS backend in `Cargo.lock`** — no `native-tls`, no `rustls` among its
-  dependencies — so a `wss://` URL cannot be dialled at all. Meanwhile
+  `tokio-tungstenite` is pinned at 0.24 in the workspace `Cargo.toml` and built
+  **without a TLS feature** — `tungstenite 0.24`'s own dependency list carries no
+  TLS crate (`Cargo.lock:8262-8277`) — so a `wss://` URL cannot be dialled at all.
+  **This entry used to say there was "no TLS backend in `Cargo.lock`", and that
+  was wrong.** `rustls`, `tokio-rustls`, `native-tls` and `openssl` are all in the
+  lockfile, and `cargo tree -p dioxusfun -i rustls` shows rustls is already
+  compiled *into the client* — the workspace standardises on it for HTTP
+  (`Cargo.toml:27`, `reqwest` with `rustls-tls`). So enabling TLS on the gateway
+  socket costs no new dependency and no new supply-chain surface; only the hard
+  part below is actually hard. Meanwhile
   `net.rs:48-53` and `:120-125` normalize `https://` to `wss://` and accept a
   `wss://` scheme as valid input. The two together are the trap: an operator who
   types a `wss://` address gets a connect failure with no hint that TLS was never
@@ -86,6 +93,13 @@ the top within each section.
   and *those* findings cannot be enumerated from a Mac. So it needs one throwaway
   CI run with the step added to see the list, then a commit fixing them, then the
   step for real. Estimated from the macOS precedent: four findings, all trivial.
+  **The other half of this — that no `cargo test` ran on Windows at all — is
+  now fixed.** `windows-build` gained a `cargo test -p dioxusfun` step, so the
+  unit tests in `sysaudio/windows.rs` and `rawmic/windows.rs` finally execute
+  somewhere automatic instead of nowhere. That left clippy as the only remaining
+  gap over those 61 `unsafe` occurrences — still the highest density in the repo,
+  on the platform with the most users, in the file that shipped a heap
+  corruption.
 - **The Windows portable and setup ship the wrong icon.** Reported from a real
   download: both carry an old icon rather than the Discordia mark. Worth
   starting from the comment in `client/Dioxus.toml`, because it says this was

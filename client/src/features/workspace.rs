@@ -222,9 +222,9 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
             crate::features::chat::ImageViewer {}
             GuildDialogHost {}
 
-            // Top row: host banner (only renders when self-hosting) grows
-            // to push the brand mark + wallet button to the right. The
-            // whole row is a drag region so the empty space between
+            // Top row: brand mark, then the host banner (only renders when
+            // self-hosting) growing to push the disconnect control to the
+            // right. The whole row is a drag region so the empty space between
             // elements lets the user move the window; the interactive
             // children opt out with .dxf-no-drag.
             div { class: "dxf-drag-region flex items-center gap-2 {mac_titlebar_clear}",

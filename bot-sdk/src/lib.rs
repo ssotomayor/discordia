@@ -204,12 +204,17 @@ impl Bot {
             }
         };
 
-        let signature = identity.sign_identify(&nonce, username);
+        // Sign the name the server will store. It canonicalises before it
+        // verifies, so signing the caller's raw string meant anything past 32
+        // characters failed the handshake as a signature error. One definition,
+        // in `protocol`, shared with the desktop client and the server.
+        let username = dioxusfun_protocol::canonical_username(username);
+        let signature = identity.sign_identify(&nonce, &username);
         // For bot connections this self-declaration is what triggers the
         // server's scoped Ready + intent filtering; installs alone never
         // bot-gate an identity.
         let identify = ClientMessage::Identify {
-            username: username.to_string(),
+            username: username.clone(),
             pubkey: identity.pubkey().to_string(),
             signature,
             bot,
@@ -219,7 +224,7 @@ impl Bot {
             read,
             user: User {
                 pubkey: identity.pubkey().to_string(),
-                username: username.to_string(),
+                username,
             },
         };
         bot.send(&identify).await?;
