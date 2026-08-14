@@ -751,6 +751,12 @@ pub enum ClientMessage {
         /// exists for — seeing the spread of versions actually connected — and
         /// deliberately not enough to gate anything on.
         ///
+        /// Because it is attacker-chosen, the server trims it, strips control
+        /// characters and caps it before repeating it anywhere — see
+        /// `sanitize_client_version`. An unbounded string with an embedded
+        /// newline is a forged log line, and a forged line would defeat the
+        /// counting this field is for.
+        ///
         /// Empty from any client older than the field, which is the answer
         /// "it did not say" rather than a version. Three entries in `TODO.md`
         /// turn on not knowing whether such clients are still out there; this

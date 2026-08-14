@@ -149,15 +149,22 @@ pub async fn handle_connection(
                         // the shape three entries in TODO.md already complain
                         // about. "unknown" rather than empty so the log line
                         // does not read as a truncation.
+                        let client_version = sanitize_client_version(&client_version);
                         let client_version = if client_version.is_empty() {
                             "unknown".to_string()
                         } else {
                             client_version
                         };
+                        // `?` and not `%`: Debug quotes the value and escapes
+                        // it. Stripping control characters stops a peer starting
+                        // a *new* log line, but on one line a value like
+                        // `1 user=admin` still reads as two fields to anything
+                        // parsing this format. Quoting is what makes the field
+                        // boundary unambiguous, so both are needed.
                         tracing::info!(
                             user = %new_user.username,
                             pubkey = %new_user.pubkey,
-                            version = %client_version,
+                            version = ?client_version,
                             "identified"
                         );
                         user = Some(new_user);
@@ -1767,6 +1774,33 @@ fn sanitize_username(raw: &str) -> String {
     crate::protocol::canonical_username(raw)
 }
 
+/// Longest self-declared version we will repeat. Generous against the ~20
+/// characters the real ones use (`v0.1.0-pre.223`, `bot-sdk/0.1.0`), tight
+/// enough that a peer cannot write a paragraph to our disk on every connect.
+const MAX_CLIENT_VERSION_LEN: usize = 64;
+
+/// Make a self-declared version string safe to repeat into a log line.
+///
+/// `username` has had this treatment since the beginning, via
+/// `sanitize_username`. `client_version` arrived without it and needs it more,
+/// not less: it is unauthenticated by design, it is written on every identify,
+/// and the server's subscriber is the plain-text `tracing_subscriber::fmt()`,
+/// which escapes nothing. An embedded newline turns one field into a forged log
+/// line — CWE-117 — and a forged line defeats the only thing this field exists
+/// for, which is counting what is actually connected.
+///
+/// Control characters are stripped *before* the cap, so a run of them cannot
+/// consume the budget and leave nothing behind.
+fn sanitize_client_version(raw: &str) -> String {
+    raw.trim()
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(MAX_CLIENT_VERSION_LEN)
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
 /// True if `bot_pubkey` is installed in `channel_id`'s guild with `perm`. DM
 /// channels (no guild) never grant a bot anything.
 fn bot_can(
@@ -2049,5 +2083,55 @@ impl RateLimiter {
         }
         self.hits.push_back(now);
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MAX_CLIENT_VERSION_LEN, sanitize_client_version};
+
+    /// The injection this exists to stop. A peer choosing its own version
+    /// string must not be able to write a second log line, or a second field.
+    #[test]
+    fn a_version_cannot_forge_a_log_line() {
+        let forged = "v1.0\nINFO identified user=admin pubkey=deadbeef version=v1.0";
+        let clean = sanitize_client_version(forged);
+        assert!(!clean.contains('\n'), "newline survived: {clean:?}");
+        assert!(!clean.contains('\r'));
+        assert!(
+            !clean.chars().any(|c| c.is_control()),
+            "a control character survived: {clean:?}"
+        );
+        // What is left is one line, and the log site quotes it — so the
+        // remaining `key=value` text cannot read as fields of its own.
+        assert!(clean.starts_with("v1.0"));
+    }
+
+    /// Unbounded is the other half: this is written on every identify, by
+    /// anyone who can open a socket.
+    #[test]
+    fn a_version_is_capped() {
+        let long = "a".repeat(10_000);
+        assert_eq!(sanitize_client_version(&long).len(), MAX_CLIENT_VERSION_LEN);
+    }
+
+    /// Control characters are stripped *before* the cap. Filtering after it
+    /// would let a run of them eat the whole budget and leave nothing, turning
+    /// a hostile string into an indistinguishable "unknown".
+    #[test]
+    fn control_characters_do_not_consume_the_cap() {
+        let padded = format!("{}v0.1.0-pre.223", "\n".repeat(MAX_CLIENT_VERSION_LEN * 2));
+        assert_eq!(sanitize_client_version(&padded), "v0.1.0-pre.223");
+    }
+
+    /// The ordinary values still pass through untouched — a sanitiser that
+    /// mangles the real input answers nothing.
+    #[test]
+    fn real_versions_survive_unchanged() {
+        for v in ["v0.1.0-pre.223", "0.1.0-dev+a1b2c3d", "bot-sdk/0.1.0"] {
+            assert_eq!(sanitize_client_version(v), v);
+        }
+        // Absent stays absent, so the caller's "unknown" branch still fires.
+        assert_eq!(sanitize_client_version("   "), "");
     }
 }
