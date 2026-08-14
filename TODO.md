@@ -382,10 +382,6 @@ the top within each section.
   concurrent servers than it did. Recorded rather than chased because there is no
   captured assertion message to work from; the next occurrence should be run with
   `--nocapture` and `RUST_BACKTRACE=1` before anything is changed.
-- **`GuildJoined` carries no `voice_states`.** Someone joining a guild
-  mid-session sees no voice presence at all — camera, mute or speaking — until
-  the next change. Pre-existing and unrelated to the camera, but the camera
-  badge makes it more visible.
 - **Windows shows WebView2's own camera prompt**, where macOS shows the TCC
   prompt once. Expected (wry auto-allows only clipboard-read), and persistence
   depends on the WebView2 user-data folder, but it is the kind of platform

@@ -380,7 +380,12 @@ async fn a_failed_audio_mint_is_not_reported_to_the_user() {
 // ---------------------------------------------------------------------------
 
 /// Join a guild as a second member. Guilds are public by default, so no invite.
-async fn join_guild(session: &mut Bot, guild_id: Id) {
+///
+/// Returns the voice presence the joiner was handed, which most callers ignore.
+async fn join_guild(
+    session: &mut Bot,
+    guild_id: Id,
+) -> Vec<dioxusfun_server::protocol::VoiceState> {
     session
         .send(&ClientMessage::JoinGuild {
             guild_id,
@@ -390,10 +395,14 @@ async fn join_guild(session: &mut Bot, guild_id: Id) {
         .await
         .unwrap();
     loop {
-        if let ServerMessage::GuildJoined { guild, .. } = next_timeout(session).await
+        if let ServerMessage::GuildJoined {
+            guild,
+            voice_states,
+            ..
+        } = next_timeout(session).await
             && guild.id == guild_id
         {
-            break;
+            break voice_states;
         }
     }
 }
@@ -764,5 +773,76 @@ async fn a_delegated_mint_is_told_which_connection_may_publish() {
     assert!(
         asked(&screen_video_identity(pubkey)),
         "the native video publisher has to publish"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Voice presence in the join bundle
+//
+// `Ready` has carried `voice_states` since voice existed; `GuildJoined` carried
+// guild, channels, members, roles and emoji, and no voice presence at all. So a
+// client that joined a guild mid-session rendered an empty voice roster — no
+// occupants, no camera or LIVE badges, no mute state — until whoever was
+// already in there next changed something.
+// ---------------------------------------------------------------------------
+
+/// The gap itself: someone already in voice is visible to a member who joins
+/// afterwards, without waiting for a `VoiceStateUpdate` that may never come.
+#[tokio::test]
+async fn joining_a_guild_shows_who_is_already_in_voice() {
+    let (url, _handle) = spawn_gateway(local_signing()).await;
+    let owner_id = BotIdentity::generate();
+    let member_id = BotIdentity::generate();
+    let mut owner = connect_user(&url, &owner_id, "owner").await;
+    let (guild_id, channel_id) = voice_channel(&mut owner).await;
+
+    // The owner is in voice with their camera on *before* anyone else arrives,
+    // and stops toggling anything — which is what makes the roster the only
+    // way the joiner could learn about them.
+    let _ = join_voice(&mut owner, channel_id).await;
+    owner
+        .send(&ClientMessage::SetCamera { on: true })
+        .await
+        .unwrap();
+    let vs = next_voice_state(&mut owner, owner_id.pubkey()).await;
+    assert!(vs.camera_on, "precondition: the owner's camera is on");
+
+    let mut member = connect_user(&url, &member_id, "member").await;
+    let voice_states = join_guild(&mut member, guild_id).await;
+
+    let seen = voice_states
+        .iter()
+        .find(|v| v.user_pubkey == owner_id.pubkey())
+        .unwrap_or_else(|| panic!("GuildJoined carried no state for the owner: {voice_states:?}"));
+    assert_eq!(seen.guild_id, guild_id);
+    assert_eq!(
+        seen.channel_id,
+        Some(channel_id),
+        "the joiner should know which voice channel they are in"
+    );
+    assert!(seen.camera_on, "and that their camera is on");
+}
+
+/// And the scoping. `voice_states_in` filters by guild for the same reason
+/// `snapshot_for` does: sharing one guild with someone says nothing about where
+/// else on the server they are. Without the filter this frame would hand every
+/// joiner the location of everyone in voice anywhere.
+#[tokio::test]
+async fn the_join_bundle_does_not_disclose_other_guilds() {
+    let (url, _handle) = spawn_gateway(local_signing()).await;
+    let owner_id = BotIdentity::generate();
+    let member_id = BotIdentity::generate();
+    let mut owner = connect_user(&url, &owner_id, "owner").await;
+    let (elsewhere, elsewhere_channel) = voice_channel(&mut owner).await;
+    let (joined_guild, _) = voice_channel(&mut owner).await;
+
+    let _ = join_voice(&mut owner, elsewhere_channel).await;
+
+    let mut member = connect_user(&url, &member_id, "member").await;
+    let voice_states = join_guild(&mut member, joined_guild).await;
+
+    assert!(
+        voice_states.is_empty(),
+        "joining {joined_guild} disclosed voice presence in {elsewhere}: {voice_states:?}"
     );
 }

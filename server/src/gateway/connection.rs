@@ -335,8 +335,11 @@ pub async fn handle_connection(
                             channels,
                             members: vec![member],
                             roles,
-                            // A brand-new guild has no custom emoji yet.
+                            // A brand-new guild has no custom emoji yet, and
+                            // nobody has had the chance to be in its voice
+                            // channels either.
                             emojis: Vec::new(),
+                            voice_states: Vec::new(),
                         }).await.is_err() {
                             break;
                         }
@@ -1864,6 +1867,10 @@ where
         }),
     );
     let emojis = state.emojis_of(guild_id);
+    // Taken after `MemberJoin` has gone out but before the joiner's own bundle
+    // is sent, so it cannot miss someone who was already in a voice channel —
+    // the case this exists for.
+    let voice_states = state.voice_states_in(guild_id);
     if send(
         ws_tx,
         &ServerMessage::GuildJoined {
@@ -1872,6 +1879,7 @@ where
             members,
             roles,
             emojis,
+            voice_states,
         },
     )
     .await
