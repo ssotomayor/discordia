@@ -25,14 +25,13 @@ pub fn is_release() -> bool {
     !VERSION.contains("-dev")
 }
 
-/// The build string, styled but **not positioned** — the caller decides where
-/// it sits, because the two places it appears want different things.
+/// The build string, styled but **not positioned** — the shell places it.
 ///
-/// On the connect and identity screens it is a fixed badge in an otherwise
-/// empty corner. In the workspace it is one item inside the layout-controls
-/// cluster, whose `gap` already spaces it; a second fixed corner there would
-/// land on top of that cluster or on the activity launcher, which hold the only
-/// two corners the workspace has.
+/// Shown on the connect and identity screens only, and deliberately not in the
+/// workspace: once you are in, the version is chrome you would read past
+/// forever to answer a question asked roughly never. Before connecting is where
+/// it is looked for, and it is the only screen reachable when nothing works —
+/// which is exactly when someone has to say what they are running.
 ///
 /// Selectable on purpose: its whole job is to be pasted into a report.
 #[component]
