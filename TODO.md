@@ -267,15 +267,22 @@ the top within each section.
   3. **LiveKit E2EE** so a relayed call is unreadable to the SFU carrying it.
      Key distribution is the work, and it must rekey on kick and ban. Untouched.
   The transport still needs real-network testing, and stays on the branch.
-- **Hole punching has never been exercised at all.** `Coordination::CoordinatorOnly`
-  builds the endpoint with iroh's default relays and then insists the resulting
-  path is direct — but no test reaches a relay, because reaching one needs the
-  internet. What is tested is the policy (`verdict`, four cases) and that
-  enforcement does not refuse a genuinely direct loopback connection. Unverified:
-  that a punch succeeds at all between two real NATs; that the refusal fires
-  when it does not; that `watch_for_relay_fallback` catches a mid-session slide
-  rather than sitting idle; and whether the 6-second `PUNCH_WINDOW` is long
-  enough for a real negotiation or merely long enough for a loopback one.
+- **Hole punching works through CGNAT — verified 2026-08-14, between two
+  cities.** A host on a carrier-grade-NAT connection (no public address, port
+  mapping impossible) and a friend on an unrelated home network, both with the
+  coordinator setting on, connected over a *direct* QUIC path. The badge read
+  `private`, and that reading is trustworthy precisely because of the
+  enforcement: had the punch failed and the relay still been carrying it,
+  `require_direct` would have refused and the session would have fallen back to
+  the rendezvous. So tier 2 is real, and it is real in the hardest case the
+  design has to serve.
+  Still unverified, and now the list is short: that the **refusal** fires
+  correctly when a punch genuinely fails (we have never seen one fail); that
+  `watch_for_relay_fallback` catches a mid-session slide rather than sitting
+  idle; and that a direct path *survives* — long sessions, sleep, a network
+  change. The 6-second `PUNCH_WINDOW` is no longer a guess: the loopback round
+  trip measured 2s including relay discovery, and the real one landed inside the
+  window.
 - **The QUIC transport has never carried a session between two machines.** The
   tests in `server/src/quic.rs` stand both ends up in one process over loopback,
   which settles the protocol plumbing and nothing about the network: whether the

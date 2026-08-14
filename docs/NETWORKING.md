@@ -27,6 +27,7 @@ What a rendezvous supplies is **reachability**, not hosting:
 | Self-host, no rendezvous, no mapping | loopback | direct to your LAN IP (needs direct connections enabled) | **cannot reach you** |
 | Self-host + rendezvous, no mapping | loopback | direct to your LAN IP | control relayed; media via the relay's SFU |
 | Self-host + a port mapping | loopback | direct | **direct**, if they have your code or your address |
+| Self-host + a coordinator | loopback | direct | **direct**, punched — no public address needed |
 
 The bottom row is Stage 1, and it is now implemented — `client/src/portmap.rs`
 asks the router for a forward, the resulting address rides on `Register`, and a
@@ -111,6 +112,10 @@ So there are three, and only the first involves nobody:
    steps out. It learns that two peers connected; it never sees what they
    exchange. Implemented, off by default, and enforced by refusing the
    connection when the coordinator turns out to still be in the path.
+   **Verified working through carrier-grade NAT** (2026-08-14): a host with no
+   public address and a friend in another city held a direct, encrypted,
+   key-authenticated session. This is the tier that makes self-hosting from a
+   home connection viable, and it is the one that was least certain to work.
 3. **Relayed.** The direct attempt failed, and a relay carries the data. This is
    the rendezvous proxy, and it is still what happens when the tiers above
    cannot.
