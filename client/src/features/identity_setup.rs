@@ -179,6 +179,12 @@ pub fn IdentitySetupView(on_done: EventHandler<Identity>) -> Element {
                                     input {
                                         class: INPUT,
                                         r#type: "text",
+                                        // The server stores at most this much,
+                                        // and both ends now sign the truncated
+                                        // form — but let the field say so
+                                        // rather than silently shortening a
+                                        // name the user typed in full.
+                                        maxlength: crate::protocol::MAX_USERNAME_LEN as i64,
                                         value: "{display_name}",
                                         oninput: move |e| display_name.set(e.value()),
                                     }
@@ -226,6 +232,7 @@ pub fn IdentitySetupView(on_done: EventHandler<Identity>) -> Element {
                                     class: INPUT,
                                     r#type: "text",
                                     placeholder: "your-handle",
+                                    maxlength: crate::protocol::MAX_USERNAME_LEN as i64,
                                     value: "{display_name}",
                                     oninput: move |e| display_name.set(e.value()),
                                 }
@@ -277,6 +284,7 @@ pub fn IdentitySetupView(on_done: EventHandler<Identity>) -> Element {
                                     class: INPUT,
                                     r#type: "text",
                                     placeholder: "your-handle",
+                                    maxlength: crate::protocol::MAX_USERNAME_LEN as i64,
                                     value: "{display_name}",
                                     oninput: move |e| display_name.set(e.value()),
                                 }

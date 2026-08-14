@@ -287,7 +287,8 @@ pub fn ProfileCard() -> Element {
                             button {
                                 class: "text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--edge)] rounded-md px-2 py-0.5 hover:border-[var(--accent)] transition-colors",
                                 onclick: move |_| {
-                                    let js = format!("navigator.clipboard && navigator.clipboard.writeText('{copy_pubkey}');");
+                                    let pk = crate::features::screenshare::js_str(&copy_pubkey);
+                                    let js = format!("navigator.clipboard && navigator.clipboard.writeText({pk});");
                                     let _ = document::eval(&js);
                                 },
                                 "Copy"
