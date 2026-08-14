@@ -83,7 +83,13 @@ pub async fn handle_connection(
                 }
 
                 match client_msg {
-                    ClientMessage::Identify { username, pubkey, signature, bot, client_version } => {
+                    ClientMessage::Identify {
+                        username,
+                        pubkey,
+                        signature,
+                        bot,
+                        client_version,
+                    } => {
                         if user.is_some() {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "already identified".into(),
