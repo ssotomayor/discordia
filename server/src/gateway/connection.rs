@@ -83,7 +83,7 @@ pub async fn handle_connection(
                 }
 
                 match client_msg {
-                    ClientMessage::Identify { username, pubkey, signature, bot } => {
+                    ClientMessage::Identify { username, pubkey, signature, bot, client_version } => {
                         if user.is_some() {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "already identified".into(),
@@ -137,7 +137,23 @@ pub async fn handle_connection(
                             let targets = ctx.state.guild_member_pubkeys(gid);
                             ctx.state.deliver(targets, ServerMessage::MemberJoin(member));
                         }
-                        tracing::info!(user = %new_user.username, pubkey = %new_user.pubkey, "identified");
+                        // The version is logged and stored nowhere. That is the
+                        // whole feature: an operator can count what is connected
+                        // without the server growing a field it never reads —
+                        // the shape three entries in TODO.md already complain
+                        // about. "unknown" rather than empty so the log line
+                        // does not read as a truncation.
+                        let client_version = if client_version.is_empty() {
+                            "unknown".to_string()
+                        } else {
+                            client_version
+                        };
+                        tracing::info!(
+                            user = %new_user.username,
+                            pubkey = %new_user.pubkey,
+                            version = %client_version,
+                            "identified"
+                        );
                         user = Some(new_user);
                     }
                     ClientMessage::FetchMessages { channel_id, limit, before_ms } => {

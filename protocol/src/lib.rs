@@ -742,6 +742,21 @@ pub enum ClientMessage {
         /// by "installing" their pubkey in a throwaway guild.
         #[serde(default)]
         bot: bool,
+        /// What build the peer says it is running — the client's stamped
+        /// version (`v0.1.0-pre.223`, `0.1.0-dev+sha`) or `bot-sdk/x.y.z`.
+        ///
+        /// **Self-declared and unauthenticated**, like `bot`. The signature
+        /// covers `nonce || pubkey || username` and not this, so it is evidence
+        /// of what a peer *claims* and nothing more. That is enough for what it
+        /// exists for — seeing the spread of versions actually connected — and
+        /// deliberately not enough to gate anything on.
+        ///
+        /// Empty from any client older than the field, which is the answer
+        /// "it did not say" rather than a version. Three entries in `TODO.md`
+        /// turn on not knowing whether such clients are still out there; this
+        /// makes that countable instead of guessed at.
+        #[serde(default)]
+        client_version: String,
     },
     FetchMessages {
         channel_id: Id,
@@ -1333,4 +1348,66 @@ pub enum ServerMessage {
     Error {
         message: String,
     },
+}
+
+#[cfg(test)]
+mod identify_wire_tests {
+    use super::ClientMessage;
+
+    /// An `Identify` from a client older than `client_version` has no such key.
+    /// `#[serde(default)]` is what keeps that a successful handshake rather than
+    /// a parse error that would lock every existing install out of every
+    /// updated server — the exact population this field exists to measure.
+    #[test]
+    fn an_identify_without_a_version_still_parses() {
+        let old = r#"{
+            "op": "identify",
+            "d": {
+                "username": "alice",
+                "pubkey": "ab",
+                "signature": "cd",
+                "bot": false
+            }
+        }"#;
+        let msg: ClientMessage =
+            serde_json::from_str(old).expect("an older client's handshake still parses");
+        match msg {
+            ClientMessage::Identify {
+                username,
+                client_version,
+                ..
+            } => {
+                assert_eq!(username, "alice", "the fields that were there survive");
+                assert!(
+                    client_version.is_empty(),
+                    "an absent version is empty — 'it did not say', not a version"
+                );
+            }
+            other => panic!("parsed as {other:?}"),
+        }
+    }
+
+    /// And that the field is actually on the wire when set. The signature covers
+    /// `nonce || pubkey || username` and not this, so nothing else in the
+    /// handshake would notice if it silently stopped being sent.
+    #[test]
+    fn a_version_survives_the_round_trip() {
+        let json = serde_json::to_string(&ClientMessage::Identify {
+            username: "alice".into(),
+            pubkey: "ab".into(),
+            signature: "cd".into(),
+            bot: false,
+            client_version: "v0.1.0-pre.223".into(),
+        })
+        .unwrap();
+        assert!(json.contains("v0.1.0-pre.223"), "not on the wire: {json}");
+
+        let back: ClientMessage = serde_json::from_str(&json).unwrap();
+        match back {
+            ClientMessage::Identify { client_version, .. } => {
+                assert_eq!(client_version, "v0.1.0-pre.223")
+            }
+            other => panic!("parsed as {other:?}"),
+        }
+    }
 }
