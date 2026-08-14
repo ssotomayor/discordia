@@ -311,6 +311,26 @@ the top within each section.
   the relay operator. Closing it needs a certificate for the relay's hostname,
   which means the deployment has a hostname — the same prerequisite the
   plaintext gateway has under Security, and worth doing once for both.
+- **The webview room is never encrypted, so macOS screen shares are
+  unreadable.** Verified live 2026-08-14, with voice working. `SCREEN_JS`'s
+  `connect(url, tok, key)` is handed `e2ee::shared_key()`, which reads only the
+  `DISCORDIA_E2EE_KEY` env var and never the *distributed* key — so with no env
+  var the webview connects with `null`, builds no key provider, and
+  `setE2eeKey` returns early for the rest of the session (`if (!e2eeKey ||
+  !e2eeProvider) return`).
+  The consequences are asymmetric and were reported exactly that way: a macOS
+  host publishes screen video from the **native** `#video` room, which *is*
+  encrypted, into a room whose webviews cannot decrypt it — black picture, noise
+  in the preview, and `EncryptionError: … but room does not have encryption
+  enabled!`. A Windows peer captures screen in the webview, so their share is
+  unencrypted and renders fine. Cameras ride the webview everywhere, so they are
+  unencrypted too — which is a privacy gap, not only a rendering one.
+  The fix mirrors what the native side already does (`3506fde`): construct the
+  `lk.Room` with `e2ee: { keyProvider, worker }` *always*, call
+  `setE2EEEnabled(false)` until a key exists, and have `setE2eeKey` enable it.
+  LiveKit's JS cannot attach a key provider to a Room after construction, which
+  is why the current lazy approach cannot work. `connect` must also be passed
+  `e2ee::current_key()` rather than `shared_key()`.
 - **Media key distribution is written and has never run between two people.**
   `client/src/mediakey.rs` seals a channel key per recipient (ECDH over the
   Nostr identity keys, XChaCha20-Poly1305, epoch bound as associated data) and
