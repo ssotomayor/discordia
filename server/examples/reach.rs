@@ -32,7 +32,7 @@
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
-use dioxusfun_server::quic::GATEWAY_ALPN;
+use dioxusfun_server::quic::{Coordination, GATEWAY_ALPN, require_direct};
 use futures_util::StreamExt;
 use iroh::endpoint::presets;
 use iroh::{Endpoint, EndpointAddr, EndpointId, TransportAddr};
@@ -42,26 +42,48 @@ const TIMEOUT: Duration = Duration::from_secs(15);
 
 #[tokio::main]
 async fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    // `--coordinated` may appear anywhere; pull it out before anything else
+    // reads positionally.
+    let coordination = if let Some(i) = args.iter().position(|a| a == "--coordinated") {
+        args.remove(i);
+        Coordination::CoordinatorOnly
+    } else {
+        Coordination::None
+    };
     if args.is_empty() {
         eprintln!(
-            "usage:\n  reach <ws://host:port>\n  reach --key <endpoint-id> <ip:port> [ip:port …]\n\
-             \x20 reach --listen"
+            "usage:\n\
+             \x20 reach <ws://host:port>\n\
+             \x20 reach --key <endpoint-id> [ip:port …] [--coordinated]\n\
+             \x20 reach --listen [--coordinated]\n\n\
+             --coordinated lets an iroh relay introduce the two ends (tier 2), and then\n\
+             insists the result is a direct path — a connection the relay is still\n\
+             carrying is refused rather than used."
         );
         std::process::exit(2);
     }
 
     if args[0] == "--listen" {
-        listen().await;
+        listen(coordination).await;
         return;
     }
 
     let result = if args[0] == "--key" {
-        if args.len() < 3 {
-            eprintln!("--key needs an endpoint id and at least one address");
+        // An address is required only without a coordinator. With one, being
+        // findable by key alone is the whole point of the exercise.
+        if args.len() < 2 {
+            eprintln!("--key needs an endpoint id");
             std::process::exit(2);
         }
-        reach_quic(&args[1], &args[2..]).await
+        if args.len() < 3 && coordination == Coordination::None {
+            eprintln!(
+                "--key needs at least one <ip:port> without --coordinated: with no relay to \
+                 introduce you, an address is the only way to find the host"
+            );
+            std::process::exit(2);
+        }
+        reach_quic(&args[1], &args[2..], coordination).await
     } else {
         reach_ws(&args[0]).await
     };
@@ -85,7 +107,7 @@ async fn main() {
 ///
 /// The data directory is temporary and the guilds in it are meaningless — the
 /// question is whether packets arrive, and `Hello` is proof that they did.
-async fn listen() {
+async fn listen(coordination: Coordination) {
     let dir = std::env::temp_dir().join(format!("dioxusfun-reach-{}", std::process::id()));
     let router = dioxusfun_server::build_router(dioxusfun_server::ServerConfig {
         livekit: dioxusfun_server::livekit::LiveKitConfig::from_env(),
@@ -95,22 +117,48 @@ async fn listen() {
     .await
     .expect("build router");
 
-    let handle = dioxusfun_server::quic::serve_quic(router, None)
+    let endpoint = dioxusfun_server::quic::bind_quic(None, coordination)
         .await
-        .expect("serve quic");
-    let addrs = dioxusfun_server::quic::dialable_addrs(&handle.sockets);
-    println!("listening. dial it with:\n");
-    for addr in &addrs {
-        println!(
-            "  reach --key {} <this-machine's-address>:{}",
-            handle.endpoint_id,
-            addr.port()
-        );
+        .expect("bind quic");
+
+    // With a coordinator allowed, wait to reach a relay before printing
+    // anything: until then there is no introduction on offer, and the only
+    // addresses are ones this network can use.
+    if coordination == Coordination::CoordinatorOnly {
+        println!("reaching a relay …");
+        let _ = tokio::time::timeout(Duration::from_secs(20), endpoint.online()).await;
+        let relays: Vec<String> = endpoint
+            .addr()
+            .addrs
+            .iter()
+            .filter_map(|a| match a {
+                TransportAddr::Relay(url) => Some(url.to_string()),
+                _ => None,
+            })
+            .collect();
+        if relays.is_empty() {
+            println!("WARNING: no relay reached — no punch can be arranged from here");
+        } else {
+            println!("relay home: {}", relays.join(", "));
+        }
     }
-    println!(
-        "\n(bound to {:?} — substitute the address the *other* machine can see)",
-        handle.sockets
-    );
+
+    let key = endpoint.id();
+    let handle =
+        dioxusfun_server::quic::serve_on_with(endpoint, router, coordination).expect("serve quic");
+    println!("\nlistening as {key}\n");
+    if coordination == Coordination::CoordinatorOnly {
+        // No address: being findable by key alone is the thing under test.
+        println!("  dial from anywhere:  reach --coordinated --key {key}");
+    } else {
+        for addr in dioxusfun_server::quic::dialable_addrs(&handle.sockets) {
+            println!(
+                "  reach --key {key} <this-machine's-address>:{}",
+                addr.port()
+            );
+        }
+    }
+    println!("\n(bound to {:?})", handle.sockets);
     std::future::pending::<()>().await;
 }
 
@@ -138,24 +186,34 @@ async fn reach_ws(url: &str) -> Result<String, String> {
 }
 
 /// The private path: QUIC, authenticated by the host's key.
-async fn reach_quic(key: &str, addrs: &[String]) -> Result<String, String> {
+async fn reach_quic(
+    key: &str,
+    addrs: &[String],
+    coordination: Coordination,
+) -> Result<String, String> {
     let endpoint_id: EndpointId = key
         .parse()
         .map_err(|e| format!("that is not an endpoint key: {e}"))?;
     let parsed: Vec<SocketAddr> = addrs.iter().filter_map(|a| a.parse().ok()).collect();
-    if parsed.is_empty() {
+    // Coordinated, the key is enough: the relay knows where the host is, which
+    // is the entire point. Uncoordinated, an address is all we have.
+    if parsed.is_empty() && coordination == Coordination::None {
         return Err("no usable ip:port addresses given".into());
     }
-    println!("dialling key {key} at {parsed:?} …");
+    println!("dialling key {key} at {parsed:?} (coordination: {coordination:?}) …");
     let started = Instant::now();
 
-    // No relay, no discovery: this has to prove the *address* works, and a
-    // connection quietly rescued by a third party would prove the opposite of
-    // what is being asked.
-    let endpoint = Endpoint::builder(presets::Minimal)
-        .bind()
-        .await
-        .map_err(|e| format!("local quic bind: {e}"))?;
+    // Uncoordinated this has to prove the *address* works, so no relay and no
+    // discovery: a connection quietly rescued by a third party would prove the
+    // opposite of what is being asked. Coordinated is the other test entirely —
+    // let the relay introduce us, then check what we actually got.
+    let endpoint = match coordination {
+        Coordination::None => Endpoint::builder(presets::Minimal),
+        Coordination::CoordinatorOnly => Endpoint::builder(presets::N0),
+    }
+    .bind()
+    .await
+    .map_err(|e| format!("local quic bind: {e}"))?;
     let addr = EndpointAddr::new(endpoint_id).with_addrs(parsed.into_iter().map(TransportAddr::Ip));
 
     let conn = tokio::time::timeout(TIMEOUT, endpoint.connect(addr, GATEWAY_ALPN))
@@ -167,6 +225,14 @@ async fn reach_quic(key: &str, addrs: &[String]) -> Result<String, String> {
             )
         })?
         .map_err(|e| format!("quic connect: {e} (a key mismatch also lands here)"))?;
+
+    // The tier-2 question, asked out loud: a relay that arranged this will carry
+    // it just as happily, and it would work — so the refusal is the test.
+    if let Err(refusal) = require_direct(&conn, coordination).await {
+        return Err(format!(
+            "REFUSED (correctly, if the punch failed): {refusal}"
+        ));
+    }
 
     let (send, recv) = conn
         .open_bi()
