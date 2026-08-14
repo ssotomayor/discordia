@@ -821,6 +821,10 @@ impl ActiveVoice {
             .await
             .map_err(|e| format!("livekit connect: {e}"))?;
         let room = Arc::new(room);
+        // Told about later keys. A key generated after this connect — which is
+        // the normal case for whoever is first into a channel — would otherwise
+        // never reach this room.
+        crate::e2ee::register_room(&room);
 
         // Microphone publish pipeline. APM (AEC + NS + AGC).
         //
@@ -1601,6 +1605,10 @@ impl ScreenVideoRoom {
             .await
             .map_err(|e| format!("livekit connect: {e}"))?;
         let room = Arc::new(room);
+        // Told about later keys. A key generated after this connect — which is
+        // the normal case for whoever is first into a channel — would otherwise
+        // never reach this room.
+        crate::e2ee::register_room(&room);
 
         // `is_screencast: true` is not cosmetic — it tells libwebrtc this is
         // desktop content, which changes the encoder's degradation behaviour
@@ -1778,6 +1786,10 @@ impl ScreenAudioRoom {
             .await
             .map_err(|e| format!("livekit connect: {e}"))?;
         let room = Arc::new(room);
+        // Told about later keys. A key generated after this connect — which is
+        // the normal case for whoever is first into a channel — would otherwise
+        // never reach this room.
+        crate::e2ee::register_room(&room);
 
         // Same bridge shape as the voice room's: the event task is `spawn`ed and
         // so must be Send, which a Dioxus Signal is not.
