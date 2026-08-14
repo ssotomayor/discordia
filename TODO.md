@@ -279,17 +279,21 @@ the top within each section.
   joining at the same instant both generate. The designated-sender rule (lowest
   pubkey) makes that last one unlikely rather than impossible — two clients with
   different views of the roster can both believe they are lowest.
-- **A rekey interrupts the call it protects.** Everyone moves to the new key at
-  slightly different moments, so there is a window where some frames cannot be
-  decrypted. LiveKit has a key *ring* for exactly this — publish under the new
-  index while still accepting the old — and this uses index 0 throughout, which
-  is the simplest thing that works and not the right one. Worth revisiting once
-  a rekey has been watched happening.
-- **Nothing tells a member their media cannot be decrypted.** If a key never
-  arrives, or arrives wrong, the call connects and is silent. The `e2ee-error`
-  toast covers setup failing; it does not cover the case where everything
-  succeeded against the wrong key. Members need to see who is on the current
-  epoch.
+- **A rekey still interrupts the call it protects, and the proper fix is out of
+  reach.** The rekeying member now sends to everyone before adopting the new key
+  itself, which shrinks the gap to about one network hop — it does not close it.
+  The real answer is LiveKit's key *ring*: publish under a new index while still
+  accepting the old. The Rust side exposes it (`set_shared_key(key, index)`);
+  the JS `ExternalE2EEKeyProvider.setKey` takes a key and no index, and the
+  index only appears on `BaseKeyProvider.onSetEncryptionKey`, which means
+  reimplementing a key provider against minified internals of a vendored bundle.
+  Not worth it until a rekey has been watched happening and the gap measured —
+  it may well be imperceptible.
+- **Undecryptable media is now visible, but only what the webview sees.** The JS
+  room reports `EncryptionError` and the badge says so. The three native rooms
+  have their own signal (`RoomEvent::E2eeStateChanged`) which is not wired, so
+  voice failing to decrypt while camera succeeds would currently show nothing.
+  Same latch, one more producer.
 - **Nothing verifies that the two SDKs derive the same key.** They agree on
   every parameter visible from this repo — ratchet salt `LKFrameEncryptionKey`,
   PBKDF2/SHA-256, JS at 100 000 iterations — but the Rust side derives inside

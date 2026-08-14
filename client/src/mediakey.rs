@@ -416,21 +416,35 @@ pub fn rekey_after_removal(
     let key = generate();
     let next = epoch.saturating_add(1);
     tracing::info!(%channel, epoch = next, "rekeying after a member was removed");
-    state.write().media_keys.insert(channel, (next, key));
-    crate::e2ee::apply_key(&key);
-    for to in present {
-        if to == me {
+
+    // Send first, adopt second, and this order is the point. Everyone switches
+    // at a slightly different moment, and during that gap frames published
+    // under the new key cannot be read by anyone still on the old one. We are
+    // the only publisher of new-key frames until we adopt, so adopting *last*
+    // shrinks the window to roughly one network hop instead of one hop plus
+    // however long our own sealing loop took.
+    //
+    // It is a smaller gap, not no gap. The proper fix is LiveKit's key ring —
+    // publish under a new index while still accepting the old — and the JS
+    // SDK's `ExternalE2EEKeyProvider.setKey` takes no index, so it is not
+    // reachable without reimplementing a key provider against minified
+    // internals. Recorded in TODO.md rather than half-done here.
+    for to in &present {
+        if to == &me {
             continue;
         }
-        if let Ok(blob) = seal(&key, &to, next, &identity) {
-            gateway.send(ClientMessage::ShareMediaKey {
+        match seal(&key, to, next, &identity) {
+            Ok(blob) => gateway.send(ClientMessage::ShareMediaKey {
                 channel_id: channel,
-                to,
+                to: to.clone(),
                 epoch: next,
                 blob,
-            });
+            }),
+            Err(e) => tracing::warn!(%to, error = %e, "could not seal the rekey"),
         }
     }
+    state.write().media_keys.insert(channel, (next, key));
+    crate::e2ee::apply_key(&key);
 }
 
 #[cfg(test)]

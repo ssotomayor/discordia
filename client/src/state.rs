@@ -513,6 +513,14 @@ pub struct AppState {
     /// screen-audio track; the webview reports it only in the fallback case
     /// where the server sent no `audio_token`.
     pub stream_has_audio: HashSet<String>,
+    /// Media has arrived that we could not decrypt — almost always a key that
+    /// has not reached us yet.
+    ///
+    /// Cleared when a new key is adopted, because that is the event most likely
+    /// to fix it. A latch rather than a counter: the UI question is "is
+    /// something wrong right now", and one failed frame and a thousand mean the
+    /// same thing to the person who cannot hear anybody.
+    pub media_undecryptable: bool,
     /// Set when a member is removed from a guild, cleared once the media key
     /// has been rolled.
     ///
@@ -640,6 +648,7 @@ impl AppState {
             stream_volumes: HashMap::new(),
             stream_muted: HashSet::new(),
             stream_has_audio: HashSet::new(),
+            media_undecryptable: false,
             pending_rekey: false,
             identity: None,
             media_keys: HashMap::new(),

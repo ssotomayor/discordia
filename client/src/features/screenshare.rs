@@ -345,6 +345,14 @@ window.dxScreen = window.dxScreen || (function () {
     }
     const thisRoom = new lk.Room(opts);
     room = thisRoom;
+    // Undecryptable media is the failure mode this whole feature has instead of
+    // an error: frames arrive, decode to noise, and the call looks connected.
+    // The SDK does notice, so say so rather than letting someone conclude their
+    // microphone is broken.
+    thisRoom.on(lk.RoomEvent.EncryptionError, function (err) {
+      console.error('[dxScreen] encryption error', err);
+      post('e2ee-undecryptable', { detail: String((err && err.message) || err) });
+    });
     if (e2eeKey && pendingKeyProvider) {
       // setKey before enabling, so the first frames are not published under a
       // key nobody has.
@@ -1371,7 +1379,7 @@ pub fn ScreenShareBridge() -> Element {
               window.__dxfShareEndWired = true;
               window.addEventListener('message', function (e) {
                 var d = e.data;
-                if (d && (d.__dxf === 'screen-share-ended' || d.__dxf === 'share-started' || d.__dxf === 'share-audio' || d.__dxf === 'share-unavailable' || d.__dxf === 'share-echo-risk' || d.__dxf === 'stream-audio' || d.__dxf === 'screen-room-error' || d.__dxf === 'screen-room-reconnecting' || d.__dxf === 'screen-track-timeout' || d.__dxf === 'e2ee-error') && window.__dxfShareSink) {
+                if (d && (d.__dxf === 'screen-share-ended' || d.__dxf === 'share-started' || d.__dxf === 'share-audio' || d.__dxf === 'share-unavailable' || d.__dxf === 'share-echo-risk' || d.__dxf === 'stream-audio' || d.__dxf === 'screen-room-error' || d.__dxf === 'screen-room-reconnecting' || d.__dxf === 'screen-track-timeout' || d.__dxf === 'e2ee-error' || d.__dxf === 'e2ee-undecryptable') && window.__dxfShareSink) {
                   window.__dxfShareSink(d);
                 }
               });
@@ -1470,6 +1478,19 @@ pub fn ScreenShareBridge() -> Element {
                                 "Connected to the stream room, but no video arrived. Make sure the sharer is running the latest Discordia build and restart the share."
                                     .into(),
                             );
+                    }
+                    // Frames are arriving that we cannot decrypt. Almost always
+                    // a key that has not reached us — a rekey in flight, or a
+                    // member who never got one. Distinguished from setup
+                    // failing because the remedy is different: this one often
+                    // resolves itself within a second.
+                    Some("e2ee-undecryptable") => {
+                        let detail = msg
+                            .get("detail")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown error");
+                        tracing::warn!(detail, "media arrived that we cannot decrypt");
+                        state.write().media_undecryptable = true;
                     }
                     // Encryption was asked for and could not be set up. Loud,
                     // because the alternative is a call that connects and

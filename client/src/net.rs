@@ -1068,6 +1068,10 @@ fn apply(
                 Ok(key) => {
                     tracing::info!(%from, epoch, "media key accepted");
                     s.media_keys.insert(channel_id, (epoch, key));
+                    // Whatever we could not decrypt a moment ago, this is the
+                    // event most likely to have fixed it. If it did not, the
+                    // next frame sets the latch again.
+                    s.media_undecryptable = false;
                     crate::e2ee::apply_key(&key);
                 }
                 // Not exceptional: a blob for somebody else, or from a member
