@@ -34,18 +34,33 @@ const CHECK_TIMEOUT: Duration = Duration::from_secs(10);
 /// error, no log, just a button pointing users at unrelated releases, or one
 /// that never appears because upstream is behind them.
 ///
-/// Anything that is not a `github.com/owner/name` URL disables the check.
-/// Failing closed is the point: a fork on GitLab should get no notice rather
-/// than someone else's.
+/// Anything that is not a `https://github.com/owner/name` URL disables the
+/// check. Failing closed is the point: a fork on GitLab should get no notice
+/// rather than someone else's.
+///
+/// Parsed with `url` rather than by hand. The hand-rolled version — strip the
+/// prefix, count the slashes — accepted `https://github.com//name` as a repo
+/// whose owner is the empty string, and built `…/repos//name/releases` out of
+/// it. A parser that understands path segments cannot make that mistake,
+/// and the crate was already a dependency.
 fn releases_url_from(repository: &str) -> Option<String> {
-    let slug = repository
-        .trim()
-        .trim_end_matches('/')
-        .trim_end_matches(".git")
-        .strip_prefix("https://github.com/")?;
-    // Exactly one slash: `owner/name`, not a path into a file or a bare owner.
-    (slug.matches('/').count() == 1 && !slug.ends_with('/'))
-        .then(|| format!("https://api.github.com/repos/{slug}/releases"))
+    let url = url::Url::parse(repository.trim()).ok()?;
+    if url.scheme() != "https" || url.host_str() != Some("github.com") {
+        return None;
+    }
+    // Empty segments dropped so a trailing slash — common in a `repository`
+    // field — reads the same as none.
+    let mut segments = url.path_segments()?.filter(|s| !s.is_empty());
+    let owner = segments.next()?;
+    let name = segments.next()?.trim_end_matches(".git");
+    // A third segment means a path *into* the repo (`/tree/master`), not the
+    // repo. `name` can still be empty after stripping a bare `.git`.
+    if segments.next().is_some() || name.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "https://api.github.com/repos/{owner}/{name}/releases"
+    ))
 }
 
 fn releases_url() -> Option<String> {
@@ -259,6 +274,11 @@ mod tests {
             "https://github.com/owner/name/tree/master",
             "git@github.com:owner/name.git",
             "http://github.com/owner/name",
+            // The one the hand-rolled parser let through: an empty owner, which
+            // it turned into `.../repos//name/releases`.
+            "https://github.com//name",
+            "https://github.com//",
+            "https://github.com/owner/.git",
         ] {
             assert_eq!(releases_url_from(bad), None, "accepted {bad:?}");
         }
