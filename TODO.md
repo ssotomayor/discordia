@@ -659,6 +659,14 @@ the top within each section.
   says so in a comment. The flag was equally wrong before `c2c6ff2`; what changed
   is that something renders it. There is no protocol version to key off, which is
   the actual gap.
+  **Half of that gap is now closed, in the direction that matters.** `Identify`
+  carries `client_version` and the server logs it, so an operator can count what
+  is connected — and a client old enough to have this bug is identifiable by
+  *absence*: it sends no version at all, and the log says `unknown`. What is
+  still missing is anything that could act on it. The field is self-declared and
+  unauthenticated (the signature covers `nonce || pubkey || username` and not
+  it), so it can inform a decision about whether these three compatibility
+  entries can be closed; it cannot gate behaviour per peer.
 - **Two app instances self-hosting on one machine fight over the SFU.** The
   orphan reclaim added with `PID_FILE` cannot tell "the recorded SFU is a
   leftover" from "the recorded SFU belongs to an instance that is still
