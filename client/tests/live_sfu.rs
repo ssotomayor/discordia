@@ -213,6 +213,9 @@ async fn subscribe_only_identity_still_receives_audio() {
 
 /// 10 ms at 48 kHz — the frame the whole pipeline is built around.
 const FRAME: usize = 480;
+/// Hops the feeder discards before it starts measuring, so its window matches
+/// the receive side's — one second, the same `WARMUP` the decoder skips.
+const WARMUP_HOPS: usize = 100;
 /// The tone under test. 440 Hz is inside the band Opus's speech mode is tuned
 /// for, and divides 48 kHz cleanly enough to keep the analysis honest.
 const TONE_HZ: f32 = 440.0;
@@ -388,8 +391,23 @@ fn spawn_tone(source: NativeAudioSource, noise: f32, denoise: Option<f32>) -> Fe
                     .expect("denoise hop");
                 hop.copy_from_slice(enh.as_slice().expect("contiguous"));
                 let after = rms(&hop);
-                if before > 0.0 && after > 0.0 {
-                    applied.sum_db += 20.0 * (after / before).log10();
+                // Steady state only, to match every other column: `received`
+                // discards the first WARMUP second, so a mean that included the
+                // model's startup response would not be comparable to the row it
+                // is printed in. The two windows share no clock — this one
+                // starts at publish, that one at subscribe — so the alignment is
+                // approximate and deliberately generous.
+                if applied.skipped < WARMUP_HOPS {
+                    applied.skipped += 1;
+                } else if before > 0.0 {
+                    // Energy in and out, not a mean of per-hop dB. A hop the
+                    // model zeroes completely has no logarithm, and the previous
+                    // version dropped exactly those — biasing the number low in
+                    // the saturated case the sweep exists to show. Summing
+                    // squares counts a silenced hop as what it is: all of the
+                    // attenuation, not none of it.
+                    applied.energy_in += (before as f64) * (before as f64);
+                    applied.energy_out += (after as f64) * (after as f64);
                     applied.hops += 1;
                 }
             }
@@ -411,7 +429,10 @@ fn spawn_tone(source: NativeAudioSource, noise: f32, denoise: Option<f32>) -> Fe
         }
         applied
     });
-    Feeder { handle, stop }
+    Feeder {
+        handle: Some(handle),
+        stop,
+    }
 }
 
 /// The feeding side of a round trip, and the switch that turns it off.
@@ -421,8 +442,23 @@ fn spawn_tone(source: NativeAudioSource, noise: f32, denoise: Option<f32>) -> Fe
 /// so the flag is not decoration: without it the feeder would run on into the
 /// next row of the sweep, publishing into a room the test has finished with.
 struct Feeder {
-    handle: tokio::task::JoinHandle<Applied>,
+    handle: Option<tokio::task::JoinHandle<Applied>>,
     stop: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// Stop feeding however this scope is left, including through a panic.
+///
+/// Not belt-and-braces: it is the only thing standing between a failed
+/// assertion and a hung suite. Everything between `spawn_tone` and `stop()` can
+/// panic — `wait_for`'s timeout does, and so does the track-kind check — and a
+/// `spawn_blocking` task cannot be aborted, so the loop would keep running on
+/// its own thread while `Runtime::drop` waits for it. The future this replaced
+/// did not need one: an unaborted `tokio::spawn` is dropped when the runtime
+/// tears down, and a blocking thread is not.
+impl Drop for Feeder {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 impl Feeder {
@@ -435,9 +471,10 @@ impl Feeder {
     /// arrives here as a `JoinError` instead of being discarded, which is the
     /// difference between "the denoiser failed on hop 214" and the round trip
     /// later reporting that it stopped delivering audio.
-    async fn stop(self) -> Applied {
+    async fn stop(mut self) -> Applied {
         self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
-        match self.handle.await {
+        let handle = self.handle.take().expect("stop is called once");
+        match handle.await {
             Ok(applied) => applied,
             Err(e) => panic!("the feeder died before the measurement finished: {e}"),
         }
@@ -451,17 +488,28 @@ impl Feeder {
 /// The number `TODO.md` and `ClientSettings::denoise_atten_lim_db` both cite —
 /// "−3.9 dB applied at a 30 dB ceiling, −2.7 dB at 12" — came from a live
 /// session on one machine and could not be re-run from the repo. This is where
-/// it comes from now.
+/// it comes from now, and it is worth knowing it is energy in versus energy
+/// out over the window, not an average of per-hop decibels.
 #[derive(Default)]
 struct Applied {
-    sum_db: f32,
+    energy_in: f64,
+    energy_out: f64,
     hops: usize,
+    skipped: usize,
 }
 
 impl Applied {
-    /// Mean dB applied per hop, or `None` when the model was not in the path.
+    /// Attenuation over the whole measured window, or `None` when the model was
+    /// not in the path.
+    ///
+    /// Energy-weighted rather than a mean of per-hop decibels, which is not the
+    /// same number and is the wrong one: averaging a logarithm gives every hop
+    /// equal say regardless of how much signal it carried, and it has nowhere
+    /// to put a hop the model zeroed. `-inf` here is a real answer — the model
+    /// removed everything — and it is directly comparable to the level column
+    /// beside it, which is computed the same way.
     fn mean_db(&self) -> Option<f32> {
-        (self.hops > 0).then(|| self.sum_db / self.hops as f32)
+        (self.hops > 0).then(|| 10.0 * (self.energy_out / self.energy_in).log10() as f32)
     }
 }
 
@@ -854,9 +902,10 @@ async fn the_knobs_that_shape_voice_quality_are_measured() {
         ),
         // Not a shipping value — the client's control stops at 30. It is here
         // as the instrument's own scale, and it is the row that exposes the
-        // limit of this input: it takes the signal to −97 dB and 0.8% of energy
-        // left in band. Read together with the two above, where applied lands
-        // on the ceiling to within 0.3 dB, it says the model is saturated —
+        // limit of this input: it takes the signal to nothing at all, `-inf` in
+        // both the applied and the level column. Read together with the two
+        // above, where applied lands on the ceiling to within hundredths of a
+        // decibel, it says the model is saturated —
         // against a sine plus white noise it hears no speech and removes
         // everything it is allowed to. Which is why these rows cannot answer
         // "does 30 vs 12 matter for speech": no speech is in the path. See

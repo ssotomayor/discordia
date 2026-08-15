@@ -591,17 +591,18 @@ the top within each section.
   DeepFilterNet **is** a dimension of
   `the_knobs_that_shape_voice_quality_are_measured` now, and running it settles
   one thing and refuses another. What it settles: the ceiling reaches the model
-  and does exactly what it claims. Against the sweep's tone at noise 0.15,
-  measured at the source, the model applies −30.03 dB at a 30 dB ceiling,
-  −12.26 dB at 12, and −39.65 dB at 100 — each row pinned at, or driven to, its
-  own limit.
-  What it refuses is the comparison the entry is about. Applied ≈ ceiling in
-  every row means the model is saturated: on a sine plus white noise it hears
-  no speech and removes everything it is permitted to remove, so the ceiling is
-  not limiting an appetite, it *is* the output. At 100 dB the signal is gone —
-  −97 dB level, 0.8% of energy left in band. The clamp is verified; the
-  question "does 30 vs 12 change what happens to *speech*" is untouched, because
-  no speech was ever in the path.
+  and is applied to within hundredths of a decibel. Against the sweep's tone at
+  noise 0.15, measured at the source as energy in versus energy out, the model
+  applies −30.00 dB at a 30 dB ceiling and −12.00 dB at 12 — and the received
+  level in the same row reads −30.00 and −12.02, which is the two halves of the
+  measurement agreeing across the codec.
+  What it refuses is the comparison the entry is about. Applied = ceiling means
+  the model is saturated: on a sine plus white noise it hears no speech and
+  removes everything it is permitted to, so the ceiling is not limiting an
+  appetite, it *is* the output. At a 100 dB ceiling the row reads `-inf` in both
+  columns — the signal is gone, not small. The clamp is verified; the question
+  "does 30 vs 12 change what happens to *speech*" is untouched, because no
+  speech was ever in the path.
   So what is left is narrower and concrete: this needs a speech-like
   excitation, not another knob. Either a short voiced sample committed
   alongside the test, or a synthesised formant-ish signal the model will
