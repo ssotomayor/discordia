@@ -541,14 +541,19 @@ the top within each section.
   starts a share; a thousand shares in one run is 12 KB, so nothing here is
   waiting on a fix. What would change the calculation is somewhere else starting
   to activate in a loop.
-- **The activation-timeout path has never been executed.** `activate`'s
-  `WaitForSingleObject` giving up is reasoned-about code: nobody has made WASAPI
-  take longer than 5 s to answer, so the branch that abandons an operation and
-  leaves it holding its blob has never run outside a reading of it. Same class of
-  gap as the one `windows_loopback_delivers_real_samples` closed by being run
-  once — that found a heap corruption on its first execution. A fault-injection
-  seam would settle it; `server/tests/voice.rs`'s `ScriptedMinter` is the shape
-  to copy.
+- **WASAPI has still never been seen answering slowly.** The *branch* that
+  handles it now runs: `settle_activation_wait` is the seam, and
+  `an_abandoned_activation_keeps_its_event_handle` drives it with the wait result
+  WASAPI would have produced, asserting the property the branch exists for — the
+  event handle survives, because the completion handler may still `SetEvent` it
+  from an MTA pool thread. Breaking the rule (closing the handle there) turns the
+  test red, so it has teeth.
+  What is still untested is the *scenario*: nobody has made
+  `ActivateAudioInterfaceAsync` take longer than 5 s, and no test can arrange a
+  stalled audio engine. So a real timeout would exercise `WaitForSingleObject`
+  returning `WAIT_TIMEOUT` for the first time, and everything after that point is
+  covered. Worth remembering which half was closed if this ever misbehaves in the
+  field.
 - **The Windows blob's lifetime rule is measured, not documented.** Microsoft
   does not say how long `ActivateAudioInterfaceAsync` needs the `VT_BLOB` it is
   handed. "As long as the process" comes from probing: the engine had not freed
@@ -558,6 +563,10 @@ the top within each section.
   Rust's allocator both sit on the process heap, not because anything promises
   it. Measured on Windows 11 26200 and one machine; no other platform even
   compiles this file.
+  The hazard and the probe that established it now live in `activation_params`'s
+  own doc comment as well, since that is where someone debugging a post-update
+  capture failure will be standing. This entry stays because the underlying fact
+  has not changed: it is still an observation, not a contract.
 
 ## Voice / audio
 
