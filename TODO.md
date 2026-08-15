@@ -101,24 +101,6 @@ the top within each section.
 
 ## Repo & CI
 
-- **Windows clippy gates one profile of two.** `windows-build` now runs
-  `cargo clippy -p dioxusfun --all-targets -- -D warnings`, so the
-  `cfg(target_os = "windows")` half of the client — `sysaudio/windows.rs` and
-  `rawmic/windows.rs`, 61 `unsafe` WASAPI FFI sites — is finally linted. But
-  `desktop-build` runs clippy *twice*, once per profile, because
-  `unused_variables` and friends fire only with `debug_assertions` off, and
-  that is how nine of them reached a published build (`c685828`). Only the
-  first profile is gated here, so a regression of that class reachable only
-  under `-C debug-assertions=off` still goes uncaught on Windows.
-  Both profiles were run by hand on Windows 11 26200 before the gate landed and
-  found nothing, so this is a hole in the *gate*, not a known defect behind it.
-  **The trap when closing it:** do not copy `desktop-build`'s second-profile
-  step verbatim. Its step-level `RUSTFLAGS` *replaces* the job-level value
-  rather than adding to it, and `windows-build`'s job-level
-  `-C target-feature=+crt-static` is load-bearing — libwebrtc links the static
-  MSVC runtime, Rust defaults to the dynamic one, and dropping the flag fails
-  the link with LNK2038. Spell both flags out in the step. The cost to weigh is
-  that it doubles the slowest job in the matrix.
 - **The Windows portable and setup ship the wrong icon.** Reported from a real
   download: both carry an old icon rather than the Discordia mark. Worth
   starting from the comment in `client/Dioxus.toml`, because it says this was
