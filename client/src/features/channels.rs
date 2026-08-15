@@ -58,6 +58,32 @@ fn reorder_positions(guild: &[Channel], moved: Id, target: Id) -> Vec<(Id, u32)>
     let dragged = order.remove(from);
     order.insert(to, dragged);
 
+    // Removing at `from` and inserting at `to` permutes only what lies between
+    // them, so only that span needs new numbers — and it can have the ones it
+    // already holds. Reusing them is what keeps a drag to two messages instead
+    // of the whole guild: every row outside the span keeps its value, and the
+    // span's own values still sit between its neighbours' by construction.
+    //
+    // This is not a micro-optimisation. Each message is an `UpdateChannel`, the
+    // server rate-limits those on a budget shared with everything else the
+    // connection does, and it drops the excess without saying so — so a burst
+    // is a partially applied reorder the user is never told about. See TODO.md.
+    let (lo, hi) = (from.min(to), from.max(to));
+    let mut slots: Vec<u32> = guild[lo..=hi].iter().map(|c| c.position).collect();
+    slots.sort_unstable();
+    if slots.windows(2).all(|w| w[0] != w[1]) {
+        return order[lo..=hi]
+            .iter()
+            .zip(slots)
+            .filter(|(c, slot)| c.position != *slot)
+            .map(|(c, slot)| (c.id, slot))
+            .collect();
+    }
+
+    // Unless the span cannot express an order: duplicate positions, which is
+    // every guild that has never been reordered, since channels default to 0.
+    // Those have to be assigned, and assigning across the guild is the only
+    // numbering that matches what `position` means.
     order
         .iter()
         .enumerate()
@@ -329,8 +355,19 @@ pub fn ChannelsColumn() -> Element {
                                                 }));
                                             }
                                         },
-                                        span { class: "text-[var(--text-dim)]", "#" }
-                                        span { class: "truncate flex-1", "{ch.name}" }
+                                        // The row is both the click target and the
+                                        // drag handle, and HTML5 takes the gesture
+                                        // the moment the pointer drifts during a
+                                        // mousedown on a `draggable` element — so a
+                                        // slightly shaky click on a channel would
+                                        // silently not select it, for exactly the
+                                        // people who have `ManageChannels`. Opting
+                                        // the label out leaves a drag handle that
+                                        // is the row's padding and its trailing
+                                        // badges, and a click target that is the
+                                        // text.
+                                        span { class: "text-[var(--text-dim)]", draggable: false, "#" }
+                                        span { class: "truncate flex-1", draggable: false, "{ch.name}" }
                                         if ch.read_only {
                                             span { class: "text-[10px] text-[var(--text-dim)]", title: "Read-only", "🔒" }
                                         }
@@ -698,8 +735,12 @@ fn VoiceChannelRow(
                 onclick: move |_| {
                     if connected { on_leave.call(()) } else { on_join.call(()) }
                 },
-                span { class: "text-[var(--text-dim)] text-xs", "♪" }
-                span { class: "truncate flex-1", "{channel.name}" }
+                // Same click-versus-drag opt-out as the text rows: the wrapper
+                // this sits in is `draggable` for `ManageChannels`, and a
+                // pointer drift during a join/leave click would otherwise be
+                // taken as the start of a channel drag.
+                span { class: "text-[var(--text-dim)] text-xs", draggable: false, "♪" }
+                span { class: "truncate flex-1", draggable: false, "{channel.name}" }
                 if connected {
                     span { class: "text-[9px] text-[var(--accent)] font-semibold uppercase tracking-wider", "live" }
                 }
@@ -2212,6 +2253,45 @@ mod tests {
         ];
         assert!(reorder_positions(&guild, guild[0].id, guild[1].id).is_empty());
         assert!(reorder_positions(&guild, guild[1].id, guild[0].id).is_empty());
+    }
+
+    /// The burst the server would silently drop. Positions with gaps in them —
+    /// what a guild looks like after any channel is deleted — used to force a
+    /// full renumber, so one drag in a large guild could exceed the shared
+    /// 30-per-10s budget and have the excess dropped with no error.
+    ///
+    /// Reusing the span's own values keeps it at two messages no matter how
+    /// large the guild is.
+    #[test]
+    fn a_one_slot_move_costs_two_messages_however_big_the_guild() {
+        let guild: Vec<Channel> = (0..40u32)
+            .map(|i| chan(&format!("c{i:02}"), i * 3 + 5))
+            .collect();
+        let updates = reorder_positions(&guild, guild[10].id, guild[11].id);
+        assert_eq!(
+            updates,
+            vec![(guild[11].id, 35), (guild[10].id, 38)],
+            "two rows swap the two position values they already held; the other              38 channels are not renumbered and cost no message"
+        );
+    }
+
+    /// The same guild, moved further: the span is the cost, not the guild.
+    #[test]
+    fn the_span_is_what_costs_messages() {
+        let guild: Vec<Channel> = (0..40u32)
+            .map(|i| chan(&format!("c{i:02}"), i * 3 + 5))
+            .collect();
+        let updates = reorder_positions(&guild, guild[5].id, guild[9].id);
+        assert_eq!(
+            updates.len(),
+            5,
+            "five rows lie in the span, and only those"
+        );
+        let moved: Vec<Id> = updates.iter().map(|(id, _)| *id).collect();
+        assert!(
+            !moved.contains(&guild[0].id) && !moved.contains(&guild[39].id),
+            "nothing outside the span may be touched"
+        );
     }
 
     #[test]
