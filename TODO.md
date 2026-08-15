@@ -229,20 +229,25 @@ the top within each section.
   there's no in-app way to see/set the central server's operator list.
 - **Invite expiry / use limits.** One rotating high-entropy code per guild
   today; no TTL, no max-uses, no per-code attribution.
-- **Nobody has performed the channel-reorder gesture.** Drag-to-reorder is
-  wired: rows are `draggable` under `ManageChannels`, and `reorder_positions`
-  turns a drop into the minimum set of `UpdateChannel`s, with six unit tests
-  behind the arithmetic. What is untested is the part a test cannot reach —
-  press, drag, release. It was written on a machine where nobody could drag a
-  mouse, and the one thing that could invalidate it is whether
-  `e.prevent_default()` on `ondragover` reaches the webview in time to permit
-  the drop. Synchronous `prevent_default` is documented from 0.6 and this
-  client already depends on it for `oncontextmenu`, so the reasoning is sound
-  and unexercised, which is exactly the position `sysaudio`'s Windows backend
-  was in before someone ran its test.
-  If it turns out not to fire, the fallback is the context menu that is already
-  on those rows: `Move up` / `Move down` calling the same `reorder_positions`,
-  no new mechanism.
+- **Nobody has performed the channel-reorder *drag*.** Reordering itself works
+  by a path that has no gesture in it — `Move up` / `Move down` in the channel
+  context menu, calling `reorder_positions`, which has eight unit tests behind
+  it. The drag is the second front end on that function: rows are `draggable`
+  under `ManageChannels`, and a drop calls the same code.
+  What is untested is the part a test cannot reach — press, drag, release —
+  and two things could stop it working, neither of which affects the menu path:
+  whether `e.prevent_default()` on `ondragover` reaches the webview in time to
+  permit the drop (synchronous `prevent_default` is documented from 0.6 and
+  this client already depends on it for `oncontextmenu`, so this is reasoned
+  and unexercised), and that `ondragstart` never calls
+  `dataTransfer.setData(…)`, which some engines require before they will honour
+  a drop. Dioxus's `DragData` exposes no way to set it, so if that turns out to
+  be the blocker the fix is not a line — it is either an upstream API or a
+  pointer-event drag like the one `grid-layout` already implements.
+  The occupant subtree under a voice row is explicitly `draggable: false`, so
+  the per-user volume slider inside it cannot start a channel drag. That is
+  reasoned too; nobody has dragged that slider on a build with this change
+  either.
 - **`MentionEveryone` permission.** Cut from v1 — mentions are computed
   client-side from content, so the server can't enforce it without rewriting
   message content.
