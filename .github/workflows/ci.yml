@@ -159,15 +159,24 @@ jobs:
       # runs because `unused_variables` and friends fire only under the second.
       # Zero either way, so this step gates code that already passes it rather
       # than accompanying a fix.
-      #
-      # Only the first profile is *gated*, which leaves the second half open —
-      # tracked in TODO.md rather than only here. If you are the one adding it:
-      # do NOT copy `desktop-build`'s second-profile step verbatim. Its
-      # step-level `RUSTFLAGS` replaces the job-level value rather than adding
-      # to it, and this job's job-level value is load-bearing — dropping
-      # `+crt-static` puts libwebrtc's /MT back against Rust's /MD and the link
-      # fails with LNK2038. Spell both flags out in the step.
       - name: Clippy (client, Windows-only code)
+        run: cargo clippy -p dioxusfun --all-targets -- -D warnings
+
+      # The second profile, for the reason `desktop-build` runs one:
+      # `unused_variables` and friends fire only with `debug_assertions` off,
+      # and that is how nine of them reached a published build (`c685828`).
+      #
+      # `RUSTFLAGS` is spelled out in full here rather than adding one flag,
+      # because a step-level value REPLACES the job-level one instead of
+      # extending it. Dropping `+crt-static` would put libwebrtc's /MT back
+      # against Rust's /MD, and `--all-targets` links the test binaries, so the
+      # failure would be a LNK2038 in this step and nowhere else.
+      #
+      # The cost is real: it doubles the slowest job in the matrix, because the
+      # changed flag changes the fingerprint and nothing above is reusable.
+      - name: Clippy (client, Windows-only code, debug-assertions off)
+        env:
+          RUSTFLAGS: "-C target-feature=+crt-static -C debug-assertions=off"
         run: cargo clippy -p dioxusfun --all-targets -- -D warnings
       # `sysaudio/windows.rs` and `rawmic/windows.rs` are 61 unsafe WASAPI FFI
       # sites that compile nowhere else, and one of them shipped a heap
