@@ -101,6 +101,26 @@ the top within each section.
 
 ## Repo & CI
 
+- **macOS clippy gates one profile of two.** The gap the Windows job just
+  closed, in the one job nobody wrote it down for. `macos-build` runs
+  `cargo clippy -p dioxusfun --all-targets -- -D warnings` once, with
+  `debug_assertions` on; `desktop-build` and `windows-build` both run it twice,
+  because `unused_variables` and friends fire only with the flag off — which is
+  how nine of them reached a published build (`c685828`). So a regression of
+  that class in `sysvideo/` or `sysaudio/macos.rs` would still reach a
+  published macOS build with nothing red.
+  Cheaper to close here than it was on Windows: `macos-build` has no job-level
+  `RUSTFLAGS` to be replaced (the comment there says `crt-static` is an MSVC
+  concern), so the step is `RUSTFLAGS: "-C debug-assertions=off"` and nothing
+  else — the trap that made the Windows one worth a paragraph does not exist on
+  this job. The cost is the same: a second compile, on a runner that is already
+  the slowest per minute in the matrix.
+  Not done in the same PR as the Windows one on purpose. Nobody here has a Mac
+  to run either profile by hand first, and the Windows change went in on the
+  strength of having been run locally — a macOS step would be going in on the
+  strength of having been reasoned about, with a red `master` as the failure
+  mode if it takes findings with it, exactly as turning that job's first
+  profile on took four.
 - **The Windows portable and setup ship the wrong icon.** Reported from a real
   download: both carry an old icon rather than the Discordia mark. Worth
   starting from the comment in `client/Dioxus.toml`, because it says this was
