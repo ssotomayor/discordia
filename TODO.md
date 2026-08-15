@@ -244,8 +244,56 @@ the top within each section.
   there's no in-app way to see/set the central server's operator list.
 - **Invite expiry / use limits.** One rotating high-entropy code per guild
   today; no TTL, no max-uses, no per-code attribution.
-- **Channel reorder UI.** `Channel.position` exists and `UpdateChannel` sets
-  it, but the client offers no drag-to-reorder yet.
+- **A reorder can be silently half-applied, and the client cannot tell.**
+  `send_reorder` emits one `UpdateChannel` per row it renumbers, and the server
+  gates those on a `RateLimiter` shared with *every* rate-limited action on the
+  connection — 30 hits per 10 s. Its `UpdateChannel` arm is the one that drops
+  the excess with `continue` and **no** `ServerMessage::Error`, unlike the arms
+  around it. Channels only move on the `ChannelUpdate` echo, so a rejected
+  update leaves a visibly half-reordered list, no message, and the same window
+  blocking the user's next ten seconds of unrelated actions.
+  Mostly starved of fuel rather than fixed: a move now reuses the position
+  values its own span already holds, so one slot costs two messages in a guild
+  of any size (`a_one_slot_move_costs_two_messages_however_big_the_guild`). It
+  still bursts when the span has duplicate positions — every guild that has
+  never been reordered, since channels default to 0 — where the fallback
+  numbers the whole guild once. A 40-channel guild's first reorder is still 40
+  messages.
+  The real fix is an error on rejection, and it is **not** in this repo's reach
+  right now: it lives in `server/src/gateway/connection.rs`, which the
+  `networking-direct-and-private` branch is rewriting. Worth doing there, or
+  after it lands, and worth remembering that it makes every silent
+  rate-limit drop visible, not just this one.
+- **A reorder writes back a stale snapshot of every row it renumbers.**
+  `UpdateChannel` is a full replace, so `send_reorder` sends each row's
+  `name`, `topic`, `read_only` and `slowmode_secs` as they were at render time
+  along with the new position. If someone else edits one of those fields on a
+  row that a reorder happens to renumber, their edit is overwritten by a
+  client that was not trying to change it and does not know it did.
+  Two rows per move is a narrow window, and the guild-wide fallback above is a
+  wide one. Closing it needs either a position-only message on the wire — which
+  is a protocol change, so it belongs with whoever next opens
+  `protocol/src/lib.rs` — or a read-modify-write against fresher state than the
+  render snapshot.
+- **Nobody has performed the channel-reorder *drag*.** Reordering itself works
+  by a path that has no gesture in it — `Move up` / `Move down` in the channel
+  context menu, calling `reorder_positions`, which has eight unit tests behind
+  it. The drag is the second front end on that function: rows are `draggable`
+  under `ManageChannels`, and a drop calls the same code.
+  What is untested is the part a test cannot reach — press, drag, release —
+  and two things could stop it working, neither of which affects the menu path:
+  whether `e.prevent_default()` on `ondragover` reaches the webview in time to
+  permit the drop (synchronous `prevent_default` is documented from 0.6 and
+  this client already depends on it for `oncontextmenu`, so this is reasoned
+  and unexercised), and that `ondragstart` never calls
+  `dataTransfer.setData(…)`, which some engines require before they will honour
+  a drop. Dioxus's `DragData` exposes no way to set it, so if that turns out to
+  be the blocker the fix is not a line — it is either an upstream API or a
+  pointer-event drag like the one `grid-layout` already implements.
+  The occupant subtree under a voice row is explicitly `draggable: false`, so
+  the per-user volume slider inside it cannot start a channel drag. That is
+  reasoned too; nobody has dragged that slider on a build with this change
+  either.
 - **`MentionEveryone` permission.** Cut from v1 — mentions are computed
   client-side from content, so the server can't enforce it without rewriting
   message content.

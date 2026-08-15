@@ -6,6 +6,127 @@ use crate::identity::discriminator;
 use crate::protocol::{Channel, ChannelKind, ClientMessage, DmInfo, Id, Permission, VoiceState};
 use crate::state::{AppState, GatewayTx, VoicePhase, use_app_state, use_gateway};
 
+/// The position changes that put `moved` where `target` sits.
+///
+/// Separated from the rows that call it because it is the only part of a
+/// reorder that can be tested: the gesture needs a mouse, the arithmetic does
+/// not.
+///
+/// `guild` is **every channel in the guild**, in the order the sidebar draws
+/// them — the text section, then the voice section, each sorted by `position`
+/// then name. That is not a convenience; it is what `position` means.
+/// `protocol::Channel::position` documents it as "sort order within the guild's
+/// channel list", and the server assigns it that way: `create_channel` takes
+/// `max(position) + 1` over every channel in the guild regardless of kind, and
+/// `create_guild`'s template loop enumerates once across a mixed text+voice
+/// list. An earlier version of this function numbered each kind group from 0
+/// on its own, which is wrong the moment a guild has both kinds — which is
+/// every guild made from a template.
+///
+/// Two things follow:
+///
+/// - Positions are assigned `0..n` across the guild rather than permuting the
+///   values it already holds. Channels default to 0, so a guild that has never
+///   been reordered has no distinct values to permute, and anything that tried
+///   would sort by name forever.
+/// - The first reorder in a guild whose positions interleave the two kinds
+///   renumbers more rows than it moves, once, as it normalises them. Nothing
+///   the user sees changes — each section filters by kind before sorting, so
+///   the visible order of both is preserved exactly — and every reorder after
+///   it touches only the rows that move.
+///
+/// A drop across kinds returns nothing. The sections are drawn separately and
+/// numbering is the only thing they share, so "text channel dropped onto a
+/// voice channel" has no meaning to express.
+fn reorder_positions(guild: &[Channel], moved: Id, target: Id) -> Vec<(Id, u32)> {
+    if moved == target {
+        return Vec::new();
+    }
+    let (Some(from), Some(to)) = (
+        guild.iter().position(|c| c.id == moved),
+        guild.iter().position(|c| c.id == target),
+    ) else {
+        // A drop onto something that is no longer in the list — the channel was
+        // deleted, or the guild changed under the drag.
+        return Vec::new();
+    };
+    if std::mem::discriminant(&guild[from].kind) != std::mem::discriminant(&guild[to].kind) {
+        return Vec::new();
+    }
+
+    let mut order: Vec<&Channel> = guild.iter().collect();
+    let dragged = order.remove(from);
+    order.insert(to, dragged);
+
+    // Removing at `from` and inserting at `to` permutes only what lies between
+    // them, so only that span needs new numbers — and it can have the ones it
+    // already holds. Reusing them is what keeps a drag to two messages instead
+    // of the whole guild: every row outside the span keeps its value, and the
+    // span's own values still sit between its neighbours' by construction.
+    //
+    // This is not a micro-optimisation. Each message is an `UpdateChannel`, the
+    // server rate-limits those on a budget shared with everything else the
+    // connection does, and it drops the excess without saying so — so a burst
+    // is a partially applied reorder the user is never told about. See TODO.md.
+    let (lo, hi) = (from.min(to), from.max(to));
+    let mut slots: Vec<u32> = guild[lo..=hi].iter().map(|c| c.position).collect();
+    slots.sort_unstable();
+    // Distinct across the span *and its immediate neighbours*, not just within
+    // it. The span-only check was wrong at the boundary: rows render by
+    // `(position, name)` and nothing enforces uniqueness — `update_channel`
+    // stores whatever it is sent — so a value the fast path reuses can tie with
+    // an untouched row just outside the span and then lose the name tie-break.
+    // The dragged row silently lands on the far side of a row that was never
+    // part of the drag. Widening the window by one on each side is enough,
+    // because the list is already sorted by position, so a tie can only be with
+    // an adjacent entry.
+    let guard = &guild[lo.saturating_sub(1)..(hi + 2).min(guild.len())];
+    let mut window: Vec<u32> = guard.iter().map(|c| c.position).collect();
+    window.sort_unstable();
+    if window.windows(2).all(|w| w[0] != w[1]) {
+        return order[lo..=hi]
+            .iter()
+            .zip(slots)
+            .filter(|(c, slot)| c.position != *slot)
+            .map(|(c, slot)| (c.id, slot))
+            .collect();
+    }
+
+    // Unless the span cannot express an order: duplicate positions, which is
+    // every guild that has never been reordered, since channels default to 0.
+    // Those have to be assigned, and assigning across the guild is the only
+    // numbering that matches what `position` means.
+    order
+        .iter()
+        .enumerate()
+        .filter(|(i, c)| c.position != *i as u32)
+        .map(|(i, c)| (c.id, i as u32))
+        .collect()
+}
+
+/// Send what a drop implies, and nothing when it implies nothing.
+///
+/// `UpdateChannel` is a full replace, so every field travels back untouched —
+/// a reorder that dropped a topic or a read-only flag would be silent data
+/// loss rather than a visible bug. The server re-checks `ManageChannels`, so
+/// the caller's gate is only there to keep the affordance off a row nobody may
+/// move.
+fn send_reorder(gw: &GatewayTx, group: &[Channel], moved: Id, target: Id) {
+    for (id, position) in reorder_positions(group, moved, target) {
+        let Some(ch) = group.iter().find(|c| c.id == id) else {
+            continue;
+        };
+        gw.send(ClientMessage::UpdateChannel {
+            channel_id: id,
+            name: ch.name.clone(),
+            topic: ch.topic.clone(),
+            read_only: ch.read_only,
+            position,
+            slowmode_secs: ch.slowmode_secs,
+        });
+    }
+}
+
 /// Right-click management menu over a channel row (`ManageChannels` only).
 #[derive(Clone, PartialEq)]
 struct ChanMenu {
@@ -76,13 +197,26 @@ pub fn ChannelsColumn() -> Element {
         .iter()
         .filter(|c| matches!(c.kind, ChannelKind::Text))
         .collect();
+
     let voice_channels: Vec<&Channel> = channels
         .iter()
         .filter(|c| matches!(c.kind, ChannelKind::Voice))
         .collect();
+    // One owned copy for the reorder handlers, which outlive this render, in
+    // the order the sidebar draws: text section then voice section. That is what
+    // `reorder_positions` is defined against, because `position` is guild-wide.
+    let guild_order: Vec<Channel> = text_channels
+        .iter()
+        .chain(voice_channels.iter())
+        .map(|c| (*c).clone())
+        .collect();
 
     let mut chan_menu = use_signal::<Option<ChanMenu>>(|| None);
     let mut show_create = use_signal(|| false);
+    // The channel currently under the cursor's grip, if a reorder is in flight.
+    // Cleared on drop and on the drag ending anywhere else, so a drag abandoned
+    // outside the list does not leave a stale grip behind it.
+    let mut dragging = use_signal::<Option<Id>>(|| None);
 
     // The guild banner had nowhere to render at all — uploading one changed a
     // database row and nothing else. Here is its home: a strip across the top
@@ -190,10 +324,36 @@ pub fn ChannelsColumn() -> Element {
                                 };
                                 let g2 = gateway.clone();
                                 let ctx_ch = ch.clone();
+                                let g_drop = gateway.clone();
+                                let drop_group = guild_order.clone();
                                 rsx! {
                                     button {
                                         key: "{cid}",
                                         class: "w-full flex items-center gap-1.5 px-2 py-1 rounded text-left text-sm transition-colors {cls}",
+                                        draggable: can_manage_channels,
+                                        ondragstart: move |_| dragging.set(Some(cid)),
+                                        // Without this the browser refuses the
+                                        // drop and the gesture ends in nothing.
+                                        // Guarded on a drag we started, so a
+                                        // file dragged in from the desktop is
+                                        // still handled by whatever handles it.
+                                        ondragover: move |e: Event<DragData>| {
+                                            if dragging().is_some() {
+                                                e.prevent_default();
+                                            }
+                                        },
+                                        ondrop: move |e: Event<DragData>| {
+                                            e.prevent_default();
+                                            let moved = dragging();
+                                            dragging.set(None);
+                                            if let Some(moved) = moved {
+                                                send_reorder(&g_drop, &drop_group, moved, cid);
+                                            }
+                                        },
+                                        // A drag released outside the list still
+                                        // ends here; without this the next drop
+                                        // anywhere would act on a stale grip.
+                                        ondragend: move |_| dragging.set(None),
                                         onclick: move |_| select_text_channel(&mut state, &g2, cid),
                                         oncontextmenu: move |e: MouseEvent| {
                                             if can_manage_channels {
@@ -207,8 +367,19 @@ pub fn ChannelsColumn() -> Element {
                                                 }));
                                             }
                                         },
-                                        span { class: "text-[var(--text-dim)]", "#" }
-                                        span { class: "truncate flex-1", "{ch.name}" }
+                                        // The row is both the click target and the
+                                        // drag handle, and HTML5 takes the gesture
+                                        // the moment the pointer drifts during a
+                                        // mousedown on a `draggable` element — so a
+                                        // slightly shaky click on a channel would
+                                        // silently not select it, for exactly the
+                                        // people who have `ManageChannels`. Opting
+                                        // the label out leaves a drag handle that
+                                        // is the row's padding and its trailing
+                                        // badges, and a click target that is the
+                                        // text.
+                                        span { class: "text-[var(--text-dim)]", draggable: false, "#" }
+                                        span { class: "truncate flex-1", draggable: false, "{ch.name}" }
                                         if ch.read_only {
                                             span { class: "text-[10px] text-[var(--text-dim)]", title: "Read-only", "🔒" }
                                         }
@@ -236,9 +407,27 @@ pub fn ChannelsColumn() -> Element {
                                     .cloned()
                                     .collect();
                                 let ctx_ch = ch.clone();
+                                let g_drop = gateway.clone();
+                                let drop_group = guild_order.clone();
                                 rsx! {
                                     div {
                                         key: "{cid}",
+                                        draggable: can_manage_channels,
+                                        ondragstart: move |_| dragging.set(Some(cid)),
+                                        ondragover: move |e: Event<DragData>| {
+                                            if dragging().is_some() {
+                                                e.prevent_default();
+                                            }
+                                        },
+                                        ondrop: move |e: Event<DragData>| {
+                                            e.prevent_default();
+                                            let moved = dragging();
+                                            dragging.set(None);
+                                            if let Some(moved) = moved {
+                                                send_reorder(&g_drop, &drop_group, moved, cid);
+                                            }
+                                        },
+                                        ondragend: move |_| dragging.set(None),
                                         oncontextmenu: move |e: MouseEvent| {
                                             if can_manage_channels {
                                                 e.prevent_default();
@@ -279,6 +468,7 @@ pub fn ChannelsColumn() -> Element {
             if let Some(m) = chan_menu() {
                 ChannelMenuPopover {
                     menu: m,
+                    guild_order: guild_order.clone(),
                     on_close: move |_| chan_menu.set(None),
                     on_mode: move |mode: ChanMenuMode| {
                         if let Some(cur) = chan_menu.write().as_mut() {
@@ -353,11 +543,30 @@ fn CreateChannelForm(guild_id: Id, on_done: EventHandler<()>) -> Element {
 #[component]
 fn ChannelMenuPopover(
     menu: ChanMenu,
+    /// Every channel in the guild, in the order the sidebar draws them — what
+    /// `reorder_positions` needs, and the reason the move items live here
+    /// rather than on the row.
+    guild_order: Vec<Channel>,
     on_close: EventHandler<()>,
     on_mode: EventHandler<ChanMenuMode>,
 ) -> Element {
     let gateway = use_gateway();
     let ch = menu.channel.clone();
+    // The rows this one can trade places with: same kind, in drawn order. A
+    // menu path to the same arithmetic the drag uses — which matters because
+    // the drag gesture is the one part of this nobody has been able to
+    // exercise, and because a reorder that can only be performed by dragging
+    // cannot be performed at all without a mouse.
+    let siblings: Vec<Channel> = guild_order
+        .iter()
+        .filter(|c| std::mem::discriminant(&c.kind) == std::mem::discriminant(&ch.kind))
+        .cloned()
+        .collect();
+    let at = siblings.iter().position(|c| c.id == ch.id);
+    let move_up = at.filter(|i| *i > 0).map(|i| siblings[i - 1].id);
+    let move_down = at
+        .filter(|i| *i + 1 < siblings.len())
+        .map(|i| siblings[i + 1].id);
     // Edit-form buffers, seeded from the channel.
     let mut name = use_signal(|| ch.name.clone());
     let mut topic = use_signal(|| ch.topic.clone().unwrap_or_default());
@@ -380,6 +589,40 @@ fn ChannelMenuPopover(
                                 class: "w-full text-left px-3 py-1.5 rounded text-[var(--text)] hover:bg-white/[0.04] transition-colors",
                                 onclick: move |_| on_mode.call(ChanMenuMode::Edit),
                                 "Edit name & topic"
+                            }
+                            if let Some(above) = move_up {
+                                {
+                                    let gw = gateway.clone();
+                                    let order = guild_order.clone();
+                                    let id = ch.id;
+                                    rsx! {
+                                        button {
+                                            class: "w-full text-left px-3 py-1.5 rounded text-[var(--text)] hover:bg-white/[0.04] transition-colors",
+                                            onclick: move |_| {
+                                                send_reorder(&gw, &order, id, above);
+                                                on_close.call(());
+                                            },
+                                            "Move up"
+                                        }
+                                    }
+                                }
+                            }
+                            if let Some(below) = move_down {
+                                {
+                                    let gw = gateway.clone();
+                                    let order = guild_order.clone();
+                                    let id = ch.id;
+                                    rsx! {
+                                        button {
+                                            class: "w-full text-left px-3 py-1.5 rounded text-[var(--text)] hover:bg-white/[0.04] transition-colors",
+                                            onclick: move |_| {
+                                                send_reorder(&gw, &order, id, below);
+                                                on_close.call(());
+                                            },
+                                            "Move down"
+                                        }
+                                    }
+                                }
                             }
                             if matches!(ch.kind, ChannelKind::Text) {
                                 button {
@@ -504,14 +747,26 @@ fn VoiceChannelRow(
                 onclick: move |_| {
                     if connected { on_leave.call(()) } else { on_join.call(()) }
                 },
-                span { class: "text-[var(--text-dim)] text-xs", "♪" }
-                span { class: "truncate flex-1", "{channel.name}" }
+                // Same click-versus-drag opt-out as the text rows: the wrapper
+                // this sits in is `draggable` for `ManageChannels`, and a
+                // pointer drift during a join/leave click would otherwise be
+                // taken as the start of a channel drag.
+                span { class: "text-[var(--text-dim)] text-xs", draggable: false, "♪" }
+                span { class: "truncate flex-1", draggable: false, "{channel.name}" }
                 if connected {
                     span { class: "text-[9px] text-[var(--accent)] font-semibold uppercase tracking-wider", "live" }
                 }
             }
             if !occupants.is_empty() {
-                div { class: "ml-5 mt-0.5 space-y-0.5",
+                div {
+                    class: "ml-5 mt-0.5 space-y-0.5",
+                    // Opt this subtree out of the reorder drag. The row above is
+                    // `draggable` for `ManageChannels`, and an HTML5 drag started
+                    // on a descendant is the ancestor's — which would make the
+                    // per-user volume slider inside `VoiceOccupant` grab the
+                    // channel instead of the knob, for exactly the people who
+                    // have the reorder affordance.
+                    draggable: false,
                     for vs in occupants.iter() {
                         {
                             let name = users_by_id.display_name(&vs.user_pubkey);
@@ -1876,5 +2131,214 @@ fn select_dm(state: &mut Signal<AppState>, gateway: &GatewayTx, channel_id: Id) 
             limit: 50,
             before_ms: None,
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn chan(name: &str, position: u32) -> Channel {
+        kinded(name, position, ChannelKind::Text)
+    }
+
+    fn kinded(name: &str, position: u32, kind: ChannelKind) -> Channel {
+        Channel {
+            id: Id::new_v4(),
+            guild_id: Id::nil(),
+            name: name.into(),
+            kind,
+            topic: None,
+            read_only: false,
+            position,
+            slowmode_secs: 0,
+        }
+    }
+
+    /// Rendered order, which is what `reorder_positions` is defined against:
+    /// `position`, then name. The same sort the list itself uses.
+    fn group(names: &[(&str, u32)]) -> Vec<Channel> {
+        let mut v: Vec<Channel> = names.iter().map(|(n, p)| chan(n, *p)).collect();
+        v.sort_by(|a, b| {
+            a.position
+                .cmp(&b.position)
+                .then_with(|| a.name.cmp(&b.name))
+        });
+        v
+    }
+
+    /// Apply the updates the way the server does — a full replace of
+    /// `position` on each named channel — and re-sort. Asserting on this rather
+    /// than on the update list is the point: what a user sees is the order, and
+    /// two different update lists can produce the same one.
+    fn applied(group: &[Channel], updates: &[(Id, u32)]) -> Vec<String> {
+        let mut after: Vec<Channel> = group.to_vec();
+        for (id, pos) in updates {
+            if let Some(c) = after.iter_mut().find(|c| c.id == *id) {
+                c.position = *pos;
+            }
+        }
+        after.sort_by(|a, b| {
+            a.position
+                .cmp(&b.position)
+                .then_with(|| a.name.cmp(&b.name))
+        });
+        after.into_iter().map(|c| c.name).collect()
+    }
+
+    #[test]
+    fn dragging_down_lands_on_the_target_slot() {
+        let g = group(&[("a", 0), ("b", 1), ("c", 2), ("d", 3)]);
+        let updates = reorder_positions(&g, g[0].id, g[2].id);
+        assert_eq!(applied(&g, &updates), ["b", "c", "a", "d"]);
+    }
+
+    #[test]
+    fn dragging_up_lands_on_the_target_slot() {
+        let g = group(&[("a", 0), ("b", 1), ("c", 2), ("d", 3)]);
+        let updates = reorder_positions(&g, g[3].id, g[1].id);
+        assert_eq!(applied(&g, &updates), ["a", "d", "b", "c"]);
+    }
+
+    /// The state every guild that has never been reordered is in: every
+    /// position is 0, so the list is really sorted by name and there are no
+    /// distinct values to permute. They get assigned instead.
+    ///
+    /// Note what this also shows — the moved channel needs no message of its
+    /// own here. `gamma` is already at 0, so renumbering the two it passed is
+    /// enough, and sending it a redundant update would be the only difference.
+    #[test]
+    fn a_group_that_never_had_positions_gets_them() {
+        let g = group(&[("alpha", 0), ("beta", 0), ("gamma", 0)]);
+        let updates = reorder_positions(&g, g[2].id, g[0].id);
+        assert_eq!(applied(&g, &updates), ["gamma", "alpha", "beta"]);
+        assert_eq!(
+            updates.len(),
+            2,
+            "gamma is already at 0 and needs no update"
+        );
+    }
+
+    /// One slot is two messages, not the whole list. The wire message is a full
+    /// replace of the channel, so every one of these is a round trip that can
+    /// race an edit — sending the untouched tail would widen that for nothing.
+    #[test]
+    fn only_the_rows_that_move_are_sent() {
+        let g = group(&[("a", 0), ("b", 1), ("c", 2), ("d", 3), ("e", 4)]);
+        let updates = reorder_positions(&g, g[0].id, g[1].id);
+        assert_eq!(updates.len(), 2);
+        assert_eq!(applied(&g, &updates), ["b", "a", "c", "d", "e"]);
+    }
+
+    /// The shape every guild made from a template is in, and the one an earlier
+    /// version of this got wrong: `position` is guild-wide, so a voice channel
+    /// in a guild with two text channels starts at 2, not at 0.
+    ///
+    /// Numbering the voice group from 0 on its own would have rewritten both
+    /// voice rows to move one — and each rewrite is a full-replace
+    /// `UpdateChannel` carrying a render-time snapshot of name, topic,
+    /// read-only and slowmode, so the rows swept in for nothing are rows whose
+    /// concurrent edit can be clobbered.
+    #[test]
+    fn a_mixed_guild_numbers_across_both_kinds() {
+        let guild = vec![
+            kinded("general", 0, ChannelKind::Text),
+            kinded("random", 1, ChannelKind::Text),
+            kinded("Lobby", 2, ChannelKind::Voice),
+            kinded("Gaming", 3, ChannelKind::Voice),
+        ];
+        let updates = reorder_positions(&guild, guild[3].id, guild[2].id);
+        assert_eq!(
+            updates,
+            vec![(guild[3].id, 2), (guild[2].id, 3)],
+            "moving one voice channel past the other must touch those two and              nothing else — the text channels above them do not move"
+        );
+    }
+
+    /// Sections are drawn separately and share only the numbering, so a drop
+    /// from one onto the other has nothing to express. It must not renumber.
+    #[test]
+    fn a_drop_across_kinds_does_nothing() {
+        let guild = vec![
+            kinded("general", 0, ChannelKind::Text),
+            kinded("Lobby", 1, ChannelKind::Voice),
+        ];
+        assert!(reorder_positions(&guild, guild[0].id, guild[1].id).is_empty());
+        assert!(reorder_positions(&guild, guild[1].id, guild[0].id).is_empty());
+    }
+
+    /// The burst the server would silently drop. Positions with gaps in them —
+    /// what a guild looks like after any channel is deleted — used to force a
+    /// full renumber, so one drag in a large guild could exceed the shared
+    /// 30-per-10s budget and have the excess dropped with no error.
+    ///
+    /// Reusing the span's own values keeps it at two messages no matter how
+    /// large the guild is.
+    #[test]
+    fn a_one_slot_move_costs_two_messages_however_big_the_guild() {
+        let guild: Vec<Channel> = (0..40u32)
+            .map(|i| chan(&format!("c{i:02}"), i * 3 + 5))
+            .collect();
+        let updates = reorder_positions(&guild, guild[10].id, guild[11].id);
+        assert_eq!(
+            updates,
+            vec![(guild[11].id, 35), (guild[10].id, 38)],
+            "two rows swap the two position values they already held; the other              38 channels are not renumbered and cost no message"
+        );
+    }
+
+    /// The same guild, moved further: the span is the cost, not the guild.
+    #[test]
+    fn the_span_is_what_costs_messages() {
+        let guild: Vec<Channel> = (0..40u32)
+            .map(|i| chan(&format!("c{i:02}"), i * 3 + 5))
+            .collect();
+        let updates = reorder_positions(&guild, guild[5].id, guild[9].id);
+        assert_eq!(
+            updates.len(),
+            5,
+            "five rows lie in the span, and only those"
+        );
+        let moved: Vec<Id> = updates.iter().map(|(id, _)| *id).collect();
+        assert!(
+            !moved.contains(&guild[0].id) && !moved.contains(&guild[39].id),
+            "nothing outside the span may be touched"
+        );
+    }
+
+    /// The boundary case the first version of the fast path got wrong: a
+    /// duplicate position just *outside* the span it reuses values from.
+    ///
+    /// Nothing enforces unique positions — the server stores what it is sent —
+    /// and rows render by `(position, name)`. So reusing the span's values can
+    /// hand the dragged row a number it shares with an untouched neighbour, and
+    /// the name tie-break then decides the order. Here `b` was dragged onto
+    /// `c`, and the span-only check let it land past `d`, which had nothing to
+    /// do with the drag.
+    #[test]
+    fn a_tie_just_outside_the_span_cannot_swallow_the_dragged_row() {
+        let guild = vec![chan("a", 1), chan("zzz", 2), chan("c", 3), chan("d", 3)];
+        let updates = reorder_positions(&guild, guild[1].id, guild[2].id);
+        assert_eq!(
+            applied(&guild, &updates),
+            ["a", "c", "zzz", "d"],
+            "the dragged row must land where it was dropped, not behind a row              it happens to tie with"
+        );
+    }
+
+    #[test]
+    fn dropping_a_row_on_itself_sends_nothing() {
+        let g = group(&[("a", 0), ("b", 1)]);
+        assert!(reorder_positions(&g, g[0].id, g[0].id).is_empty());
+    }
+
+    /// A drop that lands after the list changed under it — a channel deleted
+    /// mid-drag, or a guild switch. Silence beats renumbering a stale list.
+    #[test]
+    fn dropping_onto_something_that_left_sends_nothing() {
+        let g = group(&[("a", 0), ("b", 1)]);
+        let gone = Id::new_v4();
+        assert!(reorder_positions(&g, g[0].id, gone).is_empty());
+        assert!(reorder_positions(&g, gone, g[0].id).is_empty());
     }
 }
