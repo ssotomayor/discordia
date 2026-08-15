@@ -229,8 +229,20 @@ the top within each section.
   there's no in-app way to see/set the central server's operator list.
 - **Invite expiry / use limits.** One rotating high-entropy code per guild
   today; no TTL, no max-uses, no per-code attribution.
-- **Channel reorder UI.** `Channel.position` exists and `UpdateChannel` sets
-  it, but the client offers no drag-to-reorder yet.
+- **Nobody has performed the channel-reorder gesture.** Drag-to-reorder is
+  wired: rows are `draggable` under `ManageChannels`, and `reorder_positions`
+  turns a drop into the minimum set of `UpdateChannel`s, with six unit tests
+  behind the arithmetic. What is untested is the part a test cannot reach —
+  press, drag, release. It was written on a machine where nobody could drag a
+  mouse, and the one thing that could invalidate it is whether
+  `e.prevent_default()` on `ondragover` reaches the webview in time to permit
+  the drop. Synchronous `prevent_default` is documented from 0.6 and this
+  client already depends on it for `oncontextmenu`, so the reasoning is sound
+  and unexercised, which is exactly the position `sysaudio`'s Windows backend
+  was in before someone ran its test.
+  If it turns out not to fire, the fallback is the context menu that is already
+  on those rows: `Move up` / `Move down` calling the same `reorder_positions`,
+  no new mechanism.
 - **`MentionEveryone` permission.** Cut from v1 — mentions are computed
   client-side from content, so the server can't enforce it without rewriting
   message content.
