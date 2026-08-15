@@ -110,9 +110,19 @@ the top within each section.
   which artifact was downloaded: a pre-release from before that fix would show
   exactly this, and the bug would be nothing but a stale download. If a current
   build still does it, the `.ico` is reaching NSIS (`installer_icon`) and not the
-  executable, or not being regenerated when the artwork changed — the same
-  entry under Assets notes the `.icns` was last rebuilt by downscaling rather
-  than rasterising, so the icon set as a whole has drifted from `icon.svg`.
+  executable.
+  **The third candidate is ruled out by measurement: the `.ico` is not stale.**
+  It holds seven PNG frames — 16/24/32/48/64/128/256 — and every one of them is
+  pixel-identical to a fresh `resvg` render of the current `icon.svg` at that
+  size: 0 differing pixels of 65,536 at 256px, 0 of 256 at 16px, and the same at
+  every size between. They differ from a fresh render only in compressed bytes,
+  which is the PNG encoder, not the image. So this file already follows the
+  recipe in `Dioxus.toml` — rasterised per size from the SVG rather than
+  downscaled — and the drift the Assets entry describes is the `.icns` alone,
+  not the icon set as a whole.
+  What that leaves is the two candidates above, and neither can be settled by
+  reading the config: it needs a `dx bundle` on Windows and an inspection of the
+  produced `.exe`'s resources against `assets/icon.ico`.
 - **Windows SmartScreen blocks the download as an unknown publisher.** Also
   reported from a real machine: "Windows protected your PC", and it takes
   More info → Run anyway to get past. Expected for unsigned binaries and
@@ -178,7 +188,10 @@ the top within each section.
   stale-icon problem is fixed — it now carries the current tile-less mark — but
   it was rebuilt with `sips` from `icon-1024.png` rather than per-size from
   `icon.svg` as the `Dioxus.toml` recipe asks, because no SVG rasteriser
-  (`resvg`, `rsvg-convert`, ImageMagick) was installed. macOS draws 128px and up
+  (`resvg`, `rsvg-convert`, ImageMagick) was installed. (`resvg` is installed on
+  the Windows host now, and the `.ico` there measures as correctly rasterised —
+  see the Windows icon entry under Repo & CI — but `iconutil` is macOS-only, so
+  the `.icns` still cannot be rebuilt from here.) macOS draws 128px and up
   in the Dock, where downscaling holds up; the 16px entry is the one that would
   benefit from real hinting, and unlike Windows' taskbar macOS only uses it in
   list views. Redo with `resvg` next time the artwork changes.
