@@ -304,6 +304,15 @@ fn setup() -> Result<Started, String> {
 /// question. Sharing one process-wide blob saved those bytes and cost a lease, a
 /// retirement rule for abandoned activations, and a wedge with no recovery when
 /// a capture thread hung with the lease in hand. See `TODO.md`.
+///
+/// One thing to know before trusting the "never freed" half: it is an
+/// observation of this Windows, not a promise from Microsoft, who document
+/// neither the lifetime nor who owns the block. A future engine that *does* free
+/// it would be handing a Rust allocation to `CoTaskMemFree`, which survives
+/// today only because that and Rust's allocator both sit on the process heap. If
+/// per-app capture starts failing right after a Windows update, this is the line
+/// to re-measure — the probe was: activate, check the block is untouched, then
+/// check that 64 same-size allocations afterwards never land on its address.
 fn activation_params() -> *mut AUDIOCLIENT_ACTIVATION_PARAMS {
     // Heap rather than a `static` of the struct, which could land in read-only
     // memory and fault an engine that writes back into the blob. Whether it does
@@ -321,6 +330,37 @@ fn activation_params() -> *mut AUDIOCLIENT_ACTIVATION_PARAMS {
             },
         },
     }))
+}
+
+/// What the end of the activation wait means, and what becomes of the event.
+///
+/// A function rather than two branches inside `activate` because the timeout
+/// half had never been executed — not in a test, not on any machine. Nobody has
+/// made WASAPI take longer than `ACTIVATE_TIMEOUT` to answer, so the rule that
+/// an abandoned activation keeps its event handle existed only as a reading of
+/// the code. `activate` itself cannot be driven there without a real audio
+/// engine *and* an engine that stalls; this can, by being handed the wait result
+/// WASAPI would have produced. Same seam as `ScriptedMinter` in
+/// `server/tests/voice.rs`: answer the call rather than arrange for it to fail.
+fn settle_activation_wait(waited: WAIT_EVENT, done: SendHandle) -> Result<(), String> {
+    if waited != WAIT_OBJECT_0 {
+        // `done` is deliberately leaked. On this path the completion handler has
+        // NOT run and may still fire on an MTA pool thread: closing it now would
+        // let that `SetEvent` a handle value Windows has since recycled, quietly
+        // signalling some unrelated kernel object instead of failing loudly.
+        // Same trade `WinCapture::start` makes with its shutdown handle — a leak
+        // on an already-failed path costs far less than a use-after-free. The
+        // blob needs nothing here: it was this activation's alone and is already
+        // never freed, so an abandoned operation can hold it for as long as it
+        // likes.
+        return Err("Windows didn't answer the audio-capture request in time.".into());
+    }
+    // SAFETY: the handler has run — it is what signalled this event — so nothing
+    // will touch the handle again.
+    unsafe {
+        let _ = CloseHandle(done.0);
+    }
+    Ok(())
 }
 
 /// Ask the audio engine for a process-loopback client that excludes us.
@@ -372,23 +412,7 @@ fn activate() -> Result<IAudioClient, String> {
 
     // SAFETY: waiting on our own event.
     let waited = unsafe { WaitForSingleObject(done.0, ACTIVATE_TIMEOUT.as_millis() as u32) };
-    if waited != WAIT_OBJECT_0 {
-        // `done` is deliberately leaked. On this path the completion handler has
-        // NOT run and may still fire on an MTA pool thread: closing it now would
-        // let that `SetEvent` a handle value Windows has since recycled, quietly
-        // signalling some unrelated kernel object instead of failing loudly.
-        // Same trade `WinCapture::start` makes with its shutdown handle — a leak
-        // on an already-failed path costs far less than a use-after-free. The
-        // blob needs nothing here: it was this activation's alone and is already
-        // never freed, so an abandoned operation can hold it for as long as it
-        // likes.
-        return Err("Windows didn't answer the audio-capture request in time.".into());
-    }
-    // SAFETY: the handler has run — it is what signalled this event — so nothing
-    // will touch the handle again.
-    unsafe {
-        let _ = CloseHandle(done.0);
-    }
+    settle_activation_wait(waited, done)?;
 
     let mut hr = HRESULT(0);
     let mut iface = None;
@@ -582,6 +606,10 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use tokio::sync::mpsc::unbounded_channel;
+    use windows::Win32::Foundation::{
+        CloseHandle, GetHandleInformation, WAIT_OBJECT_0, WAIT_TIMEOUT,
+    };
+    use windows::Win32::System::Threading::CreateEventW;
 
     /// The one part of this module a CI runner can execute — everything else
     /// needs an audio device, which is the same "nobody ran it" that hid the
@@ -599,6 +627,68 @@ mod tests {
             "two activations were handed one address; whichever the engine is \
              still holding, the other one is a use-after-free waiting to happen"
         );
+    }
+
+    /// The abandoned-activation path, executed for the first time.
+    ///
+    /// `activate`'s timeout branch was reasoned-about code: no machine has made
+    /// WASAPI take longer than `ACTIVATE_TIMEOUT` to answer, so the rule it
+    /// implements — an activation nobody can wait for keeps its event handle,
+    /// because the completion handler may still `SetEvent` it from an MTA pool
+    /// thread — had never once run. The other never-run branch in this file was
+    /// `windows_loopback_delivers_real_samples`, and it found a heap corruption
+    /// the first time anyone executed it.
+    ///
+    /// What this does and does not cover: it drives the decision WASAPI's answer
+    /// produces, not WASAPI being slow. `WaitForSingleObject` is still never seen
+    /// timing out for real — that needs a stalled audio engine, which no test can
+    /// arrange — so this closes the branch, not the scenario.
+    #[test]
+    fn an_abandoned_activation_keeps_its_event_handle() {
+        // SAFETY: an unnamed auto-reset event, exactly as `activate` makes one.
+        let event = unsafe { CreateEventW(None, false, false, None) }.expect("create event");
+
+        let err = super::settle_activation_wait(WAIT_TIMEOUT, super::SendHandle(event))
+            .expect_err("a wait that did not end in WAIT_OBJECT_0 must fail the activation");
+        assert!(
+            err.contains("in time"),
+            "the timeout must reach the user as a timeout rather than as a \
+             generic failure: {err}"
+        );
+
+        // The point of the branch. A closed handle here would be a use-after-free
+        // the moment the completion handler fires on its pool thread — and worse
+        // than a crash, because Windows recycles handle values, so the `SetEvent`
+        // would land on whatever unrelated object inherited the number.
+        let mut flags = 0u32;
+        // SAFETY: querying a handle we own; the out-param is live for the call.
+        let still_open = unsafe { GetHandleInformation(event, &mut flags) };
+        assert!(
+            still_open.is_ok(),
+            "the abandoned activation's event was closed; the completion handler \
+             can still signal it"
+        );
+
+        // Production leaks this on purpose and the test cannot, or it leaks one
+        // handle per run of the suite.
+        // SAFETY: no completion handler was ever registered against this event,
+        // so nothing else can touch it.
+        unsafe {
+            let _ = CloseHandle(event);
+        }
+    }
+
+    /// The other half of the same rule: a completed activation owns its handle
+    /// and gives it back. Asserted through the return value only — checking that
+    /// the handle is *gone* would race every other thread in the test binary,
+    /// since Windows is free to hand the freed number straight to the next
+    /// `CreateEventW` anywhere in the process.
+    #[test]
+    fn a_completed_activation_settles_cleanly() {
+        // SAFETY: as above.
+        let event = unsafe { CreateEventW(None, false, false, None) }.expect("create event");
+        super::settle_activation_wait(WAIT_OBJECT_0, super::SendHandle(event))
+            .expect("a handler that signalled must settle as success");
     }
 
     /// Does this backend capture anything, and does the process survive asking?

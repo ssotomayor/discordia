@@ -101,24 +101,26 @@ the top within each section.
 
 ## Repo & CI
 
-- **Windows clippy gates one profile of two.** `windows-build` now runs
-  `cargo clippy -p dioxusfun --all-targets -- -D warnings`, so the
-  `cfg(target_os = "windows")` half of the client — `sysaudio/windows.rs` and
-  `rawmic/windows.rs`, 61 `unsafe` WASAPI FFI sites — is finally linted. But
-  `desktop-build` runs clippy *twice*, once per profile, because
-  `unused_variables` and friends fire only with `debug_assertions` off, and
-  that is how nine of them reached a published build (`c685828`). Only the
-  first profile is gated here, so a regression of that class reachable only
-  under `-C debug-assertions=off` still goes uncaught on Windows.
-  Both profiles were run by hand on Windows 11 26200 before the gate landed and
-  found nothing, so this is a hole in the *gate*, not a known defect behind it.
-  **The trap when closing it:** do not copy `desktop-build`'s second-profile
-  step verbatim. Its step-level `RUSTFLAGS` *replaces* the job-level value
-  rather than adding to it, and `windows-build`'s job-level
-  `-C target-feature=+crt-static` is load-bearing — libwebrtc links the static
-  MSVC runtime, Rust defaults to the dynamic one, and dropping the flag fails
-  the link with LNK2038. Spell both flags out in the step. The cost to weigh is
-  that it doubles the slowest job in the matrix.
+- **macOS clippy gates one profile of two.** The gap the Windows job just
+  closed, in the one job nobody wrote it down for. `macos-build` runs
+  `cargo clippy -p dioxusfun --all-targets -- -D warnings` once, with
+  `debug_assertions` on; `desktop-build` and `windows-build` both run it twice,
+  because `unused_variables` and friends fire only with the flag off — which is
+  how nine of them reached a published build (`c685828`). So a regression of
+  that class in `sysvideo/` or `sysaudio/macos.rs` would still reach a
+  published macOS build with nothing red.
+  Cheaper to close here than it was on Windows: `macos-build` has no job-level
+  `RUSTFLAGS` to be replaced (the comment there says `crt-static` is an MSVC
+  concern), so the step is `RUSTFLAGS: "-C debug-assertions=off"` and nothing
+  else — the trap that made the Windows one worth a paragraph does not exist on
+  this job. The cost is the same: a second compile, on a runner that is already
+  the slowest per minute in the matrix.
+  Not done in the same PR as the Windows one on purpose. Nobody here has a Mac
+  to run either profile by hand first, and the Windows change went in on the
+  strength of having been run locally — a macOS step would be going in on the
+  strength of having been reasoned about, with a red `master` as the failure
+  mode if it takes findings with it, exactly as turning that job's first
+  profile on took four.
 - **The Windows portable and setup ship the wrong icon.** Reported from a real
   download: both carry an old icon rather than the Discordia mark. Worth
   starting from the comment in `client/Dioxus.toml`, because it says this was
@@ -128,9 +130,19 @@ the top within each section.
   which artifact was downloaded: a pre-release from before that fix would show
   exactly this, and the bug would be nothing but a stale download. If a current
   build still does it, the `.ico` is reaching NSIS (`installer_icon`) and not the
-  executable, or not being regenerated when the artwork changed — the same
-  entry under Assets notes the `.icns` was last rebuilt by downscaling rather
-  than rasterising, so the icon set as a whole has drifted from `icon.svg`.
+  executable.
+  **The third candidate is ruled out by measurement: the `.ico` is not stale.**
+  It holds seven PNG frames — 16/24/32/48/64/128/256 — and every one of them is
+  pixel-identical to a fresh `resvg` render of the current `icon.svg` at that
+  size: 0 differing pixels of 65,536 at 256px, 0 of 256 at 16px, and the same at
+  every size between. They differ from a fresh render only in compressed bytes,
+  which is the PNG encoder, not the image. So this file already follows the
+  recipe in `Dioxus.toml` — rasterised per size from the SVG rather than
+  downscaled — and the drift the Assets entry describes is the `.icns` alone,
+  not the icon set as a whole.
+  What that leaves is the two candidates above, and neither can be settled by
+  reading the config: it needs a `dx bundle` on Windows and an inspection of the
+  produced `.exe`'s resources against `assets/icon.ico`.
 - **Windows SmartScreen blocks the download as an unknown publisher.** Also
   reported from a real machine: "Windows protected your PC", and it takes
   More info → Run anyway to get past. Expected for unsigned binaries and
@@ -196,7 +208,10 @@ the top within each section.
   stale-icon problem is fixed — it now carries the current tile-less mark — but
   it was rebuilt with `sips` from `icon-1024.png` rather than per-size from
   `icon.svg` as the `Dioxus.toml` recipe asks, because no SVG rasteriser
-  (`resvg`, `rsvg-convert`, ImageMagick) was installed. macOS draws 128px and up
+  (`resvg`, `rsvg-convert`, ImageMagick) was installed. (`resvg` is installed on
+  the Windows host now, and the `.ico` there measures as correctly rasterised —
+  see the Windows icon entry under Repo & CI — but `iconutil` is macOS-only, so
+  the `.icns` still cannot be rebuilt from here.) macOS draws 128px and up
   in the Dock, where downscaling holds up; the 16px entry is the one that would
   benefit from real hinting, and unlike Windows' taskbar macOS only uses it in
   list views. Redo with `resvg` next time the artwork changes.
@@ -589,14 +604,19 @@ the top within each section.
   starts a share; a thousand shares in one run is 12 KB, so nothing here is
   waiting on a fix. What would change the calculation is somewhere else starting
   to activate in a loop.
-- **The activation-timeout path has never been executed.** `activate`'s
-  `WaitForSingleObject` giving up is reasoned-about code: nobody has made WASAPI
-  take longer than 5 s to answer, so the branch that abandons an operation and
-  leaves it holding its blob has never run outside a reading of it. Same class of
-  gap as the one `windows_loopback_delivers_real_samples` closed by being run
-  once — that found a heap corruption on its first execution. A fault-injection
-  seam would settle it; `server/tests/voice.rs`'s `ScriptedMinter` is the shape
-  to copy.
+- **WASAPI has still never been seen answering slowly.** The *branch* that
+  handles it now runs: `settle_activation_wait` is the seam, and
+  `an_abandoned_activation_keeps_its_event_handle` drives it with the wait result
+  WASAPI would have produced, asserting the property the branch exists for — the
+  event handle survives, because the completion handler may still `SetEvent` it
+  from an MTA pool thread. Breaking the rule (closing the handle there) turns the
+  test red, so it has teeth.
+  What is still untested is the *scenario*: nobody has made
+  `ActivateAudioInterfaceAsync` take longer than 5 s, and no test can arrange a
+  stalled audio engine. So a real timeout would exercise `WaitForSingleObject`
+  returning `WAIT_TIMEOUT` for the first time, and everything after that point is
+  covered. Worth remembering which half was closed if this ever misbehaves in the
+  field.
 - **The Windows blob's lifetime rule is measured, not documented.** Microsoft
   does not say how long `ActivateAudioInterfaceAsync` needs the `VT_BLOB` it is
   handed. "As long as the process" comes from probing: the engine had not freed
@@ -606,6 +626,10 @@ the top within each section.
   Rust's allocator both sit on the process heap, not because anything promises
   it. Measured on Windows 11 26200 and one machine; no other platform even
   compiles this file.
+  The hazard and the probe that established it now live in `activation_params`'s
+  own doc comment as well, since that is where someone debugging a post-update
+  capture failure will be standing. This entry stays because the underlying fact
+  has not changed: it is still an observation, not a contract.
 
 ## Voice / audio
 
