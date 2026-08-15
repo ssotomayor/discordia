@@ -56,7 +56,7 @@
 //! the first question is whether the *measurement* is wrong. Both metrics in
 //! this file were wrong before they were right, and the code says how.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use df::tract::{DfParams, DfTract, RuntimeParams};
@@ -334,12 +334,7 @@ fn tone_samples(n: usize) -> Vec<f32> {
 /// because the seed is visible in the six lines below, and a sweep whose rows
 /// are compared against each other should not have its input hidden behind a
 /// generator whose stream could change with a version bump.
-fn spawn_tone(
-    source: NativeAudioSource,
-    noise: f32,
-    denoise: Option<f32>,
-    applied: Arc<Mutex<Applied>>,
-) -> Feeder {
+fn spawn_tone(source: NativeAudioSource, noise: f32, denoise: Option<f32>) -> Feeder {
     let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let flag = Arc::clone(&stop);
     // A blocking task rather than `tokio::spawn`, because `DfTract` is not
@@ -361,6 +356,7 @@ fn spawn_tone(
         });
         let mut noisy = ndarray::Array2::<f32>::zeros((1, FRAME));
         let mut enh = ndarray::Array2::<f32>::zeros((1, FRAME));
+        let mut applied = Applied::default();
         while !flag.load(std::sync::atomic::Ordering::Relaxed) {
             let mut hop: Vec<f32> = (0..FRAME)
                 .map(|_| {
@@ -393,9 +389,8 @@ fn spawn_tone(
                 hop.copy_from_slice(enh.as_slice().expect("contiguous"));
                 let after = rms(&hop);
                 if before > 0.0 && after > 0.0 {
-                    let mut a = applied.lock().expect("applied stats");
-                    a.sum_db += 20.0 * (after / before).log10();
-                    a.hops += 1;
+                    applied.sum_db += 20.0 * (after / before).log10();
+                    applied.hops += 1;
                 }
             }
 
@@ -410,10 +405,11 @@ fn spawn_tone(
                 samples_per_channel: FRAME as u32,
             };
             if rt.block_on(source.capture_frame(&frame)).is_err() {
-                return;
+                return applied;
             }
             std::thread::sleep(Duration::from_millis(10));
         }
+        applied
     });
     Feeder { handle, stop }
 }
@@ -425,20 +421,32 @@ fn spawn_tone(
 /// so the flag is not decoration: without it the feeder would run on into the
 /// next row of the sweep, publishing into a room the test has finished with.
 struct Feeder {
-    handle: tokio::task::JoinHandle<()>,
+    handle: tokio::task::JoinHandle<Applied>,
     stop: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Feeder {
-    /// Stop feeding and wait for the loop to notice, which takes one hop.
-    async fn stop(self) {
+    /// Stop feeding, wait for the loop to notice — which takes one hop — and
+    /// take what it measured on the way.
+    ///
+    /// The stats come back as the task's value rather than through a shared
+    /// cell. Nothing reads them until this point, so ownership does the whole
+    /// job a `Mutex` was doing, and a panicking hop stops being invisible: it
+    /// arrives here as a `JoinError` instead of being discarded, which is the
+    /// difference between "the denoiser failed on hop 214" and the round trip
+    /// later reporting that it stopped delivering audio.
+    async fn stop(self) -> Applied {
         self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
-        let _ = self.handle.await;
+        match self.handle.await {
+            Ok(applied) => applied,
+            Err(e) => panic!("the feeder died before the measurement finished: {e}"),
+        }
     }
 }
 
 /// How much the denoiser actually pulled the signal down, accumulated by the
-/// feeder because that is the only place both sides of the hop exist.
+/// feeder because that is the only place both sides of the hop exist, and
+/// handed back when it stops.
 ///
 /// The number `TODO.md` and `ClientSettings::denoise_atten_lim_db` both cite —
 /// "−3.9 dB applied at a 30 dB ceiling, −2.7 dB at 12" — came from a live
@@ -601,8 +609,7 @@ async fn measure_round_trip(cfg: Config) -> Metrics {
         )
         .await
         .expect("publish the tone");
-    let applied = Arc::new(Mutex::new(Applied::default()));
-    let feeder = spawn_tone(source, cfg.noise, cfg.denoise, Arc::clone(&applied));
+    let feeder = spawn_tone(source, cfg.noise, cfg.denoise);
 
     let ev = wait_for(&mut listener_events, "listener", |ev| {
         matches!(ev, RoomEvent::TrackSubscribed { .. })
@@ -637,7 +644,7 @@ async fn measure_round_trip(cfg: Config) -> Metrics {
     // window would report the dropout as a rate error — pointing the failure at
     // the resampler when the stream is what broke.
     let window = started.elapsed().saturating_sub(WARMUP).as_secs_f32();
-    feeder.stop().await;
+    let applied = feeder.stop().await;
 
     let sent = tone_samples(received.len());
     let (r_in, r_out) = (rms(&sent), rms(&received));
@@ -654,9 +661,7 @@ async fn measure_round_trip(cfg: Config) -> Metrics {
         band_out: band_energy(&received, TONE_HZ, 40.0),
         h2: tone_purity(&received, TONE_HZ * 2.0),
         h3: tone_purity(&received, TONE_HZ * 3.0),
-        // Read after the feeder has stopped, so no hop can be counted while this is
-        // being summarised.
-        applied_db: applied.lock().expect("applied stats").mean_db(),
+        applied_db: applied.mean_db(),
     };
 
     listener.close().await.ok();
