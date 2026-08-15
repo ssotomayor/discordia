@@ -583,17 +583,32 @@ the top within each section.
   source, and a client that wants the unprocessed device has to select it
   rather than ask for a flag. Nobody has run this repo's voice path on Linux
   yet, so it is filed here rather than guessed at.
-- **The 30-vs-12 dB ceiling numbers cannot be re-run from the repo.** The entry
-  below and `ClientSettings::denoise_atten_lim_db` both cite figures from a
-  live session — 21.2% vs 17.6% gate drops, −3.9 dB vs −2.7 dB actually applied
-  — and those figures are the whole argument for the control's existence and
-  its default. `the_knobs_that_shape_voice_quality_are_measured` sweeps `apm`,
-  `red`, `dtx` and `max_bitrate`; the ceiling is not a dimension in it, and
-  DeepFilterNet is not in the sweep at all. The house rule is that a claim
-  about voice quality has a number behind it; right now this one has a number
-  behind it that only one machine ever produced. Adding it as a sweep dimension
-  needs the noise-mixed signal the sweep already grew for the APM question — a
-  pure sine tells a denoiser as little as it told the APM.
+- **The 30-vs-12 dB ceiling numbers still cannot be re-run, and now it is clear
+  what would be needed.** The entry below and `ClientSettings::
+  denoise_atten_lim_db` both cite figures from a live session — 21.2% vs 17.6%
+  gate drops, −3.9 dB vs −2.7 dB actually applied — and those figures are the
+  whole argument for the control's existence and its default.
+  DeepFilterNet **is** a dimension of
+  `the_knobs_that_shape_voice_quality_are_measured` now, and running it settles
+  one thing and refuses another. What it settles: the ceiling reaches the model
+  and does exactly what it claims. Against the sweep's tone at noise 0.15,
+  measured at the source, the model applies −30.03 dB at a 30 dB ceiling,
+  −12.26 dB at 12, and −39.65 dB at 100 — each row pinned at, or driven to, its
+  own limit.
+  What it refuses is the comparison the entry is about. Applied ≈ ceiling in
+  every row means the model is saturated: on a sine plus white noise it hears
+  no speech and removes everything it is permitted to remove, so the ceiling is
+  not limiting an appetite, it *is* the output. At 100 dB the signal is gone —
+  −97 dB level, 0.8% of energy left in band. The clamp is verified; the
+  question "does 30 vs 12 change what happens to *speech*" is untouched, because
+  no speech was ever in the path.
+  So what is left is narrower and concrete: this needs a speech-like
+  excitation, not another knob. Either a short voiced sample committed
+  alongside the test, or a synthesised formant-ish signal the model will
+  classify as speech — and whichever it is, the gate half of the original claim
+  (21.2% vs 17.6% drops) still lives in `features::voice::denoise_gate_loop`
+  and is not reachable from an integration test at all, since the package has
+  no lib target.
 - **The default mic sensitivity cuts ordinary speech.** `default_mic_sensitivity`
   is 50 and the scale is peak ×1000, so the gate opens at **−26.0 dBFS** — 7.6 dB
   stricter than the 21 that `efcc23d`'s reporter was already struggling with, and
