@@ -71,7 +71,19 @@ fn reorder_positions(guild: &[Channel], moved: Id, target: Id) -> Vec<(Id, u32)>
     let (lo, hi) = (from.min(to), from.max(to));
     let mut slots: Vec<u32> = guild[lo..=hi].iter().map(|c| c.position).collect();
     slots.sort_unstable();
-    if slots.windows(2).all(|w| w[0] != w[1]) {
+    // Distinct across the span *and its immediate neighbours*, not just within
+    // it. The span-only check was wrong at the boundary: rows render by
+    // `(position, name)` and nothing enforces uniqueness — `update_channel`
+    // stores whatever it is sent — so a value the fast path reuses can tie with
+    // an untouched row just outside the span and then lose the name tie-break.
+    // The dragged row silently lands on the far side of a row that was never
+    // part of the drag. Widening the window by one on each side is enough,
+    // because the list is already sorted by position, so a tie can only be with
+    // an adjacent entry.
+    let guard = &guild[lo.saturating_sub(1)..(hi + 2).min(guild.len())];
+    let mut window: Vec<u32> = guard.iter().map(|c| c.position).collect();
+    window.sort_unstable();
+    if window.windows(2).all(|w| w[0] != w[1]) {
         return order[lo..=hi]
             .iter()
             .zip(slots)
@@ -2291,6 +2303,26 @@ mod tests {
         assert!(
             !moved.contains(&guild[0].id) && !moved.contains(&guild[39].id),
             "nothing outside the span may be touched"
+        );
+    }
+
+    /// The boundary case the first version of the fast path got wrong: a
+    /// duplicate position just *outside* the span it reuses values from.
+    ///
+    /// Nothing enforces unique positions — the server stores what it is sent —
+    /// and rows render by `(position, name)`. So reusing the span's values can
+    /// hand the dragged row a number it shares with an untouched neighbour, and
+    /// the name tie-break then decides the order. Here `b` was dragged onto
+    /// `c`, and the span-only check let it land past `d`, which had nothing to
+    /// do with the drag.
+    #[test]
+    fn a_tie_just_outside_the_span_cannot_swallow_the_dragged_row() {
+        let guild = vec![chan("a", 1), chan("zzz", 2), chan("c", 3), chan("d", 3)];
+        let updates = reorder_positions(&guild, guild[1].id, guild[2].id);
+        assert_eq!(
+            applied(&guild, &updates),
+            ["a", "c", "zzz", "d"],
+            "the dragged row must land where it was dropped, not behind a row              it happens to tie with"
         );
     }
 
