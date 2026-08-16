@@ -30,6 +30,18 @@ pub type GatewayIo = tokio::io::Join<iroh::endpoint::RecvStream, iroh::endpoint:
 pub struct ConnectionGuard {
     _endpoint: Endpoint,
     _conn: iroh::endpoint::Connection,
+    relay_refusal: dioxusfun_server::quic::RelayRefusal,
+}
+
+impl ConnectionGuard {
+    /// Whether this session ended because the path fell back to the relay.
+    ///
+    /// The session sees its socket close and nothing else; the reason lives in
+    /// the watcher task. Asked once the session is over, so what the user is
+    /// told is the decision that ended it rather than the symptom.
+    pub fn relay_refused(&self) -> bool {
+        self.relay_refusal.refused()
+    }
 }
 
 /// Parse a host's advertised transport key.
@@ -90,7 +102,7 @@ pub async fn dial(
     require_direct(&conn, coordination).await.inspect_err(|_| {
         conn.close(1u32.into(), b"relayed connection refused");
     })?;
-    watch_for_relay_fallback(conn.clone(), coordination);
+    let relay_refusal = watch_for_relay_fallback(conn.clone(), coordination);
 
     let (send, recv) = conn
         .open_bi()
@@ -102,6 +114,7 @@ pub async fn dial(
         ConnectionGuard {
             _endpoint: endpoint,
             _conn: conn,
+            relay_refusal,
         },
     ))
 }

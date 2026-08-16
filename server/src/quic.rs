@@ -159,16 +159,45 @@ pub async fn require_direct(
     }
 }
 
+/// Whether the watcher below is the reason a connection ended.
+///
+/// A closed QUIC connection tells the side that owned the session only that its
+/// stream ended; *why* is a decision taken over here, in a task the session
+/// knows nothing about. Without somewhere to record it, the user is shown
+/// whatever the socket noticed — and the one screen that shows it has a
+/// Reconnect button and no other explanation.
+#[derive(Clone, Default)]
+pub struct RelayRefusal(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl RelayRefusal {
+    /// True once the connection was closed for falling back to the relay.
+    pub fn refused(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn set(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 /// Kill the connection if it ever falls back onto the relay.
 ///
 /// Checking once at the start is not enough and the difference is not
 /// theoretical: iroh will move traffic back to the relay when a direct path
 /// degrades, so a session that began direct can quietly become a relayed one
 /// while the UI still says otherwise. Spawned for the life of the connection.
-pub fn watch_for_relay_fallback(conn: iroh::endpoint::Connection, coordination: &Coordination) {
+///
+/// The returned flag is how the closing reaches whoever owns the session; a
+/// caller with nobody to tell can drop it.
+pub fn watch_for_relay_fallback(
+    conn: iroh::endpoint::Connection,
+    coordination: &Coordination,
+) -> RelayRefusal {
+    let refusal = RelayRefusal::default();
     if !coordination.is_coordinated() {
-        return;
+        return refusal;
     }
+    let flag = refusal.clone();
     tokio::spawn(async move {
         use futures_util::StreamExt;
         let mut paths = conn.paths_stream();
@@ -179,11 +208,15 @@ pub fn watch_for_relay_fallback(conn: iroh::endpoint::Connection, coordination: 
                     "connection fell back to the relay — closing, because a coordinator was \
                      allowed to introduce us and not to carry us"
                 );
+                // Set before closing, so the session cannot observe its socket
+                // ending and read the flag before it says why.
+                flag.set();
                 conn.close(1u32.into(), b"relay fallback refused");
                 return;
             }
         }
     });
+    refusal
 }
 
 /// A bound QUIC endpoint serving the gateway.
