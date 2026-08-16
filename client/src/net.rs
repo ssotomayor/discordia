@@ -429,8 +429,34 @@ async fn run(
     // close the connection under the socket.
     match ws_stream {
         Socket::Tcp(ws) => run_session(ws, params, tx, rx, state, voice_tx).await,
-        Socket::Quic(ws, _guard) => run_session(ws, params, tx, rx, state, voice_tx).await,
+        Socket::Quic(ws, guard) => {
+            let ended = run_session(ws, params, tx, rx, state, voice_tx).await;
+            quic_disconnect_reason(guard.relay_refused(), ended)
+        }
     }
+}
+
+/// What to tell the user when a QUIC session ends.
+///
+/// The socket reports what it *noticed* — a stream that stopped — while the
+/// reason may be something we decided in a task it knows nothing about: the
+/// path fell back to the relay and a coordinator is not allowed to carry the
+/// conversation. Reporting the symptom there is the silent-fallback shape the
+/// rest of this codebase avoids, and it lands on a screen whose only other
+/// content is a Reconnect button.
+///
+/// Says that reconnecting may help, because it genuinely may: hole punching is
+/// attempted again from scratch and often succeeds where it just failed.
+fn quic_disconnect_reason(relay_refused: bool, ended: Result<(), String>) -> Result<(), String> {
+    if relay_refused {
+        return Err(
+            "the direct connection dropped, and the only path left ran through the \
+                    coordinator — which is allowed to introduce you, not to carry your \
+                    traffic. Reconnecting may find a direct path again."
+                .into(),
+        );
+    }
+    ended
 }
 
 /// A gateway socket, whichever transport carried it.
@@ -1345,6 +1371,34 @@ fn open_sealed(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The refusal has to replace whatever the socket said, and only then.
+    ///
+    /// Both directions matter. Substituting always would relabel every ordinary
+    /// disconnect as a relay problem; substituting never leaves the deliberate
+    /// close reported as an anonymous dropped stream, which is the state this
+    /// exists to end.
+    #[test]
+    fn a_refused_relay_fallback_is_what_the_user_is_told() {
+        let socket_said = Err("connection reset".to_string());
+
+        let told = quic_disconnect_reason(true, socket_said.clone()).unwrap_err();
+        assert!(
+            told.contains("coordinator"),
+            "the refusal must name what refused: {told}"
+        );
+        assert!(
+            told.contains("Reconnecting"),
+            "and say what to do about it: {told}"
+        );
+
+        // Nothing refused: the socket's own account stands, including a clean end.
+        assert_eq!(
+            quic_disconnect_reason(false, socket_said.clone()),
+            socket_said
+        );
+        assert_eq!(quic_disconnect_reason(false, Ok(())), Ok(()));
+    }
 
     /// A WebSocket server that completes the handshake and then says nothing.
     /// Enough to answer "did this address connect", which is all the race asks.

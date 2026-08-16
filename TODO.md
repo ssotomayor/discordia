@@ -40,6 +40,23 @@ the top within each section.
 
 ## Security
 
+- **The media-key ledger is forgotten by roster change, which a coalesced
+  rejoin could slip past.** `mediakey::forget_absent` drops what we remember
+  sending to members who are no longer in the channel, so somebody who
+  restarted the app — and so lost both their key and their own ledger — is
+  sent it again rather than left on a key nobody else holds. It is driven by
+  the `roster` memo, so it only fires on a membership change we actually
+  observe. If a departure and a return ever arrive inside one signal update,
+  the roster never shows them absent, nothing is forgotten, and the old
+  suppression is back. A restart takes seconds and does not coalesce in
+  practice, which is why this is recorded rather than defended against; the
+  defence would be a per-session marker on `VoiceState` so a returning member
+  is a different recipient rather than the same one, and that is a protocol
+  change for a case nobody has hit.
+  The larger gap behind it is that there is **no recovery path at all**: the
+  protocol has `ShareMediaKey` and nothing to ask with, so any future way of
+  ending up on the wrong key is permanent and silent. `media_undecryptable`
+  already knows when we cannot read a peer — today it only reaches the UI.
 - **DMs are encrypted; guild text is not, and that asymmetry needs saying in the
   UI.** `client/src/dmcrypt.rs` seals DM text and attachments to the two
   participants' Nostr keys (ECDH under its own `dioxusfun/dm/v1` domain,
@@ -370,16 +387,25 @@ the top within each section.
   an entry below saying it describes one socket rather than the room — the same
   mistake is available here, where a member has up to four connections and they
   can disagree.
-- **Media key distribution is written and has never run between two people.**
-  `client/src/mediakey.rs` seals a channel key per recipient (ECDH over the
-  Nostr identity keys, XChaCha20-Poly1305, epoch bound as associated data) and
-  the gateway routes blobs it cannot read. The sealing is well covered by unit
-  tests; the *orchestration* is not testable without two clients, and that is
-  where the doubt is: who generates when a channel is empty, who hands the key
-  to an arrival, whether the four-second wait is right, and whether two members
-  joining at the same instant both generate. The designated-sender rule (lowest
-  pubkey) makes that last one unlikely rather than impossible — two clients with
-  different views of the roster can both believe they are lowest.
+- **Media key distribution has now run between two people, and every doubt in
+  this entry turned out to be a bug.** `client/src/mediakey.rs` seals a channel
+  key per recipient (ECDH over the Nostr identity keys, XChaCha20-Poly1305,
+  epoch bound as associated data) and the gateway routes blobs it cannot read.
+  The sealing was always well covered by unit tests; the *orchestration* was
+  not, and that is where all of it went wrong — `07f71a7`, `ac60edd`,
+  `f2dcb09`, `7c698d8`, `fd6b92f` and `12e8034` are all the same feature
+  failing in the same way, one report at a time.
+  **This entry used to say the doubt was "whether two members joining at the
+  same instant both generate", and named the designated-sender rule (lowest
+  pubkey) as what made it unlikely. Both halves are now wrong.** They do both
+  generate, routinely, and that is fine: `net::supersedes` breaks an equal-epoch
+  tie by pubkey so the two converge. The designated-sender rule was *removed*
+  for handing a key on — holding the key is the only qualification, because
+  being lowest says nothing about having one — and `designated` now drives only
+  a rekey after a removal.
+  What remains untested is what is left of the orchestration: the four-second
+  wait, and a member who leaves and returns. Both need two clients, and the
+  second is what `forget_absent` exists for.
 - **A rekey still interrupts the call it protects — but far less of the fix is
   out of reach than this entry used to claim.** The rekeying member sends to
   everyone before adopting the new key itself, which shrinks the gap to about
@@ -437,17 +463,30 @@ the top within each section.
   Still unmeasured, and that has not changed: nobody has watched a rekey happen
   or timed the gap, so the overlap may be closing something imperceptible. The
   measurement is the same two-machine session that would verify it.
-- **Undecryptable media is now visible, but only what the webview sees.** The JS
-  room reports `EncryptionError` and the badge says so. The three native rooms
-  have their own signal (`RoomEvent::E2eeStateChanged`) which is not wired, so
-  voice failing to decrypt while camera succeeds would currently show nothing.
-  Same latch, one more producer.
-- **Nothing verifies that the two SDKs derive the same key.** They agree on
-  every parameter visible from this repo — ratchet salt `LKFrameEncryptionKey`,
-  PBKDF2/SHA-256, JS at 100 000 iterations — but the Rust side derives inside
-  libwebrtc, where the count cannot be read. A mismatch is silent: frames arrive
-  and decode to noise. No test can settle it; two machines with the same
-  passphrase can, and that is now possible.
+- **Undecryptable media is visible from the webview and from voice; the two
+  screen rooms are still silent.** The JS room reports `EncryptionError`, and
+  the voice room now reports `RoomEvent::E2eeStateChanged` into the same latch —
+  which mattered most, because voice is the only path that is entirely native
+  and so was the one failure nothing could see. `ScreenAudioRoom` subscribes and
+  can fail the same way; it has no bridge to `AppState` of its own, and its
+  failures are at least *also* visible through the webview, which renders the
+  same share. `ScreenVideoRoom` publishes only, so what it can report is
+  `EncryptionFailed` on the way out rather than a key it was never given. Both
+  are the same one-line arm plus somewhere to send it.
+- **Nothing verifies that the *webview* derives the same key as the native
+  rooms.** They agree on every parameter visible from this repo — ratchet salt
+  `LKFrameEncryptionKey`, PBKDF2/SHA-256, JS at 100 000 iterations — but the
+  Rust side derives inside libwebrtc, where the count cannot be read.
+  **This entry used to say "the two SDKs" and that "no test can settle it";
+  both have narrowed.** The Rust-to-Rust half is settled and measured:
+  `live_sfu::media_encryption_carries_audio_only_when_the_keys_agree` runs two
+  peers through the real SFU and gets the tone back within 0.53 dB with keys
+  that match. What no test here reaches is the JS side, because the webview is
+  the one participant this harness cannot be.
+  **It also said a mismatch means "frames arrive and decode to noise". They
+  decode to silence** — same measurement, 501 frames and 192 480 samples, every
+  one zero. The distinction is the whole difficulty: noise is obvious, and
+  silence is what somebody not talking sounds like.
 - **Hole punching works through CGNAT — verified 2026-08-14, between two
   cities.** A host on a carrier-grade-NAT connection (no public address, port
   mapping impossible) and a friend on an unrelated home network, both with the
@@ -978,10 +1017,42 @@ the top within each section.
   unvoiced consonants rather than chattering randomly.
   **Do not just lower the number.** −36 is one mic in one room, and too low a
   threshold sends room noise to everyone with no working suppressor holding it
-  back. The default was chosen on the assumption that AGC lifts quiet speech over
-  it — the entry below finds that AGC inert, so settle that first. The other
-  candidate is a first-run calibration: the VU bar already draws the threshold
-  against a live meter, so "speak normally" could place it.
+  back. The other candidate is a first-run calibration: the VU bar already draws
+  the threshold against a live meter, so "speak normally" could place it.
+  **The assumption under the default is now measured, and it is false.** The
+  number was chosen expecting AGC to lift a quiet talker over the gate;
+  `live_sfu::agc_is_measured_against_the_assumption_the_gate_default_rests_on`
+  toggles AGC on its own against a 0.04-peak tone and reads the level change end
+  to end:
+
+  ```text
+  AGC on minus AGC off:  +0.03  +0.01  +0.01  -0.01 dB
+  ```
+
+  Inert, sign flipping run to run — the same answer the suppressor gives through
+  the same `set_audio_options` call, and by a more direct route, since this is a
+  level ratio and gain is a level change. The test asserts a ±1 dB tripwire so an
+  SDK where AGC starts working cannot arrive quietly and leave this reasoning
+  stale.
+  **The recommendation, now that the prerequisite is settled: calibrate, and do
+  not move the number.** Both defaults this project has shipped are known bad
+  and they are the same fact seen twice — at −32 the gate passed keyboards, at
+  −26 it cuts speech. A threshold decides by level; quiet speech and fan noise
+  differ by character at the same level. So no constant is right, and choosing
+  one only picks which failure to have. Lowering it walks back into the bug that
+  caused the raise, and should be expected to be reverted.
+  Turning DeepFilterNet on by default is not the fix either, and it is worth
+  writing down because it is the obvious next thought: the gate measures the
+  *denoised* hop, which the model pulls down 2.7–3.9 dB, so at an unchanged
+  threshold switching it on cuts **more**. What it does remove is the *reason*
+  for the high threshold, since the fan and the keyboard no longer reach the
+  gate — so suppression and threshold are one change, never either alone.
+  Calibration is what can hold them in a consistent relation, and it answers the
+  objection above ("−36 is one mic in one room") which no global default can.
+  The VU bar already draws the threshold against a live meter, so the missing
+  piece is a "speak normally" step to place it, plus an offer to recalibrate
+  when the suppression switch moves. A first-run-only version captures most of
+  the value.
   **Already ruled out by measurement — do not retry it:** exposing
   DeepFilterNet's `ATTEN_LIM_DB` ceiling. Dropping it 30 → 12 dB moved gate drops
   21.2% → 17.6% on matched input levels, inside the run-to-run variance, and the
@@ -1025,6 +1096,32 @@ the top within each section.
   SNR (~10 dB) and noise colour was tried, and AEC cannot be tested this way at
   all — so **do not delete this entry on the strength of reading either one
   alone.**
+  **That thread has now been pulled, and it is the worse branch: nothing runs
+  these options, and nothing was ever going to.** In
+  `webrtc-sys-0.3.33/src/audio_track.cpp`, `options_` occurs three times — set in
+  the constructor (`:138`), returned by `options()` (`:245`), assigned by
+  `set_options` (`:253`) — and is read by nothing else. The component that would
+  have consumed them is then explicitly kept away: `InternalSource` declares
+  `is_external_source() { return true; }`, whose own comment says it "prevents
+  AudioState from sending device audio to streams using this source"
+  (`include/livekit/audio_track.h:132`). The APM lives on the device capture
+  path; we push finished hops in with `capture_frame` and bypass it. So the
+  options are stored faithfully, reported back faithfully, and acted on by
+  nobody.
+  Two consequences worth stating plainly. **An SDK bump will not fix this** —
+  it is what an external source *is*, not a defect that might be repaired — so
+  any plan that waits for one is waiting for nothing. And **`set_apm`'s own
+  readback check cannot see it**: it compares what it wrote against what it
+  reads, which is exactly the part that works, and reports "kept". The diagnostic
+  tests storage and is worded as though it tested effect.
+  What remains genuinely open is AEC, which none of this touches — the warning
+  above still stands for it. And the path to actual gain control is now clear
+  enough to name: it would have to be ours, in the DSP thread that already runs
+  DeepFilterNet and the gate on 10 ms hops, placed *before* the gate so it can
+  lift a quiet talker over the threshold. That is a real audio feature with real
+  ways to be worse than nothing — pumping, breathing between phrases, and room
+  noise raised in the pauses with no working suppressor behind it — so it is
+  named here rather than started.
 - **The transmit gate judges the denoised hop, so its operating point moves when
   suppression is toggled.** `denoise_gate_loop` runs the model first and gates
   what comes out, so switching DeepFilterNet on drops the signal the gate is

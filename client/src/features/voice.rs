@@ -1004,6 +1004,7 @@ impl ActiveVoice {
                             QualityMsg::Set(id, health) => s.voice_quality.get(id) != Some(health),
                             QualityMsg::Drop(id) => s.voice_quality.contains_key(id),
                             QualityMsg::Clear => !s.voice_quality.is_empty(),
+                            QualityMsg::Undecryptable => !s.media_undecryptable,
                         }
                     };
                     if !changed {
@@ -1018,6 +1019,10 @@ impl ActiveVoice {
                             s.voice_quality.remove(&id);
                         }
                         QualityMsg::Clear => s.voice_quality.clear(),
+                        // Latched, like the webview's. Cleared by `apply_key`
+                        // when a key is adopted, which is the event most likely
+                        // to have fixed it.
+                        QualityMsg::Undecryptable => s.media_undecryptable = true,
                     }
                 }
             });
@@ -1122,6 +1127,29 @@ impl ActiveVoice {
                         }
                         RoomEvent::Reconnected => {
                             eprintln!("[voice] reconnected");
+                        }
+                        // The native half of the undecryptable signal. The
+                        // webview has reported this since the badge existed;
+                        // the three native rooms had the same event available
+                        // and nothing listening, so voice — the one path that
+                        // is entirely native — could fail to decrypt with
+                        // nothing on screen and nothing in the log.
+                        //
+                        // `Ok` and `New` are the healthy states and say so on
+                        // every key change, so only the failures are reported.
+                        // `MissingKey` is the one that means what it says here:
+                        // somebody is publishing under a key we were never
+                        // given.
+                        RoomEvent::E2eeStateChanged { participant, state } => {
+                            use livekit::webrtc::native::frame_cryptor::EncryptionState;
+                            match state {
+                                EncryptionState::Ok | EncryptionState::New => {}
+                                bad => {
+                                    let who = participant.identity().0;
+                                    eprintln!("[voice] cannot decrypt media from {who}: {bad:?}");
+                                    let _ = quality_tx.send(QualityMsg::Undecryptable);
+                                }
+                            }
                         }
                         _ => {}
                     }
@@ -1779,15 +1807,29 @@ struct ScreenAudioRoom {
     alive: Arc<AtomicBool>,
 }
 
-/// Connection-quality notices, on the same bridge as `StreamAudio` and for the
-/// same reason: the event task is `tokio::spawn`ed and so must be `Send`, which
-/// a Dioxus Signal is not.
+/// What the room's event task needs the UI to know, on the same bridge as
+/// `StreamAudio` and for the same reason: the event task is `tokio::spawn`ed and
+/// so must be `Send`, which a Dioxus Signal is not.
+///
+/// Mostly connection quality, and one notice that is not — see `Undecryptable`.
+/// A second channel for a single boolean would be more moving parts than the
+/// thing it carries.
 enum QualityMsg {
     Set(String, ConnectionHealth),
     Drop(String),
     /// The room ended. Every reading it produced is now stale, and a stale
     /// "weak connection" dot left on a name after the call is worse than none.
     Clear,
+    /// Frames arrived that this room could not decrypt.
+    ///
+    /// Not a quality reading, and it rides here because the alternative was a
+    /// whole second bridge for one `bool`. Worth having at all because of what
+    /// the failure looks like without it: media encryption fails *silently* —
+    /// `live_sfu::media_encryption_carries_audio_only_when_the_keys_agree`
+    /// measures the frames still arriving, every sample zero — which is
+    /// indistinguishable from a peer who is not talking. Three key bugs on this
+    /// branch were found by reading `peak=0` out of a log by hand.
+    Undecryptable,
 }
 
 /// What the screen/voice event tasks tell the UI about stream audio. An enum
@@ -3564,15 +3606,33 @@ impl PlaybackMixer {
         .map_err(|e| format!("build_output_stream: {e}"))?;
 
         // Heartbeat task — proves the audio thread is alive (or not).
-        let cb_for_log = cb_counter.clone();
-        let pulled_for_log = pulled_counter.clone();
+        //
+        // Weak, so it ends when the stream does. The counters' only other owner
+        // is the cpal callback, which the output stream owns: leaving voice
+        // drops the stream, drops the callback, and the upgrade below fails.
+        // Held strongly this loop has no exit at all — it kept printing the
+        // same frozen numbers every two seconds for the life of the app, one
+        // more task per channel joined, and the tail of every log was hundreds
+        // of `(+0)` lines instead of whatever the session actually did. A
+        // heartbeat that reports after the thing it watches is gone is worse
+        // than none: it says "alive" in the same words either way.
+        let cb_for_log = Arc::downgrade(&cb_counter);
+        let pulled_for_log = Arc::downgrade(&pulled_counter);
         tokio::spawn(async move {
             let mut prev_cb = 0u64;
             let mut prev_pulled = 0u64;
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                let cb = cb_for_log.load(std::sync::atomic::Ordering::Relaxed);
-                let pulled = pulled_for_log.load(std::sync::atomic::Ordering::Relaxed);
+                // Upgraded per tick and dropped at the end of it — holding
+                // either across the sleep would keep the counters alive and
+                // defeat the very check that ends this task.
+                let (Some(cb_counter), Some(pulled_counter)) =
+                    (cb_for_log.upgrade(), pulled_for_log.upgrade())
+                else {
+                    break;
+                };
+                let cb = cb_counter.load(std::sync::atomic::Ordering::Relaxed);
+                let pulled = pulled_counter.load(std::sync::atomic::Ordering::Relaxed);
                 eprintln!(
                     "[voice] playback heartbeat: callbacks={} (+{}), non-silent samples written={} (+{})",
                     cb,

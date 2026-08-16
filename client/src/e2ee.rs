@@ -19,7 +19,13 @@
 //! machines by hand would be a worse lie than saying nothing.
 //!
 //! The two SDKs have to agree on derivation or the result is silence rather
-//! than an error — frames arrive and decode to noise. They agree on everything
+//! than an error. **This used to say the frames "decode to noise", and that was
+//! wrong** — `live_sfu::media_encryption_carries_audio_only_when_the_keys_agree`
+//! measures it now: with two peers on different keys, 501 frames and 192 480
+//! samples arrive and *every sample is zero*. Digital silence, not noise, which
+//! matters because it is indistinguishable from a peer who is not speaking —
+//! and it is why three separate key bugs on this branch were only ever visible
+//! as `peak=0` in a log. They agree on everything
 //! visible from here: both default the ratchet salt to `LKFrameEncryptionKey`,
 //! and both use PBKDF2/SHA-256. The JS side does 100 000 iterations; the Rust
 //! side hands derivation to libwebrtc, where the count is not readable from
