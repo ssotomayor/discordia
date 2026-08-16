@@ -31,9 +31,17 @@ the top within each section.
   the level/XP system is real (message-count based). Wire the rest to real
   signals when the backends exist (streaks → activity tracking; tips → a Nostr
   zap flow; relay-op → NIP-65 relay list).
-- **Theme popover anchoring.** The appearance panel is a centered modal; the
-  comp shows it as a popover anchored under the top-bar palette icon. Purely
-  positional polish.
+- **The palette icon is not where the comp puts it.** The appearance panel was a
+  centered modal and is now a popover anchored to its own button, which is the
+  half of this that was positional polish. What is left is not.
+  The comp puts the palette in the **top bar**, between "voice ready" and the
+  sound and power icons — so "anchored *under* the icon" was a description of a
+  layout we do not have. `AppearanceButton` is rendered from `UserPanel`
+  (`channels.rs`), at the bottom of the sidebar, so the popover opens upward
+  instead. It is anchored to the icon; the icon is somewhere else.
+  Moving it is a layout change to the top bar rather than to this panel, which
+  is a different size of job — and the top bar in the comp carries three things
+  this client renders elsewhere, so it is worth doing all at once or not at all.
 - **Level curve tuning.** `level_progress` is a simple 10/level-step curve;
   revisit the numbers (and maybe award XP for reactions/voice) once it's seen
   in use.
@@ -303,9 +311,15 @@ the top within each section.
 
 ## Platform — bots (Tier 1) & activities (Tier 3)
 
-- **Privileged-intent gate.** Today the owner can grant `message_content` /
-  `members` freely. Discord reviews these past a scale threshold. At minimum
-  add an extra confirm step in the install UI; longer term, a verification flow.
+- **Privileged intents have a confirm step, not a verification flow.** Granting
+  `MessageContent` or `Members` now takes two clicks: the first turns the
+  install button into a panel naming what the bot would be able to read, and
+  changing any intent invalidates it. That is the "at minimum" half of what this
+  entry asked for.
+  The other half is untouched and is the one Discord actually relies on: there
+  is no review, no scale threshold, and nothing stops an owner granting these to
+  any key at all. A confirm step slows a mistake down; it does nothing about a
+  bot that was always going to be given the intent.
 - **Bot identity refresh.** A bot member's display name is the installer-chosen
   `name`; when the bot connects we don't reconcile its self-declared username.
   Decide which wins (installer label is probably right) and document it.
