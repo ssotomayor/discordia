@@ -3529,15 +3529,33 @@ impl PlaybackMixer {
         .map_err(|e| format!("build_output_stream: {e}"))?;
 
         // Heartbeat task — proves the audio thread is alive (or not).
-        let cb_for_log = cb_counter.clone();
-        let pulled_for_log = pulled_counter.clone();
+        //
+        // Weak, so it ends when the stream does. The counters' only other owner
+        // is the cpal callback, which the output stream owns: leaving voice
+        // drops the stream, drops the callback, and the upgrade below fails.
+        // Held strongly this loop has no exit at all — it kept printing the
+        // same frozen numbers every two seconds for the life of the app, one
+        // more task per channel joined, and the tail of every log was hundreds
+        // of `(+0)` lines instead of whatever the session actually did. A
+        // heartbeat that reports after the thing it watches is gone is worse
+        // than none: it says "alive" in the same words either way.
+        let cb_for_log = Arc::downgrade(&cb_counter);
+        let pulled_for_log = Arc::downgrade(&pulled_counter);
         tokio::spawn(async move {
             let mut prev_cb = 0u64;
             let mut prev_pulled = 0u64;
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                let cb = cb_for_log.load(std::sync::atomic::Ordering::Relaxed);
-                let pulled = pulled_for_log.load(std::sync::atomic::Ordering::Relaxed);
+                // Upgraded per tick and dropped at the end of it — holding
+                // either across the sleep would keep the counters alive and
+                // defeat the very check that ends this task.
+                let (Some(cb_counter), Some(pulled_counter)) =
+                    (cb_for_log.upgrade(), pulled_for_log.upgrade())
+                else {
+                    break;
+                };
+                let cb = cb_counter.load(std::sync::atomic::Ordering::Relaxed);
+                let pulled = pulled_counter.load(std::sync::atomic::Ordering::Relaxed);
                 eprintln!(
                     "[voice] playback heartbeat: callbacks={} (+{}), non-silent samples written={} (+{})",
                     cb,
