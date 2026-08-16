@@ -102,6 +102,7 @@ async fn state_survives_restart_and_media_is_offloaded() {
                 content: "with an image".into(),
                 image: Some(TINY_PNG.into()),
                 reply_to: None,
+                enc: None,
             })
             .await
             .unwrap();

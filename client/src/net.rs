@@ -676,8 +676,9 @@ fn apply(
         }
         ServerMessage::MessageHistory {
             channel_id,
-            messages,
+            mut messages,
         } => {
+            open_sealed(&s, channel_id, &mut messages);
             // Merge rather than replace: an initial load starts from empty, but
             // an older page (infinite scroll) must fold into what's already
             // there without dropping live messages. Dedupe by id, keep
@@ -691,7 +692,7 @@ fn apply(
             }
             combined.sort_by_key(|a| a.created_at);
         }
-        ServerMessage::MessageCreate(m) => {
+        ServerMessage::MessageCreate(mut m) => {
             let cid = m.channel_id;
             // A channel we don't have as a guild channel must be a DM addressed
             // to us (the server only delivers DM frames to participants).
@@ -704,6 +705,10 @@ fn apply(
                     other: m.author.clone(),
                 });
             }
+            // Before anything reads `content`: sealed messages carry only a
+            // placeholder until this runs, and the mention check below would
+            // match against it rather than against what was written.
+            open_sealed(&s, cid, std::slice::from_mut(&mut m));
             let author_is_self = s
                 .self_user
                 .as_ref()
@@ -846,13 +851,15 @@ fn apply(
         ServerMessage::DmReady {
             channel_id,
             other,
-            messages,
+            mut messages,
         } => {
             // Authoritative open of a DM we initiated: list it, load history,
             // switch to the DM view and select it.
             if !s.dms.iter().any(|d| d.channel_id == channel_id) {
                 s.dms.push(crate::protocol::DmInfo { channel_id, other });
             }
+            // After the push, so the peer this history is sealed to resolves.
+            open_sealed(&s, channel_id, &mut messages);
             s.messages.insert(channel_id, messages);
             s.dm_mode = true;
             s.selected_channel = Some(channel_id);
@@ -1268,6 +1275,69 @@ fn apply(
             // Hello is only valid as the FIRST frame and is consumed by the
             // handshake loop in `run()`. Anywhere else, ignore.
             tracing::warn!("ignoring late Hello frame from server");
+        }
+    }
+}
+
+
+/// Open any sealed messages for `channel_id`, in place.
+///
+/// A no-op unless something in the batch actually carries `enc`, so the common
+/// case — a guild channel — costs one scan and no key agreement.
+///
+/// Both the peer and our identity have to be resolvable: a DM whose
+/// conversation we have not learned yet, or a session with no identity loaded,
+/// leaves the placeholder standing rather than guessing. That is recoverable —
+/// the next history fetch runs this again — where decrypting against the wrong
+/// peer would not be.
+fn open_sealed(
+    s: &crate::state::AppState,
+    channel_id: crate::protocol::Id,
+    messages: &mut [crate::protocol::Message],
+) {
+    if !messages.iter().any(|m| m.enc.is_some()) {
+        return;
+    }
+    let Some(peer) = s.dm_of(channel_id).map(|d| d.other.pubkey.clone()) else {
+        return;
+    };
+    let Some(identity) = s.identity.clone() else {
+        return;
+    };
+    for m in messages.iter_mut() {
+        crate::dmcrypt::open_in_place(m, &peer, &identity);
+    }
+
+    // Repair reply quotes. The server builds `excerpt` from the parent row,
+    // which for a sealed message is the placeholder — so without this, every
+    // reply inside an encrypted DM quotes "[encrypted message …]" instead of
+    // what was said. Not a leak, just useless, and the fix has to be here
+    // because the server is the one party that cannot do it.
+    //
+    // The parent is looked up among what we just opened and among what is
+    // already on screen; a reply to something scrolled out of history keeps the
+    // placeholder rather than pretending to know.
+    let known: std::collections::HashMap<crate::protocol::Id, String> = messages
+        .iter()
+        .map(|m| (m.id, m.content.clone()))
+        .chain(
+            s.messages
+                .get(&channel_id)
+                .into_iter()
+                .flatten()
+                .filter(|m| m.enc.is_some())
+                .map(|m| (m.id, m.content.clone())),
+        )
+        .collect();
+    for m in messages.iter_mut() {
+        if let Some(reply) = m.reply_to.as_mut()
+            && reply.excerpt == crate::protocol::ENCRYPTED_PLACEHOLDER
+            && let Some(parent) = known.get(&reply.message_id)
+        {
+            reply.excerpt = parent
+                .chars()
+                .take(crate::protocol::REPLY_EXCERPT_CHARS)
+                .collect();
         }
     }
 }

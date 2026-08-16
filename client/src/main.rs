@@ -1,6 +1,7 @@
 mod app;
 mod blossom;
 mod denoise;
+mod dmcrypt;
 mod e2ee;
 #[macro_use]
 mod devlog;

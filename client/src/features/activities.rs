@@ -359,6 +359,12 @@ fn handle_rpc(
                         // An activity posts on its own behalf; it has no notion
                         // of a message being answered.
                         reply_to: None,
+                        // Never sealed. An activity is sandboxed content posting
+                        // through a granted capability, and handing it the DM
+                        // key would make "may send a message" mean "may read
+                        // this conversation". If activities ever need to post
+                        // into a DM, that is a consent decision, not a field.
+                        enc: None,
                     });
                     (true, json!({ "sent": true }))
                 }

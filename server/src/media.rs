@@ -100,9 +100,25 @@ fn ext_for_mime(mime: &str) -> Option<&'static str> {
         "image/gif" => Some("gif"),
         "image/webp" => Some("webp"),
         "image/avif" => Some("avif"),
+        // An attachment on an end-to-end encrypted DM. The bytes are already
+        // ciphertext when they arrive, so there is nothing here to sniff or
+        // validate — which is exactly why it needs its own mime rather than
+        // being smuggled in as `image/png`. Everything else about the blob path
+        // still applies: it is hashed, shared and swept like any other.
+        //
+        // Note that two encryptions of the same picture do *not* dedup, because
+        // each carries its own random key. That is a feature: dedup across
+        // senders would tell the operator that two people sent the same image.
+        ENCRYPTED_BLOB_MIME => Some("enc"),
         _ => None,
     }
 }
+
+/// Mime marking a blob whose bytes are sealed by the client.
+///
+/// The real mime of what is inside travels in the message's sealed payload, so
+/// the server never learns even the *kind* of file it is holding.
+pub const ENCRYPTED_BLOB_MIME: &str = "application/vnd.discordia.enc";
 
 fn mime_for_name(name: &str) -> &'static str {
     match name.rsplit_once('.').map(|(_, e)| e) {
@@ -111,6 +127,12 @@ fn mime_for_name(name: &str) -> &'static str {
         Some("gif") => "image/gif",
         Some("webp") => "image/webp",
         Some("avif") => "image/avif",
+        // Round-trips to what `store_data_url` accepted, so a re-inlined blob
+        // is handed back to the client in the same form it was sent. Inlining
+        // it as `application/octet-stream` would still decrypt, but the client
+        // could no longer tell an encrypted attachment from any other opaque
+        // byte string.
+        Some("enc") => ENCRYPTED_BLOB_MIME,
         _ => "application/octet-stream",
     }
 }

@@ -31,6 +31,17 @@ pub enum IdentitySource {
     Nsec(String),
 }
 
+/// Domain separator for channel media keys.
+///
+/// **Frozen.** Every media key two peers have ever agreed on is derived under
+/// this label; changing it makes a client on either side of the change derive a
+/// different secret and hear silence, with nothing to say why.
+const MEDIA_KEY_DOMAIN: &[u8] = b"dioxusfun/media-key/v1";
+
+/// Domain separator for direct messages. Distinct from the media key on
+/// purpose — see `Identity::dm_secret_with`.
+const DM_DOMAIN: &[u8] = b"dioxusfun/dm/v1";
+
 #[derive(Clone)]
 pub struct Identity {
     /// x-only public key as 64-char hex — the universal user id.
@@ -176,6 +187,33 @@ impl Identity {
     /// The hash is the domain separator's whole job: this secret must never
     /// coincide with one derived for another purpose from the same pair of keys.
     pub fn shared_secret_with(&self, their_pubkey_hex: &str) -> Result<[u8; 32], String> {
+        self.secret_with_domain(their_pubkey_hex, MEDIA_KEY_DOMAIN)
+    }
+
+    /// The same agreement, under the direct-message domain.
+    ///
+    /// A separate domain rather than a second use of `shared_secret_with`,
+    /// because that function's own contract says a secret must never coincide
+    /// with one derived for another purpose from the same pair of keys — and
+    /// the media key is *shared with a whole channel*, so reusing it for a
+    /// two-party conversation would hand every member of a voice channel the
+    /// key to your DMs with any of them.
+    pub fn dm_secret_with(&self, their_pubkey_hex: &str) -> Result<[u8; 32], String> {
+        self.secret_with_domain(their_pubkey_hex, DM_DOMAIN)
+    }
+
+    /// ECDH, then a domain-separated hash. The two callers above differ only in
+    /// the label, and the label is load-bearing — see each of their docs.
+    ///
+    /// **`MEDIA_KEY_DOMAIN` must never change.** It is baked into every media
+    /// key two peers have ever agreed on; altering it would mean a client on
+    /// either side of the change derives a different secret and hears silence,
+    /// with nothing to say why.
+    fn secret_with_domain(
+        &self,
+        their_pubkey_hex: &str,
+        domain: &[u8],
+    ) -> Result<[u8; 32], String> {
         use sha2::{Digest, Sha256};
 
         let their_bytes =
@@ -192,7 +230,7 @@ impl Identity {
 
         let xy = secp256k1::ecdh::shared_secret_point(&point, &self.secret);
         let mut h = Sha256::new();
-        h.update(b"dioxusfun/media-key/v1");
+        h.update(domain);
         h.update(&xy[..32]);
         Ok(h.finalize().into())
     }

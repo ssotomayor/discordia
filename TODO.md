@@ -40,6 +40,44 @@ the top within each section.
 
 ## Security
 
+- **DMs are encrypted; guild text is not, and that asymmetry needs saying in the
+  UI.** `client/src/dmcrypt.rs` seals DM text and attachments to the two
+  participants' Nostr keys (ECDH under its own `dioxusfun/dm/v1` domain,
+  XChaCha20-Poly1305, power-of-two padding), the gateway stores and forwards an
+  opaque `Message::enc` it cannot read, and the DM header carries a `🔒
+  encrypted` badge. A guild channel has no such thing and cannot easily get one:
+  it is the group-key problem `mediakey` already struggles with, plus history
+  that must stay readable to members who join later. Nothing currently tells a
+  user which of the two they are typing into beyond the badge's absence, and
+  absence is a poor way to say "this is readable by the operator".
+  What is deliberately *not* closed, in rough order of how likely someone is to
+  assume otherwise:
+  - **No forward secrecy.** The secret comes from two static identity keys, so
+    one key compromise decrypts every DM that key ever took part in. NIP-44 has
+    the same property; fixing it means a ratchet.
+  - **Metadata is untouched.** Who talks to whom, when, and roughly how much all
+    remain visible to the server. Padding bounds the size leak, it does not
+    remove it.
+  - **Not NIP-44**, so DMs do not interoperate with other Nostr clients. Using
+    it would mean hand-rolling a spec or taking the `nostr` crate for one
+    function. Every payload carries a version byte so adopting it later is a
+    decode branch rather than a flag day — that byte is the whole reason it is
+    there.
+  - **Server-side reads of DM content are gone by construction** — search,
+    moderation, retention-by-content. Mentions still work because they are
+    computed client-side, and only because `open_sealed` decrypts before the
+    mention check runs.
+  - **Reply excerpts are repaired client-side, incompletely.** The server builds
+    the quote from the parent row, which is the placeholder, so `net::open_sealed`
+    substitutes the real text when it can find the parent in view. A reply to
+    something scrolled out of history keeps the placeholder.
+  - **An older client shows `ENCRYPTED_PLACEHOLDER`** and a broken image, since
+    the attachment is ciphertext under a mime it does not know. Same undetectable
+    mixed-version problem as everywhere else on this wire.
+  - **Never run between two machines.** Unit tests cover sealing, tampering,
+    padding, domain separation and the attachment round trip, and two gateway
+    tests cover the server carrying `enc` verbatim and refusing it in a guild —
+    but nobody has watched two real clients hold a conversation.
 - **The gateway is plaintext on every path but QUIC.** Stage 2 added an
   encrypted, key-authenticated transport (`server/src/quic.rs`,
   `client/src/quic.rs`) and a joiner holding a code prefers it — but it is only
@@ -577,6 +615,20 @@ the top within each section.
 
 ## Client UX
 
+- **You cannot start a DM with someone you do not already share a guild with,
+  and nothing in the protocol says so.** `OpenDm` has no membership check — the
+  handler asks only that you are identified and not messaging yourself — so the
+  server would happily open a conversation with any pubkey. The limit is that
+  there is exactly one way to *reach* it: the "Message" button on a profile
+  card (`features::profiles`), and profile cards open from member lists and
+  chat messages. So the capability exists and has no door.
+  Closing it is a text field that accepts an npub or hex pubkey and sends
+  `OpenDm` — no protocol change at all. Worth deciding two things first, because
+  they are the reason this is not merely an oversight: whether anyone should be
+  able to open a conversation with a stranger who has not consented (the answer
+  every other platform reached is a block list and a request inbox, neither of
+  which exists here), and what it means for `DmReady` that the other party is
+  not notified until the first message actually arrives.
 - **The Windows client is a console application, so every release ships a `cmd`
   window beside it.** Nothing in the workspace sets `windows_subsystem` — a grep
   across every file finds no occurrence — so the linker leaves the default, and

@@ -43,6 +43,7 @@ fn msg(channel_id: Uuid, author: &User, content: &str) -> Message {
         image: None,
         reactions: Vec::new(),
         reply_to: None,
+        enc: None,
         created_at: Utc::now(),
     }
 }

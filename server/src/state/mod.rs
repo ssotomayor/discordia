@@ -2127,8 +2127,10 @@ impl AppState {
             Some(id) => self.store.reply_ref(channel_id, id).await.unwrap_or(None),
             None => None,
         };
+        // No `enc` on a guild channel: the gateway refuses a sealed message
+        // there, because a room of many cannot share a two-party secret.
         Some(
-            self.append_message(channel_id, author, content, image, reply_ref)
+            self.append_message(channel_id, author, content, image, reply_ref, None)
                 .await,
         )
     }
@@ -2142,6 +2144,7 @@ impl AppState {
         content: String,
         image: Option<String>,
         reply_to: Option<Id>,
+        enc: Option<String>,
     ) -> Option<Message> {
         if !self.is_dm_participant(channel_id, &author.pubkey) {
             return None;
@@ -2154,7 +2157,7 @@ impl AppState {
             None => None,
         };
         Some(
-            self.append_message(channel_id, author, content, image, reply_ref)
+            self.append_message(channel_id, author, content, image, reply_ref, enc)
                 .await,
         )
     }
@@ -2169,6 +2172,7 @@ impl AppState {
         content: String,
         image: Option<String>,
         reply_to: Option<ReplyRef>,
+        enc: Option<String>,
     ) -> Message {
         let stored_image = image.as_ref().map(|img| {
             if img.starts_with("data:") {
@@ -2189,6 +2193,7 @@ impl AppState {
             image: stored_image,
             reactions: Vec::new(),
             reply_to,
+            enc,
             created_at: chrono::Utc::now(),
         };
         persist(self.store.insert_message(&message).await, "message insert");

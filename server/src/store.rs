@@ -140,6 +140,7 @@ impl Store {
                 reactions TEXT NOT NULL DEFAULT '[]',
                 reply_id TEXT, reply_author_pubkey TEXT,
                 reply_author_username TEXT, reply_excerpt TEXT,
+                enc TEXT,
                 created_at INTEGER NOT NULL)",
             "CREATE INDEX IF NOT EXISTS idx_messages_channel_time
                 ON messages(channel_id, created_at)",
@@ -176,6 +177,7 @@ impl Store {
             "ALTER TABLE messages ADD COLUMN reply_author_pubkey TEXT",
             "ALTER TABLE messages ADD COLUMN reply_author_username TEXT",
             "ALTER TABLE messages ADD COLUMN reply_excerpt TEXT",
+            "ALTER TABLE messages ADD COLUMN enc TEXT",
         ] {
             if let Err(e) = sqlx::query(stmt).execute(&self.pool).await
                 && !e.to_string().contains("duplicate column name")
@@ -694,8 +696,8 @@ impl Store {
             "INSERT INTO messages (id, channel_id, author_pubkey, author_username,
                                    content, image, reactions, reply_id,
                                    reply_author_pubkey, reply_author_username,
-                                   reply_excerpt, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                   reply_excerpt, enc, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(m.id.to_string())
         .bind(m.channel_id.to_string())
@@ -708,6 +710,7 @@ impl Store {
         .bind(m.reply_to.as_ref().map(|r| r.author_pubkey.clone()))
         .bind(m.reply_to.as_ref().map(|r| r.author_username.clone()))
         .bind(m.reply_to.as_ref().map(|r| r.excerpt.clone()))
+        .bind(&m.enc)
         .bind(m.created_at.timestamp_millis())
         .execute(&self.pool)
         .await?;
@@ -761,7 +764,7 @@ impl Store {
                 sqlx::query(
                     "SELECT id, channel_id, author_pubkey, author_username, content,
                             image, reactions, reply_id, reply_author_pubkey,
-                            reply_author_username, reply_excerpt, created_at
+                            reply_author_username, reply_excerpt, enc, created_at
                      FROM messages WHERE channel_id = ? AND created_at < ?
                      ORDER BY created_at DESC, rowid DESC LIMIT ?",
                 )
@@ -775,7 +778,7 @@ impl Store {
                 sqlx::query(
                     "SELECT id, channel_id, author_pubkey, author_username, content,
                             image, reactions, reply_id, reply_author_pubkey,
-                            reply_author_username, reply_excerpt, created_at
+                            reply_author_username, reply_excerpt, enc, created_at
                      FROM messages WHERE channel_id = ?
                      ORDER BY created_at DESC, rowid DESC LIMIT ?",
                 )
@@ -874,7 +877,7 @@ impl Store {
 // ----- row/enum helpers ------------------------------------------------------
 
 fn row_to_message(r: sqlx::sqlite::SqliteRow) -> Message {
-    let ms: i64 = r.get(11);
+    let ms: i64 = r.get(12);
     // All four reply columns are written together, so `reply_id` present is the
     // only condition worth testing; the rest default rather than making a row
     // written by an older server unreadable.
@@ -898,6 +901,7 @@ fn row_to_message(r: sqlx::sqlite::SqliteRow) -> Message {
         image: r.get(5),
         reactions: serde_json::from_str(&r.get::<String, _>(6)).unwrap_or_default(),
         reply_to,
+        enc: r.get(11),
         created_at: DateTime::<Utc>::from_timestamp_millis(ms).unwrap_or_else(Utc::now),
     }
 }
