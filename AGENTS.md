@@ -7,7 +7,7 @@ desktop client, axum WebSocket server.
 
 This file is the orientation for anyone (human or agent) picking up the repo.
 Read it, then `docs/ROADMAP.md` for where the project is headed and
-`docs/SELF_HOSTING.md` for ops. `TODO.md` tracks deliberately-deferred work.
+`docs/SELF_HOSTING.md` for ops.
 
 ---
 
@@ -115,7 +115,7 @@ it is what *renders* everyone else's share.
    (`server/src/media.rs`) decodes inbound `data:` URLs into
    `media:<sha256>.<ext>` sentinels stored on disk; they're re-inlined on serve
    and via `GET /media/{name}`. DB rows and broadcasts carry the sentinel, not
-   the bytes. (Blob GC is still open — see `TODO.md`.)
+   the bytes. (Blob GC is still open.)
 
 4. **Fan-out is a per-connection routing table, not a broadcast.**
    `AppState.deliver(to_pubkeys, msg)` routes only to those users' live
@@ -342,8 +342,7 @@ the transport bus (P5a core), guild export/import + persistent named rendezvous
 (P6 parts) are **done and tested**. Deliberately deferred / gated: the web-PWA
 client (P3, needs a browser), delta-sync resume + a 2k-connection load
 benchmark (P5a tail), the signed "guild-moved" redirect + cross-instance media
-copy (P6 tail), and cluster mode (P7, demand-gated). See `TODO.md` for the
-smaller deferred items.
+copy (P6 tail), and cluster mode (P7, demand-gated).
 
 ---
 

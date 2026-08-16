@@ -7,7 +7,7 @@ desktop client, axum WebSocket server.
 
 This file is the orientation for anyone (human or agent) picking up the repo.
 Read it, then `docs/ROADMAP.md` for where the project is headed and
-`docs/SELF_HOSTING.md` for ops. `TODO.md` tracks deliberately-deferred work.
+`docs/SELF_HOSTING.md` for ops.
 
 ---
 
@@ -113,7 +113,7 @@ identity bullets under `features/*.rs`:
    (`server/src/media.rs`) decodes inbound `data:` URLs into
    `media:<sha256>.<ext>` sentinels stored on disk; they're re-inlined on serve
    and via `GET /media/{name}`. DB rows and broadcasts carry the sentinel, not
-   the bytes. (Blob GC is still open — see `TODO.md`.)
+   the bytes. (Blob GC is still open.)
 
 4. **Fan-out is a per-connection routing table, not a broadcast.**
    `AppState.deliver(to_pubkeys, msg)` routes only to those users' live
@@ -277,7 +277,7 @@ identity bullets under `features/*.rs`:
   That answer rides `MintRequest::can_publish` across the delegation seam too, so
   it binds on the local mint *and* on a rendezvous-delegated one — with the
   caveat that a relay older than that field ignores it and grants publish, which
-  nothing on this wire can detect (see `TODO.md`).
+  nothing on this wire can detect.
 
   **The camera deliberately did not add a fourth.** `features/camera.rs`
   captures with `getUserMedia` on macOS and Windows alike and publishes as
@@ -420,15 +420,16 @@ time anyone ran it.
 - **Match the surrounding code.** Comments explain *why*, not *what*, and the
   codebase is fairly densely commented at decision points — keep that up.
 - **Never add Claude/AI attribution** to commits, PRs, or generated content.
-- **Deferred work goes in `TODO.md`, not only in the commit message.** If
-  something is knowingly left undone — a review follow-up, a gap you chose not
-  to close, a fix you could not verify — it needs an entry there. Commit bodies
-  in this repo are unusually good, which is the trap: they are written once and
-  read never, so recording a decision in one *feels* like tracking it.
-  `c86af67` listed five review follow-ups in its body; three were still open a
-  month later and nothing anywhere was tracking them. Same for a bug you find
-  and don't fix — `c6cb994` wrote "That is still open" about a user-reported
-  problem, and that was the last anyone looked at it.
+- **Deferred work goes in the issue tracker, not only in the commit message.**
+  If something is knowingly left undone — a review follow-up, a gap you chose
+  not to close, a fix you could not verify — it needs an issue. Commit bodies in
+  this repo are unusually good, which is the trap: they are written once and read
+  never, so recording a decision in one *feels* like tracking it. `c86af67`
+  listed five review follow-ups in its body; three were still open a month later
+  and nothing anywhere was tracking them. Same for a bug you find and don't fix —
+  `c6cb994` wrote "That is still open" about a user-reported problem, and that
+  was the last anyone looked at it. This used to be `TODO.md`, which was removed;
+  the lesson that killed those two follow-ups did not go with it.
 - Mutations on `AppState` are `async` and write through to the store — follow
   the existing method shape (mutate map → `persist(store.xxx().await, "what")`).
 - Prefer `deliver(guild_member_pubkeys, msg)` over `broadcast` for guild
@@ -443,7 +444,6 @@ the transport bus (P5a core), guild export/import + persistent named rendezvous
 (P6 parts) are **done and tested**. Deliberately deferred / gated: the web-PWA
 client (P3, needs a browser), delta-sync resume + a 2k-connection load
 benchmark (P5a tail), the signed "guild-moved" redirect + cross-instance media
-copy (P6 tail), and cluster mode (P7, demand-gated). See `TODO.md` for the
-smaller deferred items.
+copy (P6 tail), and cluster mode (P7, demand-gated).
 
 Contributing workflow (fork, branch, PR) is in `README.md`.
