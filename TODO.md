@@ -40,6 +40,23 @@ the top within each section.
 
 ## Security
 
+- **The media-key ledger is forgotten by roster change, which a coalesced
+  rejoin could slip past.** `mediakey::forget_absent` drops what we remember
+  sending to members who are no longer in the channel, so somebody who
+  restarted the app — and so lost both their key and their own ledger — is
+  sent it again rather than left on a key nobody else holds. It is driven by
+  the `roster` memo, so it only fires on a membership change we actually
+  observe. If a departure and a return ever arrive inside one signal update,
+  the roster never shows them absent, nothing is forgotten, and the old
+  suppression is back. A restart takes seconds and does not coalesce in
+  practice, which is why this is recorded rather than defended against; the
+  defence would be a per-session marker on `VoiceState` so a returning member
+  is a different recipient rather than the same one, and that is a protocol
+  change for a case nobody has hit.
+  The larger gap behind it is that there is **no recovery path at all**: the
+  protocol has `ShareMediaKey` and nothing to ask with, so any future way of
+  ending up on the wrong key is permanent and silent. `media_undecryptable`
+  already knows when we cannot read a peer — today it only reaches the UI.
 - **The gateway is plaintext on every path but QUIC.** Stage 2 added an
   encrypted, key-authenticated transport (`server/src/quic.rs`,
   `client/src/quic.rs`) and a joiner holding a code prefers it — but it is only

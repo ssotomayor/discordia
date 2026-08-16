@@ -231,13 +231,26 @@ use crate::state::{use_app_state, use_gateway};
 /// Keyed by channel and recipient, holding the epoch last sent. A rekey raises
 /// the epoch and so sends again, which is the one case that must not be
 /// suppressed.
-static SENT: std::sync::Mutex<Option<std::collections::HashMap<(Id, String), u32>>> =
-    std::sync::Mutex::new(None);
+///
+/// **The epoch does not identify the key, and this is why entries have to be
+/// forgotten.** `net::supersedes` exists precisely because two members can hold
+/// two different epoch-1 keys for the same channel. So "already sent epoch 1 to
+/// them" is not the same claim as "they have our key", and treating it as one
+/// is silence: see `forget_absent`.
+type Ledger = std::collections::HashMap<(Id, String), u32>;
+
+static SENT: std::sync::Mutex<Option<Ledger>> = std::sync::Mutex::new(None);
 
 /// Whether this key still needs sending to this member.
 fn needs_send(channel: Id, to: &str, epoch: u32) -> bool {
     let mut guard = SENT.lock().expect("media key ledger");
-    let sent = guard.get_or_insert_with(std::collections::HashMap::new);
+    let sent = guard.get_or_insert_with(Ledger::new);
+    record_send(sent, channel, to, epoch)
+}
+
+/// `needs_send` over a ledger we are handed, so it can be tested without owning
+/// the process-wide one.
+fn record_send(sent: &mut Ledger, channel: Id, to: &str, epoch: u32) -> bool {
     match sent.get(&(channel, to.to_string())) {
         Some(&already) if already >= epoch => false,
         _ => {
@@ -245,6 +258,39 @@ fn needs_send(channel: Id, to: &str, epoch: u32) -> bool {
             true
         }
     }
+}
+
+/// Drop what we remember about members no longer in this channel.
+///
+/// A member who left and came back is a **new session**, which may have restarted
+/// the app and so lost the key entirely — its own `media_keys` and its own copy
+/// of this ledger both start empty. Ours does not, and without this the stale
+/// entry suppresses the one send that would have fixed them:
+///
+/// 1. they rejoin with no key, wait `KEY_WAIT`, and we send nothing
+/// 2. they generate their own epoch-1 key and send it to us
+/// 3. `supersedes` breaks the tie by pubkey — if ours wins we keep ours, and the
+///    ledger stops us handing it over
+///
+/// Two keys, and silence in both directions with nothing on screen to say why.
+/// There is no recovery from the far side either: the protocol has
+/// `ShareMediaKey` and no request for one. The fix has to be here, on the side
+/// that sends.
+///
+/// Scoped to one channel because `present` describes one channel; entries for
+/// other channels say nothing about who is in them. Returns how many were
+/// dropped, for the caller to log.
+fn forget_absent(sent: &mut Ledger, channel: Id, present: &[String]) -> usize {
+    let before = sent.len();
+    sent.retain(|(ch, to), _| *ch != channel || present.iter().any(|p| p == to));
+    before - sent.len()
+}
+
+/// `forget_absent` against the process-wide ledger.
+fn forget_absent_now(channel: Id, present: &[String]) -> usize {
+    let mut guard = SENT.lock().expect("media key ledger");
+    let sent = guard.get_or_insert_with(Ledger::new);
+    forget_absent(sent, channel, present)
 }
 
 /// How long a joiner waits to be given the channel's key before generating one.
@@ -334,6 +380,15 @@ pub fn MediaKeyBridge() -> Element {
         let (Some(identity), Some(me)) = (identity, me) else {
             return;
         };
+
+        // Before deciding what to send, forget whoever is no longer here. Ahead
+        // of the `match` because it applies to both arms — and because the arm
+        // that holds a key returns early when nobody else is present, which is
+        // exactly the moment the last departure has to be recorded.
+        let forgotten = forget_absent_now(channel, &present);
+        if forgotten > 0 {
+            tracing::debug!(%channel, forgotten, "forgot the media key ledger for members who left");
+        }
 
         match held {
             // We hold the key: hand it to everyone else here.
@@ -568,5 +623,59 @@ mod orchestration_tests {
         assert!(!needs_send(channel, "alice", 1));
         // Channels are tracked apart, or joining a second one would go silent.
         assert!(needs_send(other, "alice", 1));
+    }
+
+    /// The ledger entry that outlived the member it described.
+    ///
+    /// Restarting the app empties that member's own key and its own ledger; ours
+    /// keeps neither of those facts. Left alone, "already sent them epoch 1"
+    /// suppresses the send that would have handed the key back, both sides end
+    /// up on two different epoch-1 keys, and `net::supersedes` resolves the tie
+    /// against whichever of them nobody is willing to hand over. Silence, both
+    /// ways, permanently — the protocol has no request to recover with.
+    ///
+    /// Tested on the ledger directly rather than through `SENT`, which is
+    /// process-wide and no test can own.
+    #[test]
+    fn a_member_who_left_is_sent_the_key_again_on_return() {
+        use super::{Ledger, forget_absent, record_send};
+        let channel = crate::protocol::Id::new_v4();
+        let mut sent = Ledger::new();
+        let present = ["alice".to_string(), "bob".to_string()];
+
+        assert!(record_send(&mut sent, channel, "bob", 1));
+        assert!(!record_send(&mut sent, channel, "bob", 1));
+
+        // Everyone still here: nothing is forgotten, and nothing repeats.
+        assert_eq!(forget_absent(&mut sent, channel, &present), 0);
+        assert!(!record_send(&mut sent, channel, "bob", 1));
+
+        // Bob leaves.
+        assert_eq!(forget_absent(&mut sent, channel, &["alice".to_string()]), 1);
+        assert!(
+            record_send(&mut sent, channel, "bob", 1),
+            "a member who left and came back must be sent the key again"
+        );
+    }
+
+    /// `present` describes one channel, so it may only be used to judge that
+    /// channel. Forgetting another one's members would re-send the key to
+    /// everybody there on the next roster change.
+    #[test]
+    fn forgetting_is_scoped_to_the_channel_it_was_told_about() {
+        use super::{Ledger, forget_absent, record_send};
+        let channel = crate::protocol::Id::new_v4();
+        let other = crate::protocol::Id::new_v4();
+        let mut sent = Ledger::new();
+
+        assert!(record_send(&mut sent, channel, "bob", 1));
+        assert!(record_send(&mut sent, other, "bob", 1));
+
+        // Bob is absent from `channel`; that says nothing about `other`.
+        assert_eq!(forget_absent(&mut sent, channel, &[]), 1);
+        assert!(
+            !record_send(&mut sent, other, "bob", 1),
+            "the other channel's entry must survive"
+        );
     }
 }
