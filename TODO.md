@@ -303,9 +303,15 @@ the top within each section.
 
 ## Platform — bots (Tier 1) & activities (Tier 3)
 
-- **Privileged-intent gate.** Today the owner can grant `message_content` /
-  `members` freely. Discord reviews these past a scale threshold. At minimum
-  add an extra confirm step in the install UI; longer term, a verification flow.
+- **Privileged intents have a confirm step, not a verification flow.** Granting
+  `MessageContent` or `Members` now takes two clicks: the first turns the
+  install button into a panel naming what the bot would be able to read, and
+  changing any intent invalidates it. That is the "at minimum" half of what this
+  entry asked for.
+  The other half is untouched and is the one Discord actually relies on: there
+  is no review, no scale threshold, and nothing stops an owner granting these to
+  any key at all. A confirm step slows a mistake down; it does nothing about a
+  bot that was always going to be given the intent.
 - **Bot identity refresh.** A bot member's display name is the installer-chosen
   `name`; when the bot connects we don't reconcile its self-declared username.
   Decide which wins (installer label is probably right) and document it.

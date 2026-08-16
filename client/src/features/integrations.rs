@@ -125,11 +125,25 @@ fn InstallForm(guild_id: Id) -> Element {
     let mut perms = use_signal(|| vec![Permission::SendMessages]);
     let mut intents = use_signal(|| vec![Intent::GuildMessages]);
     let mut error = use_signal(|| None::<String>);
+    // Set once the form has been submitted with a privileged intent ticked, and
+    // cleared by anything that changes what is being granted. While it is set,
+    // `submit` shows what the bot would be able to read instead of installing —
+    // the second click is the grant.
+    let mut confirming = use_signal(|| false);
 
     let mut submit = move || {
         let pk = pubkey().trim().to_string();
         if pk.is_empty() {
             error.set(Some("Enter the bot's public key.".into()));
+            return;
+        }
+        // A privileged intent is the one thing on this form that cannot be
+        // undone by uninstalling: whatever the bot read, it has. Discord gates
+        // these behind review past a scale threshold; the least we can do is
+        // stop granting them on the same click that names the bot.
+        if !confirming() && intents().iter().any(|i| i.is_privileged()) {
+            confirming.set(true);
+            error.set(None);
             return;
         }
         let nm = {
@@ -149,6 +163,7 @@ fn InstallForm(guild_id: Id) -> Element {
         perms.set(vec![Permission::SendMessages]);
         intents.set(vec![Intent::GuildMessages]);
         error.set(None);
+        confirming.set(false);
     };
 
     rsx! {
@@ -198,9 +213,17 @@ fn InstallForm(guild_id: Id) -> Element {
                             r#type: "checkbox",
                             checked: intents.read().contains(&i),
                             onchange: move |_| {
-                                let mut v = intents.write();
-                                if let Some(idx) = v.iter().position(|x| *x == i) { v.remove(idx); }
-                                else { v.push(i); }
+                                {
+                                    let mut v = intents.write();
+                                    if let Some(idx) = v.iter().position(|x| *x == i) { v.remove(idx); }
+                                    else { v.push(i); }
+                                }
+                                // Changing what is granted invalidates a
+                                // confirmation of the old set — otherwise
+                                // ticking one more privileged intent while the
+                                // panel is up would be granted by a click that
+                                // was answering a different question.
+                                confirming.set(false);
                             },
                         }
                         span { "{i.label()}" }
@@ -215,10 +238,45 @@ fn InstallForm(guild_id: Id) -> Element {
                 if let Some(err) = error() {
                     div { class: "text-[11px] text-[var(--danger)]", "{err}" }
                 }
+
+                // Names what the grant actually means, rather than asking
+                // "are you sure?" — the checkbox already said the name of the
+                // intent, and that is exactly what nobody reads.
+                if confirming() {
+                    div { class: "rounded border border-[var(--warn)]/40 bg-[var(--warn)]/10 p-2 space-y-1",
+                        div { class: "text-[11px] font-semibold text-[var(--warn)]",
+                            "This bot will be able to read:"
+                        }
+                        for i in intents().iter().copied().filter(|i| i.is_privileged()) {
+                            div { class: "text-[11px] text-[var(--text)]",
+                                match i {
+                                    Intent::MessageContent => "• the text and images of every message in this guild",
+                                    Intent::Members => "• who joins and who leaves this guild",
+                                    _ => "• —",
+                                }
+                            }
+                        }
+                        div { class: "text-[10px] text-[var(--text-muted)]",
+                            "Uninstalling later stops the delivery, not what was already read."
+                        }
+                    }
+                }
+
                 button {
-                    class: "w-full mt-1 rounded px-2 py-1.5 text-[11px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors",
+                    class: if confirming() {
+                        "w-full mt-1 rounded px-2 py-1.5 text-[11px] uppercase tracking-wider text-[var(--warn)] border border-[var(--warn)]/60 hover:border-[var(--warn)] transition-colors"
+                    } else {
+                        "w-full mt-1 rounded px-2 py-1.5 text-[11px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors"
+                    },
                     onclick: move |_| submit(),
-                    "Install"
+                    if confirming() { "Grant and install" } else { "Install" }
+                }
+                if confirming() {
+                    button {
+                        class: "w-full rounded px-2 py-1 text-[10px] uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--text-muted)] transition-colors",
+                        onclick: move |_| confirming.set(false),
+                        "Cancel"
+                    }
                 }
             }
         }
