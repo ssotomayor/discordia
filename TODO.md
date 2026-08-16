@@ -936,6 +936,32 @@ the top within each section.
   SNR (~10 dB) and noise colour was tried, and AEC cannot be tested this way at
   all — so **do not delete this entry on the strength of reading either one
   alone.**
+  **That thread has now been pulled, and it is the worse branch: nothing runs
+  these options, and nothing was ever going to.** In
+  `webrtc-sys-0.3.33/src/audio_track.cpp`, `options_` occurs three times — set in
+  the constructor (`:138`), returned by `options()` (`:245`), assigned by
+  `set_options` (`:253`) — and is read by nothing else. The component that would
+  have consumed them is then explicitly kept away: `InternalSource` declares
+  `is_external_source() { return true; }`, whose own comment says it "prevents
+  AudioState from sending device audio to streams using this source"
+  (`include/livekit/audio_track.h:132`). The APM lives on the device capture
+  path; we push finished hops in with `capture_frame` and bypass it. So the
+  options are stored faithfully, reported back faithfully, and acted on by
+  nobody.
+  Two consequences worth stating plainly. **An SDK bump will not fix this** —
+  it is what an external source *is*, not a defect that might be repaired — so
+  any plan that waits for one is waiting for nothing. And **`set_apm`'s own
+  readback check cannot see it**: it compares what it wrote against what it
+  reads, which is exactly the part that works, and reports "kept". The diagnostic
+  tests storage and is worded as though it tested effect.
+  What remains genuinely open is AEC, which none of this touches — the warning
+  above still stands for it. And the path to actual gain control is now clear
+  enough to name: it would have to be ours, in the DSP thread that already runs
+  DeepFilterNet and the gate on 10 ms hops, placed *before* the gate so it can
+  lift a quiet talker over the threshold. That is a real audio feature with real
+  ways to be worse than nothing — pumping, breathing between phrases, and room
+  noise raised in the pauses with no working suppressor behind it — so it is
+  named here rather than started.
 - **The transmit gate judges the denoised hop, so its operating point moves when
   suppression is toggled.** `denoise_gate_loop` runs the model first and gates
   what comes out, so switching DeepFilterNet on drops the signal the gate is
