@@ -26,9 +26,10 @@ use windows::Win32::Foundation::{
 use windows::Win32::Media::Audio::{
     AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_E_DEVICE_IN_USE, AUDCLNT_E_SERVICE_NOT_RUNNING,
     AUDCLNT_E_UNSUPPORTED_FORMAT, AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-    AUDCLNT_STREAMOPTIONS_RAW, AudioCategory_Other, AudioClientProperties, DEVICE_STATE_ACTIVE,
-    IAudioCaptureClient, IAudioClient, IAudioClient2, IMMDevice, IMMDeviceEnumerator,
-    MMDeviceEnumerator, WAVEFORMATEX, WAVEFORMATEXTENSIBLE, eCapture, eConsole,
+    AUDCLNT_STREAMOPTIONS_NONE, AUDCLNT_STREAMOPTIONS_RAW, AudioCategory_Other,
+    AudioClientProperties, DEVICE_STATE_ACTIVE, IAudioCaptureClient, IAudioClient, IAudioClient2,
+    IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator, WAVEFORMATEX, WAVEFORMATEXTENSIBLE,
+    eCapture, eConsole,
 };
 use windows::Win32::System::Com::StructuredStorage::PropVariantClear;
 use windows::Win32::System::Com::{
@@ -110,6 +111,23 @@ impl Capture {
         fatal: UnboundedSender<String>,
         sink: SinkBuilder,
     ) -> Result<Self, String> {
+        Self::start_with_bypass(device, fatal, sink, true)
+    }
+
+    /// The same capture, with the choice of asking for raw mode or not.
+    ///
+    /// Only a test calls this with `false`. It exists because the switch in the
+    /// client can report that raw mode was *requested* and nothing more:
+    /// `SetClientProperties` either accepts or refuses, and there is no
+    /// read-back saying the endpoint's effects left the path. Opening the same
+    /// device both ways at once, against the same room, is the one comparison
+    /// that can tell an accepted request from an effective one.
+    pub fn start_with_bypass(
+        device: Option<String>,
+        fatal: UnboundedSender<String>,
+        sink: SinkBuilder,
+        bypass: bool,
+    ) -> Result<Self, String> {
         // SAFETY: creating an unnamed manual-reset event.
         let shutdown = unsafe { CreateEventW(None, true, false, None) }
             .map_err(|e| format!("create shutdown event: {e}"))?;
@@ -121,7 +139,7 @@ impl Capture {
         let (ready_tx, ready_rx) = std_mpsc::channel::<Result<(), String>>();
         let thread = std::thread::Builder::new()
             .name("dxf-rawmic-win".into())
-            .spawn(move || run(device, fatal, sink, shutdown, ready_tx))
+            .spawn(move || run(device, fatal, sink, shutdown, ready_tx, bypass))
             .map_err(|e| format!("spawn capture thread: {e}"))?;
 
         match ready_rx.recv_timeout(START_TIMEOUT) {
@@ -172,6 +190,7 @@ fn run(
     sink: SinkBuilder,
     shutdown: SendHandle,
     ready: std_mpsc::Sender<Result<(), String>>,
+    bypass: bool,
 ) {
     // SAFETY: paired with CoUninitialize below.
     let com = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
@@ -180,7 +199,7 @@ fn run(
         return;
     }
 
-    let started = match setup(device) {
+    let started = match setup(device, bypass) {
         Ok(s) => {
             let _ = ready.send(Ok(()));
             s
@@ -237,7 +256,7 @@ impl Drop for Started {
     }
 }
 
-fn setup(device: Option<String>) -> Result<Started, String> {
+fn setup(device: Option<String>, bypass: bool) -> Result<Started, String> {
     let device = open(device)?;
     let name = friendly_name(&device).unwrap_or_else(|| "<unknown>".into());
 
@@ -253,7 +272,16 @@ fn setup(device: Option<String>) -> Result<Started, String> {
         cbSize: std::mem::size_of::<AudioClientProperties>() as u32,
         bIsOffload: false.into(),
         eCategory: AudioCategory_Other,
-        Options: AUDCLNT_STREAMOPTIONS_RAW,
+        // `bypass` is always true in the client. It is a parameter so that a
+        // test can open the *same* endpoint the other way and compare, which is
+        // the only way to see whether the endpoint had any processing to skip —
+        // `SetClientProperties` succeeding says the request was accepted, not
+        // that anything changed.
+        Options: if bypass {
+            AUDCLNT_STREAMOPTIONS_RAW
+        } else {
+            AUDCLNT_STREAMOPTIONS_NONE
+        },
     };
     // SAFETY: `props` is a complete, correctly-sized struct that outlives the
     // call.
@@ -550,6 +578,155 @@ mod tests {
 
     use parking_lot::Mutex;
     use tokio::sync::mpsc::unbounded_channel;
+
+    /// Collect a capture's samples and the format it opened at.
+    fn collect(
+        bypass: bool,
+        into: Arc<Mutex<Vec<f32>>>,
+        fmt: Arc<Mutex<String>>,
+    ) -> super::Capture {
+        let (fatal_tx, _fatal_rx) = unbounded_channel::<String>();
+        let (buf, f) = (into, fmt);
+        super::Capture::start_with_bypass(
+            None,
+            fatal_tx,
+            Box::new(move |rate, channels| {
+                *f.lock() = format!("{rate}Hz {channels}ch");
+                Box::new(move |data: &[f32]| buf.lock().extend_from_slice(data))
+            }),
+            bypass,
+        )
+        .expect("open the microphone")
+    }
+
+    /// Below this peak the room is not producing anything the endpoint's
+    /// effects would touch, so a comparison of the two paths is vacuous.
+    /// −34 dBFS. Picked against a measurement rather than a round number: the
+    /// idle hum on this host's line-in peaks at 0.0113, and ordinary speech at a
+    /// normal distance runs an order of magnitude above that. A floor of 0.01
+    /// sat *below* the hum and let a vacuous run pass for a reading.
+    const SILENCE_FLOOR: f32 = 0.02;
+
+    fn rms(v: &[f32]) -> f32 {
+        if v.is_empty() {
+            return 0.0;
+        }
+        (v.iter().map(|s| s * s).sum::<f32>() / v.len() as f32).sqrt()
+    }
+
+    /// Does asking for raw mode change the signal, or only the request?
+    ///
+    /// This is the measurement `TODO.md` asks for, and it is deliberately not
+    /// the one that entry proposed. It suggested the `live_sfu` sweep — but that
+    /// sweep feeds a `NativeAudioSource` with synthesised frames and never opens
+    /// a microphone at all, and "how the device is opened" is the entire content
+    /// of this module. The sweep cannot see this.
+    ///
+    /// What can: open the *same* endpoint twice in shared mode, one asking for
+    /// `AUDCLNT_STREAMOPTIONS_RAW` and one not, at the same time, against the
+    /// same room. One stimulus, two paths. If the endpoint's effects are in the
+    /// processed path, the two differ; the switch in the client is then doing
+    /// something rather than reporting that it asked.
+    ///
+    /// **Read the numbers, not the result.** Two identical captures have two
+    /// explanations — raw mode did nothing, or this machine has no effects to
+    /// remove — and nothing here can separate them, because Windows exposes no
+    /// "is there an APO on this endpoint" that we read. So the test asserts only
+    /// that both paths delivered audio, and prints the rest. A *difference* is
+    /// conclusive; a match is only evidence about this machine.
+    ///
+    /// Make noise while it runs — speech is the signal these effects are tuned
+    /// for, and a silent room measures nothing on either path.
+    ///
+    /// ```text
+    /// cargo test -p dioxusfun -- --ignored --nocapture raw_mode_changes
+    /// ```
+    #[test]
+    #[ignore = "needs a microphone, a desktop session, and something to hear"]
+    fn raw_mode_changes_the_signal_or_says_it_did_not() {
+        let (raw_buf, cooked_buf) = (
+            Arc::new(Mutex::new(Vec::<f32>::new())),
+            Arc::new(Mutex::new(Vec::<f32>::new())),
+        );
+        let (raw_fmt, cooked_fmt) = (
+            Arc::new(Mutex::new(String::new())),
+            Arc::new(Mutex::new(String::new())),
+        );
+
+        // Both first, so the overlap is as close to the whole window as the two
+        // opens allow. They are separate clients on one endpoint, which shared
+        // mode permits — exclusive mode would make the second one fail.
+        let raw = collect(true, raw_buf.clone(), raw_fmt.clone());
+        let cooked = collect(false, cooked_buf.clone(), cooked_fmt.clone());
+
+        std::thread::sleep(Duration::from_secs(6));
+        drop(raw);
+        drop(cooked);
+
+        let (r, c) = (raw_buf.lock().clone(), cooked_buf.lock().clone());
+        let (r_fmt, c_fmt) = (raw_fmt.lock().clone(), cooked_fmt.lock().clone());
+        let (r_rms, c_rms) = (rms(&r), rms(&c));
+        let r_peak = r.iter().fold(0.0f32, |a, s| a.max(s.abs()));
+        let c_peak = c.iter().fold(0.0f32, |a, s| a.max(s.abs()));
+
+        println!(
+            "raw      : {} samples, {r_fmt}, rms {r_rms:.5}, peak {r_peak:.4}",
+            r.len()
+        );
+        println!(
+            "processed: {} samples, {c_fmt}, rms {c_rms:.5}, peak {c_peak:.4}",
+            c.len()
+        );
+        if r_fmt != c_fmt {
+            println!(
+                "the engine named a different format for the two — that alone is                  the endpoint answering differently once the effects are out"
+            );
+        }
+        if r_rms > 0.0 && c_rms > 0.0 {
+            println!(
+                "level difference: {:+.2} dB (raw relative to processed)",
+                20.0 * (r_rms / c_rms).log10()
+            );
+        }
+        // The reading that would otherwise be misread as an answer. A first run
+        // here landed on the default capture device — a rear-panel line-in with
+        // nothing plugged into it — and reported a flawless 0.00 dB difference
+        // between the two paths. That is not "raw mode does nothing": it is two
+        // captures of the same silence, and an effects chain has nothing to act
+        // on either. Whoever runs this next needs to see that said out loud.
+        if r_peak.max(c_peak) < SILENCE_FLOOR {
+            println!(
+                "NOTHING WAS HEARD: peak {:.4} on the louder path, below the                  {SILENCE_FLOOR} floor. This run compares silence to silence and                  says nothing about raw mode. Check which device the [rawmic]                  line above opened — the Windows default is often a line-in                  with nothing in it — then make noise and run it again.",
+                r_peak.max(c_peak)
+            );
+        }
+
+        // Sharper than comparing levels, and the thing that turned out to
+        // matter: are the two streams the same *samples*? Two independent
+        // clients on one endpoint getting bit-identical audio means the engine
+        // handed both the same buffers, which is what "the flag changed
+        // nothing" looks like from here — as opposed to two similar-sounding
+        // but separately-processed streams.
+        let overlap = r.len().min(c.len());
+        let differing = r[..overlap]
+            .iter()
+            .zip(&c[..overlap])
+            .filter(|(a, b)| a != b)
+            .count();
+        println!(
+            "sample-for-sample over {overlap} overlapping: {differing} differ              ({:.4}%)",
+            100.0 * differing as f32 / overlap.max(1) as f32
+        );
+
+        assert!(
+            !r.is_empty(),
+            "raw mode opened and delivered nothing — the microphone would be              silent for the whole call"
+        );
+        assert!(
+            !c.is_empty(),
+            "the processed path delivered nothing, so there is nothing to              compare raw mode against and the run says nothing either way"
+        );
+    }
 
     /// Does raw mode actually open, and does audio come out of it?
     ///

@@ -659,11 +659,30 @@ the top within each section.
   a write that silently does nothing is the failure mode worth catching, and
   which found exactly that. So a driver that accepts the property and ignores it
   leaves the switch lit over an unchanged signal, and nothing in the client can
-  tell. What would settle it is a measurement, not an API: the ignored
-  `client/tests/live_sfu.rs` sweep already analyses a tone through the real
-  path, and the same room noise recorded with the switch on and off would show
-  whether the endpoint's suppressor is still working. Until then the panel's
-  wording is a claim about what we requested.
+  tell. What would settle it is a measurement, not an API — and there is one
+  now, though it is not the one this entry used to propose.
+  **The proposal was wrong and is worth correcting before someone follows it.**
+  It said to use the `client/tests/live_sfu.rs` sweep. That sweep feeds a
+  `NativeAudioSource` with synthesised frames and never opens a microphone at
+  all; "how the device is opened" is the whole content of this module, so the
+  sweep cannot see it.
+  `raw_mode_changes_the_signal_or_says_it_did_not` (`rawmic/windows.rs`,
+  `#[ignore]`d) does the experiment that can: the same endpoint opened twice in
+  shared mode, one asking for `AUDCLNT_STREAMOPTIONS_RAW` and one not, at the
+  same time, against the same room.
+  **First run, and it is a stronger negative than expected.** On this host's
+  default capture device — `Mic in at rear panel (Pink) (Realtek(R) Audio)` —
+  the two paths came back **bit-identical**: 0 of 576,000 overlapping samples
+  differ, same format, same RMS, 0.00 dB apart. Not "similar": the same samples.
+  Two readings survive that, and this run cannot separate them — the flag is
+  being accepted and ignored, or this endpoint has no effects chain to skip.
+  Windows exposes no "is there an APO here" to ask.
+  What would separate them is a device known to process: a laptop's internal
+  array mic behind Realtek/Nahimic/Dolby, or Windows 11 voice isolation on, with
+  actual speech. This run peaked at 0.0305 — a quiet hum on a line-in with
+  nothing plugged into it, above the test's silence floor but well below speech.
+  Until then the panel's wording is still a claim about what we requested, and
+  the one machine that has been measured says the request changes nothing.
 - **The raw path is Windows-only and Linux is not answered.** `rawmic::
   supported()` is `cfg!(target_os = "windows")`, and the setting hides
   elsewhere. macOS is genuinely nothing-to-do (cpal opens a plain HAL input
