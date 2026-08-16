@@ -874,10 +874,25 @@ the top within each section.
   unvoiced consonants rather than chattering randomly.
   **Do not just lower the number.** −36 is one mic in one room, and too low a
   threshold sends room noise to everyone with no working suppressor holding it
-  back. The default was chosen on the assumption that AGC lifts quiet speech over
-  it — the entry below finds that AGC inert, so settle that first. The other
-  candidate is a first-run calibration: the VU bar already draws the threshold
-  against a live meter, so "speak normally" could place it.
+  back. The other candidate is a first-run calibration: the VU bar already draws
+  the threshold against a live meter, so "speak normally" could place it.
+  **The assumption under the default is now measured, and it is false.** The
+  number was chosen expecting AGC to lift a quiet talker over the gate;
+  `live_sfu::agc_is_measured_against_the_assumption_the_gate_default_rests_on`
+  toggles AGC on its own against a 0.04-peak tone and reads the level change end
+  to end:
+
+  ```text
+  AGC on minus AGC off:  +0.03  +0.01  +0.01  -0.01 dB
+  ```
+
+  Inert, sign flipping run to run — the same answer the suppressor gives through
+  the same `set_audio_options` call, and by a more direct route, since this is a
+  level ratio and gain is a level change. That was the prerequisite this entry
+  named, so what is left is the decision itself rather than a question: a
+  threshold has no gain stage behind it, and the two candidates are a lower
+  default or the calibration. The test asserts a ±1 dB tripwire so an SDK where
+  AGC starts working cannot arrive quietly and leave this reasoning stale.
   **Already ruled out by measurement — do not retry it:** exposing
   DeepFilterNet's `ATTEN_LIM_DB` ceiling. Dropping it 30 → 12 dB moved gate drops
   21.2% → 17.6% on matched input levels, inside the run-to-run variance, and the

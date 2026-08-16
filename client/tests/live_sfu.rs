@@ -302,12 +302,12 @@ fn rms(samples: &[f32]) -> f32 {
     (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt()
 }
 
-fn tone_samples(n: usize) -> Vec<f32> {
+fn tone_samples(n: usize, amplitude: f32) -> Vec<f32> {
     let step = 2.0 * std::f32::consts::PI * TONE_HZ / SAMPLE_RATE as f32;
     let mut phase = 0.0f32;
     (0..n)
         .map(|_| {
-            let v = phase.sin() * AMPLITUDE;
+            let v = phase.sin() * amplitude;
             phase = (phase + step) % (2.0 * std::f32::consts::PI);
             v
         })
@@ -325,7 +325,11 @@ fn tone_samples(n: usize) -> Vec<f32> {
 /// because the seed is visible in the six lines below, and a sweep whose rows
 /// are compared against each other should not have its input hidden behind a
 /// generator whose stream could change with a version bump.
-fn spawn_tone(source: NativeAudioSource, noise: f32) -> tokio::task::JoinHandle<()> {
+fn spawn_tone(
+    source: NativeAudioSource,
+    noise: f32,
+    amplitude: f32,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut phase = 0.0f32;
         let step = 2.0 * std::f32::consts::PI * TONE_HZ / SAMPLE_RATE as f32;
@@ -333,7 +337,7 @@ fn spawn_tone(source: NativeAudioSource, noise: f32) -> tokio::task::JoinHandle<
         loop {
             let data: Vec<i16> = (0..FRAME)
                 .map(|_| {
-                    let mut v = phase.sin() * AMPLITUDE;
+                    let mut v = phase.sin() * amplitude;
                     phase = (phase + step) % (2.0 * std::f32::consts::PI);
                     if noise > 0.0 {
                         seed = seed
@@ -410,6 +414,22 @@ struct Config {
     /// sweep below relies on to spread a baseline into each row.
     talker_key: Option<&'static str>,
     listener_key: Option<&'static str>,
+    /// Automatic gain control on its own, when it has to be asked about apart
+    /// from the rest of the APM. `None` follows `apm`, which is what every row
+    /// written before this field did.
+    ///
+    /// Separable because it is the one of the three with a *product* claim
+    /// resting on it: the transmit gate's default threshold was set on the
+    /// assumption that AGC lifts quiet speech over it. Whether it does is a
+    /// question about AGC alone, and turning all three on cannot answer it.
+    agc: Option<bool>,
+    /// Peak amplitude of the tone.
+    ///
+    /// The default is deliberately healthy. Quiet input is its own condition —
+    /// gate drops track input level and nothing else — so measuring anything
+    /// about quiet speech means asking for it rather than inferring it from a
+    /// loud signal.
+    amplitude: f32,
 }
 
 /// `RoomOptions` carrying `key`, built the way `client::e2ee` builds it — GCM
@@ -454,6 +474,17 @@ impl Config {
             noise: 0.0,
             talker_key: None,
             listener_key: None,
+            agc: None,
+            amplitude: AMPLITUDE,
+        }
+    }
+
+    /// A tone at `amplitude` with AGC decided on its own.
+    fn quiet_with_agc(amplitude: f32, agc: bool) -> Self {
+        Self {
+            amplitude,
+            agc: Some(agc),
+            ..Self::transport_only()
         }
     }
 
@@ -520,7 +551,7 @@ async fn measure_round_trip(cfg: Config) -> Metrics {
     let opts = AudioSourceOptions {
         echo_cancellation: cfg.apm,
         noise_suppression: cfg.apm,
-        auto_gain_control: cfg.apm,
+        auto_gain_control: cfg.agc.unwrap_or(cfg.apm),
     };
     let source = NativeAudioSource::new(opts, SAMPLE_RATE, CHANNELS, 1000);
     let track = LocalAudioTrack::create_audio_track("tone", RtcAudioSource::Native(source.clone()));
@@ -540,7 +571,7 @@ async fn measure_round_trip(cfg: Config) -> Metrics {
         )
         .await
         .expect("publish the tone");
-    let feeder = spawn_tone(source, cfg.noise);
+    let feeder = spawn_tone(source, cfg.noise, cfg.amplitude);
 
     let ev = wait_for(&mut listener_events, "listener", |ev| {
         matches!(ev, RoomEvent::TrackSubscribed { .. })
@@ -577,7 +608,7 @@ async fn measure_round_trip(cfg: Config) -> Metrics {
     let window = started.elapsed().saturating_sub(WARMUP).as_secs_f32();
     feeder.abort();
 
-    let sent = tone_samples(received.len());
+    let sent = tone_samples(received.len(), cfg.amplitude);
     let (r_in, r_out) = (rms(&sent), rms(&received));
     let m = Metrics {
         frames,
@@ -736,6 +767,91 @@ async fn media_encryption_carries_audio_only_when_the_keys_agree() {
         split.band_out < 0.20,
         "{:.1}% of the received energy was still the tone with mismatched keys",
         split.band_out * 100.0
+    );
+}
+
+/// Does automatic gain control lift quiet speech, as the transmit gate's default
+/// threshold assumes?
+///
+/// The question is not academic and it is not about audio quality. The gate
+/// opens at −26 dBFS by default, which `TODO.md` records as cutting ordinary
+/// speech mid-phrase on a real call — and the reason that threshold was thought
+/// safe is that AGC would raise a quiet talker over it. If AGC does nothing,
+/// the threshold has been resting on a mechanism that is not there, and
+/// lowering it becomes a defensible change rather than a guess.
+///
+/// So this measures gain, not fidelity: the same tone at a quiet level, once
+/// with AGC off and once with it on, read as level change end to end. AGC that
+/// works has to show up as a positive dB difference between the two; there is
+/// nothing else in the path that would produce one.
+///
+/// Measured against bundled livekit-server 1.12.0 on loopback, a 0.04-peak tone,
+/// four runs:
+///
+/// ```text
+/// AGC on minus AGC off:  +0.03  +0.01  +0.01  -0.01 dB
+/// ```
+///
+/// Inert, with the sign flipping run to run — the same answer the noise
+/// suppressor gives through the same `set_audio_options` call, and by a more
+/// direct route: this is a level ratio, and gain is a level change, so there is
+/// no subtlety about whether the instrument could see it.
+///
+/// **What it means for the gate is recorded in `TODO.md`, not decided here.**
+/// The default threshold was set expecting AGC to lift a quiet talker over it;
+/// that expectation is now measured and false. Lowering the threshold is still
+/// a judgement about somebody's room, so this test supplies the number and
+/// stops.
+///
+/// The assertion is a tripwire rather than a quality bar: an SDK where AGC
+/// starts working would be good news, and it must not arrive silently, because
+/// the gate default would then be resting on a mechanism that exists again.
+#[tokio::test]
+#[ignore = "needs a running LiveKit server; see the module docs"]
+async fn agc_is_measured_against_the_assumption_the_gate_default_rests_on() {
+    // Quiet, but not so quiet that Opus's own decisions dominate: −26 dBFS is
+    // where the gate sits, so this sits just under it, where a talker who is
+    // being cut actually lives.
+    const QUIET: f32 = 0.04;
+
+    let off = measure_round_trip(Config::quiet_with_agc(QUIET, false)).await;
+    report("quiet tone, AGC off", &off);
+    let on = measure_round_trip(Config::quiet_with_agc(QUIET, true)).await;
+    report("quiet tone, AGC on", &on);
+
+    println!("--- AGC ---");
+    println!("level off / on     : {:+.2} dB / {:+.2} dB", off.db, on.db);
+    println!("difference         : {:+.2} dB", on.db - off.db);
+
+    // Both runs have to have carried audio, or the comparison above is between
+    // two failures.
+    assert!(
+        off.samples > SAMPLE_RATE as usize && on.samples > SAMPLE_RATE as usize,
+        "a run delivered too little to measure: {} off, {} on",
+        off.samples,
+        on.samples
+    );
+    assert!(
+        off.band_out > 0.50 && on.band_out > 0.50,
+        "the tone did not survive the trip at this level ({:.2} off, {:.2} on) — \
+         measure the path before reading anything into the gain",
+        off.band_out,
+        on.band_out
+    );
+
+    // The tripwire. Four runs put this at ±0.03 dB, so a decibel is comfortably
+    // outside the noise while being far below anything that would count as
+    // gain control. Failing here is good news badly timed: AGC would be doing
+    // something, and the transmit gate's default threshold — set on exactly
+    // that expectation and currently unsupported by it — would need revisiting
+    // rather than the number below.
+    let gain = on.db - off.db;
+    assert!(
+        gain.abs() < 1.0,
+        "AGC moved the level by {gain:+.2} dB, having measured inert at ±0.03 dB. \
+         If it now works, the mic-sensitivity entry in TODO.md is resting on a \
+         different world than the one it was written in — read it before \
+         widening this bound"
     );
 }
 
