@@ -1305,7 +1305,6 @@ fn apply(
     }
 }
 
-
 /// Open any sealed messages for `channel_id`, in place.
 ///
 /// A no-op unless something in the batch actually carries `enc`, so the common

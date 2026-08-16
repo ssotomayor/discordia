@@ -386,7 +386,9 @@ async fn a_guild_channel_refuses_a_sealed_message() {
     let mut refused = false;
     while tokio::time::Instant::now() < deadline {
         match tokio::time::timeout(Duration::from_millis(300), owner.next_event()).await {
-            Ok(Some(ServerMessage::Error { message })) if message.contains("only supported in DMs") => {
+            Ok(Some(ServerMessage::Error { message }))
+                if message.contains("only supported in DMs") =>
+            {
                 refused = true;
                 break;
             }

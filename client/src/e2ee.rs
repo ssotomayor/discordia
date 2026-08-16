@@ -359,7 +359,10 @@ pub fn apply_key(key: &[u8; crate::mediakey::KEY_LEN], epoch: u32) {
         rooms.retain(|(_, r)| r.strong_count() > 0);
         let mut switched = 0usize;
         let mut moved = 0usize;
-        for (kind, room) in rooms.iter().filter_map(|(k, r)| r.upgrade().map(|r| (*k, r))) {
+        for (kind, room) in rooms
+            .iter()
+            .filter_map(|(k, r)| r.upgrade().map(|r| (*k, r)))
+        {
             room.e2ee_manager().set_enabled(true);
             switched += 1;
             // Senders move last, and only in the voice room. Everything a
@@ -434,7 +437,7 @@ pub fn room_options() -> Option<livekit::e2ee::E2eeOptions> {
 
 #[cfg(test)]
 mod tests {
-    use super::{rotating_slot, usable_key, RING_SLOTS, SCREEN_SLOT};
+    use super::{RING_SLOTS, SCREEN_SLOT, rotating_slot, usable_key};
 
     /// The one property the overlap depends on: **consecutive epochs never
     /// share a slot**. If they did, adopting a key would overwrite the one that
@@ -470,7 +473,10 @@ mod tests {
     fn slots_stay_inside_the_ring() {
         for epoch in 0..1_000u32 {
             let slot = rotating_slot(epoch);
-            assert!(slot > 0 && slot < RING_SLOTS as i32, "slot {slot} out of ring");
+            assert!(
+                slot > 0 && slot < RING_SLOTS as i32,
+                "slot {slot} out of ring"
+            );
         }
     }
 
