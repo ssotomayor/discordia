@@ -456,16 +456,31 @@ the top within each section.
   uplinks actually do with camera + screen at the same time — two video uplinks
   is the case to measure, and on Windows both encoders live in one WebView2
   process.
-- **A `persistence` test failed once under a full-workspace run, undiagnosed.**
-  Seen exactly once in five `cargo test --workspace` runs while adding the camera
-  tests; three deliberate re-runs afterwards were clean, and both tests pass
-  alone. Not the temp-dir collision that `temp_data_dir`'s comment describes —
-  that helper is keyed by pid + nanos + counter and is genuinely unique. The
-  suspicion is a timing window rather than shared state: the camera tests each
-  spawn a gateway and use 700ms idle terminators, so the suite now runs more
-  concurrent servers than it did. Recorded rather than chased because there is no
-  captured assertion message to work from; the next occurrence should be run with
-  `--nocapture` and `RUST_BACKTRACE=1` before anything is changed.
+- **A `persistence` test failed once under a full-workspace run, and has not
+  been seen since in eleven attempts.** Seen exactly once in five
+  `cargo test --workspace` runs while adding the camera tests; three deliberate
+  re-runs afterwards were clean, and both tests pass alone. Hunted again on
+  Windows 11 26200 with the command this entry asked for —
+  `RUST_BACKTRACE=1 cargo test --workspace`, eight consecutive runs, 23 suites
+  green every time. So the count of clean re-runs since the single failure is
+  now eleven, and there is still no captured assertion message to work from.
+  Two things the hunt corrected about this entry, both worth having before
+  anyone spends time on it again:
+  - **The camera tests are not in a file of their own.** They are four tests in
+    `server/tests/voice.rs` (`camera_flag_reaches_the_other_members` and the
+    three after it), which is a file the `networking-direct-and-private` branch
+    is rewriting — so if the cause ever does turn out to be there, it cannot be
+    fixed from a working tree that has to stay clear of that branch.
+  - **"700ms idle terminators" describes it too loosely to suspect.** The 700ms
+    is the *second* window of `join_voice`'s two-window read loop
+    (`voice.rs:190-207`): five seconds for the first frame, 700ms for the gap
+    between frames, and its own comment says why a single 700ms budget would
+    make a loaded box look like a server that sent nothing. It is bounded and
+    reasoned, which makes it a poorer suspect than this entry implied.
+  Not the temp-dir collision that `temp_data_dir`'s comment describes either —
+  that helper is keyed by pid + nanos + counter — nor a port race, which
+  `spawn_on` closed by binding port 0. What is left is a timing window nobody
+  has caught in the act. Leave it here until it fires again with output.
 - **Windows shows WebView2's own camera prompt**, where macOS shows the TCC
   prompt once. Expected (wry auto-allows only clipboard-read), and persistence
   depends on the WebView2 user-data folder, but it is the kind of platform
@@ -617,19 +632,21 @@ the top within each section.
   returning `WAIT_TIMEOUT` for the first time, and everything after that point is
   covered. Worth remembering which half was closed if this ever misbehaves in the
   field.
-- **The Windows blob's lifetime rule is measured, not documented.** Microsoft
-  does not say how long `ActivateAudioInterfaceAsync` needs the `VT_BLOB` it is
-  handed. "As long as the process" comes from probing: the engine had not freed
+- **The Windows blob's lifetime rule is an observation, not a contract.**
+  Microsoft does not say how long `ActivateAudioInterfaceAsync` needs the
+  `VT_BLOB` it is handed. "As long as the process" comes from probing: the engine had not freed
   the block, and 64 same-size allocations afterwards never landed on its
   address. If a future Windows *does* free it, we would be handing it a Rust
   allocation to release — which works today only because `CoTaskMemAlloc` and
   Rust's allocator both sit on the process heap, not because anything promises
   it. Measured on Windows 11 26200 and one machine; no other platform even
   compiles this file.
-  The hazard and the probe that established it now live in `activation_params`'s
-  own doc comment as well, since that is where someone debugging a post-update
-  capture failure will be standing. This entry stays because the underlying fact
-  has not changed: it is still an observation, not a contract.
+  The hazard and the probe that established it live in `activation_params`'s own
+  doc comment since `16ca57a`, which is where someone debugging a post-update
+  capture failure will be standing — so this entry no longer tracks *writing it
+  down*, which is what its title used to say. It stays for the part that cannot
+  be written away: nothing promises the rule, so it can stop being true without
+  anything here changing.
 
 ## Voice / audio
 
