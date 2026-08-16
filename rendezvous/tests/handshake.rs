@@ -4,6 +4,7 @@
 
 use std::sync::Arc;
 
+use dioxusfun_protocol::rendezvous::DiscoverEntry;
 use dioxusfun_rendezvous::{AppCtx, Config, registry::Registry, router};
 use futures_util::{SinkExt, StreamExt};
 use secp256k1::{Keypair, Secp256k1, SecretKey};
@@ -81,6 +82,146 @@ async fn send_register(ws: &mut Ws, name: &str, pubkey: &str, signature: &str) {
         "d": { "name": name, "pubkey": pubkey, "signature": signature, "publish_public": false }
     });
     ws.send(Message::Text(frame.to_string())).await.unwrap();
+}
+
+/// An endpoint a host advertises has to survive the round trip to a friend who
+/// only holds a join code — that is the whole path a direct connection depends
+/// on, and it crosses two hops (`Register`, then `/resolve`) either of which
+/// could quietly drop the field.
+#[tokio::test]
+async fn an_advertised_endpoint_reaches_a_friend_holding_the_code() {
+    let (base, registry) = spawn_with(Config::default()).await;
+    let (secret, pubkey) = identity(11);
+
+    let (mut ws, nonce) = connect_control(&base).await;
+    let sig = sign(&secret, &nonce, &pubkey, "Casa");
+    let frame = serde_json::json!({
+        "op": "register",
+        "d": {
+            "name": "Casa", "pubkey": pubkey, "signature": sig,
+            // Unlisted on purpose: a code handed to friends is exactly the case
+            // that wants the direct path, and it never appears in `/discover`.
+            "publish_public": false,
+            "endpoint": "ws://203.0.113.5:9000",
+        }
+    });
+    ws.send(Message::Text(frame.to_string())).await.unwrap();
+    assert_eq!(next_json(&mut ws).await["op"], "registered");
+
+    let entry = registry.lookup("casa").expect("host is live");
+    assert_eq!(entry.endpoint.as_deref(), Some("ws://203.0.113.5:9000"));
+
+    // And over HTTP, which is how the client actually asks. The code is matched
+    // case-insensitively, like `/join`.
+    let http = base.replace("ws://", "http://");
+    let fetched: DiscoverEntry = reqwest::get(format!("{http}/resolve/CASA"))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(fetched.endpoint.as_deref(), Some("ws://203.0.113.5:9000"));
+    // Unlisted, so the browse listing must still not carry it.
+    assert!(registry.discover().is_empty());
+}
+
+/// A host that obtained no address is not an error and not a special case: the
+/// field is simply absent, and the joiner falls back to the relay.
+#[tokio::test]
+async fn a_host_without_an_endpoint_resolves_to_none() {
+    let (base, _registry) = spawn_with(Config::default()).await;
+    let (secret, pubkey) = identity(12);
+
+    let (mut ws, nonce) = connect_control(&base).await;
+    let sig = sign(&secret, &nonce, &pubkey, "Plain");
+    send_register(&mut ws, "Plain", &pubkey, &sig).await;
+    assert_eq!(next_json(&mut ws).await["op"], "registered");
+
+    let http = base.replace("ws://", "http://");
+    let fetched: DiscoverEntry = reqwest::get(format!("{http}/resolve/plain"))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(fetched.endpoint.is_none());
+
+    // An unknown code is a 404 rather than an empty entry, so a joiner can tell
+    // "no direct address" from "no such host".
+    let missing = reqwest::get(format!("{http}/resolve/nobody-here-01"))
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), reqwest::StatusCode::NOT_FOUND);
+}
+
+/// A transport key is published only when the registering key signs for it.
+///
+/// This is what stops the QUIC path being pointed somewhere else: the transport
+/// authenticates whoever holds the key it is given, so an unattested key would
+/// move the trust problem rather than solve it — a joiner would faithfully
+/// verify a connection to the wrong host.
+#[tokio::test]
+async fn a_transport_key_is_published_only_when_it_is_signed_for() {
+    let (base, registry) = spawn_with(Config::default()).await;
+    let (secret, pubkey) = identity(13);
+    let transport_key = "k51qzi5uqu5dl".to_string();
+
+    let (mut ws, nonce) = connect_control(&base).await;
+    // Same nonce, same key, different payload — see `verify_ownership`.
+    let name_sig = sign(&secret, &nonce, &pubkey, "Keyed");
+    let transport_sig = sign(&secret, &nonce, &pubkey, &transport_key);
+    let frame = serde_json::json!({
+        "op": "register",
+        "d": {
+            "name": "Keyed", "pubkey": pubkey, "signature": name_sig,
+            "publish_public": false,
+            "transport_key": transport_key,
+            "transport_signature": transport_sig,
+            "transport_addrs": ["203.0.113.5:41234", "192.168.0.61:41234"],
+        }
+    });
+    ws.send(Message::Text(frame.to_string())).await.unwrap();
+    assert_eq!(next_json(&mut ws).await["op"], "registered");
+
+    let entry = registry.lookup("keyed").expect("host is live");
+    assert_eq!(entry.transport_key.as_deref(), Some(transport_key.as_str()));
+    assert_eq!(entry.transport_addrs.len(), 2);
+}
+
+/// And an unsigned — or wrongly signed — key is dropped rather than published,
+/// while the host still registers.
+///
+/// Dropping rather than refusing on purpose: a host whose transport key cannot
+/// be attested is still perfectly good over the relay, and locking it out would
+/// turn a degraded path into no path at all.
+#[tokio::test]
+async fn an_unattested_transport_key_is_dropped_but_the_host_still_registers() {
+    let (base, registry) = spawn_with(Config::default()).await;
+    let (secret, pubkey) = identity(14);
+
+    let (mut ws, nonce) = connect_control(&base).await;
+    let name_sig = sign(&secret, &nonce, &pubkey, "Unsigned");
+    let frame = serde_json::json!({
+        "op": "register",
+        "d": {
+            "name": "Unsigned", "pubkey": pubkey, "signature": name_sig,
+            "publish_public": false,
+            "transport_key": "k51qzi5uqu5dl",
+            // Signed over the *name* rather than the key: a real signature from
+            // the right identity, vouching for the wrong thing.
+            "transport_signature": name_sig,
+            "transport_addrs": ["203.0.113.5:41234"],
+        }
+    });
+    ws.send(Message::Text(frame.to_string())).await.unwrap();
+    assert_eq!(next_json(&mut ws).await["op"], "registered");
+
+    let entry = registry.lookup("unsigned").expect("host is live");
+    assert!(
+        entry.transport_key.is_none(),
+        "unattested key was published"
+    );
+    assert!(entry.transport_addrs.is_empty());
 }
 
 #[tokio::test]

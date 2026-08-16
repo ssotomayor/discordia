@@ -30,7 +30,10 @@ async fn main() {
     let livekit_present = std::env::var("LIVEKIT_URL").is_ok();
 
     let _livekit_handle = if want_autospawn && !livekit_present {
-        match dioxusfun_server::livekit_bundle::spawn_livekit().await {
+        // No advertised address here: a standalone server is deployed at an
+        // address someone already chose, so its LiveKit needs no NAT story of
+        // its own. Set `LIVEKIT_URL` when it is behind one.
+        match dioxusfun_server::livekit_bundle::spawn_livekit(None).await {
             Ok(child) => {
                 tracing::info!("bundled livekit-server started on port 7880");
                 Some(child)

@@ -43,9 +43,18 @@ services:
     restart: unless-stopped
     ports:
       - "7700:7700"
+      # The iroh relay this rendezvous runs, so it can introduce two peers
+      # behind NAT instead of sending them to a public relay nobody chose.
+      - "7701:7701"
     environment:
       DIOXUSFUN_RENDEZVOUS_ADDR: 0.0.0.0:7700
       DIOXUSFUN_RENDEZVOUS_DATA_DIR: /data
+      # What a *client* should dial — not the bind address, which is a wildcard
+      # and would tell clients to dial themselves. Unset this and the rendezvous
+      # offers no coordination at all: its users fall back to the WebSocket
+      # proxy, rather than being handed to somebody else's servers.
+      DIOXUSFUN_RENDEZVOUS_RELAY_URL: http://${PUBLIC_HOST:?set PUBLIC_HOST in .env}:7701
+      DIOXUSFUN_RENDEZVOUS_RELAY_ADDR: 0.0.0.0:7701
       # Handed to every host that registers, so their friends use THIS shared
       # SFU instead of the host's unreachable LAN address. This is the piece
       # that makes voice work over the internet for laptop-hosted servers.

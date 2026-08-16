@@ -292,6 +292,16 @@ pub fn ChatView() -> Element {
             header { class: "h-11 px-3 flex items-center gap-3 border-b border-[var(--border)] shrink-0",
                 span { class: "text-[var(--text-dim)] font-medium", if is_dm { "@" } else { "#" } }
                 span { class: "text-sm text-[var(--accent)] font-medium", "{header_name}" }
+                // Said in the header rather than per message, because it is a
+                // property of the conversation. Shown only for DMs: a guild
+                // channel is not encrypted and a badge there would be a lie.
+                if is_dm {
+                    span {
+                        class: "text-[10px] px-1.5 py-0.5 rounded border border-[var(--border)] text-[var(--text-dim)]",
+                        title: "Messages and images in this conversation are encrypted on your machine. The server stores them but cannot read them.",
+                        "🔒 encrypted"
+                    }
+                }
                 if let Some(topic) = channel_topic {
                     span { class: "text-[var(--text-dim)]", "·" }
                     span { class: "text-xs text-[var(--text-muted)] truncate", "{topic}" }
@@ -926,11 +936,38 @@ fn Composer(channel_id: Id, composer_label: String, drag_over: Signal<bool>) -> 
         }
         // Only the id goes out; the server rebuilds the quote from its own row.
         let reply_to = replying_to().map(|r| r.message_id);
+        // In a DM, seal before anything leaves. `peer_and_identity` is None for
+        // a guild channel, where sealing is refused by the server anyway.
+        let sealing = {
+            let s = state.read();
+            s.dm_of(channel_id).and_then(|dm| {
+                s.identity
+                    .as_ref()
+                    .map(|id| (dm.other.pubkey.clone(), id.clone()))
+            })
+        };
+        let (content, image, enc) = match sealing {
+            Some((peer, identity)) => {
+                match crate::dmcrypt::seal_for_dm(&content, image.as_deref(), &peer, &identity) {
+                    Ok(sealed) => sealed,
+                    Err(e) => {
+                        // Refuse rather than fall back to plaintext. A DM that
+                        // silently sends in the clear because sealing failed is
+                        // the worst outcome available here: the user believes
+                        // it was private and nothing says otherwise.
+                        state.write().error_toast = Some(format!("Not sent — {e}"));
+                        return;
+                    }
+                }
+            }
+            None => (content, image, None),
+        };
         gateway_submit.send(ClientMessage::SendMessage {
             channel_id,
             content,
             image,
             reply_to,
+            enc,
         });
         draft.set(String::new());
         pending_image.set(None);

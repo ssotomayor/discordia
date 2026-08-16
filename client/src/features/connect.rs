@@ -279,7 +279,15 @@ pub fn ConnectView(
                                     checked: allow_lan(),
                                     oninput: move |e| allow_lan.set(e.value() == "true"),
                                 }
-                                "Also let LAN friends connect directly"
+                                "Accept direct connections"
+                            }
+                            div { class: "text-[10px] text-[var(--text-dim)] pl-6",
+                                // The gateway binds loopback without this, and a
+                                // forward to a loopback port lands on nothing —
+                                // so this governs the port mapping too, not just
+                                // the LAN. The banner says which you ended up
+                                // with once hosting starts.
+                                "Friends on this network can reach you, and Discordia asks your router (UPnP / NAT-PMP) to let friends elsewhere in without the relay. Your home IP becomes visible to anyone who joins that way."
                             }
                             if publish_to_rendezvous() {
                                 div { class: "pl-3 border-l border-[var(--border)] space-y-2",

@@ -31,6 +31,17 @@ pub enum IdentitySource {
     Nsec(String),
 }
 
+/// Domain separator for channel media keys.
+///
+/// **Frozen.** Every media key two peers have ever agreed on is derived under
+/// this label; changing it makes a client on either side of the change derive a
+/// different secret and hear silence, with nothing to say why.
+const MEDIA_KEY_DOMAIN: &[u8] = b"dioxusfun/media-key/v1";
+
+/// Domain separator for direct messages. Distinct from the media key on
+/// purpose — see `Identity::dm_secret_with`.
+const DM_DOMAIN: &[u8] = b"dioxusfun/dm/v1";
+
 #[derive(Clone)]
 pub struct Identity {
     /// x-only public key as 64-char hex — the universal user id.
@@ -131,6 +142,97 @@ impl Identity {
             source,
             secret,
         }
+    }
+
+    /// A stable 32-byte seed for this identity's *transport* key.
+    ///
+    /// The QUIC transport authenticates peers by an ed25519 key, which is not
+    /// the secp256k1 key that is your account — a second key, needed on a
+    /// different curve. Deriving it from the first rather than generating and
+    /// storing one means a host keeps the same transport identity across
+    /// restarts and reinstalls, so a friend who saved your address is still
+    /// reaching *you* and not a stranger who took the address over.
+    ///
+    /// Domain-separated so this hash can never collide with anything else we
+    /// sign or derive, and one-way, so handing out the transport key tells
+    /// nobody anything about the Nostr secret.
+    ///
+    /// The two keys are still only *asserted* to belong together — the binding
+    /// is a signature over the transport key, made by the Nostr key, verified
+    /// where it is published. Derivation makes the key stable; the signature is
+    /// what makes it yours.
+    pub fn transport_seed(&self) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update(b"dioxusfun/quic-transport/v1");
+        h.update(self.secret.secret_bytes());
+        h.finalize().into()
+    }
+
+    /// A secret this identity shares with exactly one other pubkey, and nobody
+    /// else — the basis for sealing a channel's media key to one member.
+    ///
+    /// ECDH over secp256k1, then a domain-separated hash. Two details are not
+    /// free choices:
+    ///
+    /// **Parity.** A Nostr pubkey is x-only: 32 bytes, with the y-coordinate
+    /// dropped. Reconstructing a point needs a parity byte, and both sides must
+    /// pick the same one or they derive different secrets. Even (`0x02`) is what
+    /// NIP-04 and NIP-44 settled on, so it is what this uses.
+    ///
+    /// **The x-coordinate only.** `shared_secret_point` returns x‖y; the y half
+    /// is discarded before hashing, again matching the Nostr convention. Mixing
+    /// it in would be just as secure and interoperate with nothing.
+    ///
+    /// The hash is the domain separator's whole job: this secret must never
+    /// coincide with one derived for another purpose from the same pair of keys.
+    pub fn shared_secret_with(&self, their_pubkey_hex: &str) -> Result<[u8; 32], String> {
+        self.secret_with_domain(their_pubkey_hex, MEDIA_KEY_DOMAIN)
+    }
+
+    /// The same agreement, under the direct-message domain.
+    ///
+    /// A separate domain rather than a second use of `shared_secret_with`,
+    /// because that function's own contract says a secret must never coincide
+    /// with one derived for another purpose from the same pair of keys — and
+    /// the media key is *shared with a whole channel*, so reusing it for a
+    /// two-party conversation would hand every member of a voice channel the
+    /// key to your DMs with any of them.
+    pub fn dm_secret_with(&self, their_pubkey_hex: &str) -> Result<[u8; 32], String> {
+        self.secret_with_domain(their_pubkey_hex, DM_DOMAIN)
+    }
+
+    /// ECDH, then a domain-separated hash. The two callers above differ only in
+    /// the label, and the label is load-bearing — see each of their docs.
+    ///
+    /// **`MEDIA_KEY_DOMAIN` must never change.** It is baked into every media
+    /// key two peers have ever agreed on; altering it would mean a client on
+    /// either side of the change derives a different secret and hears silence,
+    /// with nothing to say why.
+    fn secret_with_domain(
+        &self,
+        their_pubkey_hex: &str,
+        domain: &[u8],
+    ) -> Result<[u8; 32], String> {
+        use sha2::{Digest, Sha256};
+
+        let their_bytes =
+            hex::decode(their_pubkey_hex).map_err(|e| format!("pubkey not hex: {e}"))?;
+        if their_bytes.len() != 32 {
+            return Err("a nostr pubkey is 32 bytes".into());
+        }
+        // x-only -> compressed point, even parity by convention.
+        let mut compressed = [0u8; 33];
+        compressed[0] = 0x02;
+        compressed[1..].copy_from_slice(&their_bytes);
+        let point = PublicKey::from_slice(&compressed)
+            .map_err(|e| format!("not a point on the curve: {e}"))?;
+
+        let xy = secp256k1::ecdh::shared_secret_point(&point, &self.secret);
+        let mut h = Sha256::new();
+        h.update(domain);
+        h.update(&xy[..32]);
+        Ok(h.finalize().into())
     }
 
     /// Schnorr-sign a message (hashed to 32 bytes with SHA-256); returns hex.

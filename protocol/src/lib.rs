@@ -454,8 +454,42 @@ pub struct Message {
     /// Set when this message is a reply. Server-populated; see `ReplyRef`.
     #[serde(default)]
     pub reply_to: Option<ReplyRef>,
+    /// Sealed payload for an end-to-end encrypted direct message.
+    ///
+    /// When this is set the server holds no readable copy of anything: `content`
+    /// carries only `ENCRYPTED_PLACEHOLDER`, and the real text — plus the key
+    /// and mime for `image`, when there is one — is inside here, sealed to the
+    /// two participants' Nostr keys. The server stores and forwards it without
+    /// being able to read it, which is the whole point.
+    ///
+    /// `image` still travels the ordinary blob path when present, but its bytes
+    /// are ciphertext by the time they leave the sender, so content-addressing,
+    /// dedup and GC keep working over data the server cannot decode.
+    ///
+    /// Optional because a guild message is never sealed and an older client
+    /// sends nothing here. A client that does not understand the field shows
+    /// the placeholder, which is why the placeholder is a sentence rather than
+    /// an empty string.
+    #[serde(default)]
+    pub enc: Option<String>,
     pub created_at: DateTime<Utc>,
 }
+
+/// What `content` says when the real text is sealed in `Message::enc`.
+///
+/// It exists for clients too old to know about `enc`: serde drops unknown
+/// fields, so such a client renders `content` verbatim and would otherwise show
+/// an empty bubble. Deliberately a plain sentence — it is displayed as message
+/// text on those clients.
+pub const ENCRYPTED_PLACEHOLDER: &str = "[encrypted message — update Discordia to read it]";
+
+/// Cap on a sealed payload, in bytes of the base64 form.
+///
+/// `content` is capped at 2000 chars; sealing pads to a power of two, adds a
+/// nonce and a tag, base64s the result, and may also carry an image key and
+/// mime. 16 KiB leaves generous room for all of that without letting `enc`
+/// become an unbounded side channel for storing data the server cannot inspect.
+pub const MAX_ENC_LEN: usize = 16 * 1024;
 
 /// A one-to-one direct-message channel, described from the viewpoint of one
 /// participant: `other` is the *other* person in the conversation.
@@ -785,6 +819,11 @@ pub enum ClientMessage {
         /// resolve is dropped: the message still sends, just without a quote.
         #[serde(default)]
         reply_to: Option<Id>,
+        /// Sealed payload — see `Message::enc`. Only meaningful in a DM: the
+        /// server refuses it on a guild channel, because a sealed message in a
+        /// room of many is a message most of the room cannot read.
+        #[serde(default)]
+        enc: Option<String>,
     },
     /// Create a new guild. The server seeds it with a default text + voice
     /// channel and makes the requesting user its first (and only) member.
@@ -1090,6 +1129,26 @@ pub enum ClientMessage {
     /// it is not in. Ignored outright when the sender is not in voice — which
     /// is also what gates it on guild membership, since only `JoinVoice`
     /// creates a voice state and it checks.
+    /// Hand a channel's media key to one member, sealed to their pubkey.
+    ///
+    /// The server routes this and cannot read it — the payload is encrypted to
+    /// a secret derived from the two identity keys, which is the whole point:
+    /// end-to-end encrypted media is worth nothing if the server holds the key
+    /// (`client::mediakey`).
+    ///
+    /// Routed only to a member of the same guild as the channel, and only from
+    /// one. That check is not about confidentiality, which the sealing already
+    /// handles; it is so the gateway cannot be used to spray blobs at strangers.
+    ShareMediaKey {
+        channel_id: Id,
+        /// Recipient's x-only pubkey (64-char hex).
+        to: String,
+        /// Monotonic per channel. A member removed from the guild keeps the key
+        /// they had, so the survivors move up an epoch and leave it behind.
+        epoch: u32,
+        /// Hex `nonce ‖ ciphertext`. Opaque here by construction.
+        blob: String,
+    },
     SetCamera {
         on: bool,
     },
@@ -1297,6 +1356,18 @@ pub enum ServerMessage {
         sharers: Vec<String>,
     },
     VoiceStateUpdate(VoiceState),
+    /// A channel's media key, sealed to us by another member.
+    ///
+    /// Delivered verbatim from `ShareMediaKey`, with the sender named so the
+    /// recipient can derive the same shared secret. A client that cannot open
+    /// it keeps whatever key it already had.
+    MediaKey {
+        channel_id: Id,
+        /// Sender's x-only pubkey (64-char hex).
+        from: String,
+        epoch: u32,
+        blob: String,
+    },
     VoiceToken {
         channel_id: Id,
         livekit_url: String,

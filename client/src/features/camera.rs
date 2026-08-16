@@ -198,14 +198,28 @@ pub fn CameraBridge() -> Element {
         async move {
             // Its own listener and its own guard flag: sharing the share pump's
             // would mean one `if` deciding which messages either feature sees.
+            // The sink is reassigned on *every* eval; the listener is registered
+            // once. That split is the whole point, and it is the shape
+            // `features::chat`'s drop handler already uses.
+            //
+            // A listener holds the `dioxus.send` of the eval that created it,
+            // and this component is remounted whenever the session is — a
+            // disconnect sets `session` to None and the workspace is rebuilt.
+            // The webview is never reloaded, so a guard on registration alone
+            // meant the second mount registered nothing and the first mount's
+            // send was already dead: every camera message from then on
+            // disappeared into the `catch`, for the life of the process. The
+            // symptom was a camera that started, previewed, published, and was
+            // never announced to anyone — "Starting your camera…" forever.
             let bridge_js = r#"
+            window.__dxfCameraSink = function (m) { try { dioxus.send(m); } catch (err) {} };
             if (!window.__dxfCameraWired) {
               window.__dxfCameraWired = true;
               var KINDS = ['camera-started','camera-ended','camera-denied','camera-error','camera-unavailable','camera-devices'];
               window.addEventListener('message', function (e) {
                 var d = e.data;
-                if (d && KINDS.indexOf(d.__dxf) !== -1) {
-                  try { dioxus.send(d); } catch (err) {}
+                if (d && KINDS.indexOf(d.__dxf) !== -1 && window.__dxfCameraSink) {
+                  window.__dxfCameraSink(d);
                 }
               });
             }
@@ -312,6 +326,13 @@ pub fn CameraBridge() -> Element {
     rsx! { Fragment {} }
 }
 
+/// Height of the self-preview's title bar, in the same units its `style` is
+/// written in. It is the `h-8` on the header, and it exists as a number because
+/// the resize keeps the *video* at 16/9, not the window — so the chrome has to
+/// be added back. Change the header's height and this must follow, or the
+/// preview starts cropping.
+const SELF_CHROME: f64 = 32.0;
+
 /// Small floating preview of your own camera.
 ///
 /// Shows the *local capture stream*, not a subscription to our own publication:
@@ -325,8 +346,12 @@ pub fn CameraSelfPreview() -> Element {
 
     let mut px = use_signal(|| 968.0_f64);
     let mut py = use_signal(|| 280.0_f64);
-    let mut pw = use_signal(|| 240.0_f64);
-    let mut ph = use_signal(|| 176.0_f64);
+    // Sized so the *video* is 16/9, which is what every camera actually
+    // produces: the window is the picture plus `SELF_CHROME` of title bar. The
+    // old 240×176 made a 240×144 video inside a box shaped like nothing,
+    // which is where the "too small, and letterboxed as well" came from.
+    let mut pw = use_signal(|| 360.0_f64);
+    let mut ph = use_signal(|| 360.0 * 9.0 / 16.0 + SELF_CHROME);
     let mut drag = use_signal(|| None::<Drag>);
 
     let on = use_memo(move || state.read().camera_on);
@@ -357,9 +382,15 @@ pub fn CameraSelfPreview() -> Element {
                     let c = e.client_coordinates();
                     match drag() {
                         Some(Drag::Move { dx, dy }) => { px.set(c.x - dx); py.set(c.y - dy); }
-                        Some(Drag::Resize { px: spx, py: spy, w0, h0 }) => {
-                            pw.set((w0 + (c.x - spx)).max(180.0));
-                            ph.set((h0 + (c.y - spy)).max(130.0));
+                        // Width drives, height follows at 16/9. A free resize
+                        // here would break the one assumption that lets the
+                        // preview use `object-fit: cover` without cropping —
+                        // see `attachLocalCamera`. `h0` is unused for exactly
+                        // that reason.
+                        Some(Drag::Resize { px: spx, w0, .. }) => {
+                            let w = (w0 + (c.x - spx)).max(240.0);
+                            pw.set(w);
+                            ph.set(w * 9.0 / 16.0 + SELF_CHROME);
                         }
                         None => {}
                     }
@@ -396,6 +427,16 @@ pub fn CameraSelfPreview() -> Element {
             // (`innerHTML = ''`), so anything Dioxus renders inside would be
             // torn out from under the VDOM.
             div { id: "camera-self", class: "flex-1 min-h-0 bg-black" }
+            // Resize grip. The `Drag::Resize` arm above has been here since the
+            // window was written, but nothing ever raised it — the preview was
+            // stuck at whatever size it was born with.
+            div {
+                class: "absolute right-0 bottom-0 w-3 h-3 cursor-nwse-resize",
+                onmousedown: move |e| {
+                    let c = e.client_coordinates();
+                    drag.set(Some(Drag::Resize { px: c.x, py: c.y, w0: pw(), h0: ph() }));
+                },
+            }
         }
     }
 }
@@ -421,12 +462,13 @@ fn CameraTile(pubkey: String) -> Element {
 
     rsx! {
         div {
-            class: "relative rounded overflow-hidden bg-black",
-            // Inline rather than a Tailwind aspect utility: none is in the
-            // committed `tailwind.out.css`, and naming one even in a comment
-            // puts it there — the v4 scanner reads this file as plain text, so
-            // a class mentioned here is a class generated.
-            style: "aspect-ratio: 16 / 9;",
+            // No fixed ratio any more. The tile used to be `aspect-ratio: 16/9`
+            // inside an `auto-fill` grid, which is the pair that produced the
+            // reported bug: widening the window added *columns* instead of
+            // growing the tile, so one camera stayed 200px wide in a 900px
+            // window, and heightening it added nothing at all. The grid now
+            // hands out fixed cells and the tile fills whatever it is given.
+            class: "relative rounded overflow-hidden bg-black w-full h-full min-h-0",
             div {
                 class: "absolute inset-0 flex items-center justify-center text-[10px] text-[var(--text-dim)]",
                 "Connecting…"
@@ -456,8 +498,8 @@ pub fn CameraGridWindow() -> Element {
 
     let mut px = use_signal(|| 340.0_f64);
     let mut py = use_signal(|| 120.0_f64);
-    let mut pw = use_signal(|| 560.0_f64);
-    let mut ph = use_signal(|| 360.0_f64);
+    let mut pw = use_signal(|| 760.0_f64);
+    let mut ph = use_signal(|| 500.0_f64);
     let mut drag = use_signal(|| None::<Drag>);
 
     // Intersected with who is *actually* publishing, not taken from the watch
@@ -476,6 +518,12 @@ pub fn CameraGridWindow() -> Element {
             .filter(|pk| Some(pk) != me.as_ref() && s.cameras_watching.contains(pk))
             .collect::<Vec<_>>()
     });
+
+    // A square-ish grid: as many columns as the square root of the count, and
+    // whatever rows that needs. Both are `1fr`, so however the window is
+    // resized the tiles divide all of it.
+    let cols = use_memo(move || (others().len() as f64).sqrt().ceil().max(1.0) as usize);
+    let rows = use_memo(move || others().len().div_ceil(cols()).max(1));
 
     if others().is_empty() {
         return rsx! { Fragment {} };
@@ -528,11 +576,21 @@ pub fn CameraGridWindow() -> Element {
                 }
             }
             div {
-                class: "flex-1 min-h-0 overflow-y-auto p-1.5",
-                // auto-fill/minmax rather than a fixed `grid-cols-N` class: the
-                // window is resizable, so the column count has to follow its
-                // width — and it keeps a new Tailwind class out of the build.
-                style: "display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 6px; align-content: start;",
+                class: "flex-1 min-h-0 overflow-hidden p-1.5",
+                // Explicit column *and row* counts, both `1fr`, so the tiles
+                // divide the window and grow with it. `auto-fill` did the
+                // opposite of what a resize should do: it kept the tile at its
+                // 200px minimum and spent the extra width on more empty
+                // columns, so a window dragged twice as wide showed the same
+                // small picture. Rows were worse — the tiles carried their own
+                // aspect ratio, so extra *height* went nowhere at all.
+                //
+                // The count is still derived rather than fixed, just from the
+                // number of people instead of the pixel width; a square-ish
+                // layout is what fills an arbitrary rectangle most evenly.
+                // Written inline for the same reason as before: `grid-cols-N`
+                // would be a new Tailwind class per participant count.
+                style: "display: grid; grid-template-columns: repeat({cols()}, minmax(0, 1fr)); grid-template-rows: repeat({rows()}, minmax(0, 1fr)); gap: 6px;",
                 for pk in others() {
                     CameraTile { key: "{pk}", pubkey: pk.clone() }
                 }

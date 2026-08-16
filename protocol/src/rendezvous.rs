@@ -42,6 +42,40 @@ pub enum HostToRendezvous {
         /// browse tab.
         #[serde(default)]
         description: Option<String>,
+        /// A gateway URL this host believes the internet can dial directly —
+        /// the result of a port mapping (UPnP-IGD / NAT-PMP), or a manual
+        /// forward. `None` means "relay me": either the host obtained no
+        /// address, or it chose not to publish one.
+        ///
+        /// Advertising it is what lets a friend skip the relay, so it is also
+        /// what publishes the host's home IP to anyone who can read the
+        /// listing. That trade is the host's to make — see `docs/NETWORKING.md`.
+        #[serde(default)]
+        endpoint: Option<String>,
+        /// The host's QUIC transport key, which a friend dials *instead of* an
+        /// address: the address only says where to send the packets.
+        ///
+        /// A separate key from `pubkey` because it is on a different curve —
+        /// ed25519 for the transport, secp256k1 for the account — so this says
+        /// nothing on its own about whose host it is. `transport_signature` is
+        /// what ties them together.
+        #[serde(default)]
+        transport_key: Option<String>,
+        /// Schnorr signature over `SHA256(nonce || pubkey || transport_key)`,
+        /// against the same `Challenge` nonce the name claim uses.
+        ///
+        /// Without it a host could advertise somebody else's transport key, or
+        /// a name's owner could be impersonated by anyone able to register —
+        /// the point of the whole transport being authenticated is lost if the
+        /// key it authenticates against is unattested.
+        #[serde(default)]
+        transport_signature: Option<String>,
+        /// UDP addresses the transport is listening on, most useful first.
+        ///
+        /// Hints, not identity: a joiner tries them and the key decides whether
+        /// whatever answers is the right host.
+        #[serde(default)]
+        transport_addrs: Vec<String>,
     },
 }
 
@@ -61,6 +95,26 @@ pub struct DiscoverEntry {
     /// every host as stale.
     #[serde(default)]
     pub idle_secs: u64,
+    /// The host's directly-dialable gateway URL, when it advertised one at
+    /// registration. A joiner races this against the relay and keeps whichever
+    /// answers, so `None` simply means "relay only" rather than an error.
+    ///
+    /// Older rendezvous builds don't send it; older clients ignore it. Both
+    /// directions degrade to the relayed path, which is what they already do.
+    #[serde(default)]
+    pub endpoint: Option<String>,
+    /// The host's QUIC transport key and where to try it. Present only when the
+    /// host advertised one *and* proved it belongs to the key that owns the
+    /// registration — an unverified pair is dropped at registration rather than
+    /// passed on for a joiner to worry about.
+    #[serde(default)]
+    pub transport_key: Option<String>,
+    #[serde(default)]
+    pub transport_addrs: Vec<String>,
+    /// The iroh relay to be introduced through, when this rendezvous runs one.
+    /// A joiner needs it for the same reason the host did.
+    #[serde(default)]
+    pub relay_url: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -84,6 +138,14 @@ pub enum RendezvousToHost {
         /// LiveKit URL the host should hand to clients in JoinVoice responses.
         /// Provided when the rendezvous operator runs a shared LiveKit alongside.
         livekit_url: Option<String>,
+        /// The iroh relay this rendezvous runs, if it runs one.
+        ///
+        /// Hole punching needs somebody to introduce two peers, and this says
+        /// who. Absent, a host does no coordination at all rather than falling
+        /// back to a public relay nobody chose — the whole point of it arriving
+        /// here is that the third party is the one the user already picked.
+        #[serde(default)]
+        relay_url: Option<String>,
     },
     NewFriend {
         session_id: String,
@@ -108,6 +170,10 @@ mod tests {
             signature: Some("cd".repeat(64)),
             publish_public: true,
             description: None,
+            endpoint: None,
+            transport_key: None,
+            transport_signature: None,
+            transport_addrs: Vec::new(),
         })
         .unwrap();
         assert_eq!(json["op"], "register");
@@ -115,6 +181,63 @@ mod tests {
         assert_eq!(d["name"], "casa");
         assert_eq!(d["publish_public"], true);
         assert!(d["description"].is_null());
+    }
+
+    /// A host that obtained a public address puts it on the wire, and a
+    /// rendezvous that predates the field still parses the frame. Both halves
+    /// matter: the endpoint is what turns a relayed join into a direct one, and
+    /// a host that advertises one must not become unregisterable against an
+    /// older relay.
+    #[test]
+    fn endpoint_round_trips_and_is_optional() {
+        let json = serde_json::to_string(&HostToRendezvous::Register {
+            name: None,
+            pubkey: None,
+            signature: None,
+            publish_public: false,
+            description: None,
+            endpoint: Some("ws://203.0.113.5:9000".into()),
+            transport_key: None,
+            transport_signature: None,
+            transport_addrs: Vec::new(),
+        })
+        .unwrap();
+        let back: HostToRendezvous = serde_json::from_str(&json).unwrap();
+        let HostToRendezvous::Register { endpoint, .. } = back;
+        assert_eq!(endpoint.as_deref(), Some("ws://203.0.113.5:9000"));
+
+        // A frame from a client that has never heard of the field.
+        let old: HostToRendezvous =
+            serde_json::from_str(r#"{"op":"register","d":{"name":null}}"#).unwrap();
+        let HostToRendezvous::Register { endpoint, .. } = old;
+        assert!(endpoint.is_none());
+    }
+
+    /// The listing carries the endpoint through, and an entry from a relay that
+    /// never sends one is still readable — a client would otherwise fail to
+    /// decode the whole browse response over one absent field.
+    #[test]
+    fn discover_entry_endpoint_is_optional() {
+        let entry: DiscoverEntry = serde_json::from_str(
+            r#"{"shortcode":"brave-otter-07","name":null,"description":null}"#,
+        )
+        .unwrap();
+        assert!(entry.endpoint.is_none());
+        assert_eq!(entry.idle_secs, 0);
+
+        let with = DiscoverEntry {
+            shortcode: "casa".into(),
+            name: Some("Casa".into()),
+            description: None,
+            idle_secs: 3,
+            endpoint: Some("ws://203.0.113.5:9000".into()),
+            transport_key: None,
+            transport_addrs: Vec::new(),
+            relay_url: None,
+        };
+        let back: DiscoverEntry =
+            serde_json::from_str(&serde_json::to_string(&with).unwrap()).unwrap();
+        assert_eq!(back, with);
     }
 
     /// A relay that omits an optional field — as `voice_token_grant` already
@@ -132,10 +255,12 @@ mod tests {
                 shortcode,
                 voice_token_grant,
                 livekit_url,
+                relay_url,
             } => {
                 assert_eq!(shortcode, "brave-otter-07");
                 assert!(voice_token_grant.is_none());
                 assert!(livekit_url.is_none());
+                assert!(relay_url.is_none());
             }
             other => panic!("parsed as {other:?}"),
         }

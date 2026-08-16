@@ -214,7 +214,7 @@ pub async fn handle_connection(
                             break;
                         }
                     }
-                    ClientMessage::SendMessage { channel_id, content, image, reply_to } => {
+                    ClientMessage::SendMessage { channel_id, content, image, reply_to, enc } => {
                         let Some(author) = user.clone() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
@@ -228,8 +228,15 @@ pub async fn handle_connection(
                             continue;
                         }
                         let content = content.trim().to_string();
+                        // An attachment on a sealed message is ciphertext, so it
+                        // arrives under its own mime and there is nothing here to
+                        // validate beyond the size cap — the bytes are opaque by
+                        // construction. Anything else must still look like an image.
+                        let enc_image_prefix =
+                            concat!("data:", "application/vnd.discordia.enc", ";base64,");
                         if let Some(img) = &image
-                            && (!img.starts_with("data:image/")
+                            && ((!img.starts_with("data:image/")
+                                && !(enc.is_some() && img.starts_with(enc_image_prefix)))
                                 || img.len() > crate::state::MAX_IMAGE_LEN)
                             {
                                 let _ = send(&mut ws_tx, &ServerMessage::Error {
@@ -237,6 +244,14 @@ pub async fn handle_connection(
                                 }).await;
                                 continue;
                             }
+                        if let Some(payload) = &enc
+                            && payload.len() > crate::protocol::MAX_ENC_LEN
+                        {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "sealed payload too large".into(),
+                            }).await;
+                            continue;
+                        }
                         // Text is optional when an image is attached, but
                         // either way it's length-capped and a wholly empty
                         // message is rejected.
@@ -249,6 +264,17 @@ pub async fn handle_connection(
 
                         // Route to a guild text channel (members only), else a
                         // DM the author participates in, else reject.
+                        // A sealed message is sealed to *two* Nostr keys, so it
+                        // only means anything in a DM. Refusing it here rather
+                        // than dropping the field keeps the failure loud: a
+                        // client that seals into a guild gets told, instead of
+                        // watching the room render a placeholder nobody can open.
+                        if enc.is_some() && ctx.state.channel_guild(channel_id).is_some() {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "encrypted messages are only supported in DMs".into(),
+                            }).await;
+                            continue;
+                        }
                         if let Some(gid) = ctx.state.channel_guild(channel_id) {
                             if !ctx.state.is_guild_member(gid, &author.pubkey) {
                                 let _ = send(&mut ws_tx, &ServerMessage::Error {
@@ -328,7 +354,7 @@ pub async fn handle_connection(
                         } else if let Some(participants) = ctx.state.dm_participants(channel_id) {
                             if participants.iter().any(|p| p == &author.pubkey) {
                                 if let Some(msg) =
-                                    ctx.state.push_dm_message(channel_id, author, content, image, reply_to).await
+                                    ctx.state.push_dm_message(channel_id, author, content, image, reply_to, enc).await
                                 {
                                     // DMs have no guild, so no XP is earned.
                                     ctx.state.deliver(
@@ -1020,6 +1046,40 @@ pub async fn handle_connection(
                     // covered too: kick/ban/leave run through `clear_voice`, so
                     // the entry is gone before a stale flag could outlive the
                     // membership. A non-member gets `None` and no frames.
+                    ClientMessage::ShareMediaKey { channel_id, to, epoch, blob } => {
+                        let Some(u) = user.as_ref() else { continue };
+                        // Both ends must be in the guild that owns the channel.
+                        // The blob is sealed, so this is not what keeps it
+                        // secret — it is what stops the gateway being a way to
+                        // push payloads at people who never asked.
+                        let Some(guild_id) = ctx.state.channel_guild(channel_id) else {
+                            tracing::warn!(%channel_id, "media key for a channel with no guild");
+                            continue;
+                        };
+                        let members = ctx.state.guild_member_pubkeys(guild_id);
+                        if !members.contains(&u.pubkey) || !members.contains(&to) {
+                            // Logged rather than dropped in silence: this is the
+                            // one place a key can vanish without either client
+                            // being able to tell, and a member list that does
+                            // not contain somebody who is plainly in the channel
+                            // is worth seeing.
+                            tracing::warn!(
+                                from = %u.pubkey, %to, %guild_id,
+                                "refusing to route a media key: sender or recipient is not a guild member"
+                            );
+                            continue;
+                        }
+                        tracing::info!(from = %u.pubkey, %to, epoch, "routing a media key");
+                        ctx.state.deliver(
+                            vec![to],
+                            ServerMessage::MediaKey {
+                                channel_id,
+                                from: u.pubkey.clone(),
+                                epoch,
+                                blob,
+                            },
+                        );
+                    }
                     ClientMessage::SetCamera { on } => {
                         let Some(u) = user.as_ref() else { continue };
                         if let Some(state) = ctx.state.update_camera(&u.pubkey, on) {

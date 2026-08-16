@@ -814,10 +814,17 @@ impl ActiveVoice {
         state: Signal<AppState>,
         controls: AudioControls,
     ) -> Result<Self, String> {
-        let (room, mut events) = Room::connect(livekit_url, token, RoomOptions::default())
+        // `RoomOptions` is `#[non_exhaustive]`, so it is built by mutation.
+        let mut options = RoomOptions::default();
+        options.encryption = crate::e2ee::room_options();
+        let (room, mut events) = Room::connect(livekit_url, token, options)
             .await
             .map_err(|e| format!("livekit connect: {e}"))?;
         let room = Arc::new(room);
+        // Told about later keys. A key generated after this connect — which is
+        // the normal case for whoever is first into a channel — would otherwise
+        // never reach this room.
+        crate::e2ee::register_room(&room, crate::e2ee::RoomKind::Voice);
 
         // Microphone publish pipeline. APM (AEC + NS + AGC).
         //
@@ -844,18 +851,32 @@ impl ActiveVoice {
         let local_audio =
             LocalAudioTrack::create_audio_track("mic", RtcAudioSource::Native(source.clone()));
         let local_audio_for_mute = local_audio.clone();
-        room.local_participant()
+        let mic_publication = room
+            .local_participant()
             .publish_track(
                 LocalTrack::Audio(local_audio),
                 TrackPublishOptions {
                     source: TrackSource::Microphone,
-                    // The rest of the speech defaults are right — including
-                    // `dtx`, which costs nothing when the transmit gate is
-                    // already holding silence back, and `red`, which is what
-                    // makes a lost packet survivable. Only the bitrate is
-                    // ours: the SDK's SPEECH preset is 24 kbit/s, which is
-                    // thin for anything but a close-miked talking head, so the
-                    // user picks (see `ClientSettings::voice_bitrate_kbps`).
+                    // `dtx` is the right default here — it costs nothing when
+                    // the transmit gate is already holding silence back.
+                    //
+                    // `red` is also the default, and **we do not get it**. The
+                    // SDK computes `disable_red = encryption_type != None ||
+                    // !options.red`, and `e2ee::room_options` attaches options
+                    // to every room whether or not a key exists, so RFC 2198
+                    // redundancy is off whenever encryption is *configured* —
+                    // which is the default. Asking for it here would change
+                    // nothing: the flag is decided from the participant, which
+                    // is constructed when the room connects. Opus in-band FEC
+                    // survives (it rides inside the encrypted bitstream, and
+                    // libwebrtc's own fmtp carries `useinbandfec=1`), so loss
+                    // resilience is reduced rather than removed. The trade and
+                    // the ways out are in `TODO.md` under Voice / audio.
+                    //
+                    // Only the bitrate is ours: the SDK's SPEECH preset is
+                    // 24 kbit/s, which is thin for anything but a close-miked
+                    // talking head, so the user picks (see
+                    // `ClientSettings::voice_bitrate_kbps`).
                     audio_encoding: Some(AudioEncoding {
                         max_bitrate: controls.bitrate_kbps.load(Ordering::Relaxed) as u64 * 1000,
                     }),
@@ -864,6 +885,21 @@ impl ActiveVoice {
             )
             .await
             .map_err(|e| format!("publish mic: {e}"))?;
+        // Read back rather than assumed, for the same reason `set_apm` reads
+        // its options back: the interesting case is the one where what we asked
+        // for is not what we got. Encryption here is also a statement about
+        // RED — the two cannot both be on — so a report of one is a report of
+        // both, and this is the line that says which trade this call is making.
+        let encrypted = mic_publication.encryption_type() != livekit::e2ee::EncryptionType::None;
+        eprintln!(
+            "[voice] mic published: encrypted={encrypted}, red={} (opus in-band FEC unaffected)",
+            !encrypted
+        );
+        // A cryptor is built when the track is published and starts on slot 0.
+        // If a rekey already moved this channel's voice onto another slot —
+        // which a mic republished after a device change would miss — this is
+        // what puts the fresh publication where everyone is listening.
+        crate::e2ee::place_new_voice_publication(&room);
 
         // The capture path is three stages, for three different reasons.
         //
@@ -968,6 +1004,7 @@ impl ActiveVoice {
                             QualityMsg::Set(id, health) => s.voice_quality.get(id) != Some(health),
                             QualityMsg::Drop(id) => s.voice_quality.contains_key(id),
                             QualityMsg::Clear => !s.voice_quality.is_empty(),
+                            QualityMsg::Undecryptable => !s.media_undecryptable,
                         }
                     };
                     if !changed {
@@ -982,6 +1019,10 @@ impl ActiveVoice {
                             s.voice_quality.remove(&id);
                         }
                         QualityMsg::Clear => s.voice_quality.clear(),
+                        // Latched, like the webview's. Cleared by `apply_key`
+                        // when a key is adopted, which is the event most likely
+                        // to have fixed it.
+                        QualityMsg::Undecryptable => s.media_undecryptable = true,
                     }
                 }
             });
@@ -1086,6 +1127,29 @@ impl ActiveVoice {
                         }
                         RoomEvent::Reconnected => {
                             eprintln!("[voice] reconnected");
+                        }
+                        // The native half of the undecryptable signal. The
+                        // webview has reported this since the badge existed;
+                        // the three native rooms had the same event available
+                        // and nothing listening, so voice — the one path that
+                        // is entirely native — could fail to decrypt with
+                        // nothing on screen and nothing in the log.
+                        //
+                        // `Ok` and `New` are the healthy states and say so on
+                        // every key change, so only the failures are reported.
+                        // `MissingKey` is the one that means what it says here:
+                        // somebody is publishing under a key we were never
+                        // given.
+                        RoomEvent::E2eeStateChanged { participant, state } => {
+                            use livekit::webrtc::native::frame_cryptor::EncryptionState;
+                            match state {
+                                EncryptionState::Ok | EncryptionState::New => {}
+                                bad => {
+                                    let who = participant.identity().0;
+                                    eprintln!("[voice] cannot decrypt media from {who}: {bad:?}");
+                                    let _ = quality_tx.send(QualityMsg::Undecryptable);
+                                }
+                            }
                         }
                         _ => {}
                     }
@@ -1266,6 +1330,12 @@ impl ActiveVoice {
                     //
                     // 96 kbit/s is generous for the mono downmix we send, and
                     // trivial beside the multi-megabit video it accompanies.
+                    //
+                    // This track loses `red` to encryption exactly as the mic
+                    // does — see the note at the mic publish — and music is
+                    // where that shows worst, since Opus in-band FEC is tuned
+                    // for speech. Nothing to set here; recorded so the next
+                    // person tuning this does not go looking for the knob.
                     audio_encoding: Some(
                         livekit::options::audio::MUSIC_HIGH_QUALITY.encoding.clone(),
                     ),
@@ -1593,10 +1663,15 @@ impl ScreenVideoRoom {
         // shares we watch — subscribing here as well would download every
         // stream in the channel a second time.
         options.auto_subscribe = false;
+        options.encryption = crate::e2ee::room_options();
         let (room, mut events) = Room::connect(url, token, options)
             .await
             .map_err(|e| format!("livekit connect: {e}"))?;
         let room = Arc::new(room);
+        // Told about later keys. A key generated after this connect — which is
+        // the normal case for whoever is first into a channel — would otherwise
+        // never reach this room.
+        crate::e2ee::register_room(&room, crate::e2ee::RoomKind::Screen);
 
         // `is_screencast: true` is not cosmetic — it tells libwebrtc this is
         // desktop content, which changes the encoder's degradation behaviour
@@ -1732,15 +1807,29 @@ struct ScreenAudioRoom {
     alive: Arc<AtomicBool>,
 }
 
-/// Connection-quality notices, on the same bridge as `StreamAudio` and for the
-/// same reason: the event task is `tokio::spawn`ed and so must be `Send`, which
-/// a Dioxus Signal is not.
+/// What the room's event task needs the UI to know, on the same bridge as
+/// `StreamAudio` and for the same reason: the event task is `tokio::spawn`ed and
+/// so must be `Send`, which a Dioxus Signal is not.
+///
+/// Mostly connection quality, and one notice that is not — see `Undecryptable`.
+/// A second channel for a single boolean would be more moving parts than the
+/// thing it carries.
 enum QualityMsg {
     Set(String, ConnectionHealth),
     Drop(String),
     /// The room ended. Every reading it produced is now stale, and a stale
     /// "weak connection" dot left on a name after the call is worse than none.
     Clear,
+    /// Frames arrived that this room could not decrypt.
+    ///
+    /// Not a quality reading, and it rides here because the alternative was a
+    /// whole second bridge for one `bool`. Worth having at all because of what
+    /// the failure looks like without it: media encryption fails *silently* —
+    /// `live_sfu::media_encryption_carries_audio_only_when_the_keys_agree`
+    /// measures the frames still arriving, every sample zero — which is
+    /// indistinguishable from a peer who is not talking. Three key bugs on this
+    /// branch were found by reading `peak=0` out of a log by hand.
+    Undecryptable,
 }
 
 /// What the screen/voice event tasks tell the UI about stream audio. An enum
@@ -1769,10 +1858,15 @@ impl ScreenAudioRoom {
         // *video* down as well — the exact cost the separate screen room exists
         // to keep away from native peers.
         options.auto_subscribe = false;
+        options.encryption = crate::e2ee::room_options();
         let (room, mut events) = Room::connect(url, token, options)
             .await
             .map_err(|e| format!("livekit connect: {e}"))?;
         let room = Arc::new(room);
+        // Told about later keys. A key generated after this connect — which is
+        // the normal case for whoever is first into a channel — would otherwise
+        // never reach this room.
+        crate::e2ee::register_room(&room, crate::e2ee::RoomKind::Screen);
 
         // Same bridge shape as the voice room's: the event task is `spawn`ed and
         // so must be Send, which a Dioxus Signal is not.
@@ -3512,15 +3606,33 @@ impl PlaybackMixer {
         .map_err(|e| format!("build_output_stream: {e}"))?;
 
         // Heartbeat task — proves the audio thread is alive (or not).
-        let cb_for_log = cb_counter.clone();
-        let pulled_for_log = pulled_counter.clone();
+        //
+        // Weak, so it ends when the stream does. The counters' only other owner
+        // is the cpal callback, which the output stream owns: leaving voice
+        // drops the stream, drops the callback, and the upgrade below fails.
+        // Held strongly this loop has no exit at all — it kept printing the
+        // same frozen numbers every two seconds for the life of the app, one
+        // more task per channel joined, and the tail of every log was hundreds
+        // of `(+0)` lines instead of whatever the session actually did. A
+        // heartbeat that reports after the thing it watches is gone is worse
+        // than none: it says "alive" in the same words either way.
+        let cb_for_log = Arc::downgrade(&cb_counter);
+        let pulled_for_log = Arc::downgrade(&pulled_counter);
         tokio::spawn(async move {
             let mut prev_cb = 0u64;
             let mut prev_pulled = 0u64;
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                let cb = cb_for_log.load(std::sync::atomic::Ordering::Relaxed);
-                let pulled = pulled_for_log.load(std::sync::atomic::Ordering::Relaxed);
+                // Upgraded per tick and dropped at the end of it — holding
+                // either across the sleep would keep the counters alive and
+                // defeat the very check that ends this task.
+                let (Some(cb_counter), Some(pulled_counter)) =
+                    (cb_for_log.upgrade(), pulled_for_log.upgrade())
+                else {
+                    break;
+                };
+                let cb = cb_counter.load(std::sync::atomic::Ordering::Relaxed);
+                let pulled = pulled_counter.load(std::sync::atomic::Ordering::Relaxed);
                 eprintln!(
                     "[voice] playback heartbeat: callbacks={} (+{}), non-silent samples written={} (+{})",
                     cb,

@@ -67,6 +67,7 @@ fn local_signing() -> LiveKitConfig {
         explicit_url: Some("ws://127.0.0.1:7880".into()),
         port: 7880,
         lan_host: None,
+        public_host: None,
         api_key: API_KEY.into(),
         api_secret: API_SECRET.into(),
         minter: None,

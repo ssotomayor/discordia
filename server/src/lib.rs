@@ -11,6 +11,7 @@ pub mod http;
 pub mod livekit;
 pub mod livekit_bundle;
 pub mod media;
+pub mod quic;
 pub mod state;
 pub mod store;
 
@@ -100,23 +101,56 @@ pub async fn spawn(
     max_attempts: u16,
     cfg: ServerConfig,
 ) -> std::io::Result<ServerHandle> {
-    let ctx = build_context(cfg).await?;
-
     let listener = bind_with_fallback(preferred, max_attempts).await?;
-    let addr = listener.local_addr()?;
+    spawn_on(listener, cfg).await
+}
+
+/// Serve on a listener the caller already bound.
+///
+/// Self-host needs the port before the gateway starts: it advertises a
+/// port-mapped address to the rendezvous at registration time, and a mapping
+/// has to name the port the gateway actually got — which, with the fallback
+/// above, is not necessarily the one asked for. Binding first and serving
+/// second is what makes that answerable in the right order.
+pub async fn spawn_on(
+    listener: tokio::net::TcpListener,
+    cfg: ServerConfig,
+) -> std::io::Result<ServerHandle> {
+    let router = build_router(cfg).await?;
+    Ok(serve_router(listener, router))
+}
+
+/// Open the store, rehydrate state, and build the HTTP router — without
+/// serving it anywhere yet.
+///
+/// Exposed because a router can have more than one front door. Self-host serves
+/// this same router on a TCP listener *and* on a QUIC endpoint (`quic::serve_on`),
+/// and handing out the router rather than serving it twice is what keeps the two
+/// from drifting: a route added for one is a route for both, because there is
+/// only one.
+pub async fn build_router(cfg: ServerConfig) -> std::io::Result<axum::Router> {
+    let ctx = build_context(cfg).await?;
+    Ok(http::router(ctx))
+}
+
+/// Serve an already-built router on an already-bound listener.
+pub fn serve_router(listener: tokio::net::TcpListener, router: axum::Router) -> ServerHandle {
+    let addr = listener
+        .local_addr()
+        .unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 0)));
     tracing::info!(%addr, "dioxusfun-server listening");
-    let app = http::router(ctx);
 
     let task = tokio::spawn(async move {
-        if let Err(e) = axum::serve(listener, app).await {
+        if let Err(e) = axum::serve(listener, router).await {
             tracing::error!(error = %e, "axum serve ended");
         }
     });
 
-    Ok(ServerHandle { addr, task })
+    ServerHandle { addr, task }
 }
 
-async fn bind_with_fallback(
+/// Bind the first free port in `preferred..=preferred+max_attempts`.
+pub async fn bind_with_fallback(
     preferred: SocketAddr,
     max_attempts: u16,
 ) -> std::io::Result<tokio::net::TcpListener> {

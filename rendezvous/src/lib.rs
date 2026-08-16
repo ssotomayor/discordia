@@ -1,5 +1,6 @@
 pub mod registry;
 pub mod relay;
+pub mod relay_server;
 pub mod shortcode;
 pub mod verify;
 
@@ -32,6 +33,12 @@ pub struct Config {
     /// instead of waiting out the real one.
     pub heartbeat_interval: std::time::Duration,
     pub host_timeout: std::time::Duration,
+    /// The iroh relay this rendezvous runs, as clients should dial it.
+    ///
+    /// Handed to every host and joiner so they can be introduced here rather
+    /// than by a public relay nobody chose. `None` means this rendezvous offers
+    /// no coordination, and its users fall back to the WebSocket proxy.
+    pub relay_url: Option<String>,
 }
 
 impl Default for Config {
@@ -40,6 +47,7 @@ impl Default for Config {
             livekit_url: None,
             livekit_api_key: None,
             livekit_api_secret: None,
+            relay_url: None,
             heartbeat_interval: std::time::Duration::from_secs(20),
             // Three intervals: one lost packet or a briefly busy host must not
             // be enough to unregister someone who is actually fine.
@@ -62,6 +70,8 @@ pub fn router(ctx: AppCtx) -> Router {
     Router::new()
         .route("/", get(root))
         .route("/discover", get(discover))
+        .route("/resolve/:code", get(resolve))
+        .route("/config", get(config))
         .route("/voice-token", axum::routing::post(voice_token))
         .route("/control", get(control))
         .route("/join/:code", get(join))
@@ -71,11 +81,51 @@ pub fn router(ctx: AppCtx) -> Router {
 }
 
 async fn root() -> &'static str {
-    "dioxusfun-rendezvous. Endpoints: /discover, /control, /join/:code, /proxy/:session"
+    "dioxusfun-rendezvous. Endpoints: /config, /discover, /resolve/:code, /control, /join/:code, /proxy/:session"
+}
+
+/// What this rendezvous offers, before anyone commits to using it.
+///
+/// Exists for an ordering problem: a host has to bind its QUIC endpoint before
+/// it can register (registration advertises the port), but whether that
+/// endpoint should know about a relay is a property of the rendezvous. One
+/// cheap GET settles it without making registration two round trips.
+async fn config(State(ctx): State<AppCtx>) -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "relay_url": ctx.config.relay_url,
+        "livekit_url": ctx.config.livekit_url,
+    }))
 }
 
 async fn discover(State(ctx): State<AppCtx>) -> Json<Vec<DiscoverEntry>> {
-    Json(ctx.registry.discover())
+    let mut entries = ctx.registry.discover();
+    for e in &mut entries {
+        e.relay_url = ctx.config.relay_url.clone();
+    }
+    Json(entries)
+}
+
+/// What a joiner holding a code needs to know before dialling: chiefly whether
+/// this host published a direct address worth trying ahead of the relay.
+///
+/// Separate from `/discover` because that one is the public browse listing and
+/// deliberately omits unlisted hosts — while a code handed to friends is the
+/// case most likely to want the direct path. Matching `/join/{code}`, the code
+/// is compared case-insensitively.
+async fn resolve(
+    State(ctx): State<AppCtx>,
+    Path(code): Path<String>,
+) -> Result<Json<DiscoverEntry>, axum::http::StatusCode> {
+    ctx.registry
+        .lookup(&code.to_lowercase())
+        .map(|mut entry| {
+            // Where to be introduced, if this deployment offers it. The joiner
+            // needs it for the same reason the host did, and this is the only
+            // response it fetches before dialling.
+            entry.relay_url = ctx.config.relay_url.clone();
+            Json(entry)
+        })
+        .ok_or(axum::http::StatusCode::NOT_FOUND)
 }
 
 #[derive(serde::Deserialize)]

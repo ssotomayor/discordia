@@ -359,6 +359,12 @@ fn handle_rpc(
                         // An activity posts on its own behalf; it has no notion
                         // of a message being answered.
                         reply_to: None,
+                        // Never sealed. An activity is sandboxed content posting
+                        // through a granted capability, and handing it the DM
+                        // key would make "may send a message" mean "may read
+                        // this conversation". If activities ever need to post
+                        // into a DM, that is a consent decision, not a field.
+                        enc: None,
                     });
                     (true, json!({ "sent": true }))
                 }
@@ -370,8 +376,15 @@ fn handle_rpc(
 }
 
 /// Installed once: forwards every message from the activity iframe to Rust.
-/// Guards against double-wiring across hot reloads.
+///
+/// The listener is registered once per webview; the *sink* it calls is
+/// reassigned on every eval. Only the second half survives a remount — a
+/// listener closes over the `dioxus.send` of the eval that made it, and this
+/// component is rebuilt whenever the session is, so guarding registration alone
+/// leaves the live channel unregistered and the registered one dead. Same shape
+/// as `features::chat`'s drop handler, and the same bug the camera pump had.
 const BRIDGE_JS: &str = r#"
+window.__dxfActivitySink = function (m) { try { dioxus.send(m); } catch (err) {} };
 if (!window.__dxfActivityWired) {
   window.__dxfActivityWired = true;
   window.addEventListener('message', function (e) {
@@ -379,7 +392,7 @@ if (!window.__dxfActivityWired) {
     if (!f || e.source !== f.contentWindow) return;
     var d = e.data;
     if (!d || d.__dxf !== true) return;
-    try { dioxus.send(d); } catch (err) {}
+    if (window.__dxfActivitySink) window.__dxfActivitySink(d);
   });
 }
 "#;

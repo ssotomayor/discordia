@@ -299,3 +299,106 @@ async fn message_history_pages_backward_with_before_ms() {
     );
     handle.abort();
 }
+
+/// A sealed DM is carried without being understood.
+///
+/// The sealing itself lives in the client (`dmcrypt`), so what a server test
+/// can settle — and the only thing that matters here — is that the gateway is a
+/// courier: it stores and forwards `enc` byte for byte, keeps its hands off
+/// `content`, and never needs to know which is which. The payload below is
+/// deliberately not real ciphertext, because the server not caring is the
+/// property under test.
+#[tokio::test]
+async fn a_sealed_dm_is_carried_verbatim_and_never_read() {
+    let (url, handle) = spawn_gateway().await;
+    let a_id = BotIdentity::generate();
+    let b_id = BotIdentity::generate();
+    let mut a = connect_user(&url, &a_id, "Ana").await;
+    let mut b = connect_user(&url, &b_id, "Bo").await;
+
+    a.send(&ClientMessage::OpenDm {
+        user_pubkey: b_id.pubkey().to_string(),
+    })
+    .await
+    .unwrap();
+    let dm_channel = loop {
+        if let ServerMessage::DmReady { channel_id, .. } = next_timeout(&mut a).await {
+            break channel_id;
+        }
+    };
+
+    let payload = "AZm9jaGVja3RoaXNpc29wYXF1ZQ==";
+    a.send(&ClientMessage::SendMessage {
+        channel_id: dm_channel,
+        content: dioxusfun_server::protocol::ENCRYPTED_PLACEHOLDER.into(),
+        image: None,
+        reply_to: None,
+        enc: Some(payload.into()),
+    })
+    .await
+    .unwrap();
+
+    let delivered = loop {
+        if let ServerMessage::MessageCreate(m) = next_timeout(&mut b).await
+            && m.channel_id == dm_channel
+        {
+            break m;
+        }
+    };
+    assert_eq!(
+        delivered.enc.as_deref(),
+        Some(payload),
+        "the sealed payload must survive the round trip unchanged"
+    );
+    assert_eq!(
+        delivered.content,
+        dioxusfun_server::protocol::ENCRYPTED_PLACEHOLDER,
+        "the server must have no plaintext to hand over"
+    );
+    handle.abort();
+}
+
+/// Sealing into a guild channel is refused rather than silently accepted.
+///
+/// A payload sealed to two Nostr keys is unreadable to a room of many, so a
+/// client that tries it has a bug. Answering with an error is what makes that
+/// bug visible, instead of everyone in the channel rendering a placeholder that
+/// nobody on earth holds the key to.
+#[tokio::test]
+async fn a_guild_channel_refuses_a_sealed_message() {
+    let (url, handle) = spawn_gateway().await;
+    let owner_id = BotIdentity::generate();
+    let mut owner = connect_user(&url, &owner_id, "Owner").await;
+    let (_guild, text_channel) = create_guild(&mut owner, "Guild").await;
+
+    owner
+        .send(&ClientMessage::SendMessage {
+            channel_id: text_channel,
+            content: dioxusfun_server::protocol::ENCRYPTED_PLACEHOLDER.into(),
+            image: None,
+            reply_to: None,
+            enc: Some("AZm9vYmFy".into()),
+        })
+        .await
+        .unwrap();
+
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(2000);
+    let mut refused = false;
+    while tokio::time::Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_millis(300), owner.next_event()).await {
+            Ok(Some(ServerMessage::Error { message }))
+                if message.contains("only supported in DMs") =>
+            {
+                refused = true;
+                break;
+            }
+            Ok(Some(ServerMessage::MessageCreate(m))) if m.channel_id == text_channel => {
+                panic!("a sealed message was accepted into a guild channel");
+            }
+            Ok(Some(_)) => continue,
+            _ => break,
+        }
+    }
+    assert!(refused, "the server must say why it refused");
+    handle.abort();
+}

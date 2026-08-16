@@ -215,6 +215,7 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
             crate::features::screenshare::ScreenSourcePicker {}
             crate::features::screenshare::ScreenSelfPreview {}
             crate::features::camera::CameraBridge {}
+            crate::mediakey::MediaKeyBridge {}
             crate::features::camera::CameraSelfPreview {}
             crate::features::camera::CameraGridWindow {}
             crate::features::screenshare::ScreenWatchWindow {}
@@ -234,6 +235,8 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
                     span { class: "dxf-display dxf-wordmark text-lg font-bold tracking-tight", "Discordia" }
                 }
                 HostBanner {}
+                TransportBadge {}
+                EncryptionBadge {}
                 // Unplug / disconnect. Always present so the user can leave a
                 // server they've connected to. Empty reason → clean return to
                 // the connect screen (no error banner; see App::on_disconnect).
@@ -718,10 +721,15 @@ fn HostBanner() -> Element {
     let publish_error = info.publish_error.clone();
     let listed_public = info.listed_public;
     let has_shortcode = info.shortcode.is_some();
-    let (voice_label, voice_color) = if info.voice_bundled {
+    let reachability = info.reachability.clone();
+    // Whether voice works is "is there an SFU", not "did we start one" — a
+    // rendezvous that runs its own means we deliberately started nothing.
+    let (voice_label, voice_color) = if info.livekit_url.is_empty() {
+        ("voice unavailable", "text-[var(--warn)]")
+    } else if info.voice_bundled {
         ("voice ready", "text-[var(--success)]")
     } else {
-        ("voice unavailable", "text-[var(--warn)]")
+        ("voice via rendezvous", "text-[var(--success)]")
     };
 
     rsx! {
@@ -757,7 +765,144 @@ fn HostBanner() -> Element {
                 }
             }
             span { class: "flex-1" }
+            Reachability { reachability }
             span { class: "{voice_color}", "● {voice_label}" }
+        }
+    }
+}
+
+/// How far this host reaches, in the banner, with the reason when it is short.
+///
+/// A host that cannot be reached from the internet is the normal outcome behind
+/// carrier-grade NAT and on a router with UPnP off, and it used to be invisible:
+/// the only symptom was a friend failing to connect, which looks like the
+/// friend's problem. See `docs/NETWORKING.md`.
+#[component]
+fn Reachability(reachability: crate::host::Reachability) -> Element {
+    use crate::host::Reachability as R;
+    match reachability {
+        R::Direct {
+            endpoint,
+            method,
+            media,
+        } => {
+            let title = if media {
+                format!(
+                    "{method} mapped this machine's ports. Friends reach you at {endpoint} without the relay, voice included."
+                )
+            } else {
+                format!(
+                    "{method} mapped the chat port ({endpoint}), but not the voice ports — calls still go through a relay's SFU, or stay on this network."
+                )
+            };
+            rsx! {
+                span { class: "text-[var(--text-dim)]", "·" }
+                span { class: "text-[var(--success)]", title: "{title}",
+                    if media { "● reachable directly" } else { "● reachable directly (chat only)" }
+                }
+            }
+        }
+        R::LanOnly { reason } => rsx! {
+            span { class: "text-[var(--text-dim)]", "·" }
+            span { class: "text-[var(--warn)]",
+                title: "{reason} Friends elsewhere can still join by code — the rendezvous relays them.",
+                "● this network only"
+            }
+        },
+        R::LoopbackOnly => rsx! {
+            span { class: "text-[var(--text-dim)]", "·" }
+            span { class: "text-[var(--text-muted)]",
+                title: "Direct connections weren't enabled, so the gateway only listens on this machine. Friends can still join by code through the rendezvous.",
+                "● local only"
+            }
+        },
+    }
+}
+
+/// Whether this call's media is encrypted, and whether that is currently
+/// working.
+///
+/// The second half is why this exists at all. End-to-end encrypted media fails
+/// as *silence*: frames arrive, decode to noise, and everything looks connected.
+/// Somebody in that state will check their microphone, their output device and
+/// their network before suspecting a key — so the one thing worth putting on
+/// screen is that the key is the problem.
+#[component]
+fn EncryptionBadge() -> Element {
+    let state = use_app_state();
+    let snapshot = state.read();
+    // Only meaningful in a call.
+    let in_voice = snapshot.voice.channel_id.is_some();
+    let has_key = snapshot
+        .voice
+        .channel_id
+        .is_some_and(|c| snapshot.media_keys.contains_key(&c));
+    let broken = snapshot.media_undecryptable;
+    drop(snapshot);
+
+    if !in_voice || (!has_key && !broken) {
+        return rsx! { Fragment {} };
+    }
+
+    let (label, color, title) = if broken {
+        (
+            "media undecryptable",
+            "text-[var(--danger)]",
+            "Encrypted media is arriving that this client cannot decrypt — usually a key that has not reached you yet. It often clears on its own within a second; if it does not, rejoin the channel.",
+        )
+    } else {
+        (
+            "media encrypted",
+            "text-[var(--success)]",
+            "Voice, screen share and camera are encrypted end to end. The SFU forwards frames it cannot decrypt — including one you run yourself.",
+        )
+    };
+    rsx! {
+        span { class: "shrink-0 px-2 py-1 text-[10px] uppercase tracking-wider {color}",
+            title: "{title}",
+            "{label}"
+        }
+    }
+}
+
+/// Who is carrying this connection, for anyone who is *not* hosting.
+///
+/// The distinction the badge exists for: a relayed connection is readable by
+/// whoever runs the relay, and a direct one is not — but neither announces
+/// itself, and a join by code can end up as either depending on a race.
+#[component]
+fn TransportBadge() -> Element {
+    let state = use_app_state();
+    let snapshot = state.read();
+    // Self-host has its own banner, which says more than this would.
+    if snapshot.host_info.is_some() {
+        return rsx! { Fragment {} };
+    }
+    let transport = snapshot.transport;
+    drop(snapshot);
+
+    let (label, color, title) = match transport {
+        crate::state::Transport::Loopback => return rsx! { Fragment {} },
+        crate::state::Transport::Private => (
+            "private",
+            "text-[var(--success)]",
+            "Connected straight to the host over an encrypted QUIC transport, with the host authenticated by its public key. Nobody in between can read this connection. The host can see your IP address.",
+        ),
+        crate::state::Transport::Direct => (
+            "direct",
+            "text-[var(--warn)]",
+            "Connected straight to the host — no relay in the middle — but in the clear: every hop on the path can read this connection. The host can see your IP address.",
+        ),
+        crate::state::Transport::Relayed => (
+            "relayed",
+            "text-[var(--text-muted)]",
+            "Carried by a rendezvous relay, which can read everything on this connection. The host never learns your address.",
+        ),
+    };
+    rsx! {
+        span { class: "shrink-0 px-2 py-1 text-[10px] uppercase tracking-wider {color}",
+            title: "{title}",
+            "{label}"
         }
     }
 }

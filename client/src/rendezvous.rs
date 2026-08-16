@@ -93,6 +93,57 @@ impl dioxusfun_server::livekit::VoiceTokenMinter for RendezvousMinter {
     }
 }
 
+/// Ask a rendezvous whether it will introduce peers, and through what.
+///
+/// One HTTP GET before anything is bound. A rendezvous that runs no relay — or
+/// is too old to have the endpoint — answers nothing, and the caller does no
+/// coordination at all. That is the deliberate shape: the only third party that
+/// can introduce you is the one you already chose by using it.
+pub async fn coordination_offered(rendezvous_url: &str) -> dioxusfun_server::quic::Coordination {
+    #[derive(serde::Deserialize)]
+    struct Offered {
+        #[serde(default)]
+        relay_url: Option<String>,
+    }
+    let http = if let Some(rest) = rendezvous_url.strip_prefix("wss://") {
+        format!("https://{rest}")
+    } else if let Some(rest) = rendezvous_url.strip_prefix("ws://") {
+        format!("http://{rest}")
+    } else {
+        rendezvous_url.to_string()
+    };
+    let fetched = reqwest::Client::new()
+        .get(format!("{}/config", http.trim_end_matches('/')))
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await
+        .ok()
+        .and_then(|r| r.error_for_status().ok());
+    let relay = match fetched {
+        Some(r) => r.json::<Offered>().await.ok().and_then(|o| o.relay_url),
+        None => None,
+    };
+    match relay {
+        Some(url) => {
+            eprintln!("[host] rendezvous offers a coordinator at {url}");
+            dioxusfun_server::quic::Coordination::Relay(url)
+        }
+        None => {
+            eprintln!("[host] rendezvous offers no coordinator — no hole punching");
+            dioxusfun_server::quic::Coordination::None
+        }
+    }
+}
+
+/// The QUIC transport key a host advertises, and where to try it.
+#[derive(Debug, Clone)]
+pub struct TransportAdvert {
+    /// The endpoint id, as the joiner will parse it.
+    pub key: String,
+    /// UDP addresses, most useful first.
+    pub addrs: Vec<String>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct PublishOptions {
     pub publish_name: Option<String>,
@@ -105,9 +156,19 @@ pub struct PublishOptions {
 ///
 /// `identity` signs the ownership proof when a name is claimed (`publish_name`
 /// set) — the rendezvous binds the name to this key and persists the claim.
+///
+/// `endpoint` is the gateway URL a port mapping made dialable, when there is
+/// one. Sending it is what lets a friend holding our code try us directly and
+/// keep the relay as a fallback; sending `None` keeps every friend relayed.
+///
+/// `transport` is the QUIC key and addresses, which are signed here rather than
+/// by the caller: the signature has to be over the rendezvous' challenge nonce,
+/// and that nonce does not exist until this function has opened the socket.
 pub async fn register(
     rendezvous_url: &str,
     options: PublishOptions,
+    endpoint: Option<String>,
+    transport: Option<TransportAdvert>,
     identity: &crate::identity::Identity,
 ) -> Result<(PublishInfo, ControlStream), String> {
     let base = rendezvous_url.trim_end_matches('/').to_string();
@@ -148,12 +209,39 @@ pub async fn register(
         None => (None, None),
     };
 
+    // The transport key is vouched for by the same identity and against the
+    // same nonce as the name. A relay that receives it unsigned publishes
+    // nothing, so this is what makes the QUIC path reachable at all.
+    let (transport_key, transport_signature, transport_addrs) = match &transport {
+        Some(t) => {
+            let pk = identity.pubkey.clone();
+            let mut msg = Vec::new();
+            msg.extend_from_slice(nonce.as_bytes());
+            msg.extend_from_slice(pk.as_bytes());
+            msg.extend_from_slice(t.key.as_bytes());
+            (
+                Some(t.key.clone()),
+                Some(identity.sign_hex(&msg)),
+                t.addrs.clone(),
+            )
+        }
+        None => (None, None, Vec::new()),
+    };
+    // Claiming a name already carries the pubkey; an anonymous host advertising
+    // a transport key has to send one too, or the relay has nothing to check
+    // the signature against.
+    let pubkey = pubkey.or_else(|| transport.as_ref().map(|_| identity.pubkey.clone()));
+
     let hello = HostToRendezvous::Register {
         name: options.publish_name,
         pubkey,
         signature,
         publish_public: options.publish_public,
         description: options.description,
+        endpoint,
+        transport_key,
+        transport_signature,
+        transport_addrs,
     };
     let json = serde_json::to_string(&hello).map_err(|e| e.to_string())?;
     ws.send(WsMessage::Text(json))
@@ -177,6 +265,7 @@ pub async fn register(
                 shortcode,
                 livekit_url,
                 voice_token_grant,
+                ..
             } => {
                 let info = PublishInfo {
                     shortcode,

@@ -18,12 +18,23 @@ sha2 = "0.10"
 # Drive both human and bot sides of the gateway in integration tests.
 dioxusfun-bot = { path = "../bot-sdk" }
 tokio = { workspace = true, features = ["full"] }
+# `rendezvous_voice.rs` runs a real relay against a real gateway: the claim
+# under test is what a *rendezvous without a shared SFU* leads the gateway to
+# hand out, and reasoning about it is exactly what left it unconfirmed.
+dioxusfun-rendezvous = { path = "../rendezvous" }
+tokio-tungstenite = { workspace = true }
+serde_json = { workspace = true }
 
 [dependencies]
 # Server-specific.
 axum = { workspace = true, features = ["macros"] }
 tokio = { workspace = true, features = ["full"] }
 livekit-api = { version = "0.4", default-features = false, features = ["access-token"] }
+# The QUIC front door (src/quic.rs). Serves the same axum router the TCP
+# listener does, over a transport that authenticates by public key.
+iroh = { workspace = true }
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
 # Nostr identity verification: secp256k1 Schnorr (BIP-340).
 secp256k1 = { workspace = true }
 hex = { workspace = true }

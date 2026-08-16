@@ -6,6 +6,8 @@ if (Get-Command npx -ErrorAction SilentlyContinue) {
     npx @tailwindcss/cli -i assets/tailwind.css -o assets/tailwind.out.css --minify
     Pop-Location
 } else {
-    Write-Warning "npx not found — using committed tailwind.out.css. Install Node.js to regenerate."
+    # ASCII only: Windows PowerShell 5.1 reads a BOM-less script as ANSI, so a
+    # UTF-8 em dash here breaks the string and the whole file fails to parse.
+    Write-Warning "npx not found - using committed tailwind.out.css. Install Node.js to regenerate."
 }
 cargo run -p dioxusfun
