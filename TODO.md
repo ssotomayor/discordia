@@ -888,11 +888,28 @@ the top within each section.
 
   Inert, sign flipping run to run — the same answer the suppressor gives through
   the same `set_audio_options` call, and by a more direct route, since this is a
-  level ratio and gain is a level change. That was the prerequisite this entry
-  named, so what is left is the decision itself rather than a question: a
-  threshold has no gain stage behind it, and the two candidates are a lower
-  default or the calibration. The test asserts a ±1 dB tripwire so an SDK where
-  AGC starts working cannot arrive quietly and leave this reasoning stale.
+  level ratio and gain is a level change. The test asserts a ±1 dB tripwire so an
+  SDK where AGC starts working cannot arrive quietly and leave this reasoning
+  stale.
+  **The recommendation, now that the prerequisite is settled: calibrate, and do
+  not move the number.** Both defaults this project has shipped are known bad
+  and they are the same fact seen twice — at −32 the gate passed keyboards, at
+  −26 it cuts speech. A threshold decides by level; quiet speech and fan noise
+  differ by character at the same level. So no constant is right, and choosing
+  one only picks which failure to have. Lowering it walks back into the bug that
+  caused the raise, and should be expected to be reverted.
+  Turning DeepFilterNet on by default is not the fix either, and it is worth
+  writing down because it is the obvious next thought: the gate measures the
+  *denoised* hop, which the model pulls down 2.7–3.9 dB, so at an unchanged
+  threshold switching it on cuts **more**. What it does remove is the *reason*
+  for the high threshold, since the fan and the keyboard no longer reach the
+  gate — so suppression and threshold are one change, never either alone.
+  Calibration is what can hold them in a consistent relation, and it answers the
+  objection above ("−36 is one mic in one room") which no global default can.
+  The VU bar already draws the threshold against a live meter, so the missing
+  piece is a "speak normally" step to place it, plus an offer to recalibrate
+  when the suppression switch moves. A first-run-only version captures most of
+  the value.
   **Already ruled out by measurement — do not retry it:** exposing
   DeepFilterNet's `ATTEN_LIM_DB` ceiling. Dropping it 30 → 12 dB moved gate drops
   21.2% → 17.6% on matched input levels, inside the run-to-run variance, and the

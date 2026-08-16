@@ -49,9 +49,23 @@ pub struct ClientSettings {
     /// also means turning input up makes the gate open more readily.
     #[serde(default = "default_mic_volume")]
     pub mic_volume: u16,
-    /// libwebrtc automatic gain control on the captured mic. On by default (it
-    /// rescues a quiet mic without the user knowing there's a slider), but it
-    /// fights `mic_volume`, so it's exposed as its own switch.
+    /// libwebrtc automatic gain control on the captured mic. On by default, and
+    /// it fights `mic_volume`, so it is exposed as its own switch.
+    ///
+    /// **It does nothing, and this comment used to say it "rescues a quiet mic
+    /// without the user knowing there's a slider".** Measured at ±0.01 dB over
+    /// four runs by
+    /// `live_sfu::agc_is_measured_against_the_assumption_the_gate_default_rests_on`,
+    /// and the cause is structural rather than a defect: the APM runs on
+    /// libwebrtc's own capture path, and we push finished hops into an external
+    /// source instead, which is documented not to be fed by `AudioState`. The
+    /// options are stored and read back faithfully — which is why `set_apm`'s
+    /// check reports them "kept" — and consumed by nobody. See `TODO.md`.
+    ///
+    /// Left on and left exposed on purpose: the switch is harmless, and an SDK
+    /// where it starts working would be welcome. What must not survive is the
+    /// belief in the rescue, because `default_mic_sensitivity` was chosen
+    /// expecting it.
     #[serde(default = "default_auto_gain_control")]
     pub auto_gain_control: bool,
     /// DeepFilterNet noise suppression on captured microphone audio. Off by
@@ -153,6 +167,27 @@ fn default_sfx_volume() -> u8 {
 /// ×1000 peak, so 50 is −26 dBFS. Deliberately 6 dB less sensitive than the
 /// −32 dB this used to default to: at −32 the gate opened for fan noise and
 /// keyboard clatter, which is exactly the traffic the gate exists to stop.
+///
+/// **Both settings are known to be wrong, and they fail as the same fact.** At
+/// −32 the gate passed keyboards; at −26 it cuts ordinary speech mid-phrase,
+/// reported from a real call and reproduced here. A threshold decides by
+/// *level*, while quiet speech and fan noise differ by *character* at the same
+/// level — so no number is right, and moving this one only chooses which of the
+/// two failures to have.
+///
+/// It is not rescued from elsewhere either: `auto_gain_control` is inert (see
+/// its own note), and DeepFilterNet — the one suppressor that works — is off by
+/// default, so a fresh install has no suppressor at all and this number is
+/// alone. Turning the model on does not fix it by itself: the gate measures the
+/// *denoised* hop, which the model pulls down 2.7–3.9 dB, so at an unchanged
+/// threshold it cuts more rather than less. Suppression and threshold have to
+/// move together.
+///
+/// `TODO.md` records the recommendation rather than a new constant: calibrate.
+/// The VU bar already draws this threshold against a live meter, so what is
+/// missing is a "speak normally" step to place it — which is also the only
+/// arrangement in which changing the suppressor can ask for a recalibration
+/// instead of silently invalidating a number somebody tuned by ear.
 fn default_mic_sensitivity() -> u32 {
     50
 }
