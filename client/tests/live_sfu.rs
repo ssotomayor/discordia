@@ -400,6 +400,46 @@ struct Config {
     /// not reach this capture path at all — and no way to tell them apart.
     /// Noise separates them, because a working suppressor must remove it.
     noise: f32,
+    /// Media-encryption passphrase for each peer, `None` for none.
+    ///
+    /// Two fields rather than one because the interesting case is that they
+    /// *disagree*: that is the shape of every media-key bug this branch has had,
+    /// and its failure mode is silence rather than an error, so the only way to
+    /// tell it from a working call is to measure what comes out.
+    /// `&'static str` rather than `String` so `Config` stays `Copy`, which the
+    /// sweep below relies on to spread a baseline into each row.
+    talker_key: Option<&'static str>,
+    listener_key: Option<&'static str>,
+}
+
+/// `RoomOptions` carrying `key`, built the way `client::e2ee` builds it — GCM
+/// over a provider constructed with `with_shared_key`.
+///
+/// **`KeyProvider::new` is the wrong constructor and fails silently**, which
+/// this test learned by using it: with the same passphrase on both peers, 501
+/// frames arrived and every sample was zero. That provider looks a key up per
+/// participant identity, so a shared key set on it is never consulted — the
+/// exact trap `e2ee::provider` documents at length, and the one `7c698d8` says
+/// cost three test sessions across two cities. It cost five seconds here, which
+/// is the argument for this file existing.
+///
+/// A provider each, unlike the client, which shares one across its three native
+/// rooms because they are one member. Here the peers are two members, and one
+/// provider would make disagreement impossible to stage.
+fn room_options(key: Option<&str>) -> RoomOptions {
+    // `RoomOptions` is `#[non_exhaustive]`, so it is built by mutation.
+    let mut opts = RoomOptions::default();
+    if let Some(key) = key {
+        let provider = livekit::e2ee::key_provider::KeyProvider::with_shared_key(
+            livekit::e2ee::key_provider::KeyProviderOptions::default(),
+            key.as_bytes().to_vec(),
+        );
+        opts.encryption = Some(livekit::e2ee::E2eeOptions {
+            encryption_type: livekit::e2ee::EncryptionType::Gcm,
+            key_provider: provider,
+        });
+    }
+    opts
 }
 
 impl Config {
@@ -412,6 +452,17 @@ impl Config {
             dtx: true,
             max_bitrate: None,
             noise: 0.0,
+            talker_key: None,
+            listener_key: None,
+        }
+    }
+
+    /// The baseline with media encryption on, both peers agreeing.
+    fn encrypted(talker: &'static str, listener: &'static str) -> Self {
+        Self {
+            talker_key: Some(talker),
+            listener_key: Some(listener),
+            ..Self::transport_only()
         }
     }
 }
@@ -450,14 +501,14 @@ async fn measure_round_trip(cfg: Config) -> Metrics {
     let (talker, _t_events) = Room::connect(
         &url,
         &token("talker", &room_name, true),
-        RoomOptions::default(),
+        room_options(cfg.talker_key),
     )
     .await
     .expect("talker connects");
     let (listener, mut listener_events) = Room::connect(
         &url,
         &token("listener", &room_name, true),
-        RoomOptions::default(),
+        room_options(cfg.listener_key),
     )
     .await
     .expect("listener connects");
@@ -612,6 +663,79 @@ async fn a_tone_survives_the_round_trip() {
         m.h2 < 0.02,
         "energy showed up at the second harmonic — something in the path is \
          distorting rather than merely coding"
+    );
+}
+
+/// What media encryption does to the same round trip, agreeing and disagreeing.
+///
+/// This exists because of what the failure looks like from inside the app.
+/// Three separate key bugs on this branch produced one symptom — a call that
+/// connects, subscribes, counts frames, and carries nothing — and every time,
+/// the only evidence was `peak=0` in a log somebody happened to be reading.
+/// Nothing asserts on that, and nothing can: the client cannot tell a peer
+/// whose key it lacks from a peer who is not speaking.
+///
+/// A test can, because it knows what was sent. The two halves are one test on
+/// purpose: "encrypted audio arrives" is only worth asserting next to "and it
+/// would not have, had the keys differed" — otherwise a build that silently
+/// stopped encrypting would pass the first half every time.
+///
+/// The mismatched half is also the measurement behind a claim made repeatedly
+/// while debugging this branch: that mismatched keys give **silence, not
+/// noise**. The module docs of `client/src/e2ee.rs` say noise. If this run says
+/// otherwise, that comment is what needs correcting — and either way the number
+/// is here rather than in somebody's memory of a call.
+#[tokio::test]
+#[ignore = "needs a running LiveKit server; see the module docs"]
+async fn media_encryption_carries_audio_only_when_the_keys_agree() {
+    // Same passphrase on both ends: what a working channel key looks like once
+    // `mediakey` has done its job.
+    let agreed = measure_round_trip(Config::encrypted(
+        "a-shared-passphrase",
+        "a-shared-passphrase",
+    ))
+    .await;
+    report("E2EE, keys agree", &agreed);
+
+    assert!(
+        agreed.samples > SAMPLE_RATE as usize,
+        "only {} samples came back with matching keys — encryption stopped the \
+         audio rather than merely protecting it",
+        agreed.samples
+    );
+    // The same content assertion the plaintext baseline makes. Encryption is
+    // supposed to be transparent to everything below it, so the tone has to
+    // survive it as intact as it survives the codec.
+    assert!(
+        agreed.band_out > 0.80,
+        "only {:.1}% of the received energy is the tone, with keys that match",
+        agreed.band_out * 100.0
+    );
+    assert!(
+        agreed.db.abs() < 3.0,
+        "level moved by {:+.2} dB with encryption on",
+        agreed.db
+    );
+
+    // And now the same run with the two peers on different keys — the state
+    // every media-key bug on this branch has ended in.
+    let split = measure_round_trip(Config::encrypted("one-passphrase", "another-passphrase")).await;
+    report("E2EE, keys differ", &split);
+
+    // The point of the whole test. Whatever the transport did, no part of the
+    // tone may be recoverable.
+    assert!(
+        split.r_out < agreed.r_out * 0.01,
+        "audio came through at {:.4} RMS with mismatched keys, against {:.4} \
+         with matching ones — either the keys are not being applied or the \
+         frames are not encrypted at all",
+        split.r_out,
+        agreed.r_out
+    );
+    assert!(
+        split.band_out < 0.20,
+        "{:.1}% of the received energy was still the tone with mismatched keys",
+        split.band_out * 100.0
     );
 }
 
