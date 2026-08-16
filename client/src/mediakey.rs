@@ -242,22 +242,40 @@ type Ledger = std::collections::HashMap<(Id, String), u32>;
 static SENT: std::sync::Mutex<Option<Ledger>> = std::sync::Mutex::new(None);
 
 /// Whether this key still needs sending to this member.
+///
+/// **Asking does not record anything.** The ledger is written by `mark_sent`,
+/// once the key is actually on its way — see there for what recording an
+/// intention instead used to cost.
 fn needs_send(channel: Id, to: &str, epoch: u32) -> bool {
     let mut guard = SENT.lock().expect("media key ledger");
     let sent = guard.get_or_insert_with(Ledger::new);
-    record_send(sent, channel, to, epoch)
+    should_send(sent, channel, to, epoch)
+}
+
+/// Note that this member has it, so the sending effect stops resealing it.
+fn sent(channel: Id, to: &str, epoch: u32) {
+    let mut guard = SENT.lock().expect("media key ledger");
+    let sent = guard.get_or_insert_with(Ledger::new);
+    mark_sent(sent, channel, to, epoch);
 }
 
 /// `needs_send` over a ledger we are handed, so it can be tested without owning
 /// the process-wide one.
-fn record_send(sent: &mut Ledger, channel: Id, to: &str, epoch: u32) -> bool {
-    match sent.get(&(channel, to.to_string())) {
-        Some(&already) if already >= epoch => false,
-        _ => {
-            sent.insert((channel, to.to_string()), epoch);
-            true
-        }
-    }
+fn should_send(sent: &Ledger, channel: Id, to: &str, epoch: u32) -> bool {
+    !matches!(sent.get(&(channel, to.to_string())), Some(&already) if already >= epoch)
+}
+
+/// The write half, kept apart from the question on purpose.
+///
+/// These used to be one call that answered and recorded at once, which meant the
+/// ledger was written *before* the key was sealed. Sealing can fail — it is an
+/// ECDH against a pubkey that arrived over the wire — and when it did, the
+/// entry claiming we had sent the key survived the failure to send it. That
+/// member then never got it for that epoch, by the same mechanism as the stale
+/// entry in `forget_absent`: a ledger that overstates what the far side has is
+/// silence, and silence here has no error attached to it.
+fn mark_sent(sent: &mut Ledger, channel: Id, to: &str, epoch: u32) {
+    sent.insert((channel, to.to_string()), epoch);
 }
 
 /// Drop what we remember about members no longer in this channel.
@@ -427,7 +445,10 @@ pub fn MediaKeyBridge() -> Element {
                                 to: to.to_string(),
                                 epoch,
                                 blob,
-                            })
+                            });
+                            // Only now. A seal that failed must leave this
+                            // member eligible, or the failure is permanent.
+                            sent(channel, to, epoch);
                         }
                         Err(e) => {
                             tracing::warn!(%to, error = %e, "could not seal the media key")
@@ -488,10 +509,11 @@ pub fn MediaKeyBridge() -> Element {
                         if let Ok(blob) = seal(&key, &to, 1, &identity) {
                             send.send(ClientMessage::ShareMediaKey {
                                 channel_id: channel,
-                                to,
+                                to: to.clone(),
                                 epoch: 1,
                                 blob,
                             });
+                            sent(channel, &to, 1);
                         }
                     }
                 });
@@ -558,12 +580,19 @@ pub fn rekey_after_removal(
             continue;
         }
         match seal(&key, to, next, &identity) {
-            Ok(blob) => gateway.send(ClientMessage::ShareMediaKey {
-                channel_id: channel,
-                to: to.clone(),
-                epoch: next,
-                blob,
-            }),
+            Ok(blob) => {
+                gateway.send(ClientMessage::ShareMediaKey {
+                    channel_id: channel,
+                    to: to.clone(),
+                    epoch: next,
+                    blob,
+                });
+                sent(channel, to, next);
+            }
+            // A rekey that cannot be sealed for one member is the worst place
+            // to record it as delivered: the point of the new epoch is that
+            // the removed member's key stops working, and this member would be
+            // left on the old one with no second attempt.
             Err(e) => tracing::warn!(%to, error = %e, "could not seal the rekey"),
         }
     }
@@ -601,11 +630,15 @@ mod orchestration_tests {
     /// to go out even though the same recipient was written to a moment ago.
     #[test]
     fn a_key_is_sent_once_per_epoch_per_member() {
-        use super::needs_send;
+        use super::{needs_send, sent};
         let channel = crate::protocol::Id::new_v4();
         let other = crate::protocol::Id::new_v4();
 
+        // Through the process-wide ledger, so the pair that the sending effect
+        // actually calls is exercised and not only the functions underneath.
+        // Safe to share it: every channel here is a fresh `Id`.
         assert!(needs_send(channel, "alice", 1), "first send must go");
+        sent(channel, "alice", 1);
         assert!(
             !needs_send(channel, "alice", 1),
             "the same epoch must not repeat"
@@ -618,6 +651,7 @@ mod orchestration_tests {
             needs_send(channel, "alice", 2),
             "a rekey must always go out"
         );
+        sent(channel, "alice", 2);
         assert!(!needs_send(channel, "alice", 2));
         // An older epoch arriving late must not re-open the gate.
         assert!(!needs_send(channel, "alice", 1));
@@ -638,24 +672,53 @@ mod orchestration_tests {
     /// process-wide and no test can own.
     #[test]
     fn a_member_who_left_is_sent_the_key_again_on_return() {
-        use super::{Ledger, forget_absent, record_send};
+        use super::{Ledger, forget_absent, mark_sent, should_send};
         let channel = crate::protocol::Id::new_v4();
         let mut sent = Ledger::new();
         let present = ["alice".to_string(), "bob".to_string()];
 
-        assert!(record_send(&mut sent, channel, "bob", 1));
-        assert!(!record_send(&mut sent, channel, "bob", 1));
+        assert!(should_send(&sent, channel, "bob", 1));
+        mark_sent(&mut sent, channel, "bob", 1);
+        assert!(!should_send(&sent, channel, "bob", 1));
 
         // Everyone still here: nothing is forgotten, and nothing repeats.
         assert_eq!(forget_absent(&mut sent, channel, &present), 0);
-        assert!(!record_send(&mut sent, channel, "bob", 1));
+        assert!(!should_send(&sent, channel, "bob", 1));
 
         // Bob leaves.
         assert_eq!(forget_absent(&mut sent, channel, &["alice".to_string()]), 1);
         assert!(
-            record_send(&mut sent, channel, "bob", 1),
+            should_send(&sent, channel, "bob", 1),
             "a member who left and came back must be sent the key again"
         );
+    }
+
+    /// Sealing is an ECDH against a pubkey that arrived over the wire, so it can
+    /// fail. When it does, nothing was sent — and the ledger must not claim
+    /// otherwise, or that member is stranded on this epoch with no second
+    /// attempt and no error anywhere the user can see.
+    ///
+    /// This is why asking and recording are two calls. As one, the question
+    /// wrote the answer before the send it was asking about had happened.
+    #[test]
+    fn a_key_that_could_not_be_sealed_is_still_owed() {
+        use super::{Ledger, mark_sent, should_send};
+        let channel = crate::protocol::Id::new_v4();
+        let mut sent = Ledger::new();
+
+        // Asked, then the seal failed: nothing is recorded, so we owe it still.
+        assert!(should_send(&sent, channel, "bob", 1));
+        assert!(
+            should_send(&sent, channel, "bob", 1),
+            "asking must not record; a failed seal has to be retried"
+        );
+
+        // Asked, sealed, sent: now it is owed to nobody.
+        mark_sent(&mut sent, channel, "bob", 1);
+        assert!(!should_send(&sent, channel, "bob", 1));
+        // And a rekey still overrides, which is the case that must never be
+        // suppressed.
+        assert!(should_send(&sent, channel, "bob", 2));
     }
 
     /// `present` describes one channel, so it may only be used to judge that
@@ -663,18 +726,18 @@ mod orchestration_tests {
     /// everybody there on the next roster change.
     #[test]
     fn forgetting_is_scoped_to_the_channel_it_was_told_about() {
-        use super::{Ledger, forget_absent, record_send};
+        use super::{Ledger, forget_absent, mark_sent, should_send};
         let channel = crate::protocol::Id::new_v4();
         let other = crate::protocol::Id::new_v4();
         let mut sent = Ledger::new();
 
-        assert!(record_send(&mut sent, channel, "bob", 1));
-        assert!(record_send(&mut sent, other, "bob", 1));
+        mark_sent(&mut sent, channel, "bob", 1);
+        mark_sent(&mut sent, other, "bob", 1);
 
         // Bob is absent from `channel`; that says nothing about `other`.
         assert_eq!(forget_absent(&mut sent, channel, &[]), 1);
         assert!(
-            !record_send(&mut sent, other, "bob", 1),
+            !should_send(&sent, other, "bob", 1),
             "the other channel's entry must survive"
         );
     }
