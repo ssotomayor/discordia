@@ -76,29 +76,15 @@ flowchart LR
 Up to three runtime paths carry audio+video for a screen share, and they all
 terminate in the *same* `screen-{channel}` LiveKit room under different
 identities — see `server::livekit::screen_audio_identity` /
-`screen_video_identity` and the `sysaudio/` + `sysvideo/` notes below.
+`screen_video_identity`. Two arrangements there are load-bearing and are
+explained once each under **Client anatomy** below, at `sysvideo/` and at the
+identity bullets under `features/*.rs`:
 
-**Which path captures video is per-platform, and it is not a preference.**
-Windows uses the webview (WebView2 is Chromium, `getDisplayMedia` works there).
-macOS captures natively via `sysvideo/` instead. Originally because
-`navigator.mediaDevices` was absent there — which turned out to be a missing
-`NSMicrophoneUsageDescription` in our own bundle, not a WKWebView limitation;
-adding it makes `getDisplayMedia` appear. The native path stays because it is
-better here (no copy, no colour conversion, our own surface picker), not because
-the webview cannot. The webview still joins the room on both platforms, because
-it is what *renders* everyone else's share.
-
-**The camera is the exception to all of that: webview everywhere.** `client/src/
-features/camera.rs` captures with `getUserMedia` on macOS and Windows alike and
-publishes on the webview's *existing* connection, as `TrackSource::Camera`. That
-identity already holds publish rights, so the camera needed no fourth identity,
-no extra token, and no change to `server::livekit` — and `screen-{channel}` is
-now a misnomer for a room carrying faces as well as screens. The price is that
-every video track in the JS controller is keyed by identity **and** source: one
-participant can send both at once, and on Windows both come from the same
-identity. Who has a camera on rides `camera_on` on `VoiceState`, not LiveKit's
-track events, so it survives a reconnect and reaches people who are not in the
-channel to observe the publication themselves.
+- **Which path captures video is per-platform, not a preference** — Windows in
+  the webview, macOS natively via `sysvideo/`. The webview joins the room on
+  both platforms regardless, because it is what *renders* everyone else's share.
+- **The camera is the exception: webview everywhere**, on the bare identity —
+  which is why `screen-{channel}` now carries faces as well as screens.
 
 ---
 
@@ -225,14 +211,17 @@ channel to observe the publication themselves.
   flow settles which path a given capture takes *after* the picker closes, since
   that answer depends on what the user chose. Frames are mono f32 @48kHz — the
   format `features::voice` already publishes.
-- `sysvideo/` — native *screen* capture. macOS only, and it exists because the
-  webview path was unusable there: `navigator.mediaDevices` was absent until we
-  added a usage description to Info.plist, which the module docs correct at
-  length — the original "WKWebView cannot" diagnosis was ours, not WebKit's.
-  Frames are handed to a sink as owned `Frame`s wrapping the `CVPixelBuffer`,
-  which libwebrtc can encode directly — no copy, no colour conversion in our
-  process. `supported()` decides which path the share button drives; the
-  publisher lives in `features::voice::ScreenVideoRoom`.
+- `sysvideo/` — native *screen* capture. macOS only; Windows stays in the
+  webview because WebView2 is Chromium and `getDisplayMedia` works there. It
+  exists because the webview path was unusable on macOS:
+  `navigator.mediaDevices` was absent until we added a usage description to
+  Info.plist, which the module docs correct at length — the original "WKWebView
+  cannot" diagnosis was ours, not WebKit's. **So the native path stays because
+  it is better here, not because the webview cannot:** frames are handed to a
+  sink as owned `Frame`s wrapping the `CVPixelBuffer`, which libwebrtc can
+  encode directly — no copy, no colour conversion in our process — and the
+  surface picker is our own. `supported()` decides which path the share button
+  drives; the publisher lives in `features::voice::ScreenVideoRoom`.
   `sources()` enumerates what can be shared and `Target` says which of it to
   capture — screen, one window, or every window of one app, resolved to an
   `SCContentFilter` at capture time. ScreenCaptureKit has no picker of its own
@@ -290,10 +279,18 @@ channel to observe the publication themselves.
   caveat that a relay older than that field ignores it and grants publish, which
   nothing on this wire can detect (see `TODO.md`).
 
-  **The camera deliberately did not add a fourth.** It rides the bare identity
-  and is told apart by `TrackSource`, which is exactly why it cost no token, no
-  grant and no server change. If you are about to mint a `#camera` identity to
+  **The camera deliberately did not add a fourth.** `features/camera.rs`
+  captures with `getUserMedia` on macOS and Windows alike and publishes as
+  `TrackSource::Camera` on the webview's *existing* connection — the bare
+  identity already holds publish rights, so it cost no token, no grant and no
+  change to `server::livekit`. If you are about to mint a `#camera` identity to
   "fix" something, that is the thing to reconsider first.
+  The price is that every video track in the JS controller is keyed by identity
+  **and** source: one participant can send both at once, and on Windows both
+  come from the same identity. Who has a camera on rides `camera_on` on
+  `VoiceState`, not LiveKit's track events, so it survives a reconnect and
+  reaches people who are not in the channel to observe the publication
+  themselves.
 - **Screen-share audio has two paths into the same room, on purpose.** Both land
   in the same
   cpal mixer voice already uses, so stream audio follows the chosen output
@@ -446,47 +443,4 @@ benchmark (P5a tail), the signed "guild-moved" redirect + cross-instance media
 copy (P6 tail), and cluster mode (P7, demand-gated). See `TODO.md` for the
 smaller deferred items.
 
----
-
-## How to Contribute
-
-We welcome contributions from anyone who is interested in improving Discordia. Here are some guidelines to get you started:
-
-### Getting Started
-
-1. **Fork the Repository**: Click on the "Fork" button at the top right of this repository page.
-2. **Clone Your Fork**: Clone your forked repository to your local machine using `git clone`.
-3. **Set Up Your Environment**: `README.md` is the project overview; this file (`CLAUDE.md`) is the setup/orientation doc. See "Build, run, test" above and `docs/SELF_HOSTING.md` for deploying a server.
-
-### Making Changes
-
-1. **Create a New Branch**: For each new feature or bug fix, create a new branch from the main branch.
-   ```sh
-   git checkout -b my-new-feature
-   ```
-2. **Make Your Changes**: Implement your changes and ensure that they follow the coding conventions outlined in this guide.
-3. **Test Your Changes**: Run the test suite to make sure your changes do not break existing functionality.
-   ```sh
-   cargo test --workspace
-   ```
-
-### Submitting a Pull Request
-
-1. **Commit Your Changes**: Commit your changes with a descriptive commit message.
-   ```sh
-   git commit -m "Add new feature"
-   ```
-2. **Push to Your Fork**: Push your branch to your forked repository.
-   ```sh
-   git push origin my-new-feature
-   ```
-3. **Create a Pull Request**: Go to the original repository and create a pull request from your branch.
-
-### Code Review
-
-- Be prepared for feedback on your changes during code review.
-- Make any necessary adjustments based on the feedback provided.
-
----
-
-We appreciate your contributions and look forward to working with you!
+Contributing workflow (fork, branch, PR) is in `README.md`.
