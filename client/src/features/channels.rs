@@ -77,9 +77,14 @@ fn reorder_positions(guild: &[Channel], moved: Id, target: Id) -> Vec<(Id, u32)>
     // stores whatever it is sent — so a value the fast path reuses can tie with
     // an untouched row just outside the span and then lose the name tie-break.
     // The dragged row silently lands on the far side of a row that was never
-    // part of the drag. Widening the window by one on each side is enough,
-    // because the list is already sorted by position, so a tie can only be with
-    // an adjacent entry.
+    // part of the drag. Widening the window by one on each side is enough, and
+    // the reason needs stating carefully, because the obvious one is wrong:
+    // `guild` is NOT globally sorted by position — it chains the text block and
+    // the voice block, each sorted on its own. What holds is narrower and
+    // sufficient. Within one kind the sub-sequence *is* sorted, so a duplicate
+    // that could reorder anything is always adjacent; and a tie straddling the
+    // boundary between the two blocks can only push this into the full renumber,
+    // which is a wasted pass, never a wrong order.
     let guard = &guild[lo.saturating_sub(1)..(hi + 2).min(guild.len())];
     let mut window: Vec<u32> = guard.iter().map(|c| c.position).collect();
     window.sort_unstable();

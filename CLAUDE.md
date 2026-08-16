@@ -382,8 +382,11 @@ actually verified** — `cargo test -p dioxusfun -- --ignored`.
 `client/tests/live_sfu.rs` drives two live peers against a real SFU (its module
 docs give the command for pointing it at the bundled one) — and is also where
 the audio path gets *measured* rather than asserted: a tone in, the same tone
-analysed coming out, and a sweep that reruns that under the APM, `red`, `dtx`
-and bitrate settings so a claim about voice quality has a number behind it;
+analysed coming out, and a sweep that reruns that under the APM, `red`, `dtx`,
+bitrate and DeepFilterNet-ceiling settings so a claim about voice quality has a
+number behind it — read that sweep's own note before trusting a row, because the
+ceiling dimension is what showed the model saturating on a signal it hears no
+speech in;
 `windows_loopback_delivers_real_samples` needs an audio device and a desktop
 session; the macOS `frames_survive_the_encoder_handoff` needs the Screen
 Recording grant and a display. They are ignored because no runner has any of
