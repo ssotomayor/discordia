@@ -73,7 +73,8 @@ Compose-only: `PUBLIC_HOST` (see `.env.example`) is read by
 
 Client-side, for reference: `DIOXUSFUN_CONFIG_DIR` relocates the identity, dev
 log and settings, and `DIOXUSFUN_RENDEZVOUS_URL` presets the rendezvous the
-Self-host tab offers. Build-time, `LIVEKIT_BUNDLE_SKIP=1` skips fetching the
+Self-host tab offers. The three `DISCORDIA_E2EE*` variables are also client-side
+and have their own section below. Build-time, `LIVEKIT_BUNDLE_SKIP=1` skips fetching the
 LiveKit binary — useful for CI, but the resulting build cannot host voice — and
 `LIVEKIT_BUNDLE_VERSION` (default `1.12.0`, `server/build.rs`) pins which
 `livekit-server` release gets embedded. Also build-time, `DISCORDIA_VERSION`
@@ -81,6 +82,58 @@ LiveKit binary — useful for CI, but the resulting build cannot host voice — 
 set, must be exactly the tag the artifact is published under — CI sets it on the
 three publishing jobs. Left unset, the build calls itself `<crate>-dev+<sha>`,
 which is what a local build should say.
+
+### Media encryption (client-side)
+
+Voice, screen video and camera all terminate at an SFU, which decrypts and
+re-encrypts every frame — in *every* configuration, including a direct
+connection to a server you run yourself. End-to-end encryption closes that, and
+it is configured **on each participant's client**, not on the server. Nothing
+here is read by `dioxusfun-server`.
+
+| Var | Default | Meaning |
+|---|---|---|
+| `DISCORDIA_E2EE` | *(on)* | set `0`/`off`/`false`/`no` to disable media encryption entirely |
+| `DISCORDIA_E2EE_KEY` | *(unset)* | a passphrase shared by hand; the developer path, superseded by a distributed channel key |
+| `DISCORDIA_E2EE_OVERLAP` | *(off)* | set `1`/`on`/`true`/`yes` to overlap voice keys across a rekey — **unverified, see below** |
+
+**`DISCORDIA_E2EE`** is the master switch, and it is on unless you turn it off.
+The reason it exists is that a failed decryption is *silence*, not an error: if
+audio or video misbehaves and you need to know whether encryption is the cause,
+this is what removes it from the picture. With it off, the SFU carrying your
+media can read it — which for a relayed session means the rendezvous operator,
+not just you.
+
+It also has a cost worth knowing before you leave it on. LiveKit disables Opus
+**RED** (RFC 2198 packet-level redundancy) whenever encryption is configured, so
+voice loses some resilience to packet loss. Opus in-band FEC still applies, so
+this is a degradation rather than a cliff, but it is most noticeable on exactly
+the lossy paths where encryption matters most. There is no setting that keeps
+both — see `TODO.md` under Voice / audio.
+
+**`DISCORDIA_E2EE_KEY`** is the manual path: every participant must be given the
+same value out of band, and a mismatch produces **silence** — not noise, and not
+an error. Measured rather than assumed: frames arrive and every sample is zero,
+which is indistinguishable from someone who simply is not speaking. That is why
+a wrong key is so expensive to diagnose, and why the switch above exists. It
+exists for development and for verifying the mechanism. In normal
+use it is unnecessary — the client distributes a per-channel key automatically,
+sealed to each member against their Nostr identity, and a distributed key wins
+over this variable. An empty value is treated as unset rather than as a
+passphrase.
+
+**`DISCORDIA_E2EE_OVERLAP`** changes how a rekey behaves. Keys roll when someone
+is removed from a channel, and today every participant swaps keys at once, so
+frames in flight across the changeover cannot be decrypted and the call
+audibly stutters. With this on, voice publishes under a rotating key-ring slot
+so the previous key stays loaded while the new one is adopted, and there is no
+instant at which a frame has no key waiting for it.
+
+**Leave it off unless you are testing it.** It depends on a libwebrtc behaviour
+that cannot be verified from source in this repo, it has never been run between
+two machines, and if the assumption is wrong the failure is a silent call rather
+than a degraded one. It also only covers voice: screen and camera share a room
+with the webview, which can hold only one key, so those still swap in place.
 
 ### Storage governance
 

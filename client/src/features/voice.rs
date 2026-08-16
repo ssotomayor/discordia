@@ -824,7 +824,7 @@ impl ActiveVoice {
         // Told about later keys. A key generated after this connect — which is
         // the normal case for whoever is first into a channel — would otherwise
         // never reach this room.
-        crate::e2ee::register_room(&room);
+        crate::e2ee::register_room(&room, crate::e2ee::RoomKind::Voice);
 
         // Microphone publish pipeline. APM (AEC + NS + AGC).
         //
@@ -851,18 +851,32 @@ impl ActiveVoice {
         let local_audio =
             LocalAudioTrack::create_audio_track("mic", RtcAudioSource::Native(source.clone()));
         let local_audio_for_mute = local_audio.clone();
-        room.local_participant()
+        let mic_publication = room
+            .local_participant()
             .publish_track(
                 LocalTrack::Audio(local_audio),
                 TrackPublishOptions {
                     source: TrackSource::Microphone,
-                    // The rest of the speech defaults are right — including
-                    // `dtx`, which costs nothing when the transmit gate is
-                    // already holding silence back, and `red`, which is what
-                    // makes a lost packet survivable. Only the bitrate is
-                    // ours: the SDK's SPEECH preset is 24 kbit/s, which is
-                    // thin for anything but a close-miked talking head, so the
-                    // user picks (see `ClientSettings::voice_bitrate_kbps`).
+                    // `dtx` is the right default here — it costs nothing when
+                    // the transmit gate is already holding silence back.
+                    //
+                    // `red` is also the default, and **we do not get it**. The
+                    // SDK computes `disable_red = encryption_type != None ||
+                    // !options.red`, and `e2ee::room_options` attaches options
+                    // to every room whether or not a key exists, so RFC 2198
+                    // redundancy is off whenever encryption is *configured* —
+                    // which is the default. Asking for it here would change
+                    // nothing: the flag is decided from the participant, which
+                    // is constructed when the room connects. Opus in-band FEC
+                    // survives (it rides inside the encrypted bitstream, and
+                    // libwebrtc's own fmtp carries `useinbandfec=1`), so loss
+                    // resilience is reduced rather than removed. The trade and
+                    // the ways out are in `TODO.md` under Voice / audio.
+                    //
+                    // Only the bitrate is ours: the SDK's SPEECH preset is
+                    // 24 kbit/s, which is thin for anything but a close-miked
+                    // talking head, so the user picks (see
+                    // `ClientSettings::voice_bitrate_kbps`).
                     audio_encoding: Some(AudioEncoding {
                         max_bitrate: controls.bitrate_kbps.load(Ordering::Relaxed) as u64 * 1000,
                     }),
@@ -871,6 +885,21 @@ impl ActiveVoice {
             )
             .await
             .map_err(|e| format!("publish mic: {e}"))?;
+        // Read back rather than assumed, for the same reason `set_apm` reads
+        // its options back: the interesting case is the one where what we asked
+        // for is not what we got. Encryption here is also a statement about
+        // RED — the two cannot both be on — so a report of one is a report of
+        // both, and this is the line that says which trade this call is making.
+        let encrypted = mic_publication.encryption_type() != livekit::e2ee::EncryptionType::None;
+        eprintln!(
+            "[voice] mic published: encrypted={encrypted}, red={} (opus in-band FEC unaffected)",
+            !encrypted
+        );
+        // A cryptor is built when the track is published and starts on slot 0.
+        // If a rekey already moved this channel's voice onto another slot —
+        // which a mic republished after a device change would miss — this is
+        // what puts the fresh publication where everyone is listening.
+        crate::e2ee::place_new_voice_publication(&room);
 
         // The capture path is three stages, for three different reasons.
         //
@@ -1273,6 +1302,12 @@ impl ActiveVoice {
                     //
                     // 96 kbit/s is generous for the mono downmix we send, and
                     // trivial beside the multi-megabit video it accompanies.
+                    //
+                    // This track loses `red` to encryption exactly as the mic
+                    // does — see the note at the mic publish — and music is
+                    // where that shows worst, since Opus in-band FEC is tuned
+                    // for speech. Nothing to set here; recorded so the next
+                    // person tuning this does not go looking for the knob.
                     audio_encoding: Some(
                         livekit::options::audio::MUSIC_HIGH_QUALITY.encoding.clone(),
                     ),
@@ -1608,7 +1643,7 @@ impl ScreenVideoRoom {
         // Told about later keys. A key generated after this connect — which is
         // the normal case for whoever is first into a channel — would otherwise
         // never reach this room.
-        crate::e2ee::register_room(&room);
+        crate::e2ee::register_room(&room, crate::e2ee::RoomKind::Screen);
 
         // `is_screencast: true` is not cosmetic — it tells libwebrtc this is
         // desktop content, which changes the encoder's degradation behaviour
@@ -1789,7 +1824,7 @@ impl ScreenAudioRoom {
         // Told about later keys. A key generated after this connect — which is
         // the normal case for whoever is first into a channel — would otherwise
         // never reach this room.
-        crate::e2ee::register_room(&room);
+        crate::e2ee::register_room(&room, crate::e2ee::RoomKind::Screen);
 
         // Same bridge shape as the voice room's: the event task is `spawn`ed and
         // so must be Send, which a Dioxus Signal is not.

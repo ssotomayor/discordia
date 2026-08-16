@@ -342,16 +342,63 @@ the top within each section.
   joining at the same instant both generate. The designated-sender rule (lowest
   pubkey) makes that last one unlikely rather than impossible — two clients with
   different views of the roster can both believe they are lowest.
-- **A rekey still interrupts the call it protects, and the proper fix is out of
-  reach.** The rekeying member now sends to everyone before adopting the new key
-  itself, which shrinks the gap to about one network hop — it does not close it.
-  The real answer is LiveKit's key *ring*: publish under a new index while still
-  accepting the old. The Rust side exposes it (`set_shared_key(key, index)`);
-  the JS `ExternalE2EEKeyProvider.setKey` takes a key and no index, and the
-  index only appears on `BaseKeyProvider.onSetEncryptionKey`, which means
-  reimplementing a key provider against minified internals of a vendored bundle.
-  Not worth it until a rekey has been watched happening and the gap measured —
-  it may well be imperceptible.
+- **A rekey still interrupts the call it protects — but far less of the fix is
+  out of reach than this entry used to claim.** The rekeying member sends to
+  everyone before adopting the new key itself, which shrinks the gap to about
+  one network hop and does not close it. The real answer is the one Discord's
+  DAVE protocol reaches for: never swap a key, overlap two. Frames carry the
+  index that encrypted them, so a receiver holding both decrypts what is in
+  flight *and* what comes next, and there is no instant at which "the key"
+  changed. (DAVE gets there via MLS — per-sender keys derived from group state,
+  and epoch *transitions* rather than swaps. Worth reading for the membership
+  half too: MLS removal is one O(log n) commit instead of `mediakey`'s reseal to
+  every remaining member, and membership changes are ordered by the protocol
+  rather than converged after the fact the way `net::supersedes` has to.)
+  **The correction: on the native side the ring is public API, not vendored
+  internals.** `KeyProviderOptions::key_ring_size` already defaults to 16
+  (`livekit-0.7.44 src/room/e2ee/key_provider.rs:28`) — `apply_key` just writes
+  slot 0 every time, and the comment there arguing a ring is not worth its
+  bookkeeping is what needs revisiting: an epoch says *which* key is current,
+  which is a different question from what a receiver may still accept.
+  `E2eeManager::frame_cryptors()` is public (`src/room/e2ee/manager.rs:231`) and
+  `FrameCryptor::set_key_index` (`libwebrtc-0.3.35
+  src/native/frame_cryptor.rs:173`) moves a sender to a new slot. So the
+  sequence is: write the new key at the next index, leave the old one
+  populated, move the senders. `ratchet_shared_key` with `ratchet_window_size:
+  16` is the nearer analogue to DAVE's per-sender forward ratchet, if that is
+  ever wanted.
+  **What is genuinely blocked is the webview, and that splits the problem in
+  two.** The JS `ExternalE2EEKeyProvider.setKey` takes a key and no index; the
+  index appears only on `BaseKeyProvider.onSetEncryptionKey`, which means
+  reimplementing a provider against minified internals of a vendored bundle.
+  But the webview joins only `screen-{channel}` — `voice-{channel}` is native
+  end to end — so **the audio anyone would actually notice can be made gapless
+  without touching the JS at all.**
+  **Written, and switched off.** `e2ee::voice_slot` rotates voice over ring
+  slots 1..15 keyed on the media-key epoch — so consecutive epochs never share a
+  slot and the previous key survives the adoption of the next — while the screen
+  room keeps overwriting slot 0 for the webview's sake. `register_room` now
+  takes a `RoomKind` to tell the two apart, and `place_new_voice_publication`
+  puts a track published *after* a rekey (a mic republished by a device change)
+  on the slot everyone else is listening to, which a fresh cryptor would
+  otherwise miss by defaulting to 0. Unit tests cover the rotation's three
+  properties; nothing beyond that is testable here.
+  **It is behind `DISCORDIA_E2EE_OVERLAP`, default off, and must stay that way
+  until it has been watched working between two machines.** The mechanism rests
+  on one behaviour that cannot be read anywhere in this workspace: that a
+  *receiving* cryptor takes its key from the index in each frame rather than
+  from its own. `FrameCryptor::set_key_index` bottoms out in
+  `e2ee_transformer_->SetKeyIndex` (`webrtc-sys/src/frame_cryptor.cpp:246`) and
+  the transformer is inside prebuilt libwebrtc. If the assumption is wrong this
+  does not degrade, it silences the call — which is the failure mode that has
+  already cost this branch three cross-city sessions.
+  **The screen room still gaps, and that is half a security fix.** A ban has to
+  cut the removed member out of camera and screen too, and those live with the
+  JS peer. A dropped video frame is far more forgivable than a chopped syllable,
+  so it is a defensible place to land — but do not record it as done.
+  Still unmeasured, and that has not changed: nobody has watched a rekey happen
+  or timed the gap, so the overlap may be closing something imperceptible. The
+  measurement is the same two-machine session that would verify it.
 - **Undecryptable media is now visible, but only what the webview sees.** The JS
   room reports `EncryptionError` and the badge says so. The three native rooms
   have their own signal (`RoomEvent::E2eeStateChanged`) which is not wired, so
@@ -785,6 +832,49 @@ the top within each section.
 
 ## Voice / audio
 
+- **Attaching E2EE options disables Opus RED, including for peers who never get
+  a key.** `features::voice` publishes the mic on SDK defaults and its comment
+  says so — `red`, "which is what makes a lost packet survivable". It no longer
+  gets it. The chain, all of it readable: `e2ee::enabled()` defaults **on**
+  (only `DISCORDIA_E2EE=0/off/false/no` turns it off); since `3506fde`
+  `room_options()` always returns `Some(E2eeOptions { encryption_type: Gcm })`,
+  key or no key, because a room built without options can never gain an
+  encryption manager; the SDK's `E2eeManager::encryption_type()` reports `Gcm`
+  whenever *options are present* and never consults `enabled`
+  (`livekit-0.7.44 src/room/e2ee/manager.rs:260`); `LocalParticipant` captures
+  that once at room construction (`src/room/mod.rs:577`); and `publish_track`
+  computes `disable_red = encryption_type != None || !options.red`
+  (`src/room/participant/local_participant.rs:289`). The SDK default is
+  `red: true`, so before 2026-08-14 14:54 this was on for everyone without
+  `DISCORDIA_E2EE_KEY`.
+  **How bad it is, stated carefully.** Losing RED is not losing loss
+  concealment: Opus **in-band FEC survives**, because it lives inside the
+  encoded bitstream that then gets encrypted, and libwebrtc's own fmtp carries
+  `useinbandfec=1` (visible in the SDK's SDP fixtures,
+  `src/rtc_engine/peer_transport.rs:634`). So resilience is *degraded*, not
+  removed. It is still a real regression — LiveKit defaults RED on precisely
+  because in-band FEC alone was not enough — and the degradation lands hardest
+  on lossy paths, which are the ones E2EE is most wanted on. Screen-share audio
+  pays it worse than voice does, since in-band FEC is tuned for speech and that
+  track carries music.
+  **The half that is a defect rather than a trade:** `register_room` leaves the
+  manager disabled until a key exists, so a peer with no key encrypts nothing
+  and loses RED anyway — and since the room deliberately connects *before* the
+  key arrives, every session passes through that state.
+  **There is no configuration that keeps both.** `disable_red` is computed from
+  the participant, which is constructed when the room connects, so it is decided
+  once and cannot be revisited by republishing. Reverting to "attach options
+  only when a key exists" is the bug `3506fde` closed. The real options are: accept
+  the cost; hold the voice room's connect until the key resolves (trading loss
+  resilience for join latency); or stop defaulting E2EE on and make it a choice,
+  which is a product decision about whether to offer "sound better by encrypting
+  less".
+  Reported by a user as "voice sounds worse" and diagnosed by reading the SDK;
+  **not yet measured.** `client/tests/live_sfu.rs` already sweeps `red`, so the
+  measurement is a loss-injected run comparing `DISCORDIA_E2EE=off` against the
+  default — the house rule for a voice-quality claim, and this one does not have
+  its number yet. The publish now logs `encrypted=`/`red=` read back from the
+  publication, so at least which trade a given call made is no longer a guess.
 - **"Bypass system audio processing" reports that raw mode was *asked for*, not
   that the driver's effects are gone.** `rawmic::setup` sets
   `AUDCLNT_STREAMOPTIONS_RAW` and reports the failure if `SetClientProperties`

@@ -425,7 +425,7 @@ pub fn MediaKeyBridge() -> Element {
                         "generating a media key — nobody else offered one"
                     );
                     state.write().media_keys.insert(channel, (1, key));
-                    crate::e2ee::apply_key(&key);
+                    crate::e2ee::apply_key(&key, 1);
                     for to in present_in(&state.peek(), channel) {
                         if to == me || !needs_send(channel, &to, 1) {
                             continue;
@@ -513,7 +513,7 @@ pub fn rekey_after_removal(
         }
     }
     state.write().media_keys.insert(channel, (next, key));
-    crate::e2ee::apply_key(&key);
+    crate::e2ee::apply_key(&key, next);
 }
 
 #[cfg(test)]

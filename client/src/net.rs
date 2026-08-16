@@ -1121,7 +1121,7 @@ fn apply(
                     // event most likely to have fixed it. If it did not, the
                     // next frame sets the latch again.
                     s.media_undecryptable = false;
-                    crate::e2ee::apply_key(&key);
+                    crate::e2ee::apply_key(&key, epoch);
                 }
                 // Not exceptional: a blob for somebody else, or from a member
                 // who left mid-rekey. We keep what we have.
