@@ -24,10 +24,17 @@
 //! Three tests, two jobs. `subscribe_only_identity_still_receives_audio` and
 //! `a_tone_survives_the_round_trip` assert: they have thresholds and they fail.
 //! `the_knobs_that_shape_voice_quality_are_measured` mostly reports — it runs
-//! the same round trip under APM, `red`, `dtx` and bitrate settings and prints
-//! them side by side, asserting only that each one still delivers audio, since
-//! a knob that silences the path is a bug while a knob that costs 0.3 dB is a
-//! choice. Read its output rather than its result.
+//! the same round trip under APM, `red`, `dtx`, bitrate and DeepFilterNet
+//! ceiling settings and prints them side by side, asserting only that each one
+//! still delivers audio, since a knob that silences the path is a bug while a
+//! knob that costs 0.3 dB is a choice. Read its output rather than its result.
+//!
+//! One caveat that belongs at the top, because it decides what the sweep can be
+//! read to mean: the excitation is a 440 Hz sine, optionally plus white noise.
+//! That is a fine probe for a codec and a transport, and a poor one for
+//! anything trained on speech. The DeepFilterNet rows demonstrate it — the
+//! model saturates at whatever ceiling it is given, because it hears nothing it
+//! recognises as voice.
 //!
 //! # Why this is here at all
 //!
@@ -49,8 +56,10 @@
 //! the first question is whether the *measurement* is wrong. Both metrics in
 //! this file were wrong before they were right, and the code says how.
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use df::tract::{DfParams, DfTract, RuntimeParams};
 use livekit::options::TrackPublishOptions;
 use livekit::prelude::*;
 use livekit::track::{LocalAudioTrack, LocalTrack, TrackSource};
@@ -204,6 +213,9 @@ async fn subscribe_only_identity_still_receives_audio() {
 
 /// 10 ms at 48 kHz — the frame the whole pipeline is built around.
 const FRAME: usize = 480;
+/// Hops the feeder discards before it starts measuring, so its window matches
+/// the receive side's — one second, the same `WARMUP` the decoder skips.
+const WARMUP_HOPS: usize = 100;
 /// The tone under test. 440 Hz is inside the band Opus's speech mode is tuned
 /// for, and divides 48 kHz cleanly enough to keep the analysis honest.
 const TONE_HZ: f32 = 440.0;
@@ -329,13 +341,32 @@ fn spawn_tone(
     source: NativeAudioSource,
     noise: f32,
     amplitude: f32,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
+    denoise: Option<f32>,
+) -> Feeder {
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = Arc::clone(&stop);
+    // A blocking task rather than `tokio::spawn`, because `DfTract` is not
+    // `Send` and a spawned future may not hold it across an await. Nothing here
+    // wants to be on the async runtime anyway: it is a fixed 10 ms loop that
+    // must not share a worker with the receive side.
+    let rt = tokio::runtime::Handle::current();
+    let handle = tokio::task::spawn_blocking(move || {
         let mut phase = 0.0f32;
         let step = 2.0 * std::f32::consts::PI * TONE_HZ / SAMPLE_RATE as f32;
         let mut seed = 0x2545_F491_4F6C_DD1Du64;
-        loop {
-            let data: Vec<i16> = (0..FRAME)
+        // One model for the whole run, built here rather than passed in: it is
+        // stateful across hops (STFT overlap and GRU state), so it belongs to
+        // exactly one continuous stream — the same rule `Denoiser`'s own doc
+        // comment states. ~200 ms to load, once, before the first frame.
+        let mut model = denoise.map(|db| {
+            let params = RuntimeParams::default_with_ch(1).with_atten_lim(db);
+            DfTract::new(DfParams::default(), &params).expect("load DeepFilterNet")
+        });
+        let mut noisy = ndarray::Array2::<f32>::zeros((1, FRAME));
+        let mut enh = ndarray::Array2::<f32>::zeros((1, FRAME));
+        let mut applied = Applied::default();
+        while !flag.load(std::sync::atomic::Ordering::Relaxed) {
+            let mut hop: Vec<f32> = (0..FRAME)
                 .map(|_| {
                     let mut v = phase.sin() * amplitude;
                     phase = (phase + step) % (2.0 * std::f32::consts::PI);
@@ -348,8 +379,47 @@ fn spawn_tone(
                         let u = (seed >> 40) as f32 / (1u32 << 23) as f32 - 1.0;
                         v += u * noise;
                     }
-                    (v.clamp(-1.0, 1.0) * i16::MAX as f32) as i16
+                    v.clamp(-1.0, 1.0)
                 })
+                .collect();
+
+            // Where the model sits in production: on the publish task, one hop
+            // at a time, *before* the frame reaches libwebrtc. Putting it
+            // anywhere else here would measure an arrangement nothing ships.
+            if let Some(m) = model.as_mut() {
+                let before = rms(&hop);
+                noisy
+                    .as_slice_mut()
+                    .expect("contiguous")
+                    .copy_from_slice(&hop);
+                m.process(noisy.view(), enh.view_mut())
+                    .expect("denoise hop");
+                hop.copy_from_slice(enh.as_slice().expect("contiguous"));
+                let after = rms(&hop);
+                // Steady state only, to match every other column: `received`
+                // discards the first WARMUP second, so a mean that included the
+                // model's startup response would not be comparable to the row it
+                // is printed in. The two windows share no clock — this one
+                // starts at publish, that one at subscribe — so the alignment is
+                // approximate and deliberately generous.
+                if applied.skipped < WARMUP_HOPS {
+                    applied.skipped += 1;
+                } else if before > 0.0 {
+                    // Energy in and out, not a mean of per-hop dB. A hop the
+                    // model zeroes completely has no logarithm, and the previous
+                    // version dropped exactly those — biasing the number low in
+                    // the saturated case the sweep exists to show. Summing
+                    // squares counts a silenced hop as what it is: all of the
+                    // attenuation, not none of it.
+                    applied.energy_in += (before as f64) * (before as f64);
+                    applied.energy_out += (after as f64) * (after as f64);
+                    applied.hops += 1;
+                }
+            }
+
+            let data: Vec<i16> = hop
+                .iter()
+                .map(|v| (v.clamp(-1.0, 1.0) * i16::MAX as f32) as i16)
                 .collect();
             let frame = livekit::webrtc::audio_frame::AudioFrame {
                 data: data.into(),
@@ -357,12 +427,95 @@ fn spawn_tone(
                 num_channels: CHANNELS,
                 samples_per_channel: FRAME as u32,
             };
-            if source.capture_frame(&frame).await.is_err() {
-                return;
+            if rt.block_on(source.capture_frame(&frame)).is_err() {
+                return applied;
             }
-            tokio::time::sleep(Duration::from_millis(10)).await;
+            std::thread::sleep(Duration::from_millis(10));
         }
-    })
+        applied
+    });
+    Feeder {
+        handle: Some(handle),
+        stop,
+    }
+}
+
+/// The feeding side of a round trip, and the switch that turns it off.
+///
+/// It used to be a bare `JoinHandle` the caller `abort()`ed. A blocking task
+/// cannot be aborted once it is running — `abort` only stops it being polled —
+/// so the flag is not decoration: without it the feeder would run on into the
+/// next row of the sweep, publishing into a room the test has finished with.
+struct Feeder {
+    handle: Option<tokio::task::JoinHandle<Applied>>,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// Stop feeding however this scope is left, including through a panic.
+///
+/// Not belt-and-braces: it is the only thing standing between a failed
+/// assertion and a hung suite. Everything between `spawn_tone` and `stop()` can
+/// panic — `wait_for`'s timeout does, and so does the track-kind check — and a
+/// `spawn_blocking` task cannot be aborted, so the loop would keep running on
+/// its own thread while `Runtime::drop` waits for it. The future this replaced
+/// did not need one: an unaborted `tokio::spawn` is dropped when the runtime
+/// tears down, and a blocking thread is not.
+impl Drop for Feeder {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+impl Feeder {
+    /// Stop feeding, wait for the loop to notice — which takes one hop — and
+    /// take what it measured on the way.
+    ///
+    /// The stats come back as the task's value rather than through a shared
+    /// cell. Nothing reads them until this point, so ownership does the whole
+    /// job a `Mutex` was doing, and a panicking hop stops being invisible: it
+    /// arrives here as a `JoinError` instead of being discarded, which is the
+    /// difference between "the denoiser failed on hop 214" and the round trip
+    /// later reporting that it stopped delivering audio.
+    async fn stop(mut self) -> Applied {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        let handle = self.handle.take().expect("stop is called once");
+        match handle.await {
+            Ok(applied) => applied,
+            Err(e) => panic!("the feeder died before the measurement finished: {e}"),
+        }
+    }
+}
+
+/// How much the denoiser actually pulled the signal down, accumulated by the
+/// feeder because that is the only place both sides of the hop exist, and
+/// handed back when it stops.
+///
+/// The number `TODO.md` and `ClientSettings::denoise_atten_lim_db` both cite —
+/// "−3.9 dB applied at a 30 dB ceiling, −2.7 dB at 12" — came from a live
+/// session on one machine and could not be re-run from the repo. This is where
+/// it comes from now, and it is worth knowing it is energy in versus energy
+/// out over the window, not an average of per-hop decibels.
+#[derive(Default)]
+struct Applied {
+    energy_in: f64,
+    energy_out: f64,
+    hops: usize,
+    skipped: usize,
+}
+
+impl Applied {
+    /// Attenuation over the whole measured window, or `None` when the model was
+    /// not in the path.
+    ///
+    /// Energy-weighted rather than a mean of per-hop decibels, which is not the
+    /// same number and is the wrong one: averaging a logarithm gives every hop
+    /// equal say regardless of how much signal it carried, and it has nowhere
+    /// to put a hop the model zeroed. `-inf` here is a real answer — the model
+    /// removed everything — and it is directly comparable to the level column
+    /// beside it, which is computed the same way.
+    fn mean_db(&self) -> Option<f32> {
+        (self.hops > 0).then(|| 10.0 * (self.energy_out / self.energy_in).log10() as f32)
+    }
 }
 
 /// What a round trip is run with.
@@ -430,6 +583,16 @@ struct Config {
     /// about quiet speech means asking for it rather than inferring it from a
     /// loud signal.
     amplitude: f32,
+    /// DeepFilterNet's attenuation ceiling in dB, or `None` to leave the model
+    /// out of the path entirely.
+    ///
+    /// The client's own default is 30 (`denoise::ATTEN_LIM_DB`) with a user
+    /// control down to 12, and the argument for both is a pair of numbers from
+    /// a session nobody can reproduce. This is the dimension that makes them
+    /// reproducible. It is deliberately *not* the same knob as `apm`: that one
+    /// is libwebrtc's suppressor, this one is ours, and the client runs exactly
+    /// one of the two at a time.
+    denoise: Option<f32>,
 }
 
 /// `RoomOptions` carrying `key`, built the way `client::e2ee` builds it — GCM
@@ -476,6 +639,7 @@ impl Config {
             listener_key: None,
             agc: None,
             amplitude: AMPLITUDE,
+            denoise: None,
         }
     }
 
@@ -513,6 +677,11 @@ struct Metrics {
     band_out: f32,
     h2: f32,
     h3: f32,
+    /// Mean dB DeepFilterNet applied per hop on the way in, `None` when it was
+    /// not in the path. Measured at the source, unlike everything above it,
+    /// because by the time audio comes back the model's effect and the codec's
+    /// are the same number.
+    applied_db: Option<f32>,
 }
 
 /// Publish a tone into a fresh room under `cfg`, decode it back, and measure.
@@ -571,7 +740,7 @@ async fn measure_round_trip(cfg: Config) -> Metrics {
         )
         .await
         .expect("publish the tone");
-    let feeder = spawn_tone(source, cfg.noise, cfg.amplitude);
+    let feeder = spawn_tone(source, cfg.noise, cfg.amplitude, cfg.denoise);
 
     let ev = wait_for(&mut listener_events, "listener", |ev| {
         matches!(ev, RoomEvent::TrackSubscribed { .. })
@@ -606,7 +775,7 @@ async fn measure_round_trip(cfg: Config) -> Metrics {
     // window would report the dropout as a rate error — pointing the failure at
     // the resampler when the stream is what broke.
     let window = started.elapsed().saturating_sub(WARMUP).as_secs_f32();
-    feeder.abort();
+    let applied = feeder.stop().await;
 
     let sent = tone_samples(received.len(), cfg.amplitude);
     let (r_in, r_out) = (rms(&sent), rms(&received));
@@ -623,6 +792,7 @@ async fn measure_round_trip(cfg: Config) -> Metrics {
         band_out: band_energy(&received, TONE_HZ, 40.0),
         h2: tone_purity(&received, TONE_HZ * 2.0),
         h3: tone_purity(&received, TONE_HZ * 3.0),
+        applied_db: applied.mean_db(),
     };
 
     listener.close().await.ok();
@@ -878,6 +1048,9 @@ fn report(label: &str, m: &Metrics) {
         "harmonics out      : 880 Hz {:.4}, 1320 Hz {:.4}",
         m.h2, m.h3
     );
+    if let Some(db) = m.applied_db {
+        println!("DeepFilterNet      : {db:+.2} dB applied per hop, mean");
+    }
 }
 
 /// The knobs, measured rather than argued about.
@@ -946,6 +1119,46 @@ async fn the_knobs_that_shape_voice_quality_are_measured() {
                 ..base
             },
         ),
+        // The ceiling, which is the one knob whose numbers were quoted from a
+        // session nobody could re-run. Read these three together and against
+        // "noise 0.15, APM off" directly above, which is the same input with no
+        // suppressor of any kind. Two questions at once: does our own model
+        // remove this noise where libwebrtc's did not, and does moving the
+        // ceiling 30 → 12 change what it removes.
+        (
+            "noise 0.15, DFN 30 dB",
+            Config {
+                noise: 0.15,
+                denoise: Some(30.0),
+                ..base
+            },
+        ),
+        (
+            "noise 0.15, DFN 12 dB",
+            Config {
+                noise: 0.15,
+                denoise: Some(12.0),
+                ..base
+            },
+        ),
+        // Not a shipping value — the client's control stops at 30. It is here
+        // as the instrument's own scale, and it is the row that exposes the
+        // limit of this input: it takes the signal to nothing at all, `-inf` in
+        // both the applied and the level column. Read together with the two
+        // above, where applied lands on the ceiling to within hundredths of a
+        // decibel, it says the model is saturated —
+        // against a sine plus white noise it hears no speech and removes
+        // everything it is allowed to. Which is why these rows cannot answer
+        // "does 30 vs 12 matter for speech": no speech is in the path. See
+        // TODO.md, where that is now the open half.
+        (
+            "noise 0.15, DFN 100 dB",
+            Config {
+                noise: 0.15,
+                denoise: Some(100.0),
+                ..base
+            },
+        ),
     ];
 
     let mut measured = Vec::new();
@@ -963,12 +1176,16 @@ async fn the_knobs_that_shape_voice_quality_are_measured() {
 
     println!();
     println!(
-        "{:<24} {:>9} {:>10} {:>10} {:>9}",
-        "configuration", "level dB", "band ±40", "purity", "h2"
+        "{:<24} {:>9} {:>10} {:>10} {:>9} {:>11}",
+        "configuration", "level dB", "band ±40", "purity", "h2", "DFN applied"
     );
     for (label, m) in &measured {
+        let applied = match m.applied_db {
+            Some(db) => format!("{db:+.2} dB"),
+            None => "—".to_string(),
+        };
         println!(
-            "{label:<24} {:>+9.2} {:>10.4} {:>10.4} {:>9.4}",
+            "{label:<24} {:>+9.2} {:>10.4} {:>10.4} {:>9.4} {applied:>11}",
             m.db, m.band_out, m.purity_out, m.h2
         );
     }

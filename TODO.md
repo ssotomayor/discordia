@@ -31,9 +31,17 @@ the top within each section.
   the level/XP system is real (message-count based). Wire the rest to real
   signals when the backends exist (streaks → activity tracking; tips → a Nostr
   zap flow; relay-op → NIP-65 relay list).
-- **Theme popover anchoring.** The appearance panel is a centered modal; the
-  comp shows it as a popover anchored under the top-bar palette icon. Purely
-  positional polish.
+- **The palette icon is not where the comp puts it.** The appearance panel was a
+  centered modal and is now a popover anchored to its own button, which is the
+  half of this that was positional polish. What is left is not.
+  The comp puts the palette in the **top bar**, between "voice ready" and the
+  sound and power icons — so "anchored *under* the icon" was a description of a
+  layout we do not have. `AppearanceButton` is rendered from `UserPanel`
+  (`channels.rs`), at the bottom of the sidebar, so the popover opens upward
+  instead. It is anchored to the icon; the icon is somewhere else.
+  Moving it is a layout change to the top bar rather than to this panel, which
+  is a different size of job — and the top bar in the comp carries three things
+  this client renders elsewhere, so it is worth doing all at once or not at all.
 - **Level curve tuning.** `level_progress` is a simple 10/level-step curve;
   revisit the numbers (and maybe award XP for reactions/voice) once it's seen
   in use.
@@ -167,24 +175,26 @@ the top within each section.
 
 ## Repo & CI
 
-- **Windows clippy gates one profile of two.** `windows-build` now runs
-  `cargo clippy -p dioxusfun --all-targets -- -D warnings`, so the
-  `cfg(target_os = "windows")` half of the client — `sysaudio/windows.rs` and
-  `rawmic/windows.rs`, 61 `unsafe` WASAPI FFI sites — is finally linted. But
-  `desktop-build` runs clippy *twice*, once per profile, because
-  `unused_variables` and friends fire only with `debug_assertions` off, and
-  that is how nine of them reached a published build (`c685828`). Only the
-  first profile is gated here, so a regression of that class reachable only
-  under `-C debug-assertions=off` still goes uncaught on Windows.
-  Both profiles were run by hand on Windows 11 26200 before the gate landed and
-  found nothing, so this is a hole in the *gate*, not a known defect behind it.
-  **The trap when closing it:** do not copy `desktop-build`'s second-profile
-  step verbatim. Its step-level `RUSTFLAGS` *replaces* the job-level value
-  rather than adding to it, and `windows-build`'s job-level
-  `-C target-feature=+crt-static` is load-bearing — libwebrtc links the static
-  MSVC runtime, Rust defaults to the dynamic one, and dropping the flag fails
-  the link with LNK2038. Spell both flags out in the step. The cost to weigh is
-  that it doubles the slowest job in the matrix.
+- **macOS clippy gates one profile of two.** The gap the Windows job just
+  closed, in the one job nobody wrote it down for. `macos-build` runs
+  `cargo clippy -p dioxusfun --all-targets -- -D warnings` once, with
+  `debug_assertions` on; `desktop-build` and `windows-build` both run it twice,
+  because `unused_variables` and friends fire only with the flag off — which is
+  how nine of them reached a published build (`c685828`). So a regression of
+  that class in `sysvideo/` or `sysaudio/macos.rs` would still reach a
+  published macOS build with nothing red.
+  Cheaper to close here than it was on Windows: `macos-build` has no job-level
+  `RUSTFLAGS` to be replaced (the comment there says `crt-static` is an MSVC
+  concern), so the step is `RUSTFLAGS: "-C debug-assertions=off"` and nothing
+  else — the trap that made the Windows one worth a paragraph does not exist on
+  this job. The cost is the same: a second compile, on a runner that is already
+  the slowest per minute in the matrix.
+  Not done in the same PR as the Windows one on purpose. Nobody here has a Mac
+  to run either profile by hand first, and the Windows change went in on the
+  strength of having been run locally — a macOS step would be going in on the
+  strength of having been reasoned about, with a red `master` as the failure
+  mode if it takes findings with it, exactly as turning that job's first
+  profile on took four.
 - **The Windows portable and setup ship the wrong icon.** Reported from a real
   download: both carry an old icon rather than the Discordia mark. Worth
   starting from the comment in `client/Dioxus.toml`, because it says this was
@@ -194,9 +204,19 @@ the top within each section.
   which artifact was downloaded: a pre-release from before that fix would show
   exactly this, and the bug would be nothing but a stale download. If a current
   build still does it, the `.ico` is reaching NSIS (`installer_icon`) and not the
-  executable, or not being regenerated when the artwork changed — the same
-  entry under Assets notes the `.icns` was last rebuilt by downscaling rather
-  than rasterising, so the icon set as a whole has drifted from `icon.svg`.
+  executable.
+  **The third candidate is ruled out by measurement: the `.ico` is not stale.**
+  It holds seven PNG frames — 16/24/32/48/64/128/256 — and every one of them is
+  pixel-identical to a fresh `resvg` render of the current `icon.svg` at that
+  size: 0 differing pixels of 65,536 at 256px, 0 of 256 at 16px, and the same at
+  every size between. They differ from a fresh render only in compressed bytes,
+  which is the PNG encoder, not the image. So this file already follows the
+  recipe in `Dioxus.toml` — rasterised per size from the SVG rather than
+  downscaled — and the drift the Assets entry describes is the `.icns` alone,
+  not the icon set as a whole.
+  What that leaves is the two candidates above, and neither can be settled by
+  reading the config: it needs a `dx bundle` on Windows and an inspection of the
+  produced `.exe`'s resources against `assets/icon.ico`.
 - **Windows SmartScreen blocks the download as an unknown publisher.** Also
   reported from a real machine: "Windows protected your PC", and it takes
   More info → Run anyway to get past. Expected for unsigned binaries and
@@ -262,7 +282,10 @@ the top within each section.
   stale-icon problem is fixed — it now carries the current tile-less mark — but
   it was rebuilt with `sips` from `icon-1024.png` rather than per-size from
   `icon.svg` as the `Dioxus.toml` recipe asks, because no SVG rasteriser
-  (`resvg`, `rsvg-convert`, ImageMagick) was installed. macOS draws 128px and up
+  (`resvg`, `rsvg-convert`, ImageMagick) was installed. (`resvg` is installed on
+  the Windows host now, and the `.ico` there measures as correctly rasterised —
+  see the Windows icon entry under Repo & CI — but `iconutil` is macOS-only, so
+  the `.icns` still cannot be rebuilt from here.) macOS draws 128px and up
   in the Dock, where downscaling holds up; the 16px entry is the one that would
   benefit from real hinting, and unlike Windows' taskbar macOS only uses it in
   list views. Redo with `resvg` next time the artwork changes.
@@ -295,8 +318,56 @@ the top within each section.
   there's no in-app way to see/set the central server's operator list.
 - **Invite expiry / use limits.** One rotating high-entropy code per guild
   today; no TTL, no max-uses, no per-code attribution.
-- **Channel reorder UI.** `Channel.position` exists and `UpdateChannel` sets
-  it, but the client offers no drag-to-reorder yet.
+- **A reorder can be silently half-applied, and the client cannot tell.**
+  `send_reorder` emits one `UpdateChannel` per row it renumbers, and the server
+  gates those on a `RateLimiter` shared with *every* rate-limited action on the
+  connection — 30 hits per 10 s. Its `UpdateChannel` arm is the one that drops
+  the excess with `continue` and **no** `ServerMessage::Error`, unlike the arms
+  around it. Channels only move on the `ChannelUpdate` echo, so a rejected
+  update leaves a visibly half-reordered list, no message, and the same window
+  blocking the user's next ten seconds of unrelated actions.
+  Mostly starved of fuel rather than fixed: a move now reuses the position
+  values its own span already holds, so one slot costs two messages in a guild
+  of any size (`a_one_slot_move_costs_two_messages_however_big_the_guild`). It
+  still bursts when the span has duplicate positions — every guild that has
+  never been reordered, since channels default to 0 — where the fallback
+  numbers the whole guild once. A 40-channel guild's first reorder is still 40
+  messages.
+  The real fix is an error on rejection, and it is **not** in this repo's reach
+  right now: it lives in `server/src/gateway/connection.rs`, which the
+  `networking-direct-and-private` branch is rewriting. Worth doing there, or
+  after it lands, and worth remembering that it makes every silent
+  rate-limit drop visible, not just this one.
+- **A reorder writes back a stale snapshot of every row it renumbers.**
+  `UpdateChannel` is a full replace, so `send_reorder` sends each row's
+  `name`, `topic`, `read_only` and `slowmode_secs` as they were at render time
+  along with the new position. If someone else edits one of those fields on a
+  row that a reorder happens to renumber, their edit is overwritten by a
+  client that was not trying to change it and does not know it did.
+  Two rows per move is a narrow window, and the guild-wide fallback above is a
+  wide one. Closing it needs either a position-only message on the wire — which
+  is a protocol change, so it belongs with whoever next opens
+  `protocol/src/lib.rs` — or a read-modify-write against fresher state than the
+  render snapshot.
+- **Nobody has performed the channel-reorder *drag*.** Reordering itself works
+  by a path that has no gesture in it — `Move up` / `Move down` in the channel
+  context menu, calling `reorder_positions`, which has eight unit tests behind
+  it. The drag is the second front end on that function: rows are `draggable`
+  under `ManageChannels`, and a drop calls the same code.
+  What is untested is the part a test cannot reach — press, drag, release —
+  and two things could stop it working, neither of which affects the menu path:
+  whether `e.prevent_default()` on `ondragover` reaches the webview in time to
+  permit the drop (synchronous `prevent_default` is documented from 0.6 and
+  this client already depends on it for `oncontextmenu`, so this is reasoned
+  and unexercised), and that `ondragstart` never calls
+  `dataTransfer.setData(…)`, which some engines require before they will honour
+  a drop. Dioxus's `DragData` exposes no way to set it, so if that turns out to
+  be the blocker the fix is not a line — it is either an upstream API or a
+  pointer-event drag like the one `grid-layout` already implements.
+  The occupant subtree under a voice row is explicitly `draggable: false`, so
+  the per-user volume slider inside it cannot start a channel drag. That is
+  reasoned too; nobody has dragged that slider on a build with this change
+  either.
 - **`MentionEveryone` permission.** Cut from v1 — mentions are computed
   client-side from content, so the server can't enforce it without rewriting
   message content.
@@ -306,9 +377,15 @@ the top within each section.
 
 ## Platform — bots (Tier 1) & activities (Tier 3)
 
-- **Privileged-intent gate.** Today the owner can grant `message_content` /
-  `members` freely. Discord reviews these past a scale threshold. At minimum
-  add an extra confirm step in the install UI; longer term, a verification flow.
+- **Privileged intents have a confirm step, not a verification flow.** Granting
+  `MessageContent` or `Members` now takes two clicks: the first turns the
+  install button into a panel naming what the bot would be able to read, and
+  changing any intent invalidates it. That is the "at minimum" half of what this
+  entry asked for.
+  The other half is untouched and is the one Discord actually relies on: there
+  is no review, no scale threshold, and nothing stops an owner granting these to
+  any key at all. A confirm step slows a mistake down; it does nothing about a
+  bot that was always going to be given the intent.
 - **Bot identity refresh.** A bot member's display name is the installer-chosen
   `name`; when the bot connects we don't reconcile its self-declared username.
   Decide which wins (installer label is probably right) and document it.
@@ -755,16 +832,31 @@ the top within each section.
   uplinks actually do with camera + screen at the same time — two video uplinks
   is the case to measure, and on Windows both encoders live in one WebView2
   process.
-- **A `persistence` test failed once under a full-workspace run, undiagnosed.**
-  Seen exactly once in five `cargo test --workspace` runs while adding the camera
-  tests; three deliberate re-runs afterwards were clean, and both tests pass
-  alone. Not the temp-dir collision that `temp_data_dir`'s comment describes —
-  that helper is keyed by pid + nanos + counter and is genuinely unique. The
-  suspicion is a timing window rather than shared state: the camera tests each
-  spawn a gateway and use 700ms idle terminators, so the suite now runs more
-  concurrent servers than it did. Recorded rather than chased because there is no
-  captured assertion message to work from; the next occurrence should be run with
-  `--nocapture` and `RUST_BACKTRACE=1` before anything is changed.
+- **A `persistence` test failed once under a full-workspace run, and has not
+  been seen since in eleven attempts.** Seen exactly once in five
+  `cargo test --workspace` runs while adding the camera tests; three deliberate
+  re-runs afterwards were clean, and both tests pass alone. Hunted again on
+  Windows 11 26200 with the command this entry asked for —
+  `RUST_BACKTRACE=1 cargo test --workspace`, eight consecutive runs, 23 suites
+  green every time. So the count of clean re-runs since the single failure is
+  now eleven, and there is still no captured assertion message to work from.
+  Two things the hunt corrected about this entry, both worth having before
+  anyone spends time on it again:
+  - **The camera tests are not in a file of their own.** They are four tests in
+    `server/tests/voice.rs` (`camera_flag_reaches_the_other_members` and the
+    three after it), which is a file the `networking-direct-and-private` branch
+    is rewriting — so if the cause ever does turn out to be there, it cannot be
+    fixed from a working tree that has to stay clear of that branch.
+  - **"700ms idle terminators" describes it too loosely to suspect.** The 700ms
+    is the *second* window of `join_voice`'s two-window read loop
+    (`voice.rs:190-207`): five seconds for the first frame, 700ms for the gap
+    between frames, and its own comment says why a single 700ms budget would
+    make a loaded box look like a server that sent nothing. It is bounded and
+    reasoned, which makes it a poorer suspect than this entry implied.
+  Not the temp-dir collision that `temp_data_dir`'s comment describes either —
+  that helper is keyed by pid + nanos + counter — nor a port race, which
+  `spawn_on` closed by binding port 0. What is left is a timing window nobody
+  has caught in the act. Leave it here until it fires again with output.
 - **Windows shows WebView2's own camera prompt**, where macOS shows the TCC
   prompt once. Expected (wry auto-allows only clipboard-read), and persistence
   depends on the WebView2 user-data folder, but it is the kind of platform
@@ -903,23 +995,34 @@ the top within each section.
   starts a share; a thousand shares in one run is 12 KB, so nothing here is
   waiting on a fix. What would change the calculation is somewhere else starting
   to activate in a loop.
-- **The activation-timeout path has never been executed.** `activate`'s
-  `WaitForSingleObject` giving up is reasoned-about code: nobody has made WASAPI
-  take longer than 5 s to answer, so the branch that abandons an operation and
-  leaves it holding its blob has never run outside a reading of it. Same class of
-  gap as the one `windows_loopback_delivers_real_samples` closed by being run
-  once — that found a heap corruption on its first execution. A fault-injection
-  seam would settle it; `server/tests/voice.rs`'s `ScriptedMinter` is the shape
-  to copy.
-- **The Windows blob's lifetime rule is measured, not documented.** Microsoft
-  does not say how long `ActivateAudioInterfaceAsync` needs the `VT_BLOB` it is
-  handed. "As long as the process" comes from probing: the engine had not freed
+- **WASAPI has still never been seen answering slowly.** The *branch* that
+  handles it now runs: `settle_activation_wait` is the seam, and
+  `an_abandoned_activation_keeps_its_event_handle` drives it with the wait result
+  WASAPI would have produced, asserting the property the branch exists for — the
+  event handle survives, because the completion handler may still `SetEvent` it
+  from an MTA pool thread. Breaking the rule (closing the handle there) turns the
+  test red, so it has teeth.
+  What is still untested is the *scenario*: nobody has made
+  `ActivateAudioInterfaceAsync` take longer than 5 s, and no test can arrange a
+  stalled audio engine. So a real timeout would exercise `WaitForSingleObject`
+  returning `WAIT_TIMEOUT` for the first time, and everything after that point is
+  covered. Worth remembering which half was closed if this ever misbehaves in the
+  field.
+- **The Windows blob's lifetime rule is an observation, not a contract.**
+  Microsoft does not say how long `ActivateAudioInterfaceAsync` needs the
+  `VT_BLOB` it is handed. "As long as the process" comes from probing: the engine had not freed
   the block, and 64 same-size allocations afterwards never landed on its
   address. If a future Windows *does* free it, we would be handing it a Rust
   allocation to release — which works today only because `CoTaskMemAlloc` and
   Rust's allocator both sit on the process heap, not because anything promises
   it. Measured on Windows 11 26200 and one machine; no other platform even
   compiles this file.
+  The hazard and the probe that established it live in `activation_params`'s own
+  doc comment since `16ca57a`, which is where someone debugging a post-update
+  capture failure will be standing — so this entry no longer tracks *writing it
+  down*, which is what its title used to say. It stays for the part that cannot
+  be written away: nothing promises the rule, so it can stop being true without
+  anything here changing.
 
 ## Voice / audio
 
@@ -975,11 +1078,30 @@ the top within each section.
   a write that silently does nothing is the failure mode worth catching, and
   which found exactly that. So a driver that accepts the property and ignores it
   leaves the switch lit over an unchanged signal, and nothing in the client can
-  tell. What would settle it is a measurement, not an API: the ignored
-  `client/tests/live_sfu.rs` sweep already analyses a tone through the real
-  path, and the same room noise recorded with the switch on and off would show
-  whether the endpoint's suppressor is still working. Until then the panel's
-  wording is a claim about what we requested.
+  tell. What would settle it is a measurement, not an API — and there is one
+  now, though it is not the one this entry used to propose.
+  **The proposal was wrong and is worth correcting before someone follows it.**
+  It said to use the `client/tests/live_sfu.rs` sweep. That sweep feeds a
+  `NativeAudioSource` with synthesised frames and never opens a microphone at
+  all; "how the device is opened" is the whole content of this module, so the
+  sweep cannot see it.
+  `raw_mode_changes_the_signal_or_says_it_did_not` (`rawmic/windows.rs`,
+  `#[ignore]`d) does the experiment that can: the same endpoint opened twice in
+  shared mode, one asking for `AUDCLNT_STREAMOPTIONS_RAW` and one not, at the
+  same time, against the same room.
+  **First run, and it is a stronger negative than expected.** On this host's
+  default capture device — `Mic in at rear panel (Pink) (Realtek(R) Audio)` —
+  the two paths came back **bit-identical**: 0 of 576,000 overlapping samples
+  differ, same format, same RMS, 0.00 dB apart. Not "similar": the same samples.
+  Two readings survive that, and this run cannot separate them — the flag is
+  being accepted and ignored, or this endpoint has no effects chain to skip.
+  Windows exposes no "is there an APO here" to ask.
+  What would separate them is a device known to process: a laptop's internal
+  array mic behind Realtek/Nahimic/Dolby, or Windows 11 voice isolation on, with
+  actual speech. This run peaked at 0.0305 — a quiet hum on a line-in with
+  nothing plugged into it, above the test's silence floor but well below speech.
+  Until then the panel's wording is still a claim about what we requested, and
+  the one machine that has been measured says the request changes nothing.
 - **The raw path is Windows-only and Linux is not answered.** `rawmic::
   supported()` is `cfg!(target_os = "windows")`, and the setting hides
   elsewhere. macOS is genuinely nothing-to-do (cpal opens a plain HAL input
@@ -988,17 +1110,33 @@ the top within each section.
   source, and a client that wants the unprocessed device has to select it
   rather than ask for a flag. Nobody has run this repo's voice path on Linux
   yet, so it is filed here rather than guessed at.
-- **The 30-vs-12 dB ceiling numbers cannot be re-run from the repo.** The entry
-  below and `ClientSettings::denoise_atten_lim_db` both cite figures from a
-  live session — 21.2% vs 17.6% gate drops, −3.9 dB vs −2.7 dB actually applied
-  — and those figures are the whole argument for the control's existence and
-  its default. `the_knobs_that_shape_voice_quality_are_measured` sweeps `apm`,
-  `red`, `dtx` and `max_bitrate`; the ceiling is not a dimension in it, and
-  DeepFilterNet is not in the sweep at all. The house rule is that a claim
-  about voice quality has a number behind it; right now this one has a number
-  behind it that only one machine ever produced. Adding it as a sweep dimension
-  needs the noise-mixed signal the sweep already grew for the APM question — a
-  pure sine tells a denoiser as little as it told the APM.
+- **The 30-vs-12 dB ceiling numbers still cannot be re-run, and now it is clear
+  what would be needed.** The entry below and `ClientSettings::
+  denoise_atten_lim_db` both cite figures from a live session — 21.2% vs 17.6%
+  gate drops, −3.9 dB vs −2.7 dB actually applied — and those figures are the
+  whole argument for the control's existence and its default.
+  DeepFilterNet **is** a dimension of
+  `the_knobs_that_shape_voice_quality_are_measured` now, and running it settles
+  one thing and refuses another. What it settles: the ceiling reaches the model
+  and is applied to within hundredths of a decibel. Against the sweep's tone at
+  noise 0.15, measured at the source as energy in versus energy out, the model
+  applies −30.00 dB at a 30 dB ceiling and −12.00 dB at 12 — and the received
+  level in the same row reads −30.00 and −12.02, which is the two halves of the
+  measurement agreeing across the codec.
+  What it refuses is the comparison the entry is about. Applied = ceiling means
+  the model is saturated: on a sine plus white noise it hears no speech and
+  removes everything it is permitted to, so the ceiling is not limiting an
+  appetite, it *is* the output. At a 100 dB ceiling the row reads `-inf` in both
+  columns — the signal is gone, not small. The clamp is verified; the question
+  "does 30 vs 12 change what happens to *speech*" is untouched, because no
+  speech was ever in the path.
+  So what is left is narrower and concrete: this needs a speech-like
+  excitation, not another knob. Either a short voiced sample committed
+  alongside the test, or a synthesised formant-ish signal the model will
+  classify as speech — and whichever it is, the gate half of the original claim
+  (21.2% vs 17.6% drops) still lives in `features::voice::denoise_gate_loop`
+  and is not reachable from an integration test at all, since the package has
+  no lib target.
 - **The default mic sensitivity cuts ordinary speech.** `default_mic_sensitivity`
   is 50 and the scale is peak ×1000, so the gate opens at **−26.0 dBFS** — 7.6 dB
   stricter than the 21 that `efcc23d`'s reporter was already struggling with, and
