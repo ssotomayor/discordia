@@ -243,7 +243,7 @@ fn InstallForm(guild_id: Id) -> Element {
                 // "are you sure?" — the checkbox already said the name of the
                 // intent, and that is exactly what nobody reads.
                 if confirming() {
-                    div { class: "rounded border border-[var(--warn)]/40 bg-[var(--warn)]/10 p-2 space-y-1",
+                    div { class: "rounded border border-[var(--warn)]/40 bg-[var(--warn)]/15 p-2 space-y-1",
                         div { class: "text-[11px] font-semibold text-[var(--warn)]",
                             "This bot will be able to read:"
                         }
@@ -264,7 +264,7 @@ fn InstallForm(guild_id: Id) -> Element {
 
                 button {
                     class: if confirming() {
-                        "w-full mt-1 rounded px-2 py-1.5 text-[11px] uppercase tracking-wider text-[var(--warn)] border border-[var(--warn)]/60 hover:border-[var(--warn)] transition-colors"
+                        "w-full mt-1 rounded px-2 py-1.5 text-[11px] uppercase tracking-wider text-[var(--warn)] border border-[var(--warn)]/40 transition-colors"
                     } else {
                         "w-full mt-1 rounded px-2 py-1.5 text-[11px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors"
                     },

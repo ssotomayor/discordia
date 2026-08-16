@@ -83,10 +83,18 @@ pub fn AppearanceButton() -> Element {
                     onclick: move |_| open.set(false),
                 }
                 div {
-                    // `bottom-full`, not `top-full`: the palette icon lives in
-                    // `UserPanel`, at the *bottom* of the sidebar, so the comp's
-                    // "anchored under the icon" would open off-screen here. It
-                    // is anchored to the icon, above it.
+                    // Anchored above the button, not below: the palette icon
+                    // lives in `UserPanel`, at the *bottom* of the sidebar, so
+                    // the comp's "anchored under the icon" would open
+                    // off-screen here. It is anchored to the icon, above it.
+                    //
+                    // Deliberately phrased without naming the other class:
+                    // `tailwind.css` scans `src/**/*.rs`, so a utility spelled
+                    // in a comment is a rule emitted into the committed
+                    // `tailwind.out.css`. Writing this one out cost a CI
+                    // failure — the same trap `TODO.md` records for
+                    // `Discordia.html`, whose description of a rule was keeping
+                    // that rule alive.
                     class: "dxf-pop-in absolute bottom-full left-0 mb-2 z-50 w-80 bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl p-4",
                     onclick: move |e| e.stop_propagation(),
                     h3 { class: "text-sm font-medium text-[var(--accent)] mb-3", "Appearance" }
