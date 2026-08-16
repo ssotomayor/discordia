@@ -368,11 +368,16 @@ the top within each section.
   reimplementing a key provider against minified internals of a vendored bundle.
   Not worth it until a rekey has been watched happening and the gap measured —
   it may well be imperceptible.
-- **Undecryptable media is now visible, but only what the webview sees.** The JS
-  room reports `EncryptionError` and the badge says so. The three native rooms
-  have their own signal (`RoomEvent::E2eeStateChanged`) which is not wired, so
-  voice failing to decrypt while camera succeeds would currently show nothing.
-  Same latch, one more producer.
+- **Undecryptable media is visible from the webview and from voice; the two
+  screen rooms are still silent.** The JS room reports `EncryptionError`, and
+  the voice room now reports `RoomEvent::E2eeStateChanged` into the same latch —
+  which mattered most, because voice is the only path that is entirely native
+  and so was the one failure nothing could see. `ScreenAudioRoom` subscribes and
+  can fail the same way; it has no bridge to `AppState` of its own, and its
+  failures are at least *also* visible through the webview, which renders the
+  same share. `ScreenVideoRoom` publishes only, so what it can report is
+  `EncryptionFailed` on the way out rather than a key it was never given. Both
+  are the same one-line arm plus somewhere to send it.
 - **Nothing verifies that the two SDKs derive the same key.** They agree on
   every parameter visible from this repo — ratchet salt `LKFrameEncryptionKey`,
   PBKDF2/SHA-256, JS at 100 000 iterations — but the Rust side derives inside
