@@ -31,9 +31,17 @@ the top within each section.
   the level/XP system is real (message-count based). Wire the rest to real
   signals when the backends exist (streaks → activity tracking; tips → a Nostr
   zap flow; relay-op → NIP-65 relay list).
-- **Theme popover anchoring.** The appearance panel is a centered modal; the
-  comp shows it as a popover anchored under the top-bar palette icon. Purely
-  positional polish.
+- **The palette icon is not where the comp puts it.** The appearance panel was a
+  centered modal and is now a popover anchored to its own button, which is the
+  half of this that was positional polish. What is left is not.
+  The comp puts the palette in the **top bar**, between "voice ready" and the
+  sound and power icons — so "anchored *under* the icon" was a description of a
+  layout we do not have. `AppearanceButton` is rendered from `UserPanel`
+  (`channels.rs`), at the bottom of the sidebar, so the popover opens upward
+  instead. It is anchored to the icon; the icon is somewhere else.
+  Moving it is a layout change to the top bar rather than to this panel, which
+  is a different size of job — and the top bar in the comp carries three things
+  this client renders elsewhere, so it is worth doing all at once or not at all.
 - **Level curve tuning.** `level_progress` is a simple 10/level-step curve;
   revisit the numbers (and maybe award XP for reactions/voice) once it's seen
   in use.

@@ -60,20 +60,34 @@ pub fn AppearanceButton() -> Element {
 
     let current = settings.read().clone();
 
+    // `relative`, so the panel below can be positioned against this button
+    // rather than against the viewport. Everything the popover needs is inside
+    // this component, which is why anchoring it costs no plumbing: the button
+    // and the panel have always been siblings here.
     rsx! {
-        button {
-            class: "w-7 h-7 flex items-center justify-center rounded text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors",
-            title: "Appearance",
-            onclick: move |_| { err.set(None); open.set(true); },
-            dangerous_inner_html: crate::features::icons::SLIDERS,
-        }
+        div { class: "relative",
+            button {
+                class: "w-7 h-7 flex items-center justify-center rounded text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors",
+                title: "Appearance",
+                onclick: move |_| { err.set(None); open.set(true); },
+                dangerous_inner_html: crate::features::icons::SLIDERS,
+            }
 
-        if open() {
-            div {
-                class: "dxf-backdrop-in fixed inset-0 z-50 flex items-center justify-center bg-black/50",
-                onclick: move |_| open.set(false),
+            if open() {
+                // Click-catcher only. It used to carry `bg-black/50`, which is
+                // what made this read as a modal: dimming the app says "answer
+                // me before doing anything else", and this panel is a set of
+                // preferences you want to see applied to what is behind it.
                 div {
-                    class: "dxf-modal-in w-80 bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl p-4",
+                    class: "fixed inset-0 z-40",
+                    onclick: move |_| open.set(false),
+                }
+                div {
+                    // `bottom-full`, not `top-full`: the palette icon lives in
+                    // `UserPanel`, at the *bottom* of the sidebar, so the comp's
+                    // "anchored under the icon" would open off-screen here. It
+                    // is anchored to the icon, above it.
+                    class: "dxf-pop-in absolute bottom-full left-0 mb-2 z-50 w-80 bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl p-4",
                     onclick: move |e| e.stop_propagation(),
                     h3 { class: "text-sm font-medium text-[var(--accent)] mb-3", "Appearance" }
 
