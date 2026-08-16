@@ -348,16 +348,25 @@ the top within each section.
   LiveKit's JS cannot attach a key provider to a Room after construction, which
   is why the current lazy approach cannot work. `connect` must also be passed
   `e2ee::current_key()` rather than `shared_key()`.
-- **Media key distribution is written and has never run between two people.**
-  `client/src/mediakey.rs` seals a channel key per recipient (ECDH over the
-  Nostr identity keys, XChaCha20-Poly1305, epoch bound as associated data) and
-  the gateway routes blobs it cannot read. The sealing is well covered by unit
-  tests; the *orchestration* is not testable without two clients, and that is
-  where the doubt is: who generates when a channel is empty, who hands the key
-  to an arrival, whether the four-second wait is right, and whether two members
-  joining at the same instant both generate. The designated-sender rule (lowest
-  pubkey) makes that last one unlikely rather than impossible — two clients with
-  different views of the roster can both believe they are lowest.
+- **Media key distribution has now run between two people, and every doubt in
+  this entry turned out to be a bug.** `client/src/mediakey.rs` seals a channel
+  key per recipient (ECDH over the Nostr identity keys, XChaCha20-Poly1305,
+  epoch bound as associated data) and the gateway routes blobs it cannot read.
+  The sealing was always well covered by unit tests; the *orchestration* was
+  not, and that is where all of it went wrong — `07f71a7`, `ac60edd`,
+  `f2dcb09`, `7c698d8`, `fd6b92f` and `12e8034` are all the same feature
+  failing in the same way, one report at a time.
+  **This entry used to say the doubt was "whether two members joining at the
+  same instant both generate", and named the designated-sender rule (lowest
+  pubkey) as what made it unlikely. Both halves are now wrong.** They do both
+  generate, routinely, and that is fine: `net::supersedes` breaks an equal-epoch
+  tie by pubkey so the two converge. The designated-sender rule was *removed*
+  for handing a key on — holding the key is the only qualification, because
+  being lowest says nothing about having one — and `designated` now drives only
+  a rekey after a removal.
+  What remains untested is what is left of the orchestration: the four-second
+  wait, and a member who leaves and returns. Both need two clients, and the
+  second is what `forget_absent` exists for.
 - **A rekey still interrupts the call it protects, and the proper fix is out of
   reach.** The rekeying member now sends to everyone before adopting the new key
   itself, which shrinks the gap to about one network hop — it does not close it.
@@ -378,12 +387,20 @@ the top within each section.
   same share. `ScreenVideoRoom` publishes only, so what it can report is
   `EncryptionFailed` on the way out rather than a key it was never given. Both
   are the same one-line arm plus somewhere to send it.
-- **Nothing verifies that the two SDKs derive the same key.** They agree on
-  every parameter visible from this repo — ratchet salt `LKFrameEncryptionKey`,
-  PBKDF2/SHA-256, JS at 100 000 iterations — but the Rust side derives inside
-  libwebrtc, where the count cannot be read. A mismatch is silent: frames arrive
-  and decode to noise. No test can settle it; two machines with the same
-  passphrase can, and that is now possible.
+- **Nothing verifies that the *webview* derives the same key as the native
+  rooms.** They agree on every parameter visible from this repo — ratchet salt
+  `LKFrameEncryptionKey`, PBKDF2/SHA-256, JS at 100 000 iterations — but the
+  Rust side derives inside libwebrtc, where the count cannot be read.
+  **This entry used to say "the two SDKs" and that "no test can settle it";
+  both have narrowed.** The Rust-to-Rust half is settled and measured:
+  `live_sfu::media_encryption_carries_audio_only_when_the_keys_agree` runs two
+  peers through the real SFU and gets the tone back within 0.53 dB with keys
+  that match. What no test here reaches is the JS side, because the webview is
+  the one participant this harness cannot be.
+  **It also said a mismatch means "frames arrive and decode to noise". They
+  decode to silence** — same measurement, 501 frames and 192 480 samples, every
+  one zero. The distinction is the whole difficulty: noise is obvious, and
+  silence is what somebody not talking sounds like.
 - **Hole punching works through CGNAT — verified 2026-08-14, between two
   cities.** A host on a carrier-grade-NAT connection (no public address, port
   mapping impossible) and a friend on an unrelated home network, both with the
