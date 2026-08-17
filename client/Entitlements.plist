@@ -49,7 +49,7 @@
     needed here.
 
   If a notarised distribution build is ever wanted, this is the file that grows —
-  see TODO.md.
+  see docs/AUDIT-2026-08-17.md.
 -->
 <plist version="1.0">
 <dict>

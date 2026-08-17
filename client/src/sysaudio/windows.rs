@@ -303,7 +303,7 @@ fn setup() -> Result<Started, String> {
 /// to answer ("who else is holding this address, and are they done?") not a
 /// question. Sharing one process-wide blob saved those bytes and cost a lease, a
 /// retirement rule for abandoned activations, and a wedge with no recovery when
-/// a capture thread hung with the lease in hand. See `TODO.md`.
+/// a capture thread hung with the lease in hand. See `docs/AUDIT-2026-08-17.md`.
 ///
 /// One thing to know before trusting the "never freed" half: it is an
 /// observation of this Windows, not a promise from Microsoft, who document
@@ -697,7 +697,7 @@ mod tests {
     /// on review, both times on the strength of being read — and the macOS
     /// backend, written the same way, returns `Ok` and then delivers zero samples
     /// for its whole life, which is invisible from inside and still open in
-    /// `TODO.md`. This found worse on its first run: `start()` took the process
+    /// `docs/AUDIT-2026-08-17.md`. This found worse on its first run: `start()` took the process
     /// down with STATUS_HEAP_CORRUPTION, the activation blob having been freed
     /// while the engine still held it (see `activation_params`). It passes now,
     /// peak around 0.35 against a tone from another process.
@@ -764,7 +764,7 @@ mod tests {
         assert!(
             frames > 0,
             "start() succeeded and delivered no frames at all — the same shape \
-             as the open macOS finding in TODO.md"
+             as the open macOS finding in docs/AUDIT-2026-08-17.md"
         );
         assert!(
             samples >= 4800,

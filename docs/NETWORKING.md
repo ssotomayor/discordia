@@ -83,14 +83,17 @@ an SFU at all is up to its operator; one configured without LiveKit credentials
 supplies none, and media then uses the host's own — which works for a remote
 friend only if the host has a port mapping, and otherwise hands them a LAN
 address they cannot dial. That last case is confirmed in
-`server/tests/rendezvous_voice.rs` and recorded in `TODO.md`.
+`server/tests/rendezvous_voice.rs` and recorded in `docs/AUDIT-2026-08-17.md`.
 
-**The host can read everything, deliberately.** Message content is stored
-readable in `host-data/`, which is what keeps search, moderation, the audit log
-and retention working. Encrypting content against the host would break all four
-and is **not** a goal here — the threat model is third parties, not the person
-whose machine the guild runs on. NIP-44 appears on the roadmap for DMs; do not
-read that as implying guild channels are encrypted from the host.
+**The host can read every *channel* message, deliberately.** Guild message
+content is stored readable in `host-data/`, which is what keeps search,
+moderation, the audit log and retention working. Encrypting channel content
+against the host would break all four and is **not** a goal here — the threat
+model is third parties, not the person whose machine the guild runs on.
+**Direct messages are the exception, and they are not a roadmap item any
+more:** a DM is a NIP-17 gift-wrapped event on Nostr relays, encrypted with
+NIP-44, and never reaches the gateway at all (`client/src/nostr/`). Do not read
+that as implying guild channels are encrypted from the host — they are not.
 
 ---
 
@@ -167,7 +170,7 @@ the process* when that fails; the router already told us the address, so there i
 nothing to look up.
 
 Not verified anywhere in CI: that a mapping appears on a real router at all. See
-`TODO.md`.
+`docs/AUDIT-2026-08-17.md` §8.
 
 ### Stage 2 — an encrypted, key-authenticated transport
 

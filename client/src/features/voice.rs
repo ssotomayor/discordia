@@ -871,7 +871,7 @@ impl ActiveVoice {
                     // survives (it rides inside the encrypted bitstream, and
                     // libwebrtc's own fmtp carries `useinbandfec=1`), so loss
                     // resilience is reduced rather than removed. The trade and
-                    // the ways out are in `TODO.md` under Voice / audio.
+                    // the ways out are in `docs/AUDIT-2026-08-17.md` under Voice / audio.
                     //
                     // Only the bitrate is ours: the SDK's SPEECH preset is
                     // 24 kbit/s, which is thin for anything but a close-miked
@@ -1522,7 +1522,7 @@ impl ActiveVoice {
     /// energy left in the tone's band did not shift: means 0.9030 against
     /// 0.9033 over eight runs, the sign flipping between them, while the noise
     /// itself moved that number by ten times as much. See the entry in
-    /// `TODO.md`.
+    /// `docs/AUDIT-2026-08-17.md`.
     ///
     /// That leaves two possibilities the measurement cannot separate — never
     /// stored, or stored and ignored — and `audio_options()` separates them for
@@ -3980,7 +3980,7 @@ mod tests {
     /// this fails, the client's `set_apm` is writing into nothing and the
     /// suppressor question is answered. If it passes, the options are held and
     /// the remaining suspect is downstream, inside libwebrtc — which the
-    /// `TODO.md` entry says how to chase.
+    /// `docs/AUDIT-2026-08-17.md` entry says how to chase.
     ///
     /// Deliberately asserts only the round trip. Whether libwebrtc *honours*
     /// what it stored is not a property this can see, and pretending otherwise

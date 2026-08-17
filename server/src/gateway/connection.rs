@@ -146,7 +146,7 @@ pub async fn handle_connection(
                         // The version is logged and stored nowhere. That is the
                         // whole feature: an operator can count what is connected
                         // without the server growing a field it never reads —
-                        // the shape three entries in TODO.md already complain
+                        // the shape three entries in docs/AUDIT-2026-08-17.md already complain
                         // about. "unknown" rather than empty so the log line
                         // does not read as a truncation.
                         let client_version = sanitize_client_version(&client_version);
@@ -169,7 +169,7 @@ pub async fn handle_connection(
                         // format, and quoting is what makes the boundary
                         // unambiguous. Only `client_version` gets both — the
                         // rest cannot be filtered without changing a signed
-                        // preimage or a stored name. See TODO.md.
+                        // preimage or a stored name. See docs/AUDIT-2026-08-17.md.
                         tracing::info!(
                             user = ?new_user.username,
                             pubkey = %new_user.pubkey,

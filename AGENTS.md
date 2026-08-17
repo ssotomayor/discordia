@@ -34,7 +34,7 @@ flowchart LR
         Voice["features/voice.rs — native LiveKit SDK<br/>mic, playback mixer, voice room,<br/>audio-only screen-room subscriber,<br/>screen-video publisher"]
         SysAudio["sysaudio/ — native system-audio capture<br/>macOS ScreenCaptureKit · Windows WASAPI loopback"]
         SysVideo["sysvideo/ — native screen capture<br/>macOS ScreenCaptureKit (zero-copy CVPixelBuffer)"]
-        WebJS["features/screenshare.rs — webview JS bridge<br/>LiveKit JS SDK: renders all shares;<br/>captures video on Windows only"]
+        WebJS["features/screenshare.rs + features/camera.rs — webview JS bridge<br/>LiveKit JS SDK: renders all shares and cameras;<br/>captures screen on Windows only, camera everywhere"]
         UI --> Net
         SysAudio --> Voice
         SysVideo --> Voice
@@ -54,7 +54,7 @@ flowchart LR
 
     subgraph SFU["LiveKit SFU"]
         VoiceRoom["voice-{channel}<br/>native peers: mic + shared system audio"]
-        ScreenRoom["screen-{channel}<br/>webview peer (renders; captures on Windows, identity = pubkey)<br/>native peer (audio-only, identity = pubkey#audio)<br/>native peer (video publisher on macOS, identity = pubkey#video)"]
+        ScreenRoom["screen-{channel}<br/>webview peer (renders; screen on Windows + camera always, identity = pubkey)<br/>native peer (audio-only, identity = pubkey#audio)<br/>native peer (screen video publisher on macOS, identity = pubkey#video)"]
     end
 
     subgraph Rendezvous["rendezvous (optional discovery relay)"]
@@ -76,17 +76,15 @@ flowchart LR
 Up to three runtime paths carry audio+video for a screen share, and they all
 terminate in the *same* `screen-{channel}` LiveKit room under different
 identities — see `server::livekit::screen_audio_identity` /
-`screen_video_identity` and the `sysaudio/` + `sysvideo/` notes below.
+`screen_video_identity`. Two arrangements there are load-bearing and are
+explained once each under **Client anatomy** below, at `sysvideo/` and at the
+identity bullets under `features/*.rs`:
 
-**Which path captures video is per-platform, and it is not a preference.**
-Windows uses the webview (WebView2 is Chromium, `getDisplayMedia` works there).
-macOS captures natively via `sysvideo/` instead. Originally because
-`navigator.mediaDevices` was absent there — which turned out to be a missing
-`NSMicrophoneUsageDescription` in our own bundle, not a WKWebView limitation;
-adding it makes `getDisplayMedia` appear. The native path stays because it is
-better here (no copy, no colour conversion, our own surface picker), not because
-the webview cannot. The webview still joins the room on both platforms, because
-it is what *renders* everyone else's share.
+- **Which path captures video is per-platform, not a preference** — Windows in
+  the webview, macOS natively via `sysvideo/`. The webview joins the room on
+  both platforms regardless, because it is what *renders* everyone else's share.
+- **The camera is the exception: webview everywhere**, on the bare identity —
+  which is why `screen-{channel}` now carries faces as well as screens.
 
 ---
 
@@ -109,7 +107,8 @@ it is what *renders* everyone else's share.
    sqlx) and is rehydrated on boot by `load_or_seed()`. A failed DB write is
    *logged and ignored* (`persist()` helper) — the change survives the session
    but not a restart. **Messages are the exception: they live ONLY in the DB**
-   (fetched on demand via `FetchMessages`), never in an in-memory map.
+   (fetched on demand via `FetchMessages`), never in an in-memory map. Direct
+   messages are not here at all any more — see `client/src/nostr/`.
 
 3. **Message images are offloaded to content-addressed blobs.** `MediaStore`
    (`server/src/media.rs`) decodes inbound `data:` URLs into
@@ -140,10 +139,16 @@ it is what *renders* everyone else's share.
   64-char hex (x-only). Client keys live in `client/src/identity.rs`
   (`Identity::sign_hex(msg)` = Schnorr over `SHA256(msg)`).
 - The **Identify handshake**: server sends `Hello { nonce }`; client replies
-  `Identify { username, pubkey, signature, bot }` where `signature` is Schnorr
-  over `SHA256(nonce || pubkey || username)`. Verified in `server/src/auth.rs`
-  (`verify_identify`). This same challenge/sign/verify pattern is reused for
-  **rendezvous name ownership** (`rendezvous/src/verify.rs`).
+  `Identify { username, pubkey, signature, bot, client_version }` where
+  `signature` is Schnorr over `SHA256(nonce || pubkey || username)`. Verified in
+  `server/src/auth.rs` (`verify_identify`). This same challenge/sign/verify
+  pattern is reused for **rendezvous name ownership**
+  (`rendezvous/src/verify.rs`).
+  Note what the signature covers and what it does not: `bot` and
+  `client_version` are **self-declared and unauthenticated**. That is deliberate
+  for both — bot-ness because inferring it from installs would be an attack (see
+  the comment at the handler), and the version because it exists to be counted
+  in a log, not to gate anything. Neither is evidence.
 - There is **no password/account system** — your key *is* your account.
   Anti-abuse is per-guild: join gates (rules / proof-of-work), panic-mode
   lockdown, slowmode, bans, audit log (all Phase 4, in `state/mod.rs` +
@@ -164,6 +169,11 @@ it is what *renders* everyone else's share.
   join gates, slowmode, raid detection, audit log live here.
 - `store.rs` — SQLite schema + all persistence. `LoadedState` is the boot
   snapshot. Designed to also back Postgres later (only SQLite impl exists).
+- `quic.rs` — the second front door: the *same* axum router served over iroh
+  QUIC bi-streams, WebSocket upgrade and all. Encrypted, and the host is
+  authenticated by its public key rather than by a certificate we would have to
+  verify ourselves. `build_router`/`serve_router` in `lib.rs` exist so both
+  doors share one router and cannot drift apart.
 - `media.rs` — content-addressed blob store (see #3 above).
 - `auth.rs` — Schnorr verification. `archive.rs` — guild export/import
   (`export_guild`/`import_guild`, fresh IDs, pubkeys preserved).
@@ -187,6 +197,14 @@ it is what *renders* everyone else's share.
   a time. The tract crates are pinned and get a `[profile.dev.package]`
   optimisation override in the root `Cargo.toml` — read the comment there before
   bumping them, the model won't even load without it.
+- `rawmic/` — microphone capture with the OS's own input processing bypassed
+  (Windows: WASAPI raw mode, which cpal cannot ask for because the flag is set
+  before `Initialize`). Opens the same device the cpal path would and hands the
+  samples to the same `forward_mic`, so the two backends differ only in *how the
+  device is opened*. That is also why toggling it restarts the voice session:
+  raw is fixed at open time, unlike every APM switch beside it. `supported()`
+  gates the setting — macOS never had the processing in the path, so the switch
+  is hidden rather than inert.
 - `sysaudio/` — native system-audio capture for screen sharing, so a share
   carries the machine's sound without depending on the webview's picker.
   `scope()` says how far it reaches per platform (macOS: every share; Windows:
@@ -194,14 +212,17 @@ it is what *renders* everyone else's share.
   flow settles which path a given capture takes *after* the picker closes, since
   that answer depends on what the user chose. Frames are mono f32 @48kHz — the
   format `features::voice` already publishes.
-- `sysvideo/` — native *screen* capture. macOS only, and it exists because the
-  webview path was unusable there: `navigator.mediaDevices` was absent until we
-  added a usage description to Info.plist, which the module docs correct at
-  length — the original "WKWebView cannot" diagnosis was ours, not WebKit's.
-  Frames are handed to a sink as owned `Frame`s wrapping the `CVPixelBuffer`,
-  which libwebrtc can encode directly — no copy, no colour conversion in our
-  process. `supported()` decides which path the share button drives; the
-  publisher lives in `features::voice::ScreenVideoRoom`.
+- `sysvideo/` — native *screen* capture. macOS only; Windows stays in the
+  webview because WebView2 is Chromium and `getDisplayMedia` works there. It
+  exists because the webview path was unusable on macOS:
+  `navigator.mediaDevices` was absent until we added a usage description to
+  Info.plist, which the module docs correct at length — the original "WKWebView
+  cannot" diagnosis was ours, not WebKit's. **So the native path stays because
+  it is better here, not because the webview cannot:** frames are handed to a
+  sink as owned `Frame`s wrapping the `CVPixelBuffer`, which libwebrtc can
+  encode directly — no copy, no colour conversion in our process — and the
+  surface picker is our own. `supported()` decides which path the share button
+  drives; the publisher lives in `features::voice::ScreenVideoRoom`.
   `sources()` enumerates what can be shared and `Target` says which of it to
   capture — screen, one window, or every window of one app, resolved to an
   `SCContentFilter` at capture time. ScreenCaptureKit has no picker of its own
@@ -210,26 +231,67 @@ it is what *renders* everyone else's share.
   the same division Electron apps like Discord use. Targets are re-resolved from
   a fresh query on every start, because a window can close between the pick and
   the capture.
-- `host.rs` — self-host: spawn embedded server + LiveKit, register with
-  rendezvous. `rendezvous.rs` — the rendezvous client (control handshake +
-  proxy bridging). `blossom.rs` — Nostr media upload for avatars/banners.
+- `host.rs` — self-host: bind the gateway, ask the router for a way in, register
+  with the rendezvous, then decide whether a local LiveKit is needed at all (a
+  rendezvous with its own SFU wins, and the bundled one is not started). The
+  order is load-bearing: the bound port is what gets mapped and advertised.
+  `rendezvous.rs` — the rendezvous client (control handshake + proxy bridging).
+  `blossom.rs` — Nostr media upload for avatars/banners.
+- `quic.rs` — the client half of the QUIC transport: derive the transport key
+  from the Nostr identity (stable, one-way), dial a host by key, hand the stream
+  to the ordinary WebSocket handshake. `net::connect_best` prefers it over both
+  plaintext paths, which is why the UI can say `private` rather than `direct`.
+- `portmap.rs` — UPnP-IGD then NAT-PMP, so a home machine obtains an address the
+  internet can dial (`docs/NETWORKING.md`, tier 1 — the only one involving
+  nobody else). Failure is the normal case and returns a sentence for the UI,
+  never an error that stops hosting. It also measures **hairpin NAT**, because
+  LiveKit replaces its LAN ICE candidate with the advertised address rather than
+  adding to it — so advertising one without checking would trade the LAN path
+  for the remote one.
+- `version.rs` — which build this is, stamped by `client/build.rs` at compile
+  time. **Not `CARGO_PKG_VERSION`**, which is `0.1.0` in every release ever
+  published: the release number lives in the tag CI creates and used to stop
+  there. CI sets `DISCORDIA_VERSION` to exactly that tag on the three
+  publishing jobs — and deliberately *not* at workflow level, because a check
+  job that inherited it would build a binary claiming to be a release nobody
+  published. `version.rs` has a test that fails if that happens. Everything
+  else calls itself `0.1.0-dev+<sha>`.
 - `features/*.rs` — UI, one module per surface: `guilds`, `channels`, `chat`,
-  `members`, `voice`, `screenshare`, `roles`, `guild_settings`, `integrations`
-  (bots), `profiles`, `connect`, `appearance`, `activities`.
+  `members`, `voice`, `screenshare`, `camera`, `roles`, `guild_settings`,
+  `integrations` (bots), `profiles`, `connect`, `appearance`, `activities`.
 - **One user joins the screen room under up to three identities, on purpose.**
   LiveKit allows only one connection per identity, so each job that needs its own
   connection needs its own suffix:
-  - bare `{pubkey}` — the webview. Renders every share; also *captures* on
-    Windows.
+  - bare `{pubkey}` — the webview. Renders every share; *captures* the screen on
+    Windows, and publishes the **camera** on every platform.
   - `{pubkey}#audio` — native, audio-only, `auto_subscribe: false`. Subscribes to
-    stream audio so it plays through the same cpal device as voice.
+    stream audio so it plays through the same cpal device as voice. Its token is
+    minted **without** publish rights, unlike the other two.
   - `{pubkey}#video` — native, publish-only, `auto_subscribe: false`. Publishes
     natively captured screen video on macOS.
 
   Watchers resolve a sharer to a track by identity, and our own protocol
   announces sharers by *bare* pubkey — so the `#video` suffix is resolved in one
   place, `attach`/`reattach` in the JS controller. Adding a fourth identity means
-  teaching those two functions about it.
+  teaching those two functions about it — and deciding what it may publish, which
+  `screen_token_as` takes as an argument rather than inferring from the suffix.
+  That answer rides `MintRequest::can_publish` across the delegation seam too, so
+  it binds on the local mint *and* on a rendezvous-delegated one — with the
+  caveat that a relay older than that field ignores it and grants publish, which
+  nothing on this wire can detect.
+
+  **The camera deliberately did not add a fourth.** `features/camera.rs`
+  captures with `getUserMedia` on macOS and Windows alike and publishes as
+  `TrackSource::Camera` on the webview's *existing* connection — the bare
+  identity already holds publish rights, so it cost no token, no grant and no
+  change to `server::livekit`. If you are about to mint a `#camera` identity to
+  "fix" something, that is the thing to reconsider first.
+  The price is that every video track in the JS controller is keyed by identity
+  **and** source: one participant can send both at once, and on Windows both
+  come from the same identity. Who has a camera on rides `camera_on` on
+  `VoiceState`, not LiveKit's track events, so it survives a reconnect and
+  reaches people who are not in the channel to observe the publication
+  themselves.
 - **Screen-share audio has two paths into the same room, on purpose.** Both land
   in the same
   cpal mixer voice already uses, so stream audio follows the chosen output
@@ -251,13 +313,37 @@ it is what *renders* everyone else's share.
   against the new one. Anything that ends a share must clear
   `screen_share_target`, or the effect sees an unchanged key and the next click
   does nothing.
+- `nostr/` — **direct messages, which no longer touch the gateway at all.** A
+  DM is a NIP-17 gift-wrapped event on Nostr relays, so a conversation belongs
+  to your key rather than to whichever server you are connected to: change
+  servers, self-host, or have the host delete its database, and the history
+  follows you. Four layers, each verifiable on its own — `nip44` (the
+  encryption, checked against the spec's own test vectors, which is what makes a
+  hand-written crypto module a checked claim rather than an assurance), `event`
+  (NIP-01 ids and signatures), `nip59` (the gift wrap: rumor → seal → wrap,
+  where the outer layer is signed by a **throwaway key**, so a relay learns that
+  somebody messaged you and never who), `nip17` (chat semantics — and note every
+  message is wrapped *twice*, to them and to us, because a wrap can only be
+  opened by the key it was addressed to, including by its sender). `nip02` is
+  the contact list, which travels the same way; `relay` is the client;
+  `service` is the task that owns it and feeds `AppState`, shaped like
+  `net::spawn_gateway` deliberately.
+  Two things to know before touching it. The DM views are keyed by `Uuid`
+  because they were written for server channels, so `service::conversation_id`
+  *derives* one from a pubkey — stable across launches and devices, and the
+  reason the whole DM surface kept working unchanged. And **the contact list is
+  a public, replaceable event**: publishing a partial list deletes everyone
+  missing from it, which is why `ContactList` is read-modify-written whole.
 - `protocol/mod.rs` — re-exports `dioxusfun-protocol` so the client says
   `crate::protocol::…`.
 
 ## Rendezvous anatomy (`rendezvous/src/`)
 
 - `relay.rs` — the three WS handlers: host `/control` (register), friend
-  `/join/{code}`, host `/proxy/{session}` (pairing). `lib.rs` — router & config.
+  `/join/{code}`, host `/proxy/{session}` (pairing). `lib.rs` — router & config,
+  plus two HTTP reads: `/discover` (public listing) and `/resolve/{code}` (one
+  live host by code, listed or not — how a joiner learns the direct address a
+  host advertised before deciding whether to use the relay at all).
 - `registry.rs` — **live hosts** (ephemeral, keyed by shortcode) vs **name
   reservations** (persistent JSON, owner-scoped, survive restart). `discover()`
   lists only live public hosts.
@@ -299,8 +385,8 @@ dx serve --package dioxusfun
 
 # Package the macOS .app + .dmg. Use the script rather than `dx bundle` directly:
 # it passes the code-signing identity, which is what makes macOS keep its Screen
-# Recording / Microphone grants across rebuilds instead of treating every build
-# as a new app. The identity is per-developer and deliberately not in
+# Recording / Microphone / Camera grants across rebuilds instead of treating
+# every build as a new app. The identity is per-developer and deliberately not in
 # Dioxus.toml — naming one there breaks everyone else's build and all three CI
 # pre-release jobs, because dx hands it to `codesign`, which fails hard.
 DISCORDIA_SIGNING_IDENTITY="Apple Development: You (TEAMID)" ./bundle-macos.sh
@@ -317,9 +403,38 @@ gateway (`spawn_gateway()`) and drive it through the bot SDK's
 protocol end to end. Copy an existing test's helper block (`spawn_gateway`,
 `connect_user`, `create_guild`, `next_timeout`) when adding one. Each test uses
 a unique temp data dir so they're parallel-safe. Current suites: `archive`,
-`bots`, `emoji`, `owner_controls`, `persistence`, `transport` (server) and
-`handshake` (rendezvous). **First run is slow** — the server crate builds
-LiveKit from source once (~2-3 min).
+`bots`, `emoji`, `identify`, `owner_controls`, `persistence`,
+`rendezvous_voice`, `transport`, `voice` (server) and `handshake`
+(rendezvous). **First run is slow** — the server crate gets
+`livekit-server` once, and how depends on the platform: Windows and Linux
+download the prebuilt release, macOS clones and `go build`s it (~2-3 min, needs
+`go` on PATH). Either way a failure **stops the build** rather than warning:
+the binary is embedded with `include_bytes!`, so a build without it looks
+identical to one with it and quietly cannot host voice locally. Set
+`LIVEKIT_BUNDLE_SKIP=1` to opt out on purpose — the panic names it.
+
+`voice` is the one to copy when a test needs something to fail *partway*.
+`JoinVoice` mints three JWTs, and one key and secret cannot express "this mint
+fails, its siblings succeed". `ScriptedMinter` there implements the same public
+`VoiceTokenMinter` trait the rendezvous-delegated path uses and answers per
+request, so that delegation seam doubles as a fault injector.
+
+**Some tests are `#[ignore]`d, and they are where the platform paths are
+actually verified** — `cargo test -p dioxusfun -- --ignored`.
+`client/tests/live_sfu.rs` drives two live peers against a real SFU (its module
+docs give the command for pointing it at the bundled one) — and is also where
+the audio path gets *measured* rather than asserted: a tone in, the same tone
+analysed coming out, and a sweep that reruns that under the APM, `red`, `dtx`,
+bitrate and DeepFilterNet-ceiling settings so a claim about voice quality has a
+number behind it — read that sweep's own note before trusting a row, because the
+ceiling dimension is what showed the model saturating on a signal it hears no
+speech in;
+`windows_loopback_delivers_real_samples` needs an audio device and a desktop
+session; the macOS `frames_survive_the_encoder_handoff` needs the Screen
+Recording grant and a display. They are ignored because no runner has any of
+that, which is what keeps `cargo test --workspace` headless — not a sign they
+are optional. The Windows one found a heap corruption in shipped code the first
+time anyone ran it.
 
 ---
 
@@ -327,7 +442,20 @@ LiveKit from source once (~2-3 min).
 
 - **Match the surrounding code.** Comments explain *why*, not *what*, and the
   codebase is fairly densely commented at decision points — keep that up.
-- **Never add Codex/AI attribution** to commits, PRs, or generated content.
+- **Never add Claude/AI attribution** to commits, PRs, or generated content.
+- **Deferred work goes in the register, not only in the commit message.** The
+  register is §8 of `docs/AUDIT-2026-08-17.md`. If something is knowingly left
+  undone — a review follow-up, a gap you chose not to close, a fix you could not
+  verify — it goes there, with the check that would settle it. Commit bodies in
+  this repo are unusually good, which is the trap: they are written once and read
+  never, so recording a decision in one *feels* like tracking it. `c86af67`
+  listed five review follow-ups in its body; three were still open a month later
+  and nothing anywhere was tracking them. Same for a bug you find and don't fix —
+  `c6cb994` wrote "That is still open" about a user-reported problem, and that
+  was the last anyone looked at it (it is entry 66 now). This used to be
+  `TODO.md`, which was removed, and for four days the convention pointed at an
+  issue tracker that has never had a single issue in it — which is how the
+  lesson nearly died a second time.
 - Mutations on `AppState` are `async` and write through to the store — follow
   the existing method shape (mutate map → `persist(store.xxx().await, "what")`).
 - Prefer `deliver(guild_member_pubkeys, msg)` over `broadcast` for guild
@@ -343,6 +471,8 @@ the transport bus (P5a core), guild export/import + persistent named rendezvous
 client (P3, needs a browser), delta-sync resume + a 2k-connection load
 benchmark (P5a tail), the signed "guild-moved" redirect + cross-instance media
 copy (P6 tail), and cluster mode (P7, demand-gated).
+
+Contributing workflow (fork, branch, PR) is in `README.md`.
 
 ---
 

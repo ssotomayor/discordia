@@ -118,7 +118,7 @@ fn reclaim_orphan(dir: &Path) {
 // process-enumeration crate for four commands.
 //
 // One forward note: if the client ever gains `windows_subsystem = "windows"`
-// (see TODO.md), these spawns need `CREATE_NO_WINDOW` alongside the SFU's own,
+// (see docs/AUDIT-2026-08-17.md), these spawns need `CREATE_NO_WINDOW` alongside the SFU's own,
 // or each one flashes a console.
 
 /// Whether `pid` is live *and* running `image`.

@@ -574,7 +574,7 @@ pub fn rekey_after_removal(
     // publish under a new index while still accepting the old — and the JS
     // SDK's `ExternalE2EEKeyProvider.setKey` takes no index, so it is not
     // reachable without reimplementing a key provider against minified
-    // internals. Recorded in TODO.md rather than half-done here.
+    // internals. Recorded in docs/AUDIT-2026-08-17.md rather than half-done here.
     for to in &present {
         if to == &me || !needs_send(channel, to, next) {
             continue;

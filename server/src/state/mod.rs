@@ -993,7 +993,7 @@ impl AppState {
 
     /// Remove an emoji from the catalog. The blob stays: it is content-
     /// addressed and may be shared with a message attachment, so dropping it
-    /// needs refcounting (the blob-GC item in TODO.md).
+    /// needs refcounting (the blob-GC item in docs/AUDIT-2026-08-17.md).
     pub async fn delete_emoji(
         &self,
         guild_id: Id,

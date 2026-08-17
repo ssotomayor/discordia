@@ -450,7 +450,7 @@ const DICE_HTML: &str = r##"<!doctype html><html><head><meta charset="utf-8"><st
 
     // Where a share would land. Re-read after every send rather than once at
     // launch, because `message.send` resolves the channel when the call fires,
-    // not when the activity opened — see the channel-binding entry in TODO.md.
+    // not when the activity opened — see the channel-binding entry in docs/AUDIT-2026-08-17.md.
     // This makes that visible; it does not fix it. A change between this read
     // and the next click is still unannounced.
     function showWhere() {

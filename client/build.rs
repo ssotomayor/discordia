@@ -5,8 +5,9 @@
 //! number lives only in the tag CI creates
 //! (`v0.1.0-pre.${{ github.run_number }}`, `ci.yml`) and never reached the
 //! binary. So the app could not name which build it was, and "which artifact
-//! did you download?" — the first question asked of the icon report in
-//! `TODO.md`, among others — had no answer available to the person reporting.
+//! did you download?" — the first question asked of the icon report in the
+//! deferred-work register (`docs/AUDIT-2026-08-17.md` §8), among others — had
+//! no answer available to the person reporting.
 //!
 //! CI sets `DISCORDIA_VERSION` to exactly the tag it publishes, so the string
 //! on screen and the release on GitHub are the same string. Anything built

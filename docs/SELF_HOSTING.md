@@ -122,7 +122,7 @@ It also has a cost worth knowing before you leave it on. LiveKit disables Opus
 voice loses some resilience to packet loss. Opus in-band FEC still applies, so
 this is a degradation rather than a cliff, but it is most noticeable on exactly
 the lossy paths where encryption matters most. There is no setting that keeps
-both — see `TODO.md` under Voice / audio.
+both — see `docs/AUDIT-2026-08-17.md` §8, under Voice / audio.
 
 **`DISCORDIA_E2EE_KEY`** is the manual path: every participant must be given the
 same value out of band, and a mismatch produces **silence** — not noise, and not

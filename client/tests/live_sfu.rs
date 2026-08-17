@@ -490,7 +490,7 @@ impl Feeder {
 /// feeder because that is the only place both sides of the hop exist, and
 /// handed back when it stops.
 ///
-/// The number `TODO.md` and `ClientSettings::denoise_atten_lim_db` both cite —
+/// The number `docs/AUDIT-2026-08-17.md` and `ClientSettings::denoise_atten_lim_db` both cite —
 /// "−3.9 dB applied at a 30 dB ceiling, −2.7 dB at 12" — came from a live
 /// session on one machine and could not be re-run from the repo. This is where
 /// it comes from now, and it is worth knowing it is energy in versus energy
@@ -944,7 +944,7 @@ async fn media_encryption_carries_audio_only_when_the_keys_agree() {
 /// threshold assumes?
 ///
 /// The question is not academic and it is not about audio quality. The gate
-/// opens at −26 dBFS by default, which `TODO.md` records as cutting ordinary
+/// opens at −26 dBFS by default, which `docs/AUDIT-2026-08-17.md` records as cutting ordinary
 /// speech mid-phrase on a real call — and the reason that threshold was thought
 /// safe is that AGC would raise a quiet talker over it. If AGC does nothing,
 /// the threshold has been resting on a mechanism that is not there, and
@@ -967,7 +967,7 @@ async fn media_encryption_carries_audio_only_when_the_keys_agree() {
 /// direct route: this is a level ratio, and gain is a level change, so there is
 /// no subtlety about whether the instrument could see it.
 ///
-/// **What it means for the gate is recorded in `TODO.md`, not decided here.**
+/// **What it means for the gate is recorded in `docs/AUDIT-2026-08-17.md`, not decided here.**
 /// The default threshold was set expecting AGC to lift a quiet talker over it;
 /// that expectation is now measured and false. Lowering the threshold is still
 /// a judgement about somebody's room, so this test supplies the number and
@@ -1019,7 +1019,7 @@ async fn agc_is_measured_against_the_assumption_the_gate_default_rests_on() {
     assert!(
         gain.abs() < 1.0,
         "AGC moved the level by {gain:+.2} dB, having measured inert at ±0.03 dB. \
-         If it now works, the mic-sensitivity entry in TODO.md is resting on a \
+         If it now works, the mic-sensitivity entry in docs/AUDIT-2026-08-17.md is resting on a \
          different world than the one it was written in — read it before \
          widening this bound"
     );
@@ -1150,7 +1150,7 @@ async fn the_knobs_that_shape_voice_quality_are_measured() {
         // against a sine plus white noise it hears no speech and removes
         // everything it is allowed to. Which is why these rows cannot answer
         // "does 30 vs 12 matter for speech": no speech is in the path. See
-        // TODO.md, where that is now the open half.
+        // docs/AUDIT-2026-08-17.md, where that is now the open half.
         (
             "noise 0.15, DFN 100 dB",
             Config {

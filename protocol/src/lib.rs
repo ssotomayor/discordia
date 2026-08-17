@@ -750,7 +750,7 @@ pub enum ClientMessage {
         /// counting this field is for.
         ///
         /// Empty from any client older than the field, which is the answer
-        /// "it did not say" rather than a version. Three entries in `TODO.md`
+        /// "it did not say" rather than a version. Three entries in `docs/AUDIT-2026-08-17.md`
         /// turn on not knowing whether such clients are still out there; this
         /// makes that countable instead of guessed at.
         #[serde(default)]
@@ -845,7 +845,7 @@ pub enum ClientMessage {
     },
     /// Requires `ManageEmojis`: remove an emoji from the guild's catalog. The
     /// blob itself stays (it's content-addressed and may be shared) — see the
-    /// blob-GC item in TODO.md.
+    /// blob-GC item in docs/AUDIT-2026-08-17.md.
     DeleteGuildEmoji {
         guild_id: Id,
         emoji_id: Id,
