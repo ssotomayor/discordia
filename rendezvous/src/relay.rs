@@ -131,7 +131,7 @@ pub async fn handle_host_control(socket: WebSocket, registry: Arc<Registry>, cfg
                 send_err(&mut tx, &format!("name ownership rejected: {e}")).await;
                 return;
             }
-            match registry.claim_name(&slug, raw, pubkey, description.clone(), publish_public) {
+            match registry.claim_name(&slug, pubkey) {
                 Ok(()) => {}
                 Err(ClaimError::Taken) => {
                     send_err(&mut tx, &format!("the name '{slug}' is already taken")).await;
