@@ -714,9 +714,21 @@ impl Store {
 
     /// Record a redemption. Written after the join succeeds, so a use is only
     /// spent on a join that actually happened.
-    pub async fn set_invite_uses(&self, code: &str, uses: u32) -> Result<()> {
-        sqlx::query("UPDATE invites SET uses = ? WHERE code = ?")
-            .bind(i64::from(uses))
+    ///
+    /// **Relative, and it has to be.** This used to take the count the caller
+    /// had read and write it absolutely, which loses a redemption: the caller
+    /// snapshots `uses` under the in-memory entry lock and then releases it
+    /// before awaiting here, so two redemptions of the same code can arrive
+    /// carrying 4 and 5 and land in either order across the pool's eight
+    /// connections. The row is left at whichever wrote last, and because
+    /// `load_or_seed` rehydrates `uses` straight from this column, a restart
+    /// would hand the code back a use it had already spent.
+    ///
+    /// `uses = uses + 1` is order-independent, so the two writes commute and
+    /// the count is right whichever lands first. The database counts
+    /// redemptions; memory enforces the cap.
+    pub async fn bump_invite_uses(&self, code: &str) -> Result<()> {
+        sqlx::query("UPDATE invites SET uses = uses + 1 WHERE code = ?")
             .bind(code)
             .execute(&self.pool)
             .await

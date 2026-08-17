@@ -1287,7 +1287,7 @@ impl AppState {
         // Checked and spent under the same entry lock, so two joins racing the
         // last use of a capped code cannot both win it.
         let code = code.trim();
-        let (guild_id, spent) = {
+        let guild_id = {
             let mut entry = self
                 .invites
                 .get_mut(code)
@@ -1296,7 +1296,7 @@ impl AppState {
                 return Err("unknown or expired invite code".into());
             }
             entry.uses += 1;
-            (entry.guild_id, entry.uses)
+            entry.guild_id
         };
         let guild = self
             .guilds
@@ -1311,7 +1311,7 @@ impl AppState {
             }
             return Err("you are banned from this guild".into());
         }
-        persist(self.store.set_invite_uses(code, spent).await, "invite uses");
+        persist(self.store.bump_invite_uses(code).await, "invite uses");
         Ok(self.admit_member(guild, user).await)
     }
 

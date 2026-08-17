@@ -425,3 +425,47 @@ async fn every_kind_of_blob_reference_is_found() {
 
     handle.abort();
 }
+
+/// Two redemptions of the same code must both be counted, in either order.
+///
+/// The in-memory cap is enforced under the entry lock, but the lock is released
+/// before the write is awaited — so two joins can reach the store carrying
+/// counts 4 and 5 and land in either order across the pool's connections. An
+/// absolute `SET uses = <snapshot>` leaves the row at whichever wrote last, and
+/// `load_or_seed` rehydrates `uses` from that column, so a restart would hand
+/// the code back a use it had already spent. The write is relative for exactly
+/// this reason, and relative writes commute.
+#[tokio::test]
+async fn concurrent_redemptions_cannot_lose_each_other() {
+    let dir = temp_data_dir();
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = dioxusfun_server::store::Store::open(&dir.join("discordia.db"))
+        .await
+        .expect("open store");
+
+    let guild = Id::new_v4();
+    store
+        .set_invite(guild, "code12345678", None, Some(5), "owner")
+        .await
+        .expect("mint");
+
+    // Both in flight at once, which is the case the absolute write lost.
+    let (a, b) = tokio::join!(
+        store.bump_invite_uses("code12345678"),
+        store.bump_invite_uses("code12345678"),
+    );
+    a.expect("first bump");
+    b.expect("second bump");
+
+    let loaded = store.load_all().await.expect("reload");
+    let invite = loaded
+        .invites
+        .iter()
+        .find(|i| i.code == "code12345678")
+        .expect("the invite survived");
+    assert_eq!(
+        invite.uses, 2,
+        "both redemptions must be counted — a lost one hands the code back a use"
+    );
+    assert_eq!(invite.max_uses, Some(5), "the cap round-trips");
+}
