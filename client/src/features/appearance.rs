@@ -92,7 +92,7 @@ pub fn AppearanceButton() -> Element {
                     // `tailwind.css` scans `src/**/*.rs`, so a utility spelled
                     // in a comment is a rule emitted into the committed
                     // `tailwind.out.css`. Writing this one out cost a CI
-                    // failure — the same trap `TODO.md` records for
+                    // failure — the same trap `docs/AUDIT-2026-08-17.md` records for
                     // `Discordia.html`, whose description of a rule was keeping
                     // that rule alive.
                     class: "dxf-pop-in absolute bottom-full left-0 mb-2 z-50 w-80 bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl p-4",

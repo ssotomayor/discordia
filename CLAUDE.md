@@ -403,8 +403,9 @@ gateway (`spawn_gateway()`) and drive it through the bot SDK's
 protocol end to end. Copy an existing test's helper block (`spawn_gateway`,
 `connect_user`, `create_guild`, `next_timeout`) when adding one. Each test uses
 a unique temp data dir so they're parallel-safe. Current suites: `archive`,
-`bots`, `emoji`, `owner_controls`, `persistence`, `transport`, `voice` (server)
-and `handshake` (rendezvous). **First run is slow** — the server crate gets
+`bots`, `emoji`, `identify`, `owner_controls`, `persistence`,
+`rendezvous_voice`, `transport`, `voice` (server) and `handshake`
+(rendezvous). **First run is slow** — the server crate gets
 `livekit-server` once, and how depends on the platform: Windows and Linux
 download the prebuilt release, macOS clones and `go build`s it (~2-3 min, needs
 `go` on PATH). Either way a failure **stops the build** rather than warning:
@@ -442,16 +443,19 @@ time anyone ran it.
 - **Match the surrounding code.** Comments explain *why*, not *what*, and the
   codebase is fairly densely commented at decision points — keep that up.
 - **Never add Claude/AI attribution** to commits, PRs, or generated content.
-- **Deferred work goes in the issue tracker, not only in the commit message.**
-  If something is knowingly left undone — a review follow-up, a gap you chose
-  not to close, a fix you could not verify — it needs an issue. Commit bodies in
+- **Deferred work goes in the register, not only in the commit message.** The
+  register is §8 of `docs/AUDIT-2026-08-17.md`. If something is knowingly left
+  undone — a review follow-up, a gap you chose not to close, a fix you could not
+  verify — it goes there, with the check that would settle it. Commit bodies in
   this repo are unusually good, which is the trap: they are written once and read
   never, so recording a decision in one *feels* like tracking it. `c86af67`
   listed five review follow-ups in its body; three were still open a month later
   and nothing anywhere was tracking them. Same for a bug you find and don't fix —
   `c6cb994` wrote "That is still open" about a user-reported problem, and that
-  was the last anyone looked at it. This used to be `TODO.md`, which was removed;
-  the lesson that killed those two follow-ups did not go with it.
+  was the last anyone looked at it (it is entry 66 now). This used to be
+  `TODO.md`, which was removed, and for four days the convention pointed at an
+  issue tracker that has never had a single issue in it — which is how the
+  lesson nearly died a second time.
 - Mutations on `AppState` are `async` and write through to the store — follow
   the existing method shape (mutate map → `persist(store.xxx().await, "what")`).
 - Prefer `deliver(guild_member_pubkeys, msg)` over `broadcast` for guild

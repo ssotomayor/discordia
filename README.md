@@ -45,9 +45,19 @@ whoever runs its server, by design.
 
 ## Features
 
-**Chat** — guild text channels and DMs, replies, emoji reactions, custom guild
-emoji, message images stored once and content-addressed, per-guild retention
-with an hourly sweep that actually reclaims disk.
+**Chat** — guild text channels, replies, emoji reactions, custom guild emoji,
+message images stored once and content-addressed, per-guild retention with an
+hourly sweep that actually reclaims disk.
+
+**Direct messages that no server can read** — a DM is not a row in some
+operator's database. It is a NIP-17 gift-wrapped event on Nostr relays,
+encrypted with NIP-44, and it never touches the gateway. The conversation
+belongs to your key, so it follows you to another instance, to your own
+self-host, or to any other Nostr client — and the relay carrying it learns only
+that *somebody* messaged you, because the outer event is signed by a throwaway
+key. You can also start a conversation with any npub, whether or not you share
+a guild. Your contact list travels the same way (NIP-02), with the caveat the
+UI states plainly: the contact list is public, the messages are not.
 
 **Voice** — LiveKit-backed voice channels with real SFU media, DeepFilterNet 3
 noise suppression on the mic (pure Rust, weights compiled in), and per-user
@@ -259,7 +269,7 @@ omission — see the reasoning in [docs/ROADMAP.md](docs/ROADMAP.md).
 | [CLAUDE.md](CLAUDE.md) | Developer orientation: architecture, the things that will bite you, per-crate anatomy, conventions. Start here to contribute. |
 | [docs/SELF_HOSTING.md](docs/SELF_HOSTING.md) | Running a server, from one click to a VPS. Environment reference and storage governance. |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Phase-by-phase status, run-modes, and the design stance behind them. |
-| [docs/AUDIT-2026-08.md](docs/AUDIT-2026-08.md) | Evidence-based audit of the whole workspace: verified architecture, the history behind it, findings, and what the docs get wrong. |
+| [docs/AUDIT-2026-08-17.md](docs/AUDIT-2026-08-17.md) | Evidence-based audit of the whole workspace: verified architecture, findings with the command that established each, and the deferred-work register (the successor to the old `TODO.md`). |
 | [server/README.md](server/README.md) · [rendezvous/README.md](rendezvous/README.md) · [grid-layout/README.md](grid-layout/README.md) | Per-crate detail. |
 
 ## Contributing

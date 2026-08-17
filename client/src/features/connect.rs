@@ -229,7 +229,7 @@ pub fn ConnectView(
                 }
 
                 // No `key:` — rsx! honours one only on a body root, so a nested
-                // one is dropped. See TODO.md.
+                // one is dropped. See docs/AUDIT-2026-08-17.md.
                 div { class: "fade-in flex-1",
                 match tab() {
                     Tab::Browse => rsx! {

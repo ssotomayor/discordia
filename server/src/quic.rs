@@ -1,7 +1,7 @@
 //! The QUIC front door: the same gateway, over a transport that encrypts and
 //! authenticates by public key.
 //!
-//! Everything the TCP listener serves is plaintext — see `TODO.md` under
+//! Everything the TCP listener serves is plaintext — see `docs/AUDIT-2026-08-17.md` under
 //! Security. A self-hosted machine at a home address has no domain and no CA,
 //! so ordinary TLS would mean a self-signed certificate pinned to the host's
 //! key and a hand-written verifier, whose failure mode is the silent one where

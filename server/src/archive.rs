@@ -33,7 +33,7 @@ pub struct GuildArchive {
     /// The guild's custom emoji. Only the catalog travels — `image` is a
     /// content address, so the destination must already hold (or later
     /// re-receive) the blob. Cross-instance blob copy is the open P6-tail item
-    /// in TODO.md; until then an imported guild keeps its shortcodes and
+    /// in docs/AUDIT-2026-08-17.md; until then an imported guild keeps its shortcodes and
     /// re-uploads are cheap because identical bytes dedupe to the same address.
     #[serde(default)]
     pub emojis: Vec<GuildEmoji>,

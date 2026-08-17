@@ -68,7 +68,7 @@ fn reorder_positions(guild: &[Channel], moved: Id, target: Id) -> Vec<(Id, u32)>
     // This is not a micro-optimisation. Each message is an `UpdateChannel`, the
     // server rate-limits those on a budget shared with everything else the
     // connection does, and it drops the excess without saying so — so a burst
-    // is a partially applied reorder the user is never told about. See TODO.md.
+    // is a partially applied reorder the user is never told about. See docs/AUDIT-2026-08-17.md.
     let (lo, hi) = (from.min(to), from.max(to));
     let mut slots: Vec<u32> = guild[lo..=hi].iter().map(|c| c.position).collect();
     slots.sort_unstable();

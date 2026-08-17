@@ -71,7 +71,7 @@ pub struct ClientSettings {
     /// libwebrtc's own capture path, and we push finished hops into an external
     /// source instead, which is documented not to be fed by `AudioState`. The
     /// options are stored and read back faithfully — which is why `set_apm`'s
-    /// check reports them "kept" — and consumed by nobody. See `TODO.md`.
+    /// check reports them "kept" — and consumed by nobody. See `docs/AUDIT-2026-08-17.md`.
     ///
     /// Left on and left exposed on purpose: the switch is harmless, and an SDK
     /// where it starts working would be welcome. What must not survive is the
@@ -194,7 +194,7 @@ fn default_sfx_volume() -> u8 {
 /// threshold it cuts more rather than less. Suppression and threshold have to
 /// move together.
 ///
-/// `TODO.md` records the recommendation rather than a new constant: calibrate.
+/// `docs/AUDIT-2026-08-17.md` records the recommendation rather than a new constant: calibrate.
 /// The VU bar already draws this threshold against a live meter, so what is
 /// missing is a "speak normally" step to place it — which is also the only
 /// arrangement in which changing the suppressor can ask for a recalibration

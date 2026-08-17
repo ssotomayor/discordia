@@ -21,9 +21,10 @@
      that merely looks like a utility becomes one. `t.hidden!==(...)` inside the
      vendored LiveKit bundle read as `hidden` with an `!important` modifier and
      produced a `.hidden\!` rule.
-   * Prose about a class generates that class. TODO.md carried an entry
-     explaining that an unused drop-shadow utility had leaked into the build, and
-     the mention inside that entry was by then what kept it there. A comment
+   * Prose about a class generates that class. The deferred-work register
+     (`docs/AUDIT-2026-08-17.md` §8) carries an entry explaining that an unused
+     drop-shadow utility had leaked into the build, and the mention inside that
+     entry was by then what kept it there. A comment
      cannot describe a utility without conjuring it, which is why this one names
      none, and why excluding the docs one glob at a time was never going to hold.
    * Anything else sitting in the tree: the design comp at the repo root, an SVG

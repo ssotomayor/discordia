@@ -108,7 +108,7 @@ impl LiveKitConfig {
         // rather than being told voice is unavailable). It stays as the last
         // resort because it is right for the two cases that are *not* remote —
         // us, and a LAN friend — and dropping it would take voice away from
-        // both. See `TODO.md` for the part this does not fix.
+        // both. See `docs/AUDIT-2026-08-17.md` for the part this does not fix.
         let host = match (&self.public_host, &self.lan_host, is_loopback(host)) {
             (Some(public), _, true) => public.as_str(),
             (None, Some(lan), true) => lan.as_str(),

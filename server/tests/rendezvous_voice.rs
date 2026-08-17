@@ -1,7 +1,7 @@
 //! What a rendezvous *without* a shared SFU leads the gateway to hand out for
 //! voice — and what changes once the host has a public address.
 //!
-//! `TODO.md` carried this as reasoned-from-the-code and never reproduced: with
+//! `docs/AUDIT-2026-08-17.md` carried this as reasoned-from-the-code and never reproduced: with
 //! no `livekit_url` from the relay, the gateway falls back to deriving one from
 //! the connection, a proxied friend arrives on loopback, and the `lan_host`
 //! substitution hands them the host's **LAN** address — right for a friend who
@@ -185,7 +185,7 @@ async fn a_rendezvous_without_an_sfu_offers_no_livekit_url() {
 /// then waits out a LiveKit connect timeout instead of being told voice is
 /// unavailable. Left in place because the two cannot be told apart at this
 /// point, and refusing would take voice from the host itself, whose own client
-/// arrives on the very same loopback address (see `TODO.md`).
+/// arrives on the very same loopback address (see `docs/AUDIT-2026-08-17.md`).
 #[tokio::test]
 async fn a_proxied_friend_is_handed_the_lan_address_when_nothing_better_exists() {
     let (url, _handle) = spawn_gateway(LiveKitConfig {

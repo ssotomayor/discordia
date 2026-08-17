@@ -616,7 +616,7 @@ mod tests {
 
     /// Does asking for raw mode change the signal, or only the request?
     ///
-    /// This is the measurement `TODO.md` asks for, and it is deliberately not
+    /// This is the measurement `docs/AUDIT-2026-08-17.md` asks for, and it is deliberately not
     /// the one that entry proposed. It suggested the `live_sfu` sweep — but that
     /// sweep feeds a `NativeAudioSource` with synthesised frames and never opens
     /// a microphone at all, and "how the device is opened" is the entire content

@@ -9,7 +9,7 @@
 //! `GET /media/{file}` route also exists for future thin/web clients.
 //!
 //! GC of unreferenced blobs is deferred (content-addressing makes blobs shared,
-//! so deletion needs refcounting — tracked in TODO.md).
+//! so deletion needs refcounting — tracked in docs/AUDIT-2026-08-17.md).
 
 use std::path::PathBuf;
 

@@ -19,9 +19,10 @@
 > by a per-connection routing table — `deliver()` is now O(recipient
 > connections) via a pubkey→conn index, `broadcast()` reaches all (rare). A
 > slow consumer's bounded queue overflows → the connection is dropped and the
-> client reconnects+resnapshots (the successor to lag→resync). 5 transport
-> tests green (non-member exclusion, multi-device delivery, DM privacy,
-> disconnect cleanup, backward pagination). **Still open on 5a:** seq-numbered
+> client reconnects+resnapshots (the successor to lag→resync). 4 transport
+> tests green (non-member exclusion, multi-device delivery, disconnect
+> cleanup, backward pagination — the DM-privacy test went with the DMs, which
+> no longer reach the gateway). **Still open on 5a:** seq-numbered
 > *delta-sync* resume (currently a slow client gets a full re-snapshot, not a
 > `since` delta), and the **2k-connection load / restart-recovery benchmark**
 > (deferred by decision — landed on correctness tests only). Message + catalog
@@ -122,9 +123,10 @@ security-sensitive sub-problems get first-class attention:
   **synchronously invalidate** it (bus-delivered invalidation, not TTL expiry).
   Test: kicked user's next frame is rejected, no stale-cache window.
 - Schema: users, profiles (+xp), guilds, channels, roles, member_roles,
-  members, messages `(channel_id, created_at)` indexed, reactions, dms, bans,
+  members, messages `(channel_id, created_at)` indexed, reactions, bans,
   invites, bot_installs. Migrations via sqlx. SQLite default (embedded),
-  Postgres via `DATABASE_URL`.
+  Postgres via `DATABASE_URL`. (There is no `dms` table: direct messages left
+  the server entirely — see `client/src/nostr/`.)
 - **Media out of message rows.** Message images stop being ≤3MB data-URLs in
   the DB: upload to Blossom (fallback: instance-local blob dir served over
   HTTP), messages store URLs. Do it now, while the schema is being written.
@@ -327,11 +329,12 @@ up early and needs defenses first.
 | No CI/ops foundation | Phase 2 onward (CI required before merge) |
 | Trust optics (fast AI-built distrust) | Stance: small-scale reliability first; cluster demand-gated; public history + CI |
 
-## Explicitly deferred (tracked in TODO.md)
+## Explicitly deferred (tracked in `docs/AUDIT-2026-08-17.md` §8)
 
-Threads, E2EE DMs (NIP-44), cross-instance federation
-features beyond identity, native mobile apps (post-PWA), official hosted
-instance.
+Threads, cross-instance federation features beyond identity, native mobile
+apps (post-PWA), official hosted instance. **E2EE DMs shipped** and are no
+longer deferred: NIP-17 gift-wrapped messages over NIP-44, in
+`client/src/nostr/`.
 
 **Payments — decided: Nostr zaps, no in-app wallet.** The Solana wallet stays
 removed and will not be rebuilt (custody burden, second keypair post-Nostr,
