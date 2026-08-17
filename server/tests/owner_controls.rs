@@ -2412,15 +2412,22 @@ async fn a_rename_reaches_the_guild_without_a_reconnect() {
         .unwrap();
 
     // The owner is told, without either side reconnecting.
+    //
+    // Matched on the guild as well as the pubkey, because a rename touches
+    // *every* guild the user is in — they are also in the system Lobby — and
+    // which update arrives first is `DashMap` iteration order rather than
+    // anything this test should depend on. Breaking on the first one passed on
+    // Windows and failed on CI's Linux, which is the same test asserting two
+    // different things on two machines.
     let updated = loop {
         if let ServerMessage::MemberUpdate(m) = next_timeout(&mut owner).await
             && m.user.pubkey == friend_id.pubkey()
+            && m.guild_id == guild_id
         {
             break m;
         }
     };
     assert_eq!(updated.user.username, "Bartolomé");
-    assert_eq!(updated.guild_id, guild_id);
 
     // And the name the next message is attributed to has moved too, which is
     // the half a member-row update alone would miss.
