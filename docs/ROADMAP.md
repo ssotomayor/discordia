@@ -336,6 +336,19 @@ apps (post-PWA), official hosted instance. **E2EE DMs shipped** and are no
 longer deferred: NIP-17 gift-wrapped messages over NIP-44, in
 `client/src/nostr/`.
 
+Two more, moved here from the register on 2026-08-17 because they are direction
+rather than deferred work — neither describes something broken:
+
+- **Role hierarchy and channel permission overwrites.** v1 uses the flat
+  grant-subset rule instead, deliberately: a moderator can only grant what they
+  hold. Revisit if guilds grow moderation teams with tiers, which is the
+  trigger rather than a date — tiers are what make "who may act on whom"
+  ambiguous, and the flat rule answers it for free until then.
+- **Level curve tuning.** The XP system is real and message-count based; what
+  the curve should *be* is a product judgement with no criterion written down,
+  so there is nothing to close. It needs a stated goal (how long to reach level
+  10, and what a level is worth) before it is work rather than a preference.
+
 **Payments — decided: Nostr zaps, no in-app wallet.** The Solana wallet stays
 removed and will not be rebuilt (custody burden, second keypair post-Nostr,
 audience mismatch). Payments arrive via the Lightning/Nostr stack, custody-free
