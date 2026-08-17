@@ -940,6 +940,24 @@ pub enum ClientMessage {
         #[serde(default)]
         max_uses: Option<u32>,
     },
+    /// Requires `ManageChannels`: move channels within a guild, in one frame.
+    ///
+    /// **Positions only, deliberately.** The obvious way to reorder is to send
+    /// an `UpdateChannel` per row, and that is what this replaces: it is a full
+    /// replace, so it carries `name`/`topic`/`read_only`/`slowmode_secs` as
+    /// they were when the mover's screen last rendered, and someone else's edit
+    /// to a row that merely got renumbered is overwritten by a client that was
+    /// not trying to change it.
+    ///
+    /// One frame rather than one per row for a second reason: the per-row form
+    /// spent one rate-limit hit per channel, so a guild whose channels have
+    /// never been reordered (every position 0, so the whole guild renumbers)
+    /// could exhaust the window in a single drag and have the tail refused.
+    ReorderChannels {
+        guild_id: Id,
+        /// `(channel_id, new position)`, for the rows that move.
+        positions: Vec<(Id, u32)>,
+    },
     /// Join a guild by invite code (works for private guilds). Gates apply
     /// exactly as for `JoinGuild` (reply may be `JoinChallenge`).
     JoinByInvite {

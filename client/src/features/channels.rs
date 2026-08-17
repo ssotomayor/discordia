@@ -112,25 +112,32 @@ fn reorder_positions(guild: &[Channel], moved: Id, target: Id) -> Vec<(Id, u32)>
 
 /// Send what a drop implies, and nothing when it implies nothing.
 ///
-/// `UpdateChannel` is a full replace, so every field travels back untouched —
-/// a reorder that dropped a topic or a read-only flag would be silent data
-/// loss rather than a visible bug. The server re-checks `ManageChannels`, so
-/// the caller's gate is only there to keep the affordance off a row nobody may
-/// move.
+/// **One `ReorderChannels` frame carrying positions only.** This used to send
+/// one `UpdateChannel` per renumbered row, and the comment here defended it:
+/// `UpdateChannel` is a full replace, so every field had to travel back
+/// untouched or a reorder would drop a topic. That was true and it was the
+/// problem — the fields travelled back as they were *when this client last
+/// rendered*, so somebody else's edit to a row that merely got renumbered was
+/// overwritten by a client that was not trying to change it.
+///
+/// The frame count mattered too: one rate-limit hit per row meant a guild whose
+/// channels have never been reordered (all at position 0, so the whole guild
+/// renumbers) could spend the entire window on a single drag.
+///
+/// The server re-checks `ManageChannels`, so the caller's gate is only there to
+/// keep the affordance off a row nobody may move.
 fn send_reorder(gw: &GatewayTx, group: &[Channel], moved: Id, target: Id) {
-    for (id, position) in reorder_positions(group, moved, target) {
-        let Some(ch) = group.iter().find(|c| c.id == id) else {
-            continue;
-        };
-        gw.send(ClientMessage::UpdateChannel {
-            channel_id: id,
-            name: ch.name.clone(),
-            topic: ch.topic.clone(),
-            read_only: ch.read_only,
-            position,
-            slowmode_secs: ch.slowmode_secs,
-        });
+    let positions = reorder_positions(group, moved, target);
+    if positions.is_empty() {
+        return;
     }
+    let Some(guild_id) = group.first().map(|c| c.guild_id) else {
+        return;
+    };
+    gw.send(ClientMessage::ReorderChannels {
+        guild_id,
+        positions,
+    });
 }
 
 /// Right-click management menu over a channel row (`ManageChannels` only).
