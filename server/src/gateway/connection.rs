@@ -1312,6 +1312,32 @@ pub async fn handle_connection(
                             }
                         }
                     }
+                    ClientMessage::UpdateUsername { username } => {
+                        let Some(u) = user.as_mut() else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "identify first".into(),
+                            }).await;
+                            continue;
+                        };
+                        if !limiter.allow() {
+                            reject_rate_limited(&mut ws_tx).await;
+                            continue;
+                        }
+                        // Same canonicalisation as the handshake, so a name
+                        // cannot arrive here in a shape Identify would have
+                        // refused — the length cap in particular.
+                        let username = sanitize_username(&username);
+                        if username == u.username {
+                            continue;
+                        }
+                        // The connection's own copy first: it is what every
+                        // message this peer sends is attributed to.
+                        u.username = username.clone();
+                        for member in ctx.state.rename_user(&u.pubkey, &username).await {
+                            let targets = ctx.state.guild_member_pubkeys(member.guild_id);
+                            ctx.state.deliver(targets, ServerMessage::MemberUpdate(member));
+                        }
+                    }
                     ClientMessage::ReorderChannels { guild_id, positions } => {
                         let Some(u) = user.as_ref() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {

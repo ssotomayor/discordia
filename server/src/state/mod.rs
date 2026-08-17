@@ -2276,6 +2276,48 @@ impl AppState {
         Message { image, ..message }
     }
 
+    /// Change a display name everywhere it is shown, without a reconnect.
+    ///
+    /// The name lives in three places — the global directory, one member row
+    /// per guild, and the `User` the connection carries — and before this only
+    /// the first two were ever written, at Identify. So editing your name took
+    /// effect on your next connect and nowhere else in the meantime.
+    ///
+    /// **Bot member rows are deliberately skipped.** A bot's row shows the
+    /// label whoever installed it chose, not the name the bot process declares;
+    /// letting a bot rename its own row here would undo that in the one place
+    /// it is most visible. A bot renaming itself still updates the global
+    /// directory, which is cosmetic, and changes nothing anybody is shown.
+    ///
+    /// Returns the member rows that actually changed, so the caller broadcasts
+    /// exactly those guilds and nothing else.
+    pub async fn rename_user(&self, pubkey: &str, username: &str) -> Vec<Member> {
+        if let Some(mut u) = self.users.get_mut(pubkey) {
+            u.username = username.to_string();
+        }
+        let user = User {
+            pubkey: pubkey.to_string(),
+            username: username.to_string(),
+        };
+        persist(self.store.upsert_user(&user).await, "user rename");
+
+        let mut changed = Vec::new();
+        for entry in self.members.iter() {
+            let Some(mut m) = entry.value().get_mut(pubkey) else {
+                continue;
+            };
+            if m.bot || m.user.username == username {
+                continue;
+            }
+            m.user.username = username.to_string();
+            changed.push(m.clone());
+        }
+        for m in &changed {
+            persist(self.store.upsert_member(m).await, "member rename");
+        }
+        changed
+    }
+
     /// Mark a user offline in every guild they're a member of. Returns the
     /// guild_id + pubkey pairs that were actually flipped (so callers know
     /// which broadcasts to send).

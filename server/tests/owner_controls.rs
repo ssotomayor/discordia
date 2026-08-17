@@ -9,7 +9,9 @@ use std::time::Duration;
 
 use dioxusfun_bot::{Bot, BotIdentity};
 use dioxusfun_server::livekit::LiveKitConfig;
-use dioxusfun_server::protocol::{ChannelKind, ClientMessage, Id, Permission, ServerMessage};
+use dioxusfun_server::protocol::{
+    ChannelKind, ClientMessage, Id, Intent, Permission, ServerMessage,
+};
 
 async fn next_timeout(session: &mut Bot) -> ServerMessage {
     tokio::time::timeout(Duration::from_secs(5), session.next_event())
@@ -2368,6 +2370,139 @@ async fn reordering_a_whole_guild_costs_one_rate_limit_hit() {
             _ => {}
         }
     }
+
+    handle.abort();
+}
+
+/// A rename reaches everyone in the guild, and the sender's next message
+/// carries the new name — the whole point being that it takes effect *now*
+/// rather than on the next connect.
+#[tokio::test]
+async fn a_rename_reaches_the_guild_without_a_reconnect() {
+    let (url, handle) = spawn_gateway().await;
+
+    let owner_id = BotIdentity::generate();
+    let friend_id = BotIdentity::generate();
+    let (mut owner, _) = connect_user(&url, &owner_id, "Owner").await;
+    let (guild_id, text) = create_guild(&mut owner, "Renames").await;
+
+    let (mut friend, _) = connect_user(&url, &friend_id, "Bartolo").await;
+    friend
+        .send(&ClientMessage::JoinGuild {
+            guild_id,
+            accept: false,
+            pow_nonce: None,
+        })
+        .await
+        .unwrap();
+    loop {
+        if matches!(
+            next_timeout(&mut friend).await,
+            ServerMessage::GuildJoined { .. }
+        ) {
+            break;
+        }
+    }
+
+    friend
+        .send(&ClientMessage::UpdateUsername {
+            username: "Bartolomé".into(),
+        })
+        .await
+        .unwrap();
+
+    // The owner is told, without either side reconnecting.
+    let updated = loop {
+        if let ServerMessage::MemberUpdate(m) = next_timeout(&mut owner).await
+            && m.user.pubkey == friend_id.pubkey()
+        {
+            break m;
+        }
+    };
+    assert_eq!(updated.user.username, "Bartolomé");
+    assert_eq!(updated.guild_id, guild_id);
+
+    // And the name the next message is attributed to has moved too, which is
+    // the half a member-row update alone would miss.
+    friend.send_message(text, "same me").await.unwrap();
+    let posted = loop {
+        if let ServerMessage::MessageCreate(m) = next_timeout(&mut owner).await
+            && m.author.pubkey == friend_id.pubkey()
+        {
+            break m;
+        }
+    };
+    assert_eq!(posted.author.username, "Bartolomé");
+
+    handle.abort();
+}
+
+/// A bot cannot rename itself at all — the gateway refuses the frame.
+///
+/// Worth a test because the reason is not where you would look for it. The
+/// member row a bot shows is its installer's label, and `rename_user` skips bot
+/// rows to protect that — but that guard never runs, because bots are held to
+/// an allowlist of three message types and `UpdateUsername` is not one of them.
+/// The guard stays as defence in depth for the day the allowlist grows; this
+/// asserts the door that is actually shut.
+#[tokio::test]
+async fn a_bot_cannot_rename_itself() {
+    let (url, handle) = spawn_gateway().await;
+
+    let owner_id = BotIdentity::generate();
+    let (mut owner, _) = connect_user(&url, &owner_id, "Owner").await;
+    let (guild_id, text) = create_guild(&mut owner, "Bots").await;
+
+    let bot_id = BotIdentity::generate();
+    owner
+        .send(&ClientMessage::InstallBot {
+            guild_id,
+            bot_pubkey: bot_id.pubkey().to_string(),
+            name: "PingBot".into(),
+            permissions: vec![Permission::SendMessages],
+            intents: vec![Intent::GuildMessages],
+        })
+        .await
+        .unwrap();
+    loop {
+        if matches!(
+            next_timeout(&mut owner).await,
+            ServerMessage::GuildIntegrations { .. }
+        ) {
+            break;
+        }
+    }
+
+    let mut bot = dioxusfun_bot::Bot::connect(&url, &bot_id, "PingBot")
+        .await
+        .unwrap();
+    loop {
+        if matches!(next_timeout(&mut bot).await, ServerMessage::Ready { .. }) {
+            break;
+        }
+    }
+    bot.send(&ClientMessage::UpdateUsername {
+        username: "Server Admin".into(),
+    })
+    .await
+    .unwrap();
+
+    let refusal = next_error(&mut bot).await;
+    assert!(
+        refusal.contains("bots may only"),
+        "expected the bot allowlist refusal, got: {refusal}"
+    );
+
+    // And nothing moved: the label its installer chose still names its messages.
+    bot.send_message(text, "hello").await.unwrap();
+    let posted = loop {
+        if let ServerMessage::MessageCreate(m) = next_timeout(&mut owner).await
+            && m.author.pubkey == bot_id.pubkey()
+        {
+            break m;
+        }
+    };
+    assert_eq!(posted.author.username, "PingBot");
 
     handle.abort();
 }
