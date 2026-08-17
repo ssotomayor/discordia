@@ -96,6 +96,25 @@ back to several unaffiliated defaults), not by you. What a relay can see is that
 somebody sent a given pubkey a message at a given time: gift wrapping signs the
 outer event with a throwaway key, so not even the sender is visible to it.
 
+### Running two instances on one machine
+
+**`DISCORDIA_LIVEKIT_PORT`** (default `7880`) moves the bundled SFU. It sets
+three adjacent ports as a block — signalling on the number you give, the ICE/TCP
+fallback on `+1`, the UDP mux on `+2` — and the generated config and the
+process record are named after it, so two self-hosting instances no longer
+overwrite each other's files or kill each other's SFU.
+
+```sh
+DISCORDIA_LIVEKIT_PORT=7890 cargo run -p dioxusfun-server   # 7890 / 7891 / 7892
+```
+
+A value that is not a number, is zero, or is close enough to the top of the
+range that `+2` would wrap is **ignored** and the default is used: a host that
+silently binds ports nobody asked for is worse than one that ignores a typo.
+
+Only the bundled SFU listens on these. A rendezvous that supplies its own
+LiveKit is unaffected, and so is `LIVEKIT_URL`.
+
 ### Media encryption (client-side)
 
 Voice, screen video and camera all terminate at an SFU, which decrypts and

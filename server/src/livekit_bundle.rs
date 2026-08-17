@@ -37,6 +37,64 @@ const LIVEKIT_BIN_NAME: &str = "livekit-server.exe";
 const LIVEKIT_BIN_NAME: &str = "livekit-server";
 
 pub const DEFAULT_LIVEKIT_PORT: u16 = 7880;
+
+/// Env var that moves the bundled SFU off its default ports.
+///
+/// It exists so two self-hosting instances can coexist on one machine. Before
+/// it, the port, the generated config and the pid file were all fixed, so the
+/// second instance's orphan reclaim killed the first one's SFU and took 7880 —
+/// and that configuration was already broken beforehand, since a second SFU
+/// could never have bound the same port anyway.
+pub const LIVEKIT_PORT_ENV: &str = "DISCORDIA_LIVEKIT_PORT";
+
+/// The three ports one SFU needs, moved as a block.
+///
+/// Derived from one number rather than configured separately: they have to stay
+/// adjacent for a port-mapping caller to reason about them, and three env vars
+/// would let them drift apart in ways only a packet capture would explain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LivekitPorts {
+    /// WebSocket / signalling.
+    pub ws: u16,
+    /// ICE/TCP fallback, for peers whose network blocks UDP.
+    pub tcp: u16,
+    /// The single UDP mux port.
+    pub udp: u16,
+}
+
+impl LivekitPorts {
+    fn from_base(base: u16) -> LivekitPorts {
+        LivekitPorts {
+            ws: base,
+            tcp: base + 1,
+            udp: base + 2,
+        }
+    }
+}
+
+/// Resolve the ports from a raw env value.
+///
+/// Takes the string rather than reading the environment, so it can be tested
+/// without a global mutation every other test in the binary would see.
+/// Anything unparseable, zero, or close enough to the top of the range that
+/// `base + 2` would wrap falls back to the default: a self-host that silently
+/// binds ports nobody asked for is worse than one that ignores a typo.
+pub fn ports_from(raw: Option<&str>) -> LivekitPorts {
+    let base = raw
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .and_then(|v| v.parse::<u16>().ok())
+        .filter(|b| *b > 0 && *b <= u16::MAX - 2)
+        .unwrap_or(DEFAULT_LIVEKIT_PORT);
+    LivekitPorts::from_base(base)
+}
+
+/// The ports this process will use, read once.
+pub fn ports() -> LivekitPorts {
+    static PORTS: std::sync::OnceLock<LivekitPorts> = std::sync::OnceLock::new();
+    *PORTS.get_or_init(|| ports_from(std::env::var(LIVEKIT_PORT_ENV).ok().as_deref()))
+}
+
 /// ICE/TCP fallback, for peers whose network blocks UDP.
 pub const DEFAULT_LIVEKIT_TCP_PORT: u16 = 7881;
 /// **One** UDP port for all media, rather than a range.
@@ -78,7 +136,15 @@ impl Drop for LivekitSubprocess {
 /// a file on disk. Our new child fails to bind and exits; `wait_for_ready` used
 /// to connect to the **orphan** and report success, so self-host came up
 /// talking to a process nobody chose and nothing could stop.
-const PID_FILE: &str = "livekit-server.pid";
+///
+/// **Named per port**, which is what lets two instances coexist. The reclaim
+/// cannot tell "the recorded SFU is a leftover" from "it belongs to a sibling
+/// that is still running" — both are a live process with our image name — so
+/// the second instance used to kill the first one's SFU. Giving each port its
+/// own record removes the question instead of answering it.
+fn pid_file_name() -> String {
+    format!("livekit-server-{}.pid", ports().ws)
+}
 
 /// Kill the SFU a previous run left behind, if the recorded pid is still a live
 /// process running the binary we recorded.
@@ -93,7 +159,7 @@ const PID_FILE: &str = "livekit-server.pid";
 /// Blocking: it shells out. Called from the `spawn_blocking` below for the same
 /// reason the file work is.
 fn reclaim_orphan(dir: &Path) {
-    let path = dir.join(PID_FILE);
+    let path = dir.join(pid_file_name());
     let Ok(contents) = fs::read_to_string(&path) else {
         return;
     };
@@ -219,7 +285,9 @@ pub async fn spawn_livekit(advertise_ip: Option<IpAddr>) -> Result<LivekitSubpro
     };
     let path: PathBuf = dir.join(format!("{stem}-{digest}{ext}"));
 
-    let config_path = dir.join("livekit.yaml");
+    // Named per port for the same reason as the pid file: two instances must
+    // not overwrite each other's config.
+    let config_path = dir.join(format!("livekit-{}.yaml", ports().ws));
     let config = config_yaml(advertise_ip);
 
     // Everything that has to happen on a thread allowed to wait: reclaiming the
@@ -293,31 +361,36 @@ pub async fn spawn_livekit(advertise_ip: Option<IpAddr>) -> Result<LivekitSubpro
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let _ = fs::write(dir.join(PID_FILE), format!("{pid}\n{image}\n"));
+        let _ = fs::write(dir.join(pid_file_name()), format!("{pid}\n{image}\n"));
     }
 
-    wait_for_ready(&mut child, DEFAULT_LIVEKIT_PORT, Duration::from_secs(10))
+    wait_for_ready(&mut child, ports().ws, Duration::from_secs(10))
         .await
         .map_err(|e| format!("livekit not ready: {e}"))?;
 
     Ok(LivekitSubprocess {
         _child: child,
-        pid_file: dir.join(PID_FILE),
+        pid_file: dir.join(pid_file_name()),
     })
 }
 
 /// The config we hand `livekit-server`, kept out of `spawn_livekit` so its
 /// shape can be asserted without a subprocess.
 fn config_yaml(advertise_ip: Option<IpAddr>) -> String {
+    config_yaml_for(advertise_ip, ports())
+}
+
+fn config_yaml_for(advertise_ip: Option<IpAddr>, p: LivekitPorts) -> String {
     // `node_ip` is only written when we have one; left out, LiveKit derives it
     // from the local interfaces exactly as before.
     let node_ip = advertise_ip
         .map(|ip| format!("  node_ip: {ip}\n"))
         .unwrap_or_default();
+    let (ws, tcp, udp) = (p.ws, p.tcp, p.udp);
     format!(
-        "port: {DEFAULT_LIVEKIT_PORT}\n\
+        "port: {ws}\n\
          bind_addresses:\n  - 0.0.0.0\n\
-         rtc:\n  tcp_port: {DEFAULT_LIVEKIT_TCP_PORT}\n  udp_port: {DEFAULT_LIVEKIT_UDP_PORT}\n  use_external_ip: false\n{node_ip}\
+         rtc:\n  tcp_port: {tcp}\n  udp_port: {udp}\n  use_external_ip: false\n{node_ip}\
          keys:\n  {DEFAULT_LIVEKIT_KEY}: {DEFAULT_LIVEKIT_SECRET}\n\
          logging:\n  level: info\n",
     )
@@ -361,6 +434,34 @@ mod tests {
     /// One UDP port and no range, because a range is unmappable — and no
     /// `port_range_*` left behind, which LiveKit would prefer over the mux if
     /// both were present.
+    /// The env var moves all three ports together, and a bad value is ignored
+    /// rather than obeyed — binding ports nobody asked for is worse than
+    /// ignoring a typo.
+    #[test]
+    fn the_port_override_moves_the_block_or_is_ignored() {
+        let d = LivekitPorts {
+            ws: DEFAULT_LIVEKIT_PORT,
+            tcp: DEFAULT_LIVEKIT_TCP_PORT,
+            udp: DEFAULT_LIVEKIT_UDP_PORT,
+        };
+        assert_eq!(ports_from(None), d, "unset is the default");
+        assert_eq!(ports_from(Some("  ")), d, "blank is the default");
+        assert_eq!(ports_from(Some("hello")), d, "unparseable is the default");
+        assert_eq!(ports_from(Some("0")), d, "zero is not a port");
+        // `base + 2` must not wrap: 65534 would give a udp port of 0.
+        assert_eq!(ports_from(Some("65534")), d, "too close to the top");
+
+        let moved = ports_from(Some("7890"));
+        assert_eq!(moved.ws, 7890);
+        assert_eq!(moved.tcp, 7891, "the block stays adjacent");
+        assert_eq!(moved.udp, 7892);
+        assert!(
+            config_yaml_for(None, moved).contains("port: 7890"),
+            "the config the SFU reads has to agree with what we advertise"
+        );
+        assert!(config_yaml_for(None, moved).contains("udp_port: 7892"));
+    }
+
     #[test]
     fn media_rides_a_single_udp_port() {
         let yaml = config_yaml(None);
@@ -419,7 +520,7 @@ mod tests {
     fn a_stale_record_is_dropped_rather_than_acted_on() {
         let dir = std::env::temp_dir().join(format!("dioxusfun-pidtest-{}", std::process::id()));
         fs::create_dir_all(&dir).expect("temp dir");
-        let path = dir.join(PID_FILE);
+        let path = dir.join(pid_file_name());
 
         // Our own pid, deliberately paired with an image we are not running:
         // the pid resolves, the match fails, nothing is killed.
