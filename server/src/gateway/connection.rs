@@ -1151,7 +1151,7 @@ pub async fn handle_connection(
                             }
                         }
                     }
-                    ClientMessage::CreateInvite { guild_id, rotate } => {
+                    ClientMessage::CreateInvite { guild_id, rotate, expires_in_secs, max_uses } => {
                         let Some(u) = user.as_ref() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
@@ -1162,11 +1162,14 @@ pub async fn handle_connection(
                             reject_rate_limited(&mut ws_tx).await;
                             continue;
                         }
-                        match ctx.state.get_or_create_invite(guild_id, rotate, &u.pubkey).await {
-                            Ok(code) => {
+                        match ctx.state.get_or_create_invite(guild_id, rotate, expires_in_secs, max_uses, &u.pubkey).await {
+                            Ok(invite) => {
                                 let _ = send(&mut ws_tx, &ServerMessage::GuildInvite {
                                     guild_id,
-                                    code,
+                                    code: invite.code,
+                                    expires_at_ms: invite.expires_at_ms,
+                                    max_uses: invite.max_uses,
+                                    uses: invite.uses,
                                 }).await;
                             }
                             Err(e) => {

@@ -932,6 +932,13 @@ pub enum ClientMessage {
         guild_id: Id,
         #[serde(default)]
         rotate: bool,
+        /// Lifetime of a newly minted code, in seconds. `None` = never expires,
+        /// which is what every code was before this field existed.
+        #[serde(default)]
+        expires_in_secs: Option<u64>,
+        /// Successful joins the code allows. `None` = unlimited.
+        #[serde(default)]
+        max_uses: Option<u32>,
     },
     /// Join a guild by invite code (works for private guilds). Gates apply
     /// exactly as for `JoinGuild` (reply may be `JoinChallenge`).
@@ -1224,6 +1231,15 @@ pub enum ServerMessage {
     GuildInvite {
         guild_id: Id,
         code: String,
+        /// When the code stops working, in Unix ms. `None` = never.
+        #[serde(default)]
+        expires_at_ms: Option<i64>,
+        /// `None` = unlimited.
+        #[serde(default)]
+        max_uses: Option<u32>,
+        /// Joins already spent against `max_uses`.
+        #[serde(default)]
+        uses: u32,
     },
     /// The guild's ban list (reply to `FetchBans`; requester only).
     GuildBans {

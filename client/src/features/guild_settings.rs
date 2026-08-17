@@ -53,6 +53,11 @@ pub fn GuildSettingsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element 
         let fetch_bans = can_ban;
         use_hook(move || {
             gw.send(ClientMessage::CreateInvite {
+                // No limits from this surface yet: the panel has one button and
+                // nowhere to express a TTL or a cap. The server enforces both;
+                // giving them a control is the other half.
+                expires_in_secs: None,
+                max_uses: None,
                 guild_id,
                 rotate: false,
             });
@@ -336,7 +341,12 @@ pub fn GuildSettingsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element 
                                     let gateway = gateway.clone();
                                     move |_| {
                                         copied.set(false);
-                                        gateway.send(ClientMessage::CreateInvite { guild_id, rotate: true });
+                                        gateway.send(ClientMessage::CreateInvite {
+                                    guild_id,
+                                    rotate: true,
+                                    expires_in_secs: None,
+                                    max_uses: None,
+                                });
                                     }
                                 },
                                 "Rotate"

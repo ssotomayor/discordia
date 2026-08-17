@@ -24,6 +24,20 @@ use crate::protocol::{
     Profile, Reaction, ReplyRef, Role, User,
 };
 
+/// One invite code as it sits on disk.
+///
+/// `None` for either limit means "no limit", which is what every row created
+/// before these columns existed meant — so the migration needs no backfill.
+#[derive(Debug, Clone)]
+pub struct InviteRow {
+    pub code: String,
+    pub guild_id: Id,
+    pub expires_at_ms: Option<i64>,
+    pub max_uses: Option<u32>,
+    pub uses: u32,
+    pub created_by: String,
+}
+
 /// Everything rehydrated into `AppState` at boot.
 #[derive(Default)]
 pub struct LoadedState {
@@ -38,7 +52,7 @@ pub struct LoadedState {
     pub roles: Vec<Role>,
     pub emojis: Vec<GuildEmoji>,
     pub bans: Vec<(Id, String)>,
-    pub invites: Vec<(String, Id)>,
+    pub invites: Vec<InviteRow>,
     pub bot_installs: Vec<BotInstall>,
 }
 
@@ -145,7 +159,10 @@ impl Store {
                 guild_id TEXT NOT NULL, pubkey TEXT NOT NULL,
                 PRIMARY KEY (guild_id, pubkey))",
             "CREATE TABLE IF NOT EXISTS invites (
-                code TEXT PRIMARY KEY, guild_id TEXT NOT NULL UNIQUE)",
+                code TEXT PRIMARY KEY, guild_id TEXT NOT NULL UNIQUE,
+                expires_at_ms INTEGER, max_uses INTEGER,
+                uses INTEGER NOT NULL DEFAULT 0,
+                created_by TEXT NOT NULL DEFAULT '')",
             "CREATE TABLE IF NOT EXISTS bot_installs (
                 guild_id TEXT NOT NULL, bot_pubkey TEXT NOT NULL,
                 name TEXT NOT NULL,
@@ -171,6 +188,13 @@ impl Store {
             "ALTER TABLE messages ADD COLUMN reply_author_pubkey TEXT",
             "ALTER TABLE messages ADD COLUMN reply_author_username TEXT",
             "ALTER TABLE messages ADD COLUMN reply_excerpt TEXT",
+            // Invite limits. An older row has no expiry and no cap, which is
+            // exactly what it meant before the columns existed — so the
+            // defaults below are the migration, not a placeholder for one.
+            "ALTER TABLE invites ADD COLUMN expires_at_ms INTEGER",
+            "ALTER TABLE invites ADD COLUMN max_uses INTEGER",
+            "ALTER TABLE invites ADD COLUMN uses INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE invites ADD COLUMN created_by TEXT NOT NULL DEFAULT ''",
         ] {
             if let Err(e) = sqlx::query(stmt).execute(&self.pool).await
                 && !e.to_string().contains("duplicate column name")
@@ -307,12 +331,20 @@ impl Store {
         {
             out.bans.push((parse_id(&r.get::<String, _>(0)), r.get(1)));
         }
-        for r in sqlx::query("SELECT code, guild_id FROM invites")
-            .fetch_all(&self.pool)
-            .await?
+        for r in sqlx::query(
+            "SELECT code, guild_id, expires_at_ms, max_uses, uses, created_by FROM invites",
+        )
+        .fetch_all(&self.pool)
+        .await?
         {
-            out.invites
-                .push((r.get(0), parse_id(&r.get::<String, _>(1))));
+            out.invites.push(InviteRow {
+                code: r.get(0),
+                guild_id: parse_id(&r.get::<String, _>(1)),
+                expires_at_ms: r.get(2),
+                max_uses: r.get::<Option<i64>, _>(3).map(|v| v as u32),
+                uses: r.get::<i64, _>(4) as u32,
+                created_by: r.get(5),
+            });
         }
         for r in
             sqlx::query("SELECT guild_id, bot_pubkey, name, permissions, intents FROM bot_installs")
@@ -621,19 +653,43 @@ impl Store {
         Ok(())
     }
 
-    pub async fn set_invite(&self, guild_id: Id, code: &str) -> Result<()> {
+    pub async fn set_invite(
+        &self,
+        guild_id: Id,
+        code: &str,
+        expires_at_ms: Option<i64>,
+        max_uses: Option<u32>,
+        created_by: &str,
+    ) -> Result<()> {
         let gid = guild_id.to_string();
         let mut tx = self.pool.begin().await?;
         sqlx::query("DELETE FROM invites WHERE guild_id = ?")
             .bind(&gid)
             .execute(&mut *tx)
             .await?;
-        sqlx::query("INSERT INTO invites (code, guild_id) VALUES (?, ?)")
-            .bind(code)
-            .bind(&gid)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query(
+            "INSERT INTO invites (code, guild_id, expires_at_ms, max_uses, uses, created_by)
+             VALUES (?, ?, ?, ?, 0, ?)",
+        )
+        .bind(code)
+        .bind(&gid)
+        .bind(expires_at_ms)
+        .bind(max_uses.map(i64::from))
+        .bind(created_by)
+        .execute(&mut *tx)
+        .await?;
         tx.commit().await
+    }
+
+    /// Record a redemption. Written after the join succeeds, so a use is only
+    /// spent on a join that actually happened.
+    pub async fn set_invite_uses(&self, code: &str, uses: u32) -> Result<()> {
+        sqlx::query("UPDATE invites SET uses = ? WHERE code = ?")
+            .bind(i64::from(uses))
+            .bind(code)
+            .execute(&self.pool)
+            .await
+            .map(|_| ())
     }
 
     pub async fn upsert_bot_install(&self, i: &BotInstall) -> Result<()> {

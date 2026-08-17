@@ -961,7 +961,10 @@ fn apply(
             // they already captured stays captured — see `mediakey`.
             s.pending_rekey = true;
         }
-        ServerMessage::GuildInvite { guild_id, code } => {
+        // The limits ride along on the wire and nothing renders them yet — the
+        // invite panel shows a code and a rotate button, with no room for a
+        // TTL or a use count.
+        ServerMessage::GuildInvite { guild_id, code, .. } => {
             s.invites.insert(guild_id, code);
         }
         ServerMessage::GuildBans { guild_id, users } => {

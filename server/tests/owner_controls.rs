@@ -520,6 +520,8 @@ async fn private_guild_hidden_and_invite_flow() {
         .send(&ClientMessage::CreateInvite {
             guild_id,
             rotate: false,
+            expires_in_secs: None,
+            max_uses: None,
         })
         .await
         .unwrap();
@@ -527,6 +529,7 @@ async fn private_guild_hidden_and_invite_flow() {
         if let ServerMessage::GuildInvite {
             guild_id: gid,
             code,
+            ..
         } = next_timeout(&mut owner).await
             && gid == guild_id
         {
@@ -554,6 +557,8 @@ async fn private_guild_hidden_and_invite_flow() {
         .send(&ClientMessage::CreateInvite {
             guild_id,
             rotate: true,
+            expires_in_secs: None,
+            max_uses: None,
         })
         .await
         .unwrap();
@@ -683,6 +688,8 @@ async fn kick_removes_and_ban_blocks() {
         .send(&ClientMessage::CreateInvite {
             guild_id,
             rotate: false,
+            expires_in_secs: None,
+            max_uses: None,
         })
         .await
         .unwrap();
@@ -2076,6 +2083,153 @@ async fn a_rate_limited_channel_update_is_refused_out_loud() {
         dioxusfun_server::gateway::RATE_LIMITED,
         "a dropped update must name why it was dropped"
     );
+
+    handle.abort();
+}
+
+/// Fetch (or mint) an invite and return the whole frame, limits included.
+async fn mint_invite(
+    owner: &mut Bot,
+    guild_id: Id,
+    expires_in_secs: Option<u64>,
+    max_uses: Option<u32>,
+) -> (String, Option<i64>, Option<u32>, u32) {
+    owner
+        .send(&ClientMessage::CreateInvite {
+            guild_id,
+            rotate: true,
+            expires_in_secs,
+            max_uses,
+        })
+        .await
+        .unwrap();
+    loop {
+        if let ServerMessage::GuildInvite {
+            guild_id: gid,
+            code,
+            expires_at_ms,
+            max_uses,
+            uses,
+        } = next_timeout(owner).await
+            && gid == guild_id
+        {
+            return (code, expires_at_ms, max_uses, uses);
+        }
+    }
+}
+
+/// A capped code admits exactly as many people as it says, and the refusal is
+/// the same one an unknown code gets — a spent code must not be distinguishable
+/// from a wrong guess, or it becomes an oracle for "this guild exists".
+#[tokio::test]
+async fn an_invite_stops_working_once_its_uses_are_spent() {
+    let (url, handle) = spawn_gateway().await;
+
+    let owner_id = BotIdentity::generate();
+    let (mut owner, _) = connect_user(&url, &owner_id, "Owner").await;
+    let (guild_id, _) = create_guild(&mut owner, "Capped").await;
+
+    let (code, expires_at, max_uses, uses) = mint_invite(&mut owner, guild_id, None, Some(1)).await;
+    assert_eq!(max_uses, Some(1));
+    assert_eq!(uses, 0, "a fresh code has spent nothing");
+    assert_eq!(expires_at, None, "no TTL was asked for");
+
+    // First guest gets in.
+    let (mut first, _) = connect_user(&url, &BotIdentity::generate(), "First").await;
+    first
+        .send(&ClientMessage::JoinByInvite {
+            code: code.clone(),
+            accept: true,
+            pow_nonce: None,
+        })
+        .await
+        .unwrap();
+    let joined = loop {
+        match next_timeout(&mut first).await {
+            ServerMessage::GuildJoined { guild, .. } => break guild.id,
+            ServerMessage::Error { message } => panic!("first join refused: {message}"),
+            _ => {}
+        }
+    };
+    assert_eq!(joined, guild_id);
+
+    // Second guest is refused, and told the same thing a bad code is told.
+    let (mut second, _) = connect_user(&url, &BotIdentity::generate(), "Second").await;
+    second
+        .send(&ClientMessage::JoinByInvite {
+            code: code.clone(),
+            accept: true,
+            pow_nonce: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        next_error(&mut second).await,
+        "unknown or expired invite code"
+    );
+
+    handle.abort();
+}
+
+/// An expired code is refused before the join gate, not after it: a code that
+/// can never be spent must not hand out a proof-of-work challenge.
+#[tokio::test]
+async fn an_expired_invite_is_refused_without_a_challenge() {
+    let (url, handle) = spawn_gateway().await;
+
+    let owner_id = BotIdentity::generate();
+    let (mut owner, _) = connect_user(&url, &owner_id, "Owner").await;
+    let (guild_id, _) = create_guild(&mut owner, "Fleeting").await;
+
+    // Zero seconds: expires_at is now, and `is_live` is a strict `<`.
+    let (code, expires_at, _, _) = mint_invite(&mut owner, guild_id, Some(0), None).await;
+    assert!(expires_at.is_some(), "a TTL was asked for");
+
+    let (mut guest, _) = connect_user(&url, &BotIdentity::generate(), "Guest").await;
+    guest
+        .send(&ClientMessage::JoinByInvite {
+            code,
+            accept: true,
+            pow_nonce: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        next_error(&mut guest).await,
+        "unknown or expired invite code"
+    );
+
+    handle.abort();
+}
+
+/// Asking for the guild's invite must never hand back a code that no longer
+/// works — the caller has no way to tell, and would paste it to somebody.
+#[tokio::test]
+async fn fetching_an_invite_replaces_a_dead_one() {
+    let (url, handle) = spawn_gateway().await;
+
+    let owner_id = BotIdentity::generate();
+    let (mut owner, _) = connect_user(&url, &owner_id, "Owner").await;
+    let (guild_id, _) = create_guild(&mut owner, "Stale").await;
+
+    let (dead, _, _, _) = mint_invite(&mut owner, guild_id, Some(0), None).await;
+
+    // `rotate: false` — the "give me the current one" path.
+    owner
+        .send(&ClientMessage::CreateInvite {
+            guild_id,
+            rotate: false,
+            expires_in_secs: None,
+            max_uses: None,
+        })
+        .await
+        .unwrap();
+    let fresh = loop {
+        if let ServerMessage::GuildInvite { code, .. } = next_timeout(&mut owner).await {
+            break code;
+        }
+    };
+    assert_ne!(fresh, dead, "an expired code must not be handed back");
 
     handle.abort();
 }

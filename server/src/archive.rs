@@ -110,8 +110,8 @@ impl Store {
         let invite = loaded
             .invites
             .into_iter()
-            .find(|(_, gid)| *gid == guild_id)
-            .map(|(code, _)| code);
+            .find(|i| i.guild_id == guild_id)
+            .map(|i| i.code);
         let bot_installs: Vec<BotInstall> = loaded
             .bot_installs
             .into_iter()
@@ -219,9 +219,17 @@ impl Store {
 
         // Invite — mint a fresh code rather than reuse (avoids collisions on the
         // destination). Only if the source had one.
+        //
+        // **The source's limits do not travel, deliberately.** The code here is
+        // new, so an absolute expiry copied from the source would either be
+        // already past or would be measuring from the wrong moment, and a
+        // use count spent on the old instance is not owed by the new one. The
+        // destination owner re-mints with the limits they want; what the
+        // archive carries is that the guild *had* an invite, not its terms.
         if archive.invite.is_some() {
             let code = crate::state::random_invite_code();
-            self.set_invite(new_guild_id, &code).await?;
+            self.set_invite(new_guild_id, &code, None, None, &archive.guild.owner_pubkey)
+                .await?;
         }
 
         // Installed bots.
