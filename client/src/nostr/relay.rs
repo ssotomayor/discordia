@@ -20,8 +20,6 @@
 //! is also the reason a failed connection is logged and retried rather than
 //! surfaced — one relay refusing is not a condition the user can act on.
 
-#![allow(dead_code)]
-
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
@@ -70,11 +68,12 @@ pub struct Filter {
 /// What the pool reports back to the app.
 #[derive(Debug, Clone)]
 pub enum RelayEvent {
-    /// An event nobody has delivered before, from `relay`.
-    Event {
-        relay: String,
-        event: Box<Event>,
-    },
+    /// An event nobody has delivered before. Which relay carried it is not
+    /// part of this: the pool deduplicates by event id, so "first to arrive"
+    /// is a race rather than a fact about the message. The one place the
+    /// source matters — a relay serving something that does not verify — names
+    /// it at the point of the drop instead.
+    Event(Box<Event>),
     /// A relay finished replaying stored events for a subscription.
     EndOfStored {
         relay: String,
@@ -328,16 +327,22 @@ async fn handle_relay_message(
             // Verified here, once, before anything downstream sees it. A relay
             // can send whatever it likes; an event that does not verify is not
             // a message, it is a forgery attempt.
+            //
+            // Named rather than dropped in silence: this is the one inbound
+            // failure that says something about the *relay* rather than about
+            // the network, and a relay serving events that do not verify is
+            // worth knowing about before it is trusted with a conversation.
             if !event.verify() {
+                eprintln!(
+                    "[nostr] {url}: dropped an event that does not verify (id {})",
+                    event.id
+                );
                 return;
             }
             if !seen.lock().await.insert_new(&event.id) {
                 return;
             }
-            let _ = out.send(RelayEvent::Event {
-                relay: url.to_string(),
-                event: Box::new(event),
-            });
+            let _ = out.send(RelayEvent::Event(Box::new(event)));
         }
         "EOSE" => {
             let _ = out.send(RelayEvent::EndOfStored {
@@ -410,5 +415,106 @@ mod tests {
         );
         // The most recent are still remembered, which is what matters.
         assert!(!seen.insert_new(&(SeenSet::CAP + 99).to_string()));
+    }
+
+    /// Drive one frame through the handler and collect whatever it emitted.
+    ///
+    /// `handle_relay_message` is the whole of what a relay can make this client
+    /// believe, and until now nothing exercised it: every test above this point
+    /// covers a helper it calls rather than the decision itself.
+    async fn feed(frames: &[&str]) -> Vec<RelayEvent> {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let seen = Arc::new(Mutex::new(SeenSet::default()));
+        for f in frames {
+            handle_relay_message("wss://r.test", f, &tx, &seen).await;
+        }
+        drop(tx);
+        let mut out = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            out.push(ev);
+        }
+        out
+    }
+
+    fn signed_event() -> Event {
+        let secret = secp256k1::SecretKey::from_slice(&[7; 32]).expect("valid key");
+        super::super::event::sign_with(&secret, 1_700_000_000, 1, vec![], "hello".into())
+    }
+
+    /// A relay can send whatever it likes, and the signature is the only thing
+    /// that makes an event a message rather than a claim. This is the guard the
+    /// gift wrap's deniability rests on, so it gets a test of its own.
+    #[tokio::test]
+    async fn an_event_that_does_not_verify_never_reaches_the_app() {
+        let mut forged = signed_event();
+        forged.content = "hello, but rewritten in flight".into();
+        let frame = serde_json::json!(["EVENT", "sub", forged]).to_string();
+
+        assert!(
+            feed(&[&frame]).await.is_empty(),
+            "a rewritten event must not be delivered"
+        );
+    }
+
+    /// And the honest one does arrive — once, however many relays repeat it.
+    #[tokio::test]
+    async fn a_verifying_event_arrives_exactly_once() {
+        let frame = serde_json::json!(["EVENT", "sub", signed_event()]).to_string();
+        let out = feed(&[&frame, &frame]).await;
+
+        assert_eq!(out.len(), 1, "the duplicate must be dropped");
+        assert!(matches!(out[0], RelayEvent::Event(_)));
+    }
+
+    /// A rejected publish used to be parsed and then discarded by the app. The
+    /// reason a relay gives is the only account of why a message did not land,
+    /// so it has to survive the trip.
+    #[tokio::test]
+    async fn a_rejection_keeps_the_reason_the_relay_gave() {
+        let out = feed(&[r#"["OK","abc123",false,"rate-limited: slow down"]"#]).await;
+
+        match out.as_slice() {
+            [
+                RelayEvent::Published {
+                    relay,
+                    id,
+                    accepted,
+                    message,
+                },
+            ] => {
+                assert_eq!(relay, "wss://r.test");
+                assert_eq!(id, "abc123");
+                assert!(!accepted);
+                assert_eq!(message, "rate-limited: slow down");
+            }
+            other => panic!("expected one Published, got {other:?}"),
+        }
+    }
+
+    /// End-of-stored names its relay, which is what separates "this relay has
+    /// no history for us" from "history is still coming".
+    #[tokio::test]
+    async fn end_of_stored_names_the_relay_that_finished() {
+        let out = feed(&[r#"["EOSE","sub"]"#]).await;
+
+        assert!(
+            matches!(&out[..], [RelayEvent::EndOfStored { relay }] if relay == "wss://r.test"),
+            "got {out:?}"
+        );
+    }
+
+    /// Nothing a relay can put in the first slot should reach the app as a
+    /// message — including frames this client does not implement.
+    #[tokio::test]
+    async fn unknown_and_malformed_frames_are_ignored() {
+        let out = feed(&[
+            "not json at all",
+            "{}",
+            r#"["NOTICE","the relay says something"]"#,
+            r#"["EVENT"]"#,
+        ])
+        .await;
+
+        assert!(out.is_empty(), "got {out:?}");
     }
 }

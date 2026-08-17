@@ -151,19 +151,44 @@ async fn run_export(args: &[String]) {
                 eprintln!("usage: discordia export --all <out-dir>");
                 std::process::exit(2);
             };
-            std::fs::create_dir_all(dir).ok();
+            // Loudly, because this is a backup command. An unwritable
+            // directory used to be ignored here, and then every write below
+            // failed just as quietly — so the run printed "exported 0
+            // guild(s)" and exited 0. A backup that reports success while
+            // writing nothing is worse than one that fails.
+            if let Err(e) = std::fs::create_dir_all(dir) {
+                eprintln!("could not create {dir}: {e}");
+                std::process::exit(1);
+            }
             let loaded = store.load_all().await.unwrap();
-            let mut n = 0;
+            let (mut n, mut failed) = (0, 0);
             for g in &loaded.guilds {
-                if let Ok(Some(archive)) = store.export_guild(g.id).await {
-                    let path = format!("{dir}/{}.json", g.id);
-                    let json = serde_json::to_string_pretty(&archive).unwrap();
-                    if std::fs::write(&path, json).is_ok() {
-                        n += 1;
+                let path = format!("{dir}/{}.json", g.id);
+                match store.export_guild(g.id).await {
+                    Ok(Some(archive)) => {
+                        let json = serde_json::to_string_pretty(&archive).unwrap();
+                        match std::fs::write(&path, json) {
+                            Ok(()) => n += 1,
+                            Err(e) => {
+                                eprintln!("could not write {path}: {e}");
+                                failed += 1;
+                            }
+                        }
+                    }
+                    // A guild that vanished between the load and the export is
+                    // not an error; one that failed to export is.
+                    Ok(None) => {}
+                    Err(e) => {
+                        eprintln!("could not export {}: {e}", g.id);
+                        failed += 1;
                     }
                 }
             }
             println!("exported {n} guild(s) → {dir}/");
+            if failed > 0 {
+                eprintln!("{failed} guild(s) failed");
+                std::process::exit(1);
+            }
         }
         _ => {
             eprintln!("usage: discordia export --guild <uuid> <out.json> | --all <out-dir>");

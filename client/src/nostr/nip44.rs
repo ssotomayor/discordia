@@ -30,7 +30,6 @@
 // rather than unproven — and the attribute comes off the moment a caller lands.
 // It is scoped to this module rather than the crate so it cannot quietly cover
 // anything else in the meantime.
-#![allow(dead_code)]
 
 use base64::Engine as _;
 use chacha20::cipher::{KeyIvInit, StreamCipher};

@@ -18,8 +18,6 @@
 //! must read the current list first, which is why `ContactList` carries the
 //! whole set and there is no `add_one` here.
 
-#![allow(dead_code)]
-
 use secp256k1::SecretKey;
 
 use super::event::{self, Event};
@@ -72,6 +70,11 @@ impl ContactList {
     }
 
     /// What we call `pubkey`, if we call them anything.
+    ///
+    /// Unreached: nothing sets a petname yet, so nothing reads one. Kept
+    /// because the field is parsed and re-published either way — dropping the
+    /// accessor would not stop us carrying the data, only stop us reading it.
+    #[allow(dead_code)]
     pub fn petname(&self, pubkey: &str) -> Option<&str> {
         self.contacts
             .iter()

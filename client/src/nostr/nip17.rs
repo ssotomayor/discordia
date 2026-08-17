@@ -14,8 +14,6 @@
 //! The two copies are independent events with independent throwaway keys, so a
 //! relay cannot pair them and learn that A and B are talking.
 
-#![allow(dead_code)]
-
 use secp256k1::SecretKey;
 
 use super::event::{self, Event, Rumor};
@@ -147,6 +145,14 @@ pub fn dm_relay_list(secret: &SecretKey, relays: &[String], now: i64) -> Event {
 }
 
 /// Read a kind:10050 back into a relay list.
+///
+/// **Unreached, and the gap it leaves is worth naming.** We publish our own
+/// list (`dm_relay_list`, above) but never read anyone else's, so a DM goes to
+/// the relays *we* chose rather than the ones the recipient said they read.
+/// That works while both ends default to the same list and silently does not
+/// when they do not. Wiring it needs a per-recipient subscription and publish
+/// routing, which is more than this reader — see the audit's register.
+#[allow(dead_code)]
 pub fn parse_dm_relay_list(event: &Event) -> Vec<String> {
     if event.kind != KIND_DM_RELAYS {
         return Vec::new();

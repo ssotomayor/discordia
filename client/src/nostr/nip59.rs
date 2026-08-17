@@ -25,8 +25,6 @@
 //! wraps posted the same second correlate a sender with a recipient regardless
 //! of what the signatures say.
 
-#![allow(dead_code)]
-
 use secp256k1::SecretKey;
 
 use super::event::{self, Event, Rumor};
