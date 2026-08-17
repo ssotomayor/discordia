@@ -102,6 +102,21 @@ pub struct Reservation {
     pub owner_pubkey: String,
 }
 
+/// Why releasing a name was refused.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ReleaseError {
+    /// No such reservation. Reported the same way as a wrong owner, on
+    /// purpose: the two are indistinguishable to anyone who is not the owner,
+    /// and telling them apart would turn this into an oracle for which names
+    /// are claimed — a thing `/discover` deliberately does not answer for
+    /// hosts that are offline.
+    NotYours,
+    /// A session is registered under that name right now. Releasing while a
+    /// host is live would leave the session running under a code anyone could
+    /// then claim, so the owner is asked to stop the host first.
+    LiveNow,
+}
+
 /// Why a name claim was refused.
 #[derive(Debug, PartialEq, Eq)]
 pub enum ClaimError {
@@ -236,6 +251,25 @@ impl Registry {
                 owner_pubkey: owner.to_string(),
             },
         );
+        self.persist();
+        Ok(())
+    }
+
+    /// Give up a reserved name, if `owner` is the key that holds it.
+    ///
+    /// The inverse of `claim_name`, and the reason it exists: a reservation
+    /// persists, so before this there was no way to undo one. A name claimed
+    /// by mistake, or held by a key its owner has rotated away from, stayed
+    /// claimed for the life of the relay's data directory.
+    pub fn release_name(&self, slug: &str, owner: &str) -> Result<(), ReleaseError> {
+        match self.reservations.get(slug) {
+            Some(r) if r.owner_pubkey == owner => {}
+            _ => return Err(ReleaseError::NotYours),
+        }
+        if self.hosts.contains_key(slug) {
+            return Err(ReleaseError::LiveNow);
+        }
+        self.reservations.remove(slug);
         self.persist();
         Ok(())
     }

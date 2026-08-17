@@ -350,3 +350,145 @@ async fn responsive_host_keeps_its_listing() {
     assert!(registry.discover()[0].idle_secs < 1);
     pump.abort();
 }
+
+/// Send a release frame and return whatever the rendezvous answers.
+async fn send_release(ws: &mut Ws, name: &str, pubkey: &str, signature: &str) -> serde_json::Value {
+    let frame = serde_json::json!({
+        "op": "release_name",
+        "d": { "name": name, "pubkey": pubkey, "signature": signature }
+    });
+    ws.send(Message::Text(frame.to_string())).await.unwrap();
+    next_json(ws).await
+}
+
+/// The owner can give a name back, and it is claimable by somebody else after.
+///
+/// Before this a reservation was permanent: `claim_name` persisted and nothing
+/// removed one, so a name claimed by mistake was stuck for the life of the
+/// relay's data directory.
+#[tokio::test]
+async fn an_owner_can_release_a_name_and_another_key_can_then_take_it() {
+    let (base, registry) = spawn_with(Config::default()).await;
+    let (owner_secret, owner) = identity(21);
+    let (other_secret, other) = identity(22);
+
+    // Claim, then drop the session so the name is reserved but not live.
+    {
+        let (mut ws, nonce) = connect_control(&base).await;
+        let sig = sign(&owner_secret, &nonce, &owner, "Mudanza");
+        send_register(&mut ws, "Mudanza", &owner, &sig).await;
+        assert_eq!(next_json(&mut ws).await["op"], "registered");
+    }
+    // The host entry is dropped when the socket closes; wait for it.
+    for _ in 0..50 {
+        if registry.reservation_owner("mudanza").is_some() && registry.lookup("mudanza").is_none() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!(
+        registry.reservation_owner("mudanza").as_deref(),
+        Some(&owner[..])
+    );
+
+    // Somebody else cannot take it while it is reserved.
+    {
+        let (mut ws, nonce) = connect_control(&base).await;
+        let sig = sign(&other_secret, &nonce, &other, "Mudanza");
+        send_register(&mut ws, "Mudanza", &other, &sig).await;
+        assert_eq!(next_json(&mut ws).await["op"], "error");
+    }
+
+    // The owner releases it.
+    {
+        let (mut ws, nonce) = connect_control(&base).await;
+        let sig = sign(&owner_secret, &nonce, &owner, "Mudanza");
+        let reply = send_release(&mut ws, "Mudanza", &owner, &sig).await;
+        assert_eq!(reply["op"], "released", "got {reply}");
+        assert_eq!(reply["d"]["name"], "mudanza", "the slug, lowercased");
+    }
+    assert!(registry.reservation_owner("mudanza").is_none());
+
+    // And now the other key can have it.
+    {
+        let (mut ws, nonce) = connect_control(&base).await;
+        let sig = sign(&other_secret, &nonce, &other, "Mudanza");
+        send_register(&mut ws, "Mudanza", &other, &sig).await;
+        assert_eq!(next_json(&mut ws).await["op"], "registered");
+    }
+}
+
+/// A stranger cannot release somebody else's name, and is told the same thing
+/// they would be told about a name nobody has claimed — otherwise this becomes
+/// an oracle for which names are taken by hosts that are offline, which
+/// `/discover` deliberately does not answer.
+#[tokio::test]
+async fn a_stranger_cannot_release_a_name_and_learns_nothing_from_trying() {
+    let (base, registry) = spawn_with(Config::default()).await;
+    let (owner_secret, owner) = identity(31);
+    let (thief_secret, thief) = identity(32);
+
+    {
+        let (mut ws, nonce) = connect_control(&base).await;
+        let sig = sign(&owner_secret, &nonce, &owner, "Fortaleza");
+        send_register(&mut ws, "Fortaleza", &owner, &sig).await;
+        assert_eq!(next_json(&mut ws).await["op"], "registered");
+    }
+
+    // A valid signature, by the wrong key.
+    let taken = {
+        let (mut ws, nonce) = connect_control(&base).await;
+        let sig = sign(&thief_secret, &nonce, &thief, "Fortaleza");
+        send_release(&mut ws, "Fortaleza", &thief, &sig).await
+    };
+    // And the same attempt against a name nobody ever claimed.
+    let free = {
+        let (mut ws, nonce) = connect_control(&base).await;
+        let sig = sign(&thief_secret, &nonce, &thief, "Vacante");
+        send_release(&mut ws, "Vacante", &thief, &sig).await
+    };
+
+    assert_eq!(taken["op"], "error");
+    // Compared with the name blanked out: both messages name the slug that was
+    // asked about, so a literal comparison would always differ and would be
+    // asserting nothing. What must match is everything else — a stranger has
+    // to be unable to tell a claimed name from a free one by the answer.
+    let blank = |v: &serde_json::Value, slug: &str| {
+        v["d"]["message"].as_str().unwrap().replace(slug, "<name>")
+    };
+    assert_eq!(
+        blank(&taken, "fortaleza"),
+        blank(&free, "vacante"),
+        "a claimed name and a free one must answer a stranger identically"
+    );
+    assert_eq!(
+        registry.reservation_owner("fortaleza").as_deref(),
+        Some(&owner[..]),
+        "the reservation survived the attempt"
+    );
+}
+
+/// A forged signature is refused even when it names the real owner's key.
+#[tokio::test]
+async fn a_release_with_a_bad_signature_is_refused() {
+    let (base, registry) = spawn_with(Config::default()).await;
+    let (owner_secret, owner) = identity(41);
+
+    {
+        let (mut ws, nonce) = connect_control(&base).await;
+        let sig = sign(&owner_secret, &nonce, &owner, "Sellada");
+        send_register(&mut ws, "Sellada", &owner, &sig).await;
+        assert_eq!(next_json(&mut ws).await["op"], "registered");
+    }
+
+    let (mut ws, _nonce) = connect_control(&base).await;
+    // Signed against a nonce that is not this connection's.
+    let stale = sign(&owner_secret, "some-other-nonce", &owner, "Sellada");
+    let reply = send_release(&mut ws, "Sellada", &owner, &stale).await;
+
+    assert_eq!(reply["op"], "error");
+    assert_eq!(
+        registry.reservation_owner("sellada").as_deref(),
+        Some(&owner[..])
+    );
+}

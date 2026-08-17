@@ -82,9 +82,23 @@ gets a random shortcode.
 
 `name`, `pubkey` and `signature` are all `null` for an anonymous host.
 
+Giving a name back is the same proof against the same challenge, sent *instead
+of* `register` — the connection carries one frame and closes, because this is an
+administrative act rather than a session:
+
+```json
+{ "op": "release_name", "d": { "name": "casa", "pubkey": "<64-hex>", "signature": "<schnorr>" } }
+```
+
+Refused while a session is live under that name (stop the host first), and a
+request from a key that does not own it is answered exactly as one for a name
+nobody has claimed — otherwise the endpoint would enumerate which offline names
+are taken.
+
 **Rendezvous → Host:**
 ```json
 { "op": "registered", "d": { "shortcode": "purple-fox-42", "livekit_url": null } }
+{ "op": "released", "d": { "name": "casa" } }
 { "op": "new_friend", "d": { "session_id": "uuid-..." } }
 { "op": "error", "d": { "message": "..." } }
 ```
@@ -99,7 +113,9 @@ After the proxy WS pairing is established, frames flow through verbatim
 ## Status
 
 - Live hosts are in-memory (restarts wipe shortcodes); claimed *names* persist
-  to `<data>/reservations.json` and stay owned across restarts
+  to `<data>/reservations.json` and stay owned across restarts — and can be
+  given back with `release_name`. There is no rename: release-then-claim works
+  but is not atomic, so a taken new name costs you the old one.
 - Name ownership is Schnorr-proven, but joining is not: anyone holding a
   shortcode or name can connect to that host
 - No rate limiting

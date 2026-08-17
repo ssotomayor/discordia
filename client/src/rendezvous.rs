@@ -276,6 +276,15 @@ pub async fn register(
                 return Ok((info, ControlStream { ws }));
             }
             RendezvousToHost::Error { message } => return Err(message),
+            // Only ever sent in answer to `ReleaseName`, which this client has
+            // no way to send — releasing a name is an administrative act with
+            // no UI behind it yet. Named rather than swept into the arm below
+            // so that adding the affordance is a compile error here, not a
+            // frame that silently means "keep waiting".
+            RendezvousToHost::Released { name } => {
+                eprintln!("[rendezvous] unexpected release confirmation for '{name}'");
+                continue;
+            }
             RendezvousToHost::NewFriend { .. } | RendezvousToHost::Challenge { .. } => continue,
         }
     }

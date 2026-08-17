@@ -12,7 +12,7 @@ use futures_util::{SinkExt, StreamExt};
 use uuid::Uuid;
 
 use crate::Config;
-use crate::registry::{ClaimError, HostEntry, Registry, validate_name};
+use crate::registry::{ClaimError, HostEntry, Registry, ReleaseError, validate_name};
 use crate::shortcode;
 use crate::verify;
 
@@ -60,6 +60,43 @@ pub async fn handle_host_control(socket: WebSocket, registry: Arc<Registry>, cfg
                 transport_signature,
                 transport_addrs,
             ),
+            // An administrative frame rather than a session: verify, answer,
+            // and close. It shares the challenge nonce with the claim because
+            // it is the same proof — control of the key the name is bound to.
+            Ok(HostToRendezvous::ReleaseName {
+                name,
+                pubkey,
+                signature,
+            }) => {
+                let slug = match validate_name(&name) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        send_err(&mut tx, &e).await;
+                        return;
+                    }
+                };
+                if let Err(e) = verify::verify_ownership(&pubkey, &signature, &nonce, &name) {
+                    send_err(&mut tx, &format!("name ownership rejected: {e}")).await;
+                    return;
+                }
+                match registry.release_name(&slug, &pubkey) {
+                    Ok(()) => {
+                        tracing::info!(name = %slug, "reservation released");
+                        let _ = send_msg(&mut tx, &RendezvousToHost::Released { name: slug }).await;
+                    }
+                    Err(ReleaseError::NotYours) => {
+                        send_err(&mut tx, &format!("'{slug}' is not reserved by that key")).await;
+                    }
+                    Err(ReleaseError::LiveNow) => {
+                        send_err(
+                            &mut tx,
+                            &format!("'{slug}' has a live session — stop the host first"),
+                        )
+                        .await;
+                    }
+                }
+                return;
+            }
             Err(e) => {
                 send_err(&mut tx, &format!("invalid register frame: {e}")).await;
                 return;
