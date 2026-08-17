@@ -77,6 +77,17 @@ async fn build_context(cfg: ServerConfig) -> std::io::Result<Arc<AppContext>> {
             if deleted > 0 {
                 tracing::info!(deleted, "retention sweep removed expired messages");
             }
+            // After retention, not before: expiring a message is what orphans
+            // its picture, and sweeping first would leave it for another hour.
+            let media = sweep_state.sweep_media().await;
+            if media.deleted > 0 {
+                tracing::info!(
+                    deleted = media.deleted,
+                    freed_bytes = media.freed_bytes,
+                    kept = media.kept,
+                    "media sweep reclaimed unreferenced blobs"
+                );
+            }
         }
     });
 

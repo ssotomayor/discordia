@@ -15,6 +15,8 @@
 use std::path::Path;
 
 use chrono::{DateTime, Utc};
+use std::collections::HashSet;
+
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::{Row, SqlitePool};
 use uuid::Uuid;
@@ -679,6 +681,35 @@ impl Store {
         .execute(&mut *tx)
         .await?;
         tx.commit().await
+    }
+
+    /// Every blob filename any row still points at.
+    ///
+    /// The two producers are the only two readers: `messages.image` holds the
+    /// `media:` sentinel, and `guild_emojis.image` holds the bare filename
+    /// (the sentinel is stripped there because the client renders that column
+    /// as a URL path). Anything that starts storing blobs has to be added here
+    /// or the sweep will delete what it wrote — which is why this lives next
+    /// to the schema rather than in `media.rs`.
+    pub async fn referenced_media(&self) -> Result<HashSet<String>> {
+        let mut out = HashSet::new();
+        for r in sqlx::query("SELECT image FROM messages WHERE image IS NOT NULL")
+            .fetch_all(&self.pool)
+            .await?
+        {
+            let v: String = r.get(0);
+            if let Some(name) = v.strip_prefix("media:") {
+                out.insert(name.to_string());
+            }
+        }
+        for r in sqlx::query("SELECT image FROM guild_emojis")
+            .fetch_all(&self.pool)
+            .await?
+        {
+            let v: String = r.get(0);
+            out.insert(v.strip_prefix("media:").unwrap_or(&v).to_string());
+        }
+        Ok(out)
     }
 
     /// Record a redemption. Written after the join succeeds, so a use is only

@@ -11,12 +11,26 @@
 //! GC of unreferenced blobs is deferred (content-addressing makes blobs shared,
 //! so deletion needs refcounting — tracked in docs/AUDIT-2026-08-17.md).
 
+use std::collections::HashSet;
 use std::path::PathBuf;
+use std::time::{Duration, SystemTime};
 
 use base64::Engine as _;
 use sha2::{Digest, Sha256};
 
 const SENTINEL: &str = "media:";
+
+/// What one sweep did. Counted rather than logged line by line: a store with
+/// ten thousand blobs would otherwise write ten thousand lines to say nothing.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct SweepReport {
+    /// Blobs still referenced by a row.
+    pub kept: usize,
+    /// Unreferenced, but younger than the grace period — left alone.
+    pub too_young: usize,
+    pub deleted: usize,
+    pub freed_bytes: u64,
+}
 
 #[derive(Clone)]
 pub struct MediaStore {
@@ -68,6 +82,58 @@ impl MediaStore {
         let mime = mime_for_name(&name);
         let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
         Some(format!("data:{mime};base64,{b64}"))
+    }
+
+    /// Delete every blob no row points at, and report what went.
+    ///
+    /// **Mark-and-sweep rather than refcounting, deliberately.** A count has to
+    /// be right after every edit, delete, retention pass, guild import and
+    /// crash — and a count that drifts *down* deletes a picture somebody is
+    /// still looking at. The set of live references is derivable from the
+    /// database at any moment (`Store::referenced_media`), so nothing has to be
+    /// maintained and a wrong answer needs a bug in one query rather than in
+    /// every writer.
+    ///
+    /// `grace` is what makes it safe to run beside live traffic. A blob is
+    /// written *before* the row that names it, and `persist` is fire-and-forget,
+    /// so there is a window where a perfectly good blob has no reference yet.
+    /// Files younger than `grace` are therefore never swept, however unreferenced
+    /// they look. A file whose mtime cannot be read is skipped for the same
+    /// reason: unknown age is not evidence of being old.
+    pub fn sweep(&self, referenced: &HashSet<String>, grace: Duration) -> SweepReport {
+        let mut report = SweepReport::default();
+        let Ok(entries) = std::fs::read_dir(&self.dir) else {
+            return report;
+        };
+        let now = SystemTime::now();
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            // `.<name>.tmp` is a half-written blob owned by `store_data_url`;
+            // it is not addressable and not ours to reason about here.
+            if name.starts_with('.') {
+                continue;
+            }
+            if referenced.contains(&name) {
+                report.kept += 1;
+                continue;
+            }
+            let Ok(meta) = entry.metadata() else { continue };
+            let young = meta
+                .modified()
+                .ok()
+                .and_then(|m| now.duration_since(m).ok())
+                .is_none_or(|age| age < grace);
+            if young {
+                report.too_young += 1;
+                continue;
+            }
+            let size = meta.len();
+            if std::fs::remove_file(entry.path()).is_ok() {
+                report.deleted += 1;
+                report.freed_bytes += size;
+            }
+        }
+        report
     }
 
     /// Raw bytes + mime for the HTTP route.
@@ -134,5 +200,92 @@ fn mime_for_name(name: &str) -> &'static str {
         // byte string.
         Some("enc") => ENCRYPTED_BLOB_MIME,
         _ => "application/octet-stream",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn store() -> (MediaStore, tempdir::Dir) {
+        let dir = tempdir::Dir::new();
+        (MediaStore::open(dir.path()).expect("open"), dir)
+    }
+
+    /// Minimal scratch dir so these tests need no crate-level dev-dependency.
+    mod tempdir {
+        use std::path::PathBuf;
+        use std::sync::atomic::{AtomicU32, Ordering};
+        pub struct Dir(PathBuf);
+        impl Dir {
+            pub fn new() -> Dir {
+                static N: AtomicU32 = AtomicU32::new(0);
+                let p = std::env::temp_dir().join(format!(
+                    "dxf-media-{}-{}",
+                    std::process::id(),
+                    N.fetch_add(1, Ordering::Relaxed)
+                ));
+                std::fs::create_dir_all(&p).expect("mkdir");
+                Dir(p)
+            }
+            pub fn path(&self) -> PathBuf {
+                self.0.clone()
+            }
+        }
+        impl Drop for Dir {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+    }
+
+    /// A 1x1 png, small enough to inline as a literal.
+    const PNG: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+
+    #[test]
+    fn an_unreferenced_blob_is_reclaimed_and_a_referenced_one_is_not() {
+        let (media, dir) = store();
+        let sentinel = media.store_data_url(PNG).expect("stored");
+        let name = sentinel.strip_prefix(SENTINEL).unwrap().to_string();
+        assert!(dir.path().join(&name).exists(), "blob was written");
+
+        // Referenced: kept, even with no grace at all.
+        let referenced: HashSet<String> = [name.clone()].into_iter().collect();
+        let report = media.sweep(&referenced, Duration::ZERO);
+        assert_eq!(report.kept, 1);
+        assert_eq!(report.deleted, 0);
+        assert!(dir.path().join(&name).exists());
+
+        // Unreferenced: taken, and the freed bytes are reported.
+        let report = media.sweep(&HashSet::new(), Duration::ZERO);
+        assert_eq!(report.deleted, 1);
+        assert!(report.freed_bytes > 0, "freed bytes must be counted");
+        assert!(!dir.path().join(&name).exists());
+    }
+
+    /// The window this exists for: a blob is written before the row that names
+    /// it, so a young orphan is a blob whose message is still in flight.
+    #[test]
+    fn a_young_orphan_survives_the_grace_period() {
+        let (media, dir) = store();
+        let sentinel = media.store_data_url(PNG).expect("stored");
+        let name = sentinel.strip_prefix(SENTINEL).unwrap().to_string();
+
+        let report = media.sweep(&HashSet::new(), Duration::from_secs(3600));
+        assert_eq!(report.deleted, 0, "a blob written seconds ago must survive");
+        assert_eq!(report.too_young, 1);
+        assert!(dir.path().join(&name).exists());
+    }
+
+    /// A half-written blob belongs to `store_data_url`, not to the sweep.
+    #[test]
+    fn a_temp_file_is_never_swept() {
+        let (media, dir) = store();
+        let tmp = dir.path().join(".deadbeef.png.tmp");
+        std::fs::write(&tmp, b"half a picture").expect("write");
+
+        let report = media.sweep(&HashSet::new(), Duration::ZERO);
+        assert_eq!(report.deleted, 0);
+        assert!(tmp.exists(), "the temp file must be left for its owner");
     }
 }
