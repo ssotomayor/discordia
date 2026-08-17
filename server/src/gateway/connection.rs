@@ -2188,7 +2188,49 @@ impl RateLimiter {
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_CLIENT_VERSION_BYTES, sanitize_client_version};
+    use super::{MAX_CLIENT_VERSION_BYTES, RateLimiter, sanitize_client_version};
+    use std::time::{Duration, Instant};
+
+    /// The limiter admits a full window and then refuses.
+    ///
+    /// Exercised end to end by the reorder tests, never directly — and the
+    /// boundary is the interesting part: off by one here is either a limit that
+    /// never fires or one that fires a message early.
+    #[test]
+    fn a_full_window_is_admitted_and_the_next_hit_is_not() {
+        let mut limiter = RateLimiter::new();
+        for i in 0..RateLimiter::LIMIT {
+            assert!(limiter.allow(), "hit {i} is inside the window");
+        }
+        assert!(
+            !limiter.allow(),
+            "the hit past the limit must be refused, not admitted"
+        );
+    }
+
+    /// And the window *slides*: a hit older than it stops counting.
+    ///
+    /// This is the half no integration test can reach — asserting it through
+    /// the gateway would mean sleeping ten seconds. Without it, a limiter that
+    /// never evicted would look correct in every test we have and would refuse
+    /// a connection forever after its first busy moment.
+    #[test]
+    fn a_hit_older_than_the_window_stops_counting() {
+        let mut limiter = RateLimiter::new();
+        let expired = Instant::now() - RateLimiter::WINDOW - Duration::from_secs(1);
+        for _ in 0..RateLimiter::LIMIT {
+            limiter.hits.push_back(expired);
+        }
+        assert!(
+            limiter.allow(),
+            "a window full of expired hits must not block a fresh one"
+        );
+        assert_eq!(
+            limiter.hits.len(),
+            1,
+            "the expired hits should have been evicted, not merely ignored"
+        );
+    }
 
     /// The injection this exists to stop. A peer choosing its own version
     /// string must not be able to write a second log line, or a second field.
