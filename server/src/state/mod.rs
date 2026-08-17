@@ -38,6 +38,50 @@ struct Conn {
     tx: mpsc::Sender<ServerMessage>,
 }
 
+/// One invite code, with whatever limits it was minted under.
+///
+/// **Both limits are `Option`, and `None` means unlimited** — which is what
+/// every code minted before this existed already was, so an old code keeps
+/// working rather than expiring the moment the server restarts.
+///
+/// Validation belongs here rather than at the call site because there are two
+/// callers with different jobs: `invite_guild` resolves a code *before* the
+/// join gate, so an expired code is refused instead of being handed a
+/// proof-of-work challenge it can never spend, and `join_by_invite` resolves
+/// it again and consumes a use. Both have to agree about what "still valid"
+/// means.
+#[derive(Debug, Clone)]
+pub struct Invite {
+    /// The code itself. Duplicated from the map key so an `Invite` handed to a
+    /// caller is complete on its own.
+    pub code: String,
+    pub guild_id: Id,
+    /// Unix ms after which the code stops working. `None` = never expires.
+    pub expires_at_ms: Option<i64>,
+    /// Successful joins the code allows. `None` = unlimited.
+    pub max_uses: Option<u32>,
+    /// Joins already spent. Only a join that actually happened counts — a
+    /// challenge issued and never answered must not burn one.
+    pub uses: u32,
+    /// Who minted it. The "per-code attribution" half of the entry: an owner
+    /// looking at a leaked code can now tell which moderator created it.
+    pub created_by: String,
+}
+
+/// Wall clock in Unix milliseconds — the unit every timestamp on the wire uses.
+fn now_ms() -> i64 {
+    chrono::Utc::now().timestamp_millis()
+}
+
+impl Invite {
+    /// Whether the code can still admit somebody, at `now_ms`.
+    fn is_live(&self, now_ms: i64) -> bool {
+        let unexpired = self.expires_at_ms.is_none_or(|at| now_ms < at);
+        let unspent = self.max_uses.is_none_or(|max| self.uses < max);
+        unexpired && unspent
+    }
+}
+
 pub struct AppState {
     /// Durable persistence (SQLite). Messages live ONLY there; the metadata
     /// maps below are the in-memory authority, written through on mutation and
@@ -70,9 +114,9 @@ pub struct AppState {
     /// Custom emoji, by guild. The catalog only — the images live in the
     /// content-addressed media store and are served on demand (`FetchEmoji`).
     pub emojis: DashMap<Id, Vec<GuildEmoji>>,
-    /// Invite codes: code -> guild. High-entropy random strings — invites are
+    /// Invite codes: code -> the invite. High-entropy random strings — invites are
     /// a ban-evasion surface, so guessability matters.
-    pub invites: DashMap<String, Id>,
+    pub invites: DashMap<String, Invite>,
     /// The (single, rotating) invite code per guild, reverse index.
     pub invite_by_guild: DashMap<Id, String>,
     /// Banned pubkeys per guild. Checked FIRST on every join path.
@@ -187,8 +231,19 @@ impl AppState {
         for (gid, pk) in loaded.bans {
             state.bans.entry(gid).or_default().insert(pk);
         }
-        for (code, gid) in loaded.invites {
-            state.invites.insert(code.clone(), gid);
+        for row in loaded.invites {
+            let (code, gid) = (row.code.clone(), row.guild_id);
+            state.invites.insert(
+                code.clone(),
+                Invite {
+                    code: code.clone(),
+                    guild_id: gid,
+                    expires_at_ms: row.expires_at_ms,
+                    max_uses: row.max_uses,
+                    uses: row.uses,
+                    created_by: row.created_by,
+                },
+            );
             state.invite_by_guild.insert(gid, code);
         }
         for i in loaded.bot_installs {
@@ -1223,19 +1278,34 @@ impl AppState {
         code: &str,
         user: &User,
     ) -> Result<(Guild, Vec<Channel>, Vec<Member>, Vec<Role>), String> {
-        let guild_id = self
-            .invites
-            .get(code.trim())
-            .map(|g| *g)
-            .ok_or_else(|| "unknown or expired invite code".to_string())?;
+        // Checked and spent under the same entry lock, so two joins racing the
+        // last use of a capped code cannot both win it.
+        let code = code.trim();
+        let (guild_id, spent) = {
+            let mut entry = self
+                .invites
+                .get_mut(code)
+                .ok_or_else(|| "unknown or expired invite code".to_string())?;
+            if !entry.is_live(now_ms()) {
+                return Err("unknown or expired invite code".into());
+            }
+            entry.uses += 1;
+            (entry.guild_id, entry.uses)
+        };
         let guild = self
             .guilds
             .get(&guild_id)
             .map(|g| g.clone())
             .ok_or_else(|| "unknown or expired invite code".to_string())?;
         if self.is_banned(guild_id, &user.pubkey) {
+            // Refunded: a ban is not a redemption, and letting one burn a use
+            // would let a banned key exhaust somebody else's capped code.
+            if let Some(mut entry) = self.invites.get_mut(code) {
+                entry.uses = entry.uses.saturating_sub(1);
+            }
             return Err("you are banned from this guild".into());
         }
+        persist(self.store.set_invite_uses(code, spent).await, "invite uses");
         Ok(self.admit_member(guild, user).await)
     }
 
@@ -1292,16 +1362,25 @@ impl AppState {
         &self,
         guild_id: Id,
         rotate: bool,
+        expires_in_secs: Option<u64>,
+        max_uses: Option<u32>,
         by_pubkey: &str,
-    ) -> Result<String, String> {
+    ) -> Result<Invite, String> {
         if self
             .require_permission(guild_id, by_pubkey, Permission::CreateInvite)
             .is_err()
         {
             self.require_permission(guild_id, by_pubkey, Permission::ManageGuild)?;
         }
-        if !rotate && let Some(existing) = self.invite_by_guild.get(&guild_id) {
-            return Ok(existing.clone());
+        // An existing code is only worth handing back if it still works.
+        // Otherwise "get" would return a dead code and the caller would have no
+        // way to tell, which is the failure this entry is about.
+        if !rotate
+            && let Some(existing) = self.invite_by_guild.get(&guild_id)
+            && let Some(invite) = self.invites.get(existing.value())
+            && invite.is_live(now_ms())
+        {
+            return Ok(invite.clone());
         }
         // Rotation invalidates the old code.
         if let Some((_, old)) = self.invite_by_guild.remove(&guild_id) {
@@ -1315,10 +1394,32 @@ impl AppState {
                 break candidate;
             }
         };
-        self.invites.insert(code.clone(), guild_id);
+        let invite = Invite {
+            code: code.clone(),
+            guild_id,
+            // Seconds in, absolute milliseconds out: a relative TTL is what a
+            // caller can express, and an absolute instant is the only thing
+            // that survives a restart without silently extending itself.
+            expires_at_ms: expires_in_secs.map(|s| now_ms() + (s as i64) * 1000),
+            max_uses,
+            uses: 0,
+            created_by: by_pubkey.to_string(),
+        };
+        self.invites.insert(code.clone(), invite.clone());
         self.invite_by_guild.insert(guild_id, code.clone());
-        persist(self.store.set_invite(guild_id, &code).await, "invite");
-        Ok(code)
+        persist(
+            self.store
+                .set_invite(
+                    guild_id,
+                    &code,
+                    invite.expires_at_ms,
+                    invite.max_uses,
+                    by_pubkey,
+                )
+                .await,
+            "invite",
+        );
+        Ok(invite)
     }
 
     /// Common target validation for kick/ban ("moderator immunity"): never the
@@ -1810,7 +1911,11 @@ impl AppState {
 
     /// The guild an invite code maps to, if any (for pre-join gate checks).
     pub fn invite_guild(&self, code: &str) -> Option<Id> {
-        self.invites.get(code.trim()).map(|g| *g)
+        let now = now_ms();
+        self.invites
+            .get(code.trim())
+            .filter(|i| i.is_live(now))
+            .map(|i| i.guild_id)
     }
 
     /// The guild's current gate config (gate, rules, panic) for the join flow.
