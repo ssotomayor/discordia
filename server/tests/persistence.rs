@@ -333,3 +333,95 @@ async fn replies_are_quoted_server_side_and_survive_restart() {
     handle.abort();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The blob sweep is only as safe as the query that says what is still in use:
+/// a table missing from `referenced_media` means the sweep deletes pictures
+/// people are still looking at. Both producers are exercised here — a message
+/// image (stored under the `media:` sentinel) and a guild emoji (stored as the
+/// bare filename) — because they are recorded in *different shapes*, which is
+/// exactly how one of them gets forgotten.
+#[tokio::test]
+async fn every_kind_of_blob_reference_is_found() {
+    let dir = temp_data_dir();
+    let (url, handle) = spawn_on(&dir).await;
+
+    let owner = BotIdentity::generate();
+    let mut session = Bot::connect_as_user(&url, &owner, "Owner").await.unwrap();
+    loop {
+        if matches!(
+            next_timeout(&mut session).await,
+            ServerMessage::Ready { .. }
+        ) {
+            break;
+        }
+    }
+    session
+        .send(&ClientMessage::CreateGuild {
+            name: "Blobs".into(),
+            template: None,
+        })
+        .await
+        .unwrap();
+    let (guild_id, channel_id) = loop {
+        if let ServerMessage::GuildJoined {
+            guild, channels, ..
+        } = next_timeout(&mut session).await
+        {
+            let text = channels
+                .iter()
+                .find(|c| c.kind == ChannelKind::Text)
+                .expect("text channel")
+                .id;
+            break (guild.id, text);
+        }
+    };
+
+    session
+        .send(&ClientMessage::SendMessage {
+            channel_id,
+            content: "picture".into(),
+            image: Some(TINY_PNG.into()),
+            reply_to: None,
+        })
+        .await
+        .unwrap();
+    // A *different* picture on purpose. Blobs are content-addressed, so
+    // reusing TINY_PNG here would give the emoji the same file the message
+    // already referenced — and the test would pass with the emoji table
+    // missing from the query entirely. It did, until this line changed.
+    const OTHER_PNG: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+    session
+        .send(&ClientMessage::CreateGuildEmoji {
+            guild_id,
+            shortcode: "party".into(),
+            image: OTHER_PNG.into(),
+        })
+        .await
+        .unwrap();
+
+    // Let both writes land.
+    tokio::time::sleep(Duration::from_millis(400)).await;
+
+    let store = dioxusfun_server::store::Store::open(&dir.join("discordia.db"))
+        .await
+        .expect("open the store the server just wrote");
+    let referenced = store.referenced_media().await.expect("scan references");
+
+    let on_disk: Vec<String> = std::fs::read_dir(dir.join("media"))
+        .expect("media dir")
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| !n.starts_with('.'))
+        .collect();
+
+    assert!(!on_disk.is_empty(), "something was written");
+    for name in &on_disk {
+        assert!(
+            referenced.contains(name),
+            "blob {name} is on disk and unreferenced — the sweep would delete it.\n\
+             referenced: {referenced:?}"
+        );
+    }
+
+    handle.abort();
+}

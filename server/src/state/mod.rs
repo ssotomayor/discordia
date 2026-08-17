@@ -68,6 +68,12 @@ pub struct Invite {
     pub created_by: String,
 }
 
+/// How long an unreferenced blob is left alone before the sweep may take it.
+///
+/// Generous on purpose: the cost of waiting is a day of disk, and the cost of
+/// being wrong is a picture disappearing from a message somebody just sent.
+const MEDIA_GRACE: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
+
 /// Wall clock in Unix milliseconds — the unit every timestamp on the wire uses.
 fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
@@ -1825,6 +1831,24 @@ impl AppState {
         };
         persist(self.store.upsert_guild(&updated).await, "guild profile");
         Ok(updated)
+    }
+
+    /// Reclaim blob files no row points at any more.
+    ///
+    /// Runs after the retention sweep on purpose: retention is what *creates*
+    /// unreferenced blobs, by deleting the messages that named them. Doing it
+    /// the other way round would leave every freshly-orphaned picture on disk
+    /// for another hour.
+    pub async fn sweep_media(&self) -> crate::media::SweepReport {
+        match self.store.referenced_media().await {
+            Ok(referenced) => self.media.sweep(&referenced, MEDIA_GRACE),
+            // A failed query means we do not know what is referenced, and the
+            // only safe answer to that is to delete nothing.
+            Err(e) => {
+                tracing::error!(error = %e, "media sweep skipped: could not read references");
+                crate::media::SweepReport::default()
+            }
+        }
     }
 
     /// Requires `ManageGuild`: set/clear the guild's message retention (days).
