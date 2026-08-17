@@ -481,12 +481,30 @@ async fn a_release_with_a_bad_signature_is_refused() {
         assert_eq!(next_json(&mut ws).await["op"], "registered");
     }
 
+    // Wait for the registration to drop with its socket. Without this the
+    // release below can be refused for being *live* rather than for its
+    // signature, and an assertion that only checks "some error came back" is
+    // satisfied by the wrong one — which is exactly how this test passed a
+    // mutation run with the signature check disabled.
+    for _ in 0..50 {
+        if registry.lookup("sellada").is_none() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
     let (mut ws, _nonce) = connect_control(&base).await;
     // Signed against a nonce that is not this connection's.
     let stale = sign(&owner_secret, "some-other-nonce", &owner, "Sellada");
     let reply = send_release(&mut ws, "Sellada", &owner, &stale).await;
 
     assert_eq!(reply["op"], "error");
+    let message = reply["d"]["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("ownership rejected"),
+        "the refusal has to be about the signature, not about something else \
+         that happens to also refuse — got: {message}"
+    );
     assert_eq!(
         registry.reservation_owner("sellada").as_deref(),
         Some(&owner[..])
