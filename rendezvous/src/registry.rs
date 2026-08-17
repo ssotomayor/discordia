@@ -82,15 +82,24 @@ fn now_ms() -> i64 {
         .as_millis() as i64
 }
 
-/// A persisted claim on a name. The `slug` (lowercased) is the map key and the
-/// join code; `name` preserves the owner's original casing for display.
+/// A persisted claim on a name: who owns it, and nothing else.
+///
+/// **It used to carry `name`, `description` and `public` too, and nothing ever
+/// read them.** A reservation answers exactly one question — may this key use
+/// this name — and the display fields were answering a question nobody asked:
+/// `discover()` lists only *live* hosts, on purpose ("you can't join a host
+/// that's away"), and a host that comes back re-supplies all three in its own
+/// `Register` frame before anything is shown. Persisting them meant they
+/// survived a restart without ever being applied to anything.
+///
+/// Older `reservations.json` files still load: serde ignores fields the struct
+/// no longer names, so the extra keys are dropped on the next write rather than
+/// failing the boot.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Reservation {
+    /// Lowercased; the map key and the join code.
     pub slug: String,
-    pub name: String,
     pub owner_pubkey: String,
-    pub description: Option<String>,
-    pub public: bool,
 }
 
 /// Why a name claim was refused.
@@ -211,14 +220,7 @@ impl Registry {
     /// Reserve (or refresh) a name for `owner`. Fails if a *different* pubkey
     /// already owns it, or if a live session currently holds it. On success the
     /// reservation is persisted.
-    pub fn claim_name(
-        &self,
-        slug: &str,
-        name: &str,
-        owner: &str,
-        description: Option<String>,
-        public: bool,
-    ) -> Result<(), ClaimError> {
+    pub fn claim_name(&self, slug: &str, owner: &str) -> Result<(), ClaimError> {
         if let Some(existing) = self.reservations.get(slug)
             && existing.owner_pubkey != owner
         {
@@ -231,10 +233,7 @@ impl Registry {
             slug.to_string(),
             Reservation {
                 slug: slug.to_string(),
-                name: name.to_string(),
                 owner_pubkey: owner.to_string(),
-                description,
-                public,
             },
         );
         self.persist();
@@ -382,20 +381,42 @@ mod tests {
     #[test]
     fn claim_is_unique_and_owner_scoped() {
         let reg = Registry::new();
-        assert!(
-            reg.claim_name("acme", "Acme", "owner_a", None, true)
-                .is_ok()
-        );
+        assert!(reg.claim_name("acme", "owner_a").is_ok());
         // Same owner may re-claim (reconnect / metadata refresh).
-        assert!(
-            reg.claim_name("acme", "Acme", "owner_a", None, false)
-                .is_ok()
-        );
+        assert!(reg.claim_name("acme", "owner_a").is_ok());
         // A different owner cannot.
+        assert_eq!(reg.claim_name("acme", "owner_b"), Err(ClaimError::Taken));
+    }
+
+    /// A file written before the display fields were dropped must still load.
+    ///
+    /// This matters more than it looks: `load` treats an unparseable file as
+    /// "start empty" and only logs a warning, so an incompatible format change
+    /// would silently un-claim every name on the relay — the owners would find
+    /// their names free for anyone the next time they reconnected. Serde
+    /// ignores unknown fields, and this is the test that says so.
+    #[test]
+    fn a_file_from_before_the_fields_were_dropped_still_loads() {
+        let path = tmp();
+        std::fs::write(
+            &path,
+            r#"[{"slug":"acme","name":"Acme","owner_pubkey":"owner_a",
+                 "description":"a description nobody read","public":true}]"#,
+        )
+        .unwrap();
+
+        let reg = Registry::load(path.clone());
         assert_eq!(
-            reg.claim_name("acme", "Acme", "owner_b", None, true),
+            reg.reservation_owner("acme").as_deref(),
+            Some("owner_a"),
+            "the one field that is read must survive the older format"
+        );
+        // And the claim still behaves: the owner keeps it, a stranger does not.
+        assert_eq!(
+            reg.claim_name("acme", "someone_else"),
             Err(ClaimError::Taken)
         );
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
@@ -403,21 +424,17 @@ mod tests {
         let path = tmp();
         {
             let reg = Registry::load(path.clone());
-            reg.claim_name("acme", "Acme", "owner_a", Some("desc".into()), true)
-                .unwrap();
+            reg.claim_name("acme", "owner_a").unwrap();
         }
         // Fresh registry from the same file: the reservation and its owner
         // survived, so a squatter is still rejected but the owner reclaims.
         let reg2 = Registry::load(path.clone());
         assert_eq!(reg2.reservation_owner("acme").as_deref(), Some("owner_a"));
         assert_eq!(
-            reg2.claim_name("acme", "Acme", "someone_else", None, true),
+            reg2.claim_name("acme", "someone_else"),
             Err(ClaimError::Taken)
         );
-        assert!(
-            reg2.claim_name("acme", "Acme", "owner_a", None, true)
-                .is_ok()
-        );
+        assert!(reg2.claim_name("acme", "owner_a").is_ok());
         let _ = std::fs::remove_file(path);
     }
 }
