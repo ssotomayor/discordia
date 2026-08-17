@@ -532,6 +532,7 @@ pub async fn handle_connection(
                             continue;
                         }
                         if !limiter.allow() {
+                            reject_rate_limited(&mut ws_tx).await;
                             continue;
                         }
                         // Keep the emoji short to avoid abuse.
@@ -1015,6 +1016,7 @@ pub async fn handle_connection(
                             continue;
                         };
                         if !limiter.allow() {
+                            reject_rate_limited(&mut ws_tx).await;
                             continue;
                         }
                         match ctx.state.create_role(guild_id, &name, color, permissions, &u.pubkey).await {
@@ -1039,6 +1041,7 @@ pub async fn handle_connection(
                             continue;
                         };
                         if !limiter.allow() {
+                            reject_rate_limited(&mut ws_tx).await;
                             continue;
                         }
                         match ctx.state.update_role(guild_id, role_id, &name, color, permissions, &u.pubkey).await {
@@ -1062,6 +1065,7 @@ pub async fn handle_connection(
                             continue;
                         };
                         if !limiter.allow() {
+                            reject_rate_limited(&mut ws_tx).await;
                             continue;
                         }
                         match ctx.state.delete_role(guild_id, role_id, &u.pubkey).await {
@@ -1093,6 +1097,7 @@ pub async fn handle_connection(
                             continue;
                         };
                         if !limiter.allow() {
+                            reject_rate_limited(&mut ws_tx).await;
                             continue;
                         }
                         match ctx.state.set_member_role(guild_id, role_id, &user_pubkey, true, &u.pubkey).await {
@@ -1113,6 +1118,7 @@ pub async fn handle_connection(
                             continue;
                         };
                         if !limiter.allow() {
+                            reject_rate_limited(&mut ws_tx).await;
                             continue;
                         }
                         match ctx.state.set_member_role(guild_id, role_id, &user_pubkey, false, &u.pubkey).await {
@@ -1153,6 +1159,7 @@ pub async fn handle_connection(
                             continue;
                         };
                         if !limiter.allow() {
+                            reject_rate_limited(&mut ws_tx).await;
                             continue;
                         }
                         match ctx.state.get_or_create_invite(guild_id, rotate, &u.pubkey).await {
@@ -1175,6 +1182,7 @@ pub async fn handle_connection(
                             continue;
                         };
                         if !limiter.allow() {
+                            reject_rate_limited(&mut ws_tx).await;
                             continue;
                         }
                         let was_sharing = sharing_in(&ctx.state, &user_pubkey);
@@ -1197,6 +1205,7 @@ pub async fn handle_connection(
                             continue;
                         };
                         if !limiter.allow() {
+                            reject_rate_limited(&mut ws_tx).await;
                             continue;
                         }
                         let was_member = ctx.state.is_guild_member(guild_id, &user_pubkey);
@@ -1286,6 +1295,7 @@ pub async fn handle_connection(
                             continue;
                         };
                         if !limiter.allow() {
+                            reject_rate_limited(&mut ws_tx).await;
                             continue;
                         }
                         match ctx.state.create_channel(guild_id, &name, kind, topic, &u.pubkey).await {
@@ -1307,6 +1317,7 @@ pub async fn handle_connection(
                             continue;
                         };
                         if !limiter.allow() {
+                            reject_rate_limited(&mut ws_tx).await;
                             continue;
                         }
                         match ctx.state.update_channel(channel_id, &name, topic, read_only, position, slowmode_secs, &u.pubkey).await {
@@ -1327,6 +1338,7 @@ pub async fn handle_connection(
                             continue;
                         };
                         if !limiter.allow() {
+                            reject_rate_limited(&mut ws_tx).await;
                             continue;
                         }
                         match ctx.state.delete_channel(channel_id, &u.pubkey).await {
@@ -1359,6 +1371,7 @@ pub async fn handle_connection(
                             continue;
                         };
                         if !limiter.allow() {
+                            reject_rate_limited(&mut ws_tx).await;
                             continue;
                         }
                         match ctx.state.delete_message(channel_id, message_id, &u.pubkey).await {
@@ -1405,6 +1418,7 @@ pub async fn handle_connection(
                             continue;
                         };
                         if !limiter.allow() {
+                            reject_rate_limited(&mut ws_tx).await;
                             continue;
                         }
                         match ctx.state.set_guild_profile(guild_id, description, icon_image, banner, &u.pubkey).await {
@@ -1565,6 +1579,36 @@ where
     let json = serde_json::to_string(msg).expect("serializable");
     tx.send(WsMessage::Text(json)).await
 }
+
+/// Tell the client its action was refused for rate, in one place.
+///
+/// **Fourteen of the seventeen rate-limited arms used to `continue` in
+/// silence** — the client asked for something, nothing happened, and nothing
+/// said why. That is worst for the actions that come in bursts: a channel
+/// reorder emits one `UpdateChannel` per row it renumbers, so a guild that has
+/// never been reordered spends its whole budget in one drag and the list is
+/// left visibly half-sorted, with no message and the same window blocking the
+/// user's next ten seconds of unrelated actions.
+///
+/// One helper rather than fourteen copies of the literal, because the message
+/// is the contract: a client that wants to distinguish "refused" from "lost"
+/// has to be able to match on something stable.
+async fn reject_rate_limited<S>(tx: &mut S)
+where
+    S: SinkExt<WsMessage, Error = axum::Error> + Unpin,
+{
+    let _ = send(
+        tx,
+        &ServerMessage::Error {
+            message: RATE_LIMITED.into(),
+        },
+    )
+    .await;
+}
+
+/// What every rate-limit refusal says. Public so a test can assert on the
+/// refusal rather than on a spelling.
+pub const RATE_LIMITED: &str = "rate limited: slow down";
 
 /// The two screen-room identities a client can do without.
 ///

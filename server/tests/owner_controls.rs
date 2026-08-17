@@ -2035,3 +2035,47 @@ async fn creating_a_guild_no_longer_floods_bystanders_with_catalog() {
     }
     handle.abort();
 }
+
+/// A rate-limited action must say so, not vanish.
+///
+/// Fourteen of the seventeen rate-limited arms used to `continue` in silence.
+/// `UpdateChannel` is the one that hurts most, because a channel reorder emits
+/// one per row it renumbers: a guild that has never been reordered spends the
+/// whole budget in a single drag and the client is left showing a
+/// half-reordered list with nothing to explain it.
+#[tokio::test]
+async fn a_rate_limited_channel_update_is_refused_out_loud() {
+    let (url, handle) = spawn_gateway().await;
+
+    let owner_id = BotIdentity::generate();
+    let (mut owner, _) = connect_user(&url, &owner_id, "Owner").await;
+    let (_guild_id, text) = create_guild(&mut owner, "Busy").await;
+
+    // The window is 30 actions per 10s and guild creation already spent some of
+    // it, so this is comfortably past the limit without depending on the exact
+    // remainder.
+    for i in 0..40 {
+        owner
+            .send(&ClientMessage::UpdateChannel {
+                channel_id: text,
+                name: format!("general-{i}"),
+                topic: None,
+                read_only: false,
+                position: 0,
+                slowmode_secs: 0,
+            })
+            .await
+            .unwrap();
+    }
+
+    // Not "an error eventually": the refusal has to be the rate-limit one, so a
+    // future permission or validation bug cannot pass this test by accident.
+    let message = next_error(&mut owner).await;
+    assert_eq!(
+        message,
+        dioxusfun_server::gateway::RATE_LIMITED,
+        "a dropped update must name why it was dropped"
+    );
+
+    handle.abort();
+}
