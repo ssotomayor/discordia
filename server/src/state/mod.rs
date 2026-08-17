@@ -2190,6 +2190,7 @@ impl AppState {
         image: Option<String>,
         reply_to: Option<Id>,
     ) -> Option<Message> {
+        let author = self.attributed_author(channel_id, author);
         let kind_ok = self
             .channels
             .get(&channel_id)
@@ -2209,6 +2210,34 @@ impl AppState {
             self.append_message(channel_id, author, content, image, reply_ref)
                 .await,
         )
+    }
+
+    /// The name a message should be attributed to, which is not always the one
+    /// the sender declared.
+    ///
+    /// A human's username is their own business — the Identify signature commits
+    /// to it, and one person's display name is not a claim about anybody else.
+    /// **An installed bot is different:** its label was chosen by the owner who
+    /// installed it, the roster already shows that label, and the message list
+    /// was showing whatever the bot process declared on connect. So a bot
+    /// installed as "PingBot" could post as "Server Admin" and look like one,
+    /// in the surface where it matters most.
+    ///
+    /// Resolved per guild, because the same bot can be installed in two guilds
+    /// under two names and each owner's choice governs their own guild. A bot
+    /// with no install here — which the permission checks would have refused
+    /// already — keeps what it declared rather than being renamed to nothing.
+    fn attributed_author(&self, channel_id: Id, author: User) -> User {
+        let Some(guild_id) = self.channel_guild(channel_id) else {
+            return author;
+        };
+        match self.bot_install(guild_id, &author.pubkey) {
+            Some(install) => User {
+                username: install.name,
+                ..author
+            },
+            None => author,
+        }
     }
 
     /// Persist a message. Inbound data-URL images are offloaded to the blob

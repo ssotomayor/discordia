@@ -220,3 +220,69 @@ async fn intents_and_permissions_are_enforced() {
 
     handle.abort();
 }
+
+/// An installed bot is shown under the name its installer chose, not the one
+/// it declares for itself.
+///
+/// The two have always been allowed to differ — `BotInstall.name`'s own doc
+/// says the bot's `username` on connect "is cosmetic and may differ" — but
+/// nothing reconciled them, and the message author is built from the
+/// connection's self-declared user. So a bot an owner installed as "PingBot"
+/// could post under any name it liked.
+#[tokio::test]
+async fn an_installed_bot_posts_under_the_name_its_installer_chose() {
+    let (url, handle) = spawn_gateway().await;
+
+    let owner_id = BotIdentity::generate();
+    let mut owner = Bot::connect_as_user(&url, &owner_id, "Owner")
+        .await
+        .unwrap();
+    assert!(matches!(
+        next_timeout(&mut owner).await,
+        ServerMessage::Ready { .. }
+    ));
+    let (guild_id, text_channel) = create_guild(&mut owner, "Impersonation").await;
+
+    let bot_id = BotIdentity::generate();
+    owner
+        .send(&ClientMessage::InstallBot {
+            guild_id,
+            bot_pubkey: bot_id.pubkey().to_string(),
+            name: "PingBot".into(),
+            permissions: vec![Permission::SendMessages],
+            intents: vec![Intent::GuildMessages],
+        })
+        .await
+        .unwrap();
+    loop {
+        if matches!(
+            next_timeout(&mut owner).await,
+            ServerMessage::GuildIntegrations { .. }
+        ) {
+            break;
+        }
+    }
+
+    // The bot connects claiming to be somebody else entirely.
+    let mut bot = Bot::connect(&url, &bot_id, "Server Admin").await.unwrap();
+    loop {
+        if matches!(next_timeout(&mut bot).await, ServerMessage::Ready { .. }) {
+            break;
+        }
+    }
+    bot.send_message(text_channel, "trust me").await.unwrap();
+
+    let seen = loop {
+        if let ServerMessage::MessageCreate(m) = next_timeout(&mut owner).await
+            && m.author.pubkey == bot_id.pubkey()
+        {
+            break m;
+        }
+    };
+    assert_eq!(
+        seen.author.username, "PingBot",
+        "a bot must be shown under the name its installer chose, not the one it picked"
+    );
+
+    handle.abort();
+}
