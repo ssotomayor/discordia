@@ -1643,6 +1643,45 @@ impl AppState {
 
     /// Requires `ManageChannels`: full-replace a channel's
     /// name/topic/read_only/position.
+    /// Move channels within one guild, touching **only** their positions.
+    ///
+    /// The permission is checked once for the guild rather than once per row,
+    /// and every id is required to belong to it — a caller must not be able to
+    /// renumber a channel in a guild they can manage *into* one they cannot, or
+    /// use a guild they own to move somebody else's rows.
+    ///
+    /// Returns the updated channels so the caller can broadcast them; an empty
+    /// list is a no-op rather than an error, because a drag that ends where it
+    /// started is not a failure.
+    pub async fn reorder_channels(
+        &self,
+        guild_id: Id,
+        positions: &[(Id, u32)],
+        by_pubkey: &str,
+    ) -> Result<Vec<Channel>, String> {
+        self.require_permission(guild_id, by_pubkey, Permission::ManageChannels)?;
+        for (id, _) in positions {
+            if self.channel_guild(*id) != Some(guild_id) {
+                return Err("that channel is not in this guild".into());
+            }
+        }
+        let mut updated = Vec::with_capacity(positions.len());
+        for (id, position) in positions {
+            let Some(mut entry) = self.channels.get_mut(id) else {
+                continue;
+            };
+            if entry.position == *position {
+                continue;
+            }
+            entry.position = *position;
+            updated.push(entry.clone());
+        }
+        for channel in &updated {
+            persist(self.store.upsert_channel(channel).await, "channel position");
+        }
+        Ok(updated)
+    }
+
     // Full replace of every editable field, so the argument count tracks the
     // channel's shape rather than a design worth splitting up.
     #[allow(clippy::too_many_arguments)]

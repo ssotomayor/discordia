@@ -2233,3 +2233,141 @@ async fn fetching_an_invite_replaces_a_dead_one() {
 
     handle.abort();
 }
+
+/// Reordering must not carry anybody else's fields back with it.
+///
+/// The old path sent one `UpdateChannel` per renumbered row, each one a full
+/// replace built from the mover's render snapshot — so an edit that landed
+/// between the render and the drop was silently overwritten by someone who was
+/// only dragging. `ReorderChannels` carries positions and nothing else.
+#[tokio::test]
+async fn a_reorder_does_not_overwrite_a_concurrent_edit() {
+    let (url, handle) = spawn_gateway().await;
+
+    let owner_id = BotIdentity::generate();
+    let (mut owner, _) = connect_user(&url, &owner_id, "Owner").await;
+    let (guild_id, first) = create_guild(&mut owner, "Ordered").await;
+
+    // A second channel, so there is something to reorder against.
+    owner
+        .send(&ClientMessage::CreateChannel {
+            guild_id,
+            name: "second".into(),
+            kind: ChannelKind::Text,
+            topic: None,
+        })
+        .await
+        .unwrap();
+    let second = loop {
+        if let ServerMessage::ChannelCreate(c) = next_timeout(&mut owner).await {
+            break c.id;
+        }
+    };
+
+    // Somebody sets a topic on the row that is about to be renumbered.
+    owner
+        .send(&ClientMessage::UpdateChannel {
+            channel_id: first,
+            name: "general".into(),
+            topic: Some("the topic somebody just wrote".into()),
+            read_only: false,
+            position: 0,
+            slowmode_secs: 0,
+        })
+        .await
+        .unwrap();
+    loop {
+        if let ServerMessage::ChannelUpdate(c) = next_timeout(&mut owner).await
+            && c.id == first
+            && c.topic.is_some()
+        {
+            break;
+        }
+    }
+
+    // A reorder built from a snapshot taken *before* that edit — the exact race
+    // the old full-replace path lost.
+    owner
+        .send(&ClientMessage::ReorderChannels {
+            guild_id,
+            positions: vec![(second, 0), (first, 1)],
+        })
+        .await
+        .unwrap();
+
+    let mut moved = 0;
+    while moved < 2 {
+        if let ServerMessage::ChannelUpdate(c) = next_timeout(&mut owner).await {
+            if c.id == first {
+                assert_eq!(c.position, 1, "the row moved");
+                assert_eq!(
+                    c.topic.as_deref(),
+                    Some("the topic somebody just wrote"),
+                    "a reorder must not carry a stale topic back"
+                );
+            }
+            moved += 1;
+        }
+    }
+
+    handle.abort();
+}
+
+/// A whole-guild renumber is one frame, so it costs one rate-limit hit rather
+/// than one per channel — which is what let a single drag exhaust the window.
+#[tokio::test]
+async fn reordering_a_whole_guild_costs_one_rate_limit_hit() {
+    let (url, handle) = spawn_gateway().await;
+
+    let owner_id = BotIdentity::generate();
+    let (mut owner, _) = connect_user(&url, &owner_id, "Owner").await;
+    let (guild_id, first) = create_guild(&mut owner, "Wide").await;
+
+    let mut ids = vec![first];
+    for i in 0..12 {
+        owner
+            .send(&ClientMessage::CreateChannel {
+                guild_id,
+                name: format!("c{i}"),
+                kind: ChannelKind::Text,
+                topic: None,
+            })
+            .await
+            .unwrap();
+        loop {
+            if let ServerMessage::ChannelCreate(c) = next_timeout(&mut owner).await {
+                ids.push(c.id);
+                break;
+            }
+        }
+    }
+
+    // Thirteen rows renumbered at once. Under the old path this was thirteen
+    // frames against a 30-per-10s window already spent on the creates.
+    let positions: Vec<(Id, u32)> = ids
+        .iter()
+        .rev()
+        .enumerate()
+        .map(|(i, id)| (*id, i as u32))
+        .collect();
+    owner
+        .send(&ClientMessage::ReorderChannels {
+            guild_id,
+            positions: positions.clone(),
+        })
+        .await
+        .unwrap();
+
+    let mut seen = 0;
+    while seen < positions.len() {
+        match next_timeout(&mut owner).await {
+            ServerMessage::ChannelUpdate(_) => seen += 1,
+            ServerMessage::Error { message } => {
+                panic!("a single reorder was refused: {message}")
+            }
+            _ => {}
+        }
+    }
+
+    handle.abort();
+}

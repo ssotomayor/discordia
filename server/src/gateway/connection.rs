@@ -1312,6 +1312,31 @@ pub async fn handle_connection(
                             }
                         }
                     }
+                    ClientMessage::ReorderChannels { guild_id, positions } => {
+                        let Some(u) = user.as_ref() else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "identify first".into(),
+                            }).await;
+                            continue;
+                        };
+                        // One hit for the whole move, which is the point: the
+                        // per-row form spent one per channel.
+                        if !limiter.allow() {
+                            reject_rate_limited(&mut ws_tx).await;
+                            continue;
+                        }
+                        match ctx.state.reorder_channels(guild_id, &positions, &u.pubkey).await {
+                            Ok(channels) => {
+                                let targets = ctx.state.guild_member_pubkeys(guild_id);
+                                for channel in channels {
+                                    ctx.state.deliver(targets.clone(), ServerMessage::ChannelUpdate(channel));
+                                }
+                            }
+                            Err(e) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message: e }).await;
+                            }
+                        }
+                    }
                     ClientMessage::UpdateChannel { channel_id, name, topic, read_only, position, slowmode_secs } => {
                         let Some(u) = user.as_ref() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
