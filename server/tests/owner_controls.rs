@@ -1718,7 +1718,13 @@ async fn pow_gate_requires_valid_nonce() {
             break (pow_challenge.unwrap(), pow_difficulty.unwrap());
         }
     };
-    // A bogus nonce is rejected (re-challenged).
+    // A bogus nonce is rejected — re-challenged rather than admitted.
+    //
+    // **This is the half of the test that gives it its name, and it used to be
+    // a comment rather than an assertion.** The bogus attempt was sent, the
+    // answer ignored, and the test went on to prove only that a *valid* nonce
+    // works. Making `pow_ok` return `true` unconditionally — the gate accepting
+    // anything at all — left it green.
     joiner
         .send(&ClientMessage::JoinGuild {
             guild_id,
@@ -1727,7 +1733,17 @@ async fn pow_gate_requires_valid_nonce() {
         })
         .await
         .unwrap();
-    // (May coincidentally satisfy at very low bits, but 16 bits makes "0" ~always fail.)
+    // "0" satisfying 16 leading zero bits by luck is a 1-in-65,536 event, and
+    // the challenge is derived from a fresh keypair, so this is not flaky in
+    // any way a rerun would show.
+    match next_timeout(&mut joiner).await {
+        ServerMessage::JoinChallenge { .. } => {}
+        ServerMessage::GuildJoined { .. } => {
+            panic!("a bogus proof of work was admitted — the gate is not gating")
+        }
+        other => panic!("expected a re-challenge, got {other:?}"),
+    }
+
     // Solve it for real → joins.
     let nonce = solve_pow(&challenge, bits);
     joiner
