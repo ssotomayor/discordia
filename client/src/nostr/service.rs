@@ -146,7 +146,7 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
                     None => break,
                 },
                 ev = events.recv() => match ev {
-                    Some(RelayEvent::Event { event, .. }) => match event.kind {
+                    Some(RelayEvent::Event(event)) => match event.kind {
                         nip02::KIND_CONTACTS if event.pubkey == our_pubkey => {
                             // Last writer wins, which is what a replaceable
                             // event means: whatever the relays hold is the list.
@@ -158,12 +158,40 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
                         _ => {}
                     },
                     Some(RelayEvent::Connected(url)) => {
+                        eprintln!("[nostr] {url}: connected");
                         state.write().nostr_relays_up.insert(url);
                     }
-                    Some(RelayEvent::Disconnected { relay, .. }) => {
+                    Some(RelayEvent::Disconnected { relay, why }) => {
+                        // The pool retries on its own, so this is not an error
+                        // the user can act on — but it is the only account of
+                        // *why* a relay is missing from the status line, and
+                        // the pool carried the reason up here precisely so
+                        // somebody would say it.
+                        eprintln!("[nostr] {relay}: disconnected ({why}), retrying");
                         state.write().nostr_relays_up.remove(&relay);
                     }
-                    Some(_) => {}
+                    Some(RelayEvent::Published { relay, id, accepted, message }) => {
+                        // A publish goes to every relay and succeeds if any one
+                        // accepts, so a single rejection is not a failure. It
+                        // is still the only signal that a message did not land
+                        // somewhere, and it was being discarded whole.
+                        if !accepted {
+                            eprintln!(
+                                "[nostr] {relay}: rejected event {id}{}",
+                                if message.is_empty() {
+                                    String::new()
+                                } else {
+                                    format!(" ({message})")
+                                }
+                            );
+                        }
+                    }
+                    Some(RelayEvent::EndOfStored { relay }) => {
+                        // The line that separates "no history on this relay"
+                        // from "history still arriving" — which is the first
+                        // question anyone asks when a conversation opens empty.
+                        eprintln!("[nostr] {relay}: finished replaying stored events");
+                    }
                     None => break,
                 },
             }

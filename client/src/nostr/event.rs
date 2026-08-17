@@ -127,7 +127,6 @@ pub fn rumor(
     }
 }
 
-#[allow(dead_code)]
 impl Event {
     /// Whether this event's id matches its content and its signature matches
     /// its id.
@@ -168,6 +167,12 @@ impl Event {
     }
 
     /// First value of the first tag named `name`, if any.
+    ///
+    /// Unreached: every tag this client reads is read off a `Rumor` (the
+    /// innermost, unsigned layer), which has its own copy below. Kept because
+    /// an outer-layer tag is the natural thing to want next — a `p` tag off a
+    /// wrap, say — and rewriting it then would be worse than leaving it.
+    #[allow(dead_code)]
     pub fn tag(&self, name: &str) -> Option<&str> {
         self.tags
             .iter()
