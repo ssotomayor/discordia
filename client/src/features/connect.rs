@@ -18,6 +18,19 @@ enum Tab {
     Remote,
 }
 
+/// Which tab a launch opens on.
+///
+/// Pulled out of the component so it can be tested: inside a `use_signal`
+/// closure this decision is unreachable from any test, and it is the one piece
+/// of behaviour on this screen rather than layout.
+fn initial_tab(has_last_session: bool) -> Tab {
+    if has_last_session {
+        Tab::Browse
+    } else {
+        Tab::ByCode
+    }
+}
+
 const INPUT: &str = "w-full bg-transparent border border-[var(--border)] rounded px-3 py-2 text-sm text-[var(--text)] focus:outline-none focus:border-[var(--accent)] transition-colors";
 const INPUT_SM: &str = "w-full bg-transparent border border-[var(--border)] rounded px-2 py-1 text-xs text-[var(--text)] focus:outline-none focus:border-[var(--accent)] transition-colors";
 const LABEL: &str = "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]";
@@ -35,7 +48,14 @@ pub fn ConnectView(
     let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let default_rendezvous = settings.read().active_rendezvous();
 
-    let mut tab = use_signal(|| Tab::Browse);
+    // A first launch opens on "By code", not on the public list. Somebody
+    // arriving for the first time was almost certainly handed a code by a
+    // friend — and the list they would otherwise land on is empty until
+    // somebody, somewhere, has published a server. Landing on an empty list is
+    // a worse first impression than landing on a field you can paste into.
+    // With a saved session there is a reconnect button above this anyway, so
+    // Browse stays the default for the returning case.
+    let mut tab = use_signal(|| initial_tab(last_session.is_some()));
     let mut server_url = use_signal(|| "ws://localhost:9000".to_string());
     let mut allow_lan = use_signal(|| false);
     let mut publish_to_rendezvous = use_signal(|| true);
@@ -245,11 +265,11 @@ pub fn ConnectView(
                     Tab::ByCode => rsx! {
                         div { class: "space-y-3",
                             div { class: "space-y-1",
-                                label { class: LABEL, "Shortcode" }
+                                label { class: LABEL, "Join code" }
                                 input {
                                     class: "{INPUT} lowercase",
                                     r#type: "text",
-                                    placeholder: "purple-fox-42",
+                                    placeholder: "purple-fox-42 or a server name",
                                     value: "{code}",
                                     oninput: move |e| code.set(e.value()),
                                 }
@@ -652,13 +672,18 @@ fn BrowseTab(
                         div { class: "text-xs text-[var(--text-dim)] px-3 py-4 text-center", "Loading…" }
                     },
                     Some(Err(e)) => rsx! {
-                        div { class: "text-xs text-[var(--danger)] px-3 py-4",
-                            "Couldn't reach rendezvous: {e}"
+                        div { class: "text-xs px-3 py-4 space-y-1",
+                            div { class: "text-[var(--danger)]",
+                                "Couldn't reach the server directory."
+                            }
+                            div { class: "text-[var(--text-dim)]",
+                                "You can still join with a code, or host your own. ({e})"
+                            }
                         }
                     },
                     Some(Ok(list)) if list.is_empty() => rsx! {
                         div { class: "text-xs text-[var(--text-dim)] px-3 py-4 text-center",
-                            "No public servers yet. Pick Self-host and check \"List publicly\" to put one here."
+                            "Nobody has listed a public server here yet. If a friend gave you a                              code, use the \"By code\" tab — or host your own from \"Self-host\"."
                         }
                     },
                     Some(Ok(list)) => rsx! {
@@ -732,5 +757,25 @@ fn ws_to_http(url: &str) -> String {
         format!("http://{rest}")
     } else {
         url.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Tab, initial_tab};
+
+    /// A first launch opens on the field you can paste a code into, not on a
+    /// list that is empty until somebody publishes a server. Landing on an
+    /// empty list is a worse first impression than landing on an input.
+    #[test]
+    fn a_first_launch_opens_where_a_newcomer_can_succeed() {
+        assert_eq!(initial_tab(false), Tab::ByCode);
+    }
+
+    /// With somewhere to go back to, the reconnect button above the tabs is
+    /// the path, so the tabs are free to offer browsing again.
+    #[test]
+    fn a_returning_launch_opens_on_browse() {
+        assert_eq!(initial_tab(true), Tab::Browse);
     }
 }
