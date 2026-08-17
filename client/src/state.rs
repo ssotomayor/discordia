@@ -7,8 +7,8 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::host::HostInfo;
 use crate::protocol::{
-    BotInstall, Channel, ClientMessage, DmInfo, Guild, GuildSummary, Id, Member, Message,
-    Permission, Profile, Role, User, VoiceState,
+    BotInstall, Channel, ClientMessage, Guild, GuildSummary, Id, Member, Message, Permission,
+    Profile, Role, User, VoiceState,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -268,6 +268,21 @@ pub struct CameraDevice {
     pub label: String,
 }
 
+/// A one-to-one conversation, from the viewpoint of one participant: `other`
+/// is the person on the far side.
+///
+/// **Client-side only.** It used to be a wire type, back when a DM was a
+/// channel on the host and the server told you which ones you had. Direct
+/// messages are Nostr gift wraps now — the server has never heard of them — so
+/// this describes what the sidebar draws, nothing more. The `channel_id` is
+/// derived from the peer's pubkey by `nostr::service::conversation_id`, which
+/// is what lets the DM views keep working unchanged.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DmInfo {
+    pub channel_id: Id,
+    pub other: User,
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub status: ConnectionStatus,
@@ -295,6 +310,16 @@ pub struct AppState {
     /// message arrives for a conversation you aren't currently viewing, and
     /// cleared when you open it. Drives the DM-home unread badge.
     pub dm_unread: HashMap<Id, u32>,
+    /// Nostr event id behind each DM message, keyed by the synthetic `Id` the
+    /// UI uses. Needed to answer a message: a reply names the *event*, and the
+    /// Uuid is derived from it one way only.
+    pub nostr_event_ids: HashMap<Id, String>,
+    /// The Nostr contact list (NIP-02), as the relays hold it. Public, unlike
+    /// the messages: adding someone here is visible to anyone.
+    pub contacts: crate::nostr::nip02::ContactList,
+    /// Relays currently connected, for the DM status line. A set rather than a
+    /// count because which relay is up is the useful thing when one is not.
+    pub nostr_relays_up: std::collections::HashSet<String>,
     /// When true the channels column shows DM conversations instead of the
     /// selected guild's channels (the "DM home" view).
     pub dm_mode: bool,
@@ -589,6 +614,9 @@ impl AppState {
             selected_channel: None,
             dms: Vec::new(),
             dm_unread: HashMap::new(),
+            nostr_event_ids: HashMap::new(),
+            contacts: Default::default(),
+            nostr_relays_up: std::collections::HashSet::new(),
             dm_mode: false,
             catalog: Vec::new(),
             catalog_total: 0,

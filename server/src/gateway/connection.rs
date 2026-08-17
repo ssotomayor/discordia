@@ -187,9 +187,7 @@ pub async fn handle_connection(
                         };
                         // Never hand DM history to a non-participant, nor guild
                         // channel history to a non-member.
-                        let forbidden = if let Some(p) = ctx.state.dm_participants(channel_id) {
-                            !p.iter().any(|x| x == &u.pubkey)
-                        } else if let Some(gid) = ctx.state.channel_guild(channel_id) {
+                        let forbidden = if let Some(gid) = ctx.state.channel_guild(channel_id) {
                             !ctx.state.is_guild_member(gid, &u.pubkey)
                         } else {
                             false
@@ -214,7 +212,7 @@ pub async fn handle_connection(
                             break;
                         }
                     }
-                    ClientMessage::SendMessage { channel_id, content, image, reply_to, enc } => {
+                    ClientMessage::SendMessage { channel_id, content, image, reply_to } => {
                         let Some(author) = user.clone() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
@@ -228,15 +226,8 @@ pub async fn handle_connection(
                             continue;
                         }
                         let content = content.trim().to_string();
-                        // An attachment on a sealed message is ciphertext, so it
-                        // arrives under its own mime and there is nothing here to
-                        // validate beyond the size cap — the bytes are opaque by
-                        // construction. Anything else must still look like an image.
-                        let enc_image_prefix =
-                            concat!("data:", "application/vnd.discordia.enc", ";base64,");
                         if let Some(img) = &image
-                            && ((!img.starts_with("data:image/")
-                                && !(enc.is_some() && img.starts_with(enc_image_prefix)))
+                            && (!img.starts_with("data:image/")
                                 || img.len() > crate::state::MAX_IMAGE_LEN)
                             {
                                 let _ = send(&mut ws_tx, &ServerMessage::Error {
@@ -244,14 +235,6 @@ pub async fn handle_connection(
                                 }).await;
                                 continue;
                             }
-                        if let Some(payload) = &enc
-                            && payload.len() > crate::protocol::MAX_ENC_LEN
-                        {
-                            let _ = send(&mut ws_tx, &ServerMessage::Error {
-                                message: "sealed payload too large".into(),
-                            }).await;
-                            continue;
-                        }
                         // Text is optional when an image is attached, but
                         // either way it's length-capped and a wholly empty
                         // message is rejected.
@@ -264,17 +247,6 @@ pub async fn handle_connection(
 
                         // Route to a guild text channel (members only), else a
                         // DM the author participates in, else reject.
-                        // A sealed message is sealed to *two* Nostr keys, so it
-                        // only means anything in a DM. Refusing it here rather
-                        // than dropping the field keeps the failure loud: a
-                        // client that seals into a guild gets told, instead of
-                        // watching the room render a placeholder nobody can open.
-                        if enc.is_some() && ctx.state.channel_guild(channel_id).is_some() {
-                            let _ = send(&mut ws_tx, &ServerMessage::Error {
-                                message: "encrypted messages are only supported in DMs".into(),
-                            }).await;
-                            continue;
-                        }
                         if let Some(gid) = ctx.state.channel_guild(channel_id) {
                             if !ctx.state.is_guild_member(gid, &author.pubkey) {
                                 let _ = send(&mut ws_tx, &ServerMessage::Error {
@@ -350,22 +322,6 @@ pub async fn handle_connection(
                                         message: "can't post to this channel".into(),
                                     }).await;
                                 }
-                            }
-                        } else if let Some(participants) = ctx.state.dm_participants(channel_id) {
-                            if participants.iter().any(|p| p == &author.pubkey) {
-                                if let Some(msg) =
-                                    ctx.state.push_dm_message(channel_id, author, content, image, reply_to, enc).await
-                                {
-                                    // DMs have no guild, so no XP is earned.
-                                    ctx.state.deliver(
-                                        participants.to_vec(),
-                                        ServerMessage::MessageCreate(msg),
-                                    );
-                                }
-                            } else {
-                                let _ = send(&mut ws_tx, &ServerMessage::Error {
-                                    message: "not a participant of this conversation".into(),
-                                }).await;
                             }
                         } else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
@@ -505,42 +461,6 @@ pub async fn handle_connection(
                             Err(e) => {
                                 let _ = send(&mut ws_tx, &ServerMessage::Error { message: e }).await;
                             }
-                        }
-                    }
-                    ClientMessage::OpenDm { user_pubkey } => {
-                        let Some(me) = user.clone() else {
-                            let _ = send(&mut ws_tx, &ServerMessage::Error {
-                                message: "identify first".into(),
-                            }).await;
-                            continue;
-                        };
-                        if user_pubkey.is_empty() || user_pubkey == me.pubkey {
-                            let _ = send(&mut ws_tx, &ServerMessage::Error {
-                                message: "cannot open a DM with yourself".into(),
-                            }).await;
-                            continue;
-                        }
-                        let channel_id = ctx.state.get_or_create_dm(&me.pubkey, &user_pubkey).await;
-                        let other = ctx
-                            .state
-                            .users
-                            .get(&user_pubkey)
-                            .map(|u| u.clone())
-                            .unwrap_or_else(|| User {
-                                pubkey: user_pubkey.clone(),
-                                username: user_pubkey.chars().take(6).collect(),
-                            });
-                        let messages = ctx.state.history(channel_id, 50, None).await;
-                        // Reply to the requester only. The other participant
-                        // learns of the conversation when the first message
-                        // actually arrives — opening a DM window doesn't ping
-                        // them or light up their unread badge.
-                        if send(&mut ws_tx, &ServerMessage::DmReady {
-                            channel_id,
-                            other,
-                            messages,
-                        }).await.is_err() {
-                            break;
                         }
                     }
                     ClientMessage::SetProfile { avatar, banner, bio, status, custom_status } => {
@@ -1816,17 +1736,18 @@ fn broadcast_screen_state(state: &crate::state::AppState, guild_id: Id, channel_
     );
 }
 
-/// The set of pubkeys allowed to see activity in a channel: a guild's members
-/// for guild channels, or the two participants for a DM.
+/// The set of pubkeys allowed to see activity in a channel: a guild's members.
+///
+/// Every channel this server knows about belongs to a guild. Direct messages
+/// used to be the exception — a channel with two participants and no guild —
+/// and are now Nostr gift wraps that never reach this process at all.
 fn channel_audience(
     state: &crate::state::AppState,
     channel_id: crate::protocol::Id,
 ) -> Option<Vec<String>> {
-    if let Some(gid) = state.channel_guild(channel_id) {
-        Some(state.guild_member_pubkeys(gid))
-    } else {
-        state.dm_participants(channel_id).map(|p| p.to_vec())
-    }
+    state
+        .channel_guild(channel_id)
+        .map(|gid| state.guild_member_pubkeys(gid))
 }
 
 // Hex-color validation lives in `state::is_hex_color` (shared with role colors).

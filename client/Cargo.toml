@@ -45,6 +45,11 @@ sha2 = "0.10"
 # XChaCha20-Poly1305 for its 24-byte nonce: the key is sealed once per member
 # per rekey with a random nonce, and a 96-bit one is not comfortable for that.
 chacha20poly1305 = "0.10"
+# NIP-44 v2 needs raw ChaCha20 (not the AEAD) and HKDF-SHA256. Both are already
+# in the tree — `chacha20` under `chacha20poly1305`, `hkdf` transitively — so
+# naming them directly costs no new supply chain, only an honest dependency.
+chacha20 = "0.9"
+hkdf = "0.12"
 dirs = "5"
 rand = "0.8"
 

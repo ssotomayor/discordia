@@ -83,6 +83,19 @@ set, must be exactly the tag the artifact is published under — CI sets it on t
 three publishing jobs. Left unset, the build calls itself `<crate>-dev+<sha>`,
 which is what a local build should say.
 
+### Direct messages do not touch your server
+
+Worth knowing if you run a host: **DMs are not stored here.** They are NIP-17
+gift-wrapped events on Nostr relays, addressed to a user's key. Your database
+has no `dms` table and your gateway never sees one, which means you cannot read
+them, cannot back them up, and cannot lose them for your users — and a user who
+moves to another server keeps the whole conversation.
+
+The relays are chosen per client (`dm_relays` in the client's settings, falling
+back to several unaffiliated defaults), not by you. What a relay can see is that
+somebody sent a given pubkey a message at a given time: gift wrapping signs the
+outer event with a throwaway key, so not even the sender is visible to it.
+
 ### Media encryption (client-side)
 
 Voice, screen video and camera all terminate at an SFU, which decrypts and

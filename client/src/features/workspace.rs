@@ -60,7 +60,7 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
     let state = use_signal(AppState::empty);
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
 
-    let (gateway_tx, voice_tx) = use_hook(|| {
+    let (gateway_tx, voice_tx, nostr_tx) = use_hook(|| {
         // Restore the persisted audio preferences BEFORE the voice service
         // starts: it seeds its live audio controls from `AppState` on its first
         // poll. Without this the saved mic sensitivity, device choices and
@@ -105,9 +105,26 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
         let gateway_tx = spawn_gateway(params.clone(), state, voice_tx.clone(), move |reason| {
             on_disconnect.call(reason);
         });
-        (gateway_tx, voice_tx)
+        // Direct messages ride Nostr relays, not the gateway, so this starts
+        // beside it rather than inside it — and keeps running whether or not
+        // the gateway is up. That independence is the point: a DM does not care
+        // which server you are on, or whether you are on one at all.
+        let relays = {
+            let saved = settings.read();
+            if saved.dm_relays.is_empty() {
+                crate::nostr::relay::DEFAULT_RELAYS
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect()
+            } else {
+                saved.dm_relays.clone()
+            }
+        };
+        let nostr_tx = crate::nostr::service::spawn_nostr(params.identity.clone(), relays, state);
+        (gateway_tx, voice_tx, nostr_tx)
     });
     provide_context(gateway_tx.clone());
+    provide_context(nostr_tx.clone());
     provide_context(crate::features::voice::VoiceTx(voice_tx.clone()));
     provide_context(state);
     // The Nostr identity (with signing key) — used to authorize Blossom uploads.

@@ -1,7 +1,6 @@
 mod app;
 mod blossom;
 mod denoise;
-mod dmcrypt;
 mod e2ee;
 #[macro_use]
 mod devlog;
@@ -11,6 +10,7 @@ mod host;
 mod identity;
 mod mediakey;
 mod net;
+mod nostr;
 mod portmap;
 mod profile;
 mod protocol;

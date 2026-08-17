@@ -33,6 +33,17 @@ pub struct ClientSettings {
     #[serde(default = "default_rendezvous_servers")]
     pub rendezvous_servers: Vec<String>,
 
+    /// Nostr relays used for direct messages, in preference order.
+    ///
+    /// DMs do not travel over the gateway at all — they are gift-wrapped events
+    /// on these relays — so this list is what decides whether a friend can
+    /// reach you, independently of which server either of you is on. Empty
+    /// means the defaults in `nostr::relay::DEFAULT_RELAYS`, which is several
+    /// unaffiliated operators on purpose: one default would let a single
+    /// operator watch every Discordia user's DM metadata.
+    #[serde(default)]
+    pub dm_relays: Vec<String>,
+
     /// Persisted audio device choices (None = system default).
     #[serde(default)]
     pub selected_input_device: Option<String>,
@@ -239,6 +250,7 @@ impl Default for ClientSettings {
             background_dim: 55,
             blossom_server: default_blossom_server(),
             rendezvous_servers: default_rendezvous_servers(),
+            dm_relays: Vec::new(),
             selected_input_device: None,
             selected_output_device: None,
             mic_sensitivity: default_mic_sensitivity(),

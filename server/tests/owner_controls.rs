@@ -1233,40 +1233,11 @@ async fn delete_message_rules() {
         }
     }
 
-    // DMs: only the author may delete, moderators have no reach.
-    owner
-        .send(&ClientMessage::OpenDm {
-            user_pubkey: author_id.pubkey().to_string(),
-        })
-        .await
-        .unwrap();
-    let dm_channel = loop {
-        if let ServerMessage::DmReady { channel_id, .. } = next_timeout(&mut owner).await {
-            break channel_id;
-        }
-    };
-    // The author sends a DM message to the owner.
-    author
-        .send_message(dm_channel, "private note")
-        .await
-        .unwrap();
-    let dm_msg = loop {
-        if let ServerMessage::MessageCreate(m) = next_timeout(&mut owner).await
-            && m.channel_id == dm_channel
-        {
-            break m.id;
-        }
-    };
-    // Even the (guild) owner can't delete the other side's DM message.
-    owner
-        .send(&ClientMessage::DeleteMessage {
-            channel_id: dm_channel,
-            message_id: dm_msg,
-        })
-        .await
-        .unwrap();
-    let err = next_error(&mut owner).await;
-    assert!(err.contains("author"), "got: {err}");
+    // The DM half of this test is gone with the feature: direct messages are
+    // Nostr gift wraps now and never reach this server, so there is no DM
+    // channel here whose deletion rules could be checked. The guild half above
+    // still covers the rule that mattered — a moderator may delete in a channel
+    // they moderate, and the author-only rule is what DMs were demonstrating.
 
     handle.abort();
 }

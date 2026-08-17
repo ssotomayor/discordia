@@ -168,7 +168,7 @@ pub fn Avatar(
 #[component]
 pub fn ProfileCard() -> Element {
     let mut state = use_app_state();
-    let gateway = use_gateway();
+    let nostr = use_context::<crate::nostr::service::NostrTx>();
 
     let snapshot = state.read();
     let Some(pubkey) = snapshot.profile_card.clone() else {
@@ -196,6 +196,9 @@ pub fn ProfileCard() -> Element {
 
     let disc = discriminator(&pubkey);
     let dm_pubkey = pubkey.clone();
+    let contact_pubkey = pubkey.clone();
+    let nostr_contact = nostr.clone();
+    let is_contact = state.read().contacts.contains(&pubkey);
     let signature = crate::identity::color_signature(&pubkey, 15);
     let accent = crate::identity::signature_accent(&pubkey);
     // Per-guild XP: show this member's level in the guild we're viewing.
@@ -336,10 +339,31 @@ pub fn ProfileCard() -> Element {
                         span { class: "text-[10px] text-[var(--text-dim)] shrink-0", "{into}/{span}" }
                     }
                     if !is_self {
+                        // Public, unlike the messages below it — a contact list
+                        // is a kind:3 event anyone can read. Said in the tooltip
+                        // rather than assumed, because the button sits next to
+                        // one whose whole point is that nobody can see it.
                         button {
-                            class: "dxf-cta mt-4 w-full py-2.5 rounded-xl text-sm transition-all",
+                            class: "mt-4 w-full py-2 rounded-xl text-xs border border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--text)] transition-all",
+                            title: if is_contact { "Remove from your Nostr contact list. This list is public." } else { "Add to your Nostr contact list, so they follow you to any server. This list is public." },
                             onclick: move |_| {
-                                gateway.send(ClientMessage::OpenDm { user_pubkey: dm_pubkey.clone() });
+                                nostr_contact.send(crate::nostr::service::NostrCmd::SetContact {
+                                    peer: contact_pubkey.clone(),
+                                    keep: !is_contact,
+                                });
+                            },
+                            if is_contact { "✓ In your contacts" } else { "+ Add contact" }
+                        }
+                        button {
+                            class: "dxf-cta mt-2 w-full py-2.5 rounded-xl text-sm transition-all",
+                            onclick: move |_| {
+                                // Opens a Nostr conversation, not a server one.
+                                // Nothing is sent to the gateway and nothing is
+                                // created anywhere until a message is written —
+                                // there is no channel to create.
+                                nostr.send(crate::nostr::service::NostrCmd::Open {
+                                    peer: dm_pubkey.clone(),
+                                });
                                 state.write().profile_card = None;
                             },
                             "Message"

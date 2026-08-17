@@ -298,8 +298,8 @@ pub fn ChatView() -> Element {
                 if is_dm {
                     span {
                         class: "text-[10px] px-1.5 py-0.5 rounded border border-[var(--border)] text-[var(--text-dim)]",
-                        title: "Messages and images in this conversation are encrypted on your machine. The server stores them but cannot read them.",
-                        "🔒 encrypted"
+                        title: "End-to-end encrypted and sent over Nostr relays, not through this server. The relays cannot read it and cannot see who sent it. Your conversation follows your key to any server.",
+                        "🔒 private · relays"
                     }
                 }
                 if let Some(topic) = channel_topic {
@@ -863,6 +863,7 @@ fn Composer(channel_id: Id, composer_label: String, drag_over: Signal<bool>) -> 
     let mut last_typing = use_signal::<Option<std::time::Instant>>(|| None);
     let gateway = use_gateway();
     let gateway_submit = gateway.clone();
+    let nostr_submit = use_context::<crate::nostr::service::NostrTx>();
 
     // Dropped images land in the same `pending_image` slot the "+" picker fills,
     // so from here on a dragged file and a picked one are indistinguishable —
@@ -936,39 +937,38 @@ fn Composer(channel_id: Id, composer_label: String, drag_over: Signal<bool>) -> 
         }
         // Only the id goes out; the server rebuilds the quote from its own row.
         let reply_to = replying_to().map(|r| r.message_id);
-        // In a DM, seal before anything leaves. `peer_and_identity` is None for
-        // a guild channel, where sealing is refused by the server anyway.
-        let sealing = {
-            let s = state.read();
-            s.dm_of(channel_id).and_then(|dm| {
-                s.identity
-                    .as_ref()
-                    .map(|id| (dm.other.pubkey.clone(), id.clone()))
-            })
-        };
-        let (content, image, enc) = match sealing {
-            Some((peer, identity)) => {
-                match crate::dmcrypt::seal_for_dm(&content, image.as_deref(), &peer, &identity) {
-                    Ok(sealed) => sealed,
-                    Err(e) => {
-                        // Refuse rather than fall back to plaintext. A DM that
-                        // silently sends in the clear because sealing failed is
-                        // the worst outcome available here: the user believes
-                        // it was private and nothing says otherwise.
-                        state.write().error_toast = Some(format!("Not sent — {e}"));
-                        return;
-                    }
-                }
+        // A DM does not go through the gateway at all. It is a gift-wrapped
+        // Nostr event on relays, which is what makes the conversation outlive
+        // the server you happen to be connected to.
+        let dm_peer = state
+            .read()
+            .dm_of(channel_id)
+            .map(|d| d.other.pubkey.clone());
+        if let Some(peer) = dm_peer {
+            if image.is_some() {
+                // Attachments are not carried yet on the Nostr path (NIP-17
+                // kind:15 file messages, which need the blob encrypted and
+                // uploaded first). Saying so is better than dropping the
+                // picture silently after the user attached it.
+                state.write().error_toast =
+                    Some("Images in DMs are not supported yet — the text was not sent.".into());
+                return;
             }
-            None => (content, image, None),
-        };
-        gateway_submit.send(ClientMessage::SendMessage {
-            channel_id,
-            content,
-            image,
-            reply_to,
-            enc,
-        });
+            let reply_event =
+                reply_to.and_then(|id| state.read().nostr_event_ids.get(&id).cloned());
+            nostr_submit.send(crate::nostr::service::NostrCmd::Send {
+                peer,
+                text: content,
+                reply_to: reply_event,
+            });
+        } else {
+            gateway_submit.send(ClientMessage::SendMessage {
+                channel_id,
+                content,
+                image,
+                reply_to,
+            });
+        }
         draft.set(String::new());
         pending_image.set(None);
         show_emoji.set(false);

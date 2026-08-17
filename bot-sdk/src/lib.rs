@@ -261,9 +261,6 @@ impl Bot {
             content: content.to_string(),
             image: None,
             reply_to: None,
-            // A bot has no private conversation to seal into: it posts to guild
-            // channels, where sealing is refused outright.
-            enc: None,
         })
         .await
     }
@@ -282,7 +279,6 @@ impl Bot {
             content: content.to_string(),
             image: None,
             reply_to: Some(reply_to),
-            enc: None,
         })
         .await
     }

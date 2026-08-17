@@ -3,7 +3,8 @@ use dioxus_grid_layout::NoDrag;
 
 use crate::features::voice::{VoiceCmd, use_voice_tx};
 use crate::identity::discriminator;
-use crate::protocol::{Channel, ChannelKind, ClientMessage, DmInfo, Id, Permission, VoiceState};
+use crate::protocol::{Channel, ChannelKind, ClientMessage, Id, Permission, VoiceState};
+use crate::state::DmInfo;
 use crate::state::{AppState, GatewayTx, VoicePhase, use_app_state, use_gateway};
 
 /// The position changes that put `moved` where `target` sits.
@@ -275,9 +276,17 @@ pub fn ChannelsColumn() -> Element {
             NoDrag {
             if dm_mode {
                 div { class: "flex-1 overflow-y-auto px-2 py-3 space-y-1",
+                    // Start a conversation with anyone, by key.
+                    //
+                    // Until now the only way to reach this was a member list,
+                    // so you could not message somebody you did not already
+                    // share a guild with. Nothing on the server ever required
+                    // that — there was simply no door. Now there is no server
+                    // involved at all: a DM is addressed to a Nostr key.
+                    StartDmByKey {}
                     if dms.is_empty() {
                         div { class: "px-2 text-xs text-[var(--text-dim)] leading-relaxed",
-                            "No conversations yet. Click a member to start a direct message."
+                            "No conversations yet. Paste someone's npub above, or click a member."
                         }
                     }
                     for dm in dms.iter().cloned() {
@@ -2345,5 +2354,50 @@ mod tests {
         let gone = Id::new_v4();
         assert!(reorder_positions(&g, g[0].id, gone).is_empty());
         assert!(reorder_positions(&g, gone, g[0].id).is_empty());
+    }
+}
+
+/// A box that turns an `npub…` or hex pubkey into an open conversation.
+///
+/// Deliberately the *first* thing in the DM list rather than hidden behind a
+/// menu: reaching somebody by key is the whole difference between messages that
+/// belong to a server and messages that belong to you.
+#[component]
+fn StartDmByKey() -> Element {
+    let nostr = use_context::<crate::nostr::service::NostrTx>();
+    let mut input = use_signal(String::new);
+    let mut error = use_signal(|| Option::<String>::None);
+
+    let mut start = move || {
+        let raw = input().trim().to_string();
+        if raw.is_empty() {
+            return;
+        }
+        match crate::identity::pubkey_from_input(&raw) {
+            Ok(pubkey) => {
+                error.set(None);
+                input.set(String::new());
+                nostr.send(crate::nostr::service::NostrCmd::Open { peer: pubkey });
+            }
+            Err(e) => error.set(Some(e)),
+        }
+    };
+
+    rsx! {
+        div { class: "px-1 pb-2 space-y-1",
+            input {
+                class: "w-full bg-[var(--bg2)] border border-[var(--border)] rounded px-2 py-1 text-xs outline-none focus:border-[var(--accent)]",
+                r#type: "text",
+                placeholder: "npub1… or hex key",
+                value: "{input}",
+                oninput: move |e| { input.set(e.value()); error.set(None); },
+                onkeydown: move |e| {
+                    if e.key() == Key::Enter { start(); }
+                },
+            }
+            if let Some(err) = error() {
+                div { class: "px-1 text-[10px] text-[var(--danger,#f87171)]", "{err}" }
+            }
+        }
     }
 }

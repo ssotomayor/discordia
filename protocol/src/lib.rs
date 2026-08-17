@@ -454,49 +454,7 @@ pub struct Message {
     /// Set when this message is a reply. Server-populated; see `ReplyRef`.
     #[serde(default)]
     pub reply_to: Option<ReplyRef>,
-    /// Sealed payload for an end-to-end encrypted direct message.
-    ///
-    /// When this is set the server holds no readable copy of anything: `content`
-    /// carries only `ENCRYPTED_PLACEHOLDER`, and the real text — plus the key
-    /// and mime for `image`, when there is one — is inside here, sealed to the
-    /// two participants' Nostr keys. The server stores and forwards it without
-    /// being able to read it, which is the whole point.
-    ///
-    /// `image` still travels the ordinary blob path when present, but its bytes
-    /// are ciphertext by the time they leave the sender, so content-addressing,
-    /// dedup and GC keep working over data the server cannot decode.
-    ///
-    /// Optional because a guild message is never sealed and an older client
-    /// sends nothing here. A client that does not understand the field shows
-    /// the placeholder, which is why the placeholder is a sentence rather than
-    /// an empty string.
-    #[serde(default)]
-    pub enc: Option<String>,
     pub created_at: DateTime<Utc>,
-}
-
-/// What `content` says when the real text is sealed in `Message::enc`.
-///
-/// It exists for clients too old to know about `enc`: serde drops unknown
-/// fields, so such a client renders `content` verbatim and would otherwise show
-/// an empty bubble. Deliberately a plain sentence — it is displayed as message
-/// text on those clients.
-pub const ENCRYPTED_PLACEHOLDER: &str = "[encrypted message — update Discordia to read it]";
-
-/// Cap on a sealed payload, in bytes of the base64 form.
-///
-/// `content` is capped at 2000 chars; sealing pads to a power of two, adds a
-/// nonce and a tag, base64s the result, and may also carry an image key and
-/// mime. 16 KiB leaves generous room for all of that without letting `enc`
-/// become an unbounded side channel for storing data the server cannot inspect.
-pub const MAX_ENC_LEN: usize = 16 * 1024;
-
-/// A one-to-one direct-message channel, described from the viewpoint of one
-/// participant: `other` is the *other* person in the conversation.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct DmInfo {
-    pub channel_id: Id,
-    pub other: User,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -819,11 +777,6 @@ pub enum ClientMessage {
         /// resolve is dropped: the message still sends, just without a quote.
         #[serde(default)]
         reply_to: Option<Id>,
-        /// Sealed payload — see `Message::enc`. Only meaningful in a DM: the
-        /// server refuses it on a guild channel, because a sealed message in a
-        /// room of many is a message most of the room cannot read.
-        #[serde(default)]
-        enc: Option<String>,
     },
     /// Create a new guild. The server seeds it with a default text + voice
     /// channel and makes the requesting user its first (and only) member.
@@ -848,11 +801,6 @@ pub enum ClientMessage {
     /// Delete a guild. Only honoured if the requester is the guild's owner.
     DeleteGuild {
         guild_id: Id,
-    },
-    /// Open (or fetch the existing) direct-message channel with another user.
-    /// The server replies with `DmReady` and notifies the other participant.
-    OpenDm {
-        user_pubkey: String,
     },
     /// Publish (or update) the sender's public profile. Sent on connect from
     /// the client's locally-owned `profile.json`, and again whenever edited.
@@ -1171,9 +1119,6 @@ pub enum ServerMessage {
         /// Members of the user's guilds only.
         members: Vec<Member>,
         voice_states: Vec<VoiceState>,
-        /// The requesting user's existing direct-message conversations.
-        #[serde(default)]
-        dms: Vec<DmInfo>,
         /// Public directory of all guilds on the host (for browse-and-join).
         #[serde(default)]
         catalog: Vec<GuildSummary>,
@@ -1251,12 +1196,6 @@ pub enum ServerMessage {
         offset: u32,
         #[serde(default)]
         total: u32,
-    },
-    /// Reply to `OpenDm` for the requester: the DM channel plus its history.
-    DmReady {
-        channel_id: Id,
-        other: User,
-        messages: Vec<Message>,
     },
     /// A user published or changed their profile. Broadcast to everyone so
     /// avatars/bios stay current wherever that user is shown.

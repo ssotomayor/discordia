@@ -342,7 +342,7 @@ async fn connect_best(
                 // expire.
                 relay_attempt.abort();
                 eprintln!("[dioxusfun] connected directly to {direct}");
-                return Ok((Socket::Tcp(ws), Transport::Direct));
+                return Ok((Socket::Tcp(Box::new(ws)), Transport::Direct));
             }
             Ok(Err(e)) => {
                 tracing::info!(%direct, error = %e, "direct connection refused — using the relay")
@@ -354,7 +354,7 @@ async fn connect_best(
     match relay_attempt.await {
         Ok(Ok((ws, _))) => {
             eprintln!("[dioxusfun] connected through the relay {relay}");
-            Ok((Socket::Tcp(ws), Transport::Relayed))
+            Ok((Socket::Tcp(Box::new(ws)), Transport::Relayed))
         }
         Ok(Err(e)) => Err(format!("connect failed: {e}")),
         Err(e) => Err(format!("connect failed: {e}")),
@@ -392,7 +392,7 @@ async fn dial_quic(
     let (ws, _) = tokio_tungstenite::client_async(QUIC_HANDSHAKE_URL, io)
         .await
         .map_err(|e| format!("websocket over quic: {e}"))?;
-    Ok(Socket::Quic(ws, guard))
+    Ok(Socket::Quic(Box::new(ws), guard))
 }
 
 async fn run(
@@ -413,7 +413,7 @@ async fn run(
             let (ws, _) = tokio_tungstenite::connect_async(&url)
                 .await
                 .map_err(|e| format!("connect failed: {e}"))?;
-            (Socket::Tcp(ws), transport)
+            (Socket::Tcp(Box::new(ws)), transport)
         }
         Dial::DirectOrRelay {
             quic,
@@ -428,9 +428,9 @@ async fn run(
     // one won. The QUIC guard rides along in the enum because dropping it would
     // close the connection under the socket.
     match ws_stream {
-        Socket::Tcp(ws) => run_session(ws, params, tx, rx, state, voice_tx).await,
+        Socket::Tcp(ws) => run_session(*ws, params, tx, rx, state, voice_tx).await,
         Socket::Quic(ws, guard) => {
-            let ended = run_session(ws, params, tx, rx, state, voice_tx).await;
+            let ended = run_session(*ws, params, tx, rx, state, voice_tx).await;
             quic_disconnect_reason(guard.relay_refused(), ended)
         }
     }
@@ -460,12 +460,20 @@ fn quic_disconnect_reason(relay_refused: bool, ended: Result<(), String>) -> Res
 }
 
 /// A gateway socket, whichever transport carried it.
+///
+/// Both variants are boxed only because of their size. Enabling rustls on
+/// `tokio-tungstenite` — which Nostr relays require, since every one of them is
+/// `wss://` — grew `MaybeTlsStream` by a whole TLS session, so the plain-TCP
+/// variant came to dwarf the QUIC one and every `Socket` on the stack would
+/// carry that much whether or not TLS was ever negotiated. Boxing one alone
+/// merely reverses which is the outlier, so both are boxed and the enum is two
+/// pointers wide.
 enum Socket {
-    Tcp(Ws),
+    Tcp(Box<Ws>),
     /// The WebSocket plus the QUIC connection underneath it, which has to
     /// outlive the session.
     Quic(
-        tokio_tungstenite::WebSocketStream<crate::quic::GatewayIo>,
+        Box<tokio_tungstenite::WebSocketStream<crate::quic::GatewayIo>>,
         crate::quic::ConnectionGuard,
     ),
 }
@@ -644,7 +652,6 @@ fn apply(
             channels,
             members,
             voice_states,
-            dms,
             catalog,
             profiles,
             roles,
@@ -657,7 +664,10 @@ fn apply(
             s.channels = channels;
             s.members = members;
             s.voice_states = voice_states;
-            s.dms = dms;
+            // Deliberately not cleared: `s.dms` is the Nostr conversation list
+            // now, owned by `nostr::service` and unrelated to this snapshot. A
+            // reconnect to the gateway must not wipe conversations the gateway
+            // has never heard of.
             s.dm_mode = false;
             s.catalog = catalog;
             s.profiles = profiles
@@ -702,9 +712,8 @@ fn apply(
         }
         ServerMessage::MessageHistory {
             channel_id,
-            mut messages,
+            messages,
         } => {
-            open_sealed(&s, channel_id, &mut messages);
             // Merge rather than replace: an initial load starts from empty, but
             // an older page (infinite scroll) must fold into what's already
             // there without dropping live messages. Dedupe by id, keep
@@ -718,7 +727,7 @@ fn apply(
             }
             combined.sort_by_key(|a| a.created_at);
         }
-        ServerMessage::MessageCreate(mut m) => {
+        ServerMessage::MessageCreate(m) => {
             let cid = m.channel_id;
             // A channel we don't have as a guild channel must be a DM addressed
             // to us (the server only delivers DM frames to participants).
@@ -726,15 +735,11 @@ fn apply(
             // First message of a DM someone started with us — materialise the
             // conversation from the author.
             if is_dm && s.dm_of(cid).is_none() {
-                s.dms.push(crate::protocol::DmInfo {
+                s.dms.push(crate::state::DmInfo {
                     channel_id: cid,
                     other: m.author.clone(),
                 });
             }
-            // Before anything reads `content`: sealed messages carry only a
-            // placeholder until this runs, and the mention check below would
-            // match against it rather than against what was written.
-            open_sealed(&s, cid, std::slice::from_mut(&mut m));
             let author_is_self = s
                 .self_user
                 .as_ref()
@@ -873,23 +878,6 @@ fn apply(
                     });
                 }
             }
-        }
-        ServerMessage::DmReady {
-            channel_id,
-            other,
-            mut messages,
-        } => {
-            // Authoritative open of a DM we initiated: list it, load history,
-            // switch to the DM view and select it.
-            if !s.dms.iter().any(|d| d.channel_id == channel_id) {
-                s.dms.push(crate::protocol::DmInfo { channel_id, other });
-            }
-            // After the push, so the peer this history is sealed to resolves.
-            open_sealed(&s, channel_id, &mut messages);
-            s.messages.insert(channel_id, messages);
-            s.dm_mode = true;
-            s.selected_channel = Some(channel_id);
-            s.dm_unread.remove(&channel_id);
         }
         ServerMessage::ProfileUpdate(profile) => {
             crate::dlog!(
@@ -1301,68 +1289,6 @@ fn apply(
             // Hello is only valid as the FIRST frame and is consumed by the
             // handshake loop in `run()`. Anywhere else, ignore.
             tracing::warn!("ignoring late Hello frame from server");
-        }
-    }
-}
-
-/// Open any sealed messages for `channel_id`, in place.
-///
-/// A no-op unless something in the batch actually carries `enc`, so the common
-/// case — a guild channel — costs one scan and no key agreement.
-///
-/// Both the peer and our identity have to be resolvable: a DM whose
-/// conversation we have not learned yet, or a session with no identity loaded,
-/// leaves the placeholder standing rather than guessing. That is recoverable —
-/// the next history fetch runs this again — where decrypting against the wrong
-/// peer would not be.
-fn open_sealed(
-    s: &crate::state::AppState,
-    channel_id: crate::protocol::Id,
-    messages: &mut [crate::protocol::Message],
-) {
-    if !messages.iter().any(|m| m.enc.is_some()) {
-        return;
-    }
-    let Some(peer) = s.dm_of(channel_id).map(|d| d.other.pubkey.clone()) else {
-        return;
-    };
-    let Some(identity) = s.identity.clone() else {
-        return;
-    };
-    for m in messages.iter_mut() {
-        crate::dmcrypt::open_in_place(m, &peer, &identity);
-    }
-
-    // Repair reply quotes. The server builds `excerpt` from the parent row,
-    // which for a sealed message is the placeholder — so without this, every
-    // reply inside an encrypted DM quotes "[encrypted message …]" instead of
-    // what was said. Not a leak, just useless, and the fix has to be here
-    // because the server is the one party that cannot do it.
-    //
-    // The parent is looked up among what we just opened and among what is
-    // already on screen; a reply to something scrolled out of history keeps the
-    // placeholder rather than pretending to know.
-    let known: std::collections::HashMap<crate::protocol::Id, String> = messages
-        .iter()
-        .map(|m| (m.id, m.content.clone()))
-        .chain(
-            s.messages
-                .get(&channel_id)
-                .into_iter()
-                .flatten()
-                .filter(|m| m.enc.is_some())
-                .map(|m| (m.id, m.content.clone())),
-        )
-        .collect();
-    for m in messages.iter_mut() {
-        if let Some(reply) = m.reply_to.as_mut()
-            && reply.excerpt == crate::protocol::ENCRYPTED_PLACEHOLDER
-            && let Some(parent) = known.get(&reply.message_id)
-        {
-            reply.excerpt = parent
-                .chars()
-                .take(crate::protocol::REPLY_EXCERPT_CHARS)
-                .collect();
         }
     }
 }

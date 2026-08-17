@@ -107,7 +107,8 @@ identity bullets under `features/*.rs`:
    sqlx) and is rehydrated on boot by `load_or_seed()`. A failed DB write is
    *logged and ignored* (`persist()` helper) — the change survives the session
    but not a restart. **Messages are the exception: they live ONLY in the DB**
-   (fetched on demand via `FetchMessages`), never in an in-memory map.
+   (fetched on demand via `FetchMessages`), never in an in-memory map. Direct
+   messages are not here at all any more — see `client/src/nostr/`.
 
 3. **Message images are offloaded to content-addressed blobs.** `MediaStore`
    (`server/src/media.rs`) decodes inbound `data:` URLs into
@@ -312,6 +313,27 @@ identity bullets under `features/*.rs`:
   against the new one. Anything that ends a share must clear
   `screen_share_target`, or the effect sees an unchanged key and the next click
   does nothing.
+- `nostr/` — **direct messages, which no longer touch the gateway at all.** A
+  DM is a NIP-17 gift-wrapped event on Nostr relays, so a conversation belongs
+  to your key rather than to whichever server you are connected to: change
+  servers, self-host, or have the host delete its database, and the history
+  follows you. Four layers, each verifiable on its own — `nip44` (the
+  encryption, checked against the spec's own test vectors, which is what makes a
+  hand-written crypto module a checked claim rather than an assurance), `event`
+  (NIP-01 ids and signatures), `nip59` (the gift wrap: rumor → seal → wrap,
+  where the outer layer is signed by a **throwaway key**, so a relay learns that
+  somebody messaged you and never who), `nip17` (chat semantics — and note every
+  message is wrapped *twice*, to them and to us, because a wrap can only be
+  opened by the key it was addressed to, including by its sender). `nip02` is
+  the contact list, which travels the same way; `relay` is the client;
+  `service` is the task that owns it and feeds `AppState`, shaped like
+  `net::spawn_gateway` deliberately.
+  Two things to know before touching it. The DM views are keyed by `Uuid`
+  because they were written for server channels, so `service::conversation_id`
+  *derives* one from a pubkey — stable across launches and devices, and the
+  reason the whole DM surface kept working unchanged. And **the contact list is
+  a public, replaceable event**: publishing a partial list deletes everyone
+  missing from it, which is why `ContactList` is read-modify-written whole.
 - `protocol/mod.rs` — re-exports `dioxusfun-protocol` so the client says
   `crate::protocol::…`.
 

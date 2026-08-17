@@ -6,9 +6,9 @@ use uuid::Uuid;
 
 use crate::media::MediaStore;
 use crate::protocol::{
-    BotInstall, Channel, DmInfo, Guild, GuildEmoji, GuildVisibility, Id, Intent,
-    MAX_EMOJIS_PER_GUILD, Member, Message, Permission, Profile, ReplyRef, Role, ServerMessage,
-    User, VoiceState, valid_shortcode,
+    BotInstall, Channel, Guild, GuildEmoji, GuildVisibility, Id, Intent, MAX_EMOJIS_PER_GUILD,
+    Member, Message, Permission, Profile, ReplyRef, Role, ServerMessage, User, VoiceState,
+    valid_shortcode,
 };
 use crate::store::Store;
 
@@ -38,14 +38,6 @@ struct Conn {
     tx: mpsc::Sender<ServerMessage>,
 }
 
-/// A one-to-one direct-message channel. Participants are stored as sorted
-/// pubkeys so the pair maps to a single channel regardless of who opened it.
-#[derive(Clone)]
-pub struct DmChannel {
-    pub id: Id,
-    pub participants: [String; 2],
-}
-
 pub struct AppState {
     /// Durable persistence (SQLite). Messages live ONLY there; the metadata
     /// maps below are the in-memory authority, written through on mutation and
@@ -64,10 +56,6 @@ pub struct AppState {
     /// Public profiles (avatar/bio) by pubkey. Owned by the client, uploaded
     /// on connect; cached here so we can hand them to everyone.
     pub profiles: DashMap<String, Profile>,
-    /// DM channels by channel id.
-    pub dms: DashMap<Id, DmChannel>,
-    /// Index from a sorted "pubkeyA|pubkeyB" pair to its DM channel id.
-    pub dm_index: DashMap<String, Id>,
     /// Voice state per user pubkey (global; a user can only be in one voice
     /// channel at a time across all guilds, same as Discord).
     pub voice_states: DashMap<String, VoiceState>,
@@ -143,8 +131,6 @@ impl AppState {
             last_post: DashMap::new(),
             recent_joins: DashMap::new(),
             xp: DashMap::new(),
-            dms: DashMap::new(),
-            dm_index: DashMap::new(),
             voice_states: DashMap::new(),
             operators,
             conns: DashMap::new(),
@@ -197,16 +183,6 @@ impl AppState {
         }
         for e in loaded.emojis {
             state.emojis.entry(e.guild_id).or_default().push(e);
-        }
-        for (id, a, b) in loaded.dms {
-            state.dm_index.insert(Self::dm_key(&a, &b), id);
-            state.dms.insert(
-                id,
-                DmChannel {
-                    id,
-                    participants: [a, b],
-                },
-            );
         }
         for (gid, pk) in loaded.bans {
             state.bans.entry(gid).or_default().insert(pk);
@@ -765,7 +741,6 @@ impl AppState {
             .map(|v| v.value().clone())
             .collect();
 
-        let dms = self.dms_for(&user.pubkey);
         let catalog = self.guild_catalog();
         let profiles = self.profiles_snapshot();
         let roles = self.roles_for_guilds(&my_guild_ids);
@@ -777,7 +752,6 @@ impl AppState {
             channels,
             members,
             voice_states,
-            dms,
             catalog,
             profiles,
             roles,
@@ -1987,70 +1961,6 @@ impl AppState {
             .map_err(|e| format!("store error: {e}"))
     }
 
-    /// The DM conversations `pubkey` participates in, each described from their
-    /// point of view (so `other` is the partner).
-    pub fn dms_for(&self, pubkey: &str) -> Vec<DmInfo> {
-        self.dms
-            .iter()
-            .filter_map(|entry| {
-                let dm = entry.value();
-                let other = if dm.participants[0] == pubkey {
-                    &dm.participants[1]
-                } else if dm.participants[1] == pubkey {
-                    &dm.participants[0]
-                } else {
-                    return None;
-                };
-                Some(DmInfo {
-                    channel_id: dm.id,
-                    other: self.resolve_user(other),
-                })
-            })
-            .collect()
-    }
-
-    /// Sorted pair key for the DM index, so (a,b) and (b,a) collide.
-    fn dm_key(a: &str, b: &str) -> String {
-        if a <= b {
-            format!("{a}|{b}")
-        } else {
-            format!("{b}|{a}")
-        }
-    }
-
-    /// Get the existing DM channel between two users, creating it if absent.
-    /// Returns the channel id.
-    pub async fn get_or_create_dm(&self, a: &str, b: &str) -> Id {
-        let key = Self::dm_key(a, b);
-        if let Some(existing) = self.dm_index.get(&key) {
-            return *existing;
-        }
-        let id = Uuid::new_v4();
-        let mut participants = [a.to_string(), b.to_string()];
-        participants.sort();
-        persist(
-            self.store
-                .upsert_dm(id, &participants[0], &participants[1])
-                .await,
-            "dm create",
-        );
-        self.dms.insert(id, DmChannel { id, participants });
-        self.dm_index.insert(key, id);
-        id
-    }
-
-    pub fn dm_participants(&self, channel_id: Id) -> Option<[String; 2]> {
-        self.dms.get(&channel_id).map(|d| d.participants.clone())
-    }
-
-    /// True if `channel_id` is a DM that `pubkey` is part of.
-    pub fn is_dm_participant(&self, channel_id: Id, pubkey: &str) -> bool {
-        self.dms
-            .get(&channel_id)
-            .map(|d| d.participants.iter().any(|p| p == pubkey))
-            .unwrap_or(false)
-    }
-
     /// Delete a guild and everything under it. Returns `Err` with a reason if
     /// the guild is unknown or `by_pubkey` is not its owner.
     pub async fn delete_guild(&self, guild_id: Id, by_pubkey: &str) -> Result<(), String> {
@@ -2102,8 +2012,8 @@ impl AppState {
         }
     }
 
-    /// Append a message to a guild text channel. Returns `None` if the channel
-    /// isn't a known text channel.
+    /// The DM conversations `pubkey` participates in, each described from their
+    /// point of view (so `other` is the partner).
     pub async fn push_message(
         &self,
         channel_id: Id,
@@ -2127,37 +2037,8 @@ impl AppState {
             Some(id) => self.store.reply_ref(channel_id, id).await.unwrap_or(None),
             None => None,
         };
-        // No `enc` on a guild channel: the gateway refuses a sealed message
-        // there, because a room of many cannot share a two-party secret.
         Some(
-            self.append_message(channel_id, author, content, image, reply_ref, None)
-                .await,
-        )
-    }
-
-    /// Append a message to a DM channel `author` participates in. Returns
-    /// `None` if the channel isn't a DM the author belongs to.
-    pub async fn push_dm_message(
-        &self,
-        channel_id: Id,
-        author: User,
-        content: String,
-        image: Option<String>,
-        reply_to: Option<Id>,
-        enc: Option<String>,
-    ) -> Option<Message> {
-        if !self.is_dm_participant(channel_id, &author.pubkey) {
-            return None;
-        }
-        // Resolve the quote from our own row, scoped to this channel. An id
-        // that doesn't resolve there is dropped rather than rejected: the reply
-        // still sends, just without a quote.
-        let reply_ref = match reply_to {
-            Some(id) => self.store.reply_ref(channel_id, id).await.unwrap_or(None),
-            None => None,
-        };
-        Some(
-            self.append_message(channel_id, author, content, image, reply_ref, enc)
+            self.append_message(channel_id, author, content, image, reply_ref)
                 .await,
         )
     }
@@ -2172,7 +2053,6 @@ impl AppState {
         content: String,
         image: Option<String>,
         reply_to: Option<ReplyRef>,
-        enc: Option<String>,
     ) -> Message {
         let stored_image = image.as_ref().map(|img| {
             if img.starts_with("data:") {
@@ -2193,7 +2073,6 @@ impl AppState {
             image: stored_image,
             reactions: Vec::new(),
             reply_to,
-            enc,
             created_at: chrono::Utc::now(),
         };
         persist(self.store.insert_message(&message).await, "message insert");
@@ -2514,7 +2393,6 @@ impl AppState {
             channels,
             members,
             voice_states: Vec::new(),
-            dms: Vec::new(),
             catalog: Vec::new(),
             profiles: Vec::new(),
             // Roles never apply to bot connections — don't leak them.

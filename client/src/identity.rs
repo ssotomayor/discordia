@@ -38,10 +38,6 @@ pub enum IdentitySource {
 /// different secret and hear silence, with nothing to say why.
 const MEDIA_KEY_DOMAIN: &[u8] = b"dioxusfun/media-key/v1";
 
-/// Domain separator for direct messages. Distinct from the media key on
-/// purpose — see `Identity::dm_secret_with`.
-const DM_DOMAIN: &[u8] = b"dioxusfun/dm/v1";
-
 #[derive(Clone)]
 pub struct Identity {
     /// x-only public key as 64-char hex — the universal user id.
@@ -144,6 +140,17 @@ impl Identity {
         }
     }
 
+    /// The raw secret, for the Nostr code that signs events with it.
+    ///
+    /// Deliberately narrow in intent: `nostr::event::sign_with` takes a
+    /// `SecretKey` because gift wrapping also signs with *ephemeral* keys that
+    /// have no `Identity` behind them, and one signing function for both is
+    /// better than two that could drift. Everything else should keep going
+    /// through `sign_hex`/`nostr_sign_id`.
+    pub fn secret_key(&self) -> secp256k1::SecretKey {
+        self.secret
+    }
+
     /// A stable 32-byte seed for this identity's *transport* key.
     ///
     /// The QUIC transport authenticates peers by an ed25519 key, which is not
@@ -190,20 +197,7 @@ impl Identity {
         self.secret_with_domain(their_pubkey_hex, MEDIA_KEY_DOMAIN)
     }
 
-    /// The same agreement, under the direct-message domain.
-    ///
-    /// A separate domain rather than a second use of `shared_secret_with`,
-    /// because that function's own contract says a secret must never coincide
-    /// with one derived for another purpose from the same pair of keys — and
-    /// the media key is *shared with a whole channel*, so reusing it for a
-    /// two-party conversation would hand every member of a voice channel the
-    /// key to your DMs with any of them.
-    pub fn dm_secret_with(&self, their_pubkey_hex: &str) -> Result<[u8; 32], String> {
-        self.secret_with_domain(their_pubkey_hex, DM_DOMAIN)
-    }
-
-    /// ECDH, then a domain-separated hash. The two callers above differ only in
-    /// the label, and the label is load-bearing — see each of their docs.
+    /// ECDH, then a domain-separated hash.
     ///
     /// **`MEDIA_KEY_DOMAIN` must never change.** It is baked into every media
     /// key two peers have ever agreed on; altering it would mean a client on
@@ -385,6 +379,37 @@ pub fn truncate_pubkey(pubkey: &str) -> String {
     format!("{}…{}", &pubkey[..8], &pubkey[pubkey.len() - 4..])
 }
 
+/// Turn what a user pasted into a 64-char hex pubkey.
+///
+/// Accepts an `npub1…` (NIP-19 bech32) or raw hex, because both are in
+/// circulation and a user copying a key from another Nostr client will have
+/// whichever that client shows. Rejects `nsec1…` explicitly and by name: it is
+/// one character away from `npub` in a font people read quickly, and pasting a
+/// *secret* key into a "who do you want to message" box is a mistake worth
+/// catching loudly rather than failing as "not valid hex".
+pub fn pubkey_from_input(raw: &str) -> Result<String, String> {
+    let raw = raw.trim();
+    if raw.starts_with("nsec") {
+        return Err("that is a private key — you want the npub, not the nsec".into());
+    }
+    if let Some(rest) = raw.strip_prefix("npub") {
+        let _ = rest;
+        let (hrp, data) = bech32::decode(raw).map_err(|e| format!("not a valid npub: {e}"))?;
+        if hrp.as_str() != "npub" {
+            return Err(format!("expected an npub, got '{}'", hrp.as_str()));
+        }
+        if data.len() != 32 {
+            return Err("an npub decodes to 32 bytes".into());
+        }
+        return Ok(hex::encode(data));
+    }
+    let bytes = hex::decode(raw).map_err(|_| "not an npub or a hex key".to_string())?;
+    if bytes.len() != 32 {
+        return Err("a nostr pubkey is 32 bytes (64 hex characters)".into());
+    }
+    Ok(hex::encode(bytes))
+}
+
 /// Last 4 characters of the pubkey — a Discord-style discriminator suffix.
 pub fn discriminator(pubkey: &str) -> &str {
     if pubkey.len() <= 4 {
@@ -466,6 +491,44 @@ fn derive_nip06(seed: &[u8]) -> Result<SecretKey, String> {
     }
 
     Ok(key)
+}
+
+#[cfg(test)]
+mod pubkey_input_tests {
+    use super::*;
+
+    /// Both forms in circulation are accepted, and agree.
+    #[test]
+    fn npub_and_hex_are_the_same_key() {
+        let id = Identity::create("t").expect("identity");
+        let from_hex = pubkey_from_input(&id.pubkey).expect("hex");
+        let from_npub = pubkey_from_input(&id.npub()).expect("npub");
+        assert_eq!(from_hex, id.pubkey);
+        assert_eq!(from_npub, id.pubkey);
+    }
+
+    /// The mistake worth catching by name. `nsec` and `npub` differ by one
+    /// character, and pasting a secret into a "who do you want to message" box
+    /// must say so rather than failing as "not valid hex".
+    #[test]
+    fn an_nsec_is_refused_by_name() {
+        let id = Identity::create("t").expect("identity");
+        let IdentitySource::Phrase(_) = &id.source else {
+            panic!("expected a generated phrase identity")
+        };
+        let err = pubkey_from_input("nsec1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqsuchhu")
+            .expect_err("must refuse");
+        assert!(err.contains("private key"), "unhelpful error: {err}");
+    }
+
+    /// Garbage, wrong-length hex and empty input all fail rather than
+    /// producing a key nobody can be reached at.
+    #[test]
+    fn nonsense_is_refused() {
+        for bad in ["", "hello", "abcd", &"a".repeat(63), &"z".repeat(64)] {
+            assert!(pubkey_from_input(bad).is_err(), "{bad:?} should be refused");
+        }
+    }
 }
 
 #[cfg(test)]
