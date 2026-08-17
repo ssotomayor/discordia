@@ -16,7 +16,7 @@
 use dioxus::prelude::*;
 use serde_json::{Value, json};
 
-use crate::protocol::ClientMessage;
+use crate::protocol::{ClientMessage, Id};
 use crate::state::{AppState, GatewayTx, use_app_state, use_gateway};
 
 /// A capability an activity may request. The user sees these at launch and the
@@ -76,7 +76,11 @@ pub fn ActivityHost() -> Element {
     // consent, and the currently-launched activity.
     let mut picker_open = use_signal(|| false);
     let mut consenting = use_signal(|| None::<usize>);
-    let mut launched = use_signal(|| None::<usize>);
+    // The launched activity *and the channel it was launched from*. Bound at
+    // launch rather than read per call: an activity that posts "where the user
+    // is now" misdirects every share the moment they change channel, and the
+    // person who opened it has no reason to expect that.
+    let mut launched = use_signal(|| None::<Launched>);
 
     // The RPC bridge: a single long-lived eval that forwards every message from
     // the activity iframe to Rust, where it's capability-checked and answered.
@@ -90,13 +94,21 @@ pub fn ActivityHost() -> Element {
                 };
                 // Resolve the launched activity's granted capabilities live, so a
                 // closed window can't be driven and a stale request is denied.
-                let def = launched.peek().and_then(|i| ACTIVITIES.get(i));
+                let open = *launched.peek();
+                let def = open.as_ref().and_then(|l| ACTIVITIES.get(l.idx));
                 let req_id = msg.get("reqId").cloned().unwrap_or(Value::Null);
                 let method = msg.get("method").and_then(|m| m.as_str()).unwrap_or("");
                 let params = msg.get("params").cloned().unwrap_or(Value::Null);
 
                 let (ok, payload) = match def {
-                    Some(def) => handle_rpc(method, &params, def, &state, &gateway),
+                    Some(def) => handle_rpc(
+                        method,
+                        &params,
+                        def,
+                        open.as_ref().and_then(|l| l.channel),
+                        &state,
+                        &gateway,
+                    ),
                     None => (false, json!("no activity is open")),
                 };
                 let reply = if ok {
@@ -144,7 +156,8 @@ pub fn ActivityHost() -> Element {
                                 idx,
                                 on_cancel: move |_| consenting.set(None),
                                 on_approve: move |i: usize| {
-                                    launched.set(Some(i));
+                                    let channel = state.read().selected_channel;
+                                    launched.set(Some(Launched { idx: i, channel }));
                                     consenting.set(None);
                                     picker_open.set(false);
                                 },
@@ -173,7 +186,7 @@ pub fn ActivityHost() -> Element {
         }
 
         // The sandboxed activity window.
-        if let Some(idx) = launched() {
+        if let Some(idx) = launched().map(|l| l.idx) {
             if let Some(def) = ACTIVITIES.get(idx) {
                 ActivityWindow { def_idx: idx, name: def.name, icon: def.icon, html: def.html,
                     on_close: move |_| launched.set(None),
@@ -307,11 +320,26 @@ fn ActivityWindow(
     }
 }
 
+/// A launched activity: which one, and the channel it was opened from.
+///
+/// The channel is captured at launch because that is what the person opening it
+/// was looking at. Resolving it per call instead means an activity that posts a
+/// result lands wherever the user happens to have navigated by the time they
+/// click — a misdirection nobody is told about.
+#[derive(Clone, Copy, PartialEq)]
+struct Launched {
+    idx: usize,
+    channel: Option<Id>,
+}
+
 /// Capability-checked RPC dispatch. Returns `(ok, payload)`.
 fn handle_rpc(
     method: &str,
     params: &Value,
     def: &ActivityDef,
+    // The channel this activity was launched from — where its posts go, and
+    // what `channel.get` reports, whatever the user has selected since.
+    bound_channel: Option<Id>,
     state: &Signal<AppState>,
     gateway: &GatewayTx,
 ) -> (bool, Value) {
@@ -326,7 +354,7 @@ fn handle_rpc(
         }
         "channel.get" if has(Capability::ChannelRead) => {
             let s = state.read();
-            let cid = s.selected_channel;
+            let cid = bound_channel;
             let name = cid.and_then(|id| {
                 s.channels
                     .iter()
@@ -348,8 +376,9 @@ fn handle_rpc(
             if content.is_empty() {
                 return (false, json!("content is empty"));
             }
-            // Posts to the channel that's currently open, as the user.
-            let cid = state.read().selected_channel;
+            // Posts to the channel the activity was launched from, as the user
+            // — not to whatever is open now.
+            let cid = bound_channel;
             match cid {
                 Some(channel_id) => {
                     gateway.send(ClientMessage::SendMessage {
@@ -448,11 +477,9 @@ const DICE_HTML: &str = r##"<!doctype html><html><head><meta charset="utf-8"><st
     dxf.getUser().then(function (u) { whoEl.textContent = 'Hi, ' + u.username; })
        .catch(function () { whoEl.textContent = ''; });
 
-    // Where a share would land. Re-read after every send rather than once at
-    // launch, because `message.send` resolves the channel when the call fires,
-    // not when the activity opened — see the channel-binding entry in docs/AUDIT-2026-08-17.md.
-    // This makes that visible; it does not fix it. A change between this read
-    // and the next click is still unannounced.
+    // Where a share will land. Read once is now enough: the activity is bound
+    // to the channel it was launched from, so this answer cannot go stale under
+    // it. It used to be re-read after every send precisely because it could.
     function showWhere() {
       dxf.getChannel()
          .then(function (c) { whereEl.textContent = c && c.name ? 'shares go to #' + c.name : ''; })

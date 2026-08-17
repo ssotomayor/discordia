@@ -11,8 +11,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use dioxusfun_server::ServerHandle;
 use dioxusfun_server::livekit::LiveKitConfig;
 use dioxusfun_server::livekit_bundle::{
-    self, DEFAULT_LIVEKIT_KEY, DEFAULT_LIVEKIT_PORT, DEFAULT_LIVEKIT_SECRET,
-    DEFAULT_LIVEKIT_TCP_PORT, DEFAULT_LIVEKIT_UDP_PORT, LivekitSubprocess,
+    self, DEFAULT_LIVEKIT_KEY, DEFAULT_LIVEKIT_SECRET, LivekitSubprocess,
 };
 
 use crate::portmap;
@@ -160,11 +159,15 @@ pub async fn start_self_host(
     let (mapped, port_mapping, reachability) = if allow_lan {
         match local_ipv4() {
             Some(local_ip) => {
+                // From the same resolver the SFU configures itself with: a
+                // mapping for 7880 while the subprocess listens on 7890 is a
+                // hole punched to nowhere.
+                let sfu = livekit_bundle::ports();
                 let ports = portmap::Ports {
                     gateway_tcp: gateway_addr.port(),
-                    media_tcp: DEFAULT_LIVEKIT_PORT,
-                    media_tcp_ice: DEFAULT_LIVEKIT_TCP_PORT,
-                    media_udp: DEFAULT_LIVEKIT_UDP_PORT,
+                    media_tcp: sfu.ws,
+                    media_tcp_ice: sfu.tcp,
+                    media_udp: sfu.udp,
                     quic_udp: quic_port,
                 };
                 match portmap::request(local_ip, ports).await {
@@ -296,7 +299,10 @@ pub async fn start_self_host(
     } else {
         match livekit_bundle::spawn_livekit(advertise_ip).await {
             Ok(child) => {
-                eprintln!("[host] livekit ready at ws://127.0.0.1:{DEFAULT_LIVEKIT_PORT}");
+                eprintln!(
+                    "[host] livekit ready at ws://127.0.0.1:{}",
+                    livekit_bundle::ports().ws
+                );
                 (Some(child), true)
             }
             Err(e) => {
@@ -309,7 +315,7 @@ pub async fn start_self_host(
 
     let livekit_cfg = LiveKitConfig {
         explicit_url,
-        port: DEFAULT_LIVEKIT_PORT,
+        port: livekit_bundle::ports().ws,
         // Local credentials only ever sign for our own bundled subprocess.
         api_key: DEFAULT_LIVEKIT_KEY.into(),
         api_secret: DEFAULT_LIVEKIT_SECRET.into(),
@@ -385,7 +391,7 @@ pub async fn start_self_host(
     // deliberately started nothing, and voice works fine.
     let livekit_display = match (&shared_sfu_url, voice_bundled) {
         (Some(url), _) => url.clone(),
-        (None, true) => format!("ws://127.0.0.1:{DEFAULT_LIVEKIT_PORT}"),
+        (None, true) => format!("ws://127.0.0.1:{}", livekit_bundle::ports().ws),
         (None, false) => String::new(),
     };
 
