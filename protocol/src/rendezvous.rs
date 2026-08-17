@@ -18,6 +18,24 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "op", content = "d", rename_all = "snake_case")]
 pub enum HostToRendezvous {
+    /// Give up a claimed name, proving ownership the same way claiming it did.
+    ///
+    /// Sent *instead of* `Register` on a control connection: this is an
+    /// administrative act, not a session, so the connection carries one frame
+    /// and closes. Without it a reservation was permanent — `claim_name`
+    /// persists and nothing ever removed one, so a name claimed by mistake, or
+    /// by a key its owner has since rotated away from, was stuck forever.
+    ReleaseName {
+        /// The claimed name, as sent when it was claimed (compared
+        /// case-insensitively, like every other use of a name here).
+        name: String,
+        /// x-only Nostr pubkey that owns it.
+        pubkey: String,
+        /// Schnorr signature over `SHA256(nonce || pubkey || name)`, against
+        /// the nonce from the preceding `Challenge` — the same construction
+        /// the claim used, so one verifier serves both.
+        signature: String,
+    },
     Register {
         /// Claimed unique name (URL-safe: letters, digits, `-`, `_`, `.`). It
         /// doubles as the join code (`/join/{name}`) and is compared
@@ -147,6 +165,10 @@ pub enum RendezvousToHost {
         #[serde(default)]
         relay_url: Option<String>,
     },
+    /// The name is no longer reserved.
+    Released {
+        name: String,
+    },
     NewFriend {
         session_id: String,
     },
@@ -203,13 +225,17 @@ mod tests {
         })
         .unwrap();
         let back: HostToRendezvous = serde_json::from_str(&json).unwrap();
-        let HostToRendezvous::Register { endpoint, .. } = back;
+        let HostToRendezvous::Register { endpoint, .. } = back else {
+            panic!("a register frame must deserialize as one");
+        };
         assert_eq!(endpoint.as_deref(), Some("ws://203.0.113.5:9000"));
 
         // A frame from a client that has never heard of the field.
         let old: HostToRendezvous =
             serde_json::from_str(r#"{"op":"register","d":{"name":null}}"#).unwrap();
-        let HostToRendezvous::Register { endpoint, .. } = old;
+        let HostToRendezvous::Register { endpoint, .. } = old else {
+            panic!("a register frame must deserialize as one");
+        };
         assert!(endpoint.is_none());
     }
 
