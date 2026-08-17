@@ -940,6 +940,20 @@ pub enum ClientMessage {
         #[serde(default)]
         max_uses: Option<u32>,
     },
+    /// Change your display name without reconnecting.
+    ///
+    /// Unsigned, unlike the name in `Identify`: that signature binds the whole
+    /// identify payload, and by the time this arrives the connection is already
+    /// authenticated as the key it claims. A display name is also not a claim
+    /// about anybody else — the one exception is an installed bot, whose row
+    /// keeps the label its installer chose (`BotInstall.name`) and is not
+    /// touched by this.
+    ///
+    /// The server canonicalises with `canonical_username`, so the same rules
+    /// that apply at connect apply here — including the length cap.
+    UpdateUsername {
+        username: String,
+    },
     /// Requires `ManageChannels`: move channels within a guild, in one frame.
     ///
     /// **Positions only, deliberately.** The obvious way to reorder is to send
