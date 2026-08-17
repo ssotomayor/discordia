@@ -277,6 +277,64 @@ mod tests {
         assert!(dir.path().join(&name).exists());
     }
 
+    /// The only thing between a URL path segment and `fs::read` on our disk.
+    ///
+    /// `GET /media/{name}` hands whatever the caller wrote straight to `read`,
+    /// which joins it onto the blob directory. `sanitize` is the guard, and it
+    /// had no test — so nothing would have noticed if the shape it accepts
+    /// widened. Each case below is a real way of asking for a file that is not
+    /// a blob.
+    #[test]
+    fn only_a_content_address_gets_past_sanitize() {
+        let ok = format!("{}.png", "a".repeat(64));
+        assert_eq!(sanitize(&ok).as_deref(), Some(ok.as_str()));
+
+        for bad in [
+            // Traversal, in the spellings a router might normalise differently.
+            "../../etc/passwd",
+            "..%2f..%2fetc%2fpasswd",
+            "....//....//etc/passwd",
+            &format!("../{}.png", "a".repeat(64)),
+            &format!("{}/../../secret.png", "a".repeat(64)),
+            // Absolute and UNC paths, which `Path::join` would honour whole.
+            "/etc/passwd",
+            r"C:\Windows\win.ini",
+            r"\\server\share\file.png",
+            // Right shape, wrong alphabet: a hash is hex and nothing else.
+            &format!("{}.png", "g".repeat(64)),
+            &format!("{}.png", "a".repeat(63)),
+            &format!("{}.png", "a".repeat(65)),
+            // An extension is short and alphanumeric, or it is not one.
+            &format!("{}.", "a".repeat(64)),
+            &format!("{}.p n g", "a".repeat(64)),
+            &format!("{}.toolong", "a".repeat(64)),
+            // No separator at all, and the empty case.
+            &"a".repeat(64),
+            "",
+        ] {
+            assert_eq!(sanitize(bad), None, "sanitize accepted {bad:?}");
+        }
+    }
+
+    /// And the guard is the one `read` actually consults, not a helper that
+    /// happens to sit beside it — a traversal must come back as "no such blob"
+    /// rather than as somebody's file.
+    #[test]
+    fn read_refuses_a_path_that_is_not_a_content_address() {
+        let (media, dir) = store();
+        // A real file in the blob directory, reachable only by breaking out of
+        // the naming rule.
+        std::fs::write(dir.path().join("secret.txt"), b"not a picture").expect("write");
+
+        assert!(media.read("secret.txt").is_none());
+        assert!(media.read("../secret.txt").is_none());
+        assert!(
+            media
+                .read(&format!("{}/../secret.txt", "a".repeat(64)))
+                .is_none()
+        );
+    }
+
     /// A half-written blob belongs to `store_data_url`, not to the sweep.
     #[test]
     fn a_temp_file_is_never_swept() {
