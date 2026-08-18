@@ -10,24 +10,56 @@ use crate::state::{SessionMode, SessionParams};
 /// past this mark has already missed at least one beat and is on its way out.
 const HOST_STALE_AFTER_SECS: u64 = 45;
 
+/// The two things anyone came here to do.
+///
+/// Browsing, pasting a code and typing an address were never three intentions —
+/// they are three ways of arriving at somebody else's server, so they live
+/// under `Join` together. What is left is the one real fork: go somewhere, or
+/// run one here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Tab {
-    Browse,
-    ByCode,
-    SelfHost,
-    Remote,
+enum Mode {
+    Join,
+    Create,
 }
 
-/// Which tab a launch opens on.
+/// Which of the two a launch opens on.
 ///
-/// Pulled out of the component so it can be tested: inside a `use_signal`
-/// closure this decision is unreachable from any test, and it is the one piece
-/// of behaviour on this screen rather than layout.
-fn initial_tab(has_last_session: bool) -> Tab {
-    if has_last_session {
-        Tab::Browse
+/// Always joining, with or without a session to come back to. Creating is the
+/// consequential half — it can reserve a name, publish you to a public list and
+/// make a home address dialable — so it is the half somebody chooses rather
+/// than lands in. Pulled out of the `use_signal` closure so a test can hold
+/// that line; inside one it is unreachable from any test.
+fn initial_mode() -> Mode {
+    Mode::Join
+}
+
+/// Which way of joining the form is currently describing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JoinBy {
+    /// A typed address, which is the more specific thing to have gone looking
+    /// for and so wins over a code.
+    Url,
+    /// A code, resolved against the directory above the tabs.
+    Code,
+    /// Neither is filled in, so there is nothing to submit.
+    Nothing,
+}
+
+/// Decide it in one place, because the submit button and the enable/disable
+/// rule must not be able to disagree about it.
+///
+/// Extracted so a test can hold the line that an untouched address field does
+/// not silently beat the code. That is not hypothetical: when these tabs were
+/// first merged, `server_url` kept its `ws://localhost:9000` default, so the
+/// address arm was always taken and joining by code became unreachable — with
+/// the field looking untouched, because its placeholder was the same string.
+fn join_by(server_url: &str, code: &str, rendezvous_url: &str) -> JoinBy {
+    if !server_url.trim().is_empty() {
+        JoinBy::Url
+    } else if !code.trim().is_empty() && !rendezvous_url.trim().is_empty() {
+        JoinBy::Code
     } else {
-        Tab::ByCode
+        JoinBy::Nothing
     }
 }
 
@@ -48,15 +80,12 @@ pub fn ConnectView(
     let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let default_rendezvous = settings.read().active_rendezvous();
 
-    // A first launch opens on "By code", not on the public list. Somebody
-    // arriving for the first time was almost certainly handed a code by a
-    // friend — and the list they would otherwise land on is empty until
-    // somebody, somewhere, has published a server. Landing on an empty list is
-    // a worse first impression than landing on a field you can paste into.
-    // With a saved session there is a reconnect button above this anyway, so
-    // Browse stays the default for the returning case.
-    let mut tab = use_signal(|| initial_tab(last_session.is_some()));
-    let mut server_url = use_signal(|| "ws://localhost:9000".to_string());
+    let mut mode = use_signal(initial_mode);
+    // Empty, not `ws://localhost:9000`. The address is one of two ways to join
+    // and `join_by` gives it priority, so a prefilled one would mean every
+    // Connect went to localhost and no code was ever resolved. The placeholder
+    // still shows that string — showing it is the point, having it is the bug.
+    let mut server_url = use_signal(String::new);
     let mut allow_lan = use_signal(|| false);
     let mut publish_to_rendezvous = use_signal(|| true);
     let mut rendezvous_url = use_signal(|| default_rendezvous.clone());
@@ -69,19 +98,26 @@ pub fn ConnectView(
     let identity_for_submit = identity.clone();
     let submit = move |_| {
         let name = identity_for_submit.display_name.clone();
-        let params = match tab() {
-            Tab::Remote => {
-                let url = server_url().trim().to_string();
-                if url.is_empty() {
-                    return;
-                }
-                SessionParams {
-                    mode: SessionMode::Remote { server_url: url },
+        let params = match mode() {
+            Mode::Join => match join_by(&server_url(), &code(), &rendezvous_url()) {
+                JoinBy::Url => SessionParams {
+                    mode: SessionMode::Remote {
+                        server_url: server_url().trim().to_string(),
+                    },
                     username: name,
                     identity: identity_for_submit.clone(),
-                }
-            }
-            Tab::SelfHost => {
+                },
+                JoinBy::Code => SessionParams {
+                    mode: SessionMode::ByCode {
+                        rendezvous_url: rendezvous_url().trim().to_string(),
+                        code: code().trim().to_string(),
+                    },
+                    username: name,
+                    identity: identity_for_submit.clone(),
+                },
+                JoinBy::Nothing => return,
+            },
+            Mode::Create => {
                 let r_url = if publish_to_rendezvous() {
                     let r = rendezvous_url().trim().to_string();
                     if r.is_empty() { None } else { Some(r) }
@@ -102,21 +138,6 @@ pub fn ConnectView(
                     identity: identity_for_submit.clone(),
                 }
             }
-            Tab::ByCode | Tab::Browse => {
-                let c = code().trim().to_string();
-                let r = rendezvous_url().trim().to_string();
-                if c.is_empty() || r.is_empty() {
-                    return;
-                }
-                SessionParams {
-                    mode: SessionMode::ByCode {
-                        rendezvous_url: r,
-                        code: c,
-                    },
-                    username: name,
-                    identity: identity_for_submit.clone(),
-                }
-            }
         };
         // Remember the rendezvous we just used (most-recent-first).
         let r = rendezvous_url().trim().to_string();
@@ -129,10 +150,10 @@ pub fn ConnectView(
         on_connect.call(params);
     };
 
-    let disabled = match tab() {
-        Tab::Remote => server_url().trim().is_empty(),
-        Tab::SelfHost => false,
-        Tab::ByCode | Tab::Browse => code().trim().is_empty() || rendezvous_url().trim().is_empty(),
+    let disabled = match mode() {
+        // Nothing is required to start one: every field below has a default.
+        Mode::Create => false,
+        Mode::Join => join_by(&server_url(), &code(), &rendezvous_url()) == JoinBy::Nothing,
     };
 
     // On macOS our titlebar is transparent + the content view extends to
@@ -235,11 +256,30 @@ pub fn ConnectView(
 
                 div { class: "h-px bg-[var(--border)]" }
 
+                // Above the tabs, and only once, because it is not a setting of
+                // either one: the same address resolves a join code, serves the
+                // public list, and is where a server of your own gets published
+                // and its name reserved. Drawn inside each tab it was three
+                // controls that had to be kept in sync by eye, and none of them
+                // said which of those jobs it was doing.
+                div { class: "space-y-1.5",
+                    RendezvousPicker {
+                        selected: rendezvous_url(),
+                        on_select: move |u: String| rendezvous_url.set(u),
+                    }
+                    div { class: "text-[10px] text-[var(--text-dim)] leading-relaxed",
+                        "Codes are looked up here, the public list comes from here, and a server of your own is published and named here."
+                    }
+                }
+
+                // Both labels name the object, because bare "Join" and "Create"
+                // do not say *what* — and the first person shown them asked
+                // whether Create made a community or a server. Everything on
+                // this screen is a server: a community is `CreateGuild`, sent
+                // over the gateway once you are already connected to one.
                 div { class: "flex gap-1 text-xs",
-                    TabButton { active: tab() == Tab::Browse, label: "Browse", onclick: move |_| tab.set(Tab::Browse) }
-                    TabButton { active: tab() == Tab::ByCode, label: "By code", onclick: move |_| tab.set(Tab::ByCode) }
-                    TabButton { active: tab() == Tab::SelfHost, label: "Self-host", onclick: move |_| tab.set(Tab::SelfHost) }
-                    TabButton { active: tab() == Tab::Remote, label: "URL", onclick: move |_| tab.set(Tab::Remote) }
+                    TabButton { active: mode() == Mode::Join, label: "Join a server", onclick: move |_| mode.set(Mode::Join) }
+                    TabButton { active: mode() == Mode::Create, label: "Create a server", onclick: move |_| mode.set(Mode::Create) }
                 }
 
                 if let Some(err) = error {
@@ -251,21 +291,20 @@ pub fn ConnectView(
                 // No `key:` — rsx! honours one only on a body root, so a nested
                 // one is dropped. See docs/AUDIT-2026-08-17.md.
                 div { class: "fade-in flex-1",
-                match tab() {
-                    Tab::Browse => rsx! {
-                        BrowseTab {
-                            rendezvous_url: rendezvous_url(),
-                            on_rendezvous_change: move |s: String| rendezvous_url.set(s),
-                            on_pick: move |entry: DiscoverEntry| {
-                                code.set(entry.shortcode);
-                            },
-                            picked_shortcode: code(),
-                        }
-                    },
-                    Tab::ByCode => rsx! {
+                match mode() {
+                    // The code first, because it is what a newcomer was handed,
+                    // then the list — which is the same answer for people who
+                    // were handed nothing, and picking a row fills the field
+                    // above rather than being a separate way to submit.
+                    Mode::Join => rsx! {
                         div { class: "space-y-3",
                             div { class: "space-y-1",
-                                label { class: LABEL, "Join code" }
+                                // "Code", not "Join code": the tab above already
+                                // says join, and the button below says what
+                                // pressing it does. PR 90 renamed this off
+                                // "Shortcode" to stop using our word for it —
+                                // that win survives, the repetition does not.
+                                label { class: LABEL, "Code" }
                                 input {
                                     class: "{INPUT} lowercase",
                                     r#type: "text",
@@ -274,16 +313,51 @@ pub fn ConnectView(
                                     oninput: move |e| code.set(e.value()),
                                 }
                             }
-                            RendezvousPicker {
-                                selected: rendezvous_url(),
-                                on_select: move |u: String| rendezvous_url.set(u),
+
+                            BrowseTab {
+                                on_pick: move |entry: DiscoverEntry| {
+                                    code.set(entry.shortcode);
+                                },
+                                picked_shortcode: code(),
+                                rendezvous_url: rendezvous_url(),
+                            }
+
+                            // Folded, because typing a gateway address is the
+                            // rare path and it is the only control here that
+                            // ignores the directory above. Folded is also why
+                            // it must start empty: open, a stale default reads
+                            // as a filled-in field, but closed it would decide
+                            // every connection from behind a summary nobody
+                            // opened.
+                            details {
+                                summary { class: "cursor-pointer text-[10px] uppercase tracking-wider text-[var(--text-muted)] hover:text-[var(--text)] transition-colors",
+                                    "Other ways to connect"
+                                }
+                                div { class: "space-y-1 mt-2",
+                                    label { class: LABEL, "Server address" }
+                                    input {
+                                        class: INPUT_SM,
+                                        r#type: "text",
+                                        placeholder: "ws://localhost:9000",
+                                        value: "{server_url}",
+                                        oninput: move |e| server_url.set(e.value()),
+                                    }
+                                    div { class: "text-[10px] text-[var(--text-dim)] leading-relaxed",
+                                        "Connects straight to a gateway, ignoring the code and the directory. Leave it empty to use the code above."
+                                    }
+                                }
                             }
                         }
                     },
-                    Tab::SelfHost => rsx! {
+                    Mode::Create => rsx! {
                         div { class: "border border-[var(--border)] rounded p-3 text-xs space-y-3",
                             p { class: "text-[var(--text-muted)]",
-                                "Your machine runs the gateway, voice SFU, and (optionally) publishes a shortcode through a rendezvous so friends can join without your IP."
+                                // Not "your machine runs the voice SFU": a
+                                // rendezvous that has its own wins and the
+                                // bundled one is never started, so the old
+                                // sentence claimed the opposite of what happens
+                                // in the case it described. See host.rs.
+                                "Your machine runs the server and keeps its history. Voice runs here too, unless the rendezvous above supplies its own."
                             }
                             label { class: "flex items-center gap-2 cursor-pointer text-[var(--text)]",
                                 input {
@@ -291,7 +365,7 @@ pub fn ConnectView(
                                     checked: publish_to_rendezvous(),
                                     oninput: move |e| publish_to_rendezvous.set(e.value() == "true"),
                                 }
-                                "Publish a shortcode via rendezvous"
+                                "Give it a join code friends can use"
                             }
                             label { class: "flex items-center gap-2 cursor-pointer text-[var(--text)]",
                                 input {
@@ -307,21 +381,29 @@ pub fn ConnectView(
                                 // so this governs the port mapping too, not just
                                 // the LAN. The banner says which you ended up
                                 // with once hosting starts.
-                                "Friends on this network can reach you, and Discordia asks your router (UPnP / NAT-PMP) to let friends elsewhere in without the relay. Your home IP becomes visible to anyone who joins that way."
+                                "Friends here reach you directly, and Discordia asks your router (UPnP / NAT-PMP) to let in friends elsewhere. Your home IP becomes visible to anyone who joins that way."
                             }
                             if publish_to_rendezvous() {
                                 div { class: "pl-3 border-l border-[var(--border)] space-y-2",
                                     div { class: "space-y-1",
                                         label { class: LABEL, "Server name" }
                                         input {
-                                            class: INPUT_SM,
+                                            // Shown lowercased because that is
+                                            // what gets stored: the rendezvous
+                                            // canonicalises the name on
+                                            // registration and lowercases every
+                                            // lookup, so `MiServidor` would
+                                            // register and resolve as
+                                            // `miservidor` either way. Same
+                                            // treatment as the join code field.
+                                            class: "{INPUT_SM} lowercase",
                                             r#type: "text",
                                             placeholder: "my-server",
                                             value: "{publish_name}",
                                             oninput: move |e| publish_name.set(e.value()),
                                         }
                                         div { class: "text-[10px] text-[var(--text-dim)]",
-                                            "Unique on this rendezvous — becomes your join code. Letters, digits, '-', '_', '.'. Reserved to your key."
+                                            "Becomes your join code, reserved to your key. Letters, digits, '-', '_' and '.'"
                                         }
                                     }
                                     div { class: "space-y-1",
@@ -340,25 +422,9 @@ pub fn ConnectView(
                                             checked: publish_public(),
                                             oninput: move |e| publish_public.set(e.value() == "true"),
                                         }
-                                        "List this server in the public Browse tab (others can find it by name)"
-                                    }
-                                    RendezvousPicker {
-                                        selected: rendezvous_url(),
-                                        on_select: move |u: String| rendezvous_url.set(u),
+                                        "List it publicly, so strangers can find it by name"
                                     }
                                 }
-                            }
-                        }
-                    },
-                    Tab::Remote => rsx! {
-                        div { class: "space-y-1",
-                            label { class: LABEL, "Server URL" }
-                            input {
-                                class: INPUT,
-                                r#type: "text",
-                                placeholder: "ws://localhost:9000",
-                                value: "{server_url}",
-                                oninput: move |e| server_url.set(e.value()),
                             }
                         }
                     },
@@ -369,11 +435,13 @@ pub fn ConnectView(
                     class: "dxf-cta w-full py-2.5 rounded-xl transition-all disabled:opacity-30 disabled:cursor-not-allowed text-sm",
                     r#type: "submit",
                     disabled,
-                    {match tab() {
-                        Tab::Browse => "Jump back in  →",
-                        Tab::ByCode => "Join  →",
-                        Tab::Remote => "Connect  →",
-                        Tab::SelfHost => "Launch  →",
+                    // Not "Join": the tab it sits under already says that, and a
+                    // button repeating its section's name says nothing about
+                    // what pressing it does. Paired with "Launch" it also keeps
+                    // the two halves distinguishable at the last step.
+                    {match mode() {
+                        Mode::Join => "Connect  →",
+                        Mode::Create => "Launch  →",
                     }}
                 }
                     }
@@ -632,7 +700,6 @@ fn IdentityCard(
 #[component]
 fn BrowseTab(
     rendezvous_url: String,
-    on_rendezvous_change: EventHandler<String>,
     on_pick: EventHandler<DiscoverEntry>,
     picked_shortcode: String,
 ) -> Element {
@@ -677,13 +744,14 @@ fn BrowseTab(
                                 "Couldn't reach the server directory."
                             }
                             div { class: "text-[var(--text-dim)]",
-                                "You can still join with a code, or host your own. ({e})"
+                                "A code from a friend still works, or create your own server. ({e})"
                             }
                         }
                     },
                     Some(Ok(list)) if list.is_empty() => rsx! {
                         div { class: "text-xs text-[var(--text-dim)] px-3 py-4 text-center",
-                            "Nobody has listed a public server here yet. If a friend gave you a                              code, use the \"By code\" tab — or host your own from \"Self-host\"."
+                            "Nobody has listed a public server on this directory yet. A code from \
+                             a friend works without one, or make your own from the Create tab."
                         }
                     },
                     Some(Ok(list)) => rsx! {
@@ -741,11 +809,6 @@ fn BrowseTab(
                     }
                 }
             }
-
-            RendezvousPicker {
-                selected: rendezvous_url.clone(),
-                on_select: move |u: String| on_rendezvous_change.call(u),
-            }
         }
     }
 }
@@ -762,20 +825,53 @@ fn ws_to_http(url: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Tab, initial_tab};
+    use super::{JoinBy, Mode, initial_mode, join_by};
 
-    /// A first launch opens on the field you can paste a code into, not on a
-    /// list that is empty until somebody publishes a server. Landing on an
-    /// empty list is a worse first impression than landing on an input.
+    const R: &str = "ws://rendezvous.example:7700";
+
+    /// A launch lands on joining. Creating a server can reserve a name, publish
+    /// you to a public list and make a home address dialable, so it is chosen
+    /// rather than landed in.
     #[test]
-    fn a_first_launch_opens_where_a_newcomer_can_succeed() {
-        assert_eq!(initial_tab(false), Tab::ByCode);
+    fn a_launch_opens_on_the_half_that_costs_nothing() {
+        assert_eq!(initial_mode(), Mode::Join);
     }
 
-    /// With somewhere to go back to, the reconnect button above the tabs is
-    /// the path, so the tabs are free to offer browsing again.
+    /// The regression that made these tabs worth merging carefully: the address
+    /// field used to be born holding `ws://localhost:9000`, which took priority
+    /// and made joining by code unreachable. An untouched field must lose.
     #[test]
-    fn a_returning_launch_opens_on_browse() {
-        assert_eq!(initial_tab(true), Tab::Browse);
+    fn an_untouched_address_does_not_beat_a_code() {
+        assert_eq!(join_by("", "purple-fox-42", R), JoinBy::Code);
+    }
+
+    /// Typed on purpose, it wins: it is the more specific thing to have gone
+    /// looking for, and the disclosure says it ignores the code.
+    #[test]
+    fn a_typed_address_beats_a_code() {
+        assert_eq!(
+            join_by("ws://box.local:9000", "purple-fox-42", R),
+            JoinBy::Url
+        );
+    }
+
+    /// Whitespace is not an address — otherwise a stray space in the field
+    /// would silently take the same priority a real one does.
+    #[test]
+    fn blank_space_is_not_an_address() {
+        assert_eq!(join_by("   ", "purple-fox-42", R), JoinBy::Code);
+    }
+
+    /// A code needs somewhere to be looked up, so without a directory it is not
+    /// something that can be submitted.
+    #[test]
+    fn a_code_without_a_directory_is_not_submittable() {
+        assert_eq!(join_by("", "purple-fox-42", ""), JoinBy::Nothing);
+    }
+
+    /// Empty form, dead button — this is what `disabled` is reading.
+    #[test]
+    fn an_empty_form_has_nothing_to_submit() {
+        assert_eq!(join_by("", "", R), JoinBy::Nothing);
     }
 }
