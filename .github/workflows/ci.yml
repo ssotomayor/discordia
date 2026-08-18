@@ -522,6 +522,58 @@ jobs:
             -exec cp {} release/ \;
           ls -l release/
           test "$(find release -type f | wc -l)" -eq 7 || { echo "ERROR: expected 7 artifacts"; exit 1; }
+
+      # minisign rather than cosign: the verifier is meant to end up inside the
+      # client, and `minisign-verify` costs zero transitive dependencies against
+      # 281 for sigstore — and verifies with no network, which an app that can
+      # be self-hosted on an isolated machine needs.
+      #
+      # This signs; it does not make the OS trust anything. Gatekeeper and
+      # SmartScreen still want Developer ID and Authenticode, so a signature
+      # here proves the download is the one CI built and nothing more.
+      - name: Sign release artifacts
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+        run: |
+          if [ -z "$MINISIGN_SECRET_KEY" ]; then
+            echo "MINISIGN_SECRET_KEY is not set."
+            echo "Stopping rather than publishing seven artifacts nobody can verify —"
+            echo "a release that is silently unsigned is worse than no release, because"
+            echo "it teaches people the signatures are optional."
+            echo "See README, 'Verifying a download', for how to generate the pair."
+            exit 1
+          fi
+          sudo apt-get update -qq && sudo apt-get install -y -qq minisign
+          printf '%s' "$MINISIGN_SECRET_KEY" > "$RUNNER_TEMP/minisign.key"
+          tag="v0.1.0-pre.${{ github.run_number }}"
+          for f in release/*; do
+            # The trusted comment is covered by the signature; the untrusted one
+            # is not. Naming the tag and the file in it is what stops a valid
+            # signature being lifted onto a different release's artifact.
+            minisign -S -s "$RUNNER_TEMP/minisign.key" -m "$f" \
+              -t "discordia $tag $(basename "$f")"
+          done
+          rm -f "$RUNNER_TEMP/minisign.key"
+
+      # Verify with the *committed* public key, not the one derived from the
+      # secret. That is the whole point: if the two ever stop matching, this
+      # fails here instead of shipping signatures that verify against a key
+      # nobody has.
+      - name: Verify against the committed public key
+        run: |
+          test -f release-signing.pub || {
+            echo "release-signing.pub is missing from the repository root."
+            echo "Users verify against that file, so publishing without it means"
+            echo "publishing signatures with no published key."
+            exit 1
+          }
+          for f in release/*; do
+            case "$f" in *.minisig) continue ;; esac
+            minisign -V -p release-signing.pub -m "$f"
+          done
+          test "$(find release -type f | wc -l)" -eq 14 || {
+            echo "ERROR: expected 7 artifacts and 7 signatures"; exit 1; }
+
       - name: Create pre-release
         uses: softprops/action-gh-release@v2
         with:

@@ -176,10 +176,10 @@ A few load-bearing decisions the diagram implies:
 
 ### Just use it
 
-Build the client, open it, pick **Self-host** → Launch. The client spawns a
-gateway and a bundled LiveKit server in-process; you are the operator of your
-own Lobby. Optionally tick the rendezvous box to get a join code friends can
-use without your IP.
+Build the client, open it, pick **Create a server** → Launch. The client spawns
+a gateway and a bundled LiveKit server in-process; you are the operator of your
+own Lobby. Leave "Give it a join code friends can use" ticked to get a code
+friends can join with without seeing your IP.
 
 ```bash
 cargo install dioxus-cli
@@ -187,6 +187,43 @@ dx serve --package dioxusfun
 ```
 
 Durable data lands in `<config dir>/dioxusfun/host-data/` and survives restarts.
+
+### Verifying a download
+
+Every published artifact ships with a `.minisig` beside it, signed by CI. The
+public key is `release-signing.pub` in this repository — the same file CI
+verifies against before it publishes, so a key that stopped matching fails the
+release instead of shipping signatures nobody can check.
+
+```bash
+minisign -Vm Discordia-windows-setup.exe -p release-signing.pub
+```
+
+The trusted comment names the tag and the filename, and is covered by the
+signature — so a valid signature cannot be lifted from one release onto
+another's artifact. Read it: `minisign -Vm <file> -p release-signing.pub`
+prints it on success.
+
+**What this does and does not tell you.** It says the file is the one this
+repository's CI built, unmodified. It is not an OS-level signature: Discordia
+has no Authenticode certificate and no Apple Developer ID, so Windows
+SmartScreen and macOS Gatekeeper will still warn on first launch. Those are
+separate problems that cost money rather than code, and this check is the part
+that can be had without either.
+
+**Maintainers**, generating the pair for the first time:
+
+```bash
+minisign -G -W -p release-signing.pub -s minisign.key   # -W: no passphrase, for CI
+```
+
+Commit `release-signing.pub`. Put the *contents* of `minisign.key` in the
+`MINISIGN_SECRET_KEY` repository secret and then delete your local copy — it is
+recoverable only by rotating, and rotating has a bootstrapping problem: a new
+public key travels in an update that the old key signs, which is exactly what an
+attacker holding the old key could also do. If that trade is not acceptable,
+generate with a passphrase, keep the key offline, and sign releases by hand
+instead of in CI.
 
 ### Run a server
 
