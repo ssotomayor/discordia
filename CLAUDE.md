@@ -440,8 +440,14 @@ time anyone ran it.
 
 ## Conventions
 
-- **Match the surrounding code.** Comments explain *why*, not *what*, and the
-  codebase is fairly densely commented at decision points — keep that up.
+- **Comment only where it is actually needed, and only the *why*.** Never the
+  *what* — the code already says that, and a comment restating it is a second
+  copy to keep true. Write one when the reason is not recoverable by reading
+  the code: a decision that looks wrong until you know the constraint, an
+  ordering that is load-bearing, a trap the next person would otherwise walk
+  back into. Everywhere else, say nothing. Density is not the goal and was
+  never evidence of care; this codebase over-commented for a long time and is
+  being trimmed back to the lines that earn their place.
 - **Never add Claude/AI attribution** to commits, PRs, or generated content.
 - **Deferred work goes in the register, not only in the commit message.** The
   register is §8 of `docs/AUDIT-2026-08-17.md`. If something is knowingly left
