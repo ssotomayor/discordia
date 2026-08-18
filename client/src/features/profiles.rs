@@ -201,7 +201,6 @@ pub fn ProfileCard() -> Element {
     let is_contact = state.read().contacts.contains(&pubkey);
     let signature = crate::identity::color_signature(&pubkey, 15);
     let accent = crate::identity::signature_accent(&pubkey);
-    // Per-guild XP: show this member's level in the guild we're viewing.
     let xp = state
         .read()
         .selected_guild
@@ -217,9 +216,8 @@ pub fn ProfileCard() -> Element {
     let (level, into, span) = crate::protocol::level_progress(xp);
     let xp_pct = (into as f64 / span.max(1) as f64 * 100.0) as u32;
     let copy_pubkey = pubkey.clone();
-    // Roles held in the guild being viewed, in display order. Guild-scoped by
-    // nature, so a card opened from a DM (no selected guild) shows none — a role
-    // means standing in one community, not an attribute of the person.
+    // Roles are guild-scoped; a card opened from a DM (no selected guild)
+    // shows none.
     let member_roles: Vec<crate::protocol::Role> = {
         let s = state.read();
         s.selected_guild
@@ -249,7 +247,6 @@ pub fn ProfileCard() -> Element {
             div {
                 class: "dxf-modal-in w-[22rem] bg-[var(--panel2)] border border-[var(--edge)] rounded-2xl shadow-2xl overflow-hidden",
                 onclick: move |e| e.stop_propagation(),
-                // Banner tinted by the user's signature accent (or their image).
                 if let Some(b) = banner {
                     img { class: "h-24 w-full object-cover block", src: "{b}", alt: "banner" }
                 } else {
@@ -280,7 +277,6 @@ pub fn ProfileCard() -> Element {
                     if let Some(cs) = custom_status {
                         div { class: "mt-1 text-sm text-[var(--text-muted)] italic", "{cs}" }
                     }
-                    // Public-key block with copy + color signature.
                     div { class: "mt-3 rounded-xl border border-[var(--edge)] p-3", style: "background: var(--bg2);",
                         div { class: "flex items-center justify-between mb-1.5",
                             span { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]", "Nostr public key" }
@@ -310,9 +306,8 @@ pub fn ProfileCard() -> Element {
                             div { class: "flex flex-wrap gap-1.5",
                                 for role in member_roles.iter() {
                                     {
-                                        // Uncoloured roles fall back to the muted
-                                        // text colour so the chip still reads as a
-                                        // chip rather than vanishing.
+                                        // Fallback to muted text so uncolored
+                                        // roles remain visible as chips.
                                         let color = role.color.clone()
                                             .filter(|c| !c.trim().is_empty())
                                             .unwrap_or_else(|| "var(--text-muted)".into());
@@ -330,7 +325,6 @@ pub fn ProfileCard() -> Element {
                             }
                         }
                     }
-                    // Level + XP bar.
                     div { class: "mt-4 flex items-center gap-3",
                         span { class: "dxf-display text-sm font-bold text-[var(--accent)] shrink-0", "Lv {level}" }
                         div { class: "flex-1 h-2 rounded-full overflow-hidden", style: "background: var(--bg2);",
@@ -339,10 +333,8 @@ pub fn ProfileCard() -> Element {
                         span { class: "text-[10px] text-[var(--text-dim)] shrink-0", "{into}/{span}" }
                     }
                     if !is_self {
-                        // Public, unlike the messages below it — a contact list
-                        // is a kind:3 event anyone can read. Said in the tooltip
-                        // rather than assumed, because the button sits next to
-                        // one whose whole point is that nobody can see it.
+                        // Nostr contact lists are public (kind:3), unlike the
+                        // private DMs below.
                         button {
                             class: "mt-4 w-full py-2 rounded-xl text-xs border border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--text)] transition-all",
                             title: if is_contact { "Remove from your Nostr contact list. This list is public." } else { "Add to your Nostr contact list, so they follow you to any server. This list is public." },
@@ -357,10 +349,8 @@ pub fn ProfileCard() -> Element {
                         button {
                             class: "dxf-cta mt-2 w-full py-2.5 rounded-xl text-sm transition-all",
                             onclick: move |_| {
-                                // Opens a Nostr conversation, not a server one.
-                                // Nothing is sent to the gateway and nothing is
-                                // created anywhere until a message is written —
-                                // there is no channel to create.
+                                // Opens a Nostr DM; no server channel is
+                                // created until a message is sent.
                                 nostr.send(crate::nostr::service::NostrCmd::Open {
                                     peer: dm_pubkey.clone(),
                                 });
@@ -384,8 +374,7 @@ pub fn ProfileEditor() -> Element {
     let gateway = use_gateway();
     let identity = use_context::<crate::identity::Identity>();
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
-    // Separate clones for the two file pickers (Identity isn't Copy).
-    // One clone per crop dialog; the pickers themselves no longer upload.
+    // Separate clones for avatar/banner pickers (Identity is not Copy).
     let id_avatar_crop = identity.clone();
     let id_banner_crop = identity.clone();
 
@@ -396,13 +385,11 @@ pub fn ProfileEditor() -> Element {
     let mut status = use_signal(|| "online".to_string());
     let mut custom_status = use_signal(String::new);
     let mut err = use_signal::<Option<String>>(|| None);
-    // A picked image waits in one of these while the user frames it; the crop
-    // dialog uploads on accept. Two signals rather than one so the dialog knows
-    // which shape to crop to and where the result belongs.
+    // Separate signals for avatar/banner so the crop dialog knows the target
+    // shape.
     let mut editing_avatar = use_signal(|| None::<String>);
     let mut editing_banner = use_signal(|| None::<String>);
 
-    // Initialise the fields from our current profile each time the modal opens.
     let mut load_current = move || {
         let s = state.read();
         let me = s.self_user.as_ref().map(|u| u.pubkey.clone());
@@ -416,7 +403,6 @@ pub fn ProfileEditor() -> Element {
             custom_status.set(p.custom_status.clone().unwrap_or_default());
             return;
         }
-        // Fall back to whatever is on disk.
         if let Some(local) = crate::profile::load() {
             avatar.set(local.avatar);
             banner.set(local.banner);
@@ -482,7 +468,6 @@ pub fn ProfileEditor() -> Element {
             dangerous_inner_html: crate::features::icons::USER,
         }
 
-        // Crop dialogs, rendered above the editor they were opened from.
         if let Some(src) = editing_avatar() {
             crate::features::image_editor::ImageEditor {
                 src,
@@ -531,7 +516,6 @@ pub fn ProfileEditor() -> Element {
                     h3 { class: "text-sm font-medium text-[var(--accent)] mb-3", "Edit profile" }
 
                     div { class: "flex items-center gap-3 mb-3",
-                        // Live preview of the chosen avatar.
                         div { class: "w-16 h-16 rounded-md border border-[var(--border)] overflow-hidden flex items-center justify-center text-[var(--text-dim)] text-xs shrink-0",
                             if let Some(url) = avatar() {
                                 img { class: "w-full h-full object-cover", src: "{url}", alt: "avatar preview" }
@@ -564,10 +548,6 @@ pub fn ProfileEditor() -> Element {
 
                                                     }
 
-                                                    // Frame it before uploading; `editing_avatar` drives the
-
-                                                    // crop dialog, which uploads on accept.
-
                                                     editing_avatar.set(Some(to_data_url(&bytes, &mime)));
                                                 }
                                                 Err(_) => err.set(Some("Couldn't read that file.".into())),
@@ -587,7 +567,6 @@ pub fn ProfileEditor() -> Element {
                         }
                     }
 
-                    // Banner: wide preview + picker.
                     div { class: "mb-3",
                         div { class: "text-[10px] uppercase tracking-wider text-[var(--text-muted)] mb-1", "Banner" }
                         div { class: "h-16 rounded-md border border-[var(--border)] overflow-hidden bg-[var(--accent-soft)] flex items-center justify-center text-[var(--text-dim)] text-xs",
@@ -622,8 +601,6 @@ pub fn ProfileEditor() -> Element {
 
                                                     }
 
-                                                    // Frame it before uploading; `editing_banner` drives the
-
                                                     // crop dialog, which uploads on accept.
 
                                                     editing_banner.set(Some(to_data_url(&bytes, &mime)));
@@ -645,7 +622,6 @@ pub fn ProfileEditor() -> Element {
                         }
                     }
 
-                    // Presence status.
                     div { class: "text-[10px] uppercase tracking-wider text-[var(--text-muted)] mb-1", "Status" }
                     div { class: "flex gap-1 mb-3",
                         for (id, label, color) in [
@@ -686,8 +662,8 @@ pub fn ProfileEditor() -> Element {
                         oninput: move |e| bio.set(e.value()),
                     }
 
-                    // Same guidance as the guild branding pickers, from the
-                    // same constant — the rules shouldn't be learned by trial.
+                    // Shared with guild branding pickers to avoid trial-and-
+                    // error.
                     div { class: "mt-2 text-[10px] text-[var(--text-dim)]", {IMAGE_HELP} }
                     if let Some(e) = err() {
                         div { class: "mt-2 text-[10px] text-[var(--danger)]", "{e}" }

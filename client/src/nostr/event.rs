@@ -231,7 +231,6 @@ mod tests {
             mutate(&mut tampered);
             assert!(!tampered.verify(), "a rewritten event must not verify");
         }
-        // And keeping the id while changing the signature fails the second half.
         let mut resigned = base.clone();
         resigned.sig = sign_with(
             &key(3),

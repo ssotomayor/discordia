@@ -34,8 +34,8 @@ impl CropShape {
     fn aspect(self) -> f64 {
         match self {
             CropShape::Square => 1.0,
-            // Banners are rendered into strips of roughly this shape; matching
-            // it here means the preview frame is what people actually see.
+            // Match the banner strip aspect ratio so the preview frame
+            // reflects the actual rendered output.
             CropShape::Banner => 3.0,
         }
     }
@@ -43,8 +43,7 @@ impl CropShape {
     /// Output pixel size.
     fn output(self) -> (u32, u32) {
         match self {
-            // Square art is usually a logo, often with transparency, and 512 is
-            // plenty for something displayed at 40px.
+            // 512px is sufficient for logos typically displayed at ~40px.
             CropShape::Square => (512, 512),
             CropShape::Banner => (OUT_LONG_EDGE, (OUT_LONG_EDGE as f64 / 3.0) as u32),
         }
@@ -88,8 +87,6 @@ pub fn ImageEditor(
     on_cancel: EventHandler<()>,
     on_apply: EventHandler<String>,
 ) -> Element {
-    // Natural pixel size of the picked image, needed to place the frame and to
-    // map it back to source pixels. Only the browser knows it, so it is asked.
     let mut natural = use_signal(|| None::<(f64, f64)>);
     let mut zoom = use_signal(|| 1.0_f64);
     let mut dx = use_signal(|| 0.0_f64);
@@ -105,7 +102,6 @@ pub fn ImageEditor(
         use_future(move || {
             let src = src.clone();
             async move {
-                // Decode off-screen purely to read the intrinsic size.
                 let js = format!(
                     "(() => {{ const i = new Image(); \
                        i.onload = () => dioxus.send({{ w: i.naturalWidth, h: i.naturalHeight }}); \
@@ -119,10 +115,8 @@ pub fn ImageEditor(
                     let h = v.get("h").and_then(|x| x.as_f64()).unwrap_or(0.0);
                     if w > 0.0 && h > 0.0 {
                         natural.set(Some((w, h)));
-                        // Start at "cover": the smallest zoom that leaves no
-                        // empty corner, which is the crop the app would have
-                        // taken on its own. Anything the user does from here is
-                        // an improvement on the old behaviour, never a regression.
+                        // Initialize to "cover" (smallest zoom with no empty
+                        // corners) to match the default crop behavior.
                         zoom.set((vp_w / w).max(vp_h / h));
                     }
                 }
@@ -143,7 +137,6 @@ pub fn ImageEditor(
     let max_zoom = min_zoom * 5.0;
     let z = zoom().clamp(min_zoom, max_zoom);
 
-    // Keep the frame covered: the image may not be dragged past its own edges.
     let slack_x = ((nat_w * z) - vp_w).max(0.0) / 2.0;
     let slack_y = ((nat_h * z) - vp_h).max(0.0) / 2.0;
     let cur_dx = dx().clamp(-slack_x, slack_x);
@@ -156,24 +149,15 @@ pub fn ImageEditor(
         }
         working.set(true);
         let (out_w, out_h) = shape.output();
-        // A constant from `shape`'s own table, quoted through the shared sink
-        // like everything else that crosses into `document::eval` — the source
-        // image below already was, and having one of the two hand-built was how
-        // the pattern stayed alive.
         let mime = crate::features::screenshare::js_str(shape.mime());
-        // The same numbers the preview uses, mapped back into source pixels:
-        // the frame centre sits at the image centre shifted by the pan, and the
-        // frame covers `viewport / zoom` source pixels.
         let sw = vp_w / z;
         let sh = vp_h / z;
         let sx = (nat_w / 2.0) - (cur_dx / z) - sw / 2.0;
         let sy = (nat_h / 2.0) - (cur_dy / z) - sh / 2.0;
-        // No `//` comments inside this string: the backslash continuations
-        // splice lines together, so a comment can silently swallow the code
-        // that follows it. Explanations stay out here.
-        //
-        // The white fill matters — JPEG has no alpha channel, and without it
-        // transparent source pixels encode as black rather than white.
+        // No `//` comments inside this string: backslash continuations splice
+        // lines, so a comment swallows the code that follows.
+        // White fill is required for JPEG (no alpha); transparent pixels would
+        // otherwise encode as black.
         let js = format!(
             "(() => {{ const i = new Image(); \
                i.onload = () => {{ try {{ \
@@ -194,7 +178,6 @@ pub fn ImageEditor(
             let mut eval = document::eval(&js);
             match eval.recv::<String>().await {
                 Ok(url) if !url.is_empty() => on_apply.call(url),
-                // Cropping failed; the original is still better than nothing.
                 _ => on_apply.call(fallback),
             }
         });
@@ -218,7 +201,6 @@ pub fn ImageEditor(
                     "Position your image"
                 }
 
-                // The frame. What is inside it is exactly what gets uploaded.
                 div {
                     class: "relative overflow-hidden border border-[var(--border)] mx-auto {round}",
                     style: "width: {vp_w}px; height: {vp_h}px; background: var(--bg2); cursor: grab; touch-action: none;",
@@ -236,9 +218,8 @@ pub fn ImageEditor(
                     }
                 }
 
-                // Tracking overlay, so the cursor may leave the small frame
-                // mid-drag without the gesture dying. Same model as the app's
-                // other draggable surfaces.
+                // Tracking overlay: allows the cursor to leave the frame mid-
+                // drag without killing the gesture.
                 if pan().is_some() {
                     div {
                         class: "fixed inset-0 z-50",

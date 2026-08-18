@@ -420,8 +420,6 @@ pub struct AppState {
     /// than asking about a webview API.
     pub screen_capture_available: bool,
 
-    // Camera. Captured in the webview on both platforms, published on the same
-    // connection as the screen room, so none of this touches the voice service.
     /// Whether we are actually publishing a camera.
     ///
     /// Set when the JS reports `camera-started`, never from the click — the
@@ -448,7 +446,6 @@ pub struct AppState {
     /// camera is the webview on every platform.
     pub camera_capture_available: bool,
 
-    // Audio device preferences surfaced to the UI.
     /// Available input device names (populated by voice service on request).
     pub available_input_devices: Vec<String>,
     /// Available output device names (populated by voice service on request).
@@ -643,7 +640,6 @@ impl AppState {
             available_cameras: Vec::new(),
             cameras_watching: HashSet::new(),
             camera_capture_available: false,
-            // Audio device prefs: empty by default (discover on demand).
             available_input_devices: Vec::new(),
             available_output_devices: Vec::new(),
             selected_input_device: None,
@@ -1037,7 +1033,6 @@ mod tests {
         s.profiles.insert("bob".into(), profile("bob", Some("dnd")));
         assert_eq!(s.presence_of("bob"), "dnd");
 
-        // No label set at all ⇒ plain online.
         s.members.push(member("carol", true));
         assert_eq!(s.presence_of("carol"), "online");
     }
@@ -1089,7 +1084,6 @@ mod tests {
         s.user_muted.remove("x");
         assert_eq!(s.voice_gain_of("x"), 1.5);
 
-        // Stream volume is tracked separately from the same user's voice.
         s.stream_volumes.insert("x".into(), 50);
         assert_eq!(s.stream_gain_of("x"), 0.5);
         assert_eq!(s.voice_gain_of("x"), 1.5);
@@ -1098,7 +1092,6 @@ mod tests {
     #[test]
     fn deafening_mutes_and_undeafening_restores_the_previous_mute() {
         let mut v = VoiceSession::default();
-        // Unmuted → deafen mutes → undeafen unmutes.
         assert_eq!(v.toggle_deafen(), (true, true));
         v.muted = true;
         v.deafened = true;

@@ -77,24 +77,16 @@ fn default_filter() -> tracing_subscriber::EnvFilter {
 fn main() {
     init_logging();
 
-    // Settle the WebView2 runtime before anything can reach for it: wry paints
-    // every pixel with it, so without one the window would open and never
-    // render. This either returns with a runtime available or exits — and it is
-    // deliberately the first statement, ahead of every Dioxus call below.
-    //
-    // It also serves the installer, which runs this same binary with
-    // `--ensure-webview2` and never gets past this line. See `webview2::gate`.
+    // Must run before any Dioxus/wry calls: wry paints with WebView2, so
+    // without it the window opens blank.
+    // Also serves the installer path (`--ensure-webview2`), which exits here.
     #[cfg(target_os = "windows")]
     webview2::gate();
 
-    // WebView2 (Chromium) treats our asset origin as insecure, and an insecure
-    // context hides `navigator.mediaDevices` entirely — which is what stops
-    // screen sharing working on Windows. Allowlist the origin as secure.
-    //
-    // Both spellings are listed on purpose. Dioxus serves Windows from
-    // `http://dioxus.index.html/` (see dioxus-desktop's BASE_URI), but Chromium
-    // parses this flag as a list of *origins*, where a trailing slash may not
-    // match. Passing both costs nothing and removes the guess.
+    // WebView2 hides `navigator.mediaDevices` in insecure contexts, breaking
+    // screen sharing.
+    // Both origin spellings are listed because Chromium's origin parser may
+    // not match the trailing slash.
     #[cfg(target_os = "windows")]
     unsafe {
         std::env::set_var(

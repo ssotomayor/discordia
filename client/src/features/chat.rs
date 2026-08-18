@@ -54,8 +54,7 @@ fn chat_scroll_js(mode: &str) -> String {
     el._dxfStick = true;
     el._dxfPrevHeight = el.scrollHeight;
     el.addEventListener('scroll', function() {{
-      // A few pixels of tolerance, so sub-pixel rounding and "near enough to
-      // the bottom" still count as anchored.
+      // 40px tolerance for sub-pixel rounding and 'near bottom' anchoring.
       var gap = el.scrollHeight - el.scrollTop - el.clientHeight;
       el._dxfStick = gap <= 40;
     }}, {{ passive: true }});
@@ -131,7 +130,6 @@ const DROP_JS: &str = r#"
     depth = Math.max(0, depth - 1);
     if (depth === 0) sink({ k: 'over', v: false });
   }, false);
-  // Shared by drop and paste: both end in "one image file, as a data URL".
   function readImage(f, typeChecked) {
     if (!typeChecked && f.type && f.type.indexOf('image/') !== 0) {
       sink({ k: 'err', v: "That's not an image." });
@@ -144,9 +142,8 @@ const DROP_JS: &str = r#"
     var r = new FileReader();
     r.onload = function () {
       var url = String(r.result);
-      // A file the webview can't type yields `data:;base64,...`, which the
-      // server rejects outright. Claim PNG and let the renderer sniff the real
-      // format from the bytes — the same fallback the file picker uses.
+      // Webview may yield `data:;base64,...` which the server rejects. Claim
+      // PNG to let the renderer sniff the real format.
       if (url.indexOf('data:image/') !== 0) url = url.replace(/^data:[^;]*;/, 'data:image/png;');
       sink({ k: 'file', v: url });
     };
@@ -164,9 +161,7 @@ const DROP_JS: &str = r#"
     readImage(f);
   }, false);
 
-  // Cmd/Ctrl+V of an image, into the same `pending_image` slot the picker and a
-  // drop both fill. On `document` rather than the input, because the clipboard
-  // event goes to whatever has focus and the composer is not always it.
+  // Listen on `document` because the composer input is not always focused.
   document.addEventListener('paste', function (e) {
     // Scoped to the chat column, so an image pasted into a settings field or a
     // profile editor is not quietly turned into a message attachment.
@@ -179,16 +174,12 @@ const DROP_JS: &str = r#"
         break;
       }
     }
-    // No image on the clipboard: return WITHOUT preventDefault, or pasting
-    // ordinary text into the composer stops working — which is the far more
-    // common thing anyone does with Cmd+V.
+    // Return without preventDefault so text pasting still works.
     if (!f) return;
-    // There is an image and we are taking it, so stop the webview also pasting
-    // its own representation (WebKit will otherwise drop a copy of the image, or
-    // its file name, into the text input).
+    // Prevent WebKit from also pasting the image or filename into the text
+    // input.
     e.preventDefault();
-    // Type already established by the loop above; a clipboard item can report a
-    // size of 0 until read, so let the size check speak for itself.
+    // Clipboard items may report size 0 until read, so rely on the size check.
     readImage(f, true);
   }, false);
 })();
@@ -198,8 +189,8 @@ const DROP_JS: &str = r#"
 pub fn ChatView() -> Element {
     let state = use_app_state();
     let gateway = use_gateway();
-    // Set by the composer's drop bridge; owned here so the highlight can cover
-    // the whole chat column rather than just the composer row.
+    // Owned here so the highlight covers the whole chat column, not just the
+    // composer.
     let drag_over = use_signal(|| false);
 
     let snapshot = state.read();
@@ -213,16 +204,14 @@ pub fn ChatView() -> Element {
     let typers = selected_channel
         .map(|cid| snapshot.typers_in(cid))
         .unwrap_or_default();
-    // A locked channel takes no dropped images either, so it simply doesn't
-    // carry the drop-zone id the bridge looks for — no overlay, no drop, no
-    // attachment quietly swallowed by a composer that isn't there.
+    // Locked channels don't accept drops, so they use a different drop-zone
+    // id.
     let drop_id = match selected_channel {
         Some(cid) if !composer_locked(&snapshot, cid) => "dxf-chat-drop",
         _ => "dxf-chat-none",
     };
     drop(snapshot);
 
-    // Header + composer labelling differ for DMs ("@user") vs channels ("#name").
     let (is_dm, header_name, composer_label) = match &dm {
         Some(d) => (
             true,
@@ -241,10 +230,8 @@ pub fn ChatView() -> Element {
     let channel_topic = channel_meta.as_ref().and_then(|c| c.topic.clone());
     let typing_label = typing_label(&typers);
 
-    // Auto-scroll. The key is deliberately narrow — the channel plus the ids at
-    // each end — so edits and reactions on existing messages don't yank the
-    // view around. Comparing the *first* id is what distinguishes "older
-    // history was paged in above" from "a new message arrived below".
+    // Narrow key (channel + first/last ids) so edits/reactions don't trigger
+    // scroll; first id distinguishes history paging from new messages.
     let scroll_key = use_memo(move || {
         let s = state.read();
         let cid = s.selected_channel;
@@ -315,10 +302,8 @@ pub fn ChatView() -> Element {
                             if is_dm { "No messages yet. Say hi 👋" } else { "No messages yet." }
                         }
                     } else {
-                        // Page back through older history. Shown when the loaded
-                        // set is at least a full page (likely more behind it);
-                        // fetches the slice before the oldest message we hold,
-                        // which the net layer merges in chronological order.
+                        // Fetches the slice before the oldest held message;
+                        // the net layer merges it chronologically.
                         if messages.len() >= PAGE_SIZE {
                             if let (Some(channel_id), Some(oldest)) =
                                 (selected_channel, messages.first())
@@ -353,7 +338,6 @@ pub fn ChatView() -> Element {
                     }
                 }
 
-                // Typing indicator.
                 if let Some(label) = typing_label {
                     div { class: "px-4 pb-1 h-4 text-[11px] text-[var(--text-dim)] italic dxf-fade",
                         "{label}"
@@ -438,7 +422,6 @@ fn MessageRow(message: Message, grouped: bool) -> Element {
             flat
         }
     };
-    // The quoted line this message carries, when it is itself a reply.
     let quoted = message.reply_to.clone();
 
     // Guild that owns this channel. None for DMs — which is also why custom
@@ -461,10 +444,9 @@ fn MessageRow(message: Message, grouped: bool) -> Element {
                 .unwrap_or(false)
     };
 
-    // Hover reveals the action bar, but an *open* menu has to pin it: the menus
-    // are click-state that renders inside the hover-gated wrapper, so on hover
-    // alone the picker you just opened fades out the moment the pointer leaves
-    // the row — and reaching the picker means leaving the row.
+    // Open menus must pin the bar: they render inside the hover-gated wrapper,
+    // so hover alone would fade them out when the pointer leaves the row to
+    // reach the picker.
     let menu_open = show_react() || confirm_delete();
     let bar_visibility = if menu_open {
         "opacity-100"
@@ -473,9 +455,8 @@ fn MessageRow(message: Message, grouped: bool) -> Element {
     };
 
     rsx! {
-        // The quoted parent, above the reply itself. Rendered from the snapshot
-        // the message carries, so it draws even when the parent isn't in the
-        // page of history this client happens to hold.
+        // Rendered from the message's snapshot so it draws even if the parent
+        // isn't in the current history page.
         if let Some(q) = quoted {
             div { class: "flex gap-3 -mx-4 px-4 pt-1",
                 div { class: "w-8 shrink-0" }
@@ -490,8 +471,6 @@ fn MessageRow(message: Message, grouped: bool) -> Element {
         }
         div { class: "group relative flex gap-3 -mx-4 px-4 py-0.5 hover:bg-white/[0.02] dxf-msg-in",
 
-            // Avatar column: real avatar for the first message in a run, an
-            // on-hover timestamp for grouped ones.
             if grouped {
                 div { class: "w-8 shrink-0 text-[9px] text-[var(--text-dim)] text-right pt-1 opacity-0 group-hover:opacity-100 transition-opacity",
                     "{timestamp}"
@@ -531,17 +510,13 @@ fn MessageRow(message: Message, grouped: bool) -> Element {
                 }
                 if let Some(img) = message.image.as_ref() {
                     {
-                        // Thumbnails are capped at 20rem; click opens the
-                        // full-size viewer, which is the only way to actually
-                        // read anything in a screenshot.
                         let full = img.clone();
                         rsx! {
                             img {
-                                // Visible edge and an opaque backing. The old
-                                // `--border` is ~15% alpha of the accent, so a
-                                // screenshot — especially one with transparency —
-                                // bled into the message background with nothing
-                                // marking where the image stopped.
+                                // Opaque backing and visible edge: the old
+                                // `--border` is ~15% alpha, so screenshots
+                                // with transparency bled into the background
+                                // with no clear boundary.
                                 class: "mt-1 rounded-md border border-[var(--border-strong)] bg-[var(--panel2)] max-w-xs max-h-80 object-contain block hover:border-[var(--accent)] transition-colors",
                                 style: "cursor: zoom-in;",
                                 src: "{img}",
@@ -552,7 +527,6 @@ fn MessageRow(message: Message, grouped: bool) -> Element {
                         }
                     }
                 }
-                // Reaction chips.
                 if !message.reactions.is_empty() {
                     div { class: "flex flex-wrap gap-1 mt-1",
                         for r in message.reactions.iter().cloned() {
@@ -571,11 +545,11 @@ fn MessageRow(message: Message, grouped: bool) -> Element {
                                         key: "{r.emoji}",
                                         class: "dxf-pop flex items-center gap-1 px-1.5 h-6 rounded-full border text-xs transition-colors {cls}",
                                         onclick: move |_| g.send(ClientMessage::React { channel_id, message_id, emoji: emoji.clone() }),
-                                        // `Reaction.emoji` is just a string, so a
-                                        // custom emoji rides in it as `:shortcode:`
-                                        // and needs the same resolution as message
-                                        // text — otherwise reacting with a guild
-                                        // emoji shows the raw code in the chip.
+                                        // Custom emojis ride in as
+                                        // `:shortcode:` strings and need the
+                                        // same resolution as message text,
+                                        // otherwise the chip shows the raw
+                                        // code.
                                         span { EmojiText { text: r.emoji.clone(), guild_id } }
                                         span { class: "text-[10px]", "{count}" }
                                     }
@@ -586,11 +560,10 @@ fn MessageRow(message: Message, grouped: bool) -> Element {
                 }
             }
 
-            // Hover action bar: reply / add a reaction / delete.
             div { class: "absolute -top-2 right-3 {bar_visibility} transition-opacity",
                 div { class: "relative flex gap-1",
-                    // Outside-click dismissal, since hover no longer does it.
-                    // Sits under the menus (z-30) and over everything else.
+                    // z-20 sits under menus (z-30) but over content, enabling
+                    // outside-click dismissal.
                     if menu_open {
                         div {
                             class: "fixed inset-0 z-20",
@@ -633,11 +606,8 @@ fn MessageRow(message: Message, grouped: bool) -> Element {
                             "🗑"
                         }
                     }
-                    // Both menus open *upward*. Downward put them past the row's
-                    // bottom edge, where the scrollport clips them — and the
-                    // newest message, sitting at the bottom, is the one you
-                    // reach for most. Upward they overlap earlier rows, which
-                    // paint below this one, so they stay whole and clickable.
+                    // Menus open upward: downward would be clipped by the
+                    // scrollport on the newest (most-used) message.
                     if confirm_delete() {
                         div { class: "dxf-pop-in absolute right-0 bottom-full mb-1 z-30 flex items-center gap-1 p-1 bg-[var(--panel-solid)] border border-[var(--border)] rounded-md shadow-lg",
                             span { class: "text-[10px] text-[var(--text-muted)] px-1", "Delete?" }
@@ -707,8 +677,6 @@ pub fn ImageViewer() -> Element {
                 style: "max-width: 100%; max-height: 100%;",
                 src: "{src}",
                 alt: "attachment",
-                // Clicking the picture itself shouldn't dismiss it — only the
-                // backdrop around it does.
                 onclick: move |e| e.stop_propagation(),
             }
             button {
@@ -842,13 +810,8 @@ fn is_url(w: &str) -> bool {
 #[component]
 fn Composer(channel_id: Id, composer_label: String, drag_over: Signal<bool>) -> Element {
     let mut state = use_app_state();
-    // A reply aimed at another channel would be dropped by the server anyway
-    // (its lookup is channel-scoped), so the draft carries the channel it was
-    // started in and is simply ignored elsewhere. Self-correcting: switching
-    // channels hides the banner and stops the id being sent, with no effect to
-    // fire and no stale value to clean up. An effect keyed on `channel_id`
-    // wouldn't work here regardless — it's a plain prop, not a signal, so the
-    // closure would capture the first value and never re-run.
+    // Filter by channel_id because it is a plain prop, not a signal; an effect
+    // keyed on it would capture the first value and never re-run.
     let replying_to = use_memo(move || {
         state
             .read()
@@ -865,9 +828,6 @@ fn Composer(channel_id: Id, composer_label: String, drag_over: Signal<bool>) -> 
     let gateway_submit = gateway.clone();
     let nostr_submit = use_context::<crate::nostr::service::NostrTx>();
 
-    // Dropped images land in the same `pending_image` slot the "+" picker fills,
-    // so from here on a dragged file and a picked one are indistinguishable —
-    // preview, Remove, and send all work unchanged.
     let mut drag_over = drag_over;
     use_future(move || async move {
         let js = DROP_JS.replace("$MAX", &MAX_IMAGE_BYTES.to_string());
@@ -888,9 +848,7 @@ fn Composer(channel_id: Id, composer_label: String, drag_over: Signal<bool>) -> 
         }
     });
 
-    // The guild's custom emoji, for the picker's first section. Snapshotted
-    // (rather than read inside the RSX) so the state borrow doesn't span the
-    // closures below.
+    // Snapshot to avoid spanning the state borrow across the closures below.
     let (guild_emojis, emoji_urls) = {
         let state = use_app_state();
         let s = state.read();
@@ -911,8 +869,6 @@ fn Composer(channel_id: Id, composer_label: String, drag_over: Signal<bool>) -> 
         (list, urls)
     };
 
-    // Read-only channels: swap the composer for a lock notice unless the user
-    // holds ManageMessages/ManageChannels there.
     let locked = {
         let state = use_app_state();
         let s = state.read();
@@ -937,19 +893,17 @@ fn Composer(channel_id: Id, composer_label: String, drag_over: Signal<bool>) -> 
         }
         // Only the id goes out; the server rebuilds the quote from its own row.
         let reply_to = replying_to().map(|r| r.message_id);
-        // A DM does not go through the gateway at all. It is a gift-wrapped
-        // Nostr event on relays, which is what makes the conversation outlive
-        // the server you happen to be connected to.
+        // DMs bypass the gateway entirely; they are Nostr events on relays,
+        // allowing conversations to outlive the connected server.
         let dm_peer = state
             .read()
             .dm_of(channel_id)
             .map(|d| d.other.pubkey.clone());
         if let Some(peer) = dm_peer {
             if image.is_some() {
-                // Attachments are not carried yet on the Nostr path (NIP-17
-                // kind:15 file messages, which need the blob encrypted and
-                // uploaded first). Saying so is better than dropping the
-                // picture silently after the user attached it.
+                // Nostr path does not yet support attachments (NIP-17 kind:15
+                // requires encrypted blob upload); erroring is better than
+                // silently dropping the image.
                 state.write().error_toast =
                     Some("Images in DMs are not supported yet — the text was not sent.".into());
                 return;
@@ -972,14 +926,11 @@ fn Composer(channel_id: Id, composer_label: String, drag_over: Signal<bool>) -> 
         draft.set(String::new());
         pending_image.set(None);
         show_emoji.set(false);
-        // A reply is answered once. Leaving this set is how you accidentally
-        // reply to the same message for the rest of the conversation.
         if reply_to.is_some() {
             state.write().replying_to = None;
         }
     };
 
-    // Throttled typing notification (at most once / 2s while editing).
     let gateway_typing = gateway.clone();
     let mut notify_typing = move || {
         let now = std::time::Instant::now();
@@ -996,8 +947,6 @@ fn Composer(channel_id: Id, composer_label: String, drag_over: Signal<bool>) -> 
     rsx! {
         div { class: "px-3 pb-3 shrink-0 relative",
 
-            // "Replying to X" — the only thing that tells you a send will be a
-            // reply, so it sits directly above the input with its own dismiss.
             if let Some(r) = replying_to() {
                 div { class: "flex items-center gap-2 mb-1 px-2 py-1 rounded-t-md bg-[var(--panel-solid)] border border-b-0 border-[var(--border)] text-[11px]",
                     span { class: "shrink-0 text-[var(--text-dim)] opacity-60", "↩" }
@@ -1019,10 +968,8 @@ fn Composer(channel_id: Id, composer_label: String, drag_over: Signal<bool>) -> 
             if show_emoji() {
                 div {
                     class: "dxf-pop-in absolute bottom-full right-3 mb-2 p-1.5 bg-[var(--panel-solid)] border border-[var(--border)] rounded-md shadow-lg z-30",
-                    // The guild's own emoji come first — they're the ones you
-                    // can't type any other way. Inserted as `:shortcode:`, so
-                    // the draft stays plain text and needs no special casing on
-                    // send.
+                    // Guild emojis first (untypeable elsewhere); inserted as
+                    // :shortcode: to keep draft plain text.
                     if !guild_emojis.is_empty() {
                         div { class: "text-[9px] uppercase tracking-wider text-[var(--text-dim)] px-1 pb-1", "This guild" }
                         div { class: "grid grid-cols-8 gap-0.5 pb-1.5 mb-1.5 border-b border-[var(--border)]",
@@ -1058,9 +1005,8 @@ fn Composer(channel_id: Id, composer_label: String, drag_over: Signal<bool>) -> 
                                 class: "w-6 h-6 flex items-center justify-center rounded hover:bg-white/[0.06] text-base leading-none",
                                 onclick: move |_| {
                                     draft.write().push_str(emoji);
-                                    // Close on pick: the picker is for reaching
-                                    // one emoji, and leaving it open covers the
-                                    // message you were just typing.
+                                    // Close on pick to avoid covering the
+                                    // message being typed.
                                     show_emoji.set(false);
                                 },
                                 "{emoji}"
@@ -1070,16 +1016,12 @@ fn Composer(channel_id: Id, composer_label: String, drag_over: Signal<bool>) -> 
                 }
             }
 
-            // Pending attachment preview.
             if let Some(img) = pending_image() {
                 div { class: "mb-2 flex items-center gap-2",
                     img {
-                        // `--border-strong` and an opaque backing, not the plain
-                        // `--border`, which is ~15% alpha of the accent and so
-                        // close to invisible that the thumbnail read as floating
-                        // loose in the message list. The background matters for
-                        // the same reason: a screenshot with transparency showed
-                        // the chat straight through itself.
+                        // Use --border-strong and opaque bg: --border is ~15%
+                        // alpha (invisible), and transparency lets chat show
+                        // through.
                         class: "h-16 w-16 object-cover rounded border border-[var(--border-strong)] bg-[var(--panel2)]",
                         src: "{img}",
                         alt: "pending attachment",
@@ -1100,10 +1042,9 @@ fn Composer(channel_id: Id, composer_label: String, drag_over: Signal<bool>) -> 
                 onsubmit: move |e| { e.prevent_default(); submit(); },
                 div { class: "border border-[var(--border)] rounded flex items-center px-2 gap-1 focus-within:border-[var(--accent)] transition-colors",
 
-                    // Attach, on the left (label opens the hidden file input).
-                    // A "+" rather than a picture glyph: it's the affordance
-                    // people look for on the left of a composer, and it reads as
-                    // "add something" rather than "images only".
+                    // Use "+" not image glyph: reads as "add something" (not
+                    // images-only) and matches left-side affordance
+                    // expectations.
                     label {
                         class: "px-1.5 text-lg leading-none text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors cursor-pointer select-none",
                         title: "Attach an image",
@@ -1148,8 +1089,6 @@ fn Composer(channel_id: Id, composer_label: String, drag_over: Signal<bool>) -> 
                         oninput: move |e| { draft.set(e.value()); notify_typing(); },
                     }
 
-                    // Emoji toggle, on the right — next to Send, and directly
-                    // under the picker it opens.
                     button {
                         r#type: "button",
                         class: "px-1.5 text-base leading-none text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors",

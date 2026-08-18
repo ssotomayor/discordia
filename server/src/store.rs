@@ -88,16 +88,14 @@ impl Store {
     }
 
     async fn init_schema(&self) -> Result<()> {
-        // IF NOT EXISTS everywhere: idempotent boot, no migration framework
-        // needed until the schema actually changes shape (roadmap Phase 2+).
+        // IF NOT EXISTS for idempotent boot; no migration framework until
+        // schema shape changes.
         let ddl = [
             "CREATE TABLE IF NOT EXISTS users (
                 pubkey TEXT PRIMARY KEY, username TEXT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS profiles (
                 pubkey TEXT PRIMARY KEY, avatar TEXT, banner TEXT, bio TEXT,
                 status TEXT, custom_status TEXT)",
-            // Per-guild message-XP. (A legacy per-server `xp` table may exist
-            // in older DBs; it's simply no longer read.)
             "CREATE TABLE IF NOT EXISTS guild_xp (
                 guild_id TEXT NOT NULL, pubkey TEXT NOT NULL,
                 xp INTEGER NOT NULL DEFAULT 0,
@@ -133,20 +131,17 @@ impl Store {
                 color TEXT, permissions TEXT NOT NULL DEFAULT '[]',
                 position INTEGER NOT NULL DEFAULT 0)",
             "CREATE INDEX IF NOT EXISTS idx_roles_guild ON roles(guild_id)",
-            // Custom emoji. `image` is the media-store sentinel, so the bytes
-            // are shared with any message that happens to carry the same
-            // picture. UNIQUE(guild_id, shortcode) makes the uniqueness rule
-            // the database's job rather than a race between two admins.
+            // UNIQUE(guild_id, shortcode) enforces uniqueness at the DB level
+            // to avoid admin race conditions.
             "CREATE TABLE IF NOT EXISTS guild_emojis (
                 id TEXT PRIMARY KEY, guild_id TEXT NOT NULL, shortcode TEXT NOT NULL,
                 image TEXT NOT NULL, added_by TEXT NOT NULL DEFAULT '',
                 created_ms INTEGER NOT NULL DEFAULT 0,
                 UNIQUE (guild_id, shortcode))",
             "CREATE INDEX IF NOT EXISTS idx_emojis_guild ON guild_emojis(guild_id)",
-            // The four `reply_*` columns are a denormalized snapshot of the
-            // parent, not a foreign key: see `protocol::ReplyRef` for why a
-            // reply has to be able to draw its own quote. All-or-nothing —
-            // `reply_id` non-null implies the other three are too.
+            // reply_* columns are a denormalized snapshot, not a FK (see
+            // protocol::ReplyRef). reply_id non-null implies the others are
+            // set.
             "CREATE TABLE IF NOT EXISTS messages (
                 id TEXT PRIMARY KEY, channel_id TEXT NOT NULL,
                 author_pubkey TEXT NOT NULL, author_username TEXT NOT NULL,
@@ -190,9 +185,8 @@ impl Store {
             "ALTER TABLE messages ADD COLUMN reply_author_pubkey TEXT",
             "ALTER TABLE messages ADD COLUMN reply_author_username TEXT",
             "ALTER TABLE messages ADD COLUMN reply_excerpt TEXT",
-            // Invite limits. An older row has no expiry and no cap, which is
-            // exactly what it meant before the columns existed — so the
-            // defaults below are the migration, not a placeholder for one.
+            // Defaults match pre-migration semantics (no expiry/cap), so they
+            // are the migration, not placeholders.
             "ALTER TABLE invites ADD COLUMN expires_at_ms INTEGER",
             "ALTER TABLE invites ADD COLUMN max_uses INTEGER",
             "ALTER TABLE invites ADD COLUMN uses INTEGER NOT NULL DEFAULT 0",
@@ -206,8 +200,6 @@ impl Store {
         }
         Ok(())
     }
-
-    // ----- boot -------------------------------------------------------------
 
     pub async fn load_all(&self) -> Result<LoadedState> {
         let mut out = LoadedState::default();
@@ -363,8 +355,6 @@ impl Store {
         }
         Ok(out)
     }
-
-    // ----- metadata write-through -------------------------------------------
 
     pub async fn upsert_user(&self, user: &User) -> Result<()> {
         sqlx::query(
@@ -761,8 +751,6 @@ impl Store {
         Ok(())
     }
 
-    // ----- messages (DB is the only home) ------------------------------------
-
     pub async fn insert_message(&self, m: &Message) -> Result<()> {
         sqlx::query(
             "INSERT INTO messages (id, channel_id, author_pubkey, author_username,
@@ -945,13 +933,10 @@ impl Store {
     }
 }
 
-// ----- row/enum helpers ------------------------------------------------------
-
 fn row_to_message(r: sqlx::sqlite::SqliteRow) -> Message {
     let ms: i64 = r.get(11);
-    // All four reply columns are written together, so `reply_id` present is the
-    // only condition worth testing; the rest default rather than making a row
-    // written by an older server unreadable.
+    // Only check `reply_id` to avoid breaking rows from older servers that
+    // lack the other reply columns.
     let reply_id: Option<String> = r.get(7);
     let reply_to = reply_id.and_then(|id| {
         Some(ReplyRef {

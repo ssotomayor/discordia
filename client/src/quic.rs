@@ -87,18 +87,13 @@ pub async fn dial(
         .await
         .map_err(|e| format!("quic bind: {e}"))?;
 
-    // The key is the destination; the addresses are only hints about where to
-    // send the packets. A wrong address fails to connect, a wrong key fails to
-    // authenticate, and neither can be mistaken for success.
     let addr = EndpointAddr::new(endpoint_id).with_addrs(addrs.iter().cloned());
     let conn = endpoint
         .connect(addr, GATEWAY_ALPN)
         .await
         .map_err(|e| format!("quic connect: {e}"))?;
 
-    // A coordinator was allowed to introduce us. Whether it is now carrying the
-    // conversation is a different question, and this is where it gets asked —
-    // before a single frame crosses.
+    // Verify the connection is direct, not relayed, before proceeding.
     require_direct(&conn, coordination).await.inspect_err(|_| {
         conn.close(1u32.into(), b"relayed connection refused");
     })?;

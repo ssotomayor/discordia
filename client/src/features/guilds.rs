@@ -32,39 +32,32 @@ pub fn GuildsSidebar() -> Element {
     let gateway = use_gateway();
 
     let snapshot = state.read();
-    // Your own guilds first. They are the ones you administer, so they are the
-    // ones you reach for — and grouping them makes the cog affordance below
-    // read as a property of a group rather than a quirk of individual rows.
-    // Stable within each group, so the existing order is otherwise preserved.
+    // Owned guilds first: they are the ones you administer, and grouping them
+    // makes the cog affordance read as a property of the group.
     let guilds = {
         let mut v = snapshot.guilds.clone();
         v.sort_by_key(|g| !snapshot.is_owner(g.id));
         v
     };
-    // Where the owned run ends, so each row knows which group it landed in.
-    // `is_owner` also covers system guilds (empty owner) for operators,
-    // matching the rest of the app.
+    // `is_owner` covers system guilds (empty owner) for operators, matching
+    // the rest of the app.
     let owned_count = guilds.iter().filter(|g| snapshot.is_owner(g.id)).count();
     let selected = snapshot.selected_guild;
     let dm_mode = snapshot.dm_mode;
     let dm_unread = snapshot.dm_unread_total() as usize;
     let is_operator = snapshot.is_operator;
-    // Guilds in the directory we haven't joined yet.
     let available: Vec<GuildSummary> = snapshot
         .catalog
         .iter()
         .filter(|c| !snapshot.guilds.iter().any(|g| g.id == c.id))
         .cloned()
         .collect();
-    // How many directory rows we've fetched vs how many exist — drives the
-    // paginated "load more" button in the browse modal.
     let catalog_len = snapshot.catalog.len();
     let catalog_total = snapshot.catalog_total as usize;
     drop(snapshot);
 
     let mut menu = use_signal::<Option<GuildMenu>>(|| None);
     let mut show_browse = use_signal(|| false);
-    // Guild whose Integrations (bots) / Roles / Settings dialog is open.
 
     rsx! {
         nav { class: "panel-hover w-full h-full bg-[var(--panel)] border border-[var(--border)] rounded-lg flex flex-col overflow-hidden",
@@ -76,15 +69,12 @@ pub fn GuildsSidebar() -> Element {
 
             NoDrag {
             div { class: "flex-1 overflow-y-auto flex flex-col items-center py-3 gap-2",
-                // DM "home" button, pinned above the guilds.
                 DmHomeButton {
                     active: dm_mode,
                     count: dm_unread,
                     onclick: move |_| {
                         let mut s = state.write();
                         s.dm_mode = true;
-                        // Land on the first conversation if we aren't already
-                        // viewing one, and clear its unread badge.
                         let on_dm = s
                             .selected_channel
                             .map(|cid| s.dm_of(cid).is_some())
@@ -99,20 +89,15 @@ pub fn GuildsSidebar() -> Element {
                     },
                 }
 
-                // Divider between DMs and servers.
                 div { class: "w-6 h-px bg-[var(--border)] my-1" }
 
                 for (idx, guild) in guilds.iter().cloned().enumerate() {
                     {
-                        // Any manageable-or-leavable guild gets the context
-                        // menu; individual entries are permission-gated inside.
-                        // System guilds (empty owner) get one only for an
-                        // operator — nobody else can manage or leave them.
+                        // System guilds (empty owner) are only manageable by
+                        // operators.
                         let has_menu = !guild.owner_pubkey.is_empty() || is_operator;
-                        // Owners get a visible cog. Right-click still works
-                        // everywhere — it is the only way to reach "Leave" on a
-                        // guild you don't own — but a hidden gesture is no way
-                        // to find settings you're expected to use.
+                        // Visible cog for owners; right-click is the only way
+                        // to reach "Leave" on non-owned guilds.
                         let is_mine = idx < owned_count;
                         let gname = guild.name.clone();
                         rsx! {
@@ -128,11 +113,10 @@ pub fn GuildsSidebar() -> Element {
                                 on_select: {
                                     let gateway = gateway.clone();
                                     move |gid: Id| {
-                                        // Always land on this guild's default
-                                        // text channel — never leave the
-                                        // previous guild's channel on screen,
-                                        // and never land on a voice channel
-                                        // (which has no messages).
+                                        // Always land on the default text
+                                        // channel; never leave the previous
+                                        // guild's channel or land on a voice
+                                        // channel.
                                         let target = {
                                             let mut s = state.write();
                                             s.dm_mode = false;
@@ -170,7 +154,6 @@ pub fn GuildsSidebar() -> Element {
 
                 CreateGuild {}
 
-                // Browse & join other guilds on this host.
                 button {
                     class: "relative w-10 h-10 rounded-md border border-dashed border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] flex items-center justify-center text-base leading-none transition-colors",
                     title: "Browse guilds to join",
@@ -193,8 +176,6 @@ pub fn GuildsSidebar() -> Element {
             }
             }
 
-            // Context menu overlay. A transparent backdrop closes it on any
-            // outside click; the menu itself floats at the cursor.
             if let Some(m) = menu() {
                 div {
                     class: "fixed inset-0 z-50",
@@ -378,7 +359,6 @@ pub fn GuildsSidebar() -> Element {
             // inside this panel's stacking context and could be covered by any
             // panel stacked above it.
 
-            // Browse-and-join modal.
             if show_browse() {
                 div {
                     class: "dxf-backdrop-in fixed inset-0 z-50 flex items-center justify-center bg-black/50",
@@ -427,7 +407,6 @@ pub fn GuildsSidebar() -> Element {
                                     }
                                 }
                             }
-                            // More of the directory remains — fetch the next page.
                             if catalog_len < catalog_total {
                                 {
                                     let gw = gateway.clone();
@@ -448,8 +427,6 @@ pub fn GuildsSidebar() -> Element {
                                 }
                             }
                         }
-                        // Private guilds don't appear above — they're joined
-                        // with an invite code instead.
                         InviteJoinRow { on_joined: move |_| show_browse.set(false) }
                     }
                 }
@@ -619,8 +596,8 @@ fn GuildIcon(
     };
 
     rsx! {
-        // `relative` so the cog can sit on the tile's corner; `group` so it can
-        // brighten with the tile rather than demanding its own hover target.
+        // relative so the cog overlays the tile corner; group so it brightens
+        // with the tile.
         div { class: "relative group",
             button {
                 class: "w-10 h-10 rounded-md border flex items-center justify-center text-xs font-medium transition-colors overflow-hidden {cls}",

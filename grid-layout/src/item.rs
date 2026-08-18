@@ -27,7 +27,6 @@ pub fn GridItem(
 ) -> Element {
     let ctx: Option<GridContext> = try_consume_context();
 
-    // Keep the GridContext-level pinned set in sync with this item's prop.
     if let Some(ctx) = ctx {
         let id_for_effect = id.clone();
         use_effect(move || {
@@ -179,19 +178,14 @@ pub fn GridItem(
             class: "dioxus-grid-item{pinned_class} {class}",
             "data-id": "{id}",
             style: "{cell_style}",
-            // Raise on any press, any button, edit mode or not. Two reasons:
-            // clicking a window bringing it forward is what windows do, and
-            // popovers *inside* a panel (a right-click menu, say) paint within
-            // that panel's stacking order — so without this they end up behind
-            // whichever panel happens to come later in the DOM.
+            // Raise on any press: popovers inside a panel paint within its
+            // stacking order, so without this they end up behind later DOM
+            // siblings.
             onpointerdown: onpointerdown_raise,
             {children}
             if interactive {
-                // Drag handle: a strip along the top, not the whole panel.
-                // Making the entire surface draggable meant a grab cursor over
-                // every widget and no way to use the content while the layout
-                // was unlocked. A title-bar strip is where people expect to
-                // pick a window up from anyway.
+                // Strip, not whole panel: full-surface drag blocks widget
+                // interaction and shows grab cursor everywhere.
                 div {
                     class: "dioxus-grid-drag-handle",
                     style: "position: absolute; left: 0; right: 0; top: 0; \
@@ -232,11 +226,8 @@ pub fn GridItem(
 /// measurement, can never be off-screen, and lands exactly where the snap
 /// layout had it — so switching to Free looks like nothing moved.
 fn free_style(id: &str, ctx: GridContext, cell: GridPosition) -> String {
-    // Only emit z-index once the panel has actually been raised. `z-index: 0`
-    // is not free — it establishes a stacking context, which traps every
-    // popover rendered inside the panel so it cannot paint above a sibling
-    // panel. An untouched panel therefore gets no z-index at all and behaves
-    // exactly as it did before free mode existed.
+    // Omit z-index when 0: it establishes a stacking context that traps
+    // internal popovers behind sibling panels.
     let z = ctx.store.map(|s| s.z_of(id)).unwrap_or(0);
     let z_rule = if z > 0 {
         format!(" z-index: {z};")
@@ -244,7 +235,6 @@ fn free_style(id: &str, ctx: GridContext, cell: GridPosition) -> String {
         String::new()
     };
 
-    // Stored by hand, or derived from the grid cell the item started life in.
     let rect = ctx
         .store
         .and_then(|s| s.get_free(id))

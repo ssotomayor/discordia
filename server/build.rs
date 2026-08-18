@@ -94,15 +94,8 @@ fn ensure_binary(out_dir: &Path, target_os: &str, bin_path: &Path) {
         _ => download_release(target_os, &target_arch, &version, bin_path),
     };
 
-    // Fail the build rather than warn. The stub above is a *choice* the caller
-    // made; this is the bundle we were asked for going missing, and the two
-    // must not produce the same artifact. They did once, and it shipped: every
-    // pre-release binary went out with an empty stub, green, for weeks, because
-    // nobody reads `cargo:warning` in a passing job.
-    //
-    // Nobody is stranded by this. A developer without network — or without `go`
-    // on macOS — sets the variable the message names, and gets the stub they
-    // actually want.
+    // Panic instead of warn: a missing bundle previously shipped as a silent
+    // stub for weeks because warnings are ignored in passing CI jobs.
     if let Err(e) = result {
         panic!(
             "livekit bundle failed: {e}\n\
@@ -120,10 +113,6 @@ fn ensure_binary(out_dir: &Path, target_os: &str, bin_path: &Path) {
         fs::set_permissions(bin_path, perms).unwrap();
     }
 }
-
-// ---------------------------------------------------------------------------
-// Linux / Windows: download prebuilt
-// ---------------------------------------------------------------------------
 
 fn download_release(
     target_os: &str,
@@ -193,10 +182,6 @@ fn extract_zip(bytes: &[u8], target: &str) -> Result<Vec<u8>, String> {
     Err(format!("{target} not found in zip archive"))
 }
 
-// ---------------------------------------------------------------------------
-// macOS: clone + `go build`
-// ---------------------------------------------------------------------------
-
 fn build_from_source(out_dir: &Path, version: &str, bin_path: &Path) -> Result<(), String> {
     let go = find_executable("go").ok_or_else(|| {
         "go not found in PATH or common install dirs. `brew install go`, or set LIVEKIT_BUNDLE_SKIP=1 to skip voice bundling.".to_string()
@@ -244,7 +229,6 @@ fn build_from_source(out_dir: &Path, version: &str, bin_path: &Path) -> Result<(
 /// with a minimal PATH (especially under `dx serve` or IDE launchers), so PATH
 /// alone isn't enough.
 fn find_executable(name: &str) -> Option<PathBuf> {
-    // 1. PATH lookup via the shell helper, if it works.
     if Command::new(name).arg("--version").output().is_ok() {
         return Some(PathBuf::from(name));
     }
@@ -252,7 +236,6 @@ fn find_executable(name: &str) -> Option<PathBuf> {
         return Some(PathBuf::from(name));
     }
 
-    // 2. Common install dirs.
     let mut candidates: Vec<PathBuf> = vec![
         PathBuf::from("/opt/homebrew/bin").join(name), // Apple Silicon brew
         PathBuf::from("/usr/local/bin").join(name),    // Intel brew + many Linux

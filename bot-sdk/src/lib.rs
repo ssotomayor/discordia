@@ -177,7 +177,6 @@ impl Bot {
             .map_err(|e| BotError::Ws(format!("connect failed: {e}")))?;
         let (write, mut read) = stream.split();
 
-        // Wait for the server's Hello so we know which nonce to sign.
         let nonce = loop {
             let frame = read
                 .next()
@@ -204,10 +203,8 @@ impl Bot {
             }
         };
 
-        // Sign the name the server will store. It canonicalises before it
-        // verifies, so signing the caller's raw string meant anything past 32
-        // characters failed the handshake as a signature error. One definition,
-        // in `protocol`, shared with the desktop client and the server.
+        // Sign the canonicalized username; the server canonicalizes before
+        // verifying, so signing the raw string fails for names >32 chars.
         let username = dioxusfun_protocol::canonical_username(username);
         let signature = identity.sign_identify(&nonce, &username);
         // For bot connections this self-declaration is what triggers the
@@ -218,9 +215,8 @@ impl Bot {
             pubkey: identity.pubkey().to_string(),
             signature,
             bot,
-            // Prefixed, because the server logs this next to desktop-client
-            // versions and `0.1.0` on its own would say nothing about which of
-            // the two it came from.
+            // Prefixed to distinguish from desktop-client versions in server
+            // logs.
             client_version: concat!("bot-sdk/", env!("CARGO_PKG_VERSION")).to_string(),
         };
         let mut bot = Bot {

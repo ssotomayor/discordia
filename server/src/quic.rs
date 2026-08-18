@@ -265,13 +265,8 @@ pub async fn bind_quic(
     secret: Option<SecretKey>,
     coordination: &Coordination,
 ) -> Result<Endpoint, String> {
-    // `Minimal` contacts nothing; `N0` brings relays and address lookup, which
-    // is what makes a hole punch possible and is also the third party the
-    // setting exists to gate.
-    // `Minimal` throughout: it sets only the mandatory crypto provider and
-    // contacts nothing. The relay, when there is one, is named explicitly —
-    // `presets::N0` would silently bring in n0's public servers and their
-    // discovery service, which is the arrangement this replaced.
+    // Use `Minimal` to avoid `N0`'s implicit public relays and discovery;
+    // relays must be explicit.
     let mut builder = Endpoint::builder(presets::Minimal)
         .alpns(vec![GATEWAY_ALPN.to_vec()])
         .relay_mode(coordination.relay_mode()?);
@@ -364,7 +359,6 @@ async fn serve_connection(
     loop {
         let (send, recv) = match conn.accept_bi().await {
             Ok(pair) => pair,
-            // The ordinary end of a connection, not a fault.
             Err(e) => {
                 tracing::debug!(%remote, error = %e, "no more streams");
                 return Ok(());
@@ -374,9 +368,8 @@ async fn serve_connection(
         tokio::spawn(async move {
             let io = hyper_util::rt::TokioIo::new(tokio::io::join(recv, send));
             let service = hyper_util::service::TowerToHyperService::new(router);
-            // `with_upgrades` is not optional here — it is what lets the
-            // WebSocket upgrade at `/gateway` take the stream over, which is
-            // the entire reason this exists.
+            // Required for the `/gateway` WebSocket upgrade to take over the
+            // stream.
             if let Err(e) = hyper::server::conn::http1::Builder::new()
                 .serve_connection(io, service)
                 .with_upgrades()
@@ -430,9 +423,6 @@ mod tests {
             .bind()
             .await
             .expect("client endpoint");
-        // Address *and* key: the address says where to send packets, the key is
-        // who must be at the other end. A wrong key fails the handshake — which
-        // is the property this transport exists for.
         let addr = EndpointAddr::new(handle.endpoint_id).with_addrs(
             dialable_addrs(&handle.sockets)
                 .into_iter()
@@ -530,16 +520,11 @@ mod tests {
             direct_available: true,
         };
 
-        // A named relay, as one always is now: the third party has to be one
-        // somebody chose, so there is no "coordinated by whoever".
         let coordinated = Coordination::Relay("https://relay.example/".into());
 
-        // With no coordinator there is no relay to fall back to, so nothing is
-        // refused — a connection that exists at all is direct by construction.
         assert!(verdict(relayed, &Coordination::None).is_ok());
         assert!(verdict(direct, &Coordination::None).is_ok());
 
-        // With one, only a selected direct path passes.
         assert!(verdict(direct, &coordinated).is_ok());
 
         let refused = verdict(relayed, &coordinated).unwrap_err();
@@ -587,7 +572,6 @@ mod tests {
             .await
             .expect("client endpoint");
 
-        // Somebody else's key, at the right address.
         let impostor = SecretKey::generate().public();
         let addr = EndpointAddr::new(impostor).with_addrs(
             dialable_addrs(&handle.sockets)

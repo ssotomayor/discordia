@@ -13,9 +13,8 @@ use std::time::Duration;
 
 use tokio::process::{Child, Command};
 
-// The embedded bytes must match the filename `build.rs` wrote, which carries
-// the `.exe` suffix on Windows. (These two were out of sync and broke the
-// Windows build with "couldn't read .../out/livekit-server".)
+// Filename must match what `build.rs` writes (`.exe` on Windows); mismatch
+// breaks the build.
 #[cfg(target_os = "windows")]
 const LIVEKIT_BIN: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/livekit-server.exe"));
 #[cfg(not(target_os = "windows"))]
@@ -118,9 +117,7 @@ pub struct LivekitSubprocess {
 
 impl Drop for LivekitSubprocess {
     fn drop(&mut self) {
-        // Best effort, and the failure to care about is the *other* direction:
-        // a kill that skips this leaves the file behind on purpose, which is
-        // exactly what the next run reads.
+        // Leaving the file on kill is intentional: the next run reads it.
         let _ = fs::remove_file(&self.pid_file);
     }
 }
@@ -179,13 +176,9 @@ fn reclaim_orphan(dir: &Path) {
     let _ = fs::remove_file(&path);
 }
 
-// The two platform pairs below shell out rather than take a dependency. There
-// is precedent (`client::webview2`, `client::app`), and the alternative is a
-// process-enumeration crate for four commands.
-//
-// One forward note: if the client ever gains `windows_subsystem = "windows"`
-// (see docs/AUDIT-2026-08-17.md), these spawns need `CREATE_NO_WINDOW` alongside the SFU's own,
-// or each one flashes a console.
+// Shell out to avoid a process-enumeration dependency for four commands. If
+// the client gains `windows_subsystem = "windows"`, add `CREATE_NO_WINDOW` to
+// prevent console flashes.
 
 /// Whether `pid` is live *and* running `image`.
 #[cfg(windows)]
@@ -193,18 +186,16 @@ fn process_matches(pid: u32, image: &str) -> bool {
     let out = std::process::Command::new("tasklist")
         .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
         .output();
-    // A filter that matches nothing still exits 0, printing "INFO: No tasks are
-    // running which match the specified criteria." — so the image name is the
-    // test, not the status.
+    // Filter exit code is 0 even with no match, so check the image name in
+    // stdout, not the status.
     matches!(out, Ok(o) if String::from_utf8_lossy(&o.stdout).contains(image))
 }
 
 /// Whether `pid` is live *and* running `image`.
 #[cfg(not(windows))]
 fn process_matches(pid: u32, image: &str) -> bool {
-    // `args=` rather than `comm=`: Linux truncates `comm` to 15 characters and
-    // `livekit-server-` is already 15, so every build would look alike — which
-    // would defeat the digest match that makes this safe.
+    // Use `args=` not `comm=`: Linux truncates `comm` to 15 chars, making
+    // `livekit-server-` indistinguishable from other builds.
     let out = std::process::Command::new("ps")
         .args(["-p", &pid.to_string(), "-o", "args="])
         .output();
@@ -261,23 +252,9 @@ pub async fn spawn_livekit(advertise_ip: Option<IpAddr>) -> Result<LivekitSubpro
     let dir = std::env::temp_dir().join("dioxusfun");
     fs::create_dir_all(&dir).map_err(|e| format!("temp dir: {e}"))?;
 
-    // The filename carries a hash of the bytes, so a different build never
-    // lands on the same path. That is not tidiness — it is the whole fix for a
-    // bug that made self-hosting impossible on macOS.
-    //
-    // This used to be one fixed path, rewritten in place whenever the embedded
-    // bytes changed length. macOS caches a code signature against the
-    // (device, inode) pair, so overwriting the file while an older copy is still
-    // running invalidates that cache: every later `exec` of the path dies with
-    // `SIGKILL (Code Signature Invalid)` — 16 crash reports on one machine — even
-    // though `codesign --verify` on the file reports it perfectly valid, because
-    // verification reads the bytes and the kernel is comparing against its cache.
-    // Byte-identical content at a fresh path runs; at the poisoned path it is
-    // killed. Never reusing the name is what avoids the whole class.
-    //
-    // The old check compared *length* alone, so a rebuilt SFU of the same size
-    // was never re-extracted and stale bytes ran silently. A content hash is the
-    // check that was meant.
+    // Hash in filename prevents macOS code-signature cache invalidation
+    // (SIGKILL on exec) when overwriting a running binary. Also fixes stale-
+    // byte bug where same-length rebuilds weren't re-extracted.
     let digest = LIVEKIT_DIGEST.trim();
     let (stem, ext) = match LIVEKIT_BIN_NAME.split_once('.') {
         Some((s, e)) => (s, format!(".{e}")),
@@ -285,8 +262,8 @@ pub async fn spawn_livekit(advertise_ip: Option<IpAddr>) -> Result<LivekitSubpro
     };
     let path: PathBuf = dir.join(format!("{stem}-{digest}{ext}"));
 
-    // Named per port for the same reason as the pid file: two instances must
-    // not overwrite each other's config.
+    // Per-port naming prevents two instances from overwriting each other's
+    // config.
     let config_path = dir.join(format!("livekit-{}.yaml", ports().ws));
     let config = config_yaml(advertise_ip);
 
@@ -300,7 +277,6 @@ pub async fn spawn_livekit(advertise_ip: Option<IpAddr>) -> Result<LivekitSubpro
         let stem = stem.to_string();
         let digest = digest.to_string();
         tokio::task::spawn_blocking(move || -> Result<(), String> {
-            // Before anything touches the port: take back the one we orphaned.
             reclaim_orphan(&dir);
 
             // Sweep the copies other builds left behind. Without this the hashed
@@ -318,8 +294,6 @@ pub async fn spawn_livekit(advertise_ip: Option<IpAddr>) -> Result<LivekitSubpro
                     {
                         let _ = fs::remove_file(entry.path());
                     }
-                    // The pre-hash name from older builds, which is the poisoned
-                    // one.
                     if name == LIVEKIT_BIN_NAME {
                         let _ = fs::remove_file(entry.path());
                     }
@@ -381,8 +355,6 @@ fn config_yaml(advertise_ip: Option<IpAddr>) -> String {
 }
 
 fn config_yaml_for(advertise_ip: Option<IpAddr>, p: LivekitPorts) -> String {
-    // `node_ip` is only written when we have one; left out, LiveKit derives it
-    // from the local interfaces exactly as before.
     let node_ip = advertise_ip
         .map(|ip| format!("  node_ip: {ip}\n"))
         .unwrap_or_default();
@@ -506,7 +478,6 @@ mod tests {
             process_matches(me, &image),
             "this test binary ({image}, pid {me}) should match itself"
         );
-        // The recycled-pid case: same live pid, a name it is not running.
         assert!(
             !process_matches(me, "livekit-server-0000000000000000"),
             "a live pid running something else must not match"
@@ -532,7 +503,6 @@ mod tests {
         reclaim_orphan(&dir);
         assert!(!path.exists(), "a consumed record must not survive");
 
-        // Garbage is the same story without the lookup.
         fs::write(&path, "not-a-pid\n").expect("write pid file");
         reclaim_orphan(&dir);
         assert!(!path.exists());

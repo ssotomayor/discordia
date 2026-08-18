@@ -79,7 +79,6 @@ impl Drop for HostHandle {
         if let Some(task) = self.rendezvous_task.take() {
             task.abort();
         }
-        // LivekitSubprocess Drop triggers `kill_on_drop` on the child.
         self.livekit = None;
     }
 }
@@ -88,18 +87,15 @@ pub async fn start_self_host(
     allow_lan: bool,
     rendezvous_url: Option<String>,
     publish: crate::rendezvous::PublishOptions,
-    // The host's own identity: its pubkey becomes the operator of the seeded
-    // Lobby (so the person running the server can moderate it — it's their
-    // machine), and it signs the rendezvous name-ownership proof.
+    // Identity doubles as the Lobby operator (moderation) and signs the
+    // rendezvous name-ownership proof.
     identity: crate::identity::Identity,
 ) -> Result<HostHandle, String> {
     let operator_pubkey = identity.pubkey.clone();
 
-    // Bind before anything else, because the port is an input to everything
-    // that follows: it is what we ask the router to forward, and what we
-    // advertise to the rendezvous. `bind_with_fallback` may not give us the
-    // port we asked for, so guessing it here would mean mapping the wrong one.
-    // Serving starts further down, on this same listener.
+    // Bind first: the port is an input to router mapping and rendezvous
+    // advertisement. `bind_with_fallback` may change it, so guessing would map
+    // the wrong port.
     let bind_ip: IpAddr = if allow_lan {
         "0.0.0.0".parse().unwrap()
     } else {
@@ -112,26 +108,16 @@ pub async fn start_self_host(
         .local_addr()
         .map_err(|e| format!("embedded server: {e}"))?;
 
-    // Who may introduce us, asked before anything is bound: it is a property of
-    // the rendezvous, and there is no separate setting for it. A rendezvous
-    // that runs no relay leaves us uncoordinated rather than sending us to a
-    // public one nobody chose.
+    // Coordination is a property of the rendezvous, not a separate setting. No
+    // relay means no coordination, rather than defaulting to a public one.
     let coordination = match rendezvous_url.as_deref() {
         Some(url) => crate::rendezvous::coordination_offered(url).await,
         None => dioxusfun_server::quic::Coordination::None,
     };
 
-    // The QUIC endpoint binds before the mapping and before registration, for
-    // the same reason the TCP listener does: its UDP port is one of the things
-    // to map, and its key and address are what get advertised. Nothing is
-    // served on it until the router exists, further down.
-    //
-    // Gated on the same setting as the TCP bind, and that is not a detail.
-    // QUIC serves the same router; a door left open here would accept direct
-    // connections from anyone holding the key, while the checkbox that is
-    // supposed to govern exactly that sits unticked. Worse, the key and address
-    // would still be advertised, so a coordinator could introduce a stranger to
-    // a host that asked to be reachable by nobody.
+    // Bind before mapping/registration: the UDP port must be mapped and the
+    // key/address advertised. Gated on `allow_lan` to prevent accepting direct
+    // connections when the host is meant to be unreachable.
     let quic_endpoint = if !allow_lan {
         eprintln!("[host] direct connections are off — not opening the QUIC door either");
         None
@@ -140,8 +126,6 @@ pub async fn start_self_host(
         match dioxusfun_server::quic::bind_quic(Some(transport_secret), &coordination).await {
             Ok(ep) => Some(ep),
             Err(e) => {
-                // Not fatal: the TCP gateway is unaffected, and a host without the
-                // QUIC path is exactly what every host was until now.
                 eprintln!("[host] quic unavailable: {e}");
                 tracing::warn!(error = %e, "quic endpoint not bound");
                 None
@@ -152,16 +136,13 @@ pub async fn start_self_host(
         .as_ref()
         .and_then(|ep| ep.bound_sockets().first().map(|s| s.port()));
 
-    // Tier 1: ask the router for a way in. Attempted whether or not a
-    // rendezvous is involved — it is the one path that needs nobody else — but
-    // only when the gateway is actually listening off-loopback, since a forward
-    // to a port bound to 127.0.0.1 lands on nothing.
+    // Only attempt if the gateway listens off-loopback; forwarding to
+    // 127.0.0.1 lands on nothing.
     let (mapped, port_mapping, reachability) = if allow_lan {
         match local_ipv4() {
             Some(local_ip) => {
-                // From the same resolver the SFU configures itself with: a
-                // mapping for 7880 while the subprocess listens on 7890 is a
-                // hole punched to nowhere.
+                // Use the SFU's own port resolver to avoid mapping a port the
+                // subprocess isn't listening on.
                 let sfu = livekit_bundle::ports();
                 let ports = portmap::Ports {
                     gateway_tcp: gateway_addr.port(),
@@ -182,9 +163,8 @@ pub async fn start_self_host(
                         let reach = Reachability::Direct {
                             endpoint: mapped.endpoint(),
                             method: mapped.method,
-                            // Voice only counts as reachable when the media
-                            // ports kept their numbers *and* we can advertise
-                            // them, which is what the hairpin check gates.
+                            // Media is only reachable if ports are mapped AND
+                            // hairpinning works.
                             media: mapped.media && mapped.hairpin,
                         };
                         (Some(mapped), Some(guard), reach)
@@ -207,23 +187,16 @@ pub async fn start_self_host(
         (None, None, Reachability::LoopbackOnly)
     };
 
-    // Advertising the external address to LiveKit *replaces* its LAN ICE
-    // candidate rather than adding to it, so it is only safe once we know this
-    // machine can reach its own public address — otherwise the host and its LAN
-    // friends lose the voice path the remote friend gains. Both conditions, or
-    // neither: see `livekit_bundle::spawn_livekit`.
+    // Advertising the public IP replaces the LAN ICE candidate, so it is only
+    // safe if hairpinning works; otherwise LAN peers lose voice.
     let advertise_ip = mapped
         .as_ref()
         .filter(|m| m.media && m.hairpin)
         .map(|m| m.public_ip);
 
-    // What to tell a joiner about the QUIC path: the key it must authenticate
-    // against, and the addresses worth trying. The public address goes first
-    // when we have one — a friend elsewhere can only use that one, and a friend
-    // on this network will fail it fast and fall to the LAN address behind it.
-    // With a coordinator allowed, wait briefly for the endpoint to reach its
-    // home relay — that URL is how a friend gets introduced, and advertising the
-    // key without it leaves them nothing to be introduced *through*.
+    // Public IP goes first: remote peers need it, local peers fail fast and
+    // fall back to LAN. Wait for relay online so the advertised key has a
+    // valid introduction path.
     if coordination.is_coordinated()
         && let Some(ep) = quic_endpoint.as_ref()
     {
@@ -239,24 +212,22 @@ pub async fn start_self_host(
         if let Some(ip) = local_ipv4() {
             addrs.push(SocketAddr::new(IpAddr::V4(ip), port).to_string());
         }
-        // The relay URL rides in the same list: it is the same kind of hint —
-        // somewhere to be introduced rather than somewhere to send packets —
-        // and the joiner tells them apart by parsing.
+        // Relay URLs are included as hints for introduction, distinguished by
+        // the joiner via parsing.
         addrs.extend(ep.addr().addrs.iter().filter_map(|a| match a {
             iroh::TransportAddr::Relay(url) => Some(url.to_string()),
             _ => None,
         }));
-        // A key with nowhere to try it is worse than no key: the joiner would
-        // spend its patience on a path that cannot work.
+        // Omit the key if no addresses are available; a key with no targets
+        // wastes joiner patience.
         (!addrs.is_empty()).then(|| crate::rendezvous::TransportAdvert {
             key: ep.id().to_string(),
             addrs,
         })
     });
 
-    // Register with rendezvous first so we know which LiveKit URL to hand
-    // to clients. If the rendezvous operator runs a shared LiveKit, that
-    // URL takes precedence over our local subprocess.
+    // Register with rendezvous first to determine the LiveKit URL; a shared
+    // operator URL takes precedence over the local subprocess.
     let mut rendezvous_state: Option<(
         crate::rendezvous::ControlStream,
         crate::rendezvous::PublishInfo,
@@ -287,11 +258,9 @@ pub async fn start_self_host(
         .as_ref()
         .and_then(|(_, info)| info.livekit_url.clone());
 
-    // Only now is it known whether a local SFU is wanted at all: a rendezvous
-    // that runs its own wins for every client, and the bundled one would spend
-    // the session holding port 7880 and serving nobody. It used to be started
-    // unconditionally, before this was knowable — which is why the spawn moved
-    // down here rather than the question moving up.
+    // Only now is it known whether a local SFU is wanted: a rendezvous that
+    // runs its own wins for every client, and the bundled one would hold port
+    // 7880 serving nobody.
     let shared_sfu_url = explicit_url.clone();
     let (livekit, voice_bundled) = if explicit_url.is_some() {
         eprintln!("[host] rendezvous supplies the SFU — not starting the bundled one");
@@ -316,12 +285,12 @@ pub async fn start_self_host(
     let livekit_cfg = LiveKitConfig {
         explicit_url,
         port: livekit_bundle::ports().ws,
-        // Local credentials only ever sign for our own bundled subprocess.
         api_key: DEFAULT_LIVEKIT_KEY.into(),
         api_secret: DEFAULT_LIVEKIT_SECRET.into(),
-        // When the rendezvous runs a shared SFU, it mints tokens for us — we
+        // When the rendezvous runs a shared SFU, it mints tokens for us; we
         // hold a session grant, never its signing secret (a public relay can't
-        // hand that out: any host could then mint into any other host's rooms).
+        // hand that out: any host could then mint into any other host's
+        // rooms).
         minter: rendezvous_state.as_ref().and_then(|(_, info)| {
             match (&info.livekit_url, &info.voice_token_grant) {
                 (Some(_), Some(grant)) => Some(std::sync::Arc::new(
@@ -340,8 +309,6 @@ pub async fn start_self_host(
     };
 
     let operators = std::collections::HashSet::from([operator_pubkey]);
-    // Durable self-host data lives next to the identity/settings files, so a
-    // relaunched host keeps its guilds, members, and message history.
     let cfg = dioxusfun_server::ServerConfig {
         livekit: livekit_cfg,
         operators,
@@ -385,10 +352,8 @@ pub async fn start_self_host(
         None => (None, None),
     };
 
-    // Which SFU clients will actually be sent to. Empty means there is none —
-    // which since the spawn was deferred is no longer the same question as
-    // "did the bundled one start": a rendezvous that supplies an SFU means we
-    // deliberately started nothing, and voice works fine.
+    // Empty means no SFU was started (either none bundled or a rendezvous
+    // supplied one), which is valid.
     let livekit_display = match (&shared_sfu_url, voice_bundled) {
         (Some(url), _) => url.clone(),
         (None, true) => format!("ws://127.0.0.1:{}", livekit_bundle::ports().ws),

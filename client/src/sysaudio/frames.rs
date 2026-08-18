@@ -72,9 +72,8 @@ impl FrameCutter {
         for chunk in samples.chunks_exact(channels) {
             self.scratch.push(chunk.iter().sum::<f32>() * scale);
         }
-        // `pending` and `scratch` are separate fields, so this is not the
-        // double borrow it looks like — but the borrow checker only sees the
-        // method call, hence the manual extend.
+        // Manual extend avoids a double borrow the checker sees in
+        // `extend_from_slice`.
         self.pending.extend_from_slice(&self.scratch);
         self.drain()
     }

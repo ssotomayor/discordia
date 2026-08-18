@@ -239,9 +239,8 @@ pub fn start(
     })
 }
 
-// Gated with the backend it exercises: the test drives a real ScreenCaptureKit
-// capture through `start`, which does not exist elsewhere. Without this the
-// crate fails to build under `--all-targets` on any other platform.
+// Gated to macOS: the test drives ScreenCaptureKit, which is unavailable
+// elsewhere. Without this, `--all-targets` fails on other platforms.
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     /// Regression test for the over-release that crashed every share the moment

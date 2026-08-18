@@ -176,7 +176,6 @@ mod tests {
     /// same gesture to zero cells and doesn't move at all.
     #[test]
     fn free_drag_applies_the_delta_verbatim() {
-        // container 1000x500, so 70px right = 0.07, 50px down = 0.10.
         let i = free(
             InteractionKind::Drag,
             FloatRect::new(0.10, 0.20, 0.30, 0.20),

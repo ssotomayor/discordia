@@ -156,7 +156,6 @@ mod tests {
 
         let blob = seal(&key, &bob.pubkey, 7, &alice).unwrap();
         assert!(open(&blob, &alice.pubkey, 7, &eve).is_err());
-        // Not even by claiming a different sender.
         assert!(open(&blob, &eve.pubkey, 7, &bob).is_err());
     }
 
@@ -184,7 +183,6 @@ mod tests {
         let a = seal(&key, &bob.pubkey, 1, &alice).unwrap();
         let b = seal(&key, &bob.pubkey, 1, &alice).unwrap();
         assert_ne!(a, b);
-        // Both still open to the same bytes.
         assert_eq!(open(&a, &alice.pubkey, 1, &bob).unwrap(), key);
         assert_eq!(open(&b, &alice.pubkey, 1, &bob).unwrap(), key);
     }
@@ -209,10 +207,6 @@ mod tests {
         );
     }
 }
-
-// ---------------------------------------------------------------------------
-// Orchestration: who generates a key, who hands it on, and when it changes
-// ---------------------------------------------------------------------------
 
 use dioxus::prelude::*;
 
@@ -360,8 +354,7 @@ pub fn MediaKeyBridge() -> Element {
     let mut state = use_app_state();
     let gateway = use_gateway();
 
-    // A member was removed from a guild: roll the key so what follows is beyond
-    // them. Watched here rather than done in `apply`, which has no gateway to
+    // Rekey on member removal. Done here because `apply` lacks a gateway to
     // send on.
     let rekey_gateway = gateway.clone();
     use_effect(move || {
@@ -372,8 +365,8 @@ pub fn MediaKeyBridge() -> Element {
         rekey_after_removal(state, rekey_gateway.clone());
     });
 
-    // Everyone in our channel, as a sorted list, so this only re-runs when the
-    // membership actually changes rather than on every mute and speaking flag.
+    // Sorted roster ensures this memo only re-runs on membership changes, not
+    // mute/speaking flag updates.
     let roster = use_memo(move || {
         let s = state.read();
         let channel = s.voice.channel_id?;
@@ -399,30 +392,18 @@ pub fn MediaKeyBridge() -> Element {
             return;
         };
 
-        // Before deciding what to send, forget whoever is no longer here. Ahead
-        // of the `match` because it applies to both arms — and because the arm
-        // that holds a key returns early when nobody else is present, which is
-        // exactly the moment the last departure has to be recorded.
+        // Forget absent members before the match: applies to both arms, and
+        // the early-return arm requires recording the last departure.
         let forgotten = forget_absent_now(channel, &present);
         if forgotten > 0 {
             tracing::debug!(%channel, forgotten, "forgot the media key ledger for members who left");
         }
 
         match held {
-            // We hold the key: hand it to everyone else here.
-            //
-            // **Not gated on being the designated member**, and that was a bug
-            // with a symptom worth remembering: the rule used to be "only the
-            // lowest pubkey hands the key on", which says nothing about whether
-            // the lowest pubkey *has* one. A host who generated the key while
-            // alone, then had somebody join whose pubkey sorted lower, would sit
-            // on it and send nothing — and the newcomer, finding itself lowest,
-            // would generate a second key. Two keys, both rooms encrypting,
-            // silence in both directions.
-            //
-            // Holding the key is the only qualification that matters. Duplicate
-            // sends are harmless: a recipient that already has this epoch
-            // ignores it.
+            // Not gated on being the lowest pubkey: a host holding a key must
+            // send it even if a lower-pubkey member joins, otherwise both
+            // generate keys and silence results. Holding the key is the only
+            // qualification.
             Some((epoch, key)) => {
                 let others: Vec<&str> = present
                     .iter()
@@ -446,8 +427,8 @@ pub fn MediaKeyBridge() -> Element {
                                 epoch,
                                 blob,
                             });
-                            // Only now. A seal that failed must leave this
-                            // member eligible, or the failure is permanent.
+                            // Mark sent only after successful seal; a failed
+                            // seal must leave the member eligible to retry.
                             sent(channel, to, epoch);
                         }
                         Err(e) => {
@@ -456,9 +437,8 @@ pub fn MediaKeyBridge() -> Element {
                     }
                 }
             }
-            // No key yet. Alone in the channel, there is nobody to wait for.
-            // With others present, someone should be sending us one — wait
-            // before assuming they will not.
+            // If others are present, wait for a key from them before
+            // generating one ourselves.
             None => {
                 let alone = present.iter().all(|p| p == &me);
                 let mut state = state;
@@ -467,33 +447,18 @@ pub fn MediaKeyBridge() -> Element {
                 spawn(async move {
                     if !alone {
                         tokio::time::sleep(KEY_WAIT).await;
-                        // Somebody obliged while we waited.
                         if state.peek().media_keys.contains_key(&channel) {
                             return;
                         }
-                        // Still nobody, so generate one — *whoever we are*.
-                        //
-                        // This used to defer to the lowest pubkey, on the
-                        // reasoning that two members generating two keys would
-                        // be a disaster. It was: two epoch-1 keys that could
-                        // never converge. But that is fixed at the receiving
-                        // end now (`net::supersedes` breaks a tie by pubkey),
-                        // and with convergence in place the exclusivity is not
-                        // only unnecessary, it is harmful — it means a member
-                        // who never receives a key also never makes one, and
-                        // sits silent forever waiting for a client that had no
-                        // reason to send.
-                        //
-                        // Generating too often costs a brief second key that
-                        // both sides then agree to discard. Generating too
-                        // rarely costs the call.
+                        // Generate locally rather than deferring to the lowest
+                        // pubkey: exclusivity caused members to wait forever
+                        // for a key that would never arrive. Convergence is
+                        // now handled by `net::supersedes`.
                         tracing::info!(
                             %channel,
                             "no key arrived while waiting — making one rather than waiting longer"
                         );
                     }
-                    // Epoch 1: the first key a channel has had this session. A
-                    // rekey counts up from whatever we were last given.
                     let key = generate();
                     tracing::info!(
                         %channel,
@@ -563,18 +528,10 @@ pub fn rekey_after_removal(
     let next = epoch.saturating_add(1);
     tracing::info!(%channel, epoch = next, "rekeying after a member was removed");
 
-    // Send first, adopt second, and this order is the point. Everyone switches
-    // at a slightly different moment, and during that gap frames published
-    // under the new key cannot be read by anyone still on the old one. We are
-    // the only publisher of new-key frames until we adopt, so adopting *last*
-    // shrinks the window to roughly one network hop instead of one hop plus
-    // however long our own sealing loop took.
-    //
-    // It is a smaller gap, not no gap. The proper fix is LiveKit's key ring —
-    // publish under a new index while still accepting the old — and the JS
-    // SDK's `ExternalE2EEKeyProvider.setKey` takes no index, so it is not
-    // reachable without reimplementing a key provider against minified
-    // internals. Recorded in docs/AUDIT-2026-08-17.md rather than half-done here.
+    // Send before adopting to minimize the window where new-key frames are
+    // unreadable by peers still on the old key. Adopting last shrinks this to
+    // ~1 network hop. Proper fix (LiveKit key ring) is blocked by JS SDK
+    // limitations; see docs/AUDIT-2026-08-17.md.
     for to in &present {
         if to == &me || !needs_send(channel, to, next) {
             continue;
@@ -634,9 +591,6 @@ mod orchestration_tests {
         let channel = crate::protocol::Id::new_v4();
         let other = crate::protocol::Id::new_v4();
 
-        // Through the process-wide ledger, so the pair that the sending effect
-        // actually calls is exercised and not only the functions underneath.
-        // Safe to share it: every channel here is a fresh `Id`.
         assert!(needs_send(channel, "alice", 1), "first send must go");
         sent(channel, "alice", 1);
         assert!(
@@ -681,11 +635,9 @@ mod orchestration_tests {
         mark_sent(&mut sent, channel, "bob", 1);
         assert!(!should_send(&sent, channel, "bob", 1));
 
-        // Everyone still here: nothing is forgotten, and nothing repeats.
         assert_eq!(forget_absent(&mut sent, channel, &present), 0);
         assert!(!should_send(&sent, channel, "bob", 1));
 
-        // Bob leaves.
         assert_eq!(forget_absent(&mut sent, channel, &["alice".to_string()]), 1);
         assert!(
             should_send(&sent, channel, "bob", 1),
@@ -706,14 +658,12 @@ mod orchestration_tests {
         let channel = crate::protocol::Id::new_v4();
         let mut sent = Ledger::new();
 
-        // Asked, then the seal failed: nothing is recorded, so we owe it still.
         assert!(should_send(&sent, channel, "bob", 1));
         assert!(
             should_send(&sent, channel, "bob", 1),
             "asking must not record; a failed seal has to be retried"
         );
 
-        // Asked, sealed, sent: now it is owed to nobody.
         mark_sent(&mut sent, channel, "bob", 1);
         assert!(!should_send(&sent, channel, "bob", 1));
         // And a rekey still overrides, which is the case that must never be
@@ -734,7 +684,6 @@ mod orchestration_tests {
         mark_sent(&mut sent, channel, "bob", 1);
         mark_sent(&mut sent, other, "bob", 1);
 
-        // Bob is absent from `channel`; that says nothing about `other`.
         assert_eq!(forget_absent(&mut sent, channel, &[]), 1);
         assert!(
             !should_send(&sent, other, "bob", 1),

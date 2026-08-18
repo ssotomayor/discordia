@@ -67,7 +67,6 @@ async fn build_context(cfg: ServerConfig) -> std::io::Result<Arc<AppContext>> {
         livekit: cfg.livekit,
     });
 
-    // Hourly retention sweep (runs once shortly after boot, too).
     let sweep_state = ctx.state.clone();
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(3600));

@@ -518,11 +518,8 @@ pub fn App() -> Element {
     let mut error = use_signal(|| None::<String>);
     let last_session = use_signal(|| session::load().ok().flatten());
 
-    // Asked once per launch, from the app root rather than from the label that
-    // renders it: the label unmounts on connect and remounts on disconnect, so
-    // owning the check there would re-ask on every round trip and spend a
-    // 60/hour unauthenticated rate limit on a question whose answer cannot have
-    // changed. Silent on every failure — see `check_for_update`.
+    // Check once at app root: the label remounts on disconnect, which would
+    // waste the 60/hour unauthenticated rate limit.
     let mut update = use_signal(|| None::<crate::version::Update>);
     use_future(move || async move {
         if let Some(found) = crate::version::check_for_update().await {
@@ -530,8 +527,6 @@ pub fn App() -> Element {
         }
     });
 
-    // Local appearance settings (theme + background). Shared via context so
-    // the in-app Appearance panel can mutate them live.
     let settings = use_signal(crate::settings::load_or_default);
     use_context_provider(|| settings);
     let appearance = settings.read();
@@ -541,15 +536,12 @@ pub fn App() -> Element {
     let pattern = appearance.pattern.clone();
     let scrim = (appearance.background_dim.min(95) as f64) / 100.0;
     drop(appearance);
-    // A user image wins over the procedural pattern.
     let pattern_class = if background.is_some() {
         ""
     } else {
         background_pattern_class(&pattern)
     };
 
-    // Theme + accent + background are applied as inline CSS variables on the
-    // root element so they cascade to everything and update reactively.
     let mut root_style = theme_vars(&theme).to_string();
     if let Some(a) = &accent {
         root_style.push_str(&accent_vars(a));
@@ -580,14 +572,10 @@ pub fn App() -> Element {
                 div { class: "app-bg-layer", style: "background-image: url('{img}');" }
                 div { class: "app-bg-layer", style: "background: rgba(0,0,0,{scrim});" }
             }
-            // Which build this is, on the screens you see before connecting to
-            // anything — the first place someone reads a version, and the only
-            // one reachable when nothing works, which is when they need it.
-            //
-            // It stops at the door on purpose. In the workspace it would be
-            // permanent chrome answering a question nobody asks while chatting,
-            // and both bottom corners are already spoken for there: the layout
-            // controls on the right, the activity launcher on the left.
+            // Shown only pre-connection: it's the first version read and the
+            // only one reachable when nothing works.
+            // Omitted in-workspace to avoid permanent chrome and conflict with
+            // existing bottom-corner controls.
             if session.read().is_none() {
                 div { class: "fixed bottom-3 right-3 z-40 flex items-center gap-2",
                     crate::version::VersionLabel {}
@@ -620,7 +608,6 @@ pub fn App() -> Element {
                         last_session: last_session.read().clone(),
                         on_connect: move |params: SessionParams| {
                             error.set(None);
-                            // Persist for next launch's Reconnect button.
                             let saved = SavedSession {
                                 mode: params.mode.clone(),
                                 username: params.username.clone(),
@@ -629,9 +616,8 @@ pub fn App() -> Element {
                             session.set(Some(params));
                         },
                         on_rename: move |new_name: String| {
-                            // Mutate the live identity + persist to disk. The
-                            // new name takes effect on the next Connect (we
-                            // don't surgery the in-flight gateway session).
+                            // New name takes effect on next Connect; we don't
+                            // mutate the in-flight gateway session.
                             let mut current = identity.write();
                             if let Some(id) = current.as_mut() {
                                 let _ = id.set_display_name(new_name);
@@ -699,18 +685,12 @@ fn session_key(p: &SessionParams) -> String {
 #[component]
 fn AppHead() -> Element {
     rsx! {
-        // Tailwind utilities — inlined into the binary via `include_str!()`.
-        // Renders a <style> tag in <head>. No CDN, no runtime compiler, no FOUC,
-        // works offline. Same pattern as BASE_CSS and font_face_css() below.
+        // Inlined to avoid CDN/runtime compiler/FOUC; works offline.
         document::Style { {TAILWIND_CSS} }
-        // LiveKit JS SDK — powers webview-side screen sharing (capture + render).
-        // Inline rather than `src`, for the reasons on LIVEKIT_JS. Children are
-        // what `document::Script` renders as the tag's body, exactly as
-        // `document::Style` does above.
+        // Inlined rather than `src` for the reasons on LIVEKIT_JS.
         document::Script { {LIVEKIT_JS} }
-        // The worker source, parked on `window` for `dxScreen` to build a blob
-        // URL from when a key is configured. Unused otherwise — the same deal
-        // as the SDK beside it.
+        // Parked on `window` for `dxScreen` to build a blob URL from when a
+        // key is configured.
         document::Script {
             {format!(
                 "window.__dxfE2eeWorkerSrc = {};",

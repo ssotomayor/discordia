@@ -39,17 +39,13 @@ pub fn GridLayout(
     let pinned_ids = use_signal::<HashSet<String>>(HashSet::new);
     let on_change_cb = use_hook(|| on_change);
 
-    // `editable` is a prop that may change at runtime (host toggles it).
-    // `use_context_provider`'s initializer only runs once, so we hold the
-    // editable state in a Signal that the GridContext exposes, and sync it
-    // to the latest prop value on every render.
+    // Props don't flow into context initializers after the first render, so we
+    // sync this signal on every render.
     let mut editable_signal = use_signal(|| editable);
     if *editable_signal.peek() != editable {
         editable_signal.set(editable);
     }
 
-    // Same story as `editable`: props don't flow into a context initializer
-    // after the first render, so mode lives in a signal that tracks the prop.
     let mut mode_signal = use_signal(|| mode);
     if *mode_signal.peek() != mode {
         mode_signal.set(mode);
@@ -69,21 +65,16 @@ pub fn GridLayout(
         on_change: on_change_cb,
     });
 
-    // No seeding and no re-clamping on resize: free rects are fractions of the
-    // container, so they are inside it by construction and rescale with it. The
-    // whole "a window ended up off-screen and I can't scroll to it" failure
-    // mode is gone rather than patched.
+    // Free rects are fractions of the container, so they rescale with it and
+    // never go off-screen.
 
     let style = match mode {
-        // Free mode is not a grid at all — items place themselves absolutely.
         LayoutMode::Free => "position: relative; width: 100%; height: 100%; \
                              overflow: hidden; touch-action: none;"
             .to_string(),
         LayoutMode::Snap => {
-            // `repeat(n, 1fr)` when the host told us how many rows fill the
-            // container: the browser then re-divides the height on every
-            // resize for free. `grid-auto-rows` still covers anything placed
-            // past the last template row.
+            // Use `repeat(n, 1fr)` so the browser re-divides height on resize;
+            // `grid-auto-rows` covers items past the last template row.
             let rows_rule = match rows {
                 Some(n) => format!("grid-template-rows: repeat({n}, 1fr); "),
                 None => String::new(),
@@ -117,9 +108,8 @@ pub fn GridLayout(
                     }
                 });
             },
-            // Keep the measurement true for the life of the container. Taking
-            // it once at mount left every derived number — cell size, and so
-            // drag projection — wrong the moment the window was resized.
+            // Re-measure on resize; taking it once at mount leaves derived
+            // numbers wrong after window changes.
             onresize: move |evt| {
                 let mut cs = container_size;
                 if let Ok(size) = evt.get_content_box_size() {
@@ -138,8 +128,8 @@ pub fn GridLayout(
 #[component]
 fn DragPlaceholder() -> Element {
     let ctx: GridContext = use_context();
-    // Nothing to preview in Free mode: the item follows the pointer exactly,
-    // so a "where it will land" ghost would just sit underneath it.
+    // No preview in Free mode: the item follows the pointer exactly, so a
+    // ghost would just sit underneath it.
     if ctx.is_free() {
         return rsx! { Fragment {} };
     }
@@ -186,8 +176,8 @@ fn DragOverlay() -> Element {
             onpointermove: move |evt| {
                 let (cx, cy) = (evt.client_coordinates().x, evt.client_coordinates().y);
 
-                // Snapshot kind + id + delta so we can release the read lock
-                // before reaching for write.
+                // Snapshot state to release the read lock before acquiring the
+                // write lock.
                 let (kind, item_id, dx, dy, projected) = {
                     let Some(state) = drag.read().clone() else { return };
                     let dx = cx - state.pointer_start_x;
@@ -196,7 +186,6 @@ fn DragOverlay() -> Element {
                     (state.kind, state.item_id, dx, dy, projected)
                 };
 
-                // Always keep current pointer up to date so placeholder snaps.
                 drag.with_mut(|d| {
                     if let Some(s) = d.as_mut() {
                         s.pointer_current_x = cx;
@@ -204,20 +193,17 @@ fn DragOverlay() -> Element {
                     }
                 });
 
-                // Free mode: apply the pointer delta straight to the item's
-                // rect. No projection to cells, and crucially no
-                // `settle_layout` — compaction exists to guarantee "no
-                // overlaps anywhere", which is exactly the behaviour Free mode
-                // is meant to drop.
+                // Free mode: apply delta directly. No projection or
+                // settle_layout, as compaction enforces non-overlap which Free
+                // mode drops.
                 if ctx.is_free() {
                     let (Some(mut s), Some(state)) = (store, drag.read().clone()) else {
                         return;
                     };
                     if let Some(rect) = state.project_free(cx, cy) {
-                        // Magnetic alignment against every other window and the
-                        // container edges. This is what replaces grid snapping:
-                        // put a window wherever you like, but lining two up
-                        // doesn't demand pixel-perfect aim.
+                        // Magnetic alignment replaces grid snapping: allows
+                        // free placement but snaps edges for alignment without
+                        // pixel-perfect aim.
                         let others: Vec<_> = s
                             .free_snapshot()
                             .into_iter()
@@ -236,9 +222,8 @@ fn DragOverlay() -> Element {
 
                 match kind {
                     InteractionKind::Drag => {
-                        // Smooth: move the item directly via CSS transform,
-                        // bypassing Dioxus's render. Layout commit happens on
-                        // pointerup.
+                        // Move via CSS transform to bypass Dioxus render;
+                        // layout commits on pointerup.
                         let js = format!(
                             "var el=document.querySelector('[data-id=\"{}\"]');\
                              if(el){{el.style.transform='translate({:.2}px,{:.2}px)';\
@@ -247,9 +232,6 @@ fn DragOverlay() -> Element {
                         );
                         let _ = document::eval(&js);
 
-                        // Collision resolution: pretend the active item is
-                        // at its projected snap cell, recompute non-active
-                        // positions, push results back into the store.
                         if let Some(store) = store {
                             let pinned = ctx.pinned_ids.read().clone();
                             settle_layout(store, &item_id, projected, &pinned);
@@ -259,7 +241,6 @@ fn DragOverlay() -> Element {
                         if let Some(mut s) = store {
                             s.set(item_id.clone(), projected);
                         }
-                        // After resize commit, also let neighbours reflow.
                         if let Some(store) = store {
                             let pinned = ctx.pinned_ids.read().clone();
                             settle_layout(store, &item_id, projected, &pinned);
@@ -294,7 +275,6 @@ fn settle_layout(
         layout.push((active_id.to_string(), active_pos));
     }
 
-    // Immovable = the active item PLUS any user-pinned items.
     let mut immovable: HashSet<String> = pinned.clone();
     immovable.insert(active_id.to_string());
 
@@ -320,16 +300,14 @@ fn commit_and_clear(
         return;
     };
     if is_free {
-        // Free mode already wrote every intermediate position, so there is
-        // nothing to snap on release — and no transform to undo, since the
-        // item was moved by re-rendering rather than by a CSS transform.
+        // Free mode commits positions live, so no snap/undo is needed on
+        // release.
         drag.set(None);
         if let (Some(handler), Some(s)) = (on_change, store) {
             handler.call(s.snapshot());
         }
         return;
     }
-    // Clear smooth-drag transform / z-index regardless of kind.
     let js = format!(
         "var el=document.querySelector('[data-id=\"{}\"]');\
          if(el){{el.style.transform='';el.style.zIndex='';}}",
@@ -337,7 +315,6 @@ fn commit_and_clear(
     );
     let _ = document::eval(&js);
 
-    // Commit the snapped position (drag) — resize already committed live.
     if matches!(state.kind, InteractionKind::Drag)
         && let Some(mut s) = store
     {
@@ -346,7 +323,6 @@ fn commit_and_clear(
     }
     drag.set(None);
 
-    // Fire on_change with the final settled snapshot.
     if let (Some(handler), Some(s)) = (on_change, store) {
         handler.call(s.snapshot());
     }

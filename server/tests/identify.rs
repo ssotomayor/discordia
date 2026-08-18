@@ -115,9 +115,5 @@ async fn an_ordinary_username_is_unaffected() {
     );
 }
 
-// Not covered here on purpose: that a signature from the wrong key is still
-// refused. Forging one needs a handshake driven by hand, and `tokio-tungstenite`
-// is not a dependency of this crate — adding one to restate a property that
-// `auth.rs`'s own `tampered_username_fails` already covers would be paying a
-// dependency for duplicate coverage. Nothing in this change touches
-// `verify_identify`; only which string is handed to it.
+// Skipping wrong-key signature test: requires manual handshake (no `tokio-
+// tungstenite` dep) and duplicates `auth.rs` coverage.

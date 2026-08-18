@@ -17,11 +17,9 @@ async fn next_timeout(session: &mut Bot) -> ServerMessage {
 }
 
 fn temp_data_dir() -> PathBuf {
-    // The counter is what actually guarantees uniqueness. A timestamp alone is
-    // not enough: macOS resolves `SystemTime::now()` to about a microsecond, so
-    // two tests in this binary starting together can read the same value, share
-    // a data directory, and then fail on each other's files — one test's
-    // cleanup removing the media directory the other is asserting on.
+    // Counter guarantees uniqueness: macOS SystemTime::now() has ~1us
+    // resolution, so concurrent tests can collide on timestamp-only dirs and
+    // corrupt each other's files.
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     std::env::temp_dir().join(format!(
@@ -35,11 +33,9 @@ fn temp_data_dir() -> PathBuf {
 }
 
 async fn spawn_on(dir: &Path) -> (String, dioxusfun_server::ServerHandle) {
-    // Port 0 = let the OS pick. A fixed port made the two tests in this file
-    // race each other under `cargo test --workspace`: one binds it, and a
-    // client can end up talking to the other test's server on the same port,
-    // failing an assertion for reasons that have nothing to do with the code
-    // under test. The handle reports the real address, so nothing else cares.
+    // Port 0 lets the OS pick; a fixed port causes tests to race each other
+    // under cargo test --workspace, with clients accidentally talking to the
+    // wrong server.
     let preferred: SocketAddr = "127.0.0.1:0".parse().unwrap();
     let cfg = dioxusfun_server::ServerConfig {
         livekit: LiveKitConfig::from_env(),
@@ -59,7 +55,6 @@ const TINY_PNG: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCA
 async fn state_survives_restart_and_media_is_offloaded() {
     let dir = temp_data_dir();
 
-    // ---- boot #1: create a guild, post text + an image message -------------
     let owner_id = BotIdentity::generate();
     let (guild_id, text_channel): (Id, Id);
     {
@@ -105,7 +100,6 @@ async fn state_survives_restart_and_media_is_offloaded() {
             })
             .await
             .unwrap();
-        // Wait until both messages echo back (persisted before delivery).
         let mut seen = 0;
         while seen < 2 {
             if let ServerMessage::MessageCreate(_) = next_timeout(&mut owner).await {
@@ -115,8 +109,6 @@ async fn state_survives_restart_and_media_is_offloaded() {
         handle.abort();
     }
 
-    // The blob store must hold the offloaded image (content-addressed file),
-    // and the DB file must exist.
     let blobs: Vec<_> = std::fs::read_dir(dir.join("media"))
         .expect("media dir exists")
         .filter_map(|e| e.ok())
@@ -124,7 +116,6 @@ async fn state_survives_restart_and_media_is_offloaded() {
     assert!(!blobs.is_empty(), "image was offloaded to the blob store");
     assert!(dir.join("discordia.db").exists(), "sqlite file exists");
 
-    // ---- boot #2: same data dir — everything must still be there -----------
     let (url, handle) = spawn_on(&dir).await;
     let mut owner = Bot::connect_as_user(&url, &owner_id, "Owner")
         .await
@@ -160,7 +151,6 @@ async fn state_survives_restart_and_media_is_offloaded() {
     assert_eq!(history.len(), 2, "both messages survived");
     assert_eq!(history[0].content, "survives restarts");
     assert_eq!(history[1].content, "with an image");
-    // The image round-trips: stored as a blob, inlined back as a data URL.
     let img = history[1].image.as_deref().expect("image survived");
     assert!(
         img.starts_with("data:image/png;base64,"),
@@ -209,7 +199,6 @@ async fn replies_are_quoted_server_side_and_survive_restart() {
                 break (guild.id, text);
             }
         };
-        // A second text channel, to prove the lookup is channel-scoped.
         author
             .send(&ClientMessage::CreateChannel {
                 guild_id,
@@ -239,7 +228,6 @@ async fn replies_are_quoted_server_side_and_survive_restart() {
             }
         };
 
-        // A reply in the same channel gets a quote built from the parent's row.
         let mut replier = Bot::connect_as_user(&url, &replier_id, "Replier")
             .await
             .unwrap();
@@ -300,7 +288,6 @@ async fn replies_are_quoted_server_side_and_survive_restart() {
         handle.abort();
     }
 
-    // ---- restart: the snapshot is persisted, not recomputed ----------------
     let (url, handle) = spawn_on(&dir).await;
     let mut author = Bot::connect_as_user(&url, &author_id, "Author")
         .await
@@ -399,7 +386,6 @@ async fn every_kind_of_blob_reference_is_found() {
         .await
         .unwrap();
 
-    // Let both writes land.
     tokio::time::sleep(Duration::from_millis(400)).await;
 
     let store = dioxusfun_server::store::Store::open(&dir.join("discordia.db"))

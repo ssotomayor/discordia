@@ -19,7 +19,6 @@ pub fn IntegrationsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element {
     let state = use_app_state();
     let gateway = use_gateway();
 
-    // Pull the current installs for this guild whenever they refresh.
     let installs: Vec<BotInstall> = use_memo(move || {
         state
             .read()
@@ -29,7 +28,6 @@ pub fn IntegrationsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element {
             .unwrap_or_default()
     })();
 
-    // Ask the server for this guild's installs once, on open.
     {
         let gw = gateway.clone();
         use_hook(move || gw.send(ClientMessage::FetchIntegrations { guild_id }));
@@ -51,7 +49,6 @@ pub fn IntegrationsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element {
                     }
                 }
                 div { class: "flex-1 overflow-y-auto p-3 space-y-4",
-                    // Installed bots.
                     div {
                         div { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-1.5",
                             "Installed"
@@ -65,7 +62,6 @@ pub fn IntegrationsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element {
                             InstalledRow { key: "{bot.bot_pubkey}", guild_id, bot }
                         }
                     }
-                    // Install form.
                     InstallForm { guild_id }
                 }
             }
@@ -121,14 +117,11 @@ fn InstallForm(guild_id: Id) -> Element {
     let gateway = use_gateway();
     let mut pubkey = use_signal(String::new);
     let mut name = use_signal(String::new);
-    // Sensible defaults: can post, sees that messages happen (but not content).
     let mut perms = use_signal(|| vec![Permission::SendMessages]);
     let mut intents = use_signal(|| vec![Intent::GuildMessages]);
     let mut error = use_signal(|| None::<String>);
-    // Set once the form has been submitted with a privileged intent ticked, and
-    // cleared by anything that changes what is being granted. While it is set,
-    // `submit` shows what the bot would be able to read instead of installing —
-    // the second click is the grant.
+    // Two-step confirmation for privileged intents: first click arms, second
+    // grants.
     let mut confirming = use_signal(|| false);
 
     let mut submit = move || {
@@ -137,10 +130,8 @@ fn InstallForm(guild_id: Id) -> Element {
             error.set(Some("Enter the bot's public key.".into()));
             return;
         }
-        // A privileged intent is the one thing on this form that cannot be
-        // undone by uninstalling: whatever the bot read, it has. Discord gates
-        // these behind review past a scale threshold; the least we can do is
-        // stop granting them on the same click that names the bot.
+        // Privileged intents are irreversible once granted; require explicit
+        // second-click confirmation.
         if !confirming() && intents().iter().any(|i| i.is_privileged()) {
             confirming.set(true);
             error.set(None);
@@ -157,7 +148,6 @@ fn InstallForm(guild_id: Id) -> Element {
             permissions: perms(),
             intents: intents(),
         });
-        // Clear for the next one; the list refreshes via GuildIntegrations.
         pubkey.set(String::new());
         name.set(String::new());
         perms.set(vec![Permission::SendMessages]);
@@ -205,7 +195,6 @@ fn InstallForm(guild_id: Id) -> Element {
                     }
                 }
 
-                // Intents (privileged ones flagged).
                 div { class: "text-[10px] uppercase tracking-wider text-[var(--text-dim)] pt-1", "Events (intents)" }
                 for i in Intent::ALL.iter().copied() {
                     label { class: "flex items-center gap-2 text-xs text-[var(--text)] cursor-pointer select-none",
@@ -218,11 +207,9 @@ fn InstallForm(guild_id: Id) -> Element {
                                     if let Some(idx) = v.iter().position(|x| *x == i) { v.remove(idx); }
                                     else { v.push(i); }
                                 }
-                                // Changing what is granted invalidates a
-                                // confirmation of the old set — otherwise
-                                // ticking one more privileged intent while the
-                                // panel is up would be granted by a click that
-                                // was answering a different question.
+                                // Invalidates confirmation to prevent granting
+                                // a new privileged intent via a stale
+                                // confirmation click.
                                 confirming.set(false);
                             },
                         }

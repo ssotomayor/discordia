@@ -37,7 +37,6 @@ pub struct RendezvousMinter {
 
 impl RendezvousMinter {
     pub fn new(rendezvous_base: &str, grant: String) -> Self {
-        // The control socket is ws(s)://…; the mint endpoint is the http(s) twin.
         let http = if let Some(rest) = rendezvous_base.strip_prefix("wss://") {
             format!("https://{rest}")
         } else if let Some(rest) = rendezvous_base.strip_prefix("ws://") {
@@ -69,11 +68,8 @@ impl dioxusfun_server::livekit::VoiceTokenMinter for RendezvousMinter {
                     "room": req.room,
                     "identity": req.identity,
                     "name": req.name,
-                    // The subscribe-only `#audio` connection asks for a token
-                    // that cannot send. A relay older than this field ignores
-                    // it and grants publish, which is what it does today — so
-                    // sending it costs nothing against an old relay and closes
-                    // the gap against a current one.
+                    // Older relays ignore `can_publish` and grant publish;
+                    // current ones respect it. Sending it is safe for both.
                     "can_publish": req.can_publish,
                 }))
                 .send()
@@ -178,8 +174,6 @@ pub async fn register(
         .await
         .map_err(|e| format!("rendezvous control connect: {e}"))?;
 
-    // The rendezvous opens with a Challenge nonce we sign to prove name
-    // ownership. Wait for it before registering.
     let nonce = loop {
         let frame = ws
             .next()
@@ -195,8 +189,6 @@ pub async fn register(
         }
     };
 
-    // If we're claiming a name, sign SHA256(nonce || pubkey || name) so the
-    // rendezvous can verify we control the key the name is bound to.
     let (pubkey, signature) = match options.publish_name.as_deref() {
         Some(name) => {
             let pubkey = identity.pubkey.clone();
@@ -209,9 +201,8 @@ pub async fn register(
         None => (None, None),
     };
 
-    // The transport key is vouched for by the same identity and against the
-    // same nonce as the name. A relay that receives it unsigned publishes
-    // nothing, so this is what makes the QUIC path reachable at all.
+    // Relays drop unsigned transport keys, so this signature is required for
+    // the QUIC path to work.
     let (transport_key, transport_signature, transport_addrs) = match &transport {
         Some(t) => {
             let pk = identity.pubkey.clone();
@@ -227,9 +218,8 @@ pub async fn register(
         }
         None => (None, None, Vec::new()),
     };
-    // Claiming a name already carries the pubkey; an anonymous host advertising
-    // a transport key has to send one too, or the relay has nothing to check
-    // the signature against.
+    // Anonymous hosts must send a pubkey so the relay can verify the transport
+    // key signature.
     let pubkey = pubkey.or_else(|| transport.as_ref().map(|_| identity.pubkey.clone()));
 
     let hello = HostToRendezvous::Register {

@@ -113,9 +113,8 @@ impl RelayPool {
         let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<Command>();
         let (out_tx, out_rx) = mpsc::unbounded_channel::<RelayEvent>();
 
-        // One shared record of what has been delivered, so the same event
-        // arriving from four relays reaches the app once. Bounded by eviction
-        // below rather than growing for the life of the session.
+        // Dedup across relays; bounded by eviction rather than growing for the
+        // session.
         let seen: Arc<Mutex<SeenSet>> = Arc::new(Mutex::new(SeenSet::default()));
         // The current subscription, kept so a relay that reconnects — or one
         // that was down when it was issued — can pick it up.
@@ -134,7 +133,6 @@ impl RelayPool {
             ));
         }
 
-        // Fan commands out to every relay, and remember the subscription.
         tokio::spawn(async move {
             while let Some(cmd) = cmd_rx.recv().await {
                 if let Command::Subscribe(f) = &cmd {
@@ -210,11 +208,8 @@ async fn run_relay(
     filter: Arc<Mutex<Option<Vec<Filter>>>>,
 ) {
     let mut backoff = RECONNECT_MIN;
-    // Commands that arrived while this relay was down. Only the newest
-    // subscription matters, and publishes are dropped rather than queued —
-    // another relay almost certainly took them, and a message that turns up
-    // ten minutes late because one relay came back is worse than one that did
-    // not go to that relay at all.
+    // Only the newest subscription matters; publishes are dropped rather than
+    // queued to avoid stale delivery.
     loop {
         match tokio_tungstenite::connect_async(&url).await {
             Ok((stream, _)) => {
@@ -254,9 +249,8 @@ async fn serve(
     let (mut tx, mut rx) = stream.split();
     let sub_id = "dxf-dm";
 
-    // Re-issue the standing subscription. This is what makes a reconnect
-    // invisible: the relay has no memory of us, so a fresh connection with no
-    // REQ is a connection that silently receives nothing.
+    // Re-issue the standing subscription; a fresh connection without a REQ
+    // receives nothing.
     if let Some(f) = filter.lock().await.clone() {
         let mut req = vec![serde_json::json!("REQ"), serde_json::json!(sub_id)];
         req.extend(
@@ -324,14 +318,8 @@ async fn handle_relay_message(
             let Ok(event) = serde_json::from_value::<Event>(raw.clone()) else {
                 return;
             };
-            // Verified here, once, before anything downstream sees it. A relay
-            // can send whatever it likes; an event that does not verify is not
-            // a message, it is a forgery attempt.
-            //
-            // Named rather than dropped in silence: this is the one inbound
-            // failure that says something about the *relay* rather than about
-            // the network, and a relay serving events that do not verify is
-            // worth knowing about before it is trusted with a conversation.
+            // Verify once here; unverified events are forgery attempts, and a
+            // relay serving them is worth flagging.
             if !event.verify() {
                 eprintln!(
                     "[nostr] {url}: dropped an event that does not verify (id {})",
@@ -413,7 +401,6 @@ mod tests {
             "seen set grew to {}",
             seen.ids.len()
         );
-        // The most recent are still remembered, which is what matters.
         assert!(!seen.insert_new(&(SeenSet::CAP + 99).to_string()));
     }
 

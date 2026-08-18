@@ -120,22 +120,10 @@ fn provider() -> &'static livekit::e2ee::key_provider::KeyProvider {
     static PROVIDER: std::sync::OnceLock<livekit::e2ee::key_provider::KeyProvider> =
         std::sync::OnceLock::new();
     PROVIDER.get_or_init(|| {
-        // `with_shared_key`, never `new`. The difference is one boolean deep in
-        // libwebrtc's options — `shared_key` — and it is fixed at construction.
-        // `new` builds a provider in *per-participant* mode, where every frame
-        // cryptor looks its key up by the remote participant's identity; a
-        // shared key set on such a provider is simply never consulted. Both
-        // ends then report themselves as encrypting, publish and receive frames
-        // quite happily, and neither can decode a syllable of the other.
-        //
-        // That cost three test sessions across two cities to find, because
-        // every symptom pointed at key *distribution*, which was by then
-        // working perfectly.
-        //
-        // The key here is a placeholder. It is never used: `register_room`
-        // leaves a room disabled until a real key exists, and `apply_key`
-        // replaces this one before enabling anything. The constructor simply
-        // has no way to say "shared, key to follow".
+        // Must use `with_shared_key`, not `new`: `new` creates a per-
+        // participant provider that ignores shared keys, causing silent
+        // decryption failures. The key is a placeholder; `apply_key` replaces
+        // it before enabling.
         livekit::e2ee::key_provider::KeyProvider::with_shared_key(
             livekit::e2ee::key_provider::KeyProviderOptions::default(),
             vec![0u8; crate::mediakey::KEY_LEN],
@@ -283,23 +271,19 @@ pub fn register_room(room: &std::sync::Arc<livekit::Room>, kind: RoomKind) {
     let mut rooms = ROOMS.lock().expect("e2ee room list");
     rooms.retain(|(_, r)| r.strong_count() > 0);
     rooms.push((kind, std::sync::Arc::downgrade(room)));
-    // Set the state explicitly, both ways, because the default is the wrong
-    // one: `E2eeManager::new` enables itself whenever options are present, and
-    // options are now always present. Left alone, a room that connects before
-    // any key exists would encrypt its first frames against an empty provider —
-    // undecryptable to everyone, including a peer doing exactly the same thing.
+    // Explicitly set enabled state because `E2eeManager::new` defaults to
+    // enabled when options are present, which would cause encryption with an
+    // empty provider if no key exists yet.
     let have_key = ACTIVE.lock().expect("e2ee key lock").is_some();
     room.e2ee_manager().set_enabled(have_key);
-    // A room joining mid-epoch has to start on the slot everyone else is
-    // already using, not on the 0 its cryptors default to.
+    // Must start on the current epoch slot, not the default 0, to match peers
+    // already in the room.
     if kind == RoomKind::Voice {
         place_new_voice_publication(room);
     }
-    // At `info`, because whether *this* room is encrypting is the one fact that
-    // decides whether anyone can hear this peer, and it has been guessed at
-    // across three test sessions. `enabled()` is read back from the manager
-    // rather than echoed from the line above, so it reports what the SDK
-    // believes rather than what we asked for.
+    // Log at `info` because encryption status is critical for
+    // interoperability. Read `enabled()` from the manager to report the SDK's
+    // actual state, not just our intent.
     tracing::info!(
         encrypting = room.e2ee_manager().enabled(),
         have_key,
@@ -333,27 +317,19 @@ pub fn apply_key(key: &[u8; crate::mediakey::KEY_LEN], epoch: u32) {
     }
     let slot = voice_slot(epoch);
     tracing::info!(epoch, slot, "adopting a new media key");
-    // Slot 0 always: the screen room and the webview live there, and the
-    // webview cannot be told an index. With overlap off `slot` is also 0 and
-    // this single write is the whole story, exactly as before.
+    // Screen slot is fixed at 0 because the webview cannot be configured with
+    // a different index.
     provider().set_shared_key(hex_key.as_bytes().to_vec(), SCREEN_SLOT);
     if slot != SCREEN_SLOT {
-        // The overlap itself. Writing a *different* slot rather than
-        // overwriting means the previous epoch's key survives this call — that
-        // is the entire mechanism, and the reason the old comment here (that a
-        // ring is not worth its bookkeeping because an epoch already says which
-        // key is current) was answering the wrong question. Which key is
-        // current and which keys a receiver may still accept are different
-        // questions, and only the second one closes the gap.
+        // Writing to a different slot preserves the previous epoch's key,
+        // allowing receivers to still decrypt frames from the old epoch during
+        // the transition.
         provider().set_shared_key(hex_key.as_bytes().to_vec(), slot);
         VOICE_SLOT.store(slot, std::sync::atomic::Ordering::Relaxed);
     }
-    // And switch every live room on. Without this the key reaches the provider
-    // and stops there: a room that connected before any key existed has an
-    // encryption manager that is disabled, so it publishes in the clear while a
-    // peer who connected later publishes encrypted. That asymmetry is silent
-    // and one-directional — you hear them, they do not hear you — which is
-    // precisely how it was found.
+    // Must enable encryption on existing rooms; otherwise, they remain
+    // disabled and publish in the clear, creating a silent one-way audio
+    // failure.
     {
         let mut rooms = ROOMS.lock().expect("e2ee room list");
         rooms.retain(|(_, r)| r.strong_count() > 0);
@@ -509,7 +485,6 @@ mod tests {
              this test protects nothing — check the SDK before trusting it"
         );
 
-        // And ours is the first kind.
         assert!(super::provider().get_shared_key(0).is_some());
     }
 

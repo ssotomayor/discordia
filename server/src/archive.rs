@@ -73,7 +73,6 @@ impl Store {
             .filter(|e| e.guild_id == guild_id)
             .collect();
 
-        // Rebuild members from the loaded tuples: (guild, pubkey, username, bot, roles).
         let members: Vec<Member> = loaded
             .members
             .into_iter()
@@ -156,7 +155,6 @@ impl Store {
         }
 
         let new_guild_id = Uuid::new_v4();
-        // old id -> new id, for channels and roles (the only cross-referenced ids).
         let mut channel_map: HashMap<Id, Id> = HashMap::new();
         let mut role_map: HashMap<Id, Id> = HashMap::new();
         for c in &archive.channels {
@@ -166,12 +164,10 @@ impl Store {
             role_map.insert(r.id, Uuid::new_v4());
         }
 
-        // Guild — new id, everything else (owner pubkey, gates, branding) kept.
         let mut guild = archive.guild.clone();
         guild.id = new_guild_id;
         self.upsert_guild(&guild).await?;
 
-        // Roles.
         for r in &archive.roles {
             let mut role = r.clone();
             role.id = role_map[&r.id];
@@ -179,7 +175,6 @@ impl Store {
             self.upsert_role(&role).await?;
         }
 
-        // Emoji — fresh ids, shortcodes and content addresses preserved.
         for e in &archive.emojis {
             let mut emoji = e.clone();
             emoji.id = Uuid::new_v4();
@@ -187,7 +182,6 @@ impl Store {
             self.upsert_emoji(&emoji).await?;
         }
 
-        // Channels.
         for c in &archive.channels {
             let mut ch = c.clone();
             ch.id = channel_map[&c.id];
@@ -195,8 +189,6 @@ impl Store {
             self.upsert_channel(&ch).await?;
         }
 
-        // Members — pubkeys unchanged; role ids remapped (unknown ids dropped).
-        // Per-guild XP rides inside Member.xp and moves with the guild.
         for m in &archive.members {
             let mut member = m.clone();
             member.guild_id = new_guild_id;
@@ -212,35 +204,24 @@ impl Store {
             }
         }
 
-        // Bans.
         for pk in &archive.bans {
             self.insert_ban(new_guild_id, pk).await?;
         }
 
-        // Invite — mint a fresh code rather than reuse (avoids collisions on the
-        // destination). Only if the source had one.
-        //
-        // **The source's limits do not travel, deliberately.** The code here is
-        // new, so an absolute expiry copied from the source would either be
-        // already past or would be measuring from the wrong moment, and a
-        // use count spent on the old instance is not owed by the new one. The
-        // destination owner re-mints with the limits they want; what the
-        // archive carries is that the guild *had* an invite, not its terms.
+        // Mint a fresh code to avoid collisions; source limits do not travel
+        // (expiry/use-count are relative to the old instance).
         if archive.invite.is_some() {
             let code = crate::state::random_invite_code();
             self.set_invite(new_guild_id, &code, None, None, &archive.guild.owner_pubkey)
                 .await?;
         }
 
-        // Installed bots.
         for b in &archive.bot_installs {
             let mut install = b.clone();
             install.guild_id = new_guild_id;
             self.upsert_bot_install(&install).await?;
         }
 
-        // Messages — fresh message ids, remapped channel ids, pubkeys/content/
-        // timestamps preserved.
         for (old_channel, msgs) in &archive.messages {
             let Some(new_channel) = channel_map.get(old_channel).copied() else {
                 continue;
@@ -253,7 +234,6 @@ impl Store {
             }
         }
 
-        // Audit trail (historical; re-appended under the new guild id).
         for e in &archive.audit {
             self.append_audit(new_guild_id, e).await?;
         }

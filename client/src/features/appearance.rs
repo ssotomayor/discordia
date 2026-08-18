@@ -50,7 +50,6 @@ pub fn AppearanceButton() -> Element {
     let mut open = use_signal(|| false);
     let mut err = use_signal::<Option<String>>(|| None);
 
-    // Persist + apply a settings mutation in one place.
     let mut update = move |f: &dyn Fn(&mut ClientSettings)| {
         let mut next = settings.read().clone();
         f(&mut next);
@@ -74,32 +73,21 @@ pub fn AppearanceButton() -> Element {
             }
 
             if open() {
-                // Click-catcher only. It used to carry `bg-black/50`, which is
-                // what made this read as a modal: dimming the app says "answer
-                // me before doing anything else", and this panel is a set of
-                // preferences you want to see applied to what is behind it.
+                // No background dimming: this is a preference panel, not a
+                // modal blocking interaction.
                 div {
                     class: "fixed inset-0 z-40",
                     onclick: move |_| open.set(false),
                 }
                 div {
-                    // Anchored above the button, not below: the palette icon
-                    // lives in `UserPanel`, at the *bottom* of the sidebar, so
-                    // the comp's "anchored under the icon" would open
-                    // off-screen here. It is anchored to the icon, above it.
-                    //
-                    // Deliberately phrased without naming the other class:
-                    // `tailwind.css` scans `src/**/*.rs`, so a utility spelled
-                    // in a comment is a rule emitted into the committed
-                    // `tailwind.out.css`. Writing this one out cost a CI
-                    // failure — the same trap `docs/AUDIT-2026-08-17.md` records for
-                    // `Discordia.html`, whose description of a rule was keeping
-                    // that rule alive.
+                    // Anchored above: icon is at sidebar bottom, so 'below'
+                    // would open off-screen.
+                    // Do not name Tailwind classes in comments: `tailwind.css`
+                    // scans `.rs` files and emits them to `tailwind.out.css`.
                     class: "dxf-pop-in absolute bottom-full left-0 mb-2 z-50 w-80 bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl p-4",
                     onclick: move |e| e.stop_propagation(),
                     h3 { class: "text-sm font-medium text-[var(--accent)] mb-3", "Appearance" }
 
-                    // Theme swatches — gradient tiles (comp 4).
                     div { class: "text-[10px] uppercase tracking-wider text-[var(--text-muted)] mb-1.5", "Theme" }
                     div { class: "grid grid-cols-5 gap-2 mb-4",
                         for theme in THEMES.iter() {
@@ -130,7 +118,6 @@ pub fn AppearanceButton() -> Element {
                         }
                     }
 
-                    // Procedural background picker (comp 4).
                     div { class: "text-[10px] uppercase tracking-wider text-[var(--text-muted)] mb-1.5", "Background" }
                     div { class: "grid grid-cols-3 gap-2 mb-4",
                         for (id, label, preview) in BACKGROUND_TILES.iter().copied() {
@@ -144,7 +131,6 @@ pub fn AppearanceButton() -> Element {
                                 rsx! {
                                     button {
                                         key: "{id}",
-                                        // Choosing a pattern clears any custom image.
                                         class: "h-14 rounded-lg flex items-center justify-center text-xs font-medium text-[var(--text)] {ring}",
                                         style: "{preview}",
                                         onclick: move |_| update(&|s| { s.pattern = id.to_string(); s.background = None; }),
@@ -155,7 +141,6 @@ pub fn AppearanceButton() -> Element {
                         }
                     }
 
-                    // Accent color override.
                     div { class: "text-[10px] uppercase tracking-wider text-[var(--text-muted)] mb-1.5", "Accent" }
                     div { class: "flex items-center gap-2 mb-4",
                         input {
@@ -179,7 +164,6 @@ pub fn AppearanceButton() -> Element {
                         }
                     }
 
-                    // Custom background image (overrides the pattern above).
                     div { class: "text-[10px] uppercase tracking-wider text-[var(--text-muted)] mb-1.5", "Custom image" }
                     div { class: "h-20 rounded-md border border-[var(--border)] overflow-hidden bg-[var(--accent-soft)] flex items-center justify-center text-[var(--text-dim)] text-xs mb-2",
                         if let Some(url) = current.background.clone() {
@@ -235,7 +219,6 @@ pub fn AppearanceButton() -> Element {
                         }
                     }
 
-                    // Dim slider (only meaningful with a background).
                     if current.background.is_some() {
                         div { class: "flex items-center gap-2 mb-1",
                             span { class: "text-[10px] uppercase tracking-wider text-[var(--text-muted)] w-10", "Dim" }
@@ -255,7 +238,6 @@ pub fn AppearanceButton() -> Element {
                         }
                     }
 
-                    // Blossom media server — where profile images are uploaded.
                     div { class: "mt-4 text-[10px] uppercase tracking-wider text-[var(--text-muted)] mb-1.5", "Blossom media server" }
                     input {
                         r#type: "text",

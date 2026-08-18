@@ -157,7 +157,6 @@ async fn resolve_session(
                 description,
                 publish_public,
             };
-            // We're hosting, so we own our Lobby.
             let handle = start_self_host(allow_lan, rendezvous_url, publish, identity).await?;
             let url = normalize_url(&handle.info.local_url)?;
             state.write().host_info = Some(handle.info.clone());
@@ -180,10 +179,8 @@ async fn resolve_session(
             let with_scheme = ws_scheme(base);
             let code = code.trim();
             let relay = format!("{with_scheme}/join/{code}");
-            // Ask the rendezvous whether this host published an address of its
-            // own. A relay that predates the field, or a host that obtained no
-            // address, simply leaves us with the relayed path we already had —
-            // so nothing here is allowed to turn into a join failure.
+            // Fallback to relay if the host has no published address; must not
+            // fail the join.
             let relayed_only = |relay: String| {
                 Ok((
                     Dial::Single {
@@ -312,8 +309,6 @@ async fn connect_best(
     let relay_attempt =
         tokio::spawn(async move { tokio_tungstenite::connect_async(&relay_url).await });
 
-    // The private path first, and on its own clock: if it answers, nothing else
-    // is worth having.
     if let Some((key, addrs, coordination)) = quic {
         // Its own, longer budget: a hole punch is a negotiation, not a connect,
         // and `DIRECT_ATTEMPT` was sized for the latter.
@@ -423,10 +418,7 @@ async fn run(
     };
     state.write().transport = transport;
 
-    // The two transports carry the same frames over different stream types, so
-    // the session below is generic and this is the only place that knows which
-    // one won. The QUIC guard rides along in the enum because dropping it would
-    // close the connection under the socket.
+    // The QUIC guard must stay in scope; dropping it closes the connection.
     match ws_stream {
         Socket::Tcp(ws) => run_session(*ws, params, tx, rx, state, voice_tx).await,
         Socket::Quic(ws, guard) => {
@@ -499,7 +491,6 @@ where
     state.write().identity = Some(params.identity.clone());
     let (mut ws_tx, mut ws_rx) = ws_stream.split();
 
-    // Wait for the server's Hello frame so we know what nonce to sign.
     let nonce = loop {
         let Some(frame) = ws_rx.next().await else {
             return Err("server closed before Hello".into());
@@ -518,13 +509,8 @@ where
         }
     };
 
-    // Schnorr-sign nonce || pubkey || username with the Nostr identity key and
-    // send the Identify response.
-    // Sign what the server will store, not what the user typed. The server
-    // canonicalises before it verifies, so signing the raw string meant any
-    // name it would alter — anything past 32 chars — failed the handshake as
-    // "signature did not verify", which reads as a broken key rather than a
-    // long name. One definition, in `protocol`, called by both ends.
+    // Sign the canonical username, not the raw input. The server canonicalises
+    // before verifying, so signing the raw string fails for names >32 chars.
     let username = crate::protocol::canonical_username(&params.username);
     let pubkey = params.identity.pubkey.clone();
     let mut to_sign = Vec::with_capacity(nonce.len() + pubkey.len() + username.len());
@@ -547,9 +533,8 @@ where
         .await
         .map_err(|e| format!("send identify: {e}"))?;
 
-    // Publish our locally-owned profile (avatar/bio) so it travels with us to
-    // this host. Sent right after Identify; the server processes frames in
-    // order, so we're identified by the time it handles this.
+    // Sent after Identify; server processes frames in order, so we are
+    // identified by the time this is handled.
     if let Some(local) = crate::profile::load()
         && (local.avatar.is_some()
             || local.banner.is_some()
@@ -674,7 +659,6 @@ fn apply(
                 .into_iter()
                 .map(|p| (p.pubkey.clone(), p))
                 .collect();
-            // Group the flattened role list by guild.
             s.roles = {
                 let mut map: std::collections::HashMap<Id, Vec<crate::protocol::Role>> =
                     std::collections::HashMap::new();
@@ -714,10 +698,8 @@ fn apply(
             channel_id,
             messages,
         } => {
-            // Merge rather than replace: an initial load starts from empty, but
-            // an older page (infinite scroll) must fold into what's already
-            // there without dropping live messages. Dedupe by id, keep
-            // chronological order.
+            // Merge rather than replace: older pages (infinite scroll) must
+            // fold into existing messages without dropping live ones.
             let combined = s.messages.entry(channel_id).or_default();
             let existing: std::collections::HashSet<_> = combined.iter().map(|m| m.id).collect();
             for m in messages {
@@ -732,8 +714,6 @@ fn apply(
             // A channel we don't have as a guild channel must be a DM addressed
             // to us (the server only delivers DM frames to participants).
             let is_dm = !s.channels.iter().any(|c| c.id == cid);
-            // First message of a DM someone started with us — materialise the
-            // conversation from the author.
             if is_dm && s.dm_of(cid).is_none() {
                 s.dms.push(crate::state::DmInfo {
                     channel_id: cid,
@@ -746,14 +726,8 @@ fn apply(
                 .map(|u| u.pubkey == m.author.pubkey)
                 .unwrap_or(false);
             let viewing = s.selected_channel == Some(cid) && (is_dm == s.dm_mode);
-            // Mention = the message names us with "@username", or it is a reply
-            // to something we wrote.
-            //
-            // A reply counts even in a channel you're looking at and even
-            // without an "@": answering someone is addressing them, and it's the
-            // case most worth hearing about. Matched on pubkey rather than
-            // username because a username is not unique and can change, while
-            // the key is the account.
+            // Match reply on pubkey, not username, because usernames are
+            // mutable and non-unique.
             let mentioned = s
                 .self_user
                 .as_ref()
@@ -764,17 +738,13 @@ fn apply(
                             .is_some_and(|r| r.author_pubkey == u.pubkey)
                 })
                 .unwrap_or(false);
-            // A new message from someone clears their typing indicator.
             if let Some(set) = s.typing.get_mut(&cid) {
                 set.remove(&m.author.pubkey);
             }
             s.messages.entry(cid).or_default().push(m);
-            // Badge only on inbound DM messages for a conversation you're not
-            // currently looking at.
             if is_dm && !author_is_self && !viewing {
                 *s.dm_unread.entry(cid).or_insert(0) += 1;
             }
-            // Chime on an inbound DM you're not looking at, or any mention.
             if !author_is_self && ((is_dm && !viewing) || mentioned) {
                 s.notify_tick = s.notify_tick.wrapping_add(1);
             }
@@ -787,7 +757,6 @@ fn apply(
             emojis,
             voice_states,
         } => {
-            // We created or joined this guild — add it (dedup) and jump to it.
             let gid = guild.id;
             if !s.guilds.iter().any(|g| g.id == gid) {
                 s.guilds.push(guild);
@@ -795,10 +764,9 @@ fn apply(
             s.roles.insert(gid, roles);
             s.guild_emojis.insert(gid, emojis);
             resolve_emoji_images(&mut s, tx);
-            // Replace rather than merge: the server sends this guild's whole
-            // voice roster, so anything we still hold for it is stale by
-            // definition. Scoped by `guild_id` so a voice session in another
-            // guild — including our own — survives joining this one.
+            // Replace rather than merge: server sends the full roster, so
+            // local state is stale. Scope by guild_id to preserve voice
+            // sessions in other guilds.
             s.voice_states.retain(|v| v.guild_id != gid);
             s.voice_states.extend(voice_states);
             for ch in channels {
@@ -816,7 +784,6 @@ fn apply(
                     None => s.members.push(m),
                 }
             }
-            // Select the guild and its first text channel.
             s.dm_mode = false;
             s.selected_guild = Some(gid);
             let first_text = s.default_channel_of(gid);
@@ -836,8 +803,6 @@ fn apply(
             offset,
             total,
         } => {
-            // Page 0 replaces the directory; later pages append (infinite
-            // scroll). The catalog is now pull-based (FetchCatalog on browse).
             if offset == 0 {
                 s.catalog = guilds;
             } else {
@@ -846,7 +811,6 @@ fn apply(
             s.catalog_total = total;
         }
         ServerMessage::GuildDelete { guild_id } => {
-            // Drop the guild, its channels and their message logs.
             s.guilds.retain(|g| g.id != guild_id);
             let removed: Vec<Id> = s
                 .channels
@@ -863,7 +827,6 @@ fn apply(
             for cid in &removed {
                 s.messages.remove(cid);
             }
-            // If we were viewing the deleted guild, fall back to another one.
             if s.selected_guild == Some(guild_id) {
                 let next = s.guilds.first().map(|g| g.id);
                 s.selected_guild = next;
@@ -926,9 +889,8 @@ fn apply(
         }
         ServerMessage::EmojiBlobs { blobs } => {
             for blob in blobs {
-                // An empty data URL means the server has no such blob. Cache
-                // that too: without it a missing image is re-requested on every
-                // catalog push, forever.
+                // Cache empty data URLs to prevent re-requesting missing
+                // images on every catalog push.
                 if !blob.data_url.is_empty() {
                     crate::emoji::store_cached(&blob.image, &blob.data_url);
                 }
@@ -936,7 +898,6 @@ fn apply(
             }
         }
         ServerMessage::MemberUpdate(member) => {
-            // Role set (or other member metadata) changed — upsert the row.
             let existing = s
                 .members
                 .iter_mut()
@@ -950,20 +911,14 @@ fn apply(
             guild_id,
             user_pubkey,
         } => {
-            // Gone from the guild (kicked/banned/left/uninstalled) — drop the
-            // roster row. (If WE were the one removed, the server also sends
-            // us a targeted GuildDelete, which tears down the whole guild.)
+            // Drop the roster row. If we were removed, a targeted GuildDelete
+            // follows to tear down the guild.
             s.members
                 .retain(|m| !(m.guild_id == guild_id && m.user.pubkey == user_pubkey));
-            // Somebody who held the channel's media key no longer belongs here.
-            // The key cannot be taken back, so the channel moves to a new one
-            // and everything published from now on is beyond them. Whatever
-            // they already captured stays captured — see `mediakey`.
+            // Rekey because the removed member held the media key and it
+            // cannot be revoked; new messages use a new key.
             s.pending_rekey = true;
         }
-        // The limits ride along on the wire and nothing renders them yet — the
-        // invite panel shows a code and a rotate button, with no room for a
-        // TTL or a use count.
         ServerMessage::GuildInvite { guild_id, code, .. } => {
             s.invites.insert(guild_id, code);
         }
@@ -981,9 +936,8 @@ fn apply(
             invite_code,
             ..
         } => {
-            // Auto-satisfy the join gate and retry. (Rules are auto-accepted
-            // for now; a read-and-accept dialog is a follow-up. PoW is solved
-            // off-thread so the UI never stalls.)
+            // Auto-accept rules for now; PoW is solved off-thread to avoid UI
+            // stalls.
             use crate::protocol::JoinGate;
             let tx = tx.clone();
             let resend = move |accept: bool, pow_nonce: Option<String>| {
@@ -1065,7 +1019,6 @@ fn apply(
             } else {
                 s.screen_shares.insert(channel_id, sharers);
             }
-            // Close the viewer if the person we're watching stopped sharing.
             if let Some(pk) = s.screen_viewing.clone()
                 && !s.screen_shares.values().any(|v| v.contains(&pk))
             {
@@ -1102,24 +1055,14 @@ fn apply(
             epoch,
             blob,
         } => {
-            // Ours only if we can open it, and only if it is newer than what we
-            // hold. Both checks are cheap and both matter: the first is the
-            // whole security property, the second stops a late-arriving blob
-            // from an older epoch dragging the channel backwards onto a key a
-            // removed member still has.
+            // Security: only accept if we can open it. Freshness: only if
+            // newer, to prevent late blobs from older epochs dragging the
+            // channel back to a key a removed member still has.
             let identity = s.identity.clone();
             let Some(identity) = identity else { return };
-            // Newer epochs always win. An *equal* epoch is the interesting
-            // case, and it used to be ignored outright — which is how two
-            // members ended up on two different keys and heard nothing from
-            // each other. Two clients can both generate an epoch 1 for the same
-            // channel (each believing nobody else would), and nothing about the
-            // number distinguishes them.
-            //
-            // So equal epochs are broken by pubkey, lowest wins: the same rule
-            // both ends compute, so both converge on one key instead of each
-            // keeping its own. Whoever loses adopts and stops publishing under
-            // the key nobody else has.
+            // Equal epochs are broken by pubkey (lowest wins) so both ends
+            // converge on one key. Without this, two clients generating epoch
+            // 1 independently would keep different keys and hear nothing.
             let me = s.self_user.as_ref().map(|u| u.pubkey.clone());
             let have = s.media_keys.get(&channel_id).copied();
             if !supersedes(have.map(|(e, _)| e), epoch, &from, me.as_deref()) {
@@ -1128,22 +1071,18 @@ fn apply(
             }
             match crate::mediakey::open(&blob, &from, epoch, &identity) {
                 Ok(key) => {
-                    // Opened, and it supersedes — but is it *news*? A member
-                    // re-sending the key we already run is the common case, and
-                    // treating it as an adoption was a livelock: it wrote state,
-                    // which re-ran the effect that sends keys, which sent this
-                    // one straight back. Dozens of round trips a second, until
-                    // the gateway's bounded outbound queue dropped somebody off
-                    // voice entirely.
+                    // Skip if we already run this key. Treating a re-send as
+                    // an adoption caused a livelock: state write re-ran the
+                    // effect that sends keys, causing dozens of round
+                    // trips/sec until the gateway dropped us.
                     if have == Some((epoch, key)) {
                         tracing::trace!(%from, epoch, "already running this key");
                         return;
                     }
                     tracing::info!(%from, epoch, "media key accepted");
                     s.media_keys.insert(channel_id, (epoch, key));
-                    // Whatever we could not decrypt a moment ago, this is the
-                    // event most likely to have fixed it. If it did not, the
-                    // next frame sets the latch again.
+                    // Reset the undecryptable latch; this key is the most
+                    // likely fix for previously failed decryption.
                     s.media_undecryptable = false;
                     crate::e2ee::apply_key(&key, epoch);
                 }
@@ -1156,14 +1095,9 @@ fn apply(
             let self_pubkey = s.self_user.as_ref().map(|u| u.pubkey.clone());
             let is_self = self_pubkey.as_deref() == Some(vs.user_pubkey.as_str());
             if is_self {
-                // `speaking` and `deafened` are here because they are the two
-                // that move. Without them a normal conversation writes the same
-                // line over and over — measured at 68 frames and 2 distinct
-                // lines over four minutes — and reads like the server is
-                // resending state that never changed, which is what it cost the
-                // session that noticed: a wrong conclusion, held until someone
-                // opened `VoiceState` and saw which fields the log was leaving
-                // out.
+                // Include `speaking` and `deafened` to distinguish state
+                // changes; omitting them makes logs look like redundant
+                // resends, masking actual updates.
                 crate::dlog!(
                     "[net] VoiceStateUpdate(self) channel={:?} muted={} deafened={} speaking={} phase={:?}",
                     vs.channel_id,
@@ -1174,7 +1108,6 @@ fn apply(
                 );
             }
 
-            // Mirror into roster.
             let existing_idx = s
                 .voice_states
                 .iter()
@@ -1194,26 +1127,19 @@ fn apply(
                 }
             }
 
-            // Close the viewer if the person we are watching has stopped —
-            // whether they turned the share off, left, or were removed, since all
-            // three arrive as a voice state with `screen_sharing` false or a
-            // tombstone. The `ScreenShareState` arm does the same check, and a
-            // current server sends both; this one is what keeps the viewer honest
-            // if that legacy frame ever goes away.
+            // Close viewer if the watched user stops sharing or leaves. This
+            // handles cases where the `ScreenShareState` frame is missing or
+            // legacy.
             if s.screen_viewing.as_deref() == Some(vs.user_pubkey.as_str())
                 && (!vs.screen_sharing || vs.channel_id.is_none())
             {
                 s.screen_viewing = None;
             }
 
-            // Self updates propagate to local VoiceSession.
             if is_self {
-                // The server is the authority on these two and can disagree
-                // with what we asked for — it forces mute on while deafened,
-                // and it drops both when we weren't in a channel to begin with.
-                // Its answer has to reach the audio path and not only the
-                // buttons, or the mic ends up live under a red icon (or the
-                // mixer stays gated while the icon says otherwise).
+                // Server is authority on mute/deafen state (e.g., forces mute
+                // when deafened). Sync audio path to match UI, preventing mic
+                // live under red icon.
                 if vs.muted != s.voice.muted {
                     let _ = voice_tx.send(VoiceCmd::SetMute { muted: vs.muted });
                 }
@@ -1229,19 +1155,17 @@ fn apply(
                     s.voice.phase = VoicePhase::Idle;
                     s.voice.channel_id = None;
                     let _ = voice_tx.send(VoiceCmd::Disconnect);
-                    // Leaving voice also tears down the screen-share room, and
-                    // with it any native capture — the target has to go too, or
-                    // the effect that owns publishing would resume the share on
-                    // the next voice session.
+                    // Clear screen-share tokens and target to tear down native
+                    // capture; otherwise, the share effect resumes on the next
+                    // voice session.
                     s.screen_token = None;
                     s.screen_audio_token = None;
                     s.screen_video_token = None;
                     s.screen_share_target = None;
                     s.screen_sharing = false;
                     s.screen_viewing = None;
-                    // The camera rides the same webview room. Clearing the token
-                    // is what makes the JS controller disconnect and release the
-                    // device; this is the UI half of the same event.
+                    // Camera uses the same webview room; clearing the token
+                    // disconnects the JS controller and releases the device.
                     s.camera_on = false;
                     s.camera_starting = false;
                     s.cameras_watching.clear();
@@ -1270,27 +1194,25 @@ fn apply(
             video_token,
             ..
         } => {
-            // Hand the JS screen bridge what it needs to join the screen room.
             s.screen_token = Some((livekit_url.clone(), token));
             // Empty from a server that predates the native audio path; leaving
             // this None is what keeps the webview playing stream audio there.
             s.screen_audio_token =
                 (!audio_token.is_empty()).then_some((livekit_url.clone(), audio_token));
-            // Likewise for native *video*. None from an older server, which on
-            // macOS means no share is possible at all — the webview has no
-            // capture API to fall back to. `screen_capture_available` follows
-            // this, so the button explains itself rather than failing silently.
+            // None from an older server means no share is possible on macOS
+            // (no webview capture fallback); `screen_capture_available`
+            // follows this to explain the disabled state.
             s.screen_video_token = (!video_token.is_empty()).then_some((livekit_url, video_token));
         }
         ServerMessage::Error { message } => {
             tracing::warn!(server_error = %message);
-            // Surface as a toast — permission/moderation rejections would
-            // otherwise be invisible to the user.
+            // Surface as a toast; permission/moderation rejections would
+            // otherwise be invisible.
             s.error_toast = Some(message);
         }
         ServerMessage::Hello { .. } => {
-            // Hello is only valid as the FIRST frame and is consumed by the
-            // handshake loop in `run()`. Anywhere else, ignore.
+            // Hello is only valid as the first frame (consumed by the
+            // handshake loop); ignore late arrivals.
             tracing::warn!("ignoring late Hello frame from server");
         }
     }
@@ -1320,7 +1242,6 @@ mod tests {
             "and say what to do about it: {told}"
         );
 
-        // Nothing refused: the socket's own account stands, including a clean end.
         assert_eq!(
             quic_disconnect_reason(false, socket_said.clone()),
             socket_said
@@ -1337,7 +1258,6 @@ mod tests {
             while let Ok((stream, _)) = listener.accept().await {
                 tokio::spawn(async move {
                     let _ = tokio_tungstenite::accept_async(stream).await;
-                    // Hold the connection so the client's handshake completes.
                     tokio::time::sleep(std::time::Duration::from_secs(30)).await;
                 });
             }
@@ -1361,11 +1281,9 @@ mod tests {
     fn an_equal_epoch_is_broken_by_pubkey_so_both_sides_converge() {
         let mine = Some("bbbb");
 
-        // Nothing held: anything is an improvement.
         assert!(supersedes(None, 1, "cccc", mine));
 
-        // Same epoch, lower sender: adopt. Same epoch, higher sender: keep.
-        // The pair together is what makes it converge — for any two members,
+        // Tie-break by sender ID ensures convergence: for any two members,
         // exactly one adopts.
         assert!(supersedes(Some(1), 1, "aaaa", mine));
         assert!(!supersedes(Some(1), 1, "cccc", mine));
@@ -1417,7 +1335,6 @@ mod tests {
     async fn an_unreachable_quic_key_falls_through_to_the_rest() {
         let direct = ws_server().await;
         let relay = ws_server().await;
-        // A syntactically valid key nobody is listening on, at a dead address.
         let key = iroh::SecretKey::generate().public().to_string();
         let dead = dead_address().await;
         let addr = dead

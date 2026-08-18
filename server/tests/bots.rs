@@ -22,12 +22,8 @@ async fn next_timeout(bot: &mut Bot) -> ServerMessage {
 /// Per-test ServerConfig: unique temp data dir (SQLite + media) so tests are
 /// hermetic and parallel-safe.
 fn test_config(operators: std::collections::HashSet<String>) -> dioxusfun_server::ServerConfig {
-    // Counter, not a clock: pid + nanos looks unique and is not —
-    // `8f95f22` found macOS resolving `as_nanos()` to about a
-    // microsecond, so two tests starting together shared a data dir
-    // and the second one met "database is locked" on a SQLite file the
-    // first already had open. `voice.rs` was fixed then; these four
-    // kept the old key and kept flaking.
+    // Counter, not clock: macOS `as_nanos()` has ~1us resolution, so
+    // concurrent tests collide on the same dir and hit SQLite locks.
     use std::sync::atomic::{AtomicU32, Ordering};
     static N: AtomicU32 = AtomicU32::new(0);
     let dir = std::env::temp_dir().join(format!(
@@ -80,7 +76,6 @@ async fn create_guild(owner: &mut Bot, name: &str) -> (Id, Id) {
 async fn bot_install_and_ping_roundtrip() {
     let (url, handle) = spawn_gateway().await;
 
-    // Human owner connects and lands on a Ready.
     let owner_id = BotIdentity::generate();
     let mut owner = Bot::connect_as_user(&url, &owner_id, "Owner")
         .await
@@ -92,7 +87,6 @@ async fn bot_install_and_ping_roundtrip() {
 
     let (guild_id, text_channel) = create_guild(&mut owner, "Test Guild").await;
 
-    // Install a bot with send + the privileged message-content intent.
     let bot_id = BotIdentity::generate();
     owner
         .send(&ClientMessage::InstallBot {
@@ -111,7 +105,6 @@ async fn bot_install_and_ping_roundtrip() {
     };
     assert!(listed.iter().any(|b| b.bot_pubkey == bot_id.pubkey()));
 
-    // The bot connects; its Ready is scoped to exactly the installed guild.
     let mut bot = Bot::connect(&url, &bot_id, "PingBot").await.unwrap();
     let bot_guilds = loop {
         if let ServerMessage::Ready { guilds, .. } = next_timeout(&mut bot).await {
@@ -121,7 +114,6 @@ async fn bot_install_and_ping_roundtrip() {
     assert_eq!(bot_guilds.len(), 1, "bot only sees its installed guild");
     assert_eq!(bot_guilds[0].id, guild_id);
 
-    // Owner posts "!ping" — the bot receives it WITH content (intent granted).
     owner.send_message(text_channel, "!ping").await.unwrap();
     let got = loop {
         if let ServerMessage::MessageCreate(m) = next_timeout(&mut bot).await
@@ -132,7 +124,6 @@ async fn bot_install_and_ping_roundtrip() {
     };
     assert_eq!(got.content, "!ping");
 
-    // Bot replies; the owner sees the bot's message.
     bot.send_message(text_channel, "pong").await.unwrap();
     let reply = loop {
         if let ServerMessage::MessageCreate(m) = next_timeout(&mut owner).await
@@ -161,7 +152,6 @@ async fn intents_and_permissions_are_enforced() {
 
     let (guild_id, text_channel) = create_guild(&mut owner, "Locked Down").await;
 
-    // Install with message events but NO content intent and NO send permission.
     let bot_id = BotIdentity::generate();
     owner
         .send(&ClientMessage::InstallBot {
@@ -189,7 +179,6 @@ async fn intents_and_permissions_are_enforced() {
         }
     }
 
-    // Owner posts a secret; the bot is told a message happened but NOT its text.
     owner
         .send_message(text_channel, "the password is hunter2")
         .await
@@ -207,7 +196,6 @@ async fn intents_and_permissions_are_enforced() {
     );
     assert!(blanked.image.is_none());
 
-    // The bot tries to post without the SendMessages permission → rejected.
     bot.send_message(text_channel, "i shouldn't be able to say this")
         .await
         .unwrap();
@@ -263,7 +251,6 @@ async fn an_installed_bot_posts_under_the_name_its_installer_chose() {
         }
     }
 
-    // The bot connects claiming to be somebody else entirely.
     let mut bot = Bot::connect(&url, &bot_id, "Server Admin").await.unwrap();
     loop {
         if matches!(next_timeout(&mut bot).await, ServerMessage::Ready { .. }) {

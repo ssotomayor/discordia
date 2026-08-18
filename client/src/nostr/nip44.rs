@@ -89,9 +89,8 @@ pub fn conversation_key(
     if their_bytes.len() != 32 {
         return Err("a nostr pubkey is 32 bytes".into());
     }
-    // x-only -> compressed point, even parity, the same convention every other
-    // Nostr implementation picks. Both sides must choose alike or they derive
-    // different secrets and neither can read the other.
+    // Even parity (0x02) is the standard Nostr convention; both sides must
+    // match or ECDH fails.
     let mut compressed = [0u8; 33];
     compressed[0] = 0x02;
     compressed[1..].copy_from_slice(&their_bytes);
@@ -249,10 +248,8 @@ pub fn decrypt(conversation_key: &[u8; 32], payload: &str) -> Result<String, Str
     let tag = &raw[raw.len() - 32..];
 
     let (chacha_key, chacha_nonce, hmac_key) = message_keys(conversation_key, &nonce);
-    // Verified before decrypting, and with a constant-time comparison, because
-    // both halves of that matter: decrypting first would run ChaCha20 over
-    // attacker-chosen bytes, and comparing with `==` would leak how much of the
-    // tag was right through timing.
+    // Verify before decrypting to avoid processing attacker-chosen bytes; use
+    // constant-time compare to prevent timing leaks.
     let mut mac = HmacSha256::new_from_slice(&hmac_key).expect("hmac takes any key length");
     mac.update(&nonce);
     mac.update(ciphertext);
@@ -391,8 +388,6 @@ mod tests {
                 t["conversation_key"].as_str().expect("hex"),
                 "conversation key {i}"
             );
-            // And it is symmetric: the other end derives the same key from the
-            // mirrored pair, which is the property the whole scheme rests on.
             let mirrored = conversation_key(&seckey(&t["sec2"]), &xonly_of(&seckey(&t["sec1"])))
                 .unwrap_or_else(|e| panic!("vector {i}: {e}"));
             assert_eq!(
@@ -491,8 +486,6 @@ mod tests {
         {
             let sec = hex::decode(t["sec1"].as_str().expect("hex")).expect("hex");
             let refused = match secp256k1::SecretKey::from_slice(&sec) {
-                // An invalid *pubkey* is the other half of these vectors; a
-                // secret that will not parse is already a refusal.
                 Ok(sk) => conversation_key(&sk, t["pub2"].as_str().expect("hex")).is_err(),
                 Err(_) => true,
             };

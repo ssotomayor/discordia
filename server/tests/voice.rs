@@ -270,7 +270,6 @@ async fn join_voice_mints_three_identities_with_the_right_grants() {
     let claims = |t: &str| verifier.verify(t).expect("token verifies").video;
     let sub = |t: &str| verifier.verify(t).expect("token verifies").sub;
 
-    // Identities: bare, #audio, #video, all in the same screen room.
     assert_eq!(sub(&main), pubkey);
     assert_eq!(sub(&audio), screen_audio_identity(pubkey));
     assert_eq!(sub(&video), screen_video_identity(pubkey));
@@ -279,8 +278,6 @@ async fn join_voice_mints_three_identities_with_the_right_grants() {
     assert_eq!(claims(&audio).room, room);
     assert_eq!(claims(&video).room, room);
 
-    // The grants. Everything subscribes; only the audio-only one is barred from
-    // sending, on both the media and the data channel.
     assert!(claims(&main).can_publish, "webview must be able to capture");
     assert!(
         claims(&video).can_publish,
@@ -310,7 +307,6 @@ async fn a_failed_screen_mint_reports_and_sends_no_token() {
 
     let frames = join_voice(&mut user, channel_id).await;
 
-    // Voice is unaffected — the failure is scoped to the screen room.
     assert!(has_voice_token(&frames), "voice should still work");
     assert!(
         screen_token(&frames).is_none(),
@@ -371,14 +367,9 @@ async fn a_failed_audio_mint_is_not_reported_to_the_user() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Camera presence
-//
-// `SetCamera` rides `VoiceStateUpdate` rather than getting a whole-set message
-// of its own like `ScreenShareState`. These are the first tests of that fan-out
-// in the repo — nothing covers `ScreenShareState`, `SetVoiceMute` or
-// `SetSpeaking` at all — so they pin the shape as much as the feature.
-// ---------------------------------------------------------------------------
+// SetCamera rides VoiceStateUpdate rather than a dedicated frame like
+// ScreenShareState.
+// These tests pin that fan-out shape, as no other tests cover it.
 
 /// Join a guild as a second member. Guilds are public by default, so no invite.
 ///
@@ -573,14 +564,9 @@ async fn a_repeated_camera_on_broadcasts_once() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Screen-share presence
-//
-// The flag moved from a channel-keyed `DashMap` onto `VoiceState`. The legacy
-// `ScreenShareState` frame is still sent, derived from the same source, because
-// nothing on this wire carries a version and dropping it would silently take the
-// LIVE badge away from any older client.
-// ---------------------------------------------------------------------------
+// ScreenShareState is still sent (derived from VoiceState) because the wire
+// has no versioning;
+// dropping it would silently break the LIVE badge on older clients.
 
 fn share_states(frames: &[ServerMessage], pubkey: &str) -> Vec<bool> {
     frames
@@ -763,29 +749,19 @@ async fn a_delegated_mint_is_told_which_connection_may_publish() {
             .unwrap_or_else(|| panic!("no mint for {identity} in {screen}: {seen:?}"))
     };
 
-    // Renders every share, and captures on Windows.
     assert!(asked(pubkey), "the webview identity has to publish");
-    // Feeds stream audio into the cpal mixer, and sends nothing.
     assert!(
         !asked(&screen_audio_identity(pubkey)),
         "the subscribe-only identity must not be granted publish"
     );
-    // Publishes natively captured screen video.
     assert!(
         asked(&screen_video_identity(pubkey)),
         "the native video publisher has to publish"
     );
 }
 
-// ---------------------------------------------------------------------------
-// Voice presence in the join bundle
-//
-// `Ready` has carried `voice_states` since voice existed; `GuildJoined` carried
-// guild, channels, members, roles and emoji, and no voice presence at all. So a
-// client that joined a guild mid-session rendered an empty voice roster — no
-// occupants, no camera or LIVE badges, no mute state — until whoever was
-// already in there next changed something.
-// ---------------------------------------------------------------------------
+// GuildJoined previously omitted voice presence, so joiners saw an empty
+// roster until a state update arrived.
 
 /// The gap itself: someone already in voice is visible to a member who joins
 /// afterwards, without waiting for a `VoiceStateUpdate` that may never come.
@@ -797,9 +773,6 @@ async fn joining_a_guild_shows_who_is_already_in_voice() {
     let mut owner = connect_user(&url, &owner_id, "owner").await;
     let (guild_id, channel_id) = voice_channel(&mut owner).await;
 
-    // The owner is in voice with their camera on *before* anyone else arrives,
-    // and stops toggling anything — which is what makes the roster the only
-    // way the joiner could learn about them.
     let _ = join_voice(&mut owner, channel_id).await;
     owner
         .send(&ClientMessage::SetCamera { on: true })

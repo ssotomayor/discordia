@@ -61,12 +61,8 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
 
     let (gateway_tx, voice_tx, nostr_tx) = use_hook(|| {
-        // Restore the persisted audio preferences BEFORE the voice service
-        // starts: it seeds its live audio controls from `AppState` on its first
-        // poll. Without this the saved mic sensitivity, device choices and
-        // noise-cancellation toggle were written to settings.json and then
-        // silently ignored on every launch, which is most of why the
-        // sensitivity slider looked like it did nothing.
+        // Must restore persisted audio prefs before the voice service starts,
+        // as it seeds live controls from AppState on first poll.
         {
             let saved = settings.read();
             let mut app = state;
@@ -75,25 +71,19 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
             w.mic_volume = saved.mic_volume.min(200);
             w.auto_gain_control = saved.auto_gain_control;
             w.noise_cancellation = saved.noise_cancellation;
-            // Honoured only where there is processing to bypass; a settings
-            // file carried over from a Windows machine must not leave a macOS
-            // session believing it captures raw.
+            // Only valid where raw capture is supported; prevents a Windows
+            // settings file from leaving a macOS session believing it captures
+            // raw.
             w.bypass_system_audio_processing =
                 saved.bypass_system_audio_processing && crate::rawmic::supported();
-            // The slider's own domain, not DeepFilterNet's. `mic_sensitivity`
-            // above clamps wider than its control because the two are in
-            // different units; this one is bound straight to the dB value, so
-            // without the clamp below a hand-edited 90 would print "90 dB max"
-            // beside a slider that cannot reach it — and be handed to the
-            // model regardless. It is the third use of the shared bounds, and
-            // the one worth naming: the other two guard a control the user is
-            // touching, this one guards a file they edited.
+            // Clamps hand-edited values to the slider's domain; unlike
+            // mic_sensitivity, this is bound directly to the dB value.
             w.denoise_atten_lim_db = saved.denoise_atten_lim_db.clamp(
                 crate::features::voice::DENOISE_ATTEN_LIM_DB_MIN,
                 crate::features::voice::DENOISE_ATTEN_LIM_DB_MAX,
             );
-            // Anything outside the two offered values means a hand-edited
-            // settings.json; fall back rather than publish an odd bitrate.
+            // Values outside the offered set indicate a hand-edited
+            // settings.json; fall back to a valid bitrate.
             w.voice_bitrate_kbps = match saved.voice_bitrate_kbps {
                 24 => 24,
                 _ => 48,
@@ -105,10 +95,8 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
         let gateway_tx = spawn_gateway(params.clone(), state, voice_tx.clone(), move |reason| {
             on_disconnect.call(reason);
         });
-        // Direct messages ride Nostr relays, not the gateway, so this starts
-        // beside it rather than inside it — and keeps running whether or not
-        // the gateway is up. That independence is the point: a DM does not care
-        // which server you are on, or whether you are on one at all.
+        // DMs use Nostr relays, not the gateway, so this runs independently of
+        // gateway status.
         let relays = {
             let saved = settings.read();
             if saved.dm_relays.is_empty() {
@@ -146,7 +134,6 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
             .map(|(id, [x, y, w, h])| (id.clone(), GridPosition::new(*x, *y, *w, *h)))
             .collect()
     });
-    // Free-mode rects live in a second map, so they're restored separately.
     use_hook(|| {
         let saved = settings.read();
         if saved.layout_free.is_empty() {
@@ -161,9 +148,7 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
     let mut edit_mode = use_signal(|| false);
     let status = state.read().status;
 
-    // Owner-set accent for the guild we're currently viewing (not in DM mode),
-    // layered over the user's theme/accent while it's selected. Applied inline
-    // on this subtree so it overrides the app-level accent.
+    // Guild accent overrides app-level accent inline; suppressed in DM mode.
     let guild_accent_style = {
         let s = state.read();
         let accent = if s.dm_mode {
@@ -181,8 +166,7 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
             .unwrap_or_default()
     };
 
-    // Sweep stale typing indicators (older than 5s) so they fade out. Only
-    // writes when there's something to prune, to avoid idle re-renders.
+    // Prune stale typing indicators (>5s) to avoid idle re-renders.
     use_future(move || async move {
         let mut state = state;
         loop {
@@ -205,11 +189,8 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
         }
     });
 
-    // On macOS the traffic lights float over our content (fullsize content
-    // view). Only the TOP ROW needs to dodge them: `pt-7` drops it below the
-    // lights vertically and `pl-20` clears them horizontally. The padding must
-    // NOT live on the outer column, or it would shove the whole widget grid
-    // inward and leave a fat margin down the left edge.
+    // macOS traffic lights overlay content; padding must be on the top row
+    // only to avoid shifting the grid.
     let mac_top_pad = if cfg!(target_os = "macos") {
         "pt-5"
     } else {
@@ -240,11 +221,8 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
             crate::features::chat::ImageViewer {}
             GuildDialogHost {}
 
-            // Top row: brand mark, then the host banner (only renders when
-            // self-hosting) growing to push the disconnect control to the
-            // right. The whole row is a drag region so the empty space between
-            // elements lets the user move the window; the interactive
-            // children opt out with .dxf-no-drag.
+            // Row is a drag region; interactive children opt out via .dxf-no-
+            // drag.
             div { class: "dxf-drag-region flex items-center gap-2 {mac_titlebar_clear}",
                 onmousedown: move |_| crate::app::start_window_drag(),
                 div { class: "shrink-0 flex items-center gap-2 px-1",
@@ -254,9 +232,6 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
                 HostBanner {}
                 TransportBadge {}
                 EncryptionBadge {}
-                // Unplug / disconnect. Always present so the user can leave a
-                // server they've connected to. Empty reason → clean return to
-                // the connect screen (no error banner; see App::on_disconnect).
                 div { class: "dxf-no-drag shrink-0 flex items-center",
                     onmousedown: move |e| e.stop_propagation(),
                     button {
@@ -274,19 +249,18 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
             // container is exactly 100% tall and clips deliberately, so this
             // never produces a scrollbar there.
             div { class: "flex-1 overflow-auto min-h-0",
-                // No pixel measurement here any more. `rows` makes the grid use
-                // `repeat(GRID_ROWS, 1fr)`, so the browser re-divides the height
-                // on every window resize. The old code measured once in
-                // `onmounted` and never again, which is why panels kept their
-                // original height when the window grew.
+                // Use CSS grid `1fr` rows instead of pixel measurement so the
+                // browser re-divides height on resize; the old `onmounted`
+                // measurement caused panels to keep their original height when
+                // the window grew.
                 GridLayout {
                     cols: 12, rows: GRID_ROWS, gap: GRID_GAP,
                     store: layout, editable: edit_mode(),
-                    // Free placement only. The Snap/Free switch is gone: two
-                    // coordinate systems and a conversion between them was a
-                    // steady source of broken layouts, and free placement with
-                    // magnetic edges gets you a tidy arrangement anyway — you
-                    // just don't have to fight a grid for it.
+                    // Free placement only; the Snap/Free switch was removed
+                    // because maintaining two coordinate systems and
+                    // conversions caused broken layouts, while free placement
+                    // with magnetic edges achieves the same tidy arrangement
+                    // without fighting a grid.
                     mode: LayoutMode::Free,
                     on_change: move |_: Vec<(String, GridPosition)>| persist_layout(settings, layout),
                     GridItem { id: "guilds", x: 0, y: 0, w: 1, h: GRID_ROWS, min_w: 1, min_h: 10,
@@ -312,11 +286,9 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
                 }
             }
 
-            // Floating layout controls. Always visible, subtle.
             div { class: "fixed bottom-3 right-3 z-40 flex items-center gap-1.5",
-                // Reset is only offered while editing — it is the way back from
-                // a layout you've made a mess of, including a window dragged
-                // somewhere awkward in Free mode.
+                // Reset is only offered while editing to allow recovery from
+                // messy layouts or awkwardly dragged windows in Free mode.
                 if edit_mode() {
                     button {
                         class: "border border-[var(--border)] rounded px-3 py-1 text-[10px] uppercase tracking-wider bg-[var(--panel)] hover:border-[var(--danger)] text-[var(--text-muted)] hover:text-[var(--danger)] transition-colors",
@@ -346,7 +318,6 @@ fn ErrorToast() -> Element {
     let mut state = use_app_state();
     let message = use_memo(move || state.read().error_toast.clone());
 
-    // Auto-clear ~6s after the latest error appears (unless it changed again).
     use_effect(move || {
         let Some(current) = message() else { return };
         spawn(async move {
@@ -387,23 +358,20 @@ const SFX_JS: &str = r#"
 window.dxSfx = window.dxSfx || (function () {
   let ctx = null;
   const lastAt = {};
-  // Two cues can legitimately overlap (leaving voice closes a share you were
-  // watching), so the cooldown is per cue name rather than global.
+  // Cooldown is per cue name rather than global because cues can legitimately
+  // overlap (e.g., leaving voice closes a share you were watching).
   const COOLDOWN_MS = 250;
-  // Master volume multiplier (0..1), set from Rust via setVolume. Scales the
-  // `peak` of every tone so a single knob controls all UI sound effects.
   let masterVolume = 0.7;
   function audio() {
     if (!ctx) { try { ctx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { return null; } }
-    // Autoplay policies suspend the context until a gesture; resume is a no-op
-    // when it is already running.
+    // Resume is a no-op if already running; autoplay policies suspend the
+    // context until a gesture.
     if (ctx.state === 'suspended') { ctx.resume().catch(function () {}); }
     return ctx;
   }
-  // One short enveloped tone. Exponential ramps (never to exactly zero, which
-  // is undefined for exponentialRampToValueAtTime) so there is no click.
-  // `peak` is scaled by masterVolume so the user's volume setting applies
-  // uniformly to every cue.
+  // Exponential ramps avoid zero (undefined for exponentialRampToValueAtTime)
+  // to prevent clicks.
+  // `peak` is scaled by masterVolume so user volume applies uniformly.
   function tone(c, at, freq, dur, peak, type) {
     const o = c.createOscillator(); const g = c.createGain();
     o.type = type || 'sine'; o.frequency.setValueAtTime(freq, at);
@@ -414,8 +382,6 @@ window.dxSfx = window.dxSfx || (function () {
     g.gain.exponentialRampToValueAtTime(0.0001, at + dur);
     o.start(at); o.stop(at + dur + 0.02);
   }
-  // Frequency sweep for whoosh-style cues (stream start/stop). Linear ramp
-  // from `f0` to `f1` over `dur`, same envelope as `tone`.
   function sweep(c, at, f0, f1, dur, peak, type) {
     const o = c.createOscillator(); const g = c.createGain();
     o.type = type || 'sawtooth';
@@ -435,7 +401,6 @@ window.dxSfx = window.dxSfx || (function () {
     const c = audio(); if (!c) return;
     const t = c.currentTime;
     switch (name) {
-      // Leaving voice: a falling two-tone, the inverse of the connect chime.
       case 'disconnect':
         tone(c, t, 520, 0.14, 0.13); tone(c, t + 0.10, 330, 0.22, 0.13);
         break;
@@ -444,55 +409,39 @@ window.dxSfx = window.dxSfx || (function () {
       case 'watch-start':
         tone(c, t, 620, 0.09, 0.09, 'triangle'); tone(c, t + 0.07, 880, 0.14, 0.09, 'triangle');
         break;
-      // Closing it again: same shape, descending, softer still.
       case 'watch-stop':
         tone(c, t, 720, 0.09, 0.07, 'triangle'); tone(c, t + 0.07, 480, 0.13, 0.07, 'triangle');
         break;
       case 'notify':
         tone(c, t, 660, 0.3, 0.14);
         break;
-      // --- Connection ---
-      // Connect: a rising two-tone, the counterpart to the disconnect fall.
       case 'connect':
         tone(c, t, 440, 0.12, 0.12); tone(c, t + 0.09, 660, 0.18, 0.12);
         break;
-      // Server disconnect: lower and longer, signalling something went wrong.
       case 'server-disconnect':
         tone(c, t, 440, 0.15, 0.11); tone(c, t + 0.12, 220, 0.25, 0.11);
         break;
-      // --- Voice room peers ---
-      // Peer joined voice: a short ascending blip.
       case 'peer-join':
         tone(c, t, 523, 0.06, 0.08, 'triangle'); tone(c, t + 0.05, 659, 0.10, 0.08, 'triangle');
         break;
-      // Peer left voice: same shape, descending.
       case 'peer-leave':
         tone(c, t, 659, 0.06, 0.08, 'triangle'); tone(c, t + 0.05, 523, 0.10, 0.08, 'triangle');
         break;
-      // --- Screen share (self) ---
-      // Stream start: a quick rising whoosh.
       case 'stream-start':
         sweep(c, t, 300, 900, 0.18, 0.10, 'sawtooth');
         break;
-      // Stream stop: descending whoosh.
       case 'stream-stop':
         sweep(c, t, 900, 300, 0.18, 0.10, 'sawtooth');
         break;
-      // --- Screen share (peer) ---
-      // Peer started streaming: soft rising blip, quieter than self cues.
       case 'peer-stream-start':
         tone(c, t, 440, 0.07, 0.06, 'triangle'); tone(c, t + 0.06, 880, 0.12, 0.06, 'triangle');
         break;
-      // Peer stopped streaming: soft descending blip.
       case 'peer-stream-stop':
         tone(c, t, 880, 0.07, 0.06, 'triangle'); tone(c, t + 0.06, 440, 0.12, 0.06, 'triangle');
         break;
-      // --- Self mute/unmute ---
-      // Mute: a low short click.
       case 'mute':
         tone(c, t, 220, 0.06, 0.10, 'square');
         break;
-      // Unmute: a higher short click.
       case 'unmute':
         tone(c, t, 440, 0.06, 0.10, 'square');
         break;
@@ -504,11 +453,8 @@ window.dxSfx = window.dxSfx || (function () {
 "#;
 
 fn sfx(name: &str) {
-    // Every caller passes a static literal today, so this is not a live
-    // injection path. It goes through `js_str` anyway because that function
-    // exists to make escaping a property of the *sink* rather than something
-    // re-derived per call site — and a sink that opted out is exactly where the
-    // next dynamic argument would land without anyone noticing.
+    // Route through `js_str` to enforce escaping at the sink, preventing
+    // future dynamic args from bypassing it.
     let name = crate::features::screenshare::js_str(name);
     let _ = document::eval(&format!("{SFX_JS}\nwindow.dxSfx.play({name});"));
 }
@@ -538,7 +484,6 @@ fn VoiceSounds() -> Element {
         }
     });
 
-    // Opening / closing someone else's screen share.
     let viewing = use_memo(move || state.read().screen_viewing.clone());
     let mut last_viewing = use_signal(|| None::<String>);
     use_effect(move || {
@@ -557,7 +502,6 @@ fn VoiceSounds() -> Element {
         }
     });
 
-    // Notification chime for inbound DMs / mentions.
     let notify = use_memo(move || state.read().notify_tick);
     let mut last_notify = use_signal(|| 0u64);
     use_effect(move || {
@@ -568,7 +512,6 @@ fn VoiceSounds() -> Element {
         last_notify.set(now);
     });
 
-    // --- Server connection status: connect / server-disconnect ---
     let status = use_memo(move || state.read().status);
     let mut last_status = use_signal(|| ConnectionStatus::Connecting);
     use_effect(move || {
@@ -585,7 +528,6 @@ fn VoiceSounds() -> Element {
         }
     });
 
-    // --- Self mute / unmute ---
     let muted = use_memo(move || state.read().voice.muted);
     let mut last_muted = use_signal(|| false);
     use_effect(move || {
@@ -601,7 +543,6 @@ fn VoiceSounds() -> Element {
         }
     });
 
-    // --- Self screen share start / stop ---
     let sharing = use_memo(move || state.read().screen_sharing);
     let mut last_sharing = use_signal(|| false);
     use_effect(move || {
@@ -617,11 +558,8 @@ fn VoiceSounds() -> Element {
         }
     });
 
-    // --- Peer joined / left voice ---
-    // Watch the set of pubkeys in our voice channel (excluding self). When it
-    // grows someone joined; when it shrinks someone left. On channel switch we
-    // snapshot without playing sounds — the whole set changed because *we*
-    // moved, not because peers did.
+    // On channel switch, snapshot without playing sounds — the set changed
+    // because we moved, not because peers did.
     let voice_channel = use_memo(move || state.read().voice.channel_id);
     let voice_states = use_memo(move || state.read().voice_states.clone());
     let self_pk = use_memo(move || state.read().self_user.as_ref().map(|u| u.pubkey.clone()));
@@ -631,7 +569,6 @@ fn VoiceSounds() -> Element {
         let ch = voice_channel();
         let states = voice_states();
         let me = self_pk();
-        // Snapshot the peers in our channel, excluding self.
         let peers: Vec<String> = match (&ch, &me) {
             (Some(cid), Some(me_pk)) => states
                 .iter()
@@ -640,14 +577,12 @@ fn VoiceSounds() -> Element {
                 .collect(),
             _ => Vec::new(),
         };
-        // Channel changed (we joined/switched) — snapshot without sounds.
         if ch != *last_channel.peek() {
             last_channel.set(ch);
             last_peers.set(peers);
             return;
         }
         let prev = last_peers.peek().clone();
-        // Diff: new pubkeys that weren't before = join, gone = leave.
         let joined = peers.iter().any(|p| !prev.contains(p));
         let left = prev.iter().any(|p| !peers.contains(p));
         if joined {
@@ -659,9 +594,6 @@ fn VoiceSounds() -> Element {
         last_peers.set(peers);
     });
 
-    // --- Peer screen share start / stop ---
-    // Same pattern: watch the sharers in our channel excluding self, diff
-    // against the last snapshot, snapshot silently on channel switch.
     let screen_shares = use_memo(move || state.read().screen_shares.clone());
     let mut last_sharers = use_signal(Vec::<String>::new);
     use_effect(move || {
@@ -675,9 +607,8 @@ fn VoiceSounds() -> Element {
                 .unwrap_or_default(),
             _ => Vec::new(),
         };
-        // Channel changed — the peer-join watcher already updated last_channel,
-        // but we need our own snapshot here too since this effect may fire in a
-        // different order.
+        // Effects may fire in different orders, so we need our own snapshot
+        // here.
         if ch != *last_channel.peek() {
             last_sharers.set(sharers);
             return;
@@ -694,7 +625,6 @@ fn VoiceSounds() -> Element {
         last_sharers.set(sharers);
     });
 
-    // --- Master volume: apply sfx_volume from settings on startup ---
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let sfx_vol = use_memo(move || settings.read().sfx_volume);
     use_effect(move || {
@@ -777,7 +707,10 @@ fn HostBanner() -> Element {
             } else if has_shortcode && !listed_public {
                 span { class: "text-[var(--text-dim)]", "·" }
                 span { class: "text-[var(--text-muted)]",
-                    title: "Reachable by code, but hidden from the Browse list. Enable \"List this server publicly\" when self-hosting to appear there.",
+                    // Names no control, on purpose: the previous wording quoted
+                    // a checkbox label and pointed at a "Browse" tab, and both
+                    // were renamed out from under it.
+                    title: "Reachable by code, but not shown in the public list. Turn on public listing when you create the server to appear there.",
                     "unlisted"
                 }
             }
@@ -848,7 +781,6 @@ fn Reachability(reachability: crate::host::Reachability) -> Element {
 fn EncryptionBadge() -> Element {
     let state = use_app_state();
     let snapshot = state.read();
-    // Only meaningful in a call.
     let in_voice = snapshot.voice.channel_id.is_some();
     let has_key = snapshot
         .voice

@@ -82,9 +82,7 @@ mod tests {
 
         let sig = sign(&secret, &nonce, &pubkey_hex, "acme");
         assert!(verify_ownership(&pubkey_hex, &sig, &nonce, "acme").is_ok());
-        // Wrong name → fails.
         assert!(verify_ownership(&pubkey_hex, &sig, &nonce, "evil").is_err());
-        // Wrong nonce → fails (replay protection).
         assert!(verify_ownership(&pubkey_hex, &sig, "other-nonce", "acme").is_err());
     }
 }

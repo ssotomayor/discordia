@@ -117,9 +117,8 @@ impl WinCapture {
             .map_err(|e| format!("create shutdown event: {e}"))?;
         let shutdown = SendHandle(shutdown);
 
-        // Setup runs on the capture thread and reports back, so a failure to
-        // activate or initialise reaches the caller with its real reason
-        // instead of surfacing later as a track that is simply silent.
+        // Setup runs on the capture thread so activation failures reach the
+        // caller immediately, rather than surfacing later as a silent track.
         let (ready_tx, ready_rx) = std_mpsc::channel::<Result<(), String>>();
         let thread = std::thread::Builder::new()
             .name("dxf-sysaudio-win".into())
@@ -139,11 +138,9 @@ impl WinCapture {
                 Err(e)
             }
             Err(_) => {
-                // Signalled but deliberately NOT closed: the thread is still
-                // running and may yet reach the capture loop, where it waits on
-                // this very handle. Closing it here would leave that wait on a
-                // freed — possibly recycled — handle. One leaked handle on a
-                // path that has already failed is the cheaper mistake.
+                // Signalled but not closed: the thread may still be waiting on
+                // this handle. Closing it risks a use-after-free; leaking one
+                // handle on a failed path is safer.
                 unsafe {
                     let _ = SetEvent(shutdown.0);
                 }
@@ -194,8 +191,8 @@ fn run(
         }
     };
 
-    // A failure from here on is mid-share: `start` already returned `Ok`, so the
-    // track is published and nobody would otherwise learn it went quiet.
+    // Failures here are mid-share: `start` already returned `Ok`, so the track
+    // is published and would otherwise go quiet silently.
     if let Err(e) = pump(started, tx, shutdown) {
         let _ = fatal.send(e);
     }
@@ -227,17 +224,15 @@ impl Drop for Started {
 fn setup() -> Result<Started, String> {
     let mut client = activate()?;
 
-    // Float first: it is what the rest of the pipeline speaks, so it saves a
-    // conversion. Some drivers refuse it, hence the PCM fallback.
+    // Float first to avoid conversion; some drivers refuse it, hence the PCM
+    // fallback.
     let (bits, tag) = match init(&client, 32, FORMAT_IEEE_FLOAT) {
         Ok(()) => (32u16, "f32"),
         Err(hr) if hr == AUDCLNT_E_UNSUPPORTED_FORMAT => {
-            // A client whose `Initialize` failed is spent — WASAPI's contract is
-            // to release it and activate a fresh one. Retrying on the same
-            // client makes the second call fail because it is already spent,
-            // not because of the format, so the PCM fallback never actually
-            // happens and capture dies reporting that both formats were
-            // rejected when only one ever was.
+            // A client whose `Initialize` failed is spent; WASAPI requires
+            // releasing it and activating a fresh one. Retrying on the same
+            // client fails because it is already spent, not because of the
+            // format.
             drop(client);
             client = activate()?;
             init(&client, 16, WAVE_FORMAT_PCM as u16).map_err(|hr2| {
@@ -314,10 +309,8 @@ fn setup() -> Result<Started, String> {
 /// to re-measure — the probe was: activate, check the block is untouched, then
 /// check that 64 same-size allocations afterwards never land on its address.
 fn activation_params() -> *mut AUDIOCLIENT_ACTIVATION_PARAMS {
-    // Heap rather than a `static` of the struct, which could land in read-only
-    // memory and fault an engine that writes back into the blob. Whether it does
-    // stopped mattering when these stopped being shared, but the allocation is
-    // free to stay where nothing depends on the answer.
+    // Heap allocation avoids read-only memory faults if an engine writes back
+    // into the blob.
     Box::into_raw(Box::new(AUDIOCLIENT_ACTIVATION_PARAMS {
         ActivationType: AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
         Anonymous: AUDIOCLIENT_ACTIVATION_PARAMS_0 {
@@ -344,15 +337,9 @@ fn activation_params() -> *mut AUDIOCLIENT_ACTIVATION_PARAMS {
 /// `server/tests/voice.rs`: answer the call rather than arrange for it to fail.
 fn settle_activation_wait(waited: WAIT_EVENT, done: SendHandle) -> Result<(), String> {
     if waited != WAIT_OBJECT_0 {
-        // `done` is deliberately leaked. On this path the completion handler has
-        // NOT run and may still fire on an MTA pool thread: closing it now would
-        // let that `SetEvent` a handle value Windows has since recycled, quietly
-        // signalling some unrelated kernel object instead of failing loudly.
-        // Same trade `WinCapture::start` makes with its shutdown handle — a leak
-        // on an already-failed path costs far less than a use-after-free. The
-        // blob needs nothing here: it was this activation's alone and is already
-        // never freed, so an abandoned operation can hold it for as long as it
-        // likes.
+        // Leak `done` to avoid a use-after-free: the completion handler may
+        // still fire on an MTA thread, and closing the handle now would let
+        // its `SetEvent` signal a recycled handle value.
         return Err("Windows didn't answer the audio-capture request in time.".into());
     }
     // SAFETY: the handler has run — it is what signalled this event — so nothing
@@ -367,16 +354,9 @@ fn settle_activation_wait(waited: WAIT_EVENT, done: SendHandle) -> Result<(), St
 fn activate() -> Result<IAudioClient, String> {
     let params = activation_params();
 
-    // The activation parameters travel as a VT_BLOB PROPVARIANT. Built field by
-    // field because the safe constructors don't cover BLOB.
-    //
-    // Pointing a PROPVARIANT at the stack would be a bug if it cleared itself —
-    // `PropVariantClear` would hand a stack address to `CoTaskMemFree`. It
-    // doesn't: the generated `PROPVARIANT` is a plain `repr(C)` union with no
-    // `Drop`, and clearing is only ever explicit. Re-check that if the `windows`
-    // crate is bumped. Checked on 0.61: after a live activation the variant
-    // still reads `VT_BLOB` with its original `cbSize`, so the engine does not
-    // clear it either.
+    // Built manually because safe constructors don't cover BLOB. `PROPVARIANT`
+    // is a plain `repr(C)` union with no `Drop`, so `PropVariantClear` won't
+    // free stack memory; re-verify if the `windows` crate is bumped.
     let mut prop = PROPVARIANT::default();
     // SAFETY: writing the documented layout of a zeroed PROPVARIANT. The blob
     // outlives the process, never mind the call.
@@ -656,10 +636,9 @@ mod tests {
              generic failure: {err}"
         );
 
-        // The point of the branch. A closed handle here would be a use-after-free
-        // the moment the completion handler fires on its pool thread — and worse
-        // than a crash, because Windows recycles handle values, so the `SetEvent`
-        // would land on whatever unrelated object inherited the number.
+        // Closing this handle would cause a use-after-free when the completion
+        // handler fires; Windows recycles handle values, so the stray
+        // `SetEvent` would signal an unrelated object.
         let mut flags = 0u32;
         // SAFETY: querying a handle we own; the out-param is live for the call.
         let still_open = unsafe { GetHandleInformation(event, &mut flags) };
@@ -716,7 +695,6 @@ mod tests {
 
         let (tx, mut rx) = unbounded_channel::<Vec<f32>>();
         let (fatal_tx, mut fatal_rx) = unbounded_channel::<String>();
-        // `target` is a macOS concern; this backend takes the machine mix.
         let capture = crate::sysaudio::start(tx, fatal_tx, None).expect("start capture");
 
         // A *different* process on purpose: the capture excludes our own tree,

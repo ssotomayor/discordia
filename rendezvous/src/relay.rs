@@ -21,8 +21,7 @@ const MAX_CLAIM_ATTEMPTS: usize = 10;
 pub async fn handle_host_control(socket: WebSocket, registry: Arc<Registry>, cfg: Arc<Config>) {
     let (mut tx, mut rx) = socket.split();
 
-    // Issue an ownership challenge up front. A host claiming a persistent name
-    // must sign this nonce; anonymous hosts (no name) can ignore it.
+    // Challenge nonce for ownership proof; anonymous hosts ignore it.
     let nonce = verify::fresh_nonce();
     if send_msg(
         &mut tx,
@@ -36,7 +35,6 @@ pub async fn handle_host_control(socket: WebSocket, registry: Arc<Registry>, cfg
         return;
     }
 
-    // First frame must be a Register.
     let register = match rx.next().await {
         Some(Ok(Message::Text(t))) => match serde_json::from_str::<HostToRendezvous>(&t) {
             Ok(HostToRendezvous::Register {
@@ -60,9 +58,8 @@ pub async fn handle_host_control(socket: WebSocket, registry: Arc<Registry>, cfg
                 transport_signature,
                 transport_addrs,
             ),
-            // An administrative frame rather than a session: verify, answer,
-            // and close. It shares the challenge nonce with the claim because
-            // it is the same proof — control of the key the name is bound to.
+            // Administrative frame: verify ownership and close. Shares the
+            // challenge nonce with the claim.
             Ok(HostToRendezvous::ReleaseName {
                 name,
                 pubkey,
@@ -124,14 +121,9 @@ pub async fn handle_host_control(socket: WebSocket, registry: Arc<Registry>, cfg
         transport_addrs,
     ) = register;
 
-    // A transport key is published only if the registering key vouches for it.
-    // Unattested, it would be an invitation to point friends at somebody else's
-    // host — the transport authenticates whoever holds that key, so publishing
-    // one nobody proved ownership of moves the trust problem rather than
-    // solving it. The pair is dropped rather than the registration refused: a
-    // host with an unusable transport key is still perfectly good over the
-    // relay, and this way an older or misconfigured client degrades instead of
-    // being locked out.
+    // Transport key is only published if the registering key vouches for it.
+    // Unattested keys are dropped (not refused) so misconfigured clients
+    // degrade gracefully instead of being locked out.
     let transport = match (&transport_key, &pubkey, &transport_signature) {
         (Some(key), Some(pk), Some(sig)) => match verify::verify_ownership(pk, sig, &nonce, key) {
             Ok(()) => Some((key.clone(), transport_addrs)),
@@ -147,8 +139,6 @@ pub async fn handle_host_control(socket: WebSocket, registry: Arc<Registry>, cfg
         _ => None,
     };
 
-    // Resolve a shortcode. A claimed name goes through the signed-ownership +
-    // uniqueness path; no name falls back to an anonymous random shortcode.
     let (shortcode, display_name) = match &name {
         Some(raw) => {
             let slug = match validate_name(raw) {
@@ -162,8 +152,6 @@ pub async fn handle_host_control(socket: WebSocket, registry: Arc<Registry>, cfg
                 send_err(&mut tx, "claiming a name requires a pubkey and signature").await;
                 return;
             };
-            // Prove control of the key the name is bound to (signature over the
-            // name as sent, against the challenge nonce).
             if let Err(e) = verify::verify_ownership(pubkey, signature, &nonce, raw) {
                 send_err(&mut tx, &format!("name ownership rejected: {e}")).await;
                 return;
@@ -204,7 +192,6 @@ pub async fn handle_host_control(socket: WebSocket, registry: Arc<Registry>, cfg
         transport_key: transport.as_ref().map(|(k, _)| k.clone()),
         transport_addrs: transport.map(|(_, a)| a).unwrap_or_default(),
         control_tx,
-        // Stamped properly by try_claim; this is just a starting value.
         last_seen_ms: Default::default(),
     };
     // The live slot may momentarily race a same-slug reconnect; claim_name
@@ -214,8 +201,8 @@ pub async fn handle_host_control(socket: WebSocket, registry: Arc<Registry>, cfg
         return;
     };
 
-    // Send the assigned shortcode + livekit_url, plus a per-session grant the
-    // host uses to ask US to mint voice tokens. The signing secret stays here.
+    // Signing secret stays server-side; host uses this grant to request
+    // tokens.
     let voice_token_grant = cfg
         .livekit_api_secret
         .is_some()
@@ -233,20 +220,10 @@ pub async fn handle_host_control(socket: WebSocket, registry: Arc<Registry>, cfg
         return;
     }
 
-    // Forward control messages from rendezvous to host (e.g. NewFriend
-    // notifications) until the host disconnects, errors, or stops answering.
-    //
-    // The heartbeat is what makes "stops answering" detectable at all. A clean
-    // shutdown sends Close and we drop the host immediately; the cases that
-    // left stale entries in the browse list are the unclean ones — sleep, a
-    // dropped Wi-Fi link, SIGKILL, a NAT that quietly forgets the flow. None of
-    // those produce a Close or an error: the socket is half-open, `rx.next()`
-    // blocks forever, and nothing ever removes the registration. (OS-level TCP
-    // keepalive defaults to roughly two hours where it is enabled at all, which
-    // is no help.) So we ping on a timer and give up when the replies stop.
-    //
-    // Nothing is needed on the host side: WebSocket Pong is automatic in the
-    // client's tungstenite stack, so already-deployed hosts are covered too.
+    // Heartbeat detects half-open sockets (sleep, NAT reset) that never send
+    // Close or error.
+    // OS TCP keepalive is too slow; Pong is automatic in tungstenite, so no
+    // host-side change needed.
     let mut heartbeat = tokio::time::interval(cfg.heartbeat_interval);
     heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     heartbeat.tick().await; // the first tick completes immediately
@@ -307,8 +284,6 @@ async fn claim_anonymous_shortcode(registry: &Registry) -> Option<String> {
 pub async fn handle_friend_join(socket: WebSocket, registry: Arc<Registry>, code: String) {
     let (mut friend_tx, mut friend_rx) = socket.split();
 
-    // Join codes (named or anonymous) are matched case-insensitively — the slug
-    // is the canonical lowercased form.
     let code = code.to_lowercase();
     let Some(host) = registry.hosts.get(&code).map(|h| h.value().clone()) else {
         send_err(
@@ -325,7 +300,6 @@ pub async fn handle_friend_join(socket: WebSocket, registry: Arc<Registry>, code
         return;
     };
 
-    // Notify host so they open the matching proxy WS.
     if host
         .control_tx
         .send(RendezvousToHost::NewFriend {
@@ -342,7 +316,6 @@ pub async fn handle_friend_join(socket: WebSocket, registry: Arc<Registry>, code
         .clone()
         .schedule_pairing_timeout(session_id.clone(), Duration::from_secs(10));
 
-    // Wait for the host's proxy WS to arrive.
     let host_socket = match host_socket_rx.await {
         Ok(s) => s,
         Err(_) => {
@@ -358,7 +331,6 @@ pub async fn handle_friend_join(socket: WebSocket, registry: Arc<Registry>, code
 
     let (mut host_tx, mut host_rx) = host_socket.split();
 
-    // Pipe both directions.
     let friend_to_host = async {
         while let Some(Ok(msg)) = friend_rx.next().await {
             if matches!(msg, Message::Close(_)) {
@@ -392,7 +364,6 @@ pub async fn handle_friend_join(socket: WebSocket, registry: Arc<Registry>, code
 pub async fn handle_host_proxy(socket: WebSocket, registry: Arc<Registry>, session_id: String) {
     if !registry.fulfill_pairing(&session_id, socket).await {
         tracing::warn!(%session_id, "no waiting friend for proxy connection");
-        // Socket is dropped; friend side has already timed out or moved on.
     }
 }
 

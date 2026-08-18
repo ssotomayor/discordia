@@ -55,14 +55,12 @@ async fn export_import_round_trip_preserves_structure_and_pubkeys() {
         username: "Owner".into(),
     };
 
-    // Seed a guild from the "community" template (multi-channel, multi-role).
     let (guild, channels, _member, roles) = state
         .create_guild("Origin", Some("community"), &owner)
         .await;
     assert!(channels.len() >= 2, "template seeds several channels");
     assert!(!roles.is_empty(), "template seeds roles");
 
-    // Post a couple of messages into the first text channel.
     let first_channel = channels[0].id;
     for body in ["hello world", "second message"] {
         state
@@ -72,7 +70,6 @@ async fn export_import_round_trip_preserves_structure_and_pubkeys() {
             .unwrap();
     }
 
-    // Export → import into the same store.
     let archive = state
         .store
         .export_guild(guild.id)
@@ -84,7 +81,6 @@ async fn export_import_round_trip_preserves_structure_and_pubkeys() {
     let new_id = state.store.import_guild(&archive).await.unwrap();
     assert_ne!(new_id, guild.id, "imported guild gets a fresh id");
 
-    // Reload everything and inspect the imported copy.
     let loaded = state.store.load_all().await.unwrap();
 
     let orig = loaded.guilds.iter().find(|g| g.id == guild.id).unwrap();
@@ -95,7 +91,6 @@ async fn export_import_round_trip_preserves_structure_and_pubkeys() {
         "owner pubkey preserved"
     );
 
-    // Channels: same count + names, all with FRESH ids under the new guild.
     let orig_channels: Vec<_> = loaded
         .channels
         .iter()
@@ -118,7 +113,6 @@ async fn export_import_round_trip_preserves_structure_and_pubkeys() {
         "channel ids are fresh"
     );
 
-    // Roles: same names, fresh ids.
     let copy_roles: Vec<_> = loaded
         .roles
         .iter()
@@ -126,8 +120,6 @@ async fn export_import_round_trip_preserves_structure_and_pubkeys() {
         .collect();
     assert_eq!(copy_roles.len(), roles.len());
 
-    // Messages carried over into the corresponding new channel, content + author
-    // preserved.
     let new_first = copy_channels
         .iter()
         .find(|c| c.name == channels[0].name)

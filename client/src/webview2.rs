@@ -52,11 +52,8 @@ pub fn gate() {
             }
         }
         Err(problem) => {
-            // The installer reports through its exit code and gets to decide
-            // what a failure means for the rest of its run; a normal launch has
-            // nobody to tell but the user, and no working window to tell them
-            // in. Either way this process stops here rather than opening a
-            // window that would never paint.
+            // Installer mode has no UI to alert; a normal launch has no
+            // working window to paint in. Exit immediately in both cases.
             eprintln!("[webview2] {problem}");
             if !installer_mode {
                 alert(&format!(
@@ -84,12 +81,8 @@ fn ensure() -> Result<Outcome, String> {
 
     let attempt = run_bootstrapper(&bootstrapper);
 
-    // The registry is the authority here, not the exit code — deliberately, and
-    // not as belt-and-braces. Measured on a machine that already had the
-    // runtime, the bootstrapper exits 0x80040828 rather than zero, so treating a
-    // non-zero code as failure would report "check your connection" about a
-    // perfectly healthy install. It also covers the mirror case: an installer
-    // that claims success without registering anything.
+    // Registry is the authority, not exit code: bootstrapper exits 0x80040828
+    // on healthy installs, so non-zero does not mean failure.
     if installed_version().is_some() {
         return Ok(Outcome::Installed);
     }
@@ -139,9 +132,6 @@ fn bootstrapper_path() -> Option<PathBuf> {
 }
 
 fn run_bootstrapper(path: &PathBuf) -> Result<(), String> {
-    // `/install` is what makes it act; `/silent` keeps it from drawing its own
-    // window over ours. It downloads from Microsoft, so this is the one step
-    // that needs the network.
     let status = std::process::Command::new(path)
         .args(["/silent", "/install"])
         .status()
@@ -161,12 +151,9 @@ fn run_bootstrapper(path: &PathBuf) -> Result<(), String> {
         return Ok(());
     }
 
-    // Only ever surfaced when no runtime turned up either — see `ensure`. The
-    // code is passed through in hex as well as decimal because these are
-    // HRESULTs, and 0x80070002 is searchable in a way that -2147024894 is not.
-    // No attempt is made to translate it: the bootstrapper's codes are not
-    // published as a stable contract, and a wrong guess reads worse than a
-    // number. A failed download is much the likeliest cause, hence the hint.
+    // Hex included because HRESULTs are searchable in hex, not decimal. No
+    // translation: bootstrapper codes are unstable, and a wrong guess reads
+    // worse than a number.
     let code = status.code().unwrap_or(-1);
     Err(format!(
         "The WebView2 installer failed (exit code {code} / {:#010x}). It downloads the \

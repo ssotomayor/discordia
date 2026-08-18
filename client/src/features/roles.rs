@@ -76,7 +76,6 @@ pub fn RolesDialog(guild_id: Id, on_close: EventHandler<()>) -> Element {
                     }
                 }
                 div { class: "flex-1 overflow-y-auto p-3 space-y-4",
-                    // Existing roles.
                     div {
                         div { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-1.5",
                             "Defined roles"
@@ -103,7 +102,6 @@ pub fn RolesDialog(guild_id: Id, on_close: EventHandler<()>) -> Element {
                                     div {
                                         key: "{rid}",
                                         class: "border {row_cls} rounded-md p-2.5 flex flex-col gap-1.5 cursor-pointer transition-colors",
-                                        // Click to load into the editor.
                                         onclick: move |_| {
                                             editing.set(Some(rid));
                                             name.set(r_name.clone());
@@ -143,7 +141,6 @@ pub fn RolesDialog(guild_id: Id, on_close: EventHandler<()>) -> Element {
                         }
                     }
 
-                    // Create / edit form.
                     div { class: "border-t border-[var(--border)] pt-3",
                         div { class: "flex items-center mb-1.5",
                             span { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] flex-1",

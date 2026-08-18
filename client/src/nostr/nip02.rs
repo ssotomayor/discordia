@@ -114,8 +114,8 @@ pub fn parse_contact_list(event: &Event) -> ContactList {
         .filter(|t| t.first().map(String::as_str) == Some("p"))
         .filter_map(|t| {
             let pubkey = t.get(1)?.clone();
-            // A 32-byte hex key or nothing: a malformed entry from another
-            // client should not become a contact we cannot message.
+            // Reject malformed pubkeys to avoid creating uncontactable
+            // entries.
             if pubkey.len() != 64 || !pubkey.chars().all(|c| c.is_ascii_hexdigit()) {
                 return None;
             }

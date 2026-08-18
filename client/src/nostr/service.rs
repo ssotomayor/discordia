@@ -91,10 +91,8 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
         let secret = identity.secret_key();
         let (pool, mut events) = RelayPool::connect(relays.clone());
 
-        // Everything addressed to us, of the only kind that can carry a DM.
-        // Note what is *not* here: no author filter is possible, because every
-        // gift wrap is signed by a key that exists for one message. The `p` tag
-        // is the only handle there is.
+        // No author filter: gift wraps are signed by ephemeral keys. `p` is
+        // the only handle.
         pool.subscribe(vec![
             Filter {
                 kinds: Some(vec![nip59::KIND_GIFT_WRAP]),
@@ -102,9 +100,6 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
                 limit: Some(500),
                 ..Default::default()
             },
-            // Our own replaceable events: the contact list, so the people we
-            // talk to come with us to a new machine, and the DM relay list so a
-            // second device agrees with this one about where to listen.
             Filter {
                 kinds: Some(vec![nip02::KIND_CONTACTS, nip17::KIND_DM_RELAYS]),
                 authors: Some(vec![our_pubkey.clone()]),
@@ -113,8 +108,6 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
             },
         ]);
 
-        // Tell the world where to reach us, so somebody who has our npub does
-        // not have to guess which relays we read.
         pool.publish(nip17::dm_relay_list(&secret, &relays, now()));
 
         loop {
@@ -148,8 +141,6 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
                 ev = events.recv() => match ev {
                     Some(RelayEvent::Event(event)) => match event.kind {
                         nip02::KIND_CONTACTS if event.pubkey == our_pubkey => {
-                            // Last writer wins, which is what a replaceable
-                            // event means: whatever the relays hold is the list.
                             state.write().contacts = nip02::parse_contact_list(&event);
                         }
                         nip59::KIND_GIFT_WRAP => {
@@ -162,19 +153,15 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
                         state.write().nostr_relays_up.insert(url);
                     }
                     Some(RelayEvent::Disconnected { relay, why }) => {
-                        // The pool retries on its own, so this is not an error
-                        // the user can act on — but it is the only account of
-                        // *why* a relay is missing from the status line, and
-                        // the pool carried the reason up here precisely so
-                        // somebody would say it.
+                        // Pool retries automatically; this is the only source
+                        // of the disconnect reason for status.
                         eprintln!("[nostr] {relay}: disconnected ({why}), retrying");
                         state.write().nostr_relays_up.remove(&relay);
                     }
                     Some(RelayEvent::Published { relay, id, accepted, message }) => {
-                        // A publish goes to every relay and succeeds if any one
-                        // accepts, so a single rejection is not a failure. It
-                        // is still the only signal that a message did not land
-                        // somewhere, and it was being discarded whole.
+                        // Publish succeeds if any relay accepts; a single
+                        // rejection is not a failure but is the only signal of
+                        // partial delivery.
                         if !accepted {
                             eprintln!(
                                 "[nostr] {relay}: rejected event {id}{}",
@@ -187,9 +174,6 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
                         }
                     }
                     Some(RelayEvent::EndOfStored { relay }) => {
-                        // The line that separates "no history on this relay"
-                        // from "history still arriving" — which is the first
-                        // question anyone asks when a conversation opens empty.
                         eprintln!("[nostr] {relay}: finished replaying stored events");
                     }
                     None => break,
@@ -326,7 +310,6 @@ fn insert_message(msg: &nip17::ChatMessage, our_pubkey: &str, state: &mut Signal
     });
     entry.sort_by_key(|m| m.created_at);
 
-    // Badge only somebody else's message, and only when it is not on screen.
     let viewing = s.selected_channel == Some(cid) && s.dm_mode;
     if msg.author != our_pubkey && !viewing {
         *s.dm_unread.entry(cid).or_insert(0) += 1;

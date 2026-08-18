@@ -22,12 +22,8 @@ async fn next_timeout(session: &mut Bot) -> ServerMessage {
 }
 
 fn test_config(operators: std::collections::HashSet<String>) -> dioxusfun_server::ServerConfig {
-    // Counter, not a clock: pid + nanos looks unique and is not —
-    // `8f95f22` found macOS resolving `as_nanos()` to about a
-    // microsecond, so two tests starting together shared a data dir
-    // and the second one met "database is locked" on a SQLite file the
-    // first already had open. `voice.rs` was fixed then; these four
-    // kept the old key and kept flaking.
+    // pid + nanos is not unique (macOS `as_nanos()` ~1us resolution), causing
+    // SQLite lock conflicts in parallel tests.
     use std::sync::atomic::{AtomicU32, Ordering};
     static N: AtomicU32 = AtomicU32::new(0);
     let dir = std::env::temp_dir().join(format!(
@@ -226,12 +222,10 @@ async fn catalog_reaches_members_and_images_fetch_on_demand() {
         .await
         .unwrap();
 
-    // The member is told about it without asking.
     let seen = next_emojis(&mut member).await;
     assert_eq!(seen.len(), 1);
     let image = seen[0].image.clone();
 
-    // ...but the bytes only arrive when requested.
     member
         .send(&ClientMessage::FetchEmoji {
             images: vec![image.clone()],
@@ -260,7 +254,6 @@ async fn shortcodes_are_validated_and_unique() {
     let mut owner = connect_user(&url, &owner_id, "Owner").await;
     let (guild_id, _text) = create_guild(&mut owner, "Picky").await;
 
-    // Uppercase and punctuation are outside the allowed set.
     owner
         .send(&ClientMessage::CreateGuildEmoji {
             guild_id,
