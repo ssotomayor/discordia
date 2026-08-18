@@ -145,10 +145,9 @@ async fn finish(
 ) -> Result<(Mapped, MappingGuard), String> {
     let public_ip = router.public_ip().await?;
     if is_private(public_ip) {
-        // A router that reports a private address is itself behind something —
-        // the double-NAT / CGNAT case. Mapping its ports would produce an
-        // endpoint that is dialable only from the ISP's network, which is worse
-        // than admitting there is none: a friend would sit in a connect timeout.
+        // A private router address implies double-NAT/CGNAT; mapping ports
+        // would only be reachable from the ISP's network, which is worse than
+        // failing fast.
         return Err(format!(
             "your router's own address ({public_ip}) is private, so it is behind \
              another NAT — usually carrier-grade NAT at your ISP. Nothing this \
@@ -157,14 +156,11 @@ async fn finish(
         ));
     }
 
-    // The gateway is the one that must work; media is a bonus we report on.
     let gateway_port = router
         .add(PortMappingProtocol::TCP, local_ip, ports.gateway_tcp)
         .await
         .map_err(|e| format!("the router refused to forward the gateway port: {e}"))?;
 
-    // The QUIC port is mapped alongside the media ports and judged the same
-    // way — same number back, or it does not count.
     let quic_ok = match ports.quic_udp {
         Some(port) => matches!(
             router.add(PortMappingProtocol::UDP, local_ip, port).await,
@@ -181,7 +177,6 @@ async fn finish(
             (PortMappingProtocol::UDP, ports.media_udp),
         ] {
             match router.add(proto, local_ip, port).await {
-                // Same number back or nothing: see `Mapped::media`.
                 Ok(external) if external == port => {}
                 Ok(external) => {
                     tracing::warn!(
@@ -252,9 +247,8 @@ fn keep_alive(
                 _ = renew.tick() => {
                     for &(proto, internal, external) in &all {
                         match router.add(proto, local_ip, internal).await {
-                            // A renewal that comes back on a different external
-                            // port is a mapping we are no longer advertising —
-                            // the endpoint friends hold is stale from here on.
+                            // A renewal on a different external port means the
+                            // advertised endpoint is stale.
                             Ok(granted) if granted != external => tracing::warn!(
                                 %proto, internal, was = external, now = granted,
                                 "renewal moved the mapping — the advertised endpoint is stale"
@@ -269,8 +263,8 @@ fn keep_alive(
                 _ = &mut rx => break,
             }
         }
-        // Best effort: we are usually on the way out, and a lease we cannot
-        // withdraw expires on its own within the hour.
+        // Best effort: we are exiting, and unwithdrawn leases expire within
+        // the hour.
         for (proto, internal, external) in all {
             let _ = router.remove(proto, internal, external).await;
         }
@@ -309,10 +303,6 @@ fn is_private(ip: IpAddr) -> bool {
     }
 }
 
-// ---------------------------------------------------------------------------
-// The two protocols, behind one shape
-// ---------------------------------------------------------------------------
-
 enum Router {
     Igd(Box<igd_next::aio::Gateway<igd_next::aio::tokio::Tokio>>),
     NatPmp(natpmp::NatpmpAsync<tokio::net::UdpSocket>),
@@ -320,10 +310,8 @@ enum Router {
 
 async fn igd_router(local_ip: Ipv4Addr) -> Result<Router, String> {
     let options = igd_next::SearchOptions {
-        // Search from the interface we will be forwarding to. On a machine with
-        // several (a VPN, a container bridge, a second NIC) the default
-        // wildcard bind can find a router that cannot route to `local_ip`, and
-        // the mapping it hands back points somewhere useless.
+        // Bind to the forwarding interface; a wildcard bind may find a router
+        // that cannot route to `local_ip`.
         bind_addr: SocketAddr::new(IpAddr::V4(local_ip), 0),
         timeout: Some(DISCOVERY_TIMEOUT),
         ..Default::default()
@@ -373,8 +361,8 @@ impl Router {
     ) -> Result<u16, String> {
         match self {
             Router::Igd(g) => {
-                // Re-adding an identical mapping is how renewal works — IGD
-                // treats it as an update, so this is idempotent by design.
+                // Re-adding an identical mapping is how IGD renewal works
+                // (idempotent update).
                 g.add_port(
                     protocol,
                     port,
@@ -417,9 +405,8 @@ impl Router {
                 .await
                 .map_err(|e| e.to_string()),
             Router::NatPmp(n) => {
-                // NAT-PMP has no delete verb: a lifetime of zero *is* the
-                // delete, and a public port of zero means "whichever you gave
-                // me" — the private port is what identifies the mapping.
+                // NAT-PMP has no delete verb: lifetime 0 is the delete, and
+                // public port 0 means "whichever you gave me".
                 n.send_port_mapping_request(natpmp_proto(protocol), internal_port, 0, 0)
                     .await
                     .map_err(|e| e.to_string())?;

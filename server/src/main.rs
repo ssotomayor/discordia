@@ -8,8 +8,6 @@ async fn main() {
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .init();
 
-    // Subcommands for guild graduation (Phase 6). Anything else falls through
-    // to the normal serve path.
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(String::as_str) {
         Some("export") => return run_export(&args[2..]).await,
@@ -22,17 +20,16 @@ async fn main() {
         .parse()
         .expect("DIOXUSFUN_ADDR must be host:port");
 
-    // Auto-spawn the bundled LiveKit unless the operator explicitly points
-    // us at an external instance (e.g. LiveKit Cloud) via env.
+    // Auto-spawn bundled LiveKit unless an external instance is configured via
+    // LIVEKIT_URL.
     let want_autospawn = std::env::var("DIOXUSFUN_LIVEKIT_AUTOSPAWN")
         .map(|v| !matches!(v.as_str(), "0" | "false" | "no"))
         .unwrap_or(true);
     let livekit_present = std::env::var("LIVEKIT_URL").is_ok();
 
     let _livekit_handle = if want_autospawn && !livekit_present {
-        // No advertised address here: a standalone server is deployed at an
-        // address someone already chose, so its LiveKit needs no NAT story of
-        // its own. Set `LIVEKIT_URL` when it is behind one.
+        // Pass None for address: standalone LiveKit needs no NAT config. Set
+        // LIVEKIT_URL if behind NAT.
         match dioxusfun_server::livekit_bundle::spawn_livekit(None).await {
             Ok(child) => {
                 tracing::info!("bundled livekit-server started on port 7880");
@@ -59,8 +56,8 @@ async fn main() {
         "livekit configured (URLs handed to clients are derived per-connection unless explicit_url is set)"
     );
 
-    // Operators own system guilds (the seeded Lobby) so it can be moderated.
-    // Comma-separated hex pubkeys; empty leaves the Lobby unmanaged.
+    // Operators (comma-separated hex pubkeys) can moderate the seeded Lobby.
+    // Empty leaves it unmanaged.
     let operators: std::collections::HashSet<String> = std::env::var("DIOXUSFUN_OPERATORS")
         .unwrap_or_default()
         .split(',')
@@ -74,8 +71,6 @@ async fn main() {
         );
     }
 
-    // Durable data root: SQLite DB + media blobs. Default keeps everything in
-    // one directory an operator can back up by copying.
     let data_dir: std::path::PathBuf = std::env::var("DIOXUSFUN_DATA_DIR")
         .unwrap_or_else(|_| "./discordia-data".into())
         .into();
@@ -98,7 +93,6 @@ async fn main() {
             tracing::info!("ctrl+c — shutting down");
         }
     }
-    // _livekit_handle drops here, killing the subprocess.
 }
 
 /// The durable data root the CLI operates on (same default as the server).
@@ -151,11 +145,8 @@ async fn run_export(args: &[String]) {
                 eprintln!("usage: discordia export --all <out-dir>");
                 std::process::exit(2);
             };
-            // Loudly, because this is a backup command. An unwritable
-            // directory used to be ignored here, and then every write below
-            // failed just as quietly — so the run printed "exported 0
-            // guild(s)" and exited 0. A backup that reports success while
-            // writing nothing is worse than one that fails.
+            // Fail loudly: a backup that reports success while writing nothing
+            // is worse than one that fails.
             if let Err(e) = std::fs::create_dir_all(dir) {
                 eprintln!("could not create {dir}: {e}");
                 std::process::exit(1);
@@ -175,8 +166,6 @@ async fn run_export(args: &[String]) {
                             }
                         }
                     }
-                    // A guild that vanished between the load and the export is
-                    // not an error; one that failed to export is.
                     Ok(None) => {}
                     Err(e) => {
                         eprintln!("could not export {}: {e}", g.id);

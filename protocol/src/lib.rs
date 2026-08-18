@@ -268,7 +268,6 @@ mod level_tests {
         assert_eq!(level_progress(10), (2, 0, 20)); // rolled into level 2
         assert_eq!(level_progress(29), (2, 19, 20));
         assert_eq!(level_progress(30), (3, 0, 30));
-        // Level only ever increases with XP.
         let mut last = 0;
         for xp in 0..1000 {
             let l = level_progress(xp).0;
@@ -296,8 +295,7 @@ mod username_tests {
             "   ",
             &"a".repeat(33),
             &"a".repeat(200),
-            // The case a single leading trim misses: truncation lands on a
-            // space, so the result would still need trimming.
+            // Truncation landing on a space requires a second trim pass.
             &format!("{} b", "a".repeat(31)),
             &format!("{}   tail", "x".repeat(30)),
             "🙂🙂🙂",
@@ -494,10 +492,6 @@ pub struct VoiceState {
     #[serde(default)]
     pub screen_sharing: bool,
 }
-
-// ---------------------------------------------------------------------------
-// Bot platform (Tier 1)
-// ---------------------------------------------------------------------------
 
 /// What an installed bot is allowed to *do* in a guild. Granted by the guild
 /// owner at install time (Discord's model: the host decides, not the bot).

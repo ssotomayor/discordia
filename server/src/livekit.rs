@@ -97,18 +97,11 @@ impl LiveKitConfig {
             return url.clone();
         }
         let host = client_host.map(host_without_port).unwrap_or("127.0.0.1");
-        // Loopback means "this connection reached us locally" — true for us,
-        // and also for anyone proxied in by the rendezvous, because the relay
-        // adapter dials our gateway on loopback. The two are indistinguishable
-        // here, so the substituted address has to serve both.
-        //
-        // A public address serves both; the LAN one only serves a proxied
-        // friend who happens to be on this network, and hands everyone else an
-        // address they cannot dial (they then sit in a LiveKit connect timeout
-        // rather than being told voice is unavailable). It stays as the last
-        // resort because it is right for the two cases that are *not* remote —
-        // us, and a LAN friend — and dropping it would take voice away from
-        // both. See `docs/AUDIT-2026-08-17.md` for the part this does not fix.
+        // Loopback is indistinguishable between local and relay-proxied
+        // connections, so the substituted address must serve both.
+        // A public address works for all; a LAN address only works for
+        // local/LAN peers and causes timeouts for remote peers, so it is the
+        // last resort.
         let host = match (&self.public_host, &self.lan_host, is_loopback(host)) {
             (Some(public), _, true) => public.as_str(),
             (None, Some(lan), true) => lan.as_str(),
@@ -171,8 +164,6 @@ pub async fn voice_token(
                 room: room_name(channel_id),
                 identity: user_pubkey.to_string(),
                 name: username.to_string(),
-                // Voice is symmetric: everyone in a voice channel talks. Same
-                // grant `mint_token` signs locally.
                 can_publish: true,
             })
             .await
@@ -324,18 +315,15 @@ mod tests {
             claims.video
         };
 
-        // Renders everyone's share, and captures on Windows.
         let webview = grants(&pubkey, true);
         assert!(webview.can_publish);
         assert!(webview.can_subscribe);
 
-        // Subscribe-only: it feeds stream audio into the cpal mixer.
         let audio = grants(&screen_audio_identity(&pubkey), false);
         assert!(!audio.can_publish);
         assert!(!audio.can_publish_data);
         assert!(audio.can_subscribe);
 
-        // Publishes natively captured screen video.
         let video = grants(&screen_video_identity(&pubkey), true);
         assert!(video.can_publish);
     }
@@ -405,7 +393,6 @@ mod tests {
         for h in ["127.0.0.1:9000", "localhost:9000", "[::1]:9000"] {
             assert_eq!(cfg.url_for_client(Some(h)), "ws://192.168.0.61:7880");
         }
-        // A real LAN/remote host header is still honoured verbatim.
         assert_eq!(
             cfg.url_for_client(Some("192.168.0.99:9000")),
             "ws://192.168.0.99:7880"
@@ -431,8 +418,6 @@ mod tests {
             cfg.url_for_client(Some("127.0.0.1:9000")),
             "ws://203.0.113.5:7880"
         );
-        // A client that reached us on a real address still keeps it: they
-        // already proved that address works by arriving on it.
         assert_eq!(
             cfg.url_for_client(Some("192.168.0.99:9000")),
             "ws://192.168.0.99:7880"

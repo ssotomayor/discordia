@@ -28,12 +28,10 @@ pub async fn upload_blob(
     let expiration = (created_at + AUTH_TTL_SECS).to_string();
     let content = "Upload blob";
 
-    // Tags per BUD-01: verb, target hash, and an expiration.
     let tags = serde_json::json!([["t", "upload"], ["x", sha_hex], ["expiration", expiration],]);
 
-    // NIP-01 event id = sha256 of the canonical serialization
-    // [0, pubkey, created_at, kind, tags, content]. Our content/tags are ASCII,
-    // so serde_json's compact output is canonical here.
+    // NIP-01 event id is sha256 of canonical serialization. ASCII content/tags
+    // make serde_json's compact output canonical.
     let serialized = serde_json::to_string(&serde_json::json!([
         0,
         identity.pubkey,

@@ -138,8 +138,7 @@ fn newest_release(releases: Vec<Release>, mine: u64) -> Option<Update> {
 /// a broken one could ship unnoticed for months. Same `[tag] message` shape the
 /// rest of the client uses.
 pub async fn check_for_update() -> Option<Update> {
-    // A dev build has nothing to compare against, and telling someone who
-    // compiled the tree that a release exists is noise rather than news.
+    // Dev builds have no release to compare against; checking would be noise.
     let mine = is_release().then(|| release_number(VERSION))??;
     let url = releases_url().or_else(|| {
         eprintln!(
@@ -243,7 +242,6 @@ mod tests {
             releases_url_from("https://github.com/ssotomayor/discordia").as_deref(),
             Some(ours)
         );
-        // The shapes a `repository` field is written in.
         for variant in [
             "https://github.com/ssotomayor/discordia/",
             "https://github.com/ssotomayor/discordia.git",
@@ -255,7 +253,6 @@ mod tests {
                 "did not normalise {variant:?}"
             );
         }
-        // A fork's own.
         assert_eq!(
             releases_url_from("https://github.com/someone/fork").as_deref(),
             Some("https://api.github.com/repos/someone/fork/releases")
@@ -274,8 +271,6 @@ mod tests {
             "https://github.com/owner/name/tree/master",
             "git@github.com:owner/name.git",
             "http://github.com/owner/name",
-            // The one the hand-rolled parser let through: an empty owner, which
-            // it turned into `.../repos//name/releases`.
             "https://github.com//name",
             "https://github.com//",
             "https://github.com/owner/.git",

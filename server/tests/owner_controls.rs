@@ -23,12 +23,8 @@ async fn next_timeout(session: &mut Bot) -> ServerMessage {
 /// Per-test ServerConfig: unique temp data dir (SQLite + media) so tests are
 /// hermetic and parallel-safe.
 fn test_config(operators: std::collections::HashSet<String>) -> dioxusfun_server::ServerConfig {
-    // Counter, not a clock: pid + nanos looks unique and is not —
-    // `8f95f22` found macOS resolving `as_nanos()` to about a
-    // microsecond, so two tests starting together shared a data dir
-    // and the second one met "database is locked" on a SQLite file the
-    // first already had open. `voice.rs` was fixed then; these four
-    // kept the old key and kept flaking.
+    // Use counter, not clock: `as_nanos()` has ~1us resolution on macOS,
+    // causing collisions and SQLite lock errors in parallel tests.
     use std::sync::atomic::{AtomicU32, Ordering};
     static N: AtomicU32 = AtomicU32::new(0);
     let dir = std::env::temp_dir().join(format!(
@@ -129,7 +125,6 @@ async fn role_crud_and_broadcast() {
         }
     }
 
-    // Create — both parties see the new role list.
     owner
         .send(&ClientMessage::CreateRole {
             guild_id,
@@ -154,7 +149,6 @@ async fn role_crud_and_broadcast() {
     assert_eq!(roles[0].permissions, vec![Permission::KickMembers]);
     let role_id = roles[0].id;
 
-    // Assign to the member — everyone gets the MemberUpdate.
     owner
         .send(&ClientMessage::AssignRole {
             guild_id,
@@ -172,7 +166,6 @@ async fn role_crud_and_broadcast() {
     };
     assert!(updated.roles.contains(&role_id));
 
-    // A fresh joiner receives the role list in GuildJoined.
     let fresh_id = BotIdentity::generate();
     let (mut fresh, _) = connect_user(&url, &fresh_id, "Fresh").await;
     fresh
@@ -190,7 +183,6 @@ async fn role_crud_and_broadcast() {
     };
     assert_eq!(joined_roles.len(), 1, "roles travel with GuildJoined");
 
-    // Delete — the role list empties and the assignment is stripped.
     owner
         .send(&ClientMessage::DeleteRole { guild_id, role_id })
         .await
@@ -244,7 +236,6 @@ async fn manage_guild_role_unlocks_accent() {
         }
     }
 
-    // Plain member can't restyle.
     member
         .send(&ClientMessage::SetGuildAccent {
             guild_id,
@@ -255,8 +246,6 @@ async fn manage_guild_role_unlocks_accent() {
     let err = next_error(&mut member).await;
     assert!(err.contains("manage_guild"), "got: {err}");
 
-    // Owner mints an Admin role (ManageGuild is owner-touch-only — fine, the
-    // owner IS touching it) and assigns it.
     owner
         .send(&ClientMessage::CreateRole {
             guild_id,
@@ -288,7 +277,6 @@ async fn manage_guild_role_unlocks_accent() {
         }
     }
 
-    // Retry — now it works and the owner sees the GuildUpdate.
     member
         .send(&ClientMessage::SetGuildAccent {
             guild_id,
@@ -335,7 +323,6 @@ async fn role_escalation_blocked() {
         }
     }
 
-    // Owner grants a role with ManageRoles + KickMembers.
     owner
         .send(&ClientMessage::CreateRole {
             guild_id,
@@ -367,7 +354,6 @@ async fn role_escalation_blocked() {
         }
     }
 
-    // 1. Moderator mints a ManageGuild role → owner-only, rejected.
     moderator
         .send(&ClientMessage::CreateRole {
             guild_id,
@@ -380,7 +366,6 @@ async fn role_escalation_blocked() {
     let err = next_error(&mut moderator).await;
     assert!(err.contains("owner-only"), "got: {err}");
 
-    // 2. Moderator mints a BanMembers role they don't hold → subset rule.
     moderator
         .send(&ClientMessage::CreateRole {
             guild_id,
@@ -393,8 +378,6 @@ async fn role_escalation_blocked() {
     let err = next_error(&mut moderator).await;
     assert!(err.contains("don't hold it yourself"), "got: {err}");
 
-    // 3. Moderator can't touch (edit/delete) the ManageRoles-carrying role
-    //    they themselves hold — owner-only.
     moderator
         .send(&ClientMessage::DeleteRole { guild_id, role_id })
         .await
@@ -402,7 +385,6 @@ async fn role_escalation_blocked() {
     let err = next_error(&mut moderator).await;
     assert!(err.contains("owner-only"), "got: {err}");
 
-    // 4. But a role within their own grants is fine.
     moderator
         .send(&ClientMessage::CreateRole {
             guild_id,
@@ -432,7 +414,6 @@ async fn system_guild_is_immutable() {
 
     let user_id = BotIdentity::generate();
     let (mut session, guilds) = connect_user(&url, &user_id, "Anyone").await;
-    // Everyone lands in the seeded Lobby (empty owner).
     let lobby = guilds
         .iter()
         .find(|g| g.owner_pubkey.is_empty())
@@ -463,10 +444,6 @@ async fn system_guild_is_immutable() {
 
     handle.abort();
 }
-
-// ---------------------------------------------------------------------------
-// Phase 3 — membership: private guilds, invites, kick/ban/leave
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn private_guild_hidden_and_invite_flow() {
@@ -517,7 +494,6 @@ async fn private_guild_hidden_and_invite_flow() {
     let err = next_error(&mut guest).await;
     assert!(err.contains("invite-only"), "got: {err}");
 
-    // Owner mints an invite; the guest joins with it.
     owner
         .send(&ClientMessage::CreateInvite {
             guild_id,
@@ -554,7 +530,6 @@ async fn private_guild_hidden_and_invite_flow() {
         }
     }
 
-    // Rotation invalidates the old code.
     owner
         .send(&ClientMessage::CreateInvite {
             guild_id,
@@ -612,8 +587,6 @@ async fn kick_removes_and_ban_blocks() {
         }
     }
 
-    // Kick: the victim's client receives a targeted GuildDelete; the owner
-    // sees the roster row removed.
     owner
         .send(&ClientMessage::KickMember {
             guild_id,
@@ -634,7 +607,6 @@ async fn kick_removes_and_ban_blocks() {
         }
     }
 
-    // Kicked ≠ banned: rejoining works.
     target
         .send(&ClientMessage::JoinGuild {
             guild_id,
@@ -652,7 +624,6 @@ async fn kick_removes_and_ban_blocks() {
         }
     }
 
-    // Ban: removed again AND both join paths are blocked.
     owner
         .send(&ClientMessage::BanMember {
             guild_id,
@@ -714,7 +685,6 @@ async fn kick_removes_and_ban_blocks() {
         "a valid invite must not beat a ban; got: {err}"
     );
 
-    // Unban restores access.
     owner
         .send(&ClientMessage::UnbanMember {
             guild_id,
@@ -758,7 +728,6 @@ async fn moderation_guard_rails() {
     let (mut owner, _) = connect_user(&url, &owner_id, "Owner").await;
     let (guild_id, _) = create_guild(&mut owner, "Guarded").await;
 
-    // Two moderators, both holding KickMembers.
     let (mut mod_a, _) = connect_user(&url, &mod_a_id, "ModA").await;
     let (mut mod_b, _) = connect_user(&url, &mod_b_id, "ModB").await;
     for m in [&mut mod_a, &mut mod_b] {
@@ -799,7 +768,6 @@ async fn moderation_guard_rails() {
             .await
             .unwrap();
     }
-    // Wait until mod A sees both assignments land.
     let mut assigned = 0;
     while assigned < 2 {
         if let ServerMessage::MemberUpdate(m) = next_timeout(&mut mod_a).await
@@ -809,7 +777,6 @@ async fn moderation_guard_rails() {
         }
     }
 
-    // 1. Moderator can't kick the owner.
     mod_a
         .send(&ClientMessage::KickMember {
             guild_id,
@@ -820,7 +787,6 @@ async fn moderation_guard_rails() {
     let err = next_error(&mut mod_a).await;
     assert!(err.contains("owner"), "got: {err}");
 
-    // 2. Moderator can't kick themselves.
     mod_a
         .send(&ClientMessage::KickMember {
             guild_id,
@@ -831,7 +797,6 @@ async fn moderation_guard_rails() {
     let err = next_error(&mut mod_a).await;
     assert!(err.contains("yourself"), "got: {err}");
 
-    // 3. Moderators can't moderate moderators.
     mod_a
         .send(&ClientMessage::KickMember {
             guild_id,
@@ -842,7 +807,6 @@ async fn moderation_guard_rails() {
     let err = next_error(&mut mod_a).await;
     assert!(err.contains("only the owner"), "got: {err}");
 
-    // 4. Bots are uninstalled, not kicked.
     let bot_id = BotIdentity::generate();
     owner
         .send(&ClientMessage::InstallBot {
@@ -872,7 +836,6 @@ async fn moderation_guard_rails() {
     let err = next_error(&mut owner).await;
     assert!(err.contains("uninstall"), "got: {err}");
 
-    // 5. The owner CAN kick a moderator.
     owner
         .send(&ClientMessage::KickMember {
             guild_id,
@@ -889,7 +852,6 @@ async fn moderation_guard_rails() {
         }
     }
 
-    // 6. Leaving: a member exits voluntarily; the owner can't.
     mod_a
         .send(&ClientMessage::LeaveGuild { guild_id })
         .await
@@ -911,10 +873,6 @@ async fn moderation_guard_rails() {
 
     handle.abort();
 }
-
-// ---------------------------------------------------------------------------
-// Phase 4 — channels + moderation (minimal)
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn channel_crud_gated_and_broadcast() {
@@ -943,7 +901,6 @@ async fn channel_crud_gated_and_broadcast() {
         }
     }
 
-    // Plain member can't create channels.
     member
         .send(&ClientMessage::CreateChannel {
             guild_id,
@@ -956,7 +913,6 @@ async fn channel_crud_gated_and_broadcast() {
     let err = next_error(&mut member).await;
     assert!(err.contains("manage_channels"), "got: {err}");
 
-    // Owner creates one — the member sees the broadcast.
     owner
         .send(&ClientMessage::CreateChannel {
             guild_id,
@@ -974,7 +930,6 @@ async fn channel_crud_gated_and_broadcast() {
     assert_eq!(created.name, "announcements");
     assert_eq!(created.topic.as_deref(), Some("Big news only"));
 
-    // Rename + flag read-only; the member sees the update.
     owner
         .send(&ClientMessage::UpdateChannel {
             channel_id: created.id,
@@ -994,7 +949,6 @@ async fn channel_crud_gated_and_broadcast() {
     assert_eq!(updated.name, "news");
     assert!(updated.read_only);
 
-    // Delete it; the member sees ChannelDelete.
     owner
         .send(&ClientMessage::DeleteChannel {
             channel_id: created.id,
@@ -1008,7 +962,6 @@ async fn channel_crud_gated_and_broadcast() {
         }
     }
 
-    // The last text channel is protected.
     owner
         .send(&ClientMessage::DeleteChannel {
             channel_id: first_text,
@@ -1048,7 +1001,6 @@ async fn read_only_channel_gates_posting() {
         }
     }
 
-    // Flag the channel read-only.
     owner
         .send(&ClientMessage::UpdateChannel {
             channel_id: text_channel,
@@ -1069,7 +1021,6 @@ async fn read_only_channel_gates_posting() {
         }
     }
 
-    // Plain member is blocked.
     member
         .send_message(text_channel, "can I talk?")
         .await
@@ -1077,7 +1028,6 @@ async fn read_only_channel_gates_posting() {
     let err = next_error(&mut member).await;
     assert!(err.contains("read-only"), "got: {err}");
 
-    // The owner posts fine (implicit all permissions).
     owner
         .send_message(text_channel, "official news")
         .await
@@ -1089,8 +1039,6 @@ async fn read_only_channel_gates_posting() {
         }
     }
 
-    // A SendMessages-only bot is silenced; regranting with ManageMessages
-    // (announcement bot) unblocks it.
     let bot_id = BotIdentity::generate();
     owner
         .send(&ClientMessage::InstallBot {
@@ -1180,7 +1128,6 @@ async fn delete_message_rules() {
         }
     }
 
-    // Author posts, then deletes their own message — everyone sees it vanish.
     author
         .send_message(text_channel, "oops, typo")
         .await
@@ -1206,7 +1153,6 @@ async fn delete_message_rules() {
         }
     }
 
-    // A plain member can't delete someone else's message.
     author.send_message(text_channel, "hot take").await.unwrap();
     let msg_id = loop {
         if let ServerMessage::MessageCreate(m) = next_timeout(&mut plain).await
@@ -1225,8 +1171,8 @@ async fn delete_message_rules() {
     let err = next_error(&mut plain).await;
     assert!(err.contains("manage_messages"), "got: {err}");
 
-    // The owner (implicit ManageMessages) can moderate it away. (Loop until
-    // the MATCHING delete — the author's queue may still hold the first one.)
+    // Loop until the matching delete arrives; the author's queue may still
+    // hold the first one.
     owner
         .send(&ClientMessage::DeleteMessage {
             channel_id: text_channel,
@@ -1250,10 +1196,6 @@ async fn delete_message_rules() {
 
     handle.abort();
 }
-
-// ---------------------------------------------------------------------------
-// Phase 5 — delegation + branding
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn transfer_ownership_swaps_powers() {
@@ -1283,7 +1225,6 @@ async fn transfer_ownership_swaps_powers() {
         }
     }
 
-    // Non-owner can't transfer; transfers to non-members are rejected.
     let (mut outsider, _) = connect_user(&url, &outsider_id, "Outsider").await;
     outsider
         .send(&ClientMessage::TransferOwnership {
@@ -1304,7 +1245,6 @@ async fn transfer_ownership_swaps_powers() {
     let err = next_error(&mut old_owner).await;
     assert!(err.contains("must already be a member"), "got: {err}");
 
-    // Real transfer: everyone sees the new owner_pubkey.
     old_owner
         .send(&ClientMessage::TransferOwnership {
             guild_id,
@@ -1321,7 +1261,6 @@ async fn transfer_ownership_swaps_powers() {
     };
     assert_eq!(updated.owner_pubkey, new_id.pubkey());
 
-    // The old owner has lost the implicit powers...
     old_owner
         .send(&ClientMessage::DeleteGuild { guild_id })
         .await
@@ -1329,7 +1268,6 @@ async fn transfer_ownership_swaps_powers() {
     let err = next_error(&mut old_owner).await;
     assert!(err.contains("owner"), "got: {err}");
 
-    // ...and the new owner has gained them.
     new_owner
         .send(&ClientMessage::DeleteGuild { guild_id })
         .await
@@ -1373,7 +1311,6 @@ async fn guild_branding() {
         }
     }
 
-    // Description + a small data-URL banner propagate to members.
     owner
         .send(&ClientMessage::SetGuildProfile {
             guild_id,
@@ -1393,7 +1330,6 @@ async fn guild_branding() {
     assert_eq!(updated.description.as_deref(), Some("The prettiest guild"));
     assert!(updated.banner.is_some());
 
-    // Oversized images are rejected.
     let huge = format!("data:image/png;base64,{}", "A".repeat(3_100_000));
     owner
         .send(&ClientMessage::SetGuildProfile {
@@ -1405,11 +1341,9 @@ async fn guild_branding() {
         .await
         .unwrap();
     let err = next_error(&mut owner).await;
-    // The rejection should tell the user the size that would work, not just
-    // that a rule exists.
+    // Error must include the size limit, not just a generic rejection.
     assert!(err.contains("MB"), "got: {err}");
 
-    // A plain member can't rebrand.
     member
         .send(&ClientMessage::SetGuildProfile {
             guild_id,
@@ -1424,10 +1358,6 @@ async fn guild_branding() {
 
     handle.abort();
 }
-
-// ---------------------------------------------------------------------------
-// Operators — the escape hatch that makes the seeded (system) Lobby moderatable
-// ---------------------------------------------------------------------------
 
 /// Spawn a gateway that designates `operator` as owner of system guilds.
 async fn spawn_with_operator(operator: &str) -> (String, dioxusfun_server::ServerHandle) {
@@ -1444,7 +1374,6 @@ async fn operator_can_moderate_system_guild() {
     let op_id = BotIdentity::generate();
     let (url, handle) = spawn_with_operator(op_id.pubkey()).await;
 
-    // The operator connects and lands in the seeded Lobby (empty owner).
     let (mut op, guilds) = connect_user(&url, &op_id, "Operator").await;
     let lobby = guilds
         .iter()
@@ -1452,7 +1381,6 @@ async fn operator_can_moderate_system_guild() {
         .expect("seeded system guild")
         .id;
 
-    // A NON-operator in the same Lobby still can't manage it.
     let rando_id = BotIdentity::generate();
     let (mut rando, _) = connect_user(&url, &rando_id, "Rando").await;
     rando
@@ -1465,7 +1393,6 @@ async fn operator_can_moderate_system_guild() {
     let err = next_error(&mut rando).await;
     assert!(err.contains("manage_guild"), "got: {err}");
 
-    // The operator CAN restyle + create roles in the Lobby.
     op.send(&ClientMessage::SetGuildAccent {
         guild_id: lobby,
         accent: Some("#abcdef".into()),
@@ -1498,7 +1425,6 @@ async fn operator_can_moderate_system_guild() {
     };
     assert!(roles.iter().any(|r| r.name == "Lobby Mod"));
 
-    // But the Lobby stays undeletable and non-transferable, even for the operator.
     op.send(&ClientMessage::DeleteGuild { guild_id: lobby })
         .await
         .unwrap();
@@ -1520,10 +1446,6 @@ async fn operator_can_moderate_system_guild() {
     handle.abort();
 }
 
-// ---------------------------------------------------------------------------
-// Level system — message-XP → levels, broadcast on level-up
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn message_xp_levels_up_per_guild() {
     let (url, handle) = spawn_gateway().await;
@@ -1532,8 +1454,8 @@ async fn message_xp_levels_up_per_guild() {
     let (mut owner, _) = connect_user(&url, &owner_id, "Grinder").await;
     let (guild_id, text) = create_guild(&mut owner, "XP Farm").await;
 
-    // Level 1 spans 10 XP; the 10th message rolls the author into level 2 and
-    // triggers a MemberUpdate (targeted at this guild) carrying the new XP.
+    // Level 1 requires 10 XP; the 10th message triggers a MemberUpdate with
+    // the new level.
     for i in 0..10 {
         owner.send_message(text, &format!("msg {i}")).await.unwrap();
     }
@@ -1553,8 +1475,7 @@ async fn message_xp_levels_up_per_guild() {
         "10 messages → level 2"
     );
 
-    // XP is per-guild: a fresh guild starts the same user back at 0. Verify
-    // both values via a second session's Ready roster (which stamps XP).
+    // XP is per-guild; verify reset via a second session's Ready roster.
     let (guild2, _) = create_guild(&mut owner, "Fresh Start").await;
     let mut second = Bot::connect_as_user(&url, &owner_id, "Grinder")
         .await
@@ -1577,10 +1498,6 @@ async fn message_xp_levels_up_per_guild() {
 
     handle.abort();
 }
-
-// ---------------------------------------------------------------------------
-// Phase 4 — community safety: gates, panic mode, slowmode, audit, templates
-// ---------------------------------------------------------------------------
 
 use dioxusfun_server::protocol::JoinGate;
 
@@ -1636,7 +1553,6 @@ async fn rules_gate_requires_accept() {
 
     let joiner_id = BotIdentity::generate();
     let (mut joiner, _) = connect_user(&url, &joiner_id, "Joiner").await;
-    // First attempt (no accept) → challenge, not a join.
     joiner
         .send(&ClientMessage::JoinGuild {
             guild_id,
@@ -1655,7 +1571,6 @@ async fn rules_gate_requires_accept() {
     assert_eq!(challenge.0, JoinGate::Rules);
     assert_eq!(challenge.1.as_deref(), Some("Be nice."));
 
-    // Accept → joins.
     joiner
         .send(&ClientMessage::JoinGuild {
             guild_id,
@@ -1718,13 +1633,8 @@ async fn pow_gate_requires_valid_nonce() {
             break (pow_challenge.unwrap(), pow_difficulty.unwrap());
         }
     };
-    // A bogus nonce is rejected — re-challenged rather than admitted.
-    //
-    // **This is the half of the test that gives it its name, and it used to be
-    // a comment rather than an assertion.** The bogus attempt was sent, the
-    // answer ignored, and the test went on to prove only that a *valid* nonce
-    // works. Making `pow_ok` return `true` unconditionally — the gate accepting
-    // anything at all — left it green.
+    // Bogus nonce must be rejected (re-challenged), not admitted. This
+    // assertion prevents the gate from accepting any nonce.
     joiner
         .send(&ClientMessage::JoinGuild {
             guild_id,
@@ -1744,7 +1654,6 @@ async fn pow_gate_requires_valid_nonce() {
         other => panic!("expected a re-challenge, got {other:?}"),
     }
 
-    // Solve it for real → joins.
     let nonce = solve_pow(&challenge, bits);
     joiner
         .send(&ClientMessage::JoinGuild {
@@ -1844,7 +1753,6 @@ async fn slowmode_throttles_posting() {
         }
     }
 
-    // First post ok, second throttled for the member.
     member.send_message(text, "one").await.unwrap();
     loop {
         if let ServerMessage::MessageCreate(m) = next_timeout(&mut member).await
@@ -1960,22 +1868,17 @@ async fn community_template_seeds_roles_and_channels() {
     handle.abort();
 }
 
-// ---------------------------------------------------------------------------
-// Phase 5b — catalog on-demand + paginated (no broadcast storm)
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn fetch_catalog_returns_public_guilds_paginated() {
     let (url, handle) = spawn_gateway().await;
     let owner_id = BotIdentity::generate();
     let (mut owner, _) = connect_user(&url, &owner_id, "Owner").await;
-    // Create three public guilds.
     for n in ["Alpha", "Bravo", "Charlie"] {
         create_guild(&mut owner, n).await;
     }
 
-    // Page 0, limit 2 → 2 guilds, total reflects all public guilds (incl. any
-    // seeded system guild that is public).
+    // Total includes any seeded public system guilds, so it may exceed the 3
+    // created here.
     owner
         .send(&ClientMessage::FetchCatalog {
             offset: 0,
@@ -1997,7 +1900,6 @@ async fn fetch_catalog_returns_public_guilds_paginated() {
     assert_eq!(page0.len(), 2, "page honors the limit");
     assert!(total >= 3, "total counts all public guilds, got {total}");
 
-    // Next page continues without overlap.
     owner
         .send(&ClientMessage::FetchCatalog {
             offset: 2,
@@ -2027,7 +1929,6 @@ async fn creating_a_guild_no_longer_floods_bystanders_with_catalog() {
     let (mut owner, _) = connect_user(&url, &owner_id, "Owner").await;
     let (mut bystander, _) = connect_user(&url, &bystander_id, "Bystander").await;
 
-    // Owner creates a guild; the bystander is not a member.
     owner
         .send(&ClientMessage::CreateGuild {
             name: "NoStorm".into(),
@@ -2044,8 +1945,8 @@ async fn creating_a_guild_no_longer_floods_bystanders_with_catalog() {
         }
     }
 
-    // The bystander must NOT receive an unsolicited GuildCatalog push. Give the
-    // server a beat, then assert nothing catalog-shaped is queued for them.
+    // Bystander is not a member; assert no unsolicited GuildCatalog push
+    // arrives.
     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
     let got_push = tokio::time::timeout(
         std::time::Duration::from_millis(200),
@@ -2054,7 +1955,6 @@ async fn creating_a_guild_no_longer_floods_bystanders_with_catalog() {
     .await
     .ok()
     .flatten();
-    // Anything else — a timeout, or an unrelated frame — means the storm is gone.
     if let Some(ServerMessage::GuildCatalog { .. }) = got_push {
         panic!("bystander got an unsolicited catalog push")
     }
@@ -2152,7 +2052,6 @@ async fn an_invite_stops_working_once_its_uses_are_spent() {
     assert_eq!(uses, 0, "a fresh code has spent nothing");
     assert_eq!(expires_at, None, "no TTL was asked for");
 
-    // First guest gets in.
     let (mut first, _) = connect_user(&url, &BotIdentity::generate(), "First").await;
     first
         .send(&ClientMessage::JoinByInvite {
@@ -2171,7 +2070,6 @@ async fn an_invite_stops_working_once_its_uses_are_spent() {
     };
     assert_eq!(joined, guild_id);
 
-    // Second guest is refused, and told the same thing a bad code is told.
     let (mut second, _) = connect_user(&url, &BotIdentity::generate(), "Second").await;
     second
         .send(&ClientMessage::JoinByInvite {
@@ -2232,7 +2130,6 @@ async fn fetching_an_invite_replaces_a_dead_one() {
 
     let (dead, _, _, _) = mint_invite(&mut owner, guild_id, Some(0), None).await;
 
-    // `rotate: false` — the "give me the current one" path.
     owner
         .send(&ClientMessage::CreateInvite {
             guild_id,
@@ -2266,7 +2163,6 @@ async fn a_reorder_does_not_overwrite_a_concurrent_edit() {
     let (mut owner, _) = connect_user(&url, &owner_id, "Owner").await;
     let (guild_id, first) = create_guild(&mut owner, "Ordered").await;
 
-    // A second channel, so there is something to reorder against.
     owner
         .send(&ClientMessage::CreateChannel {
             guild_id,
@@ -2282,7 +2178,6 @@ async fn a_reorder_does_not_overwrite_a_concurrent_edit() {
         }
     };
 
-    // Somebody sets a topic on the row that is about to be renumbered.
     owner
         .send(&ClientMessage::UpdateChannel {
             channel_id: first,
@@ -2360,7 +2255,7 @@ async fn reordering_a_whole_guild_costs_one_rate_limit_hit() {
         }
     }
 
-    // Thirteen rows renumbered at once. Under the old path this was thirteen
+    // Thirteen rows renumbered at once; under the old path this was thirteen
     // frames against a 30-per-10s window already spent on the creates.
     let positions: Vec<(Id, u32)> = ids
         .iter()
@@ -2427,14 +2322,9 @@ async fn a_rename_reaches_the_guild_without_a_reconnect() {
         .await
         .unwrap();
 
-    // The owner is told, without either side reconnecting.
-    //
-    // Matched on the guild as well as the pubkey, because a rename touches
-    // *every* guild the user is in — they are also in the system Lobby — and
-    // which update arrives first is `DashMap` iteration order rather than
-    // anything this test should depend on. Breaking on the first one passed on
-    // Windows and failed on CI's Linux, which is the same test asserting two
-    // different things on two machines.
+    // Match on guild_id as well as pubkey: a rename touches every guild the
+    // user is in, and DashMap iteration order is non-deterministic across
+    // platforms.
     let updated = loop {
         if let ServerMessage::MemberUpdate(m) = next_timeout(&mut owner).await
             && m.user.pubkey == friend_id.pubkey()
@@ -2445,8 +2335,8 @@ async fn a_rename_reaches_the_guild_without_a_reconnect() {
     };
     assert_eq!(updated.user.username, "Bartolomé");
 
-    // And the name the next message is attributed to has moved too, which is
-    // the half a member-row update alone would miss.
+    // Verifies the name attribution moved too, which a member-row update alone
+    // would miss.
     friend.send_message(text, "same me").await.unwrap();
     let posted = loop {
         if let ServerMessage::MessageCreate(m) = next_timeout(&mut owner).await
@@ -2516,7 +2406,7 @@ async fn a_bot_cannot_rename_itself() {
         "expected the bot allowlist refusal, got: {refusal}"
     );
 
-    // And nothing moved: the label its installer chose still names its messages.
+    // Verifies the bot's label still names its messages.
     bot.send_message(text, "hello").await.unwrap();
     let posted = loop {
         if let ServerMessage::MessageCreate(m) = next_timeout(&mut owner).await

@@ -133,9 +133,9 @@ impl Capture {
             .map_err(|e| format!("create shutdown event: {e}"))?;
         let shutdown = SendHandle(shutdown);
 
-        // Setup runs on the capture thread and reports back, so a device that
-        // refuses raw mode reaches the caller with its real reason instead of
-        // surfacing later as a microphone that is simply silent.
+        // Report setup failures synchronously so a device refusing raw mode
+        // surfaces its real reason immediately, rather than appearing as a
+        // silent mic later.
         let (ready_tx, ready_rx) = std_mpsc::channel::<Result<(), String>>();
         let thread = std::thread::Builder::new()
             .name("dxf-rawmic-win".into())
@@ -264,7 +264,6 @@ fn setup(device: Option<String>, bypass: bool) -> Result<Started, String> {
     let client: IAudioClient = unsafe { device.Activate(CLSCTX_ALL, None) }
         .map_err(|e| format!("open the microphone: {}", explain(e.code())))?;
 
-    // The whole point of the module, and it only works before `Initialize`.
     let client2: IAudioClient2 = client
         .cast()
         .map_err(|_| "this microphone's driver is too old for raw mode".to_string())?;
@@ -272,11 +271,9 @@ fn setup(device: Option<String>, bypass: bool) -> Result<Started, String> {
         cbSize: std::mem::size_of::<AudioClientProperties>() as u32,
         bIsOffload: false.into(),
         eCategory: AudioCategory_Other,
-        // `bypass` is always true in the client. It is a parameter so that a
-        // test can open the *same* endpoint the other way and compare, which is
-        // the only way to see whether the endpoint had any processing to skip —
-        // `SetClientProperties` succeeding says the request was accepted, not
-        // that anything changed.
+        // bypass is always true in the client; the parameter exists so a test
+        // can open the same endpoint both ways to verify if processing was
+        // actually skipped.
         Options: if bypass {
             AUDCLNT_STREAMOPTIONS_RAW
         } else {
@@ -453,8 +450,7 @@ fn describe(format: *const WAVEFORMATEX) -> Result<Format, String> {
 /// Hand buffers to the sink as the engine signals them.
 fn pump(started: &Started, sink: &mut Sink, shutdown: SendHandle) -> Result<(), String> {
     let handles = [started.event.0, shutdown.0];
-    // Reused for the life of the capture: this thread is the audio path, and an
-    // allocation per buffer is an allocation 100 times a second.
+    // Reused to avoid allocating 100 times a second on the audio path.
     let mut scratch: Vec<f32> = Vec::with_capacity(4096);
 
     loop {
@@ -653,9 +649,8 @@ mod tests {
             Arc::new(Mutex::new(String::new())),
         );
 
-        // Both first, so the overlap is as close to the whole window as the two
-        // opens allow. They are separate clients on one endpoint, which shared
-        // mode permits — exclusive mode would make the second one fail.
+        // Open both first to maximize overlap. Shared mode permits two clients
+        // on one endpoint; exclusive mode would fail the second.
         let raw = collect(true, raw_buf.clone(), raw_fmt.clone());
         let cooked = collect(false, cooked_buf.clone(), cooked_fmt.clone());
 
@@ -688,12 +683,8 @@ mod tests {
                 20.0 * (r_rms / c_rms).log10()
             );
         }
-        // The reading that would otherwise be misread as an answer. A first run
-        // here landed on the default capture device — a rear-panel line-in with
-        // nothing plugged into it — and reported a flawless 0.00 dB difference
-        // between the two paths. That is not "raw mode does nothing": it is two
-        // captures of the same silence, and an effects chain has nothing to act
-        // on either. Whoever runs this next needs to see that said out loud.
+        // Prevents misinterpreting a silent line-in as 'raw mode does
+        // nothing'. A flawless 0.00 dB difference on silence is meaningless.
         if r_peak.max(c_peak) < SILENCE_FLOOR {
             println!(
                 "NOTHING WAS HEARD: peak {:.4} on the louder path, below the                  {SILENCE_FLOOR} floor. This run compares silence to silence and                  says nothing about raw mode. Check which device the [rawmic]                  line above opened — the Windows default is often a line-in                  with nothing in it — then make noise and run it again.",
@@ -701,12 +692,9 @@ mod tests {
             );
         }
 
-        // Sharper than comparing levels, and the thing that turned out to
-        // matter: are the two streams the same *samples*? Two independent
-        // clients on one endpoint getting bit-identical audio means the engine
-        // handed both the same buffers, which is what "the flag changed
-        // nothing" looks like from here — as opposed to two similar-sounding
-        // but separately-processed streams.
+        // Bit-identical samples prove the engine handed both clients the same
+        // buffers (flag changed nothing), unlike similar-sounding but
+        // separately-processed streams.
         let overlap = r.len().min(c.len());
         let differing = r[..overlap]
             .iter()
@@ -779,8 +767,5 @@ mod tests {
             "raw mode opened and delivered nothing at all — the microphone \
              would be silent for the whole call"
         );
-        // Not asserted on: a silent room is a legitimate reading, and the point
-        // of the run is the line above plus whatever the peak says to whoever
-        // spoke into it.
     }
 }

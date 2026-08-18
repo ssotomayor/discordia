@@ -71,7 +71,6 @@ async fn register(base: &str) -> serde_json::Value {
     let (mut ws, _) = tokio_tungstenite::connect_async(format!("{base}/control"))
         .await
         .unwrap();
-    // Challenge first; an anonymous host ignores it.
     loop {
         if let Message::Text(t) = ws.next().await.unwrap().unwrap() {
             let v: serde_json::Value = serde_json::from_str(&t).unwrap();
@@ -189,9 +188,6 @@ async fn a_rendezvous_without_an_sfu_offers_no_livekit_url() {
 #[tokio::test]
 async fn a_proxied_friend_is_handed_the_lan_address_when_nothing_better_exists() {
     let (url, _handle) = spawn_gateway(LiveKitConfig {
-        // Exactly what `start_self_host` builds when the rendezvous supplies no
-        // SFU: nothing pinned, no minter, and this machine's LAN address as the
-        // stand-in for loopback.
         explicit_url: None,
         port: 7880,
         lan_host: Some(LAN_HOST.into()),

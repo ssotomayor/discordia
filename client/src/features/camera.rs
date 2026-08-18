@@ -106,8 +106,8 @@ pub fn toggle_camera(
     on: bool,
 ) {
     if !on {
-        // Stopping is local and immediate — there is nothing to fail, so unlike
-        // starting, the UI can be told now. Same shape as the share button.
+        // Stopping is local/immediate, so update UI before eval (unlike
+        // starting).
         state.write().camera_on = false;
         state.write().camera_starting = false;
         let _ = document::eval(&stop_camera_js());
@@ -155,10 +155,8 @@ pub fn CameraBridge() -> Element {
             );
             match eval.recv::<bool>().await {
                 Ok(v) => s.write().camera_capture_available = v,
-                // Fail open, for the same reason the screen probe does: a false
-                // negative disables a working feature and tells the user
-                // something untrue, while a false positive costs one failed
-                // attempt that reports its own reason.
+                // Fail open: false negative disables working feature; false
+                // positive costs one failed attempt.
                 Err(e) => {
                     eprintln!("[camera] capture probe failed, assuming available: {e:?}");
                     s.write().camera_capture_available = true;
@@ -167,16 +165,12 @@ pub fn CameraBridge() -> Element {
         }
     });
 
-    // Populate the device list once, so the picker is not empty the first time
-    // it is opened. Labels will be blank until a grant exists; that is handled
-    // where they are rendered.
     use_hook(|| {
         let _ = document::eval(&list_cameras_js());
     });
 
-    // The screen room going away takes the camera with it — the JS `disconnect`
-    // already released the device, this is the Rust half. Covers leaving voice,
-    // being kicked, and the token being cleared for any other reason.
+    // Screen room disconnect releases camera device; this is the Rust-side
+    // cleanup.
     let mut had_token = use_signal(|| false);
     use_effect(move || {
         let has = state.read().screen_token.is_some();
@@ -196,21 +190,9 @@ pub fn CameraBridge() -> Element {
         let mut state = state;
         let gateway = gateway_pump.clone();
         async move {
-            // Its own listener and its own guard flag: sharing the share pump's
-            // would mean one `if` deciding which messages either feature sees.
-            // The sink is reassigned on *every* eval; the listener is registered
-            // once. That split is the whole point, and it is the shape
-            // `features::chat`'s drop handler already uses.
-            //
-            // A listener holds the `dioxus.send` of the eval that created it,
-            // and this component is remounted whenever the session is — a
-            // disconnect sets `session` to None and the workspace is rebuilt.
-            // The webview is never reloaded, so a guard on registration alone
-            // meant the second mount registered nothing and the first mount's
-            // send was already dead: every camera message from then on
-            // disappeared into the `catch`, for the life of the process. The
-            // symptom was a camera that started, previewed, published, and was
-            // never announced to anyone — "Starting your camera…" forever.
+            // Listener registered once, sink reassigned every eval: remounts
+            // kill the old send, so a registration-only guard would drop all
+            // messages after the first remount.
             let bridge_js = r#"
             window.__dxfCameraSink = function (m) { try { dioxus.send(m); } catch (err) {} };
             if (!window.__dxfCameraWired) {
@@ -227,16 +209,14 @@ pub fn CameraBridge() -> Element {
             let mut eval = document::eval(bridge_js);
             while let Ok(msg) = eval.recv::<Value>().await {
                 match msg.get("__dxf").and_then(|v| v.as_str()) {
-                    // Publishing succeeded — only now is the camera on.
                     Some("camera-started") => {
                         {
                             let mut w = state.write();
                             w.camera_on = true;
                             w.camera_starting = false;
                         }
-                        // Persist what actually opened, not what was asked for,
-                        // so a fallback to another camera is not remembered as
-                        // the user's choice.
+                        // Persist the actual device, not the requested one, so
+                        // a fallback isn't remembered as the user's choice.
                         let id = msg.get("deviceId").and_then(|v| v.as_str()).unwrap_or("");
                         let label = msg.get("label").and_then(|v| v.as_str()).unwrap_or("");
                         if !id.is_empty() {
@@ -249,8 +229,6 @@ pub fn CameraBridge() -> Element {
                         }
                         gateway.send(ClientMessage::SetCamera { on: true });
                     }
-                    // The track ended: our own Stop, an unplug, or another app
-                    // taking the device. All the same to the UI.
                     Some("camera-ended") => {
                         let was = state.read().camera_on;
                         {
@@ -258,16 +236,15 @@ pub fn CameraBridge() -> Element {
                             w.camera_on = false;
                             w.camera_starting = false;
                         }
-                        // Only announce a transition we had announced the start
-                        // of, or a failed start would tell the channel a camera
-                        // it never saw has stopped.
+                        // Only announce if we announced the start, otherwise a
+                        // failed start would tell the channel a camera it
+                        // never saw has stopped.
                         if was {
                             gateway.send(ClientMessage::SetCamera { on: false });
                         }
                     }
-                    // The user said no, or dismissed the OS prompt. Retrying
-                    // cannot help with a decision, so this explains where to
-                    // change it instead of offering another go.
+                    // Retrying a denied permission is futile; point the user
+                    // to OS settings instead.
                     Some("camera-denied") => {
                         let mut w = state.write();
                         w.camera_on = false;
@@ -346,10 +323,8 @@ pub fn CameraSelfPreview() -> Element {
 
     let mut px = use_signal(|| 968.0_f64);
     let mut py = use_signal(|| 280.0_f64);
-    // Sized so the *video* is 16/9, which is what every camera actually
-    // produces: the window is the picture plus `SELF_CHROME` of title bar. The
-    // old 240×176 made a 240×144 video inside a box shaped like nothing,
-    // which is where the "too small, and letterboxed as well" came from.
+    // Sized for 16:9 video (what cameras produce) plus title bar; the old
+    // 240x176 resulted in a letterboxed, too-small preview.
     let mut pw = use_signal(|| 360.0_f64);
     let mut ph = use_signal(|| 360.0 * 9.0 / 16.0 + SELF_CHROME);
     let mut drag = use_signal(|| None::<Drag>);
@@ -357,8 +332,8 @@ pub fn CameraSelfPreview() -> Element {
     let on = use_memo(move || state.read().camera_on);
     let starting = use_memo(move || state.read().camera_starting);
 
-    // Belt-and-braces with the attach the JS does as soon as the stream opens:
-    // this covers the window being (re)mounted after the capture already began.
+    // Covers window remounts after capture has already begun, complementing
+    // the JS attach.
     let mut last = use_signal(|| false);
     use_effect(move || {
         let v = on();
@@ -382,11 +357,9 @@ pub fn CameraSelfPreview() -> Element {
                     let c = e.client_coordinates();
                     match drag() {
                         Some(Drag::Move { dx, dy }) => { px.set(c.x - dx); py.set(c.y - dy); }
-                        // Width drives, height follows at 16/9. A free resize
-                        // here would break the one assumption that lets the
-                        // preview use `object-fit: cover` without cropping —
-                        // see `attachLocalCamera`. `h0` is unused for exactly
-                        // that reason.
+                        // Width drives, height follows at 16/9 to preserve the
+                        // `object-fit: cover` assumption in
+                        // `attachLocalCamera`.
                         Some(Drag::Resize { px: spx, w0, .. }) => {
                             let w = (w0 + (c.x - spx)).max(240.0);
                             pw.set(w);
@@ -427,9 +400,6 @@ pub fn CameraSelfPreview() -> Element {
             // (`innerHTML = ''`), so anything Dioxus renders inside would be
             // torn out from under the VDOM.
             div { id: "camera-self", class: "flex-1 min-h-0 bg-black" }
-            // Resize grip. The `Drag::Resize` arm above has been here since the
-            // window was written, but nothing ever raised it — the preview was
-            // stuck at whatever size it was born with.
             div {
                 class: "absolute right-0 bottom-0 w-3 h-3 cursor-nwse-resize",
                 onmousedown: move |e| {
@@ -502,11 +472,8 @@ pub fn CameraGridWindow() -> Element {
     let mut ph = use_signal(|| 500.0_f64);
     let mut drag = use_signal(|| None::<Drag>);
 
-    // Intersected with who is *actually* publishing, not taken from the watch
-    // set alone: someone can turn their camera off while you are watching, and a
-    // tile pointed at a track that no longer exists sits on "Connecting…"
-    // forever. Never ourselves — our own picture is the self-preview, and
-    // subscribing to it would be a pointless round trip through the SFU.
+    // Intersect with actual publishers to avoid tiles stuck on "Connecting…"
+    // for stopped cameras. Exclude self to avoid pointless SFU round trips.
     let others = use_memo(move || {
         let s = state.read();
         let Some(cid) = s.voice.channel_id else {
@@ -519,9 +486,6 @@ pub fn CameraGridWindow() -> Element {
             .collect::<Vec<_>>()
     });
 
-    // A square-ish grid: as many columns as the square root of the count, and
-    // whatever rows that needs. Both are `1fr`, so however the window is
-    // resized the tiles divide all of it.
     let cols = use_memo(move || (others().len() as f64).sqrt().ceil().max(1.0) as usize);
     let rows = use_memo(move || others().len().div_ceil(cols()).max(1));
 
@@ -549,10 +513,8 @@ pub fn CameraGridWindow() -> Element {
         }
         div {
             class: "fixed flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl overflow-hidden dxf-pop-in",
-            // z-index inline: between the self-preview (30) and the screen watch
-            // window (40). No bracketed z utility for that value is in the
-            // committed Tailwind output, and mentioning one here would generate
-            // it — see the note on the tile's aspect ratio.
+            // z-index 35 is inline because no Tailwind utility exists for it,
+            // and adding one would bloat the CSS.
             style: "left: {px}px; top: {py}px; width: {pw}px; height: {ph}px; z-index: 35;",
             div {
                 class: "h-8 px-2.5 flex items-center gap-1.5 border-b border-[var(--border)] shrink-0 cursor-move select-none",
@@ -566,10 +528,9 @@ pub fn CameraGridWindow() -> Element {
                     title: "Stop watching every camera",
                     onmousedown: move |e| {
                         e.stop_propagation();
-                        // Clears the whole watch set rather than hiding a window
-                        // that still holds subscriptions: the roster icons are
-                        // the switches, so the ✕ has to turn them all off or it
-                        // would lie about what is still being downloaded.
+                        // Clears the whole set because the roster icons are
+                        // the switches; hiding just this window would leave
+                        // subscriptions active and misrepresent the state.
                         state.write().cameras_watching.clear();
                     },
                     "✕"
@@ -595,7 +556,6 @@ pub fn CameraGridWindow() -> Element {
                     CameraTile { key: "{pk}", pubkey: pk.clone() }
                 }
             }
-            // Resize grip, same affordance as the screen watch window.
             div {
                 class: "absolute right-0 bottom-0 w-3 h-3 cursor-nwse-resize",
                 onmousedown: move |e| {

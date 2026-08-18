@@ -132,9 +132,8 @@ impl Tap {
             return;
         }
 
-        // AudioBufferList ends in a C flexible array. Query the required size
-        // first: `size_of::<AudioBufferList>()` only has room for one entry,
-        // while ScreenCaptureKit commonly supplies two non-interleaved buffers.
+        // Query size first: `size_of::<AudioBufferList>()` only fits one
+        // entry, but ScreenCaptureKit supplies two.
         let mut needed = 0usize;
         // SAFETY: only the size out-pointer is requested in this first pass.
         let query_status = unsafe {
@@ -235,9 +234,6 @@ impl Tap {
             return;
         }
 
-        // Cut into exact frames; the remainder waits for the next callback.
-        // The channels were already folded together above — ScreenCaptureKit
-        // delivers one buffer per channel, not interleaved.
         self.ivars().cutter.borrow_mut().push_mono(&mono);
     }
 }

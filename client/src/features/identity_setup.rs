@@ -35,8 +35,6 @@ pub fn IdentitySetupView(on_done: EventHandler<Identity>) -> Element {
 
     rsx! {
         div { class: "h-full w-full flex bg-[var(--bg)]",
-            // Brand panel matches the Connect screen so first-launch
-            // feels like the same app.
             div {
                 class: "dxf-drag-region hidden md:flex w-2/5 min-w-[340px] max-w-[520px] flex-col items-center justify-center px-10 bg-[var(--bg)]",
                 onmousedown: move |_| crate::app::start_window_drag(),
@@ -69,9 +67,8 @@ pub fn IdentitySetupView(on_done: EventHandler<Identity>) -> Element {
                     class: "dxf-drag-region h-8 shrink-0 {mac_top_pad}",
                     onmousedown: move |_| crate::app::start_window_drag(),
                 }
-                // flex column so the `my-auto` below has free space to
-                // distribute; see the note in `connect.rs` for why auto margins
-                // rather than justify-center on a scrolling container.
+                // flex column so my-auto has space to distribute; see
+                // connect.rs for why auto margins over justify-center.
                 div { class: "flex-1 overflow-auto px-8 py-8 flex flex-col dxf-no-drag",
                     div { class: "w-full max-w-md mx-auto my-auto space-y-5",
 
@@ -144,9 +141,6 @@ pub fn IdentitySetupView(on_done: EventHandler<Identity>) -> Element {
                                         style: "background: var(--bg2);",
                                         "{pubkey}"
                                     }
-                                    // Same colour signature the profile card
-                                    // shows — the key becomes recognisable at
-                                    // the moment it's created.
                                     div { class: "flex gap-1 pt-1",
                                         for c in crate::identity::color_signature(&pubkey, 16) {
                                             div { class: "h-2 flex-1 rounded-full", style: "background: {c};" }
@@ -180,29 +174,12 @@ pub fn IdentitySetupView(on_done: EventHandler<Identity>) -> Element {
                                         class: INPUT,
                                         r#type: "text",
                                         value: "{display_name}",
-                                        // The server stores at most this much
-                                        // and both ends now sign the truncated
-                                        // form — so the field stops there too
-                                        // rather than silently shortening a
-                                        // name the user typed in full. See
-                                        // `truncate_username` for why it is not
-                                        // the `maxlength` attribute doing it.
-                                        //
-                                        // Clamping on input rather than in the
-                                        // attribute means the 33rd keystroke
-                                        // sets `display_name` to the string it
-                                        // already held, so the field only stays
-                                        // in step because Dioxus re-applies
-                                        // `value` even when the diff says it
-                                        // did not change: it is declared
-                                        // `value: String volatile` in
-                                        // `dioxus-html`'s element table, and
-                                        // `dioxus-core`'s `diff/node.rs` writes
-                                        // an attribute `if volatile ||
-                                        // attribute_changed`. That is a
-                                        // framework guarantee this code leans
-                                        // on and cannot test from here — what
-                                        // gets signed is right either way.
+                                        // Clamp on input rather than via
+                                        // `maxlength` so the signed value
+                                        // matches the stored truncation.
+                                        // Relies on Dioxus `volatile` re-
+                                        // applying `value` to keep the field
+                                        // in sync.
 
                                         oninput: move |e| display_name.set(crate::protocol::truncate_username(&e.value())),
                                     }
@@ -251,8 +228,6 @@ pub fn IdentitySetupView(on_done: EventHandler<Identity>) -> Element {
                                     r#type: "text",
                                     placeholder: "your-handle",
                                     value: "{display_name}",
-                                    // Truncated here, not by `maxlength` —
-                                    // see `protocol::truncate_username`.
                                     oninput: move |e| display_name.set(crate::protocol::truncate_username(&e.value())),
                                 }
                             }
@@ -304,8 +279,6 @@ pub fn IdentitySetupView(on_done: EventHandler<Identity>) -> Element {
                                     r#type: "text",
                                     placeholder: "your-handle",
                                     value: "{display_name}",
-                                    // Truncated here, not by `maxlength` —
-                                    // see `protocol::truncate_username`.
                                     oninput: move |e| display_name.set(crate::protocol::truncate_username(&e.value())),
                                 }
                             }

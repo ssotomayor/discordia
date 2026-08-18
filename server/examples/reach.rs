@@ -48,11 +48,7 @@ const TIMEOUT: Duration = Duration::from_secs(15);
 #[tokio::main]
 async fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
-    // `--coordinated` may appear anywhere; pull it out before anything else
-    // reads positionally.
-    // `--coordinated <relay-url>`: the relay has to be named, because there is
-    // no default any more. In practice it is the one your rendezvous reports at
-    // `GET /config`.
+    // Pull out before positional parsing; relay URL is required (no default).
     let coordination = match args.iter().position(|a| a == "--coordinated") {
         Some(i) => {
             args.remove(i);
@@ -83,8 +79,8 @@ async fn main() {
     }
 
     let result = if args[0] == "--key" {
-        // An address is required only without a coordinator. With one, being
-        // findable by key alone is the whole point of the exercise.
+        // Address required only without a coordinator; with one, key lookup is
+        // the point.
         if args.len() < 2 {
             eprintln!("--key needs an endpoint id");
             std::process::exit(2);
@@ -134,9 +130,8 @@ async fn listen(coordination: Coordination) {
         .await
         .expect("bind quic");
 
-    // With a coordinator allowed, wait to reach a relay before printing
-    // anything: until then there is no introduction on offer, and the only
-    // addresses are ones this network can use.
+    // Wait for relay before printing: until then, no introduction is
+    // available.
     if coordination.is_coordinated() {
         println!("reaching a relay …");
         let _ = tokio::time::timeout(Duration::from_secs(20), endpoint.online()).await;
@@ -161,7 +156,6 @@ async fn listen(coordination: Coordination) {
         .expect("serve quic");
     println!("\nlistening as {key}\n");
     if coordination.is_coordinated() {
-        // No address: being findable by key alone is the thing under test.
         println!("  dial from anywhere:  reach --coordinated <relay-url> --key {key}");
     } else {
         for addr in dioxusfun_server::quic::dialable_addrs(&handle.sockets) {
@@ -208,18 +202,13 @@ async fn reach_quic(
         .parse()
         .map_err(|e| format!("that is not an endpoint key: {e}"))?;
     let parsed: Vec<SocketAddr> = addrs.iter().filter_map(|a| a.parse().ok()).collect();
-    // Coordinated, the key is enough: the relay knows where the host is, which
-    // is the entire point. Uncoordinated, an address is all we have.
     if parsed.is_empty() && !coordination.is_coordinated() {
         return Err("no usable ip:port addresses given".into());
     }
     println!("dialling key {key} at {parsed:?} (coordination: {coordination:?}) …");
     let started = Instant::now();
 
-    // Uncoordinated this has to prove the *address* works, so no relay and no
-    // discovery: a connection quietly rescued by a third party would prove the
-    // opposite of what is being asked. Coordinated is the other test entirely —
-    // let the relay introduce us, then check what we actually got.
+    // Uncoordinated: no relay/discovery, to prove the address itself works.
     let endpoint = Endpoint::builder(presets::Minimal)
         .relay_mode(coordination.relay_mode()?)
         .bind()

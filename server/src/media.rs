@@ -108,8 +108,8 @@ impl MediaStore {
         let now = SystemTime::now();
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
-            // `.<name>.tmp` is a half-written blob owned by `store_data_url`;
-            // it is not addressable and not ours to reason about here.
+            // Skip temp files; they are half-written blobs owned by
+            // `store_data_url` and not addressable.
             if name.starts_with('.') {
                 continue;
             }
@@ -166,15 +166,10 @@ fn ext_for_mime(mime: &str) -> Option<&'static str> {
         "image/gif" => Some("gif"),
         "image/webp" => Some("webp"),
         "image/avif" => Some("avif"),
-        // An attachment on an end-to-end encrypted DM. The bytes are already
-        // ciphertext when they arrive, so there is nothing here to sniff or
-        // validate — which is exactly why it needs its own mime rather than
-        // being smuggled in as `image/png`. Everything else about the blob path
-        // still applies: it is hashed, shared and swept like any other.
-        //
-        // Note that two encryptions of the same picture do *not* dedup, because
-        // each carries its own random key. That is a feature: dedup across
-        // senders would tell the operator that two people sent the same image.
+        // E2E encrypted DM attachment. Bytes are ciphertext on arrival, so no
+        // sniffing/validation is possible.
+        // Distinct mime prevents dedup across senders (which would leak that
+        // two people sent the same image).
         ENCRYPTED_BLOB_MIME => Some("enc"),
         _ => None,
     }
@@ -193,11 +188,8 @@ fn mime_for_name(name: &str) -> &'static str {
         Some("gif") => "image/gif",
         Some("webp") => "image/webp",
         Some("avif") => "image/avif",
-        // Round-trips to what `store_data_url` accepted, so a re-inlined blob
-        // is handed back to the client in the same form it was sent. Inlining
-        // it as `application/octet-stream` would still decrypt, but the client
-        // could no longer tell an encrypted attachment from any other opaque
-        // byte string.
+        // Round-trips to the accepted mime so the client can distinguish
+        // encrypted attachments from opaque byte strings.
         Some("enc") => ENCRYPTED_BLOB_MIME,
         _ => "application/octet-stream",
     }
@@ -249,14 +241,12 @@ mod tests {
         let name = sentinel.strip_prefix(SENTINEL).unwrap().to_string();
         assert!(dir.path().join(&name).exists(), "blob was written");
 
-        // Referenced: kept, even with no grace at all.
         let referenced: HashSet<String> = [name.clone()].into_iter().collect();
         let report = media.sweep(&referenced, Duration::ZERO);
         assert_eq!(report.kept, 1);
         assert_eq!(report.deleted, 0);
         assert!(dir.path().join(&name).exists());
 
-        // Unreferenced: taken, and the freed bytes are reported.
         let report = media.sweep(&HashSet::new(), Duration::ZERO);
         assert_eq!(report.deleted, 1);
         assert!(report.freed_bytes > 0, "freed bytes must be counted");
@@ -290,7 +280,6 @@ mod tests {
         assert_eq!(sanitize(&ok).as_deref(), Some(ok.as_str()));
 
         for bad in [
-            // Traversal, in the spellings a router might normalise differently.
             "../../etc/passwd",
             "..%2f..%2fetc%2fpasswd",
             "....//....//etc/passwd",
@@ -300,15 +289,12 @@ mod tests {
             "/etc/passwd",
             r"C:\Windows\win.ini",
             r"\\server\share\file.png",
-            // Right shape, wrong alphabet: a hash is hex and nothing else.
             &format!("{}.png", "g".repeat(64)),
             &format!("{}.png", "a".repeat(63)),
             &format!("{}.png", "a".repeat(65)),
-            // An extension is short and alphanumeric, or it is not one.
             &format!("{}.", "a".repeat(64)),
             &format!("{}.p n g", "a".repeat(64)),
             &format!("{}.toolong", "a".repeat(64)),
-            // No separator at all, and the empty case.
             &"a".repeat(64),
             "",
         ] {
@@ -322,8 +308,6 @@ mod tests {
     #[test]
     fn read_refuses_a_path_that_is_not_a_content_address() {
         let (media, dir) = store();
-        // A real file in the blob directory, reachable only by breaking out of
-        // the naming rule.
         std::fs::write(dir.path().join("secret.txt"), b"not a picture").expect("write");
 
         assert!(media.read("secret.txt").is_none());

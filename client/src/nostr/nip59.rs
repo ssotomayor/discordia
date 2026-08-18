@@ -57,7 +57,6 @@ pub fn wrap(
     rumor: &Rumor,
     now: i64,
 ) -> Result<Event, String> {
-    // Layer 2: seal the rumor to the recipient, signed by the real key.
     let seal_key = nip44::conversation_key(sender_secret, recipient_pubkey)?;
     let rumor_json = serde_json::to_string(rumor).map_err(|e| format!("encode rumor: {e}"))?;
     let sealed = nip44::encrypt(&seal_key, &rumor_json)?;
@@ -65,7 +64,6 @@ pub fn wrap(
     // the wrap, and there is nothing a seal needs to say in the clear.
     let seal = event::sign_with(sender_secret, fuzzed(now), KIND_SEAL, vec![], sealed);
 
-    // Layer 3: a key that exists for the length of this function.
     let ephemeral = random_secret();
     let wrap_key = nip44::conversation_key(&ephemeral, recipient_pubkey)?;
     let seal_json = serde_json::to_string(&seal).map_err(|e| format!("encode seal: {e}"))?;
@@ -110,8 +108,6 @@ pub fn unwrap(our_secret: &SecretKey, gift: &Event) -> Result<Rumor, String> {
     if rumor.pubkey != seal.pubkey {
         return Err("the message claims an author who did not seal it".into());
     }
-    // And the rumor's id must describe the rumor, or the sender is handing us
-    // an identifier that will not match what we store it under.
     let expected = event::event_id(
         &rumor.pubkey,
         rumor.created_at,
@@ -231,7 +227,6 @@ mod tests {
     #[test]
     fn a_rumor_cannot_claim_an_author_who_did_not_seal_it() {
         let (alice, bob, mallory) = (key(1), key(2), key(3));
-        // A rumor that says it is from Alice, sealed and wrapped by Mallory.
         let forged = event::rumor(
             &xonly_hex(&alice),
             1_700_000_000,

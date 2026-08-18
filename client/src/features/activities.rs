@@ -72,8 +72,6 @@ pub fn ActivityHost() -> Element {
     let state = use_app_state();
     let gateway = use_gateway();
 
-    // Index into ACTIVITIES for: the picker open state, the activity awaiting
-    // consent, and the currently-launched activity.
     let mut picker_open = use_signal(|| false);
     let mut consenting = use_signal(|| None::<usize>);
     // The launched activity *and the channel it was launched from*. Bound at
@@ -82,8 +80,6 @@ pub fn ActivityHost() -> Element {
     // person who opened it has no reason to expect that.
     let mut launched = use_signal(|| None::<Launched>);
 
-    // The RPC bridge: a single long-lived eval that forwards every message from
-    // the activity iframe to Rust, where it's capability-checked and answered.
     use_future(move || {
         let gateway = gateway.clone();
         async move {
@@ -92,8 +88,6 @@ pub fn ActivityHost() -> Element {
                 let Ok(msg) = eval.recv::<Value>().await else {
                     break;
                 };
-                // Resolve the launched activity's granted capabilities live, so a
-                // closed window can't be driven and a stale request is denied.
                 let open = *launched.peek();
                 let def = open.as_ref().and_then(|l| ACTIVITIES.get(l.idx));
                 let req_id = msg.get("reqId").cloned().unwrap_or(Value::Null);
@@ -116,7 +110,6 @@ pub fn ActivityHost() -> Element {
                 } else {
                     json!({ "__dxf_reply": req_id, "ok": false, "error": payload })
                 };
-                // Post the reply back into the sandboxed frame.
                 let _ = document::eval(&format!(
                     "var f=document.getElementById('dxf-activity-frame');\
                  if(f&&f.contentWindow){{f.contentWindow.postMessage({}, '*');}}",
@@ -127,14 +120,12 @@ pub fn ActivityHost() -> Element {
     });
 
     rsx! {
-        // Floating launcher (bottom-left, mirroring the edit-layout toggle).
         button {
             class: "fixed bottom-3 left-3 z-40 border border-[var(--border)] rounded px-3 py-1 text-[10px] uppercase tracking-wider bg-[var(--panel)] hover:border-[var(--accent)] text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors",
             onclick: move |_| picker_open.set(!picker_open()),
             "Activities"
         }
 
-        // Picker → consent.
         if picker_open() {
             div {
                 class: "dxf-backdrop-in fixed inset-0 z-50 flex items-center justify-center bg-black/50",
@@ -185,7 +176,6 @@ pub fn ActivityHost() -> Element {
             }
         }
 
-        // The sandboxed activity window.
         if let Some(idx) = launched().map(|l| l.idx) {
             if let Some(def) = ACTIVITIES.get(idx) {
                 ActivityWindow { def_idx: idx, name: def.name, icon: def.icon, html: def.html,
@@ -299,8 +289,8 @@ fn ActivityWindow(
                     "✕"
                 }
             }
-            // The sandbox: scripts allowed, but a unique opaque origin (no
-            // allow-same-origin) so it can't reach the host except via postMessage.
+            // Omit allow-same-origin to force an opaque origin, isolating the
+            // sandbox from the host except via postMessage.
             iframe {
                 id: "dxf-activity-frame",
                 class: "flex-1 min-h-0 w-full bg-white border-0",
@@ -337,8 +327,7 @@ fn handle_rpc(
     method: &str,
     params: &Value,
     def: &ActivityDef,
-    // The channel this activity was launched from — where its posts go, and
-    // what `channel.get` reports, whatever the user has selected since.
+    // Bound to the launch channel, not the user's current selection.
     bound_channel: Option<Id>,
     state: &Signal<AppState>,
     gateway: &GatewayTx,
@@ -376,8 +365,6 @@ fn handle_rpc(
             if content.is_empty() {
                 return (false, json!("content is empty"));
             }
-            // Posts to the channel the activity was launched from, as the user
-            // — not to whatever is open now.
             let cid = bound_channel;
             match cid {
                 Some(channel_id) => {
@@ -385,8 +372,8 @@ fn handle_rpc(
                         channel_id,
                         content,
                         image: None,
-                        // An activity posts on its own behalf; it has no notion
-                        // of a message being answered.
+                        // Activities post on their own behalf; they have no
+                        // concept of replying to a message.
                         reply_to: None,
                     });
                     (true, json!({ "sent": true }))
@@ -477,9 +464,8 @@ const DICE_HTML: &str = r##"<!doctype html><html><head><meta charset="utf-8"><st
     dxf.getUser().then(function (u) { whoEl.textContent = 'Hi, ' + u.username; })
        .catch(function () { whoEl.textContent = ''; });
 
-    // Where a share will land. Read once is now enough: the activity is bound
-    // to the channel it was launched from, so this answer cannot go stale under
-    // it. It used to be re-read after every send precisely because it could.
+    // Read once is sufficient because the activity is bound to its launch
+    // channel, preventing stale state.
     function showWhere() {
       dxf.getChannel()
          .then(function (c) { whereEl.textContent = c && c.name ? 'shares go to #' + c.name : ''; })

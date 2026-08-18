@@ -112,8 +112,6 @@ impl LayoutStore {
             .iter()
             .map(|(k, v)| (k.clone(), *v))
             .collect();
-        // Stable ordering by id so callers persisting the layout get
-        // deterministic output.
         v.sort_by(|a, b| a.0.cmp(&b.0));
         v
     }
@@ -166,7 +164,6 @@ mod tests {
     fn raise_puts_the_item_on_top() {
         let m = rerank(z(&[("a", 1), ("b", 2), ("c", 3)]), "a");
         assert!(m["a"] > m["b"] && m["a"] > m["c"]);
-        // Relative order of the others is preserved.
         assert!(m["b"] < m["c"]);
     }
 

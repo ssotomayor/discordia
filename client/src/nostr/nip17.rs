@@ -105,9 +105,7 @@ pub fn open_chat(
     } else {
         rumor.pubkey.clone()
     };
-    // A message that is neither from us nor to us is one a relay had no
-    // business handing over; treating it as a conversation would let anyone
-    // inject a thread into somebody else's list.
+    // Reject messages not involving us to prevent thread injection.
     if rumor.pubkey != our_pubkey && recipient_of(&rumor) != Some(our_pubkey.to_string()) {
         return Err("this message is not part of a conversation we are in".into());
     }
@@ -204,7 +202,6 @@ mod tests {
         let (theirs, ours) = wrap_both(&alice, &b_pub, &r, 1_700_000_000).expect("wrap");
         assert_eq!(ours.tag("p"), Some(a_pub.as_str()));
         assert_eq!(theirs.tag("p"), Some(b_pub.as_str()));
-        // And the two wraps are unlinkable by a relay.
         assert_ne!(ours.pubkey, theirs.pubkey);
     }
 
@@ -226,7 +223,6 @@ mod tests {
     fn a_message_between_other_people_is_refused() {
         let (alice, bob, carol) = (key(1), key(2), key(3));
         let (b_pub, c_pub) = (xonly_hex(&bob), xonly_hex(&carol));
-        // Bob writes to Carol, but wraps it to Alice.
         let r = chat_rumor(&b_pub, &c_pub, "about alice…", None, 1_700_000_000);
         let to_alice = nip59::wrap(&bob, &xonly_hex(&alice), &r, 1_700_000_000).expect("wrap");
         let err = open_chat(&alice, &xonly_hex(&alice), &to_alice).expect_err("refused");

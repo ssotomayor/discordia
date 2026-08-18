@@ -16,10 +16,7 @@
 
 use tokio::sync::mpsc::UnboundedSender;
 
-// Gated like the two backends below, because it exists for them and for nothing
-// else. Where neither is compiled there is no capture to cut into frames, and
-// an ungated `mod` left the whole thing without a caller — which is dead code,
-// not a lint to silence.
+// Gated to match the backends below; without them this module is dead code.
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod frames;
 #[cfg(target_os = "macos")]

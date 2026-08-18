@@ -38,7 +38,6 @@ pub fn split_shortcodes(s: &str) -> Vec<Piece<'_>> {
             i += 1;
             continue;
         }
-        // Find the closing colon and test what sits between them.
         match s[i + 1..].find(':') {
             Some(rel) => {
                 let close = i + 1 + rel;
@@ -141,8 +140,6 @@ mod tests {
     fn handles_adjacent_punctuation_and_repeats() {
         assert_eq!(codes(":tada:!"), vec!["tada"]);
         assert_eq!(codes(":a1::b2:"), vec!["a1", "b2"]);
-        // Two chars is the minimum, so `:xx:` — not `:x:`, which the
-        // degenerate-delimiter test below asserts is *not* a shortcode.
         assert_eq!(codes(":xx:,:yy:"), vec!["xx", "yy"]);
     }
 

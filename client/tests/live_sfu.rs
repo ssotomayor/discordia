@@ -147,7 +147,6 @@ async fn subscribe_only_identity_still_receives_audio() {
     let room_name = format!("screen-{}", uuid::Uuid::new_v4());
     let pubkey = "a".repeat(64);
 
-    // The sharer: bare pubkey, publishes, exactly as the webview does.
     let (sharer, mut sharer_events) = Room::connect(
         &url,
         &token(&pubkey, &room_name, true),
@@ -156,7 +155,6 @@ async fn subscribe_only_identity_still_receives_audio() {
     .await
     .expect("sharer connects");
 
-    // The listener: `{pubkey}#audio`, minted with can_publish false.
     let (listener, mut listener_events) = Room::connect(
         &url,
         &token(&format!("{pubkey}#audio"), &room_name, false),
@@ -180,18 +178,9 @@ async fn subscribe_only_identity_still_receives_audio() {
     })
     .await;
 
-    // And the converse: with the grant revoked, the publish must not succeed.
-    // If it did, `can_publish: false` would be decorative and the token would
-    // not be the control it is documented to be.
-    //
-    // Observed against livekit-server 1.12.0, and worth knowing: the refusal is
-    // a *timeout*, not an answer — "track publication timed out, no response
-    // received from the server". The SFU drops the AddTrack request on the
-    // floor rather than rejecting it. Enforcement is real, but any code that
-    // ever tried to publish on this identity would hang for ten seconds instead
-    // of failing fast, so the assertion is on the outcome and the message is
-    // printed rather than matched. A future LiveKit that starts answering
-    // properly should not fail this test.
+    // LiveKit 1.12.0 drops AddTrack on revocation (timeout, not rejection).
+    // Assert on the error outcome, not the message, so future proper
+    // rejections don't break this.
     let refused = publish_silence(&listener, TrackSource::Microphone).await;
     assert!(
         refused.is_err(),
@@ -268,7 +257,6 @@ fn goertzel_ratio(samples: &[f32], hz: f32) -> f32 {
     }
     let re = s1 - s2 * cw;
     let im = s2 * sw;
-    // |X(k)|^2 scaled to the same units as the running sum of squares.
     let at_hz = 2.0 * (re * re + im * im) / n;
     if total <= f32::EPSILON {
         0.0
@@ -405,12 +393,9 @@ fn spawn_tone(
                 if applied.skipped < WARMUP_HOPS {
                     applied.skipped += 1;
                 } else if before > 0.0 {
-                    // Energy in and out, not a mean of per-hop dB. A hop the
-                    // model zeroes completely has no logarithm, and the previous
-                    // version dropped exactly those — biasing the number low in
-                    // the saturated case the sweep exists to show. Summing
-                    // squares counts a silenced hop as what it is: all of the
-                    // attenuation, not none of it.
+                    // Sum energy (squares) rather than averaging dB: a zeroed
+                    // hop has no log, and dropping it biases the result low in
+                    // the saturated case this sweep targets.
                     applied.energy_in += (before as f64) * (before as f64);
                     applied.energy_out += (after as f64) * (after as f64);
                     applied.hops += 1;
@@ -713,10 +698,6 @@ async fn measure_round_trip(cfg: Config) -> Metrics {
     .await
     .expect("listener connects");
 
-    // A steady sine is precisely what a noise suppressor exists to remove, so
-    // with the APM on the number says more about the suppressor than about the
-    // path. That is a reading worth having — it is what a real microphone
-    // publishes through — but it is not the baseline.
     let opts = AudioSourceOptions {
         echo_cancellation: cfg.apm,
         noise_suppression: cfg.apm,
@@ -754,8 +735,6 @@ async fn measure_round_trip(cfg: Config) -> Metrics {
     };
     let mut stream = NativeAudioStream::new(audio.rtc_track(), SAMPLE_RATE as i32, CHANNELS as i32);
 
-    // Skip the first second: the encoder ramps and the jitter buffer fills, and
-    // neither is what this measures.
     const WARMUP: Duration = Duration::from_secs(1);
     const TOTAL: Duration = Duration::from_secs(5);
     let started = Instant::now();
@@ -844,14 +823,11 @@ async fn a_tone_survives_the_round_trip() {
         "effective rate {:.0} Hz is more than 5% off nominal",
         m.rate
     );
-    // Level. Opus is lossy, not quiet: more than a few dB means a gain stage in
-    // a path that should have none.
     assert!(
         m.db.abs() < 3.0,
         "level moved by {:+.2} dB end to end",
         m.db
     );
-    // Content. Most of the energy that comes out has to still be the tone.
     assert!(
         m.band_out > 0.80,
         "only {:.1}% of the received energy is within 40 Hz of {TONE_HZ} — the \
@@ -889,8 +865,6 @@ async fn a_tone_survives_the_round_trip() {
 #[tokio::test]
 #[ignore = "needs a running LiveKit server; see the module docs"]
 async fn media_encryption_carries_audio_only_when_the_keys_agree() {
-    // Same passphrase on both ends: what a working channel key looks like once
-    // `mediakey` has done its job.
     let agreed = measure_round_trip(Config::encrypted(
         "a-shared-passphrase",
         "a-shared-passphrase",
@@ -923,8 +897,6 @@ async fn media_encryption_carries_audio_only_when_the_keys_agree() {
     let split = measure_round_trip(Config::encrypted("one-passphrase", "another-passphrase")).await;
     report("E2EE, keys differ", &split);
 
-    // The point of the whole test. Whatever the transport did, no part of the
-    // tone may be recoverable.
     assert!(
         split.r_out < agreed.r_out * 0.01,
         "audio came through at {:.4} RMS with mismatched keys, against {:.4} \
@@ -979,9 +951,8 @@ async fn media_encryption_carries_audio_only_when_the_keys_agree() {
 #[tokio::test]
 #[ignore = "needs a running LiveKit server; see the module docs"]
 async fn agc_is_measured_against_the_assumption_the_gate_default_rests_on() {
-    // Quiet, but not so quiet that Opus's own decisions dominate: −26 dBFS is
-    // where the gate sits, so this sits just under it, where a talker who is
-    // being cut actually lives.
+    // −26 dBFS is the gate threshold; this level sits just under it to test
+    // the boundary.
     const QUIET: f32 = 0.04;
 
     let off = measure_round_trip(Config::quiet_with_agc(QUIET, false)).await;
@@ -993,8 +964,6 @@ async fn agc_is_measured_against_the_assumption_the_gate_default_rests_on() {
     println!("level off / on     : {:+.2} dB / {:+.2} dB", off.db, on.db);
     println!("difference         : {:+.2} dB", on.db - off.db);
 
-    // Both runs have to have carried audio, or the comparison above is between
-    // two failures.
     assert!(
         off.samples > SAMPLE_RATE as usize && on.samples > SAMPLE_RATE as usize,
         "a run delivered too little to measure: {} off, {} on",
@@ -1009,12 +978,9 @@ async fn agc_is_measured_against_the_assumption_the_gate_default_rests_on() {
         on.band_out
     );
 
-    // The tripwire. Four runs put this at ±0.03 dB, so a decibel is comfortably
-    // outside the noise while being far below anything that would count as
-    // gain control. Failing here is good news badly timed: AGC would be doing
-    // something, and the transmit gate's default threshold — set on exactly
-    // that expectation and currently unsupported by it — would need revisiting
-    // rather than the number below.
+    // Threshold is 1.0 dB because noise is ±0.03 dB; failing here means AGC is
+    // active, which invalidates the transmit gate's default threshold (see
+    // docs/AUDIT-2026-08-17.md).
     let gain = on.db - off.db;
     assert!(
         gain.abs() < 1.0,
@@ -1098,12 +1064,8 @@ async fn the_knobs_that_shape_voice_quality_are_measured() {
                 ..base
             },
         ),
-        // The pair that has to be read together: same noisy input, APM off
-        // then on. If the suppressor runs on this path, the second row keeps a
-        // larger share of its energy in the tone's band, because the noise
-        // spread across everything else is what got removed. If the two rows
-        // match, the APM is not reaching this capture path and the baseline's
-        // reason for switching it off is about something that never happened.
+        // Compare with the APM-off row above: if they match, APM is not
+        // reaching this capture path.
         (
             "noise 0.15, APM off",
             Config {
@@ -1119,12 +1081,8 @@ async fn the_knobs_that_shape_voice_quality_are_measured() {
                 ..base
             },
         ),
-        // The ceiling, which is the one knob whose numbers were quoted from a
-        // session nobody could re-run. Read these three together and against
-        // "noise 0.15, APM off" directly above, which is the same input with no
-        // suppressor of any kind. Two questions at once: does our own model
-        // remove this noise where libwebrtc's did not, and does moving the
-        // ceiling 30 → 12 change what it removes.
+        // Compare with the APM-off row above to check if our model removes
+        // noise libwebrtc missed, and if the ceiling value matters.
         (
             "noise 0.15, DFN 30 dB",
             Config {
@@ -1141,16 +1099,9 @@ async fn the_knobs_that_shape_voice_quality_are_measured() {
                 ..base
             },
         ),
-        // Not a shipping value — the client's control stops at 30. It is here
-        // as the instrument's own scale, and it is the row that exposes the
-        // limit of this input: it takes the signal to nothing at all, `-inf` in
-        // both the applied and the level column. Read together with the two
-        // above, where applied lands on the ceiling to within hundredths of a
-        // decibel, it says the model is saturated —
-        // against a sine plus white noise it hears no speech and removes
-        // everything it is allowed to. Which is why these rows cannot answer
-        // "does 30 vs 12 matter for speech": no speech is in the path. See
-        // docs/AUDIT-2026-08-17.md, where that is now the open half.
+        // Not a shipping value (client max is 30). Used to show saturation:
+        // with no speech, high DFN removes everything, so these rows cannot
+        // answer if 30 vs 12 matters for speech.
         (
             "noise 0.15, DFN 100 dB",
             Config {

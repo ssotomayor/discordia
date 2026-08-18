@@ -94,12 +94,8 @@ impl Tap {
             return;
         };
 
-        // A degenerate buffer would only be rejected further down the encoder;
-        // refusing it here keeps it out. Dimensions come from the buffer rather
-        // than the configured size because a display-mode change mid-share
-        // (resolution switch, monitor unplugged) moves them under us — the same
-        // reason `Frame` does not carry them onward and libwebrtc asks the
-        // buffer itself.
+        // Dimensions come from the buffer, not config, because display-mode
+        // changes (resolution switch, unplug) move them under us.
         if objc2_core_video::CVPixelBufferGetWidth(&buffer) == 0
             || objc2_core_video::CVPixelBufferGetHeight(&buffer) == 0
         {
@@ -107,8 +103,8 @@ impl Tap {
         }
 
         (self.ivars().sink)(Frame { buffer });
-        // After the sink, so the count means "frames that reached the encoder",
-        // which is the question the sharer is actually asking.
+        // After the sink, so the count means "frames that reached the
+        // encoder".
         super::FRAMES_CAPTURED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 }
@@ -131,14 +127,11 @@ impl MacVideoCapture {
             let config = SCStreamConfiguration::new();
             config.setWidth(settings.width as usize);
             config.setHeight(settings.height as usize);
-            // NV12 rather than BGRA: it is what VideoToolbox and libwebrtc both
-            // want, so the frame reaches the encoder without a colour
-            // conversion. BGRA would cost a full-frame pass per frame for
-            // nothing.
+            // NV12 avoids a per-frame color conversion; both VideoToolbox and
+            // libwebrtc accept it directly.
             config.setPixelFormat(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange);
-            // A frame *ceiling*, not a target — ScreenCaptureKit only emits
-            // when the screen actually changes, so a still screen costs
-            // nothing regardless of what is set here.
+            // A ceiling, not a target: ScreenCaptureKit only emits on screen
+            // change, so a still screen costs nothing.
             config.setMinimumFrameInterval(CMTime {
                 value: 1,
                 timescale: settings.fps.max(1) as i32,
@@ -147,8 +140,8 @@ impl MacVideoCapture {
             });
             // The cursor is part of what someone is trying to show you.
             config.setShowsCursor(true);
-            // Frames are consumed inline by the sink, so a deep queue would
-            // only add latency to a stream whose whole value is being current.
+            // Frames are consumed inline; a deep queue only adds latency to a
+            // stream whose value is being current.
             config.setQueueDepth(3);
 
             let tap = Tap::alloc().set_ivars(TapState { sink, fatal });
@@ -172,9 +165,8 @@ impl MacVideoCapture {
                 )
                 .map_err(|e| format!("add screen output: {e}"))?;
 
-            // Leak the delegate for the life of the stream: ScreenCaptureKit
-            // holds it weakly, so dropping it here would leave the stream
-            // calling into freed memory.
+            // Leak the delegate: ScreenCaptureKit holds it weakly, so dropping
+            // it would leave the stream calling into freed memory.
             std::mem::forget(tap);
 
             let (done_tx, done_rx) = std_mpsc::channel();
@@ -301,8 +293,8 @@ pub fn sources() -> Result<Vec<Source>, String> {
         for (i, d) in displays.iter().enumerate() {
             out.push(Source {
                 target: Target::Display(d.displayID()),
-                // SCDisplay carries no name, so it is numbered. Worth naming
-                // only when there is more than one to tell apart.
+                // SCDisplay carries no name, so it is numbered only when there
+                // is more than one to tell apart.
                 title: if multi {
                     format!("Screen {}", i + 1)
                 } else {
@@ -320,9 +312,8 @@ pub fn sources() -> Result<Vec<Source>, String> {
             .filter(|w| is_pickable(w))
             .collect();
 
-        // One entry per app that has more than one shareable window. With a
-        // single window the app entry and the window entry would capture the
-        // same thing under two names.
+        // One entry per app with >1 shareable window; with a single window,
+        // app and window entries would capture the same thing under two names.
         let mut seen: std::collections::HashMap<i32, (String, usize)> =
             std::collections::HashMap::new();
         for w in &windows {
@@ -364,8 +355,8 @@ pub fn sources() -> Result<Vec<Source>, String> {
                 }
             })
             .collect();
-        // Grouped by app, then by title, so the list is stable between openings
-        // — an unstable picker moves the entry out from under the cursor.
+        // Grouped by app then title for stability; an unstable picker moves
+        // the entry out from under the cursor.
         wins.sort_by(|a, b| {
             let ka = a.app.as_deref().unwrap_or("").to_lowercase();
             let kb = b.app.as_deref().unwrap_or("").to_lowercase();
@@ -397,12 +388,10 @@ fn filter_for(
                     .iter()
                     .find(|d| d.displayID() == id)
                     .ok_or("that screen is no longer connected")?;
-                // Nothing excluded: "entire screen" means the screen as it is,
-                // wallpaper and dock included. The recursive-mirror artifact
-                // that usually argues for excluding ourselves needs the
-                // sharer's own window to be showing the stream, and on this
-                // path it never is — the native publisher renders no
-                // self-preview.
+                // Nothing excluded: "entire screen" means the screen as it is.
+                // The recursive-mirror artifact that argues for excluding
+                // ourselves needs the sharer's window showing the stream,
+                // which never happens here (no self-preview).
                 Ok(SCContentFilter::initWithDisplay_excludingWindows(
                     SCContentFilter::alloc(),
                     &display,
@@ -415,8 +404,8 @@ fn filter_for(
                     .iter()
                     .find(|w| w.windowID() == id)
                     .ok_or("that window has closed")?;
-                // The window wherever it is, independent of which display it
-                // sits on and of anything stacked in front of it.
+                // The window wherever it is, independent of display and
+                // stacking order.
                 Ok(SCContentFilter::initWithDesktopIndependentWindow(
                     SCContentFilter::alloc(),
                     &window,
@@ -437,11 +426,9 @@ fn filter_for(
                 let app = window
                     .owningApplication()
                     .ok_or("that app is no longer running")?;
-                // Whichever display the window's own origin falls inside.
-                // `CGRect` has no intersection helper here, and a corner test is
-                // enough: a window straddling two screens still belongs to the
-                // one its top-left is on, which is the one macOS itself counts
-                // it as being on.
+                // Use top-left origin to determine display: a window
+                // straddling screens belongs to the one its origin is on,
+                // matching macOS behavior.
                 let wf = window.frame();
                 let display = content
                     .displays()

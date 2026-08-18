@@ -49,8 +49,8 @@ impl Default for Config {
             livekit_api_secret: None,
             relay_url: None,
             heartbeat_interval: std::time::Duration::from_secs(20),
-            // Three intervals: one lost packet or a briefly busy host must not
-            // be enough to unregister someone who is actually fine.
+            // Timeouts are generous to avoid unregistering healthy peers due
+            // to transient packet loss or host busyness.
             host_timeout: std::time::Duration::from_secs(60),
         }
     }
@@ -119,9 +119,8 @@ async fn resolve(
     ctx.registry
         .lookup(&code.to_lowercase())
         .map(|mut entry| {
-            // Where to be introduced, if this deployment offers it. The joiner
-            // needs it for the same reason the host did, and this is the only
-            // response it fetches before dialling.
+            // Joiner needs the relay URL for the same reason the host did;
+            // this is the only response fetched before dialling.
             entry.relay_url = ctx.config.relay_url.clone();
             Json(entry)
         })

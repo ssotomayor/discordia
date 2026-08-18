@@ -174,7 +174,6 @@ mod tests {
     #[test]
     fn snap_aligns_a_near_miss_to_a_neighbour() {
         let neighbour = FloatRect::new(0.5, 0.0, 0.5, 1.0);
-        // Left edge 0.008 short of the neighbour's left edge.
         let dragged = FloatRect::new(0.492, 0.3, 0.2, 0.2);
         let snapped = dragged.snap_edges(&[neighbour], 0.01);
         assert!((snapped.x - 0.5).abs() < 1e-9, "{snapped:?}");

@@ -218,7 +218,6 @@ impl AppState {
                 Member {
                     user: User { pubkey, username },
                     guild_id: gid,
-                    // Presence is ephemeral: everyone starts offline.
                     online: false,
                     bot,
                     roles: role_ids,
@@ -462,8 +461,6 @@ impl AppState {
         {
             return None;
         }
-        // Level changed — surface the member row so the new level renders in
-        // that guild's rosters.
         let member = self
             .members
             .get(&guild_id)
@@ -492,8 +489,6 @@ impl AppState {
             }
         }
     }
-
-    // ----- Permission engine -----------------------------------------------
 
     /// True if `pubkey` is the effective owner of `guild_id` for PERMISSION
     /// purposes. A normal guild: the literal `owner_pubkey`. A system guild
@@ -684,7 +679,6 @@ impl AppState {
             panic_mode: false,
         };
 
-        // Channels from the template.
         let mut channels = Vec::new();
         for (pos, (cname, kind, read_only)) in spec.channels.iter().enumerate() {
             channels.push(Channel {
@@ -698,7 +692,6 @@ impl AppState {
                 position: pos as u32,
             });
         }
-        // Roles from the template.
         let mut roles = Vec::new();
         for (pos, (rname, perms)) in spec.roles.iter().enumerate() {
             roles.push(Role {
@@ -747,9 +740,8 @@ impl AppState {
     }
 
     pub async fn snapshot_for(&self, user: &User) -> ServerMessage {
-        // Everyone belongs to the shared system guild(s) (empty owner, e.g. the
-        // seeded Lobby) — a landing space so a fresh user isn't staring at an
-        // empty rail. All other guilds are private and joined explicitly.
+        // System guilds (empty owner) are auto-joined as a landing space; all
+        // other guilds are private.
         let system_guilds: Vec<Id> = self
             .guilds
             .iter()
@@ -760,8 +752,6 @@ impl AppState {
             self.add_member(gid, user).await;
         }
 
-        // Mark the user online in every guild they belong to, and collect the
-        // ids of those guilds — the snapshot is scoped to exactly these.
         let my_guild_ids: Vec<Id> = self
             .members
             .iter()
@@ -794,7 +784,6 @@ impl AppState {
                 }
             }
         }
-        // Voice state is only visible within a guild you're in.
         let voice_states: Vec<VoiceState> = self
             .voice_states
             .iter()
@@ -836,8 +825,6 @@ impl AppState {
             .map(|r| r.clone())
             .unwrap_or_default()
     }
-
-    // ----- Role CRUD (grant-subset rule; see protocol::Role docs) ----------
 
     const MAX_ROLES_PER_GUILD: usize = 50;
 
@@ -931,8 +918,8 @@ impl AppState {
         by_pubkey: &str,
     ) -> Result<Role, String> {
         let permissions = unique(permissions);
-        // Subset rule applies to what the role IS and what it WOULD BECOME —
-        // otherwise a moderator could hollow out (or repurpose) a senior role.
+        // Subset rule applies to current and new permissions to prevent
+        // hollowing out senior roles.
         let current = self
             .roles
             .get(&guild_id)
@@ -959,11 +946,8 @@ impl AppState {
         Ok(updated)
     }
 
-    // -- Custom emoji ----------------------------------------------------
-    //
-    // Authority is `ManageEmojis` (the owner implicitly holds it, like every
-    // other permission). The client's `can()` only hides buttons — every one of
-    // these re-checks, because that is the only check that counts.
+    // Client-side `can()` only hides UI; server must re-check `ManageEmojis`
+    // on every mutation.
 
     /// The guild's emoji catalog (empty slice if it has none).
     pub fn emojis_of(&self, guild_id: Id) -> Vec<GuildEmoji> {
@@ -1181,7 +1165,6 @@ impl AppState {
         if is_new {
             persist(self.store.upsert_member(&member).await, "member add");
         }
-        // Rejoining resumes any level earned in this guild before.
         self.stamp_xp(member)
     }
 
@@ -1304,8 +1287,8 @@ impl AppState {
             .map(|g| g.clone())
             .ok_or_else(|| "unknown or expired invite code".to_string())?;
         if self.is_banned(guild_id, &user.pubkey) {
-            // Refunded: a ban is not a redemption, and letting one burn a use
-            // would let a banned key exhaust somebody else's capped code.
+            // Refund use on ban to prevent banned keys from exhausting capped
+            // codes.
             if let Some(mut entry) = self.invites.get_mut(code) {
                 entry.uses = entry.uses.saturating_sub(1);
             }
@@ -1338,8 +1321,6 @@ impl AppState {
         let roles = self.guild_roles(guild_id);
         (guild, channels, members, roles)
     }
-
-    // ----- Membership control (invites, kick/ban, leave) --------------------
 
     /// Requires `ManageGuild`: flip a guild between public and private.
     pub async fn set_guild_visibility(
@@ -1378,9 +1359,9 @@ impl AppState {
         {
             self.require_permission(guild_id, by_pubkey, Permission::ManageGuild)?;
         }
-        // An existing code is only worth handing back if it still works.
-        // Otherwise "get" would return a dead code and the caller would have no
-        // way to tell, which is the failure this entry is about.
+        // Only return an existing code if it is still live; otherwise the
+        // caller would receive a dead code with no way to distinguish it from
+        // a valid one.
         if !rotate
             && let Some(existing) = self.invite_by_guild.get(&guild_id)
             && let Some(invite) = self.invites.get(existing.value())
@@ -1388,12 +1369,9 @@ impl AppState {
         {
             return Ok(invite.clone());
         }
-        // Rotation invalidates the old code.
         if let Some((_, old)) = self.invite_by_guild.remove(&guild_id) {
             self.invites.remove(&old);
         }
-        // 12 random alphanumerics (~62 bits) — statistically unguessable, and
-        // redemption is rate-limited on top.
         let code = loop {
             let candidate = random_invite_code();
             if !self.invites.contains_key(&candidate) {
@@ -1403,9 +1381,8 @@ impl AppState {
         let invite = Invite {
             code: code.clone(),
             guild_id,
-            // Seconds in, absolute milliseconds out: a relative TTL is what a
-            // caller can express, and an absolute instant is the only thing
-            // that survives a restart without silently extending itself.
+            // Store absolute expiry so a restart does not silently extend the
+            // TTL.
             expires_at_ms: expires_in_secs.map(|s| now_ms() + (s as i64) * 1000),
             max_uses,
             uses: 0,
@@ -1474,7 +1451,6 @@ impl AppState {
         if let Some(gm) = self.members.get(&guild_id) {
             gm.remove(target_pubkey);
         }
-        // Clear voice only if it points into this guild.
         let in_this_guild = self
             .voice_states
             .get(target_pubkey)
@@ -1600,8 +1576,6 @@ impl AppState {
         Ok(cleared)
     }
 
-    // ----- Channel management + moderation (minimal) -------------------------
-
     /// Requires `ManageChannels`: add a channel. Position appends at the end.
     pub async fn create_channel(
         &self,
@@ -1682,8 +1656,7 @@ impl AppState {
         Ok(updated)
     }
 
-    // Full replace of every editable field, so the argument count tracks the
-    // channel's shape rather than a design worth splitting up.
+    // Argument count tracks channel shape; splitting is not worth it.
     #[allow(clippy::too_many_arguments)]
     pub async fn update_channel(
         &self,
@@ -1709,7 +1682,6 @@ impl AppState {
             channel.topic = topic
                 .filter(|t| !t.trim().is_empty())
                 .map(|t| t.chars().take(120).collect());
-            // Read-only only means something for text channels.
             channel.read_only =
                 read_only && matches!(channel.kind, crate::protocol::ChannelKind::Text);
             channel.slowmode_secs = slowmode_secs.min(21_600); // cap at 6h
@@ -1746,8 +1718,6 @@ impl AppState {
                 return Err("a guild needs at least one text channel".into());
             }
         }
-        // Evict anyone in the (voice) channel; collect the cleared states so
-        // the caller can broadcast them.
         let occupants: Vec<String> = self
             .voice_states
             .iter()
@@ -1770,8 +1740,6 @@ impl AppState {
         );
         Ok((guild_id, cleared))
     }
-
-    // ----- Delegation + branding ---------------------------------------------
 
     /// Owner-only: hand the guild to another member. The target must be an
     /// existing human member (a bot can't own a guild). The old owner stays a
@@ -1911,8 +1879,6 @@ impl AppState {
         persist(self.store.upsert_guild(&updated).await, "guild retention");
         Ok(updated)
     }
-
-    // ----- Community safety (gates, panic, slowmode, audit) -----------------
 
     /// Requires `ManageGuild`: configure the join gate + rules text.
     pub async fn set_join_gate(
@@ -2199,9 +2165,8 @@ impl AppState {
         if !kind_ok {
             return None;
         }
-        // Resolve the quote from our own row, scoped to this channel. An id
-        // that doesn't resolve there is dropped rather than rejected: the reply
-        // still sends, just without a quote.
+        // Unresolved quote ids are dropped (not rejected) so the reply still
+        // sends without a quote.
         let reply_ref = match reply_to {
             Some(id) => self.store.reply_ref(channel_id, id).await.unwrap_or(None),
             None => None,
@@ -2253,8 +2218,6 @@ impl AppState {
     ) -> Message {
         let stored_image = image.as_ref().map(|img| {
             if img.starts_with("data:") {
-                // Unknown mime or decode failure → fall back to storing the
-                // data URL itself (still capped by MAX_IMAGE_LEN upstream).
                 self.media
                     .store_data_url(img)
                     .unwrap_or_else(|| img.clone())
@@ -2355,8 +2318,6 @@ impl AppState {
             muted: prev.as_ref().map(|p| p.muted).unwrap_or(false),
             deafened: prev.as_ref().map(|p| p.deafened).unwrap_or(false),
             speaking: false,
-            // Same reset, same reason as the camera below: a share publishes into
-            // the channel's own `screen-…` room, so switching channels leaves it.
             screen_sharing: false,
             // Reset, not carried over from `prev` like mute/deafen: the camera
             // publishes into the *channel's* `screen-…` room, so a channel
@@ -2382,17 +2343,9 @@ impl AppState {
         deafened: bool,
     ) -> Option<VoiceState> {
         let mut entry = self.voice_states.get_mut(user_pubkey)?;
-        // Deafening implies muting — you can't talk to people you can't hear —
-        // but not the reverse: muting says nothing about what you're listening
-        // to. Coercing it here rather than trusting the client is what keeps
-        // the pair consistent for every watcher.
-        //
-        // It does not rescue a client older than the deafen button, which sends
-        // `deafened: muted` and so now reads as deafened whenever it mutes. The
-        // flag was equally wrong before this change; the difference is that
-        // nothing rendered it. Coercing the other way would only trade a
-        // mislabelled mute for a deafen that cannot be expressed at all, and
-        // the mixed-version window is one pre-release wide.
+        // Deafen implies mute (can't talk if you can't hear), but not vice
+        // versa. Coerce here to keep state consistent for all watchers, rather
+        // than trusting the client.
         entry.muted = muted || deafened;
         entry.deafened = deafened;
         Some(entry.clone())
@@ -2434,21 +2387,17 @@ impl AppState {
         Some(VoiceState {
             channel_id: None,
             speaking: false,
-            // Explicit, and it must stay explicit: `..prev` would carry a live
-            // `true` into the tombstone delivered to every guild member. Today
-            // the client drops the row once `channel_id` is None so nothing
-            // renders it, which is exactly what would make a stale camera flag
-            // here cost a debugging session rather than announce itself.
+            // Explicit `false` required: `..prev` would carry a live `true`
+            // into the tombstone, which clients silently drop, hiding the
+            // stale flag.
             camera_on: false,
-            // Explicit for the same reason, and it matters more here: this flag
-            // is older and is rendered in two places, so a stale `true` would be
-            // visible rather than merely wrong.
+            // Explicit `false` required: unlike camera, this flag is rendered
+            // in multiple places, so a stale `true` from `..prev` would be
+            // visible.
             screen_sharing: false,
             ..prev
         })
     }
-
-    // ----- Bot platform (Tier 1) -------------------------------------------
 
     /// The grants a bot has in a specific guild, if installed there.
     pub fn bot_install(&self, guild_id: Id, bot_pubkey: &str) -> Option<BotInstall> {
@@ -2523,8 +2472,8 @@ impl AppState {
             .or_default()
             .insert(guild_id, install.clone());
 
-        // Surface the bot in the roster. Keep an already-connected bot's online
-        // flag; a fresh install starts offline until the bot process connects.
+        // Preserve the online flag if the bot is already connected; fresh
+        // installs start offline.
         let member = {
             let guild_members = self.members.entry(guild_id).or_default();
             if let Some(mut existing) = guild_members.get_mut(bot_pubkey) {
@@ -2561,8 +2510,8 @@ impl AppState {
         by_pubkey: &str,
     ) -> Result<(), String> {
         self.require_permission(guild_id, by_pubkey, Permission::ManageGuild)?;
-        // Drop the per-guild grant; if it was the bot's last install, forget the
-        // bot entirely so `is_bot` flips false.
+        // Remove the bot entirely if this was its last install, so `is_bot`
+        // flips false.
         let now_empty = if let Some(g) = self.bot_installs.get(bot_pubkey) {
             g.remove(&guild_id);
             g.is_empty()
@@ -2593,7 +2542,6 @@ impl AppState {
         let installs = self.bot_guilds(&bot.pubkey);
         let my_guild_ids: Vec<Id> = installs.iter().map(|i| i.guild_id).collect();
 
-        // Flip the bot online in each installed guild.
         for gid in &my_guild_ids {
             if let Some(gm) = self.members.get(gid)
                 && let Some(mut m) = gm.get_mut(&bot.pubkey)
@@ -2612,8 +2560,7 @@ impl AppState {
             .filter(|c| my_guild_ids.contains(&c.guild_id))
             .map(|c| c.clone())
             .collect();
-        // Roster is sensitive: only hand it over for guilds the bot was granted
-        // the Members intent in.
+        // Only expose rosters for guilds where the bot has the Members intent.
         let mut members: Vec<Member> = Vec::new();
         for install in &installs {
             if !install.has_intent(Intent::Members) {
@@ -2636,8 +2583,6 @@ impl AppState {
             profiles: Vec::new(),
             // Roles never apply to bot connections — don't leak them.
             roles: Vec::new(),
-            // Nor do custom emoji: a bot posts text, and the catalog is guild
-            // configuration it has no business enumerating.
             emojis: Vec::new(),
             // Bots are never operators.
             operator: false,
@@ -2715,7 +2660,6 @@ impl GuildTemplate {
                 visibility: Private,
                 join_gate: JoinGate::Rules,
             },
-            // "friend" and default: minimal + open.
             _ => GuildTemplate {
                 channels: vec![("general", Text, false), ("General Voice", Voice, false)],
                 roles: vec![],

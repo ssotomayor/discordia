@@ -76,15 +76,12 @@ pub fn ConnectView(
     on_rename: EventHandler<String>,
     on_sign_out: EventHandler<()>,
 ) -> Element {
-    // Rendezvous address book lives in local settings (see ClientSettings).
     let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let default_rendezvous = settings.read().active_rendezvous();
 
     let mut mode = use_signal(initial_mode);
-    // Empty, not `ws://localhost:9000`. The address is one of two ways to join
-    // and `join_by` gives it priority, so a prefilled one would mean every
-    // Connect went to localhost and no code was ever resolved. The placeholder
-    // still shows that string — showing it is the point, having it is the bug.
+    // Empty, not `ws://localhost:9000`: `join_by` prioritizes the address, so
+    // a prefilled default would prevent code-based joins from ever resolving.
     let mut server_url = use_signal(String::new);
     let mut allow_lan = use_signal(|| false);
     let mut publish_to_rendezvous = use_signal(|| true);
@@ -139,7 +136,6 @@ pub fn ConnectView(
                 }
             }
         };
-        // Remember the rendezvous we just used (most-recent-first).
         let r = rendezvous_url().trim().to_string();
         if !r.is_empty() {
             let mut next = settings.read().clone();
@@ -151,15 +147,12 @@ pub fn ConnectView(
     };
 
     let disabled = match mode() {
-        // Nothing is required to start one: every field below has a default.
         Mode::Create => false,
         Mode::Join => join_by(&server_url(), &code(), &rendezvous_url()) == JoinBy::Nothing,
     };
 
-    // On macOS our titlebar is transparent + the content view extends to
-    // the very top, so we leave room at the top for the traffic lights
-    // (which sit at roughly y=12-32 from the window edge). Other OSes
-    // keep the system titlebar so no extra padding needed.
+    // macOS has a transparent titlebar with content extending to the top;
+    // padding avoids overlapping traffic lights.
     let mac_top_pad = if cfg!(target_os = "macos") {
         "pt-7"
     } else {
@@ -168,13 +161,9 @@ pub fn ConnectView(
 
     rsx! {
         div { class: "h-full w-full flex bg-[var(--bg)]",
-            // BRAND PANEL — fills the left third of the window. The whole
-            // panel is a drag region so users can grab it anywhere to move
-            // the window (Discord's native-app feel relies on this).
             div {
                 class: "dxf-drag-region hidden md:flex w-2/5 min-w-[340px] max-w-[520px] flex-col items-center justify-center px-10 bg-[var(--bg)]",
                 onmousedown: move |_| crate::app::start_window_drag(),
-                // Logo in a glowing rounded tile (comp 1).
                 div {
                     class: "w-28 h-28 rounded-3xl flex items-center justify-center mb-8",
                     style: "background: linear-gradient(160deg, var(--panel2), var(--bg2)); \
@@ -199,9 +188,8 @@ pub fn ConnectView(
                 }
             }
 
-            // FORM PANEL — fills the rest. Top strip is also a drag region
-            // (so the empty bar above the form acts like a titlebar even
-            // when the brand panel isn't visible at narrow widths).
+            // Top strip is a drag region so the empty bar acts as a titlebar
+            // when the brand panel is hidden at narrow widths.
             div { class: "flex-1 flex flex-col overflow-hidden min-w-0",
                 div {
                     class: "dxf-drag-region h-8 shrink-0 {mac_top_pad}",
@@ -210,14 +198,10 @@ pub fn ConnectView(
                 form {
                     class: "flex-1 overflow-auto px-8 py-8 flex flex-col items-stretch dxf-no-drag",
                     onsubmit: submit,
-                    // `my-auto`, not `justify-center` on the parent: auto
-                    // margins centre the form when there is spare height and
-                    // collapse to zero when there isn't, so tall content still
-                    // scrolls from the top. `justify-center` would push the
-                    // first fields above the scroll origin where they can't be
-                    // reached. Without this the brand panel sat centred while
-                    // the form clung to the top — a gap that grows with the
-                    // window, which is why it looked worst on large screens.
+                    // Use `my-auto` instead of `justify-center`: auto margins
+                    // collapse to zero when content overflows, keeping the top
+                    // reachable. `justify-center` pushes content above the
+                    // scroll origin.
                     div { class: "w-full max-w-md mx-auto my-auto space-y-5 flex flex-col",
 
                 IdentityCard { identity: identity.clone(), on_rename, on_sign_out }
@@ -256,12 +240,10 @@ pub fn ConnectView(
 
                 div { class: "h-px bg-[var(--border)]" }
 
-                // Above the tabs, and only once, because it is not a setting of
-                // either one: the same address resolves a join code, serves the
-                // public list, and is where a server of your own gets published
-                // and its name reserved. Drawn inside each tab it was three
-                // controls that had to be kept in sync by eye, and none of them
-                // said which of those jobs it was doing.
+                // Placed above tabs because this address serves join codes,
+                // the public list, and server publishing simultaneously.
+                // Duplicating it per tab required manual sync and obscured its
+                // multi-purpose role.
                 div { class: "space-y-1.5",
                     RendezvousPicker {
                         selected: rendezvous_url(),
@@ -272,11 +254,9 @@ pub fn ConnectView(
                     }
                 }
 
-                // Both labels name the object, because bare "Join" and "Create"
-                // do not say *what* — and the first person shown them asked
-                // whether Create made a community or a server. Everything on
-                // this screen is a server: a community is `CreateGuild`, sent
-                // over the gateway once you are already connected to one.
+                // Labels specify "server" to distinguish from "community"
+                // (which is `CreateGuild` and requires an existing
+                // connection). Bare "Join"/"Create" caused user confusion.
                 div { class: "flex gap-1 text-xs",
                     TabButton { active: mode() == Mode::Join, label: "Join a server", onclick: move |_| mode.set(Mode::Join) }
                     TabButton { active: mode() == Mode::Create, label: "Create a server", onclick: move |_| mode.set(Mode::Create) }
@@ -292,18 +272,16 @@ pub fn ConnectView(
                 // one is dropped. See docs/AUDIT-2026-08-17.md.
                 div { class: "fade-in flex-1",
                 match mode() {
-                    // The code first, because it is what a newcomer was handed,
-                    // then the list — which is the same answer for people who
-                    // were handed nothing, and picking a row fills the field
-                    // above rather than being a separate way to submit.
+                    // Code first because it is the primary input for
+                    // newcomers; the list is a fallback that fills the code
+                    // field rather than acting as a separate submission path.
                     Mode::Join => rsx! {
                         div { class: "space-y-3",
                             div { class: "space-y-1",
-                                // "Code", not "Join code": the tab above already
-                                // says join, and the button below says what
-                                // pressing it does. PR 90 renamed this off
-                                // "Shortcode" to stop using our word for it —
-                                // that win survives, the repetition does not.
+                                // Label is "Code" not "Join code" to avoid
+                                // redundancy with the tab and button. Renamed
+                                // from "Shortcode" in PR 90 to avoid internal
+                                // jargon.
                                 label { class: LABEL, "Code" }
                                 input {
                                     class: "{INPUT} lowercase",
@@ -322,13 +300,10 @@ pub fn ConnectView(
                                 rendezvous_url: rendezvous_url(),
                             }
 
-                            // Folded, because typing a gateway address is the
-                            // rare path and it is the only control here that
-                            // ignores the directory above. Folded is also why
-                            // it must start empty: open, a stale default reads
-                            // as a filled-in field, but closed it would decide
-                            // every connection from behind a summary nobody
-                            // opened.
+                            // Folded because gateway address entry is rare and
+                            // ignores the directory above. Must start empty:
+                            // an open stale default looks filled, while a
+                            // closed one silently dictates connections.
                             details {
                                 summary { class: "cursor-pointer text-[10px] uppercase tracking-wider text-[var(--text-muted)] hover:text-[var(--text)] transition-colors",
                                     "Other ways to connect"
@@ -376,11 +351,8 @@ pub fn ConnectView(
                                 "Accept direct connections"
                             }
                             div { class: "text-[10px] text-[var(--text-dim)] pl-6",
-                                // The gateway binds loopback without this, and a
-                                // forward to a loopback port lands on nothing —
-                                // so this governs the port mapping too, not just
-                                // the LAN. The banner says which you ended up
-                                // with once hosting starts.
+                                // Gateway binds loopback without this, so it
+                                // governs port mapping too, not just LAN.
                                 "Friends here reach you directly, and Discordia asks your router (UPnP / NAT-PMP) to let in friends elsewhere. Your home IP becomes visible to anyone who joins that way."
                             }
                             if publish_to_rendezvous() {
@@ -388,14 +360,11 @@ pub fn ConnectView(
                                     div { class: "space-y-1",
                                         label { class: LABEL, "Server name" }
                                         input {
-                                            // Shown lowercased because that is
-                                            // what gets stored: the rendezvous
-                                            // canonicalises the name on
-                                            // registration and lowercases every
-                                            // lookup, so `MiServidor` would
-                                            // register and resolve as
-                                            // `miservidor` either way. Same
-                                            // treatment as the join code field.
+                                            // Rendezvous canonicalizes names
+                                            // to lowercase on
+                                            // registration/lookup, so
+                                            // `MiServidor` resolves as
+                                            // `miservidor`.
                                             class: "{INPUT_SM} lowercase",
                                             r#type: "text",
                                             placeholder: "my-server",
@@ -435,10 +404,6 @@ pub fn ConnectView(
                     class: "dxf-cta w-full py-2.5 rounded-xl transition-all disabled:opacity-30 disabled:cursor-not-allowed text-sm",
                     r#type: "submit",
                     disabled,
-                    // Not "Join": the tab it sits under already says that, and a
-                    // button repeating its section's name says nothing about
-                    // what pressing it does. Paired with "Launch" it also keeps
-                    // the two halves distinguishable at the last step.
                     {match mode() {
                         Mode::Join => "Connect  →",
                         Mode::Create => "Launch  →",
@@ -601,18 +566,14 @@ fn IdentityCard(
                 }
                 div { class: "flex flex-col flex-1 min-w-0",
                     if editing() {
-                        // Inline editor — Enter saves, Escape cancels.
                         input {
                             class: "w-full bg-transparent border border-[var(--border)] rounded px-2 py-0.5 text-sm text-[var(--text)] focus:outline-none focus:border-[var(--accent)] transition-colors",
                             r#type: "text",
                             value: "{draft}",
                             autofocus: true,
-                            // This field had no cap at all, so a long rename
-                            // reached `set_display_name` in full and was cut
-                            // down at signing time with nothing on screen
-                            // saying so. Same rule as the setup fields — see
-                            // `protocol::truncate_username` for why the
-                            // `maxlength` attribute cannot express it.
+                            // Truncates on input because `maxlength` cannot
+                            // express the protocol's signing-time limit (see
+                            // `protocol::truncate_username`).
                             oninput: move |e| draft.set(crate::protocol::truncate_username(&e.value())),
                             onkeydown: move |e| {
                                 let key = e.key().to_string();
@@ -676,7 +637,6 @@ fn IdentityCard(
                     "sign out"
                 }
             }
-            // Color signature derived from the pubkey.
             div { class: "flex gap-1",
                 for c in signature.iter() {
                     div { class: "h-2 flex-1 rounded-full", style: "background: {c};" }
@@ -772,12 +732,9 @@ fn BrowseTab(
                                         class: "w-full text-left px-3 py-2 {row_cls} transition-colors",
                                         onclick: move |_| on_pick.call(entry_for_pick.clone()),
                                         div { class: "flex items-baseline gap-2",
-                                            // Liveness dot. The rendezvous drops
-                                            // a host that stops answering, but
-                                            // that takes up to a minute — this
-                                            // shows the gap instead of listing a
-                                            // host that has already gone quiet as
-                                            // if it were fine.
+                                            // Rendezvous drops stale hosts up
+                                            // to a minute late; this dot shows
+                                            // the gap immediately.
                                             span {
                                                 class: "w-1.5 h-1.5 rounded-full shrink-0 self-center",
                                                 style: if entry.idle_secs >= HOST_STALE_AFTER_SECS {

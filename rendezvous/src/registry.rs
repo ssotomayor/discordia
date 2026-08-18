@@ -416,7 +416,6 @@ mod tests {
     fn claim_is_unique_and_owner_scoped() {
         let reg = Registry::new();
         assert!(reg.claim_name("acme", "owner_a").is_ok());
-        // Same owner may re-claim (reconnect / metadata refresh).
         assert!(reg.claim_name("acme", "owner_a").is_ok());
         // A different owner cannot.
         assert_eq!(reg.claim_name("acme", "owner_b"), Err(ClaimError::Taken));
@@ -445,7 +444,6 @@ mod tests {
             Some("owner_a"),
             "the one field that is read must survive the older format"
         );
-        // And the claim still behaves: the owner keeps it, a stranger does not.
         assert_eq!(
             reg.claim_name("acme", "someone_else"),
             Err(ClaimError::Taken)

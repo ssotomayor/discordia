@@ -38,8 +38,7 @@ pub fn MembersPanel() -> Element {
         })
         .unwrap_or_default();
     let voice_states: Vec<VoiceState> = snapshot.voice_states.clone();
-    // Moderation affordances for the current guild (server re-checks; this
-    // just decides whether right-click opens a menu at all).
+    // Decides whether right-click opens a menu; server re-checks permissions.
     let (can_kick, can_ban, can_roles, owner_pk, self_pk) = guild_id
         .map(|gid| {
             (
@@ -68,8 +67,7 @@ pub fn MembersPanel() -> Element {
     let online_count = members.iter().filter(|m| m.online).count();
     let offline_count = members.len() - online_count;
 
-    // A row is context-menu-able if we hold ANY moderation power and the
-    // target isn't ourselves, a bot (uninstall via Integrations), or the owner.
+    // Excludes self, bots (uninstall via Integrations), and owner.
     let on_context = {
         let owner_pk = owner_pk.clone();
         let self_pk = self_pk.clone();
@@ -94,7 +92,6 @@ pub fn MembersPanel() -> Element {
 
     rsx! {
         aside { class: "panel-hover w-full h-full bg-[var(--panel)] border border-[var(--border)] rounded-lg flex flex-col overflow-hidden",
-            // Header — drag surface in edit mode.
             div { class: "h-11 px-3 flex items-center border-b border-[var(--border)]",
                 h2 { class: "text-sm text-[var(--accent)] truncate font-medium", "Members" }
                 span { class: "ml-auto text-[10px] text-[var(--text-dim)] uppercase tracking-wider",
@@ -158,7 +155,6 @@ fn MemberMenuPopover(
 
     let gid = menu.guild_id;
     let target_pk = menu.pubkey.clone();
-    // The target's current role assignment + the guild's role list.
     let (target_roles, guild_roles) = {
         let s = state.read();
         let assigned = s
@@ -343,7 +339,6 @@ fn MemberRow(
         (crate::features::profiles::status_color(&status), pulse)
     };
 
-    // Level from the member's per-guild XP; status subtitle from the profile.
     let level = crate::protocol::level_progress(member.xp).0;
     let subtitle = state
         .read()
@@ -355,9 +350,6 @@ fn MemberRow(
         div {
             class: "flex items-center gap-2.5 px-3 py-1.5 rounded-lg hover:bg-white/[0.03] cursor-pointer",
             title: if is_self { "Click to view your profile" } else { "Click to view profile" },
-            // A single click opens the profile card; DMs are started from the
-            // card's "Send Message" button. Right-click opens the moderation
-            // menu (when the viewer holds any moderation permission).
             onclick: move |_| state.write().profile_card = Some(card_pubkey.clone()),
             oncontextmenu: move |e: MouseEvent| {
                 e.prevent_default();
@@ -375,7 +367,6 @@ fn MemberRow(
                     style: "background:{dot_color}; color:{dot_color};",
                 }
             }
-            // Name (+ verified/bot) with an optional status subtitle beneath.
             div { class: "flex flex-col min-w-0 flex-1",
                 span {
                     class: "text-sm truncate flex items-center gap-1 {name_class}",

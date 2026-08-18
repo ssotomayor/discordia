@@ -111,8 +111,7 @@ async fn an_advertised_endpoint_reaches_a_friend_holding_the_code() {
     let entry = registry.lookup("casa").expect("host is live");
     assert_eq!(entry.endpoint.as_deref(), Some("ws://203.0.113.5:9000"));
 
-    // And over HTTP, which is how the client actually asks. The code is matched
-    // case-insensitively, like `/join`.
+    // HTTP resolve matches codes case-insensitively, like `/join`.
     let http = base.replace("ws://", "http://");
     let fetched: DiscoverEntry = reqwest::get(format!("{http}/resolve/CASA"))
         .await
@@ -121,7 +120,6 @@ async fn an_advertised_endpoint_reaches_a_friend_holding_the_code() {
         .await
         .unwrap();
     assert_eq!(fetched.endpoint.as_deref(), Some("ws://203.0.113.5:9000"));
-    // Unlisted, so the browse listing must still not carry it.
     assert!(registry.discover().is_empty());
 }
 
@@ -167,7 +165,6 @@ async fn a_transport_key_is_published_only_when_it_is_signed_for() {
     let transport_key = "k51qzi5uqu5dl".to_string();
 
     let (mut ws, nonce) = connect_control(&base).await;
-    // Same nonce, same key, different payload — see `verify_ownership`.
     let name_sig = sign(&secret, &nonce, &pubkey, "Keyed");
     let transport_sig = sign(&secret, &nonce, &pubkey, &transport_key);
     let frame = serde_json::json!({
@@ -235,7 +232,6 @@ async fn signed_name_claim_succeeds_and_becomes_the_shortcode() {
 
     let reply = next_json(&mut ws).await;
     assert_eq!(reply["op"], "registered", "got {reply}");
-    // The slug (lowercased name) is the join shortcode.
     assert_eq!(reply["d"]["shortcode"], "acme");
 }
 
@@ -244,7 +240,6 @@ async fn bad_signature_is_rejected() {
     let base = spawn().await;
     let (_secret, pubkey) = identity(2);
     let (mut ws, _nonce) = connect_control(&base).await;
-    // Sign the wrong thing.
     send_register(&mut ws, "acme", &pubkey, &"00".repeat(64)).await;
     let reply = next_json(&mut ws).await;
     assert_eq!(reply["op"], "error", "got {reply}");
@@ -256,14 +251,11 @@ async fn a_second_key_cannot_take_a_claimed_name() {
     let (secret_a, pubkey_a) = identity(3);
     let (secret_b, pubkey_b) = identity(4);
 
-    // Owner A claims "shared" and stays connected (holding the live slot).
     let (mut ws_a, nonce_a) = connect_control(&base).await;
     let sig_a = sign(&secret_a, &nonce_a, &pubkey_a, "shared");
     send_register(&mut ws_a, "shared", &pubkey_a, &sig_a).await;
     assert_eq!(next_json(&mut ws_a).await["op"], "registered");
 
-    // B, a different key, presents a perfectly valid signature for its OWN key
-    // but is refused — the name is owned by A.
     let (mut ws_b, nonce_b) = connect_control(&base).await;
     let sig_b = sign(&secret_b, &nonce_b, &pubkey_b, "shared");
     send_register(&mut ws_b, "shared", &pubkey_b, &sig_b).await;
@@ -346,7 +338,6 @@ async fn responsive_host_keeps_its_listing() {
         "a host answering heartbeats must stay listed"
     );
 
-    // And its reported idle time should be small, so the UI shows it as live.
     assert!(registry.discover()[0].idle_secs < 1);
     pump.abort();
 }
@@ -372,7 +363,6 @@ async fn an_owner_can_release_a_name_and_another_key_can_then_take_it() {
     let (owner_secret, owner) = identity(21);
     let (other_secret, other) = identity(22);
 
-    // Claim, then drop the session so the name is reserved but not live.
     {
         let (mut ws, nonce) = connect_control(&base).await;
         let sig = sign(&owner_secret, &nonce, &owner, "Mudanza");
@@ -399,7 +389,6 @@ async fn an_owner_can_release_a_name_and_another_key_can_then_take_it() {
         assert_eq!(next_json(&mut ws).await["op"], "error");
     }
 
-    // The owner releases it.
     {
         let (mut ws, nonce) = connect_control(&base).await;
         let sig = sign(&owner_secret, &nonce, &owner, "Mudanza");
@@ -409,7 +398,6 @@ async fn an_owner_can_release_a_name_and_another_key_can_then_take_it() {
     }
     assert!(registry.reservation_owner("mudanza").is_none());
 
-    // And now the other key can have it.
     {
         let (mut ws, nonce) = connect_control(&base).await;
         let sig = sign(&other_secret, &nonce, &other, "Mudanza");
@@ -435,13 +423,11 @@ async fn a_stranger_cannot_release_a_name_and_learns_nothing_from_trying() {
         assert_eq!(next_json(&mut ws).await["op"], "registered");
     }
 
-    // A valid signature, by the wrong key.
     let taken = {
         let (mut ws, nonce) = connect_control(&base).await;
         let sig = sign(&thief_secret, &nonce, &thief, "Fortaleza");
         send_release(&mut ws, "Fortaleza", &thief, &sig).await
     };
-    // And the same attempt against a name nobody ever claimed.
     let free = {
         let (mut ws, nonce) = connect_control(&base).await;
         let sig = sign(&thief_secret, &nonce, &thief, "Vacante");
@@ -449,10 +435,9 @@ async fn a_stranger_cannot_release_a_name_and_learns_nothing_from_trying() {
     };
 
     assert_eq!(taken["op"], "error");
-    // Compared with the name blanked out: both messages name the slug that was
-    // asked about, so a literal comparison would always differ and would be
-    // asserting nothing. What must match is everything else — a stranger has
-    // to be unable to tell a claimed name from a free one by the answer.
+    // Blank the slug before comparing: a literal match would always differ,
+    // asserting nothing. The rest of the message must be identical so a
+    // stranger cannot distinguish claimed from free names.
     let blank = |v: &serde_json::Value, slug: &str| {
         v["d"]["message"].as_str().unwrap().replace(slug, "<name>")
     };
@@ -481,11 +466,9 @@ async fn a_release_with_a_bad_signature_is_refused() {
         assert_eq!(next_json(&mut ws).await["op"], "registered");
     }
 
-    // Wait for the registration to drop with its socket. Without this the
-    // release below can be refused for being *live* rather than for its
-    // signature, and an assertion that only checks "some error came back" is
-    // satisfied by the wrong one — which is exactly how this test passed a
-    // mutation run with the signature check disabled.
+    // Wait for the registration to drop with its socket. Otherwise the release
+    // below may be refused for being *live* rather than for its signature, and
+    // an assertion checking only "some error" is satisfied by the wrong one.
     for _ in 0..50 {
         if registry.lookup("sellada").is_none() {
             break;
@@ -494,7 +477,6 @@ async fn a_release_with_a_bad_signature_is_refused() {
     }
 
     let (mut ws, _nonce) = connect_control(&base).await;
-    // Signed against a nonce that is not this connection's.
     let stale = sign(&owner_secret, "some-other-nonce", &owner, "Sellada");
     let reply = send_release(&mut ws, "Sellada", &owner, &stale).await;
 

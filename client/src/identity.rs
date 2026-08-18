@@ -252,7 +252,6 @@ impl Identity {
 
     /// NIP-19 `npub…` for display.
     pub fn npub(&self) -> String {
-        // pubkey is valid hex of 32 bytes by construction.
         let bytes = hex::decode(&self.pubkey).unwrap_or_default();
         to_bech32("npub", &bytes)
     }
@@ -429,7 +428,6 @@ pub fn color_signature(pubkey: &str, n: usize) -> Vec<String> {
     }
     (0..n)
         .map(|i| {
-            // Advance the hash per bar so hues spread across the wheel.
             h = h.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
             let hue = h % 360;
             let sat = 62 + (h >> 9) % 24; // 62–86%
@@ -449,18 +447,12 @@ pub fn signature_accent(pubkey: &str) -> String {
         .unwrap_or_else(|| "hsl(30, 70%, 60%)".into())
 }
 
-// ---------------------------------------------------------------------------
-// NIP-06 key derivation: BIP-32 over secp256k1 along `m/44'/1237'/0'/0/0`.
-// Implemented with secp256k1's `add_tweak` (child = parent + IL mod n).
-// ---------------------------------------------------------------------------
-
 const HARDENED: u32 = 0x8000_0000;
 const NIP06_PATH: [u32; 5] = [44 | HARDENED, 1237 | HARDENED, HARDENED, 0, 0];
 
 fn derive_nip06(seed: &[u8]) -> Result<SecretKey, String> {
     let secp = Secp256k1::new();
 
-    // Master key: HMAC-SHA512("Bitcoin seed", seed).
     let mut mac = <Hmac<Sha512> as Mac>::new_from_slice(b"Bitcoin seed").expect("hmac key length");
     mac.update(seed);
     let master = mac.finalize().into_bytes();
@@ -471,11 +463,9 @@ fn derive_nip06(seed: &[u8]) -> Result<SecretKey, String> {
     for &index in &NIP06_PATH {
         let mut mac = <Hmac<Sha512> as Mac>::new_from_slice(&chain).expect("hmac key length");
         if index & HARDENED != 0 {
-            // Hardened: 0x00 || ser256(k_par) || ser32(i)
             mac.update(&[0u8]);
             mac.update(&key.secret_bytes());
         } else {
-            // Normal: serP(point(k_par)) || ser32(i)  (compressed pubkey)
             let pk = PublicKey::from_secret_key(&secp, &key);
             mac.update(&pk.serialize());
         }

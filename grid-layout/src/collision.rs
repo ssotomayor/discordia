@@ -25,7 +25,6 @@ pub(crate) fn overlaps(a: &GridPosition, b: &GridPosition) -> bool {
 }
 
 pub(crate) fn compact_vertical(layout: &mut [(String, GridPosition)], immovable: &HashSet<String>) {
-    // Push down to resolve any overlaps with immovable items or higher items.
     let mut order: Vec<usize> = (0..layout.len()).collect();
     order.sort_by_key(|&i| (layout[i].1.y, layout[i].1.x));
 
@@ -46,7 +45,6 @@ pub(crate) fn compact_vertical(layout: &mut [(String, GridPosition)], immovable:
         }
     }
 
-    // Compact upwards.
     order.sort_by_key(|&i| (layout[i].1.y, layout[i].1.x));
     for &i in &order {
         if immovable.contains(&layout[i].0) {
@@ -145,8 +143,6 @@ mod tests {
 
     #[test]
     fn other_items_compact_around_pinned() {
-        // 'p' is pinned at y=2. 'b' starts at y=10. 'b' must compact up but
-        // can only go as high as y=4 (below the pinned 4-row obstacle).
         let mut layout = vec![
             ("active".into(), pos(0, 0, 4, 2)),
             ("p".into(), pos(0, 2, 4, 2)),

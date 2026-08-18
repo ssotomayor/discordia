@@ -54,7 +54,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             ServerMessage::MessageCreate(msg) => {
-                // Ignore our own posts so we don't loop.
                 if msg.author.pubkey == bot.user.pubkey {
                     continue;
                 }

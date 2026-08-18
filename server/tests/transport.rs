@@ -126,7 +126,6 @@ async fn guild_message_never_reaches_a_non_member() {
     let mut member = connect_user(&url, &member_id, "Member").await;
     join(&mut member, guild_id).await;
 
-    // Identified, live, but NOT a member of the guild.
     let mut stranger = connect_user(&url, &stranger_id, "Stranger").await;
 
     owner.send_message(text, "members only").await.unwrap();
@@ -152,8 +151,6 @@ async fn guild_message_reaches_every_device_of_a_member() {
     let mut owner = connect_user(&url, &owner_id, "Owner").await;
     let (guild_id, text) = create_guild(&mut owner, "Two devices").await;
 
-    // The member joins on device 1, then opens a second connection with the
-    // SAME identity — both should route.
     let mut device1 = connect_user(&url, &member_id, "Member").await;
     join(&mut device1, guild_id).await;
     let mut device2 = connect_user(&url, &member_id, "Member").await;
@@ -186,7 +183,6 @@ async fn disconnect_removes_connection_from_routing() {
     let mut b = connect_user(&url, &b_id, "B").await;
     join(&mut b, guild_id).await;
 
-    // A disconnects; routing must shed it and keep delivering to B without error.
     drop(a);
     tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -233,13 +229,12 @@ async fn message_history_pages_backward_with_before_ms() {
     let mut owner = connect_user(&url, &owner_id, "Owner").await;
     let (_guild_id, text) = create_guild(&mut owner, "History").await;
 
-    // Post 5 messages with small gaps so their timestamps are distinct.
+    // Sleep to ensure distinct timestamps for pagination.
     for i in 0..5 {
         owner.send_message(text, &format!("m{i}")).await.unwrap();
         tokio::time::sleep(Duration::from_millis(8)).await;
     }
 
-    // Newest page.
     let page1 = fetch_history(&mut owner, text, 2, None).await;
     assert_eq!(page1.len(), 2, "first page honors the limit");
     let p1: std::collections::HashSet<_> = page1.iter().map(|m| m.content.clone()).collect();
@@ -248,7 +243,6 @@ async fn message_history_pages_backward_with_before_ms() {
         "newest two, got {p1:?}"
     );
 
-    // Page backward from the oldest message we hold.
     let oldest_ms = page1
         .iter()
         .map(|m| m.created_at.timestamp_millis())

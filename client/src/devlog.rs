@@ -62,10 +62,8 @@ pub fn write_line(msg: &str) {
 
     static ANNOUNCE: Once = Once::new();
     ANNOUNCE.call_once(|| {
-        // `config_dir()` only computes a path — on a fresh profile nothing has
-        // created it yet, and an append to a file in a missing directory just
-        // fails. Silently, which would cost a whole repro session before anyone
-        // noticed the log was empty.
+        // Ensure parent dir exists; appending to a file in a missing dir fails
+        // silently.
         let dir = path();
         if let Some(parent) = dir.parent() {
             let _ = std::fs::create_dir_all(parent);
@@ -73,9 +71,8 @@ pub fn write_line(msg: &str) {
         eprintln!("[devlog] writing to {}", dir.display());
     });
 
-    // Seconds since the epoch rather than a formatted clock: this file is read
-    // by diffing timestamps between lines, and pulling in a date formatter for
-    // that is not worth a dependency.
+    // Epoch millis rather than formatted clock: file is read by diffing
+    // timestamps, avoiding a date formatter dependency.
     let t = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
@@ -112,7 +109,6 @@ mod tests {
             body.contains("hello from the test"),
             "line written: {body:?}"
         );
-        // Timestamp prefix, so lines can be diffed for ordering.
         assert!(
             body.split_whitespace()
                 .next()

@@ -47,15 +47,13 @@ pub fn GuildSettingsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element 
         .read()
         .can(guild_id, crate::protocol::Permission::ManageEmojis);
 
-    // Fetch the invite + ban list once on open (fetch-on-open pattern).
     {
         let gw = gateway.clone();
         let fetch_bans = can_ban;
         use_hook(move || {
             gw.send(ClientMessage::CreateInvite {
-                // No limits from this surface yet: the panel has one button and
-                // nowhere to express a TTL or a cap. The server enforces both;
-                // giving them a control is the other half.
+                // No TTL/cap controls in this UI yet; server enforces limits,
+                // UI just omits them.
                 expires_in_secs: None,
                 max_uses: None,
                 guild_id,
@@ -68,7 +66,6 @@ pub fn GuildSettingsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element 
         });
     }
 
-    // Local edit buffer for the description (submitted on Save).
     let mut description = use_signal(|| {
         state
             .read()
@@ -78,9 +75,8 @@ pub fn GuildSettingsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element 
             .and_then(|g| g.description.clone())
             .unwrap_or_default()
     });
-    // (is_problem, message). Success and failure looked identical before —
-    // both silent — and rendering a "done" message in warning orange would be
-    // its own small lie, so the flag drives the colour.
+    // Flag distinguishes success from failure to drive color, avoiding a
+    // misleading 'done' state.
     let mut upload_note = use_signal(|| None::<(bool, String)>);
     let mut copied = use_signal(|| false);
 
@@ -89,7 +85,6 @@ pub fn GuildSettingsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element 
     };
     let is_private = matches!(g.visibility, GuildVisibility::Private);
 
-    // Submit branding (full-replace: keep current images unless re-picked).
     let save_branding = {
         let gateway = gateway.clone();
         let icon_image = g.icon_image.clone();
@@ -122,7 +117,6 @@ pub fn GuildSettingsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element 
                 }
                 div { class: "flex-1 overflow-y-auto p-3 space-y-4",
 
-                    // ----- Branding -----
                     div {
                         div { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-1.5",
                             "Branding"
@@ -135,9 +129,6 @@ pub fn GuildSettingsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element 
                             value: "{description}",
                             oninput: move |e| description.set(e.value()),
                         }
-                        // What is actually set right now. Without this the only
-                        // way to tell an upload had worked was to go hunting for
-                        // where the image is used.
                         div { class: "flex items-center gap-3 mt-2",
                             div { class: "shrink-0 text-center",
                                 if let Some(src) = g.icon_image.clone() {
@@ -169,9 +160,6 @@ pub fn GuildSettingsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element 
                             }
                         }
                         div { class: "flex gap-2 mt-2",
-                            // Icon + banner pickers: upload to Blossom, fall
-                            // back to an embedded data URL (same path as
-                            // profile avatars), then push the whole profile.
                             ImagePickButton {
                                 label: "Icon…",
                                 shape: crate::features::image_editor::CropShape::Square,
@@ -239,8 +227,6 @@ pub fn GuildSettingsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element 
                                 "Save"
                             }
                         }
-                        // What's actually accepted. Without this the only way to
-                        // learn the rules was to trip over them.
                         div { class: "text-[10px] text-[var(--text-dim)] mt-1",
                             "Icon: square works best. Banner: wide (about 4:1). "
                             {crate::features::profiles::IMAGE_HELP}
@@ -254,7 +240,6 @@ pub fn GuildSettingsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element 
                         }
                     }
 
-                    // ----- Visibility -----
                     div { class: "border-t border-[var(--border)] pt-3",
                         div { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-1.5",
                             "Visibility"
@@ -284,7 +269,6 @@ pub fn GuildSettingsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element 
                         }
                     }
 
-                    // ----- Message retention -----
                     div { class: "border-t border-[var(--edge)] pt-3",
                         div { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-1.5",
                             "Message retention"
@@ -295,7 +279,6 @@ pub fn GuildSettingsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element 
                         }
                     }
 
-                    // ----- Community safety -----
                     div { class: "border-t border-[var(--border)] pt-3",
                         div { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-1.5",
                             "Community safety"
@@ -308,7 +291,6 @@ pub fn GuildSettingsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element 
                         }
                     }
 
-                    // ----- Invite code -----
                     div { class: "border-t border-[var(--border)] pt-3",
                         div { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-1.5",
                             "Invite code"
@@ -354,12 +336,10 @@ pub fn GuildSettingsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element 
                         }
                     }
 
-                    // ----- Custom emoji -----
                     if can_emojis {
                         EmojiSettings { guild_id }
                     }
 
-                    // ----- Bans -----
                     if can_ban {
                         div { class: "border-t border-[var(--border)] pt-3",
                             div { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-1.5",
@@ -464,7 +444,6 @@ fn SafetyControls(
     };
 
     rsx! {
-        // Join gate selector.
         div { class: "flex items-center gap-2",
             span { class: "text-xs text-[var(--text-muted)] flex-1", "New members must…" }
             select {
@@ -482,7 +461,6 @@ fn SafetyControls(
                 option { value: "pow", "solve a challenge" }
             }
         }
-        // Rules editor — only meaningful for the Rules gate.
         if matches!(gate_draft(), JoinGate::Rules) {
             textarea {
                 class: "w-full mt-2 bg-transparent border border-[var(--border)] focus:border-[var(--accent)] rounded px-2 py-1 text-xs text-[var(--text)] outline-none transition-colors resize-none",
@@ -518,7 +496,6 @@ fn SafetyControls(
             }
         }
 
-        // Panic mode — emergency lockdown, toggles immediately.
         label { class: "flex items-center gap-2 mt-3 text-xs cursor-pointer select-none",
             input {
                 r#type: "checkbox",
@@ -536,7 +513,6 @@ fn SafetyControls(
             }
         }
 
-        // Audit log.
         div { class: "mt-3",
             div { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-1",
                 "Audit log"
@@ -547,11 +523,8 @@ fn SafetyControls(
             div { class: "max-h-32 overflow-y-auto space-y-0.5",
                 for e in entries().iter().rev().take(50).cloned() {
                     {
-                        // Who acted, by name where we know it. `actor_pubkey` has
-                        // been written by every `audit()` call and persisted since
-                        // the log existed, and nothing rendered it — so the log
-                        // answered "what happened to whom" and not "who did it",
-                        // which is the question an audit log is for.
+                        // actor_pubkey was persisted but never rendered; this
+                        // adds the "who" to the audit log.
                         let actor = state.read().display_name(&e.actor_pubkey);
                         rsx! {
                             div {
@@ -588,8 +561,6 @@ fn ImagePickButton(
     identity: crate::identity::Identity,
     settings: Signal<crate::settings::ClientSettings>,
 ) -> Element {
-    // The picked image waits here while the user frames it. Uploading only
-    // happens once they accept the crop.
     let mut editing = use_signal(|| None::<String>);
     rsx! {
         if let Some(src) = editing() {
@@ -629,12 +600,10 @@ fn ImagePickButton(
                         let Some(file) = files.into_iter().next() else { return };
                         match file.read_bytes().await {
                             Ok(bytes) => {
-                                // Normalise the mime BEFORE validating: the
-                                // webview reports `application/octet-stream`
-                                // for extensions it doesn't know, and passing
-                                // that through produced a data URL the server
-                                // refuses — which looked like "my image was
-                                // rejected" for a perfectly good picture.
+                                // Normalise mime before validation: webview
+                                // reports `application/octet-stream` for
+                                // unknown extensions, which the server
+                                // rejects.
                                 let mime = crate::features::profiles::image_mime(
                                     file.content_type(),
                                 );
@@ -646,7 +615,6 @@ fn ImagePickButton(
                                     onpicked.call((None, Some(msg)));
                                     return;
                                 }
-                                // Frame it first; the upload happens on accept.
                                 editing.set(Some(crate::features::profiles::to_data_url(
                                     &bytes, &mime,
                                 )));
@@ -752,7 +720,6 @@ fn EmojiSettings(guild_id: Id) -> Element {
                 "Members of this guild type :name: to use them. PNG, JPEG, GIF or WebP, up to 256 KB."
             }
 
-            // Add form.
             if !full {
                 div { class: "flex items-center gap-2 mb-2",
                     label {

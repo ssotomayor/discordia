@@ -52,13 +52,8 @@ pub struct RelayHandle {
 pub async fn spawn(bind: SocketAddr, public_url: Option<String>) -> Option<RelayHandle> {
     let url = public_url?;
 
-    // Both config structs are `#[non_exhaustive]`, so they are built by their
-    // constructors and adjusted, not by struct literal.
-    //
-    // Defaults are right here: no TLS (see the module docs), default limits, and
-    // access open to anyone who can reach this rendezvous. Narrowing access to
-    // registered hosts would not help — the joiners being introduced are not
-    // registered — and the relay cannot read what it carries either way.
+    // Defaults are open access because joiners are unregistered and the relay
+    // cannot inspect payloads.
     let mut config = ServerConfig::default();
     config.relay = Some(RelayConfig::new(bind));
 
@@ -71,8 +66,7 @@ pub async fn spawn(bind: SocketAddr, public_url: Option<String>) -> Option<Relay
             })
         }
         Err(e) => {
-            // Not fatal. Everything else the rendezvous does still works, and
-            // its users fall back to the proxy.
+            // Not fatal; users fall back to the proxy.
             tracing::error!(error = %e, "could not start the iroh relay — hole punching will be unavailable");
             None
         }
