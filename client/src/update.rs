@@ -8,6 +8,8 @@
 //! is a key an attacker who can answer for GitHub also controls, and verifying
 //! against it would be theatre.
 
+use std::time::Duration;
+
 use dioxus::prelude::*;
 use minisign_verify::{PublicKey, Signature};
 
@@ -206,9 +208,11 @@ pub fn swap(staged: &std::path::Path, target: &std::path::Path) -> Result<(), St
 
 /// Carry out what `plan_install` decided.
 ///
-/// The AppImage path re-execs and leaves it to the caller to exit; nothing here
-/// kills the process, because deciding when to drop a voice call is not this
-/// module's business.
+/// The AppImage path starts the new image and returns; **the caller must then
+/// exit**, and `UpdateNotice` does. Splitting it that way keeps the decision of
+/// when to drop a voice call out of here — but the two halves are not optional
+/// separately: `spawn` without an exit leaves the user with two windows, the
+/// stale one still usable, while the UI says it is restarting.
 pub fn perform(install: &Install) -> Result<(), String> {
     match install {
         Install::ReplaceAppImage { target, staged } => {
@@ -261,7 +265,27 @@ pub fn UpdateNotice(update: crate::version::Update) -> Element {
                     let restarts = matches!(plan, Install::ReplaceAppImage { .. });
                     match perform(&plan) {
                         Err(e) => phase.set(Phase::Failed(e)),
-                        Ok(()) if restarts => phase.set(Phase::Restart),
+                        Ok(()) if restarts => {
+                            phase.set(Phase::Restart);
+                            // And then leave, which is the half that makes it a
+                            // restart rather than a second copy. `perform` has
+                            // already started the new image; this process is
+                            // now the *old* build, holding the window the user
+                            // is looking at and — when self-hosting — the port
+                            // the new one needs.
+                            //
+                            // Long enough for "restarting" to be seen, short
+                            // enough that the two do not overlap for any
+                            // meaningful time.
+                            tokio::time::sleep(Duration::from_millis(700)).await;
+                            // `exit`, not a graceful window close: every
+                            // shutdown path here runs pre-update code, and the
+                            // one thing that must be true afterwards is that
+                            // none of it is still running. A hung teardown
+                            // would leave exactly the two-window state this
+                            // exists to prevent.
+                            std::process::exit(0);
+                        }
                         Ok(()) => phase.set(Phase::HandedOff),
                     }
                 }
