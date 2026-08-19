@@ -49,6 +49,10 @@ pub fn AppearanceButton() -> Element {
     let mut settings = use_context::<Signal<ClientSettings>>();
     let mut open = use_signal(|| false);
     let mut err = use_signal::<Option<String>>(|| None);
+    // Where the button was when it was pressed. See the comment above the
+    // markup: the popover is positioned against this rather than against the
+    // button, because it cannot live inside it.
+    let mut at = use_signal(|| (0.0_f64, 0.0_f64));
 
     let mut update = move |f: &dyn Fn(&mut ClientSettings)| {
         let mut next = settings.read().clone();
@@ -58,17 +62,31 @@ pub fn AppearanceButton() -> Element {
     };
 
     let current = settings.read().clone();
+    let (at_x, at_y) = at();
 
-    // `relative`, so the panel below can be positioned against this button
-    // rather than against the viewport. Everything the popover needs is inside
-    // this component, which is why anchoring it costs no plumbing: the button
-    // and the panel have always been siblings here.
+    // Anchored to the click, not to the button, because the popover cannot be a
+    // descendant of it. It used to be `absolute` inside a `relative` wrapper —
+    // which reads well and does not work: this button lives in the channels
+    // column, whose container is `overflow-hidden`, and an absolutely
+    // positioned child is clipped by an ancestor's overflow no matter its
+    // `z-index`. The panel opened and almost none of it was on screen.
+    //
+    // `guilds.rs` already writes this rule down for the guild dialogs — they
+    // are rendered at the workspace root for the same reason. `fixed` is the
+    // cheaper way to leave the panel, and the click is the only anchor
+    // available once you do: this column is draggable, so there is no position
+    // to hardcode.
     rsx! {
-        div { class: "relative",
+        div {
             button {
                 class: "w-7 h-7 flex items-center justify-center rounded text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors",
                 title: "Appearance",
-                onclick: move |_| { err.set(None); open.set(true); },
+                onclick: move |e| {
+                    let c = e.client_coordinates();
+                    at.set((c.x, c.y));
+                    err.set(None);
+                    open.set(true);
+                },
                 dangerous_inner_html: crate::features::icons::SLIDERS,
             }
 
@@ -80,11 +98,17 @@ pub fn AppearanceButton() -> Element {
                     onclick: move |_| open.set(false),
                 }
                 div {
-                    // Anchored above: icon is at sidebar bottom, so 'below'
-                    // would open off-screen.
+                    // Opens upward: the icon sits at the bottom of the column,
+                    // so downward would go off the bottom of the window.
+                    //
                     // Do not name Tailwind classes in comments: `tailwind.css`
                     // scans `.rs` files and emits them to `tailwind.out.css`.
-                    class: "dxf-pop-in absolute bottom-full left-0 mb-2 z-50 w-80 bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl p-4",
+                    class: "dxf-pop-in fixed z-50 w-80 bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl p-4",
+                    // Clamped in CSS, which is safe here and was not for the
+                    // settings panel: nothing else reads this position, so it
+                    // cannot drift from a value some other handler is doing
+                    // arithmetic against. This panel does not drag.
+                    style: "left: min(max({at_x}px - 14px, 8px), calc(100vw - 328px)); bottom: calc(100vh - {at_y}px + 14px); max-height: calc({at_y}px - 24px); overflow-y: auto;",
                     onclick: move |e| e.stop_propagation(),
                     h3 { class: "text-sm font-medium text-[var(--accent)] mb-3", "Appearance" }
 
