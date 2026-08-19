@@ -399,6 +399,23 @@ jobs:
           Copy-Item client/nsis/MicrosoftEdgeWebview2Setup.exe portable/
           Copy-Item .github/portable/WEBVIEW2.txt portable/
 
+          # How the running app knows which of the two Windows builds it is, and
+          # therefore which artifact updating means. Without it, a portable copy
+          # downloads the installer, installs a second Discordia somewhere else,
+          # and reports success while the copy the user keeps opening stays on
+          # the old version.
+          #
+          # A file rather than something derived from the install path: the
+          # portable lives wherever the user unzipped it, and there is nothing
+          # about that location to recognise. It travels inside the zip, so an
+          # update replaces it along with everything else.
+          Set-Content -Path portable/PORTABLE -Encoding ascii -Value @(
+            'This marks the portable build.',
+            'Discordia reads it to know that updating means replacing the files',
+            'in this folder, not running the installer. Deleting it makes the',
+            'app offer you the installer instead.'
+          )
+
           Compress-Archive -Path portable/* -DestinationPath Discordia-windows-portable.zip
 
           $setup = Get-ChildItem -Recurse -Filter '*-setup.exe' $root.FullName | Select-Object -First 1
