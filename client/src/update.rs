@@ -815,6 +815,175 @@ mod tests {
         assert!(portable_dir().is_none());
     }
 
+    /// The published portable archive, unpacked over a folder, for real.
+    ///
+    /// The other tests build their own zips, which proves the logic and proves
+    /// nothing about the artifact. This one asks GitHub for the newest release,
+    /// takes the file this platform would actually download, checks its
+    /// signature against the compiled-in key, and unpacks it over a scratch
+    /// copy of itself — the same three steps the update button performs, on the
+    /// same bytes a user would get.
+    ///
+    /// It fails if CI renames an artifact, stops signing one, or changes the
+    /// archive's shape, none of which any synthetic test can notice.
+    ///
+    /// ```text
+    /// cargo test -p dioxusfun --bins -- --ignored the_published_portable
+    /// ```
+    #[test]
+    #[ignore = "downloads the published portable archive"]
+    fn the_published_portable_archive_unpacks_over_a_folder() {
+        let rt = tokio::runtime::Runtime::new().expect("build a runtime");
+        let (zip_bytes, sig) = rt.block_on(async {
+            let http = reqwest::Client::new();
+            let releases: serde_json::Value = http
+                .get("https://api.github.com/repos/ssotomayor/discordia/releases")
+                .header("User-Agent", "Discordia-test")
+                .send()
+                .await
+                .expect("list releases")
+                .json()
+                .await
+                .expect("decode releases");
+            let newest = releases
+                .as_array()
+                .expect("an array of releases")
+                .iter()
+                .find(|r| r["draft"] != true)
+                .expect("a published release");
+            let url_of = |name: &str| {
+                newest["assets"]
+                    .as_array()
+                    .expect("assets")
+                    .iter()
+                    .find(|a| a["name"] == name)
+                    .unwrap_or_else(|| panic!("{name} is not in {}", newest["tag_name"]))
+                    ["browser_download_url"]
+                    .as_str()
+                    .expect("a url")
+                    .to_string()
+            };
+            let asset = "Discordia-windows-portable.zip";
+            let body = http
+                .get(url_of(asset))
+                .send()
+                .await
+                .expect("download the archive")
+                .bytes()
+                .await
+                .expect("read the archive");
+            let sig = http
+                .get(url_of(&signature_name(asset)))
+                .send()
+                .await
+                .expect("download the signature")
+                .text()
+                .await
+                .expect("read the signature");
+            (body, sig)
+        });
+
+        verify(&zip_bytes, &sig).expect("the published archive must verify");
+
+        // Stand up a folder shaped like an installed portable copy, by
+        // unpacking the archive into it, then update it with the same archive.
+        let dir = scratch("published-portable");
+        let zip = dir.join("Discordia-windows-portable.zip");
+        std::fs::write(&zip, &zip_bytes).unwrap();
+        let installed = dir.join("app");
+        std::fs::create_dir_all(&installed).unwrap();
+        unzip_into(&zip, &installed).expect("unpack the archive once");
+        // The published build predates the marker, so put it there by hand;
+        // once a release carries one this line stops mattering.
+        std::fs::write(installed.join(PORTABLE_MARKER), b"portable").unwrap();
+        let before = std::fs::read(installed.join("Discordia.exe")).expect("an exe in the archive");
+
+        replace_portable(&zip, &installed, "Discordia.exe").expect("update the folder");
+
+        assert_eq!(
+            std::fs::read(installed.join("Discordia.exe")).unwrap(),
+            before,
+            "the replaced program is not the one from the archive"
+        );
+        assert!(
+            installed.join("Discordia.exe.old").is_file(),
+            "the outgoing program was not parked"
+        );
+        assert!(
+            installed.join("assets").is_dir(),
+            "the assets did not survive"
+        );
+        assert!(
+            !installed.join(".update-staging").exists(),
+            "staging was left behind"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Every artifact any platform's update could ask for is in the newest
+    /// release, and every one of them is signed.
+    ///
+    /// Metadata only, so it covers all four platforms for the price of one API
+    /// call — where the two download tests each cover one. It is the check that
+    /// notices a renamed artifact or a signature that stopped being produced,
+    /// which are silent failures for every user except the one platform whoever
+    /// changed it happened to test.
+    ///
+    /// ```text
+    /// cargo test -p dioxusfun --bins -- --ignored every_asset
+    /// ```
+    #[test]
+    #[ignore = "asks GitHub for the newest release"]
+    fn every_asset_the_update_can_ask_for_is_published_and_signed() {
+        let wanted = [
+            "Discordia-windows-setup.exe",
+            "Discordia-windows-portable.zip",
+            "Discordia-macos-arm64.dmg",
+            "Discordia-linux-x86_64.AppImage",
+        ];
+        let rt = tokio::runtime::Runtime::new().expect("build a runtime");
+        let (tag, names) = rt.block_on(async {
+            let releases: serde_json::Value = reqwest::Client::new()
+                .get("https://api.github.com/repos/ssotomayor/discordia/releases")
+                .header("User-Agent", "Discordia-test")
+                .send()
+                .await
+                .expect("list releases")
+                .json()
+                .await
+                .expect("decode releases");
+            let newest = releases
+                .as_array()
+                .expect("an array")
+                .iter()
+                .find(|r| r["draft"] != true)
+                .expect("a published release")
+                .clone();
+            let names: Vec<String> = newest["assets"]
+                .as_array()
+                .expect("assets")
+                .iter()
+                .filter_map(|a| a["name"].as_str().map(str::to_string))
+                .collect();
+            (
+                newest["tag_name"].as_str().unwrap_or("?").to_string(),
+                names,
+            )
+        });
+
+        for asset in wanted {
+            assert!(
+                names.iter().any(|n| n == asset),
+                "{tag} publishes no {asset} — an update on that platform would find nothing"
+            );
+            let sig = signature_name(asset);
+            assert!(
+                names.iter().any(|n| *n == sig),
+                "{tag} has {asset} but no {sig} — unverifiable, so the update refuses it"
+            );
+        }
+    }
+
     /// Every platform we publish for names a file that exists in the release,
     /// and every platform we do not publish for names nothing.
     #[test]
