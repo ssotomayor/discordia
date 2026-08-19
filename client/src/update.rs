@@ -223,12 +223,18 @@ const OUTGOING: &str = ".old";
 
 /// Unpack a verified portable zip over the folder it is running from.
 ///
-/// Ordering is the design. Everything replaceable moves first, and the
-/// executable — the one file that cannot simply be overwritten and the one
-/// whose loss leaves nothing to launch — moves last, with the outgoing copy
-/// kept until the new one is in place. A failure before that point leaves a
-/// working app on the old version; a failure at that point puts the old
-/// executable back.
+/// **All of it or none of it.** Every file displaced is kept until the whole
+/// thing has landed, and any failure walks the replacements back out in
+/// reverse. The first version of this only rolled back the executable, on the
+/// theory that the files before it were interchangeable — they are not. A
+/// rename can fail part way through for reasons that have nothing to do with
+/// us (a scanner holding a file open, a permission, a path length), and
+/// stopping there left a folder that was neither version, with nothing saying
+/// which half was which.
+///
+/// Ordering still matters inside that: the executable moves last, because it is
+/// the one file that cannot simply be overwritten and the one whose loss leaves
+/// nothing to launch.
 ///
 /// `exe` is passed rather than read from `current_exe` so this can be exercised
 /// with ordinary files, on any OS. The destructive part of an updater is the
@@ -254,30 +260,97 @@ pub fn replace_portable(
         return Err(format!("the update archive contains no {exe}"));
     }
 
-    for rel in unpacked.iter().filter(|r| r.as_os_str() != exe) {
-        let to = dir.join(rel);
-        if let Some(parent) = to.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("could not make room for {}: {e}", rel.display()))?;
+    // Every replacement made so far, newest last, so a failure can walk back
+    // out the way it came in. Without this the loop below could stop half way
+    // and leave a folder that is neither version — some files new, some old,
+    // and nothing saying so.
+    let backups = staging.join(".replaced");
+    let mut done: Vec<Undo> = Vec::new();
+
+    let outcome = (|| {
+        for rel in unpacked.iter().filter(|r| r.as_os_str() != exe) {
+            place(&staging, &backups, dir, rel, &mut done)?;
         }
-        std::fs::rename(staging.join(rel), &to)
-            .map_err(|e| format!("could not replace {}: {e}", rel.display()))?;
+        // The program last, and parked rather than deleted: Windows will not
+        // overwrite a running `.exe` but will rename one, and the old file
+        // keeps its handle under that name until the next start.
+        let live = dir.join(exe);
+        let outgoing = dir.join(format!("{exe}{OUTGOING}"));
+        let _ = std::fs::remove_file(&outgoing);
+        if live.exists() {
+            std::fs::rename(&live, &outgoing)
+                .map_err(|e| format!("could not move the running program aside: {e}"))?;
+            done.push(Undo {
+                placed: live.clone(),
+                restore_from: Some(outgoing.clone()),
+            });
+        }
+        std::fs::rename(staging.join(exe), &live)
+            .map_err(|e| format!("could not install the new program: {e}"))?;
+        Ok(())
+    })();
+
+    if let Err(e) = outcome {
+        // All of it, not just the last step. "The update failed" has to mean
+        // the folder is as it was; anything else asks a user to work out which
+        // half of their install is which.
+        for u in done.into_iter().rev() {
+            let _ = std::fs::remove_file(&u.placed);
+            if let Some(from) = u.restore_from {
+                let _ = std::fs::rename(&from, &u.placed);
+            }
+        }
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err(e);
     }
 
-    let live = dir.join(exe);
-    let outgoing = dir.join(format!("{exe}{OUTGOING}"));
-    let _ = std::fs::remove_file(&outgoing);
-    if live.exists() {
-        std::fs::rename(&live, &outgoing)
-            .map_err(|e| format!("could not move the running program aside: {e}"))?;
-    }
-    if let Err(e) = std::fs::rename(staging.join(exe), &live) {
-        // Put back what was working, rather than leaving a folder with no
-        // program in it.
-        let _ = std::fs::rename(&outgoing, &live);
-        return Err(format!("could not install the new program: {e}"));
-    }
     let _ = std::fs::remove_dir_all(&staging);
+    Ok(())
+}
+
+/// One replacement, and how to take it back.
+struct Undo {
+    /// Where the new file was put.
+    placed: std::path::PathBuf,
+    /// Where the file it displaced is waiting, if there was one.
+    restore_from: Option<std::path::PathBuf>,
+}
+
+/// Move one unpacked file into place, recording what it displaced.
+fn place(
+    staging: &std::path::Path,
+    backups: &std::path::Path,
+    dir: &std::path::Path,
+    rel: &std::path::Path,
+    done: &mut Vec<Undo>,
+) -> Result<(), String> {
+    let to = dir.join(rel);
+    if let Some(parent) = to.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("could not make room for {}: {e}", rel.display()))?;
+    }
+    let mut restore_from = None;
+    if to.exists() {
+        let kept = backups.join(rel);
+        if let Some(parent) = kept.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("could not set {} aside: {e}", rel.display()))?;
+        }
+        std::fs::rename(&to, &kept)
+            .map_err(|e| format!("could not set {} aside: {e}", rel.display()))?;
+        restore_from = Some(kept);
+    }
+    if let Err(e) = std::fs::rename(staging.join(rel), &to) {
+        // Undo this one here; the caller unwinds the rest.
+        if let Some(kept) = &restore_from {
+            let _ = std::fs::rename(kept, &to);
+        }
+        return Err(format!("could not replace {}: {e}", rel.display()));
+    }
+    done.push(Undo {
+        placed: to,
+        restore_from,
+    });
     Ok(())
 }
 
@@ -773,6 +846,57 @@ mod tests {
         assert!(
             !dir.join("assets").exists(),
             "a refused update still unpacked"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A rename that fails **part way through the folder**, which is the case
+    /// the first version of this got wrong: it stopped where it was and left
+    /// some files new and some old.
+    ///
+    /// The failure is induced with a plain file sitting where the archive needs
+    /// a directory: `create_dir_all` refuses that on every platform, so this is
+    /// a real failure rather than a mocked one. It lands on the second entry,
+    /// after the first has already been replaced.
+    #[test]
+    fn a_failure_part_way_through_puts_every_file_back() {
+        let dir = scratch("portable-midway");
+        std::fs::write(dir.join("Discordia.exe"), b"old program").unwrap();
+        std::fs::create_dir_all(dir.join("assets")).unwrap();
+        std::fs::write(dir.join("assets/a.woff2"), b"old a").unwrap();
+        std::fs::write(dir.join("assets/b.woff2"), b"old b").unwrap();
+        // `blocker` is a file, and the archive wants it to be a directory.
+        std::fs::write(dir.join("blocker"), b"in the way").unwrap();
+
+        let zip = zip_of(
+            &dir,
+            &[
+                ("assets/a.woff2", b"new a"),
+                ("blocker/inner.txt", b"cannot land"),
+                ("assets/b.woff2", b"new b"),
+                ("Discordia.exe", b"new program"),
+            ],
+        );
+        let err = replace_portable(&zip, &dir, "Discordia.exe").unwrap_err();
+        assert!(err.contains("blocker"), "unhelpful error: {err}");
+
+        assert_eq!(
+            std::fs::read(dir.join("assets/a.woff2")).unwrap(),
+            b"old a",
+            "a file replaced before the failure was not put back"
+        );
+        assert_eq!(std::fs::read(dir.join("assets/b.woff2")).unwrap(), b"old b");
+        assert_eq!(
+            std::fs::read(dir.join("Discordia.exe")).unwrap(),
+            b"old program"
+        );
+        assert!(
+            !dir.join("Discordia.exe.old").exists(),
+            "the program was parked by an update that did not happen"
+        );
+        assert!(
+            !dir.join(".update-staging").exists(),
+            "a failed update left its staging directory behind"
         );
         std::fs::remove_dir_all(&dir).ok();
     }
