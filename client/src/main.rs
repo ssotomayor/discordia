@@ -377,7 +377,10 @@ mod logging_tests {
 
         std::fs::write(&path, b"0123456789").unwrap();
         super::rotate(&path, 100);
-        assert!(path.exists(), "rotated a log that was nowhere near the limit");
+        assert!(
+            path.exists(),
+            "rotated a log that was nowhere near the limit"
+        );
         assert!(!rolled.exists());
 
         super::rotate(&path, 10);
