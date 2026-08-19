@@ -196,10 +196,18 @@ pub enum Install {
         dir: std::path::PathBuf,
         zip: std::path::PathBuf,
     },
-    /// Hand the verified file to the OS: the Windows installer installs, and
-    /// the macOS disk image mounts for the user to drag across. Neither can be
-    /// finished without the user, because both are gated by SmartScreen and
-    /// Gatekeeper on an unsigned binary.
+    /// Start the Windows installer **and get out of its way**.
+    ///
+    /// It writes over `Discordia.exe`, and Windows will not let it while this
+    /// process is the one running that file. Left alive, the installer stops on
+    /// "Error opening file for writing" and offers Abort / Retry / Ignore — a
+    /// dialog that means the update failed and reads like the download was
+    /// corrupt. Separate from `Open` for exactly this: the two look alike and
+    /// one of them cannot be done from inside the running app.
+    RunInstaller(std::path::PathBuf),
+    /// Hand the verified file to the OS and stay. The macOS disk image mounts
+    /// for the user to drag across, which does not require this process to be
+    /// gone — macOS replaces a running bundle happily.
     Open(std::path::PathBuf),
 }
 
@@ -210,6 +218,7 @@ pub fn plan_install(staged: std::path::PathBuf) -> Install {
     }
     match portable_dir() {
         Some(dir) => Install::ReplacePortable { dir, zip: staged },
+        None if cfg!(target_os = "windows") => Install::RunInstaller(staged),
         None => Install::Open(staged),
     }
 }
@@ -463,7 +472,7 @@ pub fn perform(install: &Install) -> Result<(), String> {
                 .map(|_| ())
                 .map_err(|e| format!("installed, but could not restart: {e}"))
         }
-        Install::Open(path) => open_installer(path),
+        Install::RunInstaller(path) | Install::Open(path) => open_installer(path),
     }
 }
 
@@ -508,6 +517,8 @@ enum Phase {
     Working,
     /// Replaced, and waiting to be restarted into.
     Restart,
+    /// The installer is up and this process is leaving so it can write.
+    Closing,
     /// Handed to the OS installer, which now owns the rest.
     HandedOff,
     Failed(String),
@@ -532,31 +543,37 @@ pub fn UpdateNotice(update: crate::version::Update) -> Element {
                 Err(e) => phase.set(Phase::Failed(e)),
                 Ok(staged) => {
                     let plan = plan_install(staged);
-                    let restarts = matches!(
-                        plan,
-                        Install::ReplaceAppImage { .. } | Install::ReplacePortable { .. }
-                    );
+                    // Three of the four paths need this process gone, for two
+                    // different reasons that both end the same way: the two
+                    // in-place replacements have already started a new build,
+                    // and the Windows installer cannot write `Discordia.exe`
+                    // while this process is running it.
+                    let leaves = !matches!(plan, Install::Open(_));
+                    let after = match plan {
+                        // The new build is already up; this is the old one
+                        // holding the window the user is looking at and, when
+                        // self-hosting, the port the new one needs.
+                        Install::ReplaceAppImage { .. } | Install::ReplacePortable { .. } => {
+                            Phase::Restart
+                        }
+                        // Nothing is up yet. The installer puts the new build
+                        // in place and the user starts it.
+                        _ => Phase::Closing,
+                    };
                     match perform(&plan) {
                         Err(e) => phase.set(Phase::Failed(e)),
-                        Ok(()) if restarts => {
-                            phase.set(Phase::Restart);
-                            // And then leave, which is the half that makes it a
-                            // restart rather than a second copy. `perform` has
-                            // already started the new image; this process is
-                            // now the *old* build, holding the window the user
-                            // is looking at and — when self-hosting — the port
-                            // the new one needs.
-                            //
-                            // Long enough for "restarting" to be seen, short
-                            // enough that the two do not overlap for any
-                            // meaningful time.
-                            tokio::time::sleep(Duration::from_millis(700)).await;
+                        Ok(()) if leaves => {
+                            phase.set(after);
+                            // Long enough for the message to be read, and — on
+                            // the installer path — long enough for it to be up
+                            // before its reason for existing disappears.
+                            tokio::time::sleep(Duration::from_millis(900)).await;
                             // `exit`, not a graceful window close: every
                             // shutdown path here runs pre-update code, and the
                             // one thing that must be true afterwards is that
-                            // none of it is still running. A hung teardown
-                            // would leave exactly the two-window state this
-                            // exists to prevent.
+                            // none of it is still running. A teardown that hangs
+                            // holds `Discordia.exe` open, which is the whole
+                            // failure this is fixing.
                             std::process::exit(0);
                         }
                         Ok(()) => phase.set(Phase::HandedOff),
@@ -591,6 +608,9 @@ pub fn UpdateNotice(update: crate::version::Update) -> Element {
             },
             Phase::Working => rsx! {
                 span { class: "text-[10px] text-[var(--text-muted)]", "downloading {tag}…" }
+            },
+            Phase::Closing => rsx! {
+                span { class: "text-[10px] text-[var(--up)]", "closing so the installer can finish" }
             },
             Phase::Restart => rsx! {
                 span { class: "text-[10px] text-[var(--up)]", "{tag} installed — restarting" }
@@ -749,18 +769,43 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// Off an AppImage — every developer machine, and Windows and macOS
-    /// always — installing means handing the file to the OS, never replacing
-    /// anything in place.
+    /// Windows without a portable marker means the installer, and the installer
+    /// means this process has to leave — it writes over `Discordia.exe`, which
+    /// Windows refuses while we are the process running it. Reported from a
+    /// real update: NSIS stopped on "Error opening file for writing" with
+    /// Abort / Retry / Ignore, which reads like a corrupt download.
+    ///
+    /// The distinction is only visible in the type, so the type is what gets
+    /// pinned: `Open` and `RunInstaller` do the same thing and differ in
+    /// whether the caller may stay alive afterwards.
+    #[test]
+    #[cfg(windows)]
+    fn the_windows_installer_is_not_the_stay_alive_case() {
+        assert!(
+            matches!(
+                plan_install(std::path::PathBuf::from("setup.exe")),
+                Install::RunInstaller(_)
+            ),
+            "a Windows install planned as Open would leave the app holding its \
+             own exe while the installer tries to overwrite it"
+        );
+    }
+
+    /// Off an AppImage and off a portable unzip — every developer machine —
+    /// installing hands the file to the OS and replaces nothing in place.
+    ///
+    /// Which of the two hand-off variants it is depends on the platform, and
+    /// that is what `the_windows_installer_is_not_the_stay_alive_case` pins.
+    /// What matters here is that neither of them touches a live install.
     #[test]
     fn without_an_appimage_nothing_is_replaced() {
         assert!(
             running_appimage().is_none(),
             "APPIMAGE is set while running tests, which this test cannot interpret"
         );
-        assert!(matches!(
+        assert!(!matches!(
             plan_install(std::path::PathBuf::from("x")),
-            Install::Open(_)
+            Install::ReplaceAppImage { .. } | Install::ReplacePortable { .. }
         ));
     }
 
