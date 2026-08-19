@@ -176,15 +176,24 @@ fn reclaim_orphan(dir: &Path) {
     let _ = fs::remove_file(&path);
 }
 
-// Shell out to avoid a process-enumeration dependency for four commands. If
-// the client gains `windows_subsystem = "windows"`, add `CREATE_NO_WINDOW` to
-// prevent console flashes.
+// Shell out to avoid a process-enumeration dependency for four commands. The
+// two Windows ones carry `CREATE_NO_WINDOW`: the client is a windowed build, so
+// without it each call flashes a console of its own.
+
+/// The `CreateProcess` flag for "no console, ever".
+///
+/// Spelled out rather than pulled from the `windows` crate: it is one constant,
+/// and this crate does not otherwise depend on it.
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// Whether `pid` is live *and* running `image`.
 #[cfg(windows)]
 fn process_matches(pid: u32, image: &str) -> bool {
+    use std::os::windows::process::CommandExt;
     let out = std::process::Command::new("tasklist")
         .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
+        .creation_flags(CREATE_NO_WINDOW)
         .output();
     // Filter exit code is 0 even with no match, so check the image name in
     // stdout, not the status.
@@ -204,8 +213,10 @@ fn process_matches(pid: u32, image: &str) -> bool {
 
 #[cfg(windows)]
 fn kill_pid(pid: u32) {
+    use std::os::windows::process::CommandExt;
     let _ = std::process::Command::new("taskkill")
         .args(["/F", "/PID", &pid.to_string()])
+        .creation_flags(CREATE_NO_WINDOW)
         .output();
 }
 
@@ -319,14 +330,25 @@ pub async fn spawn_livekit(advertise_ip: Option<IpAddr>) -> Result<LivekitSubpro
         .map_err(|e| format!("livekit extraction task: {e}"))??;
     }
 
-    let mut child = Command::new(&path)
+    let mut command = Command::new(&path);
+    command
         .arg("--config")
         .arg(&config_path)
         .kill_on_drop(true)
-        .stdout(std::process::Stdio::inherit())
-        .stderr(std::process::Stdio::inherit())
-        .spawn()
-        .map_err(|e| format!("spawn livekit: {e}"))?;
+        // Piped rather than inherited, and forwarded below. A windowed client
+        // has no console behind those handles, so inheriting them sends the
+        // SFU's account of its own startup nowhere — and that account is
+        // exactly what is wanted when self-host does not come up.
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    // Console-subsystem child of a windowed parent: Windows would hand it a
+    // console of its own, which is a terminal full of SFU logs opening beside
+    // the app the moment anyone self-hosts.
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+    let mut child = command.spawn().map_err(|e| format!("spawn livekit: {e}"))?;
+
+    forward_output(&mut child);
 
     // Recorded before the wait, not after: if we are killed *during* the wait,
     // the child is already running and the next run still has to find it.
@@ -346,6 +368,33 @@ pub async fn spawn_livekit(advertise_ip: Option<IpAddr>) -> Result<LivekitSubpro
         _child: child,
         pid_file: dir.join(pid_file_name()),
     })
+}
+
+/// Relay the child's output into our own log, a line at a time.
+///
+/// Both streams at `info` and with the child's own level left in the text:
+/// livekit prefixes every line with its level, and re-levelling stderr to
+/// `warn` would relabel its routine startup chatter as a problem.
+fn forward_output(child: &mut Child) {
+    fn forward<R>(reader: R)
+    where
+        R: tokio::io::AsyncRead + Unpin + Send + 'static,
+    {
+        use tokio::io::AsyncBufReadExt;
+        tokio::spawn(async move {
+            let mut lines = tokio::io::BufReader::new(reader).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                tracing::info!("livekit: {line}");
+            }
+        });
+    }
+
+    if let Some(out) = child.stdout.take() {
+        forward(out);
+    }
+    if let Some(err) = child.stderr.take() {
+        forward(err);
+    }
 }
 
 /// The config we hand `livekit-server`, kept out of `spawn_livekit` so its

@@ -83,7 +83,17 @@ pub fn open_external(url: &str) {
     );
     #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
     let cmd = ("xdg-open", vec![url]);
-    let _ = std::process::Command::new(cmd.0).args(cmd.1).spawn();
+    let mut command = std::process::Command::new(cmd.0);
+    command.args(cmd.1);
+    // A windowed build has no console for `cmd` to inherit, so Windows would
+    // give it one: a console flashing open on every link click.
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    let _ = command.spawn();
 }
 
 /// Inline Discordia brand mark. `class` sets the size (e.g. "w-32 h-32").

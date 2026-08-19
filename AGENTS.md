@@ -184,7 +184,12 @@ identity bullets under `features/*.rs`:
 
 ## Client anatomy (`client/src/`)
 
-- `main.rs` / `app.rs` — Dioxus entry, theming, top-level layout.
+- `main.rs` / `app.rs` — Dioxus entry, theming, top-level layout. `main.rs` also
+  owns logging, and where it lands differs by build. Debug prints to the console.
+  Release is windowed on Windows (`windows_subsystem`), so there is no console to
+  print to: it writes `<config_dir>/logs/discordia.log` — rolled at 5 MB, one
+  generation — and that file also receives panics and every `eprintln!` in the
+  crate, because the process's own stdout/stderr are redirected onto it.
 - `net.rs` — the WebSocket loop. `apply(ServerMessage)` mutates `AppState`; the
   gateway sender pushes `ClientMessage`s. **New server messages are handled
   here.**

@@ -41,20 +41,20 @@ pub fn gate() {
     match ensure() {
         Ok(Outcome::AlreadyPresent(version)) => {
             if installer_mode {
-                println!("WebView2 runtime {version} already present; nothing to do");
+                tracing::info!("WebView2 runtime {version} already present; nothing to do");
                 std::process::exit(0);
             }
         }
         Ok(Outcome::Installed) => {
             if installer_mode {
-                println!("WebView2 runtime installed");
+                tracing::info!("WebView2 runtime installed");
                 std::process::exit(0);
             }
         }
         Err(problem) => {
             // Installer mode has no UI to alert; a normal launch has no
             // working window to paint in. Exit immediately in both cases.
-            eprintln!("[webview2] {problem}");
+            tracing::error!("[webview2] {problem}");
             if !installer_mode {
                 alert(&format!(
                     "Discordia needs the Microsoft Edge WebView2 runtime, and it \

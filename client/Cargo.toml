@@ -136,6 +136,9 @@ windows = { version = "0.61", features = [
     "Win32_Security",
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
+    # SetStdHandle: a windowed build has no stderr, so every `eprintln!` in the
+    # crate writes into nothing. See `redirect_std_handles` in src/main.rs.
+    "Win32_System_Console",
     "Win32_System_SystemInformation",
     "Win32_System_Threading",
     "Win32_System_Variant",
