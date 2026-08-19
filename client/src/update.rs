@@ -978,7 +978,7 @@ mod tests {
             );
             let sig = signature_name(asset);
             assert!(
-                names.iter().any(|n| *n == sig),
+                names.contains(&sig),
                 "{tag} has {asset} but no {sig} — unverifiable, so the update refuses it"
             );
         }
