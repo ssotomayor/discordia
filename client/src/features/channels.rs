@@ -1400,11 +1400,19 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                         }
                     }
                     div {
-                        class: "fixed z-40 flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-lg overflow-hidden w-64",
+                        class: "fixed z-40 flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-lg overflow-hidden w-96",
                         // Max-height is computed from current Y position
                         // because the window is draggable; a fixed max-height
                         // would clip content when dragged near the bottom.
-                        style: "left: {audio_x}px; top: {audio_y}px; max-height: calc(100vh - {audio_y}px - 12px);",
+                        //
+                        // `left` is capped the same way and for a sharper
+                        // reason: it opens at a fixed 1000px, which fit while
+                        // the panel was 256px wide and does not now — 1000 +
+                        // 384 is past the right edge of the window this app
+                        // opens at. The cap is in CSS rather than in the signal
+                        // so it follows a resize, and it is `min`, so dragging
+                        // it left still works.
+                        style: "left: min({audio_x}px, calc(100vw - 396px)); top: {audio_y}px; max-height: calc(100vh - {audio_y}px - 12px);",
                         onclick: move |e| e.stop_propagation(),
 
                         div {
