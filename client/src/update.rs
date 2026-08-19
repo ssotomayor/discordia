@@ -306,7 +306,7 @@ pub fn UpdateNotice(update: crate::version::Update) -> Element {
             // was not the file CI built.
             Phase::Failed(e) => rsx! {
                 span {
-                    class: "text-[10px] text-[var(--danger)] max-w-[280px] truncate",
+                    class: "text-[10px] text-[var(--danger)] max-w-[320px] truncate",
                     title: "{e}",
                     "update failed — {e}"
                 }
