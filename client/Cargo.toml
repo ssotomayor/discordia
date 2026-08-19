@@ -102,6 +102,7 @@ tracing = { workspace = true }
 # is how sixteen diagnostics along the networking paths came to be written and
 # never seen. See `main.rs`.
 tracing-subscriber = { workspace = true }
+minisign-verify = "0.2.5"
 
 [features]
 default = ["desktop"]

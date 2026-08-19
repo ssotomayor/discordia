@@ -579,18 +579,11 @@ pub fn App() -> Element {
             if session.read().is_none() {
                 div { class: "fixed bottom-3 right-3 z-40 flex items-center gap-2",
                     crate::version::VersionLabel {}
-                    // Notifies, and stops there. The app has no Authenticode
-                    // certificate, so a self-updater would be handing the user
-                    // an unsigned binary it could not verify — a link they
-                    // follow deliberately is a different act from a binary
-                    // swapped underneath them.
+                    // Downloads and installs now, but only on a click, and
+                    // only what verifies against the key compiled into this
+                    // binary. See .
                     if let Some(u) = update() {
-                        button {
-                            class: "text-[10px] text-[var(--accent)] underline",
-                            title: "Opens the release page in your browser",
-                            onclick: move |_| open_external(&u.url),
-                            "{u.tag} available"
-                        }
+                        crate::update::UpdateNotice { update: u }
                     }
                 }
             }

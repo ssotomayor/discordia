@@ -74,6 +74,22 @@ pub struct Update {
     pub tag: String,
     /// The release page, opened in the user's real browser.
     pub url: String,
+    /// Where to fetch the artifact for *this* platform and the signature
+    /// beside it, when the release published one.
+    ///
+    /// `None` is the ordinary answer on a platform CI does not build for, and
+    /// the update offers the release page instead of an install it cannot
+    /// perform.
+    pub download: Option<Download>,
+}
+
+/// The two URLs an install needs, and they travel together on purpose: an
+/// artifact whose signature was not published is one this app will not run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Download {
+    pub asset: String,
+    pub asset_url: String,
+    pub signature_url: String,
 }
 
 /// One row of the releases listing, cut down to what we use.
@@ -83,6 +99,36 @@ struct Release {
     html_url: String,
     #[serde(default)]
     draft: bool,
+    #[serde(default)]
+    assets: Vec<Asset>,
+}
+
+/// One uploaded file on a release.
+#[derive(serde::Deserialize)]
+struct Asset {
+    name: String,
+    browser_download_url: String,
+}
+
+/// Pair this platform's artifact with its signature, or give up.
+///
+/// Both or neither. Half a pair is not a degraded install, it is an unverifiable
+/// one — and the whole point of the signing work is that this code never has to
+/// decide whether to trust something on its own.
+fn download_for(assets: &[Asset]) -> Option<Download> {
+    let wanted = crate::update::asset_name()?;
+    let sig = crate::update::signature_name(wanted);
+    let find = |name: &str| {
+        assets
+            .iter()
+            .find(|a| a.name == name)
+            .map(|a| a.browser_download_url.clone())
+    };
+    Some(Download {
+        asset: wanted.to_string(),
+        asset_url: find(wanted)?,
+        signature_url: find(&sig)?,
+    })
 }
 
 /// The build number inside a release tag: `v0.1.0-pre.223` → `223`.
@@ -116,6 +162,7 @@ fn newest_release(releases: Vec<Release>, mine: u64) -> Option<Update> {
         .map(|(_, r)| Update {
             tag: r.tag_name,
             url: r.html_url,
+            download: download_for(&r.assets),
         })
 }
 
@@ -231,7 +278,40 @@ mod tests {
             tag_name: tag.into(),
             html_url: format!("https://example.invalid/{tag}"),
             draft: false,
+            assets: vec![],
         }
+    }
+
+    fn asset(name: &str) -> Asset {
+        Asset {
+            name: name.into(),
+            browser_download_url: format!("https://example.invalid/{name}"),
+        }
+    }
+
+    /// A release with our artifact but no signature beside it offers no
+    /// install. Half a pair is not a degraded update, it is an unverifiable
+    /// one — and this is the case a partial upload actually produces.
+    #[test]
+    fn an_artifact_without_its_signature_is_not_offered() {
+        let Some(name) = crate::update::asset_name() else {
+            return;
+        };
+        assert_eq!(download_for(&[asset(name)]), None);
+        let both = [asset(name), asset(&crate::update::signature_name(name))];
+        let d = download_for(&both).expect("both halves present");
+        assert_eq!(d.asset, name);
+        assert!(d.signature_url.ends_with(".minisig"));
+    }
+
+    /// Somebody else's platform in the listing is not ours.
+    #[test]
+    fn another_platforms_artifact_is_not_mistaken_for_ours() {
+        let foreign = [
+            asset("Discordia-solaris-sparc.tar.gz"),
+            asset("Discordia-solaris-sparc.tar.gz.minisig"),
+        ];
+        assert_eq!(download_for(&foreign), None);
     }
 
     /// A fork gets its own releases, or none — never ours.
