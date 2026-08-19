@@ -222,11 +222,40 @@ pub fn perform(install: &Install) -> Result<(), String> {
                 .map(|_| ())
                 .map_err(|e| format!("installed, but could not restart: {e}"))
         }
-        Install::Open(path) => {
-            crate::app::open_external(&path.to_string_lossy());
-            Ok(())
-        }
+        Install::Open(path) => open_installer(path),
     }
+}
+
+/// Start the verified installer, and say so if it does not start.
+///
+/// Not `app::open_external`, for two reasons that both bit at once. It ignores
+/// the spawn result, so a launch that never happened returned the same `()` as
+/// one that did — the app said "finish in the installer" with no installer. And
+/// on Windows it goes through `cmd /C start <arg>`, where a path containing a
+/// space arrives quoted and `start` reads a lone quoted token as the *window
+/// title*: it opens an empty console and runs nothing. `%TEMP%` sits under the
+/// user's profile, so any account named "John Doe" hits that.
+///
+/// Windows therefore runs the installer directly — it is an executable, and
+/// there is nothing `cmd` was adding except a way to fail quietly.
+fn open_installer(path: &std::path::Path) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    let mut cmd = std::process::Command::new(path);
+    #[cfg(target_os = "macos")]
+    let mut cmd = {
+        let mut c = std::process::Command::new("open");
+        c.arg(path);
+        c
+    };
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+    let mut cmd = {
+        let mut c = std::process::Command::new("xdg-open");
+        c.arg(path);
+        c
+    };
+    cmd.spawn()
+        .map(|_| ())
+        .map_err(|e| format!("downloaded and verified, but could not start it: {e}"))
 }
 
 /// How far the one-click install has got.

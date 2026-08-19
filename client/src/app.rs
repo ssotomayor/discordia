@@ -71,8 +71,16 @@ pub fn open_external(url: &str) {
     let url = url.to_string();
     #[cfg(target_os = "macos")]
     let cmd = ("open", vec![url]);
+    // The empty string is the window title, and leaving it out is a trap rather
+    // than a tidiness question: `start` reads a single quoted token as a title
+    // and opens an empty console instead of running anything. Rust quotes any
+    // argument containing a space, so the moment one reaches here — a path, a
+    // URL with an encoded space — the call silently does nothing.
     #[cfg(target_os = "windows")]
-    let cmd = ("cmd", vec!["/C".to_string(), "start".to_string(), url]);
+    let cmd = (
+        "cmd",
+        vec!["/C".to_string(), "start".to_string(), String::new(), url],
+    );
     #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
     let cmd = ("xdg-open", vec![url]);
     let _ = std::process::Command::new(cmd.0).args(cmd.1).spawn();
