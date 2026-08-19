@@ -1148,7 +1148,17 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
     let mut show_audio_settings = use_signal(|| false);
     // Not persisted: reopening the app should not silently resume polling.
     let mut show_stats = use_signal(|| false);
-    let mut audio_x = use_signal(|| 1000.0_f64);
+    // Where the settings panel opens. 880 rather than the old 1000 because the
+    // panel is now 384px wide: 880 + 384 lands 16px inside the 1280-wide window
+    // this app opens at, where 1000 + 384 would have hung 104px off the right
+    // edge with the close button among them.
+    //
+    // A fixed number and not a clamp, deliberately. This panel has never bounded
+    // itself and doing it properly needs the viewport width, which is not
+    // something Rust has here — and the half-measure, capping the rendered
+    // position while the drag still reads the signal, is worse than no bound at
+    // all: it breaks dragging. See the `style` below.
+    let mut audio_x = use_signal(|| 880.0_f64);
     let mut audio_y = use_signal(|| 48.0_f64);
     let mut audio_drag = use_signal(|| None::<AudioDrag>);
 
@@ -1405,14 +1415,15 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                         // because the window is draggable; a fixed max-height
                         // would clip content when dragged near the bottom.
                         //
-                        // `left` is capped the same way and for a sharper
-                        // reason: it opens at a fixed 1000px, which fit while
-                        // the panel was 256px wide and does not now — 1000 +
-                        // 384 is past the right edge of the window this app
-                        // opens at. The cap is in CSS rather than in the signal
-                        // so it follows a resize, and it is `min`, so dragging
-                        // it left still works.
-                        style: "left: min({audio_x}px, calc(100vw - 396px)); top: {audio_y}px; max-height: calc(100vh - {audio_y}px - 12px);",
+                        // `left` is the signal and nothing else. Capping it here
+                        // with `min()` was tried and is wrong: the drag handler
+                        // takes its offset from `audio_x`, so the moment the
+                        // rendered position stops being `audio_x` the two
+                        // disagree by whatever the cap swallowed — dragging
+                        // right does nothing and dragging left crosses a dead
+                        // zone of that size first. Whatever bounds this panel
+                        // has to be the same number the drag reads.
+                        style: "left: {audio_x}px; top: {audio_y}px; max-height: calc(100vh - {audio_y}px - 12px);",
                         onclick: move |e| e.stop_propagation(),
 
                         div {
