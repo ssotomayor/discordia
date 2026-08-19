@@ -404,17 +404,40 @@ fn unzip_into(
 
 /// Delete the executable a previous update parked, if it is still there.
 ///
-/// Called at startup because that is the first moment it can succeed: while the
-/// old build was running, Windows held its file open.
+/// Retries, on a thread, because startup is the one moment it is *least* likely
+/// to work. The build that parked the file spawns this one and then waits
+/// before exiting, so at the instant this runs the old process is usually still
+/// alive with its own executable open — and on Windows that is exactly what
+/// makes the file undeletable. The first attempt is the one that fails.
+///
+/// It costs a sleeping thread and saves the user carrying a second copy of a
+/// 141MB binary until whenever they next happen to restart the app.
+///
+/// Everything here is best-effort by design: a file that will not go is not
+/// worth a message, and it is tried again on the next launch anyway.
 pub fn sweep_outgoing() {
-    let Some(dir) = portable_dir() else { return };
-    let Ok(exe) = std::env::current_exe() else {
-        return;
-    };
-    let Some(name) = exe.file_name().and_then(|n| n.to_str()) else {
-        return;
-    };
-    let _ = std::fs::remove_file(dir.join(format!("{name}{OUTGOING}")));
+    let Some(path) = outgoing_path() else { return };
+    std::thread::spawn(move || {
+        // Immediately, then across the window the old process takes to leave —
+        // it sleeps 700ms before exiting, and the last attempt is long enough
+        // after that for a slow shutdown too.
+        for wait in [0, 1, 2, 5, 10] {
+            if wait > 0 {
+                std::thread::sleep(Duration::from_secs(wait));
+            }
+            if !path.exists() || std::fs::remove_file(&path).is_ok() {
+                return;
+            }
+        }
+    });
+}
+
+/// Where a parked executable would be, if this is a portable copy at all.
+fn outgoing_path() -> Option<std::path::PathBuf> {
+    let dir = portable_dir()?;
+    let exe = std::env::current_exe().ok()?;
+    let name = exe.file_name()?.to_str()?;
+    Some(dir.join(format!("{name}{OUTGOING}")))
 }
 
 /// Put `staged` where `target` is, executable, in one step.
@@ -789,6 +812,61 @@ mod tests {
             "a Windows install planned as Open would leave the app holding its \
              own exe while the installer tries to overwrite it"
         );
+    }
+
+    /// The sweep gives up on a file that is not there, rather than spending
+    /// five sleeps on nothing. Every launch that did not just update takes this
+    /// path, so it is the common one.
+    #[test]
+    fn nothing_parked_means_nothing_to_sweep() {
+        // No portable marker in a checkout, so there is no path to sweep at all.
+        assert!(outgoing_path().is_none());
+    }
+
+    /// The retry is the whole point of the change, so it is what gets tested:
+    /// a file that cannot be deleted on the first attempt still goes.
+    ///
+    /// The lock is real rather than simulated — a second handle open with
+    /// sharing denied is what an exiting process holds on its own executable,
+    /// and it is the reason the first attempt fails in production.
+    #[test]
+    #[cfg(windows)]
+    fn a_file_still_held_open_is_swept_once_it_is_released() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = scratch("sweep-retry");
+        let parked = dir.join("Discordia.exe.old");
+        std::fs::write(&parked, b"outgoing").unwrap();
+
+        // FILE_SHARE_READ only: deletion is refused while this lives.
+        let held = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(1)
+            .open(&parked)
+            .unwrap();
+        assert!(
+            std::fs::remove_file(&parked).is_err(),
+            "the lock did not take, so this test proves nothing"
+        );
+
+        let p = parked.clone();
+        let sweeper = std::thread::spawn(move || {
+            for wait in [0, 1, 2] {
+                if wait > 0 {
+                    std::thread::sleep(Duration::from_secs(wait));
+                }
+                if !p.exists() || std::fs::remove_file(&p).is_ok() {
+                    return true;
+                }
+            }
+            false
+        });
+
+        std::thread::sleep(Duration::from_millis(300));
+        drop(held);
+
+        assert!(sweeper.join().unwrap(), "the retry never got the file");
+        assert!(!parked.exists());
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// Off an AppImage and off a portable unzip — every developer machine —
