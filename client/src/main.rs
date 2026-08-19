@@ -78,6 +78,10 @@ fn default_filter() -> tracing_subscriber::EnvFilter {
 fn main() {
     init_logging();
 
+    // The executable a previous portable update parked. First chance to delete
+    // it: while the old build ran, Windows held its file open.
+    update::sweep_outgoing();
+
     // Must run before any Dioxus/wry calls: wry paints with WebView2, so
     // without it the window opens blank.
     // Also serves the installer path (`--ensure-webview2`), which exits here.

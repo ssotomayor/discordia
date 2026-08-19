@@ -103,6 +103,7 @@ tracing = { workspace = true }
 # never seen. See `main.rs`.
 tracing-subscriber = { workspace = true }
 minisign-verify = "0.2.5"
+zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 
 [features]
 default = ["desktop"]

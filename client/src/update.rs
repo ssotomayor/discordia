@@ -21,13 +21,36 @@ use minisign_verify::{PublicKey, Signature};
 /// edit, and a build that disagrees with the published key cannot exist.
 const PUBLIC_KEY: &str = include_str!("../../release-signing.pub");
 
+/// The file that marks a portable unzip, written into the archive by `ci.yml`.
+///
+/// Windows ships twice from one build, and the two update differently: the
+/// installer replaces an installation, the portable is a folder the user
+/// unzipped wherever they liked. Nothing about the path distinguishes them —
+/// hence a file, which travels in the zip and is replaced along with it.
+const PORTABLE_MARKER: &str = "PORTABLE";
+
+/// The directory a portable copy lives in, if this is one.
+fn portable_dir() -> Option<std::path::PathBuf> {
+    if !cfg!(target_os = "windows") {
+        return None;
+    }
+    let dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
+    dir.join(PORTABLE_MARKER).is_file().then_some(dir)
+}
+
 /// What this build would download to update itself.
 ///
 /// `None` on any platform we do not publish an artifact for, which is the
 /// honest answer for a self-built binary — the update flow simply does not
 /// offer itself rather than guessing at a file that was never uploaded.
+///
+/// Not a `const`: on Windows the answer depends on how this copy got here.
+/// Handing the installer to a portable copy is not a lesser update, it is the
+/// wrong one — it installs a second Discordia elsewhere and leaves the folder
+/// the user actually opens untouched, having reported success.
 pub fn asset_name() -> Option<&'static str> {
     match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("windows", _) if portable_dir().is_some() => Some("Discordia-windows-portable.zip"),
         ("windows", _) => Some("Discordia-windows-setup.exe"),
         ("macos", "aarch64") => Some("Discordia-macos-arm64.dmg"),
         ("linux", "x86_64") => Some("Discordia-linux-x86_64.AppImage"),
@@ -103,7 +126,9 @@ fn trim_key(file: &str) -> &str {
 /// temp dir everywhere else, where nothing is being replaced in place.
 fn staging_path(asset: &str) -> std::path::PathBuf {
     running_appimage()
-        .and_then(|p| p.parent().map(|d| d.join(format!(".{asset}.partial"))))
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+        .or_else(portable_dir)
+        .map(|d| d.join(format!(".{asset}.partial")))
         .unwrap_or_else(|| std::env::temp_dir().join(asset))
 }
 
@@ -165,6 +190,12 @@ pub enum Install {
         target: std::path::PathBuf,
         staged: std::path::PathBuf,
     },
+    /// Unpack the verified zip over the folder a portable copy runs from, then
+    /// re-exec. The other Windows build; see `PORTABLE_MARKER`.
+    ReplacePortable {
+        dir: std::path::PathBuf,
+        zip: std::path::PathBuf,
+    },
     /// Hand the verified file to the OS: the Windows installer installs, and
     /// the macOS disk image mounts for the user to drag across. Neither can be
     /// finished without the user, because both are gated by SmartScreen and
@@ -174,10 +205,134 @@ pub enum Install {
 
 /// Decide, without doing anything.
 pub fn plan_install(staged: std::path::PathBuf) -> Install {
-    match running_appimage() {
-        Some(target) => Install::ReplaceAppImage { target, staged },
+    if let Some(target) = running_appimage() {
+        return Install::ReplaceAppImage { target, staged };
+    }
+    match portable_dir() {
+        Some(dir) => Install::ReplacePortable { dir, zip: staged },
         None => Install::Open(staged),
     }
+}
+
+/// The suffix the outgoing executable is parked under.
+///
+/// Windows refuses to overwrite a running `.exe` but allows renaming one, which
+/// is the whole trick: the file the OS is executing keeps its handle under a new
+/// name while the new build takes the old one.
+const OUTGOING: &str = ".old";
+
+/// Unpack a verified portable zip over the folder it is running from.
+///
+/// Ordering is the design. Everything replaceable moves first, and the
+/// executable — the one file that cannot simply be overwritten and the one
+/// whose loss leaves nothing to launch — moves last, with the outgoing copy
+/// kept until the new one is in place. A failure before that point leaves a
+/// working app on the old version; a failure at that point puts the old
+/// executable back.
+///
+/// `exe` is passed rather than read from `current_exe` so this can be exercised
+/// with ordinary files, on any OS. The destructive part of an updater is the
+/// part that most deserves a test and least tolerates being tested in
+/// production.
+pub fn replace_portable(
+    zip: &std::path::Path,
+    dir: &std::path::Path,
+    exe: &str,
+) -> Result<(), String> {
+    let staging = dir.join(".update-staging");
+    let _ = std::fs::remove_dir_all(&staging);
+    std::fs::create_dir_all(&staging).map_err(|e| format!("could not stage the update: {e}"))?;
+
+    let unpacked = unzip_into(zip, &staging).inspect_err(|_| {
+        let _ = std::fs::remove_dir_all(&staging);
+    })?;
+
+    // Refuse before touching anything if the archive is not what it claims. An
+    // update that lands every file except the program is worse than none.
+    if !staging.join(exe).is_file() {
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err(format!("the update archive contains no {exe}"));
+    }
+
+    for rel in unpacked.iter().filter(|r| r.as_os_str() != exe) {
+        let to = dir.join(rel);
+        if let Some(parent) = to.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("could not make room for {}: {e}", rel.display()))?;
+        }
+        std::fs::rename(staging.join(rel), &to)
+            .map_err(|e| format!("could not replace {}: {e}", rel.display()))?;
+    }
+
+    let live = dir.join(exe);
+    let outgoing = dir.join(format!("{exe}{OUTGOING}"));
+    let _ = std::fs::remove_file(&outgoing);
+    if live.exists() {
+        std::fs::rename(&live, &outgoing)
+            .map_err(|e| format!("could not move the running program aside: {e}"))?;
+    }
+    if let Err(e) = std::fs::rename(staging.join(exe), &live) {
+        // Put back what was working, rather than leaving a folder with no
+        // program in it.
+        let _ = std::fs::rename(&outgoing, &live);
+        return Err(format!("could not install the new program: {e}"));
+    }
+    let _ = std::fs::remove_dir_all(&staging);
+    Ok(())
+}
+
+/// Extract every file in `zip` under `into`, returning their relative paths.
+///
+/// Entries are rejected rather than sanitised if they escape the destination.
+/// The archive is signed, so this is not the threat it would otherwise be — but
+/// "we verified it" is a reason to expect well-formed input, not a reason to
+/// write wherever it says.
+fn unzip_into(
+    zip: &std::path::Path,
+    into: &std::path::Path,
+) -> Result<Vec<std::path::PathBuf>, String> {
+    let file = std::fs::File::open(zip).map_err(|e| format!("could not open the update: {e}"))?;
+    let mut archive =
+        zip::ZipArchive::new(file).map_err(|e| format!("the update is not a zip: {e}"))?;
+    let mut written = Vec::new();
+    for i in 0..archive.len() {
+        let mut entry = archive
+            .by_index(i)
+            .map_err(|e| format!("could not read the update: {e}"))?;
+        let Some(rel) = entry.enclosed_name() else {
+            return Err(format!(
+                "the update contains an unsafe path: {}",
+                entry.name()
+            ));
+        };
+        let out = into.join(&rel);
+        if entry.is_dir() {
+            std::fs::create_dir_all(&out).map_err(|e| format!("could not unpack: {e}"))?;
+            continue;
+        }
+        if let Some(parent) = out.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("could not unpack: {e}"))?;
+        }
+        let mut to = std::fs::File::create(&out).map_err(|e| format!("could not unpack: {e}"))?;
+        std::io::copy(&mut entry, &mut to).map_err(|e| format!("could not unpack: {e}"))?;
+        written.push(rel);
+    }
+    Ok(written)
+}
+
+/// Delete the executable a previous update parked, if it is still there.
+///
+/// Called at startup because that is the first moment it can succeed: while the
+/// old build was running, Windows held its file open.
+pub fn sweep_outgoing() {
+    let Some(dir) = portable_dir() else { return };
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let Some(name) = exe.file_name().and_then(|n| n.to_str()) else {
+        return;
+    };
+    let _ = std::fs::remove_file(dir.join(format!("{name}{OUTGOING}")));
 }
 
 /// Put `staged` where `target` is, executable, in one step.
@@ -218,6 +373,19 @@ pub fn perform(install: &Install) -> Result<(), String> {
         Install::ReplaceAppImage { target, staged } => {
             swap(staged, target)?;
             std::process::Command::new(target)
+                .spawn()
+                .map(|_| ())
+                .map_err(|e| format!("installed, but could not restart: {e}"))
+        }
+        Install::ReplacePortable { dir, zip } => {
+            let exe = std::env::current_exe()
+                .ok()
+                .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+                .ok_or("could not find the running program to replace")?;
+            replace_portable(zip, dir, &exe)?;
+            let _ = std::fs::remove_file(zip);
+            std::process::Command::new(dir.join(&exe))
+                .current_dir(dir)
                 .spawn()
                 .map(|_| ())
                 .map_err(|e| format!("installed, but could not restart: {e}"))
@@ -291,7 +459,10 @@ pub fn UpdateNotice(update: crate::version::Update) -> Element {
                 Err(e) => phase.set(Phase::Failed(e)),
                 Ok(staged) => {
                     let plan = plan_install(staged);
-                    let restarts = matches!(plan, Install::ReplaceAppImage { .. });
+                    let restarts = matches!(
+                        plan,
+                        Install::ReplaceAppImage { .. } | Install::ReplacePortable { .. }
+                    );
                     match perform(&plan) {
                         Err(e) => phase.set(Phase::Failed(e)),
                         Ok(()) if restarts => {
@@ -520,6 +691,130 @@ mod tests {
         ));
     }
 
+    /// Build a zip in `dir` from `(relative path, contents)` pairs.
+    fn zip_of(dir: &std::path::Path, entries: &[(&str, &[u8])]) -> std::path::PathBuf {
+        use std::io::Write;
+        let path = dir.join("update.zip");
+        let mut w = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+        for (name, body) in entries {
+            w.start_file(*name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            w.write_all(body).unwrap();
+        }
+        w.finish().unwrap();
+        path
+    }
+
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("dxf-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// The happy path, and the two things about it that matter: the program is
+    /// the new one, and the old one is still on disk under its parked name —
+    /// because on Windows it is still open, and deleting it now would fail.
+    #[test]
+    fn a_portable_update_replaces_the_folder_and_parks_the_old_program() {
+        let dir = scratch("portable-ok");
+        std::fs::write(dir.join("Discordia.exe"), b"old program").unwrap();
+        std::fs::create_dir_all(dir.join("assets")).unwrap();
+        std::fs::write(dir.join("assets/font.woff2"), b"old font").unwrap();
+        std::fs::write(dir.join("PORTABLE"), b"marker").unwrap();
+
+        let zip = zip_of(
+            &dir,
+            &[
+                ("Discordia.exe", b"new program"),
+                ("assets/font.woff2", b"new font"),
+                ("PORTABLE", b"marker"),
+            ],
+        );
+        replace_portable(&zip, &dir, "Discordia.exe").unwrap();
+
+        assert_eq!(
+            std::fs::read(dir.join("Discordia.exe")).unwrap(),
+            b"new program"
+        );
+        assert_eq!(
+            std::fs::read(dir.join("assets/font.woff2")).unwrap(),
+            b"new font"
+        );
+        assert_eq!(
+            std::fs::read(dir.join("Discordia.exe.old")).unwrap(),
+            b"old program",
+            "the outgoing program must survive until the next start can delete it"
+        );
+        assert!(
+            !dir.join(".update-staging").exists(),
+            "staging was left behind"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// An archive missing the program is refused *before* anything is touched.
+    /// Landing every file except the one you launch is worse than landing none.
+    #[test]
+    fn an_archive_without_the_program_changes_nothing() {
+        let dir = scratch("portable-noexe");
+        std::fs::write(dir.join("Discordia.exe"), b"old program").unwrap();
+        std::fs::write(dir.join("keep.txt"), b"untouched").unwrap();
+
+        let zip = zip_of(&dir, &[("assets/font.woff2", b"new font")]);
+        let err = replace_portable(&zip, &dir, "Discordia.exe").unwrap_err();
+
+        assert!(err.contains("no Discordia.exe"), "unhelpful: {err}");
+        assert_eq!(
+            std::fs::read(dir.join("Discordia.exe")).unwrap(),
+            b"old program"
+        );
+        assert_eq!(std::fs::read(dir.join("keep.txt")).unwrap(), b"untouched");
+        assert!(
+            !dir.join("assets").exists(),
+            "a refused update still unpacked"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Something that is not an archive at all — a proxy's error page saved
+    /// under the asset's name — is refused without disturbing the install.
+    #[test]
+    fn a_download_that_is_not_a_zip_changes_nothing() {
+        let dir = scratch("portable-notzip");
+        std::fs::write(dir.join("Discordia.exe"), b"old program").unwrap();
+        let fake = dir.join("update.zip");
+        std::fs::write(&fake, b"<!doctype html>").unwrap();
+
+        assert!(replace_portable(&fake, &dir, "Discordia.exe").is_err());
+        assert_eq!(
+            std::fs::read(dir.join("Discordia.exe")).unwrap(),
+            b"old program"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A zip that points outside the folder is refused rather than sanitised.
+    /// It is signed, so this should be impossible — which is the reason to
+    /// check rather than the reason to skip.
+    #[test]
+    fn an_entry_escaping_the_folder_is_refused() {
+        let dir = scratch("portable-escape");
+        std::fs::write(dir.join("Discordia.exe"), b"old program").unwrap();
+        let zip = zip_of(&dir, &[("../escaped.txt", b"nope")]);
+
+        assert!(replace_portable(&zip, &dir, "Discordia.exe").is_err());
+        assert!(!dir.parent().unwrap().join("escaped.txt").exists());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Off a portable unzip — which is every developer machine and every
+    /// non-Windows platform — nothing claims to be one.
+    #[test]
+    fn a_checkout_is_not_a_portable_copy() {
+        assert!(portable_dir().is_none());
+    }
+
     /// Every platform we publish for names a file that exists in the release,
     /// and every platform we do not publish for names nothing.
     #[test]
@@ -528,6 +823,7 @@ mod tests {
             "Discordia-windows-setup.exe",
             "Discordia-macos-arm64.dmg",
             "Discordia-linux-x86_64.AppImage",
+            "Discordia-windows-portable.zip",
         ];
         if let Some(name) = asset_name() {
             assert!(
