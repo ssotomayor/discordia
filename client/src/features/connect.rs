@@ -342,18 +342,24 @@ pub fn ConnectView(
                                 }
                                 "Give it a join code friends can use"
                             }
-                            label { class: "flex items-center gap-2 cursor-pointer text-[var(--text)]",
-                                input {
-                                    r#type: "checkbox",
-                                    checked: allow_lan(),
-                                    oninput: move |e| allow_lan.set(e.value() == "true"),
+                            div { class: "flex items-center gap-1.5",
+                                label { class: "flex items-center gap-2 cursor-pointer text-[var(--text)]",
+                                    input {
+                                        r#type: "checkbox",
+                                        checked: allow_lan(),
+                                        oninput: move |e| allow_lan.set(e.value() == "true"),
+                                    }
+                                    "Accept direct connections"
                                 }
-                                "Accept direct connections"
-                            }
-                            div { class: "text-[10px] text-[var(--text-dim)] pl-6",
-                                // Gateway binds loopback without this, so it
-                                // governs port mapping too, not just LAN.
-                                "Friends here reach you directly, and Discordia asks your router (UPnP / NAT-PMP) to let in friends elsewhere. Your home IP becomes visible to anyone who joins that way."
+                                // Outside the label, or clicking the hint would
+                                // toggle the checkbox it explains.
+                                span {
+                                    class: "w-4 h-4 shrink-0 flex items-center justify-center rounded-full border border-[var(--border)] text-[9px] text-[var(--text-dim)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors cursor-help",
+                                    // Gateway binds loopback without this, so it
+                                    // governs port mapping too, not just LAN.
+                                    title: "Friends here reach you directly, and Discordia asks your router (UPnP / NAT-PMP) to let in friends elsewhere. Your home IP becomes visible to anyone who joins that way.",
+                                    "?"
+                                }
                             }
                             if publish_to_rendezvous() {
                                 div { class: "pl-3 border-l border-[var(--border)] space-y-2",
@@ -476,43 +482,36 @@ fn RendezvousPicker(selected: String, on_select: EventHandler<String>) -> Elemen
                     }
                 }
             }
-            div { class: "space-y-1",
-                for url in servers.iter().cloned() {
-                    {
-                        let active = url == selected;
-                        let cls = if active {
-                            "border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)]"
-                        } else {
-                            "border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--text)] hover:border-[var(--border-strong)]"
-                        };
-                        let pick = url.clone();
-                        let drop_url = url.clone();
-                        rsx! {
-                            div {
-                                key: "{url}",
-                                class: "flex items-center gap-1",
-                                button {
-                                    r#type: "button",
-                                    class: "flex-1 text-left font-mono text-[11px] px-2 py-1 rounded border transition-colors truncate {cls}",
-                                    onclick: move |_| on_select.call(pick.clone()),
-                                    "{url}"
-                                }
-                                button {
-                                    r#type: "button",
-                                    class: "px-1.5 text-[var(--text-dim)] hover:text-[var(--danger)] text-xs transition-colors",
-                                    title: "Forget this server",
-                                    onclick: move |_| {
-                                        let mut next = settings.read().clone();
-                                        next.remove_rendezvous(&drop_url);
-                                        settings.set(next.clone());
-                                        crate::settings::save(&next);
-                                        on_select.call(next.active_rendezvous());
-                                    },
-                                    "✕"
-                                }
-                            }
+            div { class: "flex items-center gap-1",
+                select {
+                    // Inline colors as well as classes: the webview renders a
+                    // native listbox, which ignores the Tailwind background on
+                    // the popup and would otherwise draw dark text on dark.
+                    class: "flex-1 min-w-0 rounded border border-[var(--border)] px-2 py-1 font-mono text-[11px] focus:outline-none focus:border-[var(--accent)] transition-colors",
+                    style: "color: var(--text); background: var(--panel-solid);",
+                    onchange: move |e| on_select.call(e.value()),
+                    for url in servers.iter().cloned() {
+                        option {
+                            key: "{url}",
+                            value: "{url}",
+                            selected: url == selected,
+                            style: "color: var(--text); background: var(--panel-solid);",
+                            "{url}"
                         }
                     }
+                }
+                button {
+                    r#type: "button",
+                    class: "px-1.5 text-[var(--text-dim)] hover:text-[var(--danger)] text-xs transition-colors",
+                    title: "Forget this server",
+                    onclick: move |_| {
+                        let mut next = settings.read().clone();
+                        next.remove_rendezvous(&selected);
+                        settings.set(next.clone());
+                        crate::settings::save(&next);
+                        on_select.call(next.active_rendezvous());
+                    },
+                    "✕"
                 }
             }
         }
