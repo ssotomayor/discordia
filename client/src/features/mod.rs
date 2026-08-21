@@ -4,6 +4,7 @@ pub mod camera;
 pub mod channels;
 pub mod chat;
 pub mod connect;
+pub mod friends;
 pub mod guild_settings;
 pub mod guilds;
 pub mod home;

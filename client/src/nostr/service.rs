@@ -44,6 +44,16 @@ pub enum NostrCmd {
     Open { peer: String },
     /// Add or remove a contact, and publish the whole replaced list.
     SetContact { peer: String, keep: bool },
+    /// Rename a contact you already have. `None` clears the name.
+    ///
+    /// Separate from `SetContact` because it means something different: that
+    /// one decides whether a person is on a list anyone can read, this one only
+    /// changes what *you* call someone already on it. Both republish the whole
+    /// list, because kind 3 leaves no other option.
+    SetPetname {
+        peer: String,
+        petname: Option<String>,
+    },
 }
 
 /// Handle the UI holds.
@@ -135,6 +145,18 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
                         };
                         pool.publish(nip02::contact_list_event(&secret, &next, now()));
                         state.write().contacts = next;
+                    }
+                    Some(NostrCmd::SetPetname { peer, petname }) => {
+                        // Read-modify-write for the same reason as above. The
+                        // rules live in `renamed` so they can be tested without
+                        // a relay; the guard keeps a no-op rename from
+                        // republishing an identical list.
+                        let current = state.read().contacts.clone();
+                        let next = current.renamed(&peer, petname);
+                        if next != current {
+                            pool.publish(nip02::contact_list_event(&secret, &next, now()));
+                            state.write().contacts = next;
+                        }
                     }
                     None => break,
                 },

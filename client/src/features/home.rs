@@ -94,6 +94,9 @@ pub fn HomeView(show_connect: Signal<bool>) -> Element {
                         NoConversationsYet { show_connect }
                     }
                 }
+                div { class: "w-56 shrink-0",
+                    crate::features::friends::FriendsPanel {}
+                }
             }
         }
     }

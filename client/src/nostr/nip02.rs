@@ -69,12 +69,26 @@ impl ContactList {
         self.contacts.iter().any(|c| c.pubkey == pubkey)
     }
 
-    /// What we call `pubkey`, if we call them anything.
+    /// Rename someone already on the list, keeping their relay hint.
     ///
-    /// Unreached: nothing sets a petname yet, so nothing reads one. Kept
-    /// because the field is parsed and re-published either way — dropping the
-    /// accessor would not stop us carrying the data, only stop us reading it.
-    #[allow(dead_code)]
+    /// Blank clears the name instead of storing one: a petname is absent or it
+    /// is something, and `Some("")` would publish a tag claiming you call them
+    /// nothing.
+    ///
+    /// A key that is not on the list comes back unchanged. Naming a stranger
+    /// would otherwise add them to a list anyone can read — a rename is not a
+    /// decision to publish a relationship, and must not become one.
+    pub fn renamed(&self, pubkey: &str, petname: Option<String>) -> Self {
+        match self.contacts.iter().find(|c| c.pubkey == pubkey) {
+            Some(existing) => self.clone().with(Contact {
+                petname: petname.filter(|p| !p.trim().is_empty()),
+                ..existing.clone()
+            }),
+            None => self.clone(),
+        }
+    }
+
+    /// What we call `pubkey`, if we call them anything.
     pub fn petname(&self, pubkey: &str) -> Option<&str> {
         self.contacts
             .iter()
@@ -211,6 +225,64 @@ mod tests {
             .without(&pk('a'));
         assert!(!list.contains(&pk('a')));
         assert!(list.contains(&pk('b')));
+    }
+
+    #[test]
+    fn renaming_keeps_the_relay_hint_and_everyone_else() {
+        let list = ContactList::default()
+            .with(Contact {
+                pubkey: pk('a'),
+                relay: Some("wss://relay.example".into()),
+                petname: None,
+            })
+            .with(Contact {
+                pubkey: pk('b'),
+                relay: None,
+                petname: Some("bee".into()),
+            })
+            .renamed(&pk('a'), Some("ana".into()));
+
+        assert_eq!(list.petname(&pk('a')), Some("ana"));
+        assert_eq!(
+            list.contacts
+                .iter()
+                .find(|c| c.pubkey == pk('a'))
+                .and_then(|c| c.relay.as_deref()),
+            Some("wss://relay.example"),
+        );
+        assert_eq!(list.petname(&pk('b')), Some("bee"));
+    }
+
+    /// A petname is absent or it is something. `Some("")` would publish a tag
+    /// claiming you call them nothing.
+    #[test]
+    fn a_blank_rename_clears_the_name() {
+        let list = ContactList::default()
+            .with(Contact {
+                pubkey: pk('a'),
+                relay: None,
+                petname: Some("ana".into()),
+            })
+            .renamed(&pk('a'), Some("   ".into()));
+
+        assert_eq!(list.petname(&pk('a')), None);
+        assert!(list.contains(&pk('a')));
+    }
+
+    /// Renaming is not a decision to publish a relationship. This list is
+    /// public, so a rename that added someone would out them.
+    #[test]
+    fn renaming_a_stranger_does_not_add_them() {
+        let list = ContactList::default()
+            .with(Contact {
+                pubkey: pk('a'),
+                relay: None,
+                petname: None,
+            })
+            .renamed(&pk('z'), Some("nobody".into()));
+
+        assert!(!list.contains(&pk('z')));
+        assert_eq!(list.contacts.len(), 1);
     }
 
     /// A junk entry from another client is skipped rather than becoming a
