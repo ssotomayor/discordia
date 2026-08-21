@@ -9,9 +9,7 @@ use crate::features::{
 };
 use crate::net::spawn_gateway;
 use crate::protocol::{ClientMessage, Id};
-use crate::state::{
-    AppState, ConnectionStatus, SessionParams, VoicePhase, use_app_state, use_gateway,
-};
+use crate::state::{ConnectionStatus, SessionParams, VoicePhase, use_app_state, use_gateway};
 
 /// Vertical row span each panel occupies, and the gap (px) between grid
 /// rows. The on-mount measurement divides the available height by these so
@@ -57,66 +55,28 @@ const UNPLUG_ICON_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width=
 
 #[component]
 pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>) -> Element {
-    let state = use_signal(AppState::empty);
+    // `AppState`, the Nostr service and the identity come from `IdentityHost`,
+    // which outlives this component: DMs and contacts belong to the key, not to
+    // whichever server happens to be connected. What is owned here is what a
+    // session owns — the gateway and voice.
+    let state = use_app_state();
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
 
-    let (gateway_tx, voice_tx, nostr_tx) = use_hook(|| {
-        // Must restore persisted audio prefs before the voice service starts,
-        // as it seeds live controls from AppState on first poll.
-        {
-            let saved = settings.read();
-            let mut app = state;
-            let mut w = app.write();
-            w.mic_sensitivity = saved.mic_sensitivity.clamp(1, 1000);
-            w.mic_volume = saved.mic_volume.min(200);
-            w.auto_gain_control = saved.auto_gain_control;
-            w.noise_cancellation = saved.noise_cancellation;
-            // Only valid where raw capture is supported; prevents a Windows
-            // settings file from leaving a macOS session believing it captures
-            // raw.
-            w.bypass_system_audio_processing =
-                saved.bypass_system_audio_processing && crate::rawmic::supported();
-            // Clamps hand-edited values to the slider's domain; unlike
-            // mic_sensitivity, this is bound directly to the dB value.
-            w.denoise_atten_lim_db = saved.denoise_atten_lim_db.clamp(
-                crate::features::voice::DENOISE_ATTEN_LIM_DB_MIN,
-                crate::features::voice::DENOISE_ATTEN_LIM_DB_MAX,
-            );
-            // Values outside the offered set indicate a hand-edited
-            // settings.json; fall back to a valid bitrate.
-            w.voice_bitrate_kbps = match saved.voice_bitrate_kbps {
-                24 => 24,
-                _ => 48,
-            };
-            w.selected_input_device = saved.selected_input_device.clone();
-            w.selected_output_device = saved.selected_output_device.clone();
-        }
+    let (gateway_tx, voice_tx) = use_hook(|| {
         let voice_tx = spawn_voice_service(state);
         let gateway_tx = spawn_gateway(params.clone(), state, voice_tx.clone(), move |reason| {
+            // Unmounting this component used to take `AppState` with it. It no
+            // longer does, so the host's half has to be dropped on purpose —
+            // otherwise the next connection starts on top of the last one's
+            // guilds, roles and roster.
+            let mut app = state;
+            app.write().clear_server();
             on_disconnect.call(reason);
         });
-        // DMs use Nostr relays, not the gateway, so this runs independently of
-        // gateway status.
-        let relays = {
-            let saved = settings.read();
-            if saved.dm_relays.is_empty() {
-                crate::nostr::relay::DEFAULT_RELAYS
-                    .iter()
-                    .map(|s| s.to_string())
-                    .collect()
-            } else {
-                saved.dm_relays.clone()
-            }
-        };
-        let nostr_tx = crate::nostr::service::spawn_nostr(params.identity.clone(), relays, state);
-        (gateway_tx, voice_tx, nostr_tx)
+        (gateway_tx, voice_tx)
     });
     provide_context(gateway_tx.clone());
-    provide_context(nostr_tx.clone());
     provide_context(crate::features::voice::VoiceTx(voice_tx.clone()));
-    provide_context(state);
-    // The Nostr identity (with signing key) — used to authorize Blossom uploads.
-    provide_context(params.identity.clone());
 
     // Initial 4-panel dashboard layout. 12 cols, each panel spans the full
     // GRID_ROWS height so the four columns sit side by side. The pixel row

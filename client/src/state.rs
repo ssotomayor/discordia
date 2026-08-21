@@ -930,6 +930,75 @@ impl AppState {
         self.dm_unread.remove(&channel_id);
     }
 
+    /// Drop everything the connected server owned, keeping what belongs to the
+    /// key instead of to the host.
+    ///
+    /// This used to be free: `AppState` was created inside `WorkspaceView`, so
+    /// disconnecting unmounted the component and took the whole struct with it.
+    /// Now it outlives a session, because DMs and contacts have to survive one,
+    /// and the split has to be made by hand.
+    ///
+    /// **It enumerates what survives, not what goes.** The list of
+    /// server-owned fields is most of this struct and grows with every gateway
+    /// feature; a `clear_server` written the other way around would silently
+    /// leak the previous host's guilds, roles or bans the first time someone
+    /// added a field and forgot this function. Written this way the same
+    /// oversight resets something local — visible, harmless, and fixed by
+    /// adding a line.
+    pub fn clear_server(&mut self) {
+        let dm_channels: std::collections::HashSet<Id> =
+            self.dms.iter().map(|d| d.channel_id).collect();
+
+        let mut fresh = Self::empty();
+        // `empty()` starts at `Connecting` because that is how the app boots.
+        // Arriving here means the opposite happened.
+        fresh.status = ConnectionStatus::Disconnected;
+
+        // Yours, not the host's: gift wraps and a kind:3 list on relays.
+        fresh.dms = std::mem::take(&mut self.dms);
+        fresh.dm_unread = std::mem::take(&mut self.dm_unread);
+        fresh.nostr_event_ids = std::mem::take(&mut self.nostr_event_ids);
+        fresh.contacts = std::mem::take(&mut self.contacts);
+        fresh.nostr_relays_up = std::mem::take(&mut self.nostr_relays_up);
+        fresh.dm_mode = self.dm_mode;
+        fresh.identity = self.identity.take();
+
+        // `messages` is the one map that holds both kinds, keyed by channel id
+        // with nothing in the key to tell them apart. Clearing it wholesale
+        // would throw away DM history that no server can send back.
+        fresh.messages = std::mem::take(&mut self.messages)
+            .into_iter()
+            .filter(|(cid, _)| dm_channels.contains(cid))
+            .collect();
+        fresh.selected_channel = self.selected_channel.filter(|c| dm_channels.contains(c));
+
+        // Properties of this machine, not of the connection.
+        fresh.available_input_devices = std::mem::take(&mut self.available_input_devices);
+        fresh.available_output_devices = std::mem::take(&mut self.available_output_devices);
+        fresh.available_cameras = std::mem::take(&mut self.available_cameras);
+        fresh.selected_input_device = self.selected_input_device.take();
+        fresh.selected_output_device = self.selected_output_device.take();
+        fresh.mic_sensitivity = self.mic_sensitivity;
+        fresh.mic_volume = self.mic_volume;
+        fresh.auto_gain_control = self.auto_gain_control;
+        fresh.noise_cancellation = self.noise_cancellation;
+        fresh.denoise_atten_lim_db = self.denoise_atten_lim_db;
+        fresh.bypass_system_audio_processing = self.bypass_system_audio_processing;
+        fresh.mic_bypass_error = self.mic_bypass_error.take();
+        fresh.voice_bitrate_kbps = self.voice_bitrate_kbps;
+        fresh.screen_capture_available = self.screen_capture_available;
+        fresh.camera_capture_available = self.camera_capture_available;
+
+        // Per-person mixer choices. Keyed by pubkey, so they still mean the
+        // same thing when you meet again on another server.
+        fresh.user_volumes = std::mem::take(&mut self.user_volumes);
+        fresh.user_muted = std::mem::take(&mut self.user_muted);
+        fresh.stream_volumes = std::mem::take(&mut self.stream_volumes);
+        fresh.stream_muted = std::mem::take(&mut self.stream_muted);
+
+        *self = fresh;
+    }
+
     pub fn members_of(&self, guild_id: Id) -> Vec<&Member> {
         let mut v: Vec<&Member> = self
             .members
@@ -1181,5 +1250,102 @@ mod tests {
 
         assert_eq!(s.selected_channel, Some(cid));
         assert!(!s.messages.contains_key(&cid));
+    }
+
+    fn with_a_server_and_a_dm() -> (AppState, Id, Id) {
+        let mut s = AppState::empty();
+        let dm_cid = Id::new_v4();
+        let guild_cid = Id::new_v4();
+
+        s.dms.push(DmInfo {
+            channel_id: dm_cid,
+            other: user(&"d".repeat(64)),
+        });
+        s.dm_unread.insert(dm_cid, 2);
+        s.contacts = s.contacts.clone().with(crate::nostr::nip02::Contact {
+            pubkey: "e".repeat(64),
+            relay: None,
+            petname: Some("someone".into()),
+        });
+        s.messages.insert(dm_cid, Vec::new());
+
+        s.status = ConnectionStatus::Ready;
+        s.self_user = Some(user(&"f".repeat(64)));
+        s.members.push(member(&"f".repeat(64), true));
+        s.selected_guild = Some(Id::new_v4());
+        s.catalog_total = 9;
+        s.is_operator = true;
+        s.messages.insert(guild_cid, Vec::new());
+
+        s.mic_volume = 133;
+        s.selected_output_device = Some("Speakers".into());
+
+        (s, dm_cid, guild_cid)
+    }
+
+    /// Disconnecting used to be free — `AppState` lived inside `WorkspaceView`,
+    /// so unmounting took it away. Now it outlives a session so DMs can, and
+    /// the partition is made by hand.
+    #[test]
+    fn clearing_the_server_keeps_what_belongs_to_the_key() {
+        let (mut s, dm_cid, _) = with_a_server_and_a_dm();
+
+        s.clear_server();
+
+        assert_eq!(s.dms.len(), 1);
+        assert_eq!(s.dm_unread.get(&dm_cid), Some(&2));
+        assert_eq!(s.contacts.petname(&"e".repeat(64)), Some("someone"));
+    }
+
+    #[test]
+    fn clearing_the_server_drops_what_the_host_owned() {
+        let (mut s, _, _) = with_a_server_and_a_dm();
+
+        s.clear_server();
+
+        assert!(s.members.is_empty());
+        assert!(s.self_user.is_none());
+        assert!(s.selected_guild.is_none());
+        assert_eq!(s.catalog_total, 0);
+        assert!(!s.is_operator);
+        assert_eq!(s.status, ConnectionStatus::Disconnected);
+    }
+
+    /// The trap this function exists for: `messages` is keyed by channel id
+    /// with nothing in the key saying which kind it is, so a wholesale clear
+    /// would throw away DM history no server can send back.
+    #[test]
+    fn clearing_the_server_keeps_dm_history_and_drops_channel_history() {
+        let (mut s, dm_cid, guild_cid) = with_a_server_and_a_dm();
+
+        s.clear_server();
+
+        assert!(s.messages.contains_key(&dm_cid));
+        assert!(!s.messages.contains_key(&guild_cid));
+    }
+
+    #[test]
+    fn a_selected_dm_survives_the_disconnect_but_a_selected_channel_does_not() {
+        let (mut s, dm_cid, guild_cid) = with_a_server_and_a_dm();
+
+        s.selected_channel = Some(dm_cid);
+        s.clear_server();
+        assert_eq!(s.selected_channel, Some(dm_cid));
+
+        let (mut s, _, _) = with_a_server_and_a_dm();
+        s.selected_channel = Some(guild_cid);
+        s.clear_server();
+        assert_eq!(s.selected_channel, None);
+    }
+
+    /// Device choices describe this machine, not the connection.
+    #[test]
+    fn clearing_the_server_leaves_the_audio_setup_alone() {
+        let (mut s, _, _) = with_a_server_and_a_dm();
+
+        s.clear_server();
+
+        assert_eq!(s.mic_volume, 133);
+        assert_eq!(s.selected_output_device.as_deref(), Some("Speakers"));
     }
 }

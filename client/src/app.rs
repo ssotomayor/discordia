@@ -5,7 +5,7 @@ use crate::features::{
 };
 use crate::identity::Identity;
 use crate::session::{self, SavedSession};
-use crate::state::{SessionMode, SessionParams};
+use crate::state::{AppState, SessionMode, SessionParams};
 
 /// App brand mark, inlined as raw SVG markup. We render it inline (rather
 /// than via an `<img>` asset) so the two halves and the splatter layer are
@@ -529,6 +529,77 @@ fn background_pattern_class(pattern: &str) -> &'static str {
     }
 }
 
+/// Owns everything scoped to the *key* rather than to a connection.
+///
+/// It sits between the identity gate and the session gate, which is the whole
+/// point: `AppState`, the Nostr service and the signing identity are provided
+/// here, so they exist before a server does and outlive one when it goes away.
+/// DMs are gift wraps on relays and contacts are a kind:3 event — neither has
+/// ever needed a gateway, and until now both were unreachable without one
+/// purely because `AppState` was born inside `WorkspaceView`.
+///
+/// Keyed on the pubkey by the caller, so importing a different key rebuilds the
+/// service against the right secret instead of leaving the old subscription up.
+#[component]
+fn IdentityHost(identity: Identity, children: Element) -> Element {
+    let state = use_signal(AppState::empty);
+    let settings = use_context::<Signal<crate::settings::ClientSettings>>();
+
+    let nostr_tx = use_hook(|| {
+        // Must restore persisted audio prefs before the voice service starts,
+        // as it seeds live controls from AppState on first poll. That service
+        // starts a level down in `WorkspaceView`, so seeding here is early
+        // enough by construction.
+        {
+            let saved = settings.read();
+            let mut app = state;
+            let mut w = app.write();
+            w.mic_sensitivity = saved.mic_sensitivity.clamp(1, 1000);
+            w.mic_volume = saved.mic_volume.min(200);
+            w.auto_gain_control = saved.auto_gain_control;
+            w.noise_cancellation = saved.noise_cancellation;
+            // Only valid where raw capture is supported; prevents a Windows
+            // settings file from leaving a macOS session believing it captures
+            // raw.
+            w.bypass_system_audio_processing =
+                saved.bypass_system_audio_processing && crate::rawmic::supported();
+            // Clamps hand-edited values to the slider's domain; unlike
+            // mic_sensitivity, this is bound directly to the dB value.
+            w.denoise_atten_lim_db = saved.denoise_atten_lim_db.clamp(
+                crate::features::voice::DENOISE_ATTEN_LIM_DB_MIN,
+                crate::features::voice::DENOISE_ATTEN_LIM_DB_MAX,
+            );
+            // Values outside the offered set indicate a hand-edited
+            // settings.json; fall back to a valid bitrate.
+            w.voice_bitrate_kbps = match saved.voice_bitrate_kbps {
+                24 => 24,
+                _ => 48,
+            };
+            w.selected_input_device = saved.selected_input_device.clone();
+            w.selected_output_device = saved.selected_output_device.clone();
+        }
+        let relays = {
+            let saved = settings.read();
+            if saved.dm_relays.is_empty() {
+                crate::nostr::relay::DEFAULT_RELAYS
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect()
+            } else {
+                saved.dm_relays.clone()
+            }
+        };
+        crate::nostr::service::spawn_nostr(identity.clone(), relays, state)
+    });
+
+    provide_context(state);
+    provide_context(nostr_tx.clone());
+    // The Nostr identity (with signing key) — used to authorize Blossom uploads.
+    provide_context(identity.clone());
+
+    rsx! { {children} }
+}
+
 #[component]
 pub fn App() -> Element {
     let mut identity = use_signal(|| Identity::load().ok().flatten());
@@ -606,56 +677,67 @@ pub fn App() -> Element {
                 }
             }
             div { class: "app-shell",
-            match (identity.read().clone(), session.read().clone()) {
-                (None, _) => rsx! {
+            // Nested rather than matched on the pair, so that one `IdentityHost`
+            // spans both session states. Wrapping each arm separately would put
+            // it at two different places in the tree, and moving between them
+            // would rebuild it — which is exactly the teardown this is meant to
+            // stop.
+            match identity.read().clone() {
+                None => rsx! {
                     IdentitySetupView {
                         on_done: move |new_id: Identity| identity.set(Some(new_id)),
                     }
                 },
-                (Some(id), None) => rsx! {
-                    ConnectView {
-                        identity: id,
-                        error: error(),
-                        last_session: last_session.read().clone(),
-                        on_connect: move |params: SessionParams| {
-                            error.set(None);
-                            let saved = SavedSession {
-                                mode: params.mode.clone(),
-                                username: params.username.clone(),
-                            };
-                            let _ = session::save(&saved);
-                            session.set(Some(params));
-                        },
-                        on_rename: move |new_name: String| {
-                            // New name takes effect on next Connect; we don't
-                            // mutate the in-flight gateway session.
-                            let mut current = identity.write();
-                            if let Some(id) = current.as_mut() {
-                                let _ = id.set_display_name(new_name);
-                            }
-                        },
-                        on_sign_out: move |_| {
-                            let _ = Identity::delete_file();
-                            let _ = session::clear();
-                            session.set(None);
-                            identity.set(None);
-                        },
-                    }
-                },
-                (Some(_), Some(params)) => rsx! {
-                    Fragment {
-                        WorkspaceView {
-                            key: "{session_key(&params)}",
-                            params: params.clone(),
-                            on_disconnect: move |reason: String| {
-                                // An empty reason means the user deliberately
-                                // unplugged — return to the connect screen
-                                // without flagging it as an error.
-                                error.set(if reason.is_empty() { None } else { Some(reason) });
-                                session.set(None);
+                Some(id) => rsx! {
+                    IdentityHost {
+                        key: "{id.pubkey}",
+                        identity: id.clone(),
+                        {match session.read().clone() {
+                            None => rsx! {
+                                ConnectView {
+                                    identity: id.clone(),
+                                    error: error(),
+                                    last_session: last_session.read().clone(),
+                                    on_connect: move |params: SessionParams| {
+                                        error.set(None);
+                                        let saved = SavedSession {
+                                            mode: params.mode.clone(),
+                                            username: params.username.clone(),
+                                        };
+                                        let _ = session::save(&saved);
+                                        session.set(Some(params));
+                                    },
+                                    on_rename: move |new_name: String| {
+                                        // New name takes effect on next Connect; we don't
+                                        // mutate the in-flight gateway session.
+                                        let mut current = identity.write();
+                                        if let Some(id) = current.as_mut() {
+                                            let _ = id.set_display_name(new_name);
+                                        }
+                                    },
+                                    on_sign_out: move |_| {
+                                        let _ = Identity::delete_file();
+                                        let _ = session::clear();
+                                        session.set(None);
+                                        identity.set(None);
+                                    },
+                                }
                             },
-                        }
-                    },
+                            Some(params) => rsx! {
+                                WorkspaceView {
+                                    key: "{session_key(&params)}",
+                                    params: params.clone(),
+                                    on_disconnect: move |reason: String| {
+                                        // An empty reason means the user deliberately
+                                        // unplugged — return to the connect screen
+                                        // without flagging it as an error.
+                                        error.set(if reason.is_empty() { None } else { Some(reason) });
+                                        session.set(None);
+                                    },
+                                }
+                            },
+                        }}
+                    }
                 },
             }
             }
