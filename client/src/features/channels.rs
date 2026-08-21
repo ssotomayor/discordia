@@ -273,14 +273,13 @@ pub fn ChannelsColumn() -> Element {
                             } else {
                                 "text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-white/[0.03]"
                             };
-                            let g2 = gateway.clone();
                             let uname = dm.other.username.clone();
                             let disc = discriminator(&dm.other.pubkey);
                             rsx! {
                                 button {
                                     key: "{cid}",
                                     class: "w-full flex items-center gap-2 px-2 py-1 rounded text-left text-sm transition-colors {cls}",
-                                    onclick: move |_| select_dm(&mut state, &g2, cid),
+                                    onclick: move |_| select_dm(&mut state, cid),
                                     crate::features::profiles::Avatar {
                                         pubkey: dm.other.pubkey.clone(),
                                         name: uname.clone(),
@@ -1994,21 +1993,8 @@ pub(crate) fn select_text_channel(
     }
 }
 
-fn select_dm(state: &mut Signal<AppState>, gateway: &GatewayTx, channel_id: Id) {
-    let needs_fetch = {
-        let mut s = state.write();
-        s.dm_mode = true;
-        s.selected_channel = Some(channel_id);
-        s.dm_unread.remove(&channel_id);
-        !s.messages.contains_key(&channel_id)
-    };
-    if needs_fetch {
-        gateway.send(ClientMessage::FetchMessages {
-            channel_id,
-            limit: 50,
-            before_ms: None,
-        });
-    }
+fn select_dm(state: &mut Signal<AppState>, channel_id: Id) {
+    state.write().open_dm(channel_id);
 }
 
 #[cfg(test)]

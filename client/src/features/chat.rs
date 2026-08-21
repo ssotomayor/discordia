@@ -933,6 +933,12 @@ fn Composer(channel_id: Id, composer_label: String, drag_over: Signal<bool>) -> 
 
     let gateway_typing = gateway.clone();
     let mut notify_typing = move || {
+        // Same reason the send path branches: a DM channel id is derived from a
+        // pubkey, so this would announce typing in a channel the server does
+        // not have. NIP-17 has no typing notice, so a DM simply sends none.
+        if state.read().dm_of(channel_id).is_some() {
+            return;
+        }
         let now = std::time::Instant::now();
         let send = match *last_typing.peek() {
             Some(t) => now.duration_since(t).as_secs() >= 2,

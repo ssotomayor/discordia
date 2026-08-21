@@ -918,6 +918,18 @@ impl AppState {
         self.dm_unread.values().copied().sum()
     }
 
+    /// Open a DM conversation.
+    ///
+    /// Takes no gateway and needs none: a DM's `channel_id` comes from
+    /// `nostr::service::conversation_id`, so no server has a channel by that
+    /// id, and its history arrives as gift wraps rather than as a reply to
+    /// anything we ask for.
+    pub fn open_dm(&mut self, channel_id: Id) {
+        self.dm_mode = true;
+        self.selected_channel = Some(channel_id);
+        self.dm_unread.remove(&channel_id);
+    }
+
     pub fn members_of(&self, guild_id: Id) -> Vec<&Member> {
         let mut v: Vec<&Member> = self
             .members
@@ -1136,5 +1148,38 @@ mod tests {
 
         assert!(s.members.is_empty());
         assert_eq!(s.display_name(&me), format!("u-{me}"));
+    }
+
+    /// Opening a DM clears only that conversation's unread count. It used to
+    /// also fire a `FetchMessages` at the gateway for a channel id no server
+    /// has, which is what kept the DM surface tied to a live connection.
+    #[test]
+    fn opening_a_dm_selects_it_and_clears_only_its_unread() {
+        let mut s = AppState::empty();
+        let mine = Id::new_v4();
+        let other = Id::new_v4();
+        s.dm_unread.insert(mine, 3);
+        s.dm_unread.insert(other, 7);
+
+        s.open_dm(mine);
+
+        assert!(s.dm_mode);
+        assert_eq!(s.selected_channel, Some(mine));
+        assert_eq!(s.dm_unread.get(&mine), None);
+        assert_eq!(s.dm_unread.get(&other), Some(&7));
+    }
+
+    /// A DM with no history yet is still openable. The empty `messages` entry
+    /// the old gateway round-trip left behind was load-bearing only for
+    /// suppressing a repeat of that same request, so nothing replaces it.
+    #[test]
+    fn opening_a_dm_needs_no_message_history() {
+        let mut s = AppState::empty();
+        let cid = Id::new_v4();
+
+        s.open_dm(cid);
+
+        assert_eq!(s.selected_channel, Some(cid));
+        assert!(!s.messages.contains_key(&cid));
     }
 }
