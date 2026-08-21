@@ -604,6 +604,9 @@ fn IdentityHost(identity: Identity, children: Element) -> Element {
 pub fn App() -> Element {
     let mut identity = use_signal(|| Identity::load().ok().flatten());
     let mut session = use_signal(|| None::<SessionParams>);
+    // Whether the connect screen is showing instead of home. Owned here
+    // rather than inside either view, because both of them can leave it.
+    let mut show_connect = use_signal(|| false);
     let mut error = use_signal(|| None::<String>);
     let last_session = use_signal(|| session::load().ok().flatten());
 
@@ -693,13 +696,26 @@ pub fn App() -> Element {
                         key: "{id.pubkey}",
                         identity: id.clone(),
                         {match session.read().clone() {
+                            // Home is where a key with no server lands. The
+                            // connect screen is no longer the entry point; it is
+                            // what one entry in the rail opens, which is what
+                            // makes "you do not need a server to message
+                            // someone" true in the UI and not just in the
+                            // protocol.
+                            None if !show_connect() => rsx! {
+                                crate::features::home::HomeView { show_connect }
+                            },
                             None => rsx! {
                                 ConnectView {
                                     identity: id.clone(),
                                     error: error(),
                                     last_session: last_session.read().clone(),
+                                    on_dismiss: move |_| show_connect.set(false),
                                     on_connect: move |params: SessionParams| {
                                         error.set(None);
+                                        // So that disconnecting later lands on
+                                        // home rather than back on this screen.
+                                        show_connect.set(false);
                                         let saved = SavedSession {
                                             mode: params.mode.clone(),
                                             username: params.username.clone(),

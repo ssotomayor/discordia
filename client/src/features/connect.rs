@@ -72,6 +72,9 @@ pub fn ConnectView(
     identity: Identity,
     error: Option<String>,
     last_session: Option<SavedSession>,
+    /// Set false to go back to `HomeView`. This screen stopped being the entry
+    /// point when home landed, so it needs a way out that is not "connect".
+    on_dismiss: EventHandler<()>,
     on_connect: EventHandler<SessionParams>,
     on_rename: EventHandler<String>,
     on_sign_out: EventHandler<()>,
@@ -192,8 +195,17 @@ pub fn ConnectView(
             // when the brand panel is hidden at narrow widths.
             div { class: "flex-1 flex flex-col overflow-hidden min-w-0",
                 div {
-                    class: "dxf-drag-region h-8 shrink-0 {mac_top_pad}",
+                    class: "dxf-drag-region h-8 shrink-0 flex items-center px-3 {mac_top_pad}",
                     onmousedown: move |_| crate::app::start_window_drag(),
+                    button {
+                        r#type: "button",
+                        class: "dxf-no-drag text-[10px] uppercase tracking-wider text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors",
+                        onclick: move |e| {
+                            e.stop_propagation();
+                            on_dismiss.call(());
+                        },
+                        "← Messages"
+                    }
                 }
                 form {
                     class: "flex-1 overflow-auto px-8 py-8 flex flex-col items-stretch dxf-no-drag",
