@@ -5,7 +5,6 @@ use dioxus_grid_layout::{
 
 use crate::features::{
     channels::ChannelsColumn, chat::ChatView, guilds::GuildsSidebar, members::MembersPanel,
-    voice::spawn_voice_service,
 };
 use crate::net::spawn_gateway;
 use crate::protocol::{ClientMessage, Id};
@@ -55,28 +54,33 @@ const UNPLUG_ICON_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width=
 
 #[component]
 pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>) -> Element {
-    // `AppState`, the Nostr service and the identity come from `IdentityHost`,
-    // which outlives this component: DMs and contacts belong to the key, not to
-    // whichever server happens to be connected. What is owned here is what a
-    // session owns — the gateway and voice.
+    // `AppState`, the Nostr service, voice and the identity all come from
+    // `IdentityHost`, which outlives this component: they belong to the key or
+    // to the machine, not to whichever server happens to be connected. The one
+    // thing a session owns is the gateway.
     let state = use_app_state();
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
+    let voice_tx = use_context::<crate::features::voice::VoiceTx>();
 
-    let (gateway_tx, voice_tx) = use_hook(|| {
-        let voice_tx = spawn_voice_service(state);
-        let gateway_tx = spawn_gateway(params.clone(), state, voice_tx.clone(), move |reason| {
-            // Unmounting this component used to take `AppState` with it. It no
-            // longer does, so the host's half has to be dropped on purpose —
-            // otherwise the next connection starts on top of the last one's
-            // guilds, roles and roster.
+    let gateway_tx = use_hook(|| {
+        let voice_for_gateway = voice_tx.0.clone();
+        let voice_for_teardown = voice_tx.clone();
+        spawn_gateway(params.clone(), state, voice_for_gateway, move |reason| {
+            // Both of these used to happen for free when this component
+            // unmounted: `AppState` went with it, and dropping the last voice
+            // sender ended that service's loop and its session. Neither is
+            // owned here any more, so leaving a call and forgetting the host's
+            // half are now things to do on purpose. Without the first, a
+            // disconnect during a call leaves the call up; without the second,
+            // the next connection starts on top of the last one's guilds,
+            // roles and roster.
+            voice_for_teardown.send(crate::features::voice::VoiceCmd::Disconnect);
             let mut app = state;
             app.write().clear_server();
             on_disconnect.call(reason);
-        });
-        (gateway_tx, voice_tx)
+        })
     });
     provide_context(gateway_tx.clone());
-    provide_context(crate::features::voice::VoiceTx(voice_tx.clone()));
 
     // Initial 4-panel dashboard layout. 12 cols, each panel spans the full
     // GRID_ROWS height so the four columns sit side by side. The pixel row

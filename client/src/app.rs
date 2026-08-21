@@ -545,7 +545,7 @@ fn IdentityHost(identity: Identity, children: Element) -> Element {
     let state = use_signal(AppState::empty);
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
 
-    let nostr_tx = use_hook(|| {
+    let (nostr_tx, voice_tx) = use_hook(|| {
         // Must restore persisted audio prefs before the voice service starts,
         // as it seeds live controls from AppState on first poll. That service
         // starts a level down in `WorkspaceView`, so seeding here is early
@@ -589,11 +589,26 @@ fn IdentityHost(identity: Identity, children: Element) -> Element {
                 saved.dm_relays.clone()
             }
         };
-        crate::nostr::service::spawn_nostr(identity.clone(), relays, state)
+        // Voice belongs here rather than to a session: it owns the microphone,
+        // the playback mixer and the device lists, none of which are properties
+        // of a server. Its loop starts idle and touches no device until a
+        // `Connect` arrives, so hoisting it grabs nothing early — and it is what
+        // lets the audio settings work on the home screen instead of writing to
+        // a channel with no reader.
+        //
+        // The cost is that ending a call is now explicit. Unmounting
+        // `WorkspaceView` used to drop the last sender, which ended the loop and
+        // took the session with it; see the `Disconnect` there.
+        let voice_tx = crate::features::voice::spawn_voice_service(state);
+        (
+            crate::nostr::service::spawn_nostr(identity.clone(), relays, state),
+            crate::features::voice::VoiceTx(voice_tx),
+        )
     });
 
     provide_context(state);
     provide_context(nostr_tx.clone());
+    provide_context(voice_tx.clone());
     // The Nostr identity (with signing key) — used to authorize Blossom uploads.
     provide_context(identity.clone());
 
