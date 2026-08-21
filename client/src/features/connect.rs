@@ -199,8 +199,12 @@ pub fn ConnectView(
                     onmousedown: move |_| crate::app::start_window_drag(),
                     button {
                         r#type: "button",
-                        class: "dxf-no-drag text-[10px] uppercase tracking-wider text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors",
-                        onclick: move |e| {
+                        class: "text-[10px] uppercase tracking-wider text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors",
+                        // mousedown, not click: the strip around this starts a
+                        // native window drag on mousedown, and that swallows the
+                        // mouseup, so no click ever arrives. Same reason as the
+                        // camera preview's Stop.
+                        onmousedown: move |e| {
                             e.stop_propagation();
                             on_dismiss.call(());
                         },
