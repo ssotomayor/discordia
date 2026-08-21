@@ -54,12 +54,14 @@ pub fn HomeView(show_connect: Signal<bool>) -> Element {
     provide_context(gateway_tx);
 
     // `ChannelsColumn` shows conversations only in DM mode, and the flag
-    // survives a disconnect because it is a preference rather than server data.
-    // Here it is not a preference: there is no guild to be in.
+    // survives a disconnect because it reads as a preference. Here it is not
+    // one: there is no guild to be in, and arriving with a guild channel still
+    // selected would render the chat pane's empty-channel header. See
+    // `AppState::enter_home` for the rule and why the guard is not optional.
     use_effect(move || {
         let mut app = state;
-        if !app.read().dm_mode {
-            app.write().dm_mode = true;
+        if app.read().home_needs_entering() {
+            app.write().enter_home();
         }
     });
 

@@ -65,7 +65,11 @@ pub fn GuildsSidebar() -> Element {
         nav { class: "panel-hover w-full h-full bg-[var(--panel)] border border-[var(--border)] rounded-lg flex flex-col overflow-hidden",
             div { class: HEADER,
                 span { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]",
-                    "Guilds"
+                    // Not "Guilds" at home, where there are none and cannot be:
+                    // a guild is a community *inside* a server, so the header
+                    // named a thing the panel did not contain while the only
+                    // entry in it offered a different noun entirely.
+                    if home_chrome.is_some() { "Home" } else { "Guilds" }
                 }
             }
 

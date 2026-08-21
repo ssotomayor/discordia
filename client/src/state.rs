@@ -930,6 +930,40 @@ impl AppState {
         self.dm_unread.remove(&channel_id);
     }
 
+    /// Whether `enter_home` would change anything.
+    ///
+    /// Split out so the effect that calls it does not write on every render,
+    /// which with a signal is not a tidiness question — it is a loop.
+    pub fn home_needs_entering(&self) -> bool {
+        match self.selected_channel {
+            _ if !self.dm_mode => true,
+            Some(c) => self.dm_of(c).is_none(),
+            None => !self.dms.is_empty(),
+        }
+    }
+
+    /// Put the view where home expects it: DM mode, on a conversation if there
+    /// is one.
+    ///
+    /// Home has no other mode — there is no guild to be in — and landing with
+    /// nothing selected renders the chat pane's empty-channel header, which
+    /// reads as a broken screen rather than an empty one. The rail's home
+    /// button already picks the first conversation; this is the same rule for
+    /// arriving without pressing it.
+    pub fn enter_home(&mut self) {
+        self.dm_mode = true;
+        if self
+            .selected_channel
+            .is_some_and(|c| self.dm_of(c).is_some())
+        {
+            return;
+        }
+        match self.dms.first().map(|d| d.channel_id) {
+            Some(first) => self.open_dm(first),
+            None => self.selected_channel = None,
+        }
+    }
+
     /// Drop everything the connected server owned, keeping what belongs to the
     /// key instead of to the host.
     ///
@@ -1250,6 +1284,66 @@ mod tests {
 
         assert_eq!(s.selected_channel, Some(cid));
         assert!(!s.messages.contains_key(&cid));
+    }
+
+    /// Arriving at home lands on a conversation. Leaving it unselected renders
+    /// the chat pane's empty-channel header, which looks broken rather than
+    /// empty.
+    #[test]
+    fn entering_home_lands_on_the_first_conversation() {
+        let mut s = AppState::empty();
+        let first = Id::new_v4();
+        s.dms.push(DmInfo {
+            channel_id: first,
+            other: user(&"a".repeat(64)),
+        });
+        s.dms.push(DmInfo {
+            channel_id: Id::new_v4(),
+            other: user(&"b".repeat(64)),
+        });
+
+        assert!(s.home_needs_entering());
+        s.enter_home();
+
+        assert!(s.dm_mode);
+        assert_eq!(s.selected_channel, Some(first));
+        assert!(!s.home_needs_entering());
+    }
+
+    /// A guild channel can still be selected when the server goes away, and it
+    /// is not something home can show.
+    #[test]
+    fn entering_home_abandons_a_guild_channel() {
+        let mut s = AppState::empty();
+        s.selected_channel = Some(Id::new_v4());
+
+        assert!(s.home_needs_entering());
+        s.enter_home();
+
+        assert_eq!(s.selected_channel, None);
+        assert!(!s.home_needs_entering());
+    }
+
+    /// Already on a conversation: leave the choice alone. The guard is what
+    /// keeps the effect that calls this from writing on every render.
+    #[test]
+    fn entering_home_keeps_the_conversation_you_were_reading() {
+        let mut s = AppState::empty();
+        let a = Id::new_v4();
+        let b = Id::new_v4();
+        s.dms.push(DmInfo {
+            channel_id: a,
+            other: user(&"a".repeat(64)),
+        });
+        s.dms.push(DmInfo {
+            channel_id: b,
+            other: user(&"b".repeat(64)),
+        });
+        s.open_dm(b);
+
+        assert!(!s.home_needs_entering());
+        s.enter_home();
+        assert_eq!(s.selected_channel, Some(b));
     }
 
     fn with_a_server_and_a_dm() -> (AppState, Id, Id) {
