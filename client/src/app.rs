@@ -308,6 +308,18 @@ button:active:not(:disabled) { transform: scale(0.985); }
 }
 .dxf-pop { animation: dxf-pop 0.18s var(--ease) both; }
 
+/* Tool group — a row of icon buttons read as one control rather than as
+   loose glyphs floating on the panel. The hover fill is on the child rather
+   than on each button so that buttons rendered by other components join the
+   group without knowing they are in one; `>` keeps it off the popovers those
+   components also render. */
+.dxf-toolgroup {
+  display: inline-flex; align-items: center; gap: 2px; padding: 2px;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--bg2);
+}
+.dxf-toolgroup > button { border-radius: 6px; }
+.dxf-toolgroup > button:hover { background: var(--accent-soft); }
+
 /* Beckon — the one control worth finding when the app is otherwise empty.
    Used on the server bar's add button while no server has ever been added: a
    first launch has nothing else to point at, and a dashed outline on its own

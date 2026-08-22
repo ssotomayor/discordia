@@ -142,8 +142,12 @@ pub fn ServerBar(
                     }
 
                     if servers().is_empty() {
+                        // Says what a server adds, not what you can do without
+                        // one. Messages already work; the question this row has
+                        // to answer is why anyone would press the button beside
+                        // it.
                         span { class: "text-[11px] text-[var(--text-dim)]",
-                            "None yet — messages work without one."
+                            "No servers yet — add one for voice, channels and communities."
                         }
                     }
                 }

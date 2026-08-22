@@ -1365,6 +1365,8 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                         }
                     }
                 }
+                div { class: "dxf-toolgroup shrink-0",
+
                 crate::features::profiles::ProfileEditor {}
                 crate::features::appearance::AppearanceButton {}
 
@@ -1968,6 +1970,7 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                     } else {
                         crate::features::icons::HEADPHONES
                     },
+                }
                 }
             }
         }
