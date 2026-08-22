@@ -406,7 +406,10 @@ fn MessageRow(message: Message, grouped: bool) -> Element {
     let message_id = message.id;
     // For the reply banner. Truncated the same way the server truncates its
     // authoritative excerpt, so the banner and the eventual quote match.
-    let author_name = message.author.username.clone();
+    // Resolved now rather than read off the message: the name stored on it was
+    // whatever we could work out when it arrived, which for a Nostr peer whose
+    // kind:0 had not landed yet is a truncated key that never improves.
+    let author_name = state.read().person_name(&message.author.pubkey);
     let content_for_reply = {
         let flat = message
             .content
@@ -484,7 +487,7 @@ fn MessageRow(message: Message, grouped: bool) -> Element {
                     onclick: move |_| state.write().profile_card = Some(author_pubkey.clone()),
                     crate::features::profiles::Avatar {
                         pubkey: message.author.pubkey.clone(),
-                        name: message.author.username.clone(),
+                        name: author_name.clone(),
                         size: "w-8 h-8",
                     }
                 }
@@ -497,7 +500,7 @@ fn MessageRow(message: Message, grouped: bool) -> Element {
                             class: "text-sm font-semibold",
                             style: "color: {crate::identity::signature_accent(&message.author.pubkey)};",
                             title: "{message.author.pubkey}",
-                            "{message.author.username}"
+                            "{author_name}"
                             span { class: "text-[var(--text-dim)] font-mono text-[10px] ml-0.5 font-normal",
                                 "#{discriminator(&message.author.pubkey)}"
                             }

@@ -159,6 +159,10 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
         pool.subscribe(subscription(&our_pubkey, &known));
 
         pool.publish(nip17::dm_relay_list(&secret, &relays, now()));
+        // Say who we are, or nobody can name us. Every Discordia user is asking
+        // the relays for everyone else's kind:0, and until this line none of
+        // them had ever published one.
+        pool.publish(metadata::ours(&secret, &identity.display_name, now()));
 
         loop {
             tokio::select! {
@@ -175,11 +179,10 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
                         // everyone missing from it.
                         let current = state.read().contacts.clone();
                         let next = if keep {
-                            current.with(nip02::Contact {
-                                pubkey: peer.clone(),
-                                relay: None,
-                                petname: None,
-                            })
+                            // `added`, not `with`: re-adding a key you already
+                            // have must not wipe the name and relay hint you
+                            // had for them.
+                            current.added(&peer)
                         } else {
                             current.without(&peer)
                         };
@@ -370,7 +373,9 @@ fn insert_message(msg: &nip17::ChatMessage, our_pubkey: &str, state: &mut Signal
     }
     s.nostr_event_ids.insert(mid, msg.id.clone());
 
-    let author_name = s.display_name(&msg.author);
+    // Only a seed. Every surface resolves the author with `person_name` at
+    // render time, because this one is fixed at the moment the message lands.
+    let author_name = s.person_name(&msg.author);
     let entry = s.messages.entry(cid).or_default();
     if entry.iter().any(|m| m.id == mid) {
         return;

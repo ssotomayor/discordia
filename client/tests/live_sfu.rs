@@ -234,7 +234,7 @@ fn tone_purity(samples: &[f32], hz: f32) -> f32 {
     }
     let mut acc = 0.0f32;
     let mut n = 0usize;
-    for chunk in samples.chunks_exact(WINDOW) {
+    for chunk in samples.as_chunks::<WINDOW>().0 {
         acc += goertzel_ratio(chunk, hz);
         n += 1;
     }
@@ -282,7 +282,7 @@ fn band_energy(samples: &[f32], hz: f32, half_width: f32) -> f32 {
     let step = SAMPLE_RATE as f32 / WINDOW as f32;
     let mut acc = 0.0f32;
     let mut n = 0usize;
-    for chunk in samples.chunks_exact(WINDOW) {
+    for chunk in samples.as_chunks::<WINDOW>().0 {
         let mut f = hz - half_width;
         let mut sum = 0.0f32;
         while f <= hz + half_width {

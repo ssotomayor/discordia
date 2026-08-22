@@ -24,6 +24,12 @@ pub fn FriendsPanel() -> Element {
     let mut adding = use_signal(String::new);
     let mut add_error = use_signal(|| Option::<String>::None);
     let mut renaming = use_signal(|| Option::<String>::None);
+    // The draft lives here, beside the row it belongs to, and is seeded every
+    // time a rename opens. Kept inside `FriendRow` it was a `use_signal`
+    // initialised once — the row stays mounted across every open and close, so
+    // text abandoned with Escape survived, reappeared on the next open, and
+    // could be published as the real name by someone who did not notice.
+    let mut draft = use_signal(String::new);
 
     let contacts = state.read().contacts.contacts.clone();
 
@@ -97,11 +103,16 @@ pub fn FriendsPanel() -> Element {
                                 key: "{pk}",
                                 pubkey: pk.clone(),
                                 shown,
-                                petname: contact.petname.clone(),
                                 has_petname,
                                 renaming: is_renaming,
+                                draft,
                                 on_rename_open: move |open: bool| {
-                                    renaming.set(if open { Some(pk.clone()) } else { None });
+                                    if open {
+                                        draft.set(contact.petname.clone().unwrap_or_default());
+                                        renaming.set(Some(pk.clone()));
+                                    } else {
+                                        renaming.set(None);
+                                    }
                                 },
                             }
                         }
@@ -117,13 +128,12 @@ pub fn FriendsPanel() -> Element {
 fn FriendRow(
     pubkey: String,
     shown: String,
-    petname: Option<String>,
     has_petname: bool,
     renaming: bool,
+    draft: Signal<String>,
     on_rename_open: EventHandler<bool>,
 ) -> Element {
     let nostr = use_context::<NostrTx>();
-    let mut draft = use_signal(|| petname.clone().unwrap_or_default());
 
     let pk_open = pubkey.clone();
     let pk_save = pubkey.clone();
@@ -153,9 +163,9 @@ fn FriendRow(
                     class: "flex-1 min-w-0 bg-transparent border border-[var(--border)] rounded px-1 py-0.5 text-xs outline-none focus:border-[var(--accent)]",
                     r#type: "text",
                     autofocus: true,
-                    // Yours, not theirs: a petname travels with your list rather
-                    // than with their profile, so leaving it empty falls back to
-                    // whatever they call themselves.
+                    // Yours in the sense that it rides your list rather than
+                    // their profile — not in the sense of private. Empty falls
+                    // back to whatever they call themselves.
                     placeholder: "your name for them",
                     value: "{draft}",
                     oninput: move |e| draft.set(e.value()),
@@ -177,7 +187,10 @@ fn FriendRow(
                 button {
                     r#type: "button",
                     class: "shrink-0 opacity-0 group-hover:opacity-100 text-[10px] uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--accent)] transition-all",
-                    title: "Rename — only you see this",
+                    // Not "only you see this": `contact_list_event` writes the
+                    // petname into the kind:3 `p` tag in the clear, beside the
+                    // pubkey. It is *your* name for them, not a private one.
+                    title: "Rename — published in your public contact list",
                     onclick: move |_| on_rename_open.call(true),
                     if has_petname { "renamed" } else { "name" }
                 }

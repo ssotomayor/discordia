@@ -62,22 +62,32 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let voice_tx = use_context::<crate::features::voice::VoiceTx>();
 
+    // Leaving a session, wherever it is triggered from.
+    //
+    // Both halves of this used to happen for free when this component
+    // unmounted: `AppState` went with it, and dropping the last voice sender
+    // ended that service's loop and any live call. Neither is owned here any
+    // more, so both are now deliberate.
+    //
+    // It has to be one function because there are two ways out and only one of
+    // them runs the gateway task to completion. A dropped socket ends `run()`
+    // and reaches the callback below; the unplug button does not — it unmounts
+    // this component, which *cancels* that task mid-await, so anything written
+    // after the await never executes. Wiring the teardown only into the
+    // callback left the button hanging up on nothing: the mic stayed open and
+    // the previous host's roster stayed in memory.
+    let voice_for_leave = voice_tx.clone();
+    let leave = use_callback(move |reason: String| {
+        voice_for_leave.send(crate::features::voice::VoiceCmd::Disconnect);
+        let mut app = state;
+        app.write().clear_server();
+        on_disconnect.call(reason);
+    });
+
     let gateway_tx = use_hook(|| {
         let voice_for_gateway = voice_tx.0.clone();
-        let voice_for_teardown = voice_tx.clone();
         spawn_gateway(params.clone(), state, voice_for_gateway, move |reason| {
-            // Both of these used to happen for free when this component
-            // unmounted: `AppState` went with it, and dropping the last voice
-            // sender ended that service's loop and its session. Neither is
-            // owned here any more, so leaving a call and forgetting the host's
-            // half are now things to do on purpose. Without the first, a
-            // disconnect during a call leaves the call up; without the second,
-            // the next connection starts on top of the last one's guilds,
-            // roles and roster.
-            voice_for_teardown.send(crate::features::voice::VoiceCmd::Disconnect);
-            let mut app = state;
-            app.write().clear_server();
-            on_disconnect.call(reason);
+            leave.call(reason);
         })
     });
     provide_context(gateway_tx.clone());
@@ -201,7 +211,10 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
                     button {
                         class: "w-8 h-8 flex items-center justify-center rounded-md border border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--danger)] hover:border-[var(--danger)] transition-colors",
                         title: "Disconnect",
-                        onclick: move |_| on_disconnect.call(String::new()),
+                        // An empty reason means the user meant to. Goes through
+                        // `leave` rather than straight to the prop, or the
+                        // teardown above never runs on this path.
+                        onclick: move |_| leave.call(String::new()),
                         dangerous_inner_html: UNPLUG_ICON_SVG,
                     }
                 }

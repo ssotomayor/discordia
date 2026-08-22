@@ -69,6 +69,24 @@ impl ContactList {
         self.contacts.iter().any(|c| c.pubkey == pubkey)
     }
 
+    /// Put someone on the list, keeping whatever you already knew about them.
+    ///
+    /// Adding is not editing. `with` replaces an entry wholesale, which is what
+    /// `renamed` wants and the opposite of what this wants: re-adding a key you
+    /// already have — pasting it into the add box a second time, say — must not
+    /// throw away the name you gave them or the relay hint that says where to
+    /// find them. Already present means nothing to do.
+    pub fn added(&self, pubkey: &str) -> Self {
+        if self.contains(pubkey) {
+            return self.clone();
+        }
+        self.clone().with(Contact {
+            pubkey: pubkey.to_string(),
+            relay: None,
+            petname: None,
+        })
+    }
+
     /// Rename someone already on the list, keeping their relay hint.
     ///
     /// Blank clears the name instead of storing one: a petname is absent or it
@@ -225,6 +243,34 @@ mod tests {
             .without(&pk('a'));
         assert!(!list.contains(&pk('a')));
         assert!(list.contains(&pk('b')));
+    }
+
+    /// Adding is not editing. Pasting a key you already have into the add box
+    /// must not throw away the name you gave them — `with` would have, because
+    /// replacing wholesale is what a *rename* needs.
+    #[test]
+    fn re_adding_a_contact_keeps_their_name_and_relay() {
+        let list = ContactList::default()
+            .with(Contact {
+                pubkey: pk('a'),
+                relay: Some("wss://relay.example".into()),
+                petname: Some("ana".into()),
+            })
+            .added(&pk('a'));
+
+        assert_eq!(list.contacts.len(), 1);
+        assert_eq!(list.petname(&pk('a')), Some("ana"));
+        assert_eq!(
+            list.contacts[0].relay.as_deref(),
+            Some("wss://relay.example")
+        );
+    }
+
+    #[test]
+    fn adding_someone_new_puts_them_on_the_list() {
+        let list = ContactList::default().added(&pk('b'));
+        assert!(list.contains(&pk('b')));
+        assert_eq!(list.petname(&pk('b')), None);
     }
 
     #[test]

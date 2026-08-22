@@ -27,6 +27,23 @@ pub struct Metadata {
     pub picture: Option<String>,
 }
 
+/// Announce what to call us.
+///
+/// Reading kind:0 without writing one is half a feature and the wrong half.
+/// Two Discordia users talking to each other would each ask the relays for the
+/// other's name, and neither would ever have published one — so both would see
+/// a hex key forever and conclude the lookup was broken. It is not; nobody was
+/// answering.
+///
+/// Only `name` is set. The avatar lives on the gateway as a data URL and a
+/// kind:0 `picture` is a URL other clients will fetch, so republishing one here
+/// would mean hosting it somewhere public — a different decision, and not one
+/// to make as a side effect of typing a display name.
+pub fn ours(secret: &secp256k1::SecretKey, name: &str, now: i64) -> Event {
+    let content = serde_json::json!({ "name": name }).to_string();
+    super::event::sign_with(secret, now, KIND_METADATA, Vec::new(), content)
+}
+
 /// Read a kind:0 into the two fields we render.
 ///
 /// `content` is a JSON *string* holding an object, so a malformed one is
@@ -114,6 +131,30 @@ mod tests {
     fn junk_content_is_not_an_error() {
         assert_eq!(parse(&ev(0, "not json at all")), None);
         assert_eq!(parse(&ev(0, "[1,2,3]")), None);
+    }
+
+    /// Reading kind:0 without writing one leaves every Discordia user asking a
+    /// question none of them answers.
+    #[test]
+    fn our_own_metadata_round_trips_through_the_parser() {
+        let secret = secp256k1::SecretKey::from_slice(&[7u8; 32]).expect("key");
+        let event = ours(&secret, "RecknockT", 1_700_000_000);
+
+        assert_eq!(event.kind, KIND_METADATA);
+        assert_eq!(
+            parse(&event).and_then(|m| m.name).as_deref(),
+            Some("RecknockT")
+        );
+    }
+
+    /// The avatar is a data URL on the gateway and `picture` is a URL other
+    /// clients will fetch, so publishing one would mean hosting it somewhere
+    /// public. That is a decision, not a side effect of typing a name.
+    #[test]
+    fn our_own_metadata_claims_no_picture() {
+        let secret = secp256k1::SecretKey::from_slice(&[8u8; 32]).expect("key");
+        let m = parse(&ours(&secret, "someone", 1)).expect("metadata");
+        assert_eq!(m.picture, None);
     }
 
     #[test]

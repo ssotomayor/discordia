@@ -308,6 +308,25 @@ button:active:not(:disabled) { transform: scale(0.985); }
 }
 .dxf-pop { animation: dxf-pop 0.18s var(--ease) both; }
 
+/* Beckon — the one control worth finding when the app is otherwise empty.
+   Used on the server bar's add button while no server has ever been added: a
+   first launch has nothing else to point at, and a dashed outline on its own
+   reads as disabled rather than as an invitation. It settles rather than
+   pulsing forever, because an animation that never stops stops being a
+   signal. */
+@keyframes dxf-beckon {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 45%, transparent); }
+  50%      { box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent) 0%, transparent); }
+}
+.dxf-beckon {
+  border-color: var(--accent);
+  color: var(--accent);
+  animation: dxf-beckon 1.8s var(--ease) 6;
+}
+@media (prefers-reduced-motion: reduce) {
+  .dxf-beckon { animation: none; }
+}
+
 /* Dialogs zoom in with a little overshoot bounce; their backdrop fades. */
 @keyframes dxf-modal-in {
   0%   { opacity: 0; transform: scale(0.92) translateY(6px); }
@@ -775,6 +794,11 @@ pub fn App() -> Element {
                                         let _ = session::clear();
                                         session.set(None);
                                         identity.set(None);
+                                        // Outlives the identity it was set
+                                        // under, so without this the next key
+                                        // created in this run lands on the
+                                        // connect screen instead of home.
+                                        show_connect.set(false);
                                     },
                                 } },
                                 }
@@ -810,6 +834,11 @@ pub fn App() -> Element {
                                         let _ = session::clear();
                                         session.set(None);
                                         identity.set(None);
+                                        // Outlives the identity it was set
+                                        // under, so without this the next key
+                                        // created in this run lands on the
+                                        // connect screen instead of home.
+                                        show_connect.set(false);
                                     },
                                 }
                             },
