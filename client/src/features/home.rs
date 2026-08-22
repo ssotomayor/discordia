@@ -30,7 +30,15 @@ pub struct HomeChrome {
 }
 
 #[component]
-pub fn HomeView(show_connect: Signal<bool>) -> Element {
+pub fn HomeView(
+    show_connect: Signal<bool>,
+    /// The connect screen, rendered *inside* this frame rather than instead of
+    /// it. Passed in because it needs half of `App`'s state — the identity, the
+    /// last error, the callbacks that set a session — and drilling all of that
+    /// through here would put this component in the middle of a conversation it
+    /// has no part in.
+    connect_panel: Element,
+) -> Element {
     let state = use_app_state();
     provide_context(HomeChrome { show_connect });
 
@@ -89,8 +97,14 @@ pub fn HomeView(show_connect: Signal<bool>) -> Element {
                 div { class: "w-60 shrink-0",
                     ChannelsColumn {}
                 }
+                // Only the middle column changes. Reaching for a server should
+                // not take away the rail, the conversation list or the friends
+                // you were looking at — the frame is the app, and the connect
+                // screen is one thing you do inside it.
                 div { class: "flex-1 min-w-0",
-                    if has_conversations {
+                    if show_connect() {
+                        {connect_panel}
+                    } else if has_conversations {
                         ChatView {}
                     } else {
                         NoConversationsYet { show_connect }

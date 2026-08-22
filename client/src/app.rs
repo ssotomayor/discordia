@@ -742,11 +742,10 @@ pub fn App() -> Element {
                             // makes "you do not need a server to message
                             // someone" true in the UI and not just in the
                             // protocol.
-                            None if !show_connect() => rsx! {
-                                crate::features::home::HomeView { show_connect }
-                            },
                             None => rsx! {
-                                ConnectView {
+                                crate::features::home::HomeView {
+                                    show_connect,
+                                    connect_panel: rsx! { ConnectView {
                                     identity: id.clone(),
                                     error: error(),
                                     last_session: last_session.read().clone(),
@@ -766,6 +765,41 @@ pub fn App() -> Element {
                                     on_rename: move |new_name: String| {
                                         // New name takes effect on next Connect; we don't
                                         // mutate the in-flight gateway session.
+                                        let mut current = identity.write();
+                                        if let Some(id) = current.as_mut() {
+                                            let _ = id.set_display_name(new_name);
+                                        }
+                                    },
+                                    on_sign_out: move |_| {
+                                        let _ = Identity::delete_file();
+                                        let _ = session::clear();
+                                        session.set(None);
+                                        identity.set(None);
+                                    },
+                                } },
+                                }
+                            },
+                            // Reaching for another server from inside one has to
+                            // show the same screen; without this arm the bar's
+                            // "+" set a flag nothing rendered, so it did nothing
+                            // at all here.
+                            Some(_) if show_connect() => rsx! {
+                                ConnectView {
+                                    identity: id.clone(),
+                                    error: error(),
+                                    last_session: last_session.read().clone(),
+                                    on_dismiss: move |_| show_connect.set(false),
+                                    on_connect: move |params: SessionParams| {
+                                        error.set(None);
+                                        show_connect.set(false);
+                                        let saved = SavedSession {
+                                            mode: params.mode.clone(),
+                                            username: params.username.clone(),
+                                        };
+                                        let _ = session::save(&saved);
+                                        session.set(Some(params));
+                                    },
+                                    on_rename: move |new_name: String| {
                                         let mut current = identity.write();
                                         if let Some(id) = current.as_mut() {
                                             let _ = id.set_display_name(new_name);
