@@ -317,6 +317,16 @@ pub struct AppState {
     /// The Nostr contact list (NIP-02), as the relays hold it. Public, unlike
     /// the messages: adding someone here is visible to anyone.
     pub contacts: crate::nostr::nip02::ContactList,
+    /// Names learned from a server's roster, kept after that server is gone.
+    ///
+    /// A guild roster is the host's to define and `clear_server` drops it, but
+    /// what you *learned* from it about a person is not the host's — and
+    /// throwing it away meant a conversation that read "SotoWin" while
+    /// connected read as a hex key the moment you left. A remembered name is a
+    /// worse claim than a kind:0 (it was only ever true on that server) and a
+    /// far better one than 64 characters of hex, which is why it sits below
+    /// Nostr and above the fallback in `person_name`.
+    pub known_names: HashMap<String, String>,
     /// What people say about themselves in a NIP-01 kind:0, keyed by pubkey.
     ///
     /// Separate from `profiles` rather than folded into it, because the two
@@ -621,6 +631,7 @@ impl AppState {
             dm_unread: HashMap::new(),
             nostr_event_ids: HashMap::new(),
             contacts: Default::default(),
+            known_names: HashMap::new(),
             nostr_profiles: HashMap::new(),
             nostr_relays_up: std::collections::HashSet::new(),
             dm_mode: false,
@@ -924,6 +935,7 @@ impl AppState {
             .map(str::to_string)
             .or_else(|| self.nostr_profiles.get(pubkey).and_then(|m| m.name.clone()))
             .or_else(|| self.user_of(pubkey).map(|u| u.username.clone()))
+            .or_else(|| self.known_names.get(pubkey).cloned())
             .unwrap_or_else(|| crate::identity::truncate_pubkey(pubkey))
     }
 
@@ -1034,6 +1046,17 @@ impl AppState {
         fresh.dm_unread = std::mem::take(&mut self.dm_unread);
         fresh.nostr_event_ids = std::mem::take(&mut self.nostr_event_ids);
         fresh.contacts = std::mem::take(&mut self.contacts);
+        // Harvested here rather than recorded at every place a roster arrives:
+        // this is the one moment the names are about to be lost, so it is the
+        // one place that has to remember them.
+        let mut known = std::mem::take(&mut self.known_names);
+        for m in &self.members {
+            known.insert(m.user.pubkey.clone(), m.user.username.clone());
+        }
+        if let Some(me) = &self.self_user {
+            known.insert(me.pubkey.clone(), me.username.clone());
+        }
+        fresh.known_names = known;
         fresh.nostr_profiles = std::mem::take(&mut self.nostr_profiles);
         fresh.nostr_relays_up = std::mem::take(&mut self.nostr_relays_up);
         fresh.dm_mode = self.dm_mode;
@@ -1431,6 +1454,58 @@ mod tests {
         assert_eq!(s.dms.len(), 1);
         assert_eq!(s.dm_unread.get(&dm_cid), Some(&2));
         assert_eq!(s.contacts.petname(&"e".repeat(64)), Some("someone"));
+    }
+
+    /// The roster is the host's and goes; what you learned from it about a
+    /// person is not, and staying is the difference between a conversation
+    /// titled "u-ffff…" and one titled by a name once you disconnect.
+    #[test]
+    fn a_name_learned_from_a_roster_outlives_the_roster() {
+        let (mut s, _, _) = with_a_server_and_a_dm();
+        let them = "f".repeat(64);
+
+        assert_eq!(s.person_name(&them), format!("u-{them}"));
+        s.clear_server();
+
+        assert!(s.members.is_empty());
+        assert_eq!(s.person_name(&them), format!("u-{them}"));
+    }
+
+    /// It is the weakest claim above the key, so anything with a better one
+    /// wins. A server can call someone anything.
+    #[test]
+    fn a_petname_and_a_nostr_name_both_beat_a_remembered_one() {
+        let mut s = AppState::empty();
+        let them = "a".repeat(64);
+        s.known_names.insert(them.clone(), "from-a-server".into());
+        assert_eq!(s.person_name(&them), "from-a-server");
+
+        s.nostr_profiles.insert(
+            them.clone(),
+            crate::nostr::metadata::Metadata {
+                name: Some("their-own".into()),
+                picture: None,
+            },
+        );
+        assert_eq!(s.person_name(&them), "their-own");
+
+        s.contacts = s.contacts.clone().with(crate::nostr::nip02::Contact {
+            pubkey: them.clone(),
+            relay: None,
+            petname: Some("mine".into()),
+        });
+        assert_eq!(s.person_name(&them), "mine");
+    }
+
+    /// Nobody has said anything, so there is nothing to say but the key.
+    #[test]
+    fn an_unknown_person_is_named_by_their_key() {
+        let s = AppState::empty();
+        let them = "b".repeat(64);
+        assert_eq!(
+            s.person_name(&them),
+            crate::identity::truncate_pubkey(&them)
+        );
     }
 
     #[test]

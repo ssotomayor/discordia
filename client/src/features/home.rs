@@ -18,17 +18,6 @@ use crate::features::{channels::ChannelsColumn, chat::ChatView};
 use crate::protocol::ClientMessage;
 use crate::state::{GatewayTx, use_app_state};
 
-/// Provided by `HomeView` and by nothing else.
-///
-/// `GuildsSidebar` is shared with the workspace, so it asks for this with
-/// `try_consume_context` and draws the "connect to a server" entry only where
-/// it is present. That keeps the rail one component instead of two, and keeps
-/// the workspace from growing a button that means nothing there.
-#[derive(Clone, Copy)]
-pub struct HomeChrome {
-    pub show_connect: Signal<bool>,
-}
-
 #[component]
 pub fn HomeView(
     show_connect: Signal<bool>,
@@ -40,7 +29,6 @@ pub fn HomeView(
     connect_panel: Element,
 ) -> Element {
     let state = use_app_state();
-    provide_context(HomeChrome { show_connect });
 
     // `use_gateway()` is `use_context`, which panics when the context is
     // absent, and 29 call sites reach for it. The panels mounted here send

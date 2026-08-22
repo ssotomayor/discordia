@@ -30,8 +30,6 @@ enum ConfirmAction {
 pub fn GuildsSidebar() -> Element {
     let mut state = use_app_state();
     let gateway = use_gateway();
-    // Present only under `HomeView`; absent in the workspace. See `HomeChrome`.
-    let home_chrome = try_consume_context::<crate::features::home::HomeChrome>();
 
     let snapshot = state.read();
     // Owned guilds first: they are the ones you administer, and grouping them
@@ -65,11 +63,7 @@ pub fn GuildsSidebar() -> Element {
         nav { class: "panel-hover w-full h-full bg-[var(--panel)] border border-[var(--border)] rounded-lg flex flex-col overflow-hidden",
             div { class: HEADER,
                 span { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]",
-                    // Not "Guilds" at home, where there are none and cannot be:
-                    // a guild is a community *inside* a server, so the header
-                    // named a thing the panel did not contain while the only
-                    // entry in it offered a different noun entirely.
-                    if home_chrome.is_some() { "Home" } else { "Guilds" }
+                    "Guilds"
                 }
             }
 
@@ -158,33 +152,24 @@ pub fn GuildsSidebar() -> Element {
                     }
                 }
 
-                // Creating and browsing guilds are things a connected server
-                // does. At home there is none, so the rail offers the one
-                // action that changes that instead.
-                if let Some(home) = home_chrome {
-                    ConnectEntry { show_connect: home.show_connect }
-                }
+                CreateGuild {}
 
-                if home_chrome.is_none() {
-                    CreateGuild {}
-
-                    button {
-                        class: "relative w-10 h-10 rounded-md border border-dashed border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] flex items-center justify-center text-base leading-none transition-colors",
-                        title: "Browse guilds to join",
-                        onclick: {
-                            let gateway = gateway.clone();
-                            move |_| {
-                                // Pull the latest directory on open — the server no
-                                // longer pushes catalog updates to everyone.
-                                gateway.send(ClientMessage::FetchCatalog { offset: 0, limit: 0 });
-                                show_browse.set(true);
-                            }
-                        },
-                        "🔍"
-                        if !available.is_empty() {
-                            span { class: "dxf-pop absolute -top-1 -right-1 min-w-4 h-4 px-1 rounded-full bg-[var(--accent)] text-[var(--bg)] text-[9px] font-bold flex items-center justify-center",
-                                "{available.len()}"
-                            }
+                button {
+                    class: "relative w-10 h-10 rounded-md border border-dashed border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] flex items-center justify-center text-base leading-none transition-colors",
+                    title: "Browse guilds to join",
+                    onclick: {
+                        let gateway = gateway.clone();
+                        move |_| {
+                            // Pull the latest directory on open — the server no
+                            // longer pushes catalog updates to everyone.
+                            gateway.send(ClientMessage::FetchCatalog { offset: 0, limit: 0 });
+                            show_browse.set(true);
+                        }
+                    },
+                    "🔍"
+                    if !available.is_empty() {
+                        span { class: "dxf-pop absolute -top-1 -right-1 min-w-4 h-4 px-1 rounded-full bg-[var(--accent)] text-[var(--bg)] text-[9px] font-bold flex items-center justify-center",
+                            "{available.len()}"
                         }
                     }
                 }
@@ -516,21 +501,6 @@ fn DmHomeButton(active: bool, count: usize, onclick: EventHandler<()>) -> Elemen
 /// `CreateGuild` to the server; the new guild arrives back over the socket
 /// (see `ServerMessage::GuildJoined`, delivered only to the creator) and is
 /// selected automatically.
-/// The rail's way out of the home surface, in the slot the workspace uses for
-/// creating and browsing guilds.
-#[component]
-fn ConnectEntry(mut show_connect: Signal<bool>) -> Element {
-    rsx! {
-        button {
-            r#type: "button",
-            class: "w-10 h-10 rounded-md border border-dashed border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] flex items-center justify-center text-base leading-none transition-colors",
-            title: "Connect to a server",
-            onclick: move |_| show_connect.set(true),
-            "+"
-        }
-    }
-}
-
 #[component]
 fn CreateGuild() -> Element {
     let gateway = use_gateway();

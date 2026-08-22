@@ -124,7 +124,14 @@ pub fn ServerBar(
                                         title: "Forget this server",
                                         onmousedown: move |e| {
                                             e.stop_propagation();
-                                            let _ = session::forget(&drop_mode);
+                                            // Not `let _ =`: if the file cannot
+                                            // be written the row comes back on
+                                            // the next read, and a button that
+                                            // undoes itself with no explanation
+                                            // is the worst of both.
+                                            if let Err(e) = session::forget(&drop_mode) {
+                                                eprintln!("[servers] could not forget: {e}");
+                                            }
                                             revision += 1;
                                         },
                                         "✕"
