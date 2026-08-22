@@ -612,7 +612,12 @@ fn IdentityHost(identity: Identity, children: Element) -> Element {
     // The Nostr identity (with signing key) — used to authorize Blossom uploads.
     provide_context(identity.clone());
 
-    rsx! { {children} }
+    // A column, because this now has chrome of its own above the view: the
+    // server bar is `shrink-0` and the view below it claims the rest. Without
+    // a flex parent the two would both ask for the full height.
+    rsx! {
+        div { class: "h-full w-full flex flex-col", {children} }
+    }
 }
 
 #[component]
@@ -710,6 +715,26 @@ pub fn App() -> Element {
                     IdentityHost {
                         key: "{id.pubkey}",
                         identity: id.clone(),
+                        // Above both views rather than inside either: a server
+                        // is what you switch between, not something you find on
+                        // a screen. The rail keeps guilds, which only exist once
+                        // one of these is connected.
+                        crate::features::servers::ServerBar {
+                            identity: id.clone(),
+                            current: session.read().as_ref().map(|p| p.mode.clone()),
+                            on_connect: move |params: SessionParams| {
+                                error.set(None);
+                                show_connect.set(false);
+                                let saved = SavedSession {
+                                    mode: params.mode.clone(),
+                                    username: params.username.clone(),
+                                };
+                                let _ = session::save(&saved);
+                                session.set(Some(params));
+                            },
+                            on_add: move |_| show_connect.set(true),
+                        }
+                        div { class: "flex-1 min-h-0",
                         {match session.read().clone() {
                             // Home is where a key with no server lands. The
                             // connect screen is no longer the entry point; it is
@@ -768,6 +793,7 @@ pub fn App() -> Element {
                                 }
                             },
                         }}
+                        }
                     }
                 },
             }

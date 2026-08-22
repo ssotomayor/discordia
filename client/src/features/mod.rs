@@ -16,5 +16,6 @@ pub mod members;
 pub mod profiles;
 pub mod roles;
 pub mod screenshare;
+pub mod servers;
 pub mod voice;
 pub mod workspace;
