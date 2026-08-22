@@ -14,7 +14,7 @@
 use dioxus::prelude::*;
 use tokio::sync::mpsc::unbounded_channel;
 
-use crate::features::{channels::ChannelsColumn, chat::ChatView, guilds::GuildsSidebar};
+use crate::features::{channels::ChannelsColumn, chat::ChatView};
 use crate::protocol::ClientMessage;
 use crate::state::{GatewayTx, use_app_state};
 
@@ -81,19 +81,15 @@ pub fn HomeView(
     let has_conversations = !state.read().dms.is_empty();
 
     rsx! {
-        div { class: "h-full w-full flex flex-col bg-[var(--bg)] p-2 gap-2 {mac_top_pad}",
+        // No rail here, and no drag strip. The rail's two jobs — home and
+        // "add a server" — both moved into the bar above, which is also the
+        // drag region now; what was left was an empty column and a gap that
+        // pushed the bar away from everything it sits over.
+        div { class: "h-full w-full flex flex-col bg-[var(--bg)] px-2 pb-2 pt-2 {mac_top_pad}",
             crate::features::profiles::ProfileCard {}
             crate::features::chat::ImageViewer {}
 
-            div {
-                class: "dxf-drag-region h-6 shrink-0",
-                onmousedown: move |_| crate::app::start_window_drag(),
-            }
-
             div { class: "flex-1 flex gap-2 min-h-0",
-                div { class: "w-14 shrink-0",
-                    GuildsSidebar {}
-                }
                 div { class: "w-60 shrink-0",
                     ChannelsColumn {}
                 }

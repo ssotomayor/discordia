@@ -28,6 +28,10 @@ pub fn ServerBar(
     on_connect: EventHandler<SessionParams>,
     on_add: EventHandler<()>,
 ) -> Element {
+    // Read here rather than taking a callback: `App` renders this but has no
+    // `AppState` — that belongs to `IdentityHost`, which is this component's
+    // ancestor at runtime and therefore reachable by context.
+    let mut state = crate::state::use_app_state();
     // Re-read on every change rather than holding a copy: the list is written
     // by `session::save` from the connect flow, which does not go through here.
     let mut revision = use_signal(|| 0u32);
@@ -36,15 +40,33 @@ pub fn ServerBar(
         session::load_all()
     });
 
+    let beckon = if servers().is_empty() {
+        "dxf-beckon"
+    } else {
+        ""
+    };
+
     rsx! {
         div { class: "shrink-0 px-2 pt-2",
             div {
-                class: "dxf-drag-region panel-hover w-full bg-[var(--panel)] border border-[var(--border)] rounded-lg flex items-center gap-2 px-3 py-2",
+                class: "dxf-drag-region panel-hover w-full bg-[var(--panel)] border border-[var(--border)] rounded-lg flex items-center gap-2 px-2 py-1.5",
                 onmousedown: move |_| crate::app::start_window_drag(),
 
-                span { class: "shrink-0 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] pr-1",
-                    "Servers"
+                // Home, and the app's mark, in the corner every app puts them.
+                // It replaced a rail whose only jobs were this button and the
+                // "+" that now sits at the other end of this bar.
+                button {
+                    r#type: "button",
+                    class: "shrink-0 w-9 h-9 rounded-md flex items-center justify-center hover:bg-[var(--accent-soft)] transition-colors",
+                    title: "Home — your messages",
+                    onmousedown: move |e| {
+                        e.stop_propagation();
+                        state.write().enter_home();
+                    },
+                    crate::app::DiscordiaLogo { class: "w-7 h-7" }
                 }
+
+                div { class: "shrink-0 w-px h-6 bg-[var(--border)]" }
 
                 div { class: "flex-1 min-w-0 flex items-center gap-2 overflow-x-auto",
                     for saved in servers().into_iter() {
@@ -69,7 +91,7 @@ pub fn ServerBar(
                             rsx! {
                                 div {
                                     key: "{full}",
-                                    class: "group shrink-0 flex items-center h-10 pl-1 pr-1 rounded-md border transition-colors {cls}",
+                                    class: "group shrink-0 flex items-center h-9 pl-1 pr-1 rounded-md border transition-colors {cls}",
                                     title: "{full}",
                                     button {
                                         r#type: "button",
@@ -90,7 +112,7 @@ pub fn ServerBar(
                                             });
                                         },
                                         div {
-                                            class: "w-8 h-8 shrink-0 rounded-md border border-[var(--edge)] flex items-center justify-center text-sm font-semibold",
+                                            class: "w-7 h-7 shrink-0 rounded-md border border-[var(--edge)] flex items-center justify-center text-xs font-semibold",
                                             style: "background: var(--bg2);",
                                             "{initial}"
                                         }
@@ -121,8 +143,11 @@ pub fn ServerBar(
 
                 button {
                     r#type: "button",
-                    class: "shrink-0 w-10 h-10 rounded-md border border-dashed border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] flex items-center justify-center text-base leading-none transition-colors",
-                    title: "Connect to another server",
+                    // Beckons only while the list is empty. A first launch has
+                    // nothing else to point at, and a dashed outline on its own
+                    // reads as disabled rather than as the way in.
+                    class: "shrink-0 w-9 h-9 rounded-md border border-dashed border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] flex items-center justify-center text-base leading-none transition-colors {beckon}",
+                    title: if servers().is_empty() { "Join or create a server" } else { "Connect to another server" },
                     onmousedown: move |e| {
                         e.stop_propagation();
                         on_add.call(());
