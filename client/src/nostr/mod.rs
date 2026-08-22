@@ -16,6 +16,7 @@
 //! events the meaning of a conversation.
 
 pub mod event;
+pub mod metadata;
 pub mod nip02;
 pub mod nip17;
 pub mod nip44;

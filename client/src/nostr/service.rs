@@ -27,7 +27,7 @@ use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 
 use super::event::Event;
 use super::relay::{Filter, RelayEvent, RelayPool};
-use super::{nip02, nip17, nip59};
+use super::{metadata, nip02, nip17, nip59};
 use crate::identity::Identity;
 use crate::protocol::{Id, Message, User};
 use crate::state::{AppState, DmInfo};
@@ -90,6 +90,56 @@ fn message_id(event_id: &str) -> Id {
     Id::from_bytes(d[..16].try_into().expect("16 bytes"))
 }
 
+/// Everything this client wants from the relays right now.
+///
+/// Rebuilt whole on every change because `RelayPool::subscribe` replaces the
+/// standing subscription; handing it only the new filter would drop the others.
+///
+/// Three filters rather than one: a `REQ` ORs them, and the three things wanted
+/// here share no shape. Gift wraps carry no author we can name — they are
+/// signed by throwaway keys, which is the point — so `p` is the only handle.
+/// Our own replaceable events are the opposite: author is all that identifies
+/// them. And kind:0 is asked for by author, of other people.
+fn subscription(our_pubkey: &str, people: &std::collections::BTreeSet<String>) -> Vec<Filter> {
+    let mut filters = vec![
+        Filter {
+            kinds: Some(vec![nip59::KIND_GIFT_WRAP]),
+            p: Some(vec![our_pubkey.to_string()]),
+            limit: Some(500),
+            ..Default::default()
+        },
+        Filter {
+            kinds: Some(vec![nip02::KIND_CONTACTS, nip17::KIND_DM_RELAYS]),
+            authors: Some(vec![our_pubkey.to_string()]),
+            limit: Some(4),
+            ..Default::default()
+        },
+    ];
+    if !people.is_empty() {
+        filters.push(Filter {
+            kinds: Some(vec![metadata::KIND_METADATA]),
+            authors: Some(people.iter().cloned().collect()),
+            // Kind 0 is replaceable, so relays hold one per author and the
+            // limit only bounds a misbehaving one.
+            limit: Some(people.len() as u32),
+            ..Default::default()
+        });
+    }
+    filters
+}
+
+/// Everyone whose name we would like to know: your contacts, and whoever you
+/// have a conversation with.
+fn people_worth_naming(state: &AppState) -> std::collections::BTreeSet<String> {
+    state
+        .contacts
+        .contacts
+        .iter()
+        .map(|c| c.pubkey.clone())
+        .chain(state.dms.iter().map(|d| d.other.pubkey.clone()))
+        .collect()
+}
+
 /// Start the service. Returns the handle the UI sends through.
 pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppState>) -> NostrTx {
     let (tx, mut rx) = unbounded_channel::<NostrCmd>();
@@ -101,22 +151,12 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
         let secret = identity.secret_key();
         let (pool, mut events) = RelayPool::connect(relays.clone());
 
-        // No author filter: gift wraps are signed by ephemeral keys. `p` is
-        // the only handle.
-        pool.subscribe(vec![
-            Filter {
-                kinds: Some(vec![nip59::KIND_GIFT_WRAP]),
-                p: Some(vec![our_pubkey.clone()]),
-                limit: Some(500),
-                ..Default::default()
-            },
-            Filter {
-                kinds: Some(vec![nip02::KIND_CONTACTS, nip17::KIND_DM_RELAYS]),
-                authors: Some(vec![our_pubkey.clone()]),
-                limit: Some(4),
-                ..Default::default()
-            },
-        ]);
+        // Whose kind:0 we are asking for. Grows as the contact list arrives and
+        // as conversations appear, and every growth means a fresh `subscribe` —
+        // that call *replaces* the standing subscription rather than adding to
+        // it, so the whole filter set is rebuilt each time.
+        let mut known: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        pool.subscribe(subscription(&our_pubkey, &known));
 
         pool.publish(nip17::dm_relay_list(&secret, &relays, now()));
 
@@ -168,6 +208,15 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
                         nip59::KIND_GIFT_WRAP => {
                             receive(&secret, &our_pubkey, &event, &mut state);
                         }
+                        metadata::KIND_METADATA => {
+                            // Self-declared and unverified beyond the signature
+                            // — it proves a key said this, nothing more. Kind 0
+                            // is replaceable, so what arrives is the whole
+                            // current claim and replaces ours wholesale.
+                            if let Some(m) = metadata::parse(&event) {
+                                state.write().nostr_profiles.insert(event.pubkey.clone(), m);
+                            }
+                        }
                         _ => {}
                     },
                     Some(RelayEvent::Connected(url)) => {
@@ -200,6 +249,16 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
                     }
                     None => break,
                 },
+            }
+
+            // After anything that could have introduced someone: a contact list
+            // arriving, a gift wrap opening a conversation, a contact added by
+            // hand. Cheap to compare and the only place that has to know is
+            // here, rather than every path that can add a person.
+            let current = people_worth_naming(&state.read());
+            if current != known {
+                known = current;
+                pool.subscribe(subscription(&our_pubkey, &known));
             }
         }
     });

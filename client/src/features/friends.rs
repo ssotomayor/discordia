@@ -89,10 +89,7 @@ pub fn FriendsPanel() -> Element {
                 for contact in contacts.iter().cloned() {
                     {
                         let pk = contact.pubkey.clone();
-                        let shown = contact
-                            .petname
-                            .clone()
-                            .unwrap_or_else(|| state.read().display_name(&pk));
+                        let shown = state.read().person_name(&pk);
                         let has_petname = contact.petname.is_some();
                         let is_renaming = renaming() == Some(pk.clone());
                         rsx! {

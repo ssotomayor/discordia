@@ -317,6 +317,14 @@ pub struct AppState {
     /// The Nostr contact list (NIP-02), as the relays hold it. Public, unlike
     /// the messages: adding someone here is visible to anyone.
     pub contacts: crate::nostr::nip02::ContactList,
+    /// What people say about themselves in a NIP-01 kind:0, keyed by pubkey.
+    ///
+    /// Separate from `profiles` rather than folded into it, because the two
+    /// have different owners and different lifetimes: that one is the gateway's
+    /// and dies with the connection, this one belongs to the keys involved and
+    /// outlives it. Merging them would mean a disconnect wiping names for
+    /// conversations that never needed a server.
+    pub nostr_profiles: HashMap<String, crate::nostr::metadata::Metadata>,
     /// Relays currently connected, for the DM status line. A set rather than a
     /// count because which relay is up is the useful thing when one is not.
     pub nostr_relays_up: std::collections::HashSet<String>,
@@ -613,6 +621,7 @@ impl AppState {
             dm_unread: HashMap::new(),
             nostr_event_ids: HashMap::new(),
             contacts: Default::default(),
+            nostr_profiles: HashMap::new(),
             nostr_relays_up: std::collections::HashSet::new(),
             dm_mode: false,
             catalog: Vec::new(),
@@ -882,8 +891,40 @@ impl AppState {
     }
 
     /// The avatar data URL for a pubkey, if set.
+    /// The gateway's avatar for someone, falling back to their Nostr picture.
+    ///
+    /// That order and not the reverse: inside a guild, the face people expect
+    /// is the one that guild's server knows. The Nostr one is what makes an
+    /// avatar appear at all when there is no server to ask.
     pub fn avatar_of(&self, pubkey: &str) -> Option<&str> {
-        self.profiles.get(pubkey).and_then(|p| p.avatar.as_deref())
+        self.profiles
+            .get(pubkey)
+            .and_then(|p| p.avatar.as_deref())
+            .or_else(|| {
+                self.nostr_profiles
+                    .get(pubkey)
+                    .and_then(|m| m.picture.as_deref())
+            })
+    }
+
+    /// What to call someone on a surface that belongs to your key rather than
+    /// to a server: DMs, the contact list.
+    ///
+    /// Four sources, most-yours first. Your petname wins because you chose it
+    /// and it travels with your own list. Then what they publish on Nostr,
+    /// which follows the key everywhere. Then what a connected server calls
+    /// them, which is true only there. Then the key itself, which is always
+    /// true and never useful.
+    ///
+    /// Deliberately not `display_name`, which stays roster-first: in a guild,
+    /// the name everyone else sees is the server's.
+    pub fn person_name(&self, pubkey: &str) -> String {
+        self.contacts
+            .petname(pubkey)
+            .map(str::to_string)
+            .or_else(|| self.nostr_profiles.get(pubkey).and_then(|m| m.name.clone()))
+            .or_else(|| self.user_of(pubkey).map(|u| u.username.clone()))
+            .unwrap_or_else(|| crate::identity::truncate_pubkey(pubkey))
     }
 
     /// The channel a guild should open on: its first *text* channel in the same
@@ -993,6 +1034,7 @@ impl AppState {
         fresh.dm_unread = std::mem::take(&mut self.dm_unread);
         fresh.nostr_event_ids = std::mem::take(&mut self.nostr_event_ids);
         fresh.contacts = std::mem::take(&mut self.contacts);
+        fresh.nostr_profiles = std::mem::take(&mut self.nostr_profiles);
         fresh.nostr_relays_up = std::mem::take(&mut self.nostr_relays_up);
         fresh.dm_mode = self.dm_mode;
         fresh.identity = self.identity.take();

@@ -273,15 +273,7 @@ pub fn ChannelsColumn() -> Element {
                             } else {
                                 "text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-white/[0.03]"
                             };
-                            // Your name for them wins over the one they
-                            // chose: a petname rides your own contact list, so
-                            // it is the same on every machine your key opens.
-                            let uname = state
-                                .read()
-                                .contacts
-                                .petname(&dm.other.pubkey)
-                                .map(|p| p.to_string())
-                                .unwrap_or_else(|| dm.other.username.clone());
+                            let uname = state.read().person_name(&dm.other.pubkey);
                             let disc = discriminator(&dm.other.pubkey);
                             rsx! {
                                 button {

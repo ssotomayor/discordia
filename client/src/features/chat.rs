@@ -213,11 +213,14 @@ pub fn ChatView() -> Element {
     drop(snapshot);
 
     let (is_dm, header_name, composer_label) = match &dm {
-        Some(d) => (
-            true,
-            d.other.username.clone(),
-            format!("@{}", d.other.username),
-        ),
+        Some(d) => {
+            // Resolved now, not read off `DmInfo`: the name stored there was
+            // whatever we could work out when the conversation first appeared,
+            // which off a server is a truncated key and never improves.
+            let name = state.read().person_name(&d.other.pubkey);
+            let label = format!("@{name}");
+            (true, name, label)
+        }
         None => {
             let name = channel_meta
                 .as_ref()
