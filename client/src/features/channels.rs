@@ -17,6 +17,9 @@ struct DmRow {
     preview: Option<String>,
     when: Option<String>,
     unread: u32,
+    /// Gateway-reported only. False means "not known to be online" rather than
+    /// offline, which is why there is no grey dot to go with the green one.
+    online: bool,
 }
 
 impl DmRow {
@@ -208,6 +211,7 @@ pub fn ChannelsColumn() -> Element {
                 }),
                 when: last.map(|m| m.created_at.format("%H:%M").to_string()),
                 unread: snapshot.dm_unread.get(&dm.channel_id).copied().unwrap_or(0),
+                online: snapshot.is_online(&dm.other.pubkey),
                 info: dm,
             }
         })
@@ -267,6 +271,13 @@ pub fn ChannelsColumn() -> Element {
     // grip.
     let mut dragging = use_signal::<Option<Id>>(|| None);
 
+    // Home's title names the panel; the accent is reserved for the guild you
+    // are actually inside, so it does not read as a selection here.
+    let home_title_cls = if dm_mode {
+        "text-[var(--text)]"
+    } else {
+        "text-[var(--accent)]"
+    };
     let banner = if dm_mode {
         None
     } else {
@@ -286,7 +297,7 @@ pub fn ChannelsColumn() -> Element {
                 }
             }
             div { class: HEADER,
-                h2 { class: "text-sm text-[var(--accent)] truncate font-medium flex-1",
+                h2 { class: "dxf-display text-sm truncate font-semibold flex-1 {home_title_cls}",
                     if dm_mode {
                         "Home"
                     } else {
@@ -319,15 +330,11 @@ pub fn ChannelsColumn() -> Element {
                     // people, and people are what the column is mostly made of.
                     StartDmByKey { input: filter }
                     crate::features::home::HomeNav {}
-                    div { class: "flex items-baseline gap-2 px-2 pt-1 pb-0.5",
-                        span { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-dim)]",
-                            "Direct messages"
-                        }
-                        span { class: "flex-1" }
+                    div { class: "px-2 pt-1 pb-0.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-dim)]",
                         if dm_unread_total > 0 {
-                            span { class: "font-mono text-[10px] text-[var(--accent)]",
-                                "{dm_unread_total} unread"
-                            }
+                            "Direct \u{2014} {dm_unread_total} unread"
+                        } else {
+                            "Direct"
                         }
                     }
                     if dms.is_empty() {
@@ -360,11 +367,20 @@ pub fn ChannelsColumn() -> Element {
                                     key: "{cid}",
                                     class: "w-full flex items-center gap-2 px-2 py-1.5 rounded border text-left transition-colors {cls}",
                                     onclick: move |_| select_dm(&mut state, &g2, cid),
-                                    crate::features::profiles::Avatar {
-                                        pubkey: row.info.other.pubkey.clone(),
-                                        name: uname.clone(),
-                                        size: "w-7 h-7",
-                                        text: "text-[10px]",
+                                    span { class: "relative shrink-0",
+                                        crate::features::profiles::Avatar {
+                                            pubkey: row.info.other.pubkey.clone(),
+                                            name: uname.clone(),
+                                            size: "w-7 h-7",
+                                            text: "text-[10px]",
+                                        }
+                                        if row.online {
+                                            span {
+                                                class: "absolute -right-0.5 -bottom-0.5 w-2.5 h-2.5 rounded-full border-2 border-[var(--panel)]",
+                                                style: "background: var(--up);",
+                                                title: "Online \u{2014} a server you share says so",
+                                            }
+                                        }
                                     }
                                     span { class: "flex-1 min-w-0",
                                         span { class: "flex items-baseline gap-1",
@@ -2358,7 +2374,7 @@ fn StartDmByKey(input: Signal<String>) -> Element {
             input {
                 class: "w-full bg-[var(--bg2)] border border-[var(--border)] rounded px-2 py-1 text-xs outline-none focus:border-[var(--accent)]",
                 r#type: "text",
-                placeholder: "Search, or paste an npub",
+                placeholder: "Search people, servers, npub\u{2026}",
                 value: "{input}",
                 oninput: move |e| { input.set(e.value()); error.set(None); },
                 onkeydown: move |e| {

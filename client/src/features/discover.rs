@@ -14,8 +14,6 @@ use crate::protocol::rendezvous::DiscoverEntry;
 /// past this mark has already missed at least one beat and is on its way out.
 pub const HOST_STALE_AFTER_SECS: u64 = 45;
 
-const LABEL: &str = "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]";
-
 /// How a host's last heartbeat reads on its row.
 ///
 /// The rendezvous pings every 20s and drops a host at 60s, so there is a
@@ -29,6 +27,26 @@ pub fn freshness(idle_secs: u64) -> (String, bool) {
         s if s < 3600 => (format!("quiet {}m", s / 60), false),
         s => (format!("quiet {}h", s / 3600), false),
     }
+}
+
+/// Whether a typed search asks for this host.
+///
+/// Name, code and description, because all three are ways somebody refers to a
+/// server — and the code especially, since pasting one that happens to be
+/// listed should find it rather than come back empty.
+fn matches_query(entry: &DiscoverEntry, needle: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    let name = entry.name.as_deref().unwrap_or_default().to_lowercase();
+    let desc = entry
+        .description
+        .as_deref()
+        .unwrap_or_default()
+        .to_lowercase();
+    name.contains(needle)
+        || entry.shortcode.to_lowercase().contains(needle)
+        || desc.contains(needle)
 }
 
 /// Which hosts a filter chip lets through.
@@ -67,6 +85,7 @@ pub fn ServerDirectory(
 ) -> Element {
     let mut refresh_tick = use_signal(|| 0u32);
     let mut filter = use_signal(|| Filter::All);
+    let mut query = use_signal(String::new);
     let url_for_fetch = rendezvous_url.clone();
     let entries = use_resource(move || {
         let _ = refresh_tick();
@@ -100,7 +119,13 @@ pub fn ServerDirectory(
     rsx! {
         div { class: "space-y-2",
             div { class: "flex items-center gap-2 flex-wrap",
-                span { class: "{LABEL}", "Public servers" }
+                input {
+                    class: "flex-1 min-w-[180px] bg-[var(--bg)] border border-[var(--border)] focus:border-[var(--accent)] rounded px-2.5 py-1.5 text-xs text-[var(--text)] outline-none transition-colors",
+                    r#type: "text",
+                    placeholder: "Search by name, or paste a code\u{2026}",
+                    value: "{query}",
+                    oninput: move |e| query.set(e.value()),
+                }
                 button {
                     r#type: "button",
                     class: "{all_cls}",
@@ -119,7 +144,6 @@ pub fn ServerDirectory(
                     onclick: move |_| filter.set(Filter::Named),
                     "{named_label}"
                 }
-                span { class: "flex-1" }
                 button {
                     r#type: "button",
                     class: "text-[10px] text-[var(--accent)] hover:text-[var(--accent-strong)] transition-colors",
@@ -150,8 +174,13 @@ pub fn ServerDirectory(
                         }
                     },
                     Some(Ok(list)) => {
-                        let shown: Vec<DiscoverEntry> =
-                            list.iter().filter(|e| filter().keeps(e)).cloned().collect();
+                        let needle = query().trim().to_lowercase();
+                        let shown: Vec<DiscoverEntry> = list
+                            .iter()
+                            .filter(|e| filter().keeps(e))
+                            .filter(|e| matches_query(e, &needle))
+                            .cloned()
+                            .collect();
                         rsx! {
                             if shown.is_empty() {
                                 div { class: "text-xs text-[var(--text-dim)] px-3 py-4 text-center border border-dashed border-[var(--border)] rounded",
@@ -171,6 +200,11 @@ pub fn ServerDirectory(
                                     } else {
                                         "border-[var(--border)] hover:border-[var(--border-strong)]"
                                     };
+                                    // The stripe says at a glance which rows
+                                    // can be reached without a relay in the
+                                    // middle, which is the one property of a
+                                    // host worth reading before its name.
+                                    let stripe = if direct { "var(--blue, #8fb0ff)" } else { "var(--violet)" };
                                     let initials: String = title
                                         .split(|c: char| !c.is_alphanumeric())
                                         .filter(|w| !w.is_empty())
@@ -183,7 +217,8 @@ pub fn ServerDirectory(
                                     rsx! {
                                         div {
                                             key: "{sc}",
-                                            class: "flex items-center gap-3 px-3 py-2.5 rounded-lg border transition-colors {row_cls}",
+                                            class: "flex items-center gap-3 pl-2.5 pr-3 py-2.5 rounded-lg border transition-colors {row_cls}",
+                                            style: "border-left: 3px solid {stripe};",
                                             button {
                                                 r#type: "button",
                                                 class: "flex-1 min-w-0 flex items-center gap-3 text-left",
@@ -206,31 +241,35 @@ pub fn ServerDirectory(
                                                     if let Some(d) = entry.description.clone() {
                                                         span { class: "block truncate text-[11px] text-[var(--text-muted)] mt-0.5", "{d}" }
                                                     }
-                                                    span { class: "flex items-center gap-1.5 mt-1",
-                                                        span {
-                                                            class: "px-1.5 py-0.5 rounded-full border text-[9px] font-mono",
-                                                            style: if fresh_ok {
-                                                                "color: var(--up); border-color: color-mix(in srgb, var(--up) 40%, transparent);"
-                                                            } else {
-                                                                "color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, transparent);"
-                                                            },
-                                                            "{fresh_label}"
-                                                        }
-                                                        span {
-                                                            class: "px-1.5 py-0.5 rounded-full border border-[var(--border)] text-[9px] font-mono text-[var(--text-dim)]",
-                                                            title: if direct {
-                                                                "This host published an address, so the connection can skip the relay"
-                                                            } else {
-                                                                "No address published — the rendezvous relays every frame, and can read them"
-                                                            },
-                                                            if direct { "direct" } else { "relayed" }
-                                                        }
-                                                    }
+                                                }
+                                            }
+                                            // Pills sit beside the button, not
+                                            // under the description: they are
+                                            // what you compare rows by, and a
+                                            // column of them reads at a glance.
+                                            span { class: "shrink-0 hidden lg:flex items-center gap-1.5",
+                                                span {
+                                                    class: "px-1.5 py-0.5 rounded-full border text-[9px] font-mono whitespace-nowrap",
+                                                    style: if fresh_ok {
+                                                        "color: var(--up); border-color: color-mix(in srgb, var(--up) 40%, transparent);"
+                                                    } else {
+                                                        "color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, transparent);"
+                                                    },
+                                                    "{fresh_label}"
+                                                }
+                                                span {
+                                                    class: "px-1.5 py-0.5 rounded-full border border-[var(--border)] text-[9px] font-mono text-[var(--text-dim)] whitespace-nowrap",
+                                                    title: if direct {
+                                                        "This host published an address, so the connection can skip the relay"
+                                                    } else {
+                                                        "No address published — the rendezvous relays every frame, and can read them"
+                                                    },
+                                                    if direct { "direct" } else { "relayed" }
                                                 }
                                             }
                                             button {
                                                 r#type: "button",
-                                                class: "shrink-0 px-3 py-1.5 rounded text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors",
+                                                class: "dxf-cta shrink-0 px-3 py-1.5 rounded text-[11px]",
                                                 onclick: move |_| on_enter.call(for_enter.clone()),
                                                 "Enter"
                                             }
@@ -288,5 +327,45 @@ mod tests {
     #[test]
     fn a_long_silence_is_counted_in_hours() {
         assert_eq!(freshness(7_400).0, "quiet 2h");
+    }
+
+    fn entry(name: Option<&str>, shortcode: &str, description: Option<&str>) -> DiscoverEntry {
+        DiscoverEntry {
+            shortcode: shortcode.into(),
+            name: name.map(Into::into),
+            description: description.map(Into::into),
+            idle_secs: 0,
+            endpoint: None,
+            transport_key: None,
+            transport_addrs: Vec::new(),
+            relay_url: None,
+        }
+    }
+
+    /// An empty box asks for everything, or typing would start by hiding the
+    /// list it is meant to narrow.
+    #[test]
+    fn an_empty_search_keeps_every_host() {
+        assert!(matches_query(
+            &entry(Some("rust-sur"), "rust-sur", None),
+            ""
+        ));
+    }
+
+    /// Pasting a code that happens to be listed should find its row, not come
+    /// back empty because the search only looked at names.
+    #[test]
+    fn a_pasted_code_finds_its_row() {
+        let e = entry(Some("hormiguero"), "viento-tapir-04", None);
+        assert!(matches_query(&e, "viento-tapir"));
+    }
+
+    /// The description is where the reason to join is written, so it is worth
+    /// searching even though it is not an identifier.
+    #[test]
+    fn the_description_is_searchable() {
+        let e = entry(Some("nexo"), "nexo", Some("Rust en espanol"));
+        assert!(matches_query(&e, "rust"));
+        assert!(!matches_query(&e, "haskell"));
     }
 }

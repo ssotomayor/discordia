@@ -294,6 +294,7 @@ pub enum HomeView {
     Dms,
     Communities,
     Servers,
+    People,
 }
 
 /// What the composer needs to show a "replying to X" banner.
@@ -1011,6 +1012,18 @@ impl AppState {
             bt.cmp(&at)
         });
         v
+    }
+
+    /// Whether the gateway currently reports this person as online.
+    ///
+    /// Only answerable for members of guilds we share — presence is a gateway
+    /// fact, and a Nostr contact we share no guild with simply has none. False
+    /// here therefore means "not known to be online", never "offline", and
+    /// nothing may draw it as the latter.
+    pub fn is_online(&self, pubkey: &str) -> bool {
+        self.members
+            .iter()
+            .any(|m| m.user.pubkey == pubkey && m.online)
     }
 
     /// Communities in this host's public catalog we haven't joined yet.
