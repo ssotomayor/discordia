@@ -70,6 +70,11 @@ pub enum Transport {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectionStatus {
+    /// No gateway at all, and not waiting for one. Home is reachable in this
+    /// state on purpose: direct messages are Nostr events keyed to your
+    /// identity, so they owe nothing to a server, and a client that demanded
+    /// one before showing them would be lying about where they live.
+    Offline,
     Connecting,
     Ready,
     Disconnected,

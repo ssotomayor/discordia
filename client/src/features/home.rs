@@ -10,22 +10,23 @@ use dioxus::prelude::*;
 
 use crate::protocol::rendezvous::DiscoverEntry;
 use crate::protocol::{ClientMessage, GuildSummary};
-use crate::state::{HomeView, SessionMode, use_app_state, use_gateway};
+use crate::state::{ConnectionStatus, HomeView, SessionMode, use_app_state, use_gateway};
 
-/// Which explore pane home leads with.
+/// Which explore pane home leads with: the level you are missing.
 ///
-/// The two are not interchangeable: communities live *inside* a host, so
-/// browsing them is only a question you can ask once you have arrived at one.
-/// A host with nothing to offer — no community you could join, none you have —
-/// leaves the directory of *other hosts* as the only useful next step, which is
-/// exactly the case a newcomer to a bare server lands in.
-///
-/// Note this deliberately does not read "am I connected to a server", which in
-/// this client is always true past the connect screen: the workspace only
-/// exists inside a session. Joining a community is the closest thing to the
-/// arrival the rule is about.
-pub fn primary_explore(joined_communities: usize, joinable_communities: usize) -> HomeView {
-    if joined_communities > 0 || joinable_communities > 0 {
+/// The two are not interchangeable. Communities live *inside* a host, so
+/// browsing them is a question you can only ask once you have arrived at one —
+/// with no gateway there is no catalog to read, and the directory of hosts is
+/// the only move there is. Past that, a host with nothing to offer (nothing
+/// you could join, nothing you have) leaves the same answer standing.
+pub fn primary_explore(
+    offline: bool,
+    joined_communities: usize,
+    joinable_communities: usize,
+) -> HomeView {
+    if offline {
+        HomeView::Servers
+    } else if joined_communities > 0 || joinable_communities > 0 {
         HomeView::Communities
     } else {
         HomeView::Servers
@@ -52,9 +53,13 @@ pub fn HomeNav() -> Element {
     let view = snapshot.home_view;
     let joinable = snapshot.joinable_communities().len();
     let joined = snapshot.joined_communities();
+    let offline = snapshot.status == ConnectionStatus::Offline;
     drop(snapshot);
 
-    let communities_first = primary_explore(joined, joinable) == HomeView::Communities;
+    // Offline there is no host, so there is no catalog to browse and the row
+    // is omitted rather than shown dead. The other door is the whole point of
+    // being here.
+    let communities_first = primary_explore(offline, joined, joinable) == HomeView::Communities;
 
     let gw = gateway.clone();
     let mut open_communities = move || {
@@ -102,7 +107,7 @@ pub fn HomeNav() -> Element {
                     if communities_first { "Another server" } else { "Find a server" }
                 }
                 span { class: "block text-[10px] text-[var(--text-dim)]",
-                    "directory · code · host your own"
+                    if offline { "you're not on one yet" } else { "directory · code · host your own" }
                 }
             }
         }
@@ -110,7 +115,9 @@ pub fn HomeNav() -> Element {
 
     rsx! {
         div { class: "px-1 pb-2 space-y-0.5 border-b border-[var(--border)] mb-2",
-            if communities_first {
+            if offline {
+                {servers}
+            } else if communities_first {
                 {communities}
                 {servers}
             } else {
@@ -276,6 +283,7 @@ fn CommunitiesPane() -> Element {
 fn ServersPane(on_switch: EventHandler<SessionMode>) -> Element {
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let rendezvous = settings.read().active_rendezvous();
+    let offline = use_app_state().read().status == ConnectionStatus::Offline;
     let mut code = use_signal(String::new);
 
     let rz_for_go = rendezvous.clone();
@@ -301,8 +309,13 @@ fn ServersPane(on_switch: EventHandler<SessionMode>) -> Element {
             }
 
             div { class: "text-xs text-[var(--text-muted)] leading-relaxed",
-                "Each server is a machine somebody runs. Joining one swaps this session for
-                 that one — your direct messages come with you, they belong to your key."
+                if offline {
+                    "Each server is a machine somebody runs — it gives you communities, channels
+                     and voice. Your direct messages do not need one and are already working."
+                } else {
+                    "Each server is a machine somebody runs. Joining one swaps this session for
+                     that one — your direct messages come with you, they belong to your key."
+                }
             }
 
             crate::features::discover::ServerDirectory {
@@ -330,8 +343,69 @@ fn ServersPane(on_switch: EventHandler<SessionMode>) -> Element {
             }
 
             div { class: "text-[11px] text-[var(--text-dim)] leading-relaxed",
-                "To host your own, or to reach a server by address, disconnect with the plug
-                 button — those need a session that hasn't started yet."
+                "To host your own or reach one by address, open Connection in the top bar."
+            }
+        }
+    }
+}
+
+/// What fills the main area when home has nothing open yet.
+///
+/// The alternative was an empty chat pane, which on a first launch says
+/// nothing at all — and says it at the exact moment somebody is deciding
+/// whether this app works without a server. It does, and this is where that
+/// gets stated.
+#[component]
+pub fn HomeWelcome(on_open_connect: EventHandler<()>) -> Element {
+    let mut state = use_app_state();
+    let snapshot = state.read();
+    let offline = snapshot.status == ConnectionStatus::Offline;
+    let dms = snapshot.dms.len();
+    let relays = snapshot.nostr_relays_up.len();
+    drop(snapshot);
+
+    rsx! {
+        div { class: "flex-1 flex items-center justify-center p-8",
+            div { class: "max-w-md space-y-4 text-center",
+                div { class: "text-lg font-medium text-[var(--text)]",
+                    if dms == 0 { "Nothing open yet" } else { "Pick up a conversation" }
+                }
+                div { class: "text-sm text-[var(--text-muted)] leading-relaxed",
+                    if dms == 0 {
+                        "Direct messages are Nostr events signed by your key, so they work with no
+                         server at all — paste someone's npub in the column to start one."
+                    } else {
+                        "Your conversations are in the column. They belong to your key, not to any
+                         server, so they follow you wherever you connect."
+                    }
+                }
+                div { class: "flex items-center justify-center gap-2 text-[11px] font-mono text-[var(--text-dim)]",
+                    span {
+                        class: "w-1.5 h-1.5 rounded-full",
+                        style: if relays > 0 { "background: var(--up);" } else { "background: var(--warn);" },
+                    }
+                    if relays == 1 { "1 relay connected" } else { "{relays} relays connected" }
+                }
+                if offline {
+                    div { class: "pt-2 border-t border-[var(--border)] space-y-3",
+                        div { class: "text-sm text-[var(--text-muted)] leading-relaxed",
+                            "You're not on a server. One gives you communities, channels and voice
+                             — everything that is shared rather than yours."
+                        }
+                        div { class: "flex items-center justify-center gap-2",
+                            button {
+                                class: "dxf-cta px-4 py-2 rounded text-sm",
+                                onclick: move |_| state.write().home_view = HomeView::Servers,
+                                "Find a server"
+                            }
+                            button {
+                                class: "px-4 py-2 rounded text-sm border border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors",
+                                onclick: move |_| on_open_connect.call(()),
+                                "Host my own"
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -349,9 +423,11 @@ pub fn ExploreStrip() -> Element {
     let snapshot = state.read();
     let joinable = snapshot.joinable_communities();
     let joined = snapshot.joined_communities();
+    let offline = snapshot.status == ConnectionStatus::Offline;
     drop(snapshot);
 
-    let communities_first = primary_explore(joined, joinable.len()) == HomeView::Communities;
+    let communities_first =
+        primary_explore(offline, joined, joinable.len()) == HomeView::Communities;
     // Four is what fits beside the two buttons at the narrowest the chat panel
     // is usable at; the rest are one click away in the pane.
     let shown: Vec<GuildSummary> = joinable.iter().take(4).cloned().collect();
@@ -396,18 +472,26 @@ pub fn ExploreStrip() -> Element {
                 }
             } else {
                 span { class: "text-[11px] text-[var(--text-dim)] whitespace-nowrap",
-                    "You haven't joined a community on this server yet."
+                    if offline {
+                        "Communities live inside a server. You're not on one yet."
+                    } else {
+                        "You haven't joined a community on this server yet."
+                    }
                 }
             }
 
             div { class: "flex-1" }
-            button {
-                class: "shrink-0 text-[10px] uppercase tracking-wider text-[var(--text-muted)] border border-[var(--border)] rounded px-2.5 py-1 hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors",
-                onclick: move |_| {
-                    gw_fetch.send(ClientMessage::FetchCatalog { offset: 0, limit: 0 });
-                    state.write().home_view = HomeView::Communities;
-                },
-                "Communities"
+            // Offline this would ask a server that was never dialled, so the
+            // button is not offered rather than being offered and failing.
+            if !offline {
+                button {
+                    class: "shrink-0 text-[10px] uppercase tracking-wider text-[var(--text-muted)] border border-[var(--border)] rounded px-2.5 py-1 hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors",
+                    onclick: move |_| {
+                        gw_fetch.send(ClientMessage::FetchCatalog { offset: 0, limit: 0 });
+                        state.write().home_view = HomeView::Communities;
+                    },
+                    "Communities"
+                }
             }
             button {
                 class: "shrink-0 text-[10px] uppercase tracking-wider text-[var(--text-muted)] border border-[var(--border)] rounded px-2.5 py-1 hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors",
@@ -471,17 +555,26 @@ fn initials(name: &str) -> String {
 mod tests {
     use super::*;
 
-    /// The case the rule exists for: you arrived somewhere with nothing to
-    /// join, so the only useful next step is somebody else's server.
+    /// With no gateway there is no catalog to read, whatever a stale count
+    /// might still say — this is the first-launch case, and the reason home
+    /// no longer sits behind the connect screen.
+    #[test]
+    fn offline_can_only_lead_to_a_server() {
+        assert_eq!(primary_explore(true, 0, 0), HomeView::Servers);
+        assert_eq!(primary_explore(true, 4, 9), HomeView::Servers);
+    }
+
+    /// Arrived somewhere with nothing to join: the only useful next step is
+    /// somebody else's server.
     #[test]
     fn a_bare_server_leads_with_the_directory() {
-        assert_eq!(primary_explore(0, 0), HomeView::Servers);
+        assert_eq!(primary_explore(false, 0, 0), HomeView::Servers);
     }
 
     /// A host with a catalog is worth browsing before leaving it.
     #[test]
     fn something_to_join_here_leads_with_communities() {
-        assert_eq!(primary_explore(0, 3), HomeView::Communities);
+        assert_eq!(primary_explore(false, 0, 3), HomeView::Communities);
     }
 
     /// Having joined is what "you're in" means, and it holds even once there
@@ -489,6 +582,6 @@ mod tests {
     /// the directory, which reads as being asked to leave.
     #[test]
     fn joining_everything_does_not_send_you_away() {
-        assert_eq!(primary_explore(4, 0), HomeView::Communities);
+        assert_eq!(primary_explore(false, 4, 0), HomeView::Communities);
     }
 }

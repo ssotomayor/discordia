@@ -70,6 +70,9 @@ pub fn ConnectView(
     on_connect: EventHandler<SessionParams>,
     on_rename: EventHandler<String>,
     on_sign_out: EventHandler<()>,
+    /// Close and go back to home. This screen is no longer a gate — home works
+    /// without a gateway — so it needs a way out that is not "connect".
+    on_dismiss: EventHandler<()>,
 ) -> Element {
     let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let default_rendezvous = settings.read().active_rendezvous();
@@ -187,8 +190,15 @@ pub fn ConnectView(
             // when the brand panel is hidden at narrow widths.
             div { class: "flex-1 flex flex-col overflow-hidden min-w-0",
                 div {
-                    class: "dxf-drag-region h-8 shrink-0 {mac_top_pad}",
+                    class: "dxf-drag-region h-8 shrink-0 flex items-center justify-end pr-3 {mac_top_pad}",
                     onmousedown: move |_| crate::app::start_window_drag(),
+                    button {
+                        r#type: "button",
+                        class: "dxf-no-drag text-[10px] uppercase tracking-wider text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors",
+                        onmousedown: move |e| e.stop_propagation(),
+                        onclick: move |_| on_dismiss.call(()),
+                        "← Home"
+                    }
                 }
                 form {
                     class: "flex-1 overflow-auto px-8 py-8 flex flex-col items-stretch dxf-no-drag",

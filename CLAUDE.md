@@ -265,15 +265,23 @@ identity bullets under `features/*.rs`:
   `members`, `voice`, `screenshare`, `camera`, `roles`, `guild_settings`,
   `integrations` (bots), `profiles`, `connect`, `home`, `discover`,
   `appearance`, `activities`.
+- **`home` is the first screen, and it works without a gateway.** Identity
+  setup lands here, not on `connect`. That is possible because direct messages
+  are Nostr events keyed to your identity — `spawn_nostr` only ever needed an
+  `Identity` — so `WorkspaceView` takes `Option<SessionParams>` and
+  `ConnectionStatus::Offline` is a state the app *runs in*, not one it is
+  recovering from. Everything session-shaped (the rail's guilds, the members
+  panel, voice, the catalog) is simply empty there, and the controls that would
+  need a gateway are not drawn rather than drawn dead. `ConnectView` is now
+  opened from the Connection button for what home cannot do itself — hosting a
+  server, dialling a raw address, the identity card.
 - **`home` carries two levels, and they are not the same question.**
   *Communities* are guilds inside the host you are connected to
   (`FetchCatalog` → `GuildCatalog`); *servers* are other hosts entirely
   (`GET /discover` on the rendezvous, rendered by `features::discover`, which
   the connect screen and home share so there is one directory and not two).
-  `home::primary_explore` decides which of the two home leads with, and the
-  reason it reads community membership rather than "am I on a server" is in its
-  doc comment: past the connect screen this client is always in a session, so
-  the state the rule wants to detect cannot occur (register entry 78).
+  `home::primary_explore` picks which one home leads with — the level you are
+  missing — and its three inputs are each a real case with a test.
 - **One user joins the screen room under up to three identities, on purpose.**
   LiveKit allows only one connection per identity, so each job that needs its own
   connection needs its own suffix:

@@ -2,7 +2,7 @@ use dioxus::prelude::*;
 use dioxus_grid_layout::NoDrag;
 
 use crate::protocol::{ClientMessage, GuildSummary, Id, Permission};
-use crate::state::{HomeView, use_app_state, use_gateway};
+use crate::state::{ConnectionStatus, HomeView, use_app_state, use_gateway};
 
 const HEADER: &str =
     "h-11 px-2 flex items-center justify-center border-b border-[var(--border)] shrink-0";
@@ -47,6 +47,7 @@ pub fn GuildsSidebar() -> Element {
     let dm_unread = snapshot.dm_unread_total() as usize;
     let is_operator = snapshot.is_operator;
     let available: Vec<GuildSummary> = snapshot.joinable_communities();
+    let offline = snapshot.status == ConnectionStatus::Offline;
     drop(snapshot);
 
     let mut menu = use_signal::<Option<GuildMenu>>(|| None);
@@ -145,6 +146,17 @@ pub fn GuildsSidebar() -> Element {
                     }
                 }
 
+                // Both of these are gateway work: a community is created on a
+                // host and browsed from its catalog. With no host there is
+                // nothing for them to act on, so the rail says where you are
+                // instead of offering two controls that cannot fire.
+                if offline {
+                    div { class: "px-1 text-[8px] font-mono uppercase tracking-wider text-[var(--text-dim)] text-center leading-tight",
+                        "no server"
+                    }
+                }
+
+                if !offline {
                 CreateGuild {}
 
                 button {
@@ -167,6 +179,7 @@ pub fn GuildsSidebar() -> Element {
                             "{available.len()}"
                         }
                     }
+                }
                 }
             }
             }

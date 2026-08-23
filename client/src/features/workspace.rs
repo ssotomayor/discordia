@@ -7,6 +7,7 @@ use crate::features::{
     channels::ChannelsColumn, chat::ChatView, guilds::GuildsSidebar, members::MembersPanel,
     voice::spawn_voice_service,
 };
+use crate::identity::Identity;
 use crate::net::spawn_gateway;
 use crate::protocol::{ClientMessage, Id};
 use crate::state::{
@@ -56,11 +57,22 @@ fn default_layout() -> Vec<(String, GridPosition)> {
 /// so it picks up the button's text colour (and the danger hover state).
 const UNPLUG_ICON_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>"##;
 
+/// The whole app past identity setup, with or without a gateway.
+///
+/// `params` is optional because home does not need a server: `Offline` is a
+/// first-class state here, not a failure. Everything session-shaped — the
+/// guild rail's contents, the members panel, voice — is simply empty in it,
+/// while the Nostr half (direct messages, contacts) runs exactly the same,
+/// because it never depended on the gateway in the first place.
 #[component]
 pub fn WorkspaceView(
-    params: SessionParams,
+    params: Option<SessionParams>,
+    identity: Identity,
     on_disconnect: EventHandler<String>,
     on_switch: EventHandler<SessionMode>,
+    /// Open the connect screen for the things home cannot do itself — hosting
+    /// a server, dialling a raw address, managing the identity.
+    on_open_connect: EventHandler<()>,
 ) -> Element {
     let state = use_signal(AppState::empty);
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
@@ -97,9 +109,27 @@ pub fn WorkspaceView(
             w.selected_output_device = saved.selected_output_device.clone();
         }
         let voice_tx = spawn_voice_service(state);
-        let gateway_tx = spawn_gateway(params.clone(), state, voice_tx.clone(), move |reason| {
-            on_disconnect.call(reason);
-        });
+        // Offline still needs a `GatewayTx` in context, because every panel
+        // asks for one. Its receiver is dropped with this block, so a stray
+        // send fails silently — which is why the panels that *could* send are
+        // gated on `status` rather than left to discover it. Nothing here
+        // routes a message to a server that was never dialled.
+        let gateway_tx = match params.clone() {
+            Some(p) => spawn_gateway(p, state, voice_tx.clone(), move |reason| {
+                on_disconnect.call(reason);
+            }),
+            None => {
+                let mut app = state;
+                let mut w = app.write();
+                w.status = ConnectionStatus::Offline;
+                // There is nothing else to be looking at: no guild has been
+                // loaded, and none can be.
+                w.dm_mode = true;
+                drop(w);
+                let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+                crate::state::GatewayTx(tx)
+            }
+        };
         // DMs use Nostr relays, not the gateway, so this runs independently of
         // gateway status.
         let relays = {
@@ -113,7 +143,7 @@ pub fn WorkspaceView(
                 saved.dm_relays.clone()
             }
         };
-        let nostr_tx = crate::nostr::service::spawn_nostr(params.identity.clone(), relays, state);
+        let nostr_tx = crate::nostr::service::spawn_nostr(identity.clone(), relays, state);
         (gateway_tx, voice_tx, nostr_tx)
     });
     provide_context(gateway_tx.clone());
@@ -121,7 +151,7 @@ pub fn WorkspaceView(
     provide_context(crate::features::voice::VoiceTx(voice_tx.clone()));
     provide_context(state);
     // The Nostr identity (with signing key) — used to authorize Blossom uploads.
-    provide_context(params.identity.clone());
+    provide_context(identity.clone());
 
     // Initial 4-panel dashboard layout. 12 cols, each panel spans the full
     // GRID_ROWS height so the four columns sit side by side. The pixel row
@@ -155,6 +185,13 @@ pub fn WorkspaceView(
     let home_pane = {
         let s = state.read();
         s.dm_mode.then_some(s.home_view)
+    };
+    // Home with no conversation open has nothing to draw a chat for, and an
+    // empty composer is the least informative thing to show somebody on a
+    // first launch.
+    let home_empty = {
+        let s = state.read();
+        s.dm_mode && s.selected_channel.is_none()
     };
 
     // Guild accent overrides app-level accent inline; suppressed in DM mode.
@@ -238,16 +275,36 @@ pub fn WorkspaceView(
                     crate::app::DiscordiaLogo { class: "w-6 h-6" }
                     span { class: "dxf-display dxf-wordmark text-lg font-bold tracking-tight", "Discordia" }
                 }
+                // Says the state rather than leaving its absence to be
+                // inferred from empty panels — which is what "nothing works"
+                // looks like from the outside.
+                if status == ConnectionStatus::Offline {
+                    span { class: "shrink-0 px-2 py-0.5 rounded-full border border-[var(--border)] text-[10px] font-mono text-[var(--text-dim)]",
+                        title: "Direct messages run on Nostr relays and need no server. Communities, channels and voice do.",
+                        "no server"
+                    }
+                }
                 HostBanner {}
                 TransportBadge {}
                 EncryptionBadge {}
-                div { class: "dxf-no-drag shrink-0 flex items-center",
+                div { class: "dxf-no-drag shrink-0 flex items-center gap-2",
                     onmousedown: move |e| e.stop_propagation(),
                     button {
-                        class: "w-8 h-8 flex items-center justify-center rounded-md border border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--danger)] hover:border-[var(--danger)] transition-colors",
-                        title: "Disconnect",
-                        onclick: move |_| on_disconnect.call(String::new()),
-                        dangerous_inner_html: UNPLUG_ICON_SVG,
+                        class: "h-8 px-3 flex items-center rounded-md border border-[var(--border)] text-[10px] uppercase tracking-wider text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors",
+                        title: "Host a server, connect by address, or manage your identity",
+                        onclick: move |_| on_open_connect.call(()),
+                        "Connection"
+                    }
+                    // Only where there is something to unplug from. Offline is
+                    // where this button used to land you, so offering it there
+                    // would be a control that does nothing.
+                    if status != ConnectionStatus::Offline {
+                        button {
+                            class: "w-8 h-8 flex items-center justify-center rounded-md border border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--danger)] hover:border-[var(--danger)] transition-colors",
+                            title: "Disconnect",
+                            onclick: move |_| on_disconnect.call(String::new()),
+                            dangerous_inner_html: UNPLUG_ICON_SVG,
+                        }
                     }
                 }
             }
@@ -286,6 +343,8 @@ pub fn WorkspaceView(
                                 }
                             } else if matches!(home_pane, Some(HomeView::Communities) | Some(HomeView::Servers)) {
                                 crate::features::home::HomePane { on_switch }
+                            } else if home_empty {
+                                crate::features::home::HomeWelcome { on_open_connect }
                             } else {
                                 ChatView {}
                             }
