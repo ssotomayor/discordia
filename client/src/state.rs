@@ -242,6 +242,21 @@ pub enum GuildDialog {
     Integrations(Id),
     Roles(Id),
 }
+/// Which pane home fills its main area with.
+///
+/// The two explore panes are separate because they answer different questions
+/// against different sources: `Communities` is this host's guild catalog
+/// (`FetchCatalog`), `Servers` is the rendezvous directory of *other hosts*
+/// (`GET /discover`). Conflating them was the thing the home redesign set out
+/// to fix — a community you can only reach by first arriving at its server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HomeView {
+    #[default]
+    Dms,
+    Communities,
+    Servers,
+}
+
 /// What the composer needs to show a "replying to X" banner.
 ///
 /// Deliberately not `protocol::ReplyRef`: that one is the server's *answer*,
@@ -323,6 +338,9 @@ pub struct AppState {
     /// When true the channels column shows DM conversations instead of the
     /// selected guild's channels (the "DM home" view).
     pub dm_mode: bool,
+    /// Which of home's panes fills the main area. Only meaningful while
+    /// `dm_mode` is on — a guild is always its own channel view.
+    pub home_view: HomeView,
     /// Public directory of guilds on the host we've fetched so far (paginated,
     /// browse-and-join). May be a prefix of the whole directory — see
     /// `catalog_total`.
@@ -615,6 +633,7 @@ impl AppState {
             contacts: Default::default(),
             nostr_relays_up: std::collections::HashSet::new(),
             dm_mode: false,
+            home_view: HomeView::Dms,
             catalog: Vec::new(),
             catalog_total: 0,
             profiles: HashMap::new(),
@@ -916,6 +935,25 @@ impl AppState {
     /// Total unread DM messages across all conversations.
     pub fn dm_unread_total(&self) -> u32 {
         self.dm_unread.values().copied().sum()
+    }
+
+    /// Communities in this host's public catalog we haven't joined yet.
+    pub fn joinable_communities(&self) -> Vec<GuildSummary> {
+        self.catalog
+            .iter()
+            .filter(|c| !self.guilds.iter().any(|g| g.id == c.id))
+            .cloned()
+            .collect()
+    }
+
+    /// Communities we chose to be in. The host's system space (empty owner) is
+    /// auto-joined by `snapshot_for`, so counting raw membership would say
+    /// "you're settled in" to somebody who has joined nothing.
+    pub fn joined_communities(&self) -> usize {
+        self.guilds
+            .iter()
+            .filter(|g| !g.owner_pubkey.is_empty())
+            .count()
     }
 
     pub fn members_of(&self, guild_id: Id) -> Vec<&Member> {

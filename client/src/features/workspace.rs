@@ -10,7 +10,8 @@ use crate::features::{
 use crate::net::spawn_gateway;
 use crate::protocol::{ClientMessage, Id};
 use crate::state::{
-    AppState, ConnectionStatus, SessionParams, VoicePhase, use_app_state, use_gateway,
+    AppState, ConnectionStatus, HomeView, SessionMode, SessionParams, VoicePhase, use_app_state,
+    use_gateway,
 };
 
 /// Vertical row span each panel occupies, and the gap (px) between grid
@@ -56,7 +57,11 @@ fn default_layout() -> Vec<(String, GridPosition)> {
 const UNPLUG_ICON_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>"##;
 
 #[component]
-pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>) -> Element {
+pub fn WorkspaceView(
+    params: SessionParams,
+    on_disconnect: EventHandler<String>,
+    on_switch: EventHandler<SessionMode>,
+) -> Element {
     let state = use_signal(AppState::empty);
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
 
@@ -147,6 +152,10 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
 
     let mut edit_mode = use_signal(|| false);
     let status = state.read().status;
+    let home_pane = {
+        let s = state.read();
+        s.dm_mode.then_some(s.home_view)
+    };
 
     // Guild accent overrides app-level accent inline; suppressed in DM mode.
     let guild_accent_style = {
@@ -275,8 +284,17 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
                                 div { class: "flex-1 flex items-center justify-center text-[var(--text-muted)] text-sm",
                                     "Connecting…"
                                 }
+                            } else if matches!(home_pane, Some(HomeView::Communities) | Some(HomeView::Servers)) {
+                                crate::features::home::HomePane { on_switch }
                             } else {
                                 ChatView {}
+                            }
+                            // Under the conversation only. The explore panes
+                            // reach both levels through home's own column, so
+                            // carrying the strip there would be a second copy
+                            // of the navigation you are already standing in.
+                            if home_pane == Some(HomeView::Dms) && status != ConnectionStatus::Connecting {
+                                crate::features::home::ExploreStrip {}
                             }
                         }
                     }

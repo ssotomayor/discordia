@@ -231,7 +231,7 @@ pub fn ChannelsColumn() -> Element {
             div { class: HEADER,
                 h2 { class: "text-sm text-[var(--accent)] truncate font-medium flex-1",
                     if dm_mode {
-                        "Direct Messages"
+                        "Home"
                     } else {
                         {guild.as_ref().map(|g| g.name.clone()).unwrap_or_else(|| "No guild".into())}
                     }
@@ -258,6 +258,7 @@ pub fn ChannelsColumn() -> Element {
             NoDrag {
             if dm_mode {
                 div { class: "flex-1 overflow-y-auto px-2 py-3 space-y-1",
+                    crate::features::home::HomeNav {}
                     StartDmByKey {}
                     if dms.is_empty() {
                         div { class: "px-2 text-xs text-[var(--text-dim)] leading-relaxed",
@@ -1998,6 +1999,9 @@ fn select_dm(state: &mut Signal<AppState>, gateway: &GatewayTx, channel_id: Id) 
     let needs_fetch = {
         let mut s = state.write();
         s.dm_mode = true;
+        // Opening a conversation is an answer to "talk", so it takes the main
+        // area back from whichever explore pane was holding it.
+        s.home_view = crate::state::HomeView::Dms;
         s.selected_channel = Some(channel_id);
         s.dm_unread.remove(&channel_id);
         !s.messages.contains_key(&channel_id)

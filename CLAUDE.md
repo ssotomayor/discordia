@@ -263,7 +263,17 @@ identity bullets under `features/*.rs`:
   else calls itself `0.1.0-dev+<sha>`.
 - `features/*.rs` — UI, one module per surface: `guilds`, `channels`, `chat`,
   `members`, `voice`, `screenshare`, `camera`, `roles`, `guild_settings`,
-  `integrations` (bots), `profiles`, `connect`, `appearance`, `activities`.
+  `integrations` (bots), `profiles`, `connect`, `home`, `discover`,
+  `appearance`, `activities`.
+- **`home` carries two levels, and they are not the same question.**
+  *Communities* are guilds inside the host you are connected to
+  (`FetchCatalog` → `GuildCatalog`); *servers* are other hosts entirely
+  (`GET /discover` on the rendezvous, rendered by `features::discover`, which
+  the connect screen and home share so there is one directory and not two).
+  `home::primary_explore` decides which of the two home leads with, and the
+  reason it reads community membership rather than "am I on a server" is in its
+  doc comment: past the connect screen this client is always in a session, so
+  the state the rule wants to detect cannot occur (register entry 78).
 - **One user joins the screen room under up to three identities, on purpose.**
   LiveKit allows only one connection per identity, so each job that needs its own
   connection needs its own suffix:

@@ -2,7 +2,7 @@ use dioxus::prelude::*;
 use dioxus_grid_layout::NoDrag;
 
 use crate::protocol::{ClientMessage, GuildSummary, Id, Permission};
-use crate::state::{use_app_state, use_gateway};
+use crate::state::{HomeView, use_app_state, use_gateway};
 
 const HEADER: &str =
     "h-11 px-2 flex items-center justify-center border-b border-[var(--border)] shrink-0";
@@ -46,18 +46,10 @@ pub fn GuildsSidebar() -> Element {
     let dm_mode = snapshot.dm_mode;
     let dm_unread = snapshot.dm_unread_total() as usize;
     let is_operator = snapshot.is_operator;
-    let available: Vec<GuildSummary> = snapshot
-        .catalog
-        .iter()
-        .filter(|c| !snapshot.guilds.iter().any(|g| g.id == c.id))
-        .cloned()
-        .collect();
-    let catalog_len = snapshot.catalog.len();
-    let catalog_total = snapshot.catalog_total as usize;
+    let available: Vec<GuildSummary> = snapshot.joinable_communities();
     drop(snapshot);
 
     let mut menu = use_signal::<Option<GuildMenu>>(|| None);
-    let mut show_browse = use_signal(|| false);
 
     rsx! {
         nav { class: "panel-hover w-full h-full bg-[var(--panel)] border border-[var(--border)] rounded-lg flex flex-col overflow-hidden",
@@ -75,6 +67,7 @@ pub fn GuildsSidebar() -> Element {
                     onclick: move |_| {
                         let mut s = state.write();
                         s.dm_mode = true;
+                        s.home_view = HomeView::Dms;
                         let on_dm = s
                             .selected_channel
                             .map(|cid| s.dm_of(cid).is_some())
@@ -156,14 +149,16 @@ pub fn GuildsSidebar() -> Element {
 
                 button {
                     class: "relative w-10 h-10 rounded-md border border-dashed border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] flex items-center justify-center text-base leading-none transition-colors",
-                    title: "Browse guilds to join",
+                    title: "Browse communities on this server",
                     onclick: {
                         let gateway = gateway.clone();
                         move |_| {
                             // Pull the latest directory on open — the server no
                             // longer pushes catalog updates to everyone.
                             gateway.send(ClientMessage::FetchCatalog { offset: 0, limit: 0 });
-                            show_browse.set(true);
+                            let mut s = state.write();
+                            s.dm_mode = true;
+                            s.home_view = HomeView::Communities;
                         }
                     },
                     "🔍"
@@ -358,119 +353,6 @@ pub fn GuildsSidebar() -> Element {
             // `GuildDialogHost`), not here. A modal inside this panel would be
             // inside this panel's stacking context and could be covered by any
             // panel stacked above it.
-
-            if show_browse() {
-                div {
-                    class: "dxf-backdrop-in fixed inset-0 z-50 flex items-center justify-center bg-black/50",
-                    onclick: move |_| show_browse.set(false),
-                    div {
-                        class: "dxf-modal-in w-80 max-h-[70vh] flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl overflow-hidden",
-                        onclick: move |e| e.stop_propagation(),
-                        div { class: "px-4 py-3 border-b border-[var(--border)] flex items-center",
-                            h3 { class: "text-sm font-medium text-[var(--accent)] flex-1", "Browse guilds" }
-                            button {
-                                class: "text-[var(--text-dim)] hover:text-[var(--text)] text-lg leading-none",
-                                onclick: move |_| show_browse.set(false),
-                                "✕"
-                            }
-                        }
-                        div { class: "flex-1 overflow-y-auto p-2 space-y-1",
-                            if available.is_empty() {
-                                div { class: "px-2 py-6 text-center text-xs text-[var(--text-dim)]",
-                                    "You've joined every guild here. Create one with +."
-                                }
-                            }
-                            for g in available.iter().cloned() {
-                                {
-                                    let gid = g.id;
-                                    let gw = gateway.clone();
-                                    let label = g.icon.clone().unwrap_or_else(|| initials(&g.name));
-                                    rsx! {
-                                        div {
-                                            key: "{gid}",
-                                            class: "flex items-center gap-2 px-2 py-1.5 rounded hover:bg-white/[0.03]",
-                                            span { class: "w-8 h-8 rounded-md border border-[var(--border)] flex items-center justify-center text-xs text-[var(--text-muted)] shrink-0",
-                                                "{label}"
-                                            }
-                                            div { class: "flex-1 min-w-0",
-                                                div { class: "text-sm text-[var(--text)] truncate", "{g.name}" }
-                                                div { class: "text-[10px] text-[var(--text-dim)]",
-                                                    if g.member_count == 1 { "1 member" } else { "{g.member_count} members" }
-                                                }
-                                            }
-                                            button {
-                                                class: "px-3 py-1 rounded text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors",
-                                                onclick: move |_| gw.send(ClientMessage::JoinGuild { guild_id: gid, accept: false, pow_nonce: None }),
-                                                "Join"
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            if catalog_len < catalog_total {
-                                {
-                                    let gw = gateway.clone();
-                                    rsx! {
-                                        div { class: "flex justify-center py-2",
-                                            button {
-                                                class: "text-[11px] uppercase tracking-wider text-[var(--text-muted)] border border-[var(--border)] rounded px-3 py-1 hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors",
-                                                onclick: move |_| {
-                                                    gw.send(ClientMessage::FetchCatalog {
-                                                        offset: catalog_len as u32,
-                                                        limit: 0,
-                                                    });
-                                                },
-                                                "Load more"
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        InviteJoinRow { on_joined: move |_| show_browse.set(false) }
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// "Have an invite code?" input at the bottom of the browse modal. The server
-/// replies `GuildJoined` (which auto-selects the guild) or an `Error` toast.
-#[component]
-fn InviteJoinRow(on_joined: EventHandler<()>) -> Element {
-    let gateway = use_gateway();
-    let mut code = use_signal(String::new);
-
-    let mut submit = move || {
-        let c = code().trim().to_string();
-        if c.is_empty() {
-            return;
-        }
-        gateway.send(ClientMessage::JoinByInvite {
-            code: c,
-            accept: false,
-            pow_nonce: None,
-        });
-        code.set(String::new());
-        on_joined.call(());
-    };
-
-    rsx! {
-        form {
-            class: "border-t border-[var(--border)] p-2 flex items-center gap-2",
-            onsubmit: move |_| submit(),
-            input {
-                class: "flex-1 bg-transparent border border-[var(--border)] focus:border-[var(--accent)] rounded px-2 py-1 text-xs font-mono text-[var(--text)] outline-none transition-colors",
-                placeholder: "Have an invite code?",
-                value: "{code}",
-                oninput: move |e| code.set(e.value()),
-            }
-            button {
-                r#type: "submit",
-                class: "px-3 py-1 rounded text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors",
-                "Join"
-            }
         }
     }
 }

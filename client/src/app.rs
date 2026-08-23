@@ -642,7 +642,7 @@ pub fn App() -> Element {
                         },
                     }
                 },
-                (Some(_), Some(params)) => rsx! {
+                (Some(id), Some(params)) => rsx! {
                     Fragment {
                         WorkspaceView {
                             key: "{session_key(&params)}",
@@ -653,6 +653,29 @@ pub fn App() -> Element {
                                 // without flagging it as an error.
                                 error.set(if reason.is_empty() { None } else { Some(reason) });
                                 session.set(None);
+                            },
+                            // Home can send you to another server without a
+                            // trip through the connect screen. It is the same
+                            // transition either way — `session_key` changes,
+                            // so the workspace and its gateway are rebuilt —
+                            // and the saved session follows, because coming
+                            // back should land where you last were.
+                            on_switch: {
+                                let id = id.clone();
+                                move |mode: SessionMode| {
+                                    let username = id.display_name.clone();
+                                    error.set(None);
+                                    let saved = SavedSession {
+                                        mode: mode.clone(),
+                                        username: username.clone(),
+                                    };
+                                    let _ = session::save(&saved);
+                                    session.set(Some(SessionParams {
+                                        mode,
+                                        username,
+                                        identity: id.clone(),
+                                    }));
+                                }
                             },
                         }
                     },
