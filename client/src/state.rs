@@ -38,6 +38,40 @@ pub enum SessionMode {
     },
 }
 
+impl SessionMode {
+    /// What to call this session in the UI.
+    ///
+    /// A gateway has no name of its own on this wire — nothing in the protocol
+    /// asks a host what it is called — so the honest label is the thing the
+    /// person used to get here: the code they were given, the address they
+    /// typed, or the fact that it is this machine.
+    pub fn label(&self) -> String {
+        match self {
+            Self::SelfHost { .. } => "This machine".to_string(),
+            Self::ByCode { code, .. } => code.clone(),
+            Self::Remote { server_url } => host_of(server_url),
+        }
+    }
+}
+
+/// Host (and port) of a gateway URL, or the whole string when it does not
+/// parse as one — a label should degrade to something recognisable rather than
+/// to nothing.
+fn host_of(url: &str) -> String {
+    let rest = url
+        .strip_prefix("wss://")
+        .or_else(|| url.strip_prefix("ws://"))
+        .or_else(|| url.strip_prefix("https://"))
+        .or_else(|| url.strip_prefix("http://"))
+        .unwrap_or(url);
+    let host = rest.split(['/', '?']).next().unwrap_or(rest);
+    if host.is_empty() {
+        url.to_string()
+    } else {
+        host.to_string()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionParams {
     pub mode: SessionMode,
@@ -346,6 +380,17 @@ pub struct AppState {
     /// Which of home's panes fills the main area. Only meaningful while
     /// `dm_mode` is on — a guild is always its own channel view.
     pub home_view: HomeView,
+    /// Whether home's servers pane should arrive with the hosting form already
+    /// unfolded. Set by the buttons that promise hosting specifically, so the
+    /// label is true: landing on the pane with the form still shut leaves the
+    /// person who pressed "Host my own" to go looking for it.
+    pub home_open_host: bool,
+    /// What to call the server this session is attached to, in home's column.
+    ///
+    /// Derived from `SessionParams` at mount rather than from anything the
+    /// host tells us: a gateway has no name of its own on this wire, and the
+    /// thing a person recognises is the code or address they arrived by.
+    pub server_label: Option<String>,
     /// Public directory of guilds on the host we've fetched so far (paginated,
     /// browse-and-join). May be a prefix of the whole directory — see
     /// `catalog_total`.
@@ -639,6 +684,8 @@ impl AppState {
             nostr_relays_up: std::collections::HashSet::new(),
             dm_mode: false,
             home_view: HomeView::Dms,
+            home_open_host: false,
+            server_label: None,
             catalog: Vec::new(),
             catalog_total: 0,
             profiles: HashMap::new(),
@@ -942,6 +989,30 @@ impl AppState {
         self.dm_unread.values().copied().sum()
     }
 
+    /// The last message in a conversation, for the sidebar's preview line.
+    ///
+    /// Reads the same `messages` map the chat view does — the Nostr service
+    /// files every decrypted wrap there on replay, not only the open one, so
+    /// this is available for conversations nobody has clicked yet.
+    pub fn dm_last_message(&self, channel_id: Id) -> Option<&Message> {
+        self.messages.get(&channel_id).and_then(|m| m.last())
+    }
+
+    /// Conversations most-recent first, the order a message list is read in.
+    ///
+    /// Conversations with nothing in them sort last rather than first: an
+    /// empty one is usually one you just opened by pasting a key, and it has
+    /// no activity to be recent about.
+    pub fn dms_by_recency(&self) -> Vec<DmInfo> {
+        let mut v = self.dms.clone();
+        v.sort_by(|a, b| {
+            let at = self.dm_last_message(a.channel_id).map(|m| m.created_at);
+            let bt = self.dm_last_message(b.channel_id).map(|m| m.created_at);
+            bt.cmp(&at)
+        });
+        v
+    }
+
     /// Communities in this host's public catalog we haven't joined yet.
     pub fn joinable_communities(&self) -> Vec<GuildSummary> {
         self.catalog
@@ -1031,6 +1102,37 @@ pub fn use_gateway() -> GatewayTx {
 mod tests {
     use super::*;
     use crate::protocol::{Member, Profile, User};
+
+    /// A code is what somebody was handed and what they would say out loud, so
+    /// it is the label even though an address is more precise.
+    #[test]
+    fn a_code_labels_itself() {
+        let mode = SessionMode::ByCode {
+            rendezvous_url: "ws://rz.example:7700".into(),
+            code: "purple-fox-42".into(),
+        };
+        assert_eq!(mode.label(), "purple-fox-42");
+    }
+
+    /// The scheme and path are noise in a chip; the host is the part that
+    /// identifies the machine.
+    #[test]
+    fn an_address_shows_its_host() {
+        let mode = SessionMode::Remote {
+            server_url: "wss://chat.example.com:9000/gateway".into(),
+        };
+        assert_eq!(mode.label(), "chat.example.com:9000");
+    }
+
+    /// Anything that is not a URL still has to produce something readable
+    /// rather than an empty chip.
+    #[test]
+    fn an_unparseable_address_survives_whole() {
+        let mode = SessionMode::Remote {
+            server_url: "not a url".into(),
+        };
+        assert_eq!(mode.label(), "not a url");
+    }
 
     fn user(pk: &str) -> User {
         User {

@@ -151,6 +151,16 @@ pub fn GuildsSidebar() -> Element {
                 // nothing for them to act on, so the rail says where you are
                 // instead of offering two controls that cannot fire.
                 if offline {
+                    button {
+                        class: "w-10 h-10 rounded-md border border-dashed border-[var(--border)] text-[var(--accent)] hover:border-[var(--accent)] flex items-center justify-center text-lg leading-none transition-colors",
+                        title: "Find a server, host one, or connect by address",
+                        onclick: move |_| {
+                            let mut s = state.write();
+                            s.dm_mode = true;
+                            s.home_view = HomeView::Servers;
+                        },
+                        "+"
+                    }
                     div { class: "px-1 text-[8px] font-mono uppercase tracking-wider text-[var(--text-dim)] text-center leading-tight",
                         "no server"
                     }

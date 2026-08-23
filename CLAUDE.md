@@ -266,15 +266,23 @@ identity bullets under `features/*.rs`:
   `integrations` (bots), `profiles`, `connect`, `home`, `discover`,
   `appearance`, `activities`.
 - **`home` is the first screen, and it works without a gateway.** Identity
-  setup lands here, not on `connect`. That is possible because direct messages
-  are Nostr events keyed to your identity — `spawn_nostr` only ever needed an
-  `Identity` — so `WorkspaceView` takes `Option<SessionParams>` and
-  `ConnectionStatus::Offline` is a state the app *runs in*, not one it is
+  setup lands here. **There is no connect screen** — `features::connect` is a
+  set of forms (`AddressForm`, `HostForm`, `RendezvousPicker`, `IdentityCard`)
+  that home mounts, not a place you pass through. That is possible because
+  direct messages are Nostr events keyed to your identity — `spawn_nostr` only
+  ever needed an `Identity` — so `WorkspaceView` takes `Option<SessionParams>`
+  and `ConnectionStatus::Offline` is a state the app *runs in*, not one it is
   recovering from. Everything session-shaped (the rail's guilds, the members
-  panel, voice, the catalog) is simply empty there, and the controls that would
-  need a gateway are not drawn rather than drawn dead. `ConnectView` is now
-  opened from the Connection button for what home cannot do itself — hosting a
-  server, dialling a raw address, the identity card.
+  panel, voice, the catalog) is simply empty there, and a control that would
+  need a gateway is not drawn rather than drawn dead.
+- **`key` on a lone component does nothing — Dioxus only reads it in a list.**
+  `diff_node` compares templates and nothing else; keys are consulted in
+  `diff_keyed_children`, reached only for siblings. So `App` renders
+  `WorkspaceView` inside a one-element `for`, and that is load-bearing rather
+  than a style: without it the workspace keeps its mount across a session
+  change, `use_hook` never re-runs, and the gateway is never spawned —
+  connecting appears to do nothing at all. This was shipped and reported before
+  it was found.
 - **`home` carries two levels, and they are not the same question.**
   *Communities* are guilds inside the host you are connected to
   (`FetchCatalog` → `GuildCatalog`); *servers* are other hosts entirely

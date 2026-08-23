@@ -64,12 +64,3 @@ pub fn clear() -> Result<(), String> {
     }
     Ok(())
 }
-
-/// Human-friendly summary used in the "Reconnect" pill on the connect screen.
-pub fn label(session: &SavedSession) -> String {
-    match &session.mode {
-        SessionMode::Remote { server_url } => format!("Remote · {server_url}"),
-        SessionMode::SelfHost { .. } => "Self-host".to_string(),
-        SessionMode::ByCode { code, .. } => format!("Code · {code}"),
-    }
-}

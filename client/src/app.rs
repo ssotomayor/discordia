@@ -1,8 +1,6 @@
 use dioxus::prelude::*;
 
-use crate::features::{
-    connect::ConnectView, identity_setup::IdentitySetupView, workspace::WorkspaceView,
-};
+use crate::features::{identity_setup::IdentitySetupView, workspace::WorkspaceView};
 use crate::identity::Identity;
 use crate::session::{self, SavedSession};
 use crate::state::{SessionMode, SessionParams};
@@ -534,12 +532,6 @@ pub fn App() -> Element {
     let mut identity = use_signal(|| Identity::load().ok().flatten());
     let mut session = use_signal(|| None::<SessionParams>);
     let mut error = use_signal(|| None::<String>);
-    let last_session = use_signal(|| session::load().ok().flatten());
-    // The connect screen is a place you go, not a gate you pass. Home works
-    // without a gateway, so nothing forces this open — it is asked for, and it
-    // holds what home cannot do for itself: hosting a server, dialling a raw
-    // address, and the identity card.
-    let mut show_connect = use_signal(|| false);
 
     // Check once at app root: the label remounts on disconnect, which would
     // waste the 60/hour unauthenticated rate limit.
@@ -600,7 +592,7 @@ pub fn App() -> Element {
             // Omitted in-workspace to avoid permanent chrome and conflict with
             // existing bottom-corner controls — which now includes offline
             // home, since that is a workspace too.
-            if show_connect() || identity.read().is_none() {
+            if identity.read().is_none() {
                 div { class: "fixed bottom-3 right-3 z-40 flex items-center gap-2",
                     crate::version::VersionLabel {}
                     // Downloads and installs now, but only on a click, and
@@ -620,11 +612,22 @@ pub fn App() -> Element {
                 },
                 Some(id) => rsx! {
                     Fragment {
+                        // A list of one, because a list is the only place
+                        // Dioxus reads `key`. `diff_node` compares templates
+                        // and nothing else, so a key on a lone component is
+                        // decorative: the workspace kept its mount across a
+                        // session change, `use_hook` never re-ran, and the
+                        // gateway was never spawned — connecting looked like it
+                        // did nothing at all. Keyed siblings go through
+                        // `diff_keyed_children`, which replaces.
+                        for session_id in [session
+                            .read()
+                            .as_ref()
+                            .map(session_key)
+                            .unwrap_or_else(|| "offline".into())]
+                        {
                         WorkspaceView {
-                            // Offline gets its own key, so unplugging tears the
-                            // gateway down the same way a switch does rather
-                            // than leaving a dead one attached to a live tree.
-                            key: "{session.read().as_ref().map(session_key).unwrap_or_else(|| \"offline\".into())}",
+                            key: "{session_id}",
                             params: session.read().clone(),
                             identity: id.clone(),
                             on_disconnect: move |reason: String| {
@@ -658,44 +661,22 @@ pub fn App() -> Element {
                                     }));
                                 }
                             },
-                            on_open_connect: move |_| show_connect.set(true),
-                        }
-                        if show_connect() {
-                            div { class: "fixed inset-0 z-50 overflow-y-auto bg-[var(--bg)]",
-                                div { class: "min-h-full",
-                                    ConnectView {
-                                        identity: id.clone(),
-                                        error: error(),
-                                        last_session: last_session.read().clone(),
-                                        on_connect: move |params: SessionParams| {
-                                            error.set(None);
-                                            let saved = SavedSession {
-                                                mode: params.mode.clone(),
-                                                username: params.username.clone(),
-                                            };
-                                            let _ = session::save(&saved);
-                                            session.set(Some(params));
-                                            show_connect.set(false);
-                                        },
-                                        on_rename: move |new_name: String| {
-                                            // New name takes effect on next Connect; we don't
-                                            // mutate the in-flight gateway session.
-                                            let mut current = identity.write();
-                                            if let Some(id) = current.as_mut() {
-                                                let _ = id.set_display_name(new_name);
-                                            }
-                                        },
-                                        on_sign_out: move |_| {
-                                            let _ = Identity::delete_file();
-                                            let _ = session::clear();
-                                            session.set(None);
-                                            identity.set(None);
-                                            show_connect.set(false);
-                                        },
-                                        on_dismiss: move |_| show_connect.set(false),
-                                    }
+                            notice: error(),
+                            on_rename: move |new_name: String| {
+                                // New name takes effect on the next connect; we
+                                // do not rename an in-flight gateway session.
+                                let mut current = identity.write();
+                                if let Some(id) = current.as_mut() {
+                                    let _ = id.set_display_name(new_name);
                                 }
-                            }
+                            },
+                            on_sign_out: move |_| {
+                                let _ = Identity::delete_file();
+                                let _ = session::clear();
+                                session.set(None);
+                                identity.set(None);
+                            },
+                        }
                         }
                     }
                 },

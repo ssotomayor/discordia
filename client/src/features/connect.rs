@@ -1,427 +1,174 @@
+//! The forms for arriving somewhere, or being the somewhere.
+//!
+//! These used to be one screen you passed through before the app would start.
+//! They are components now, mounted inside home, because home works without a
+//! gateway and so nothing needs to be answered before it will open — see
+//! `features::home`.
+
 use dioxus::prelude::*;
 
 use crate::identity::Identity;
-use crate::protocol::rendezvous::DiscoverEntry;
-use crate::session::{self, SavedSession};
-use crate::state::{SessionMode, SessionParams};
+use crate::state::SessionMode;
 
-/// The two things anyone came here to do.
-///
-/// Browsing, pasting a code and typing an address were never three intentions —
-/// they are three ways of arriving at somebody else's server, so they live
-/// under `Join` together. What is left is the one real fork: go somewhere, or
-/// run one here.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Mode {
-    Join,
-    Create,
-}
-
-/// Which of the two a launch opens on.
-///
-/// Always joining, with or without a session to come back to. Creating is the
-/// consequential half — it can reserve a name, publish you to a public list and
-/// make a home address dialable — so it is the half somebody chooses rather
-/// than lands in. Pulled out of the `use_signal` closure so a test can hold
-/// that line; inside one it is unreachable from any test.
-fn initial_mode() -> Mode {
-    Mode::Join
-}
-
-/// Which way of joining the form is currently describing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum JoinBy {
-    /// A typed address, which is the more specific thing to have gone looking
-    /// for and so wins over a code.
-    Url,
-    /// A code, resolved against the directory above the tabs.
-    Code,
-    /// Neither is filled in, so there is nothing to submit.
-    Nothing,
-}
-
-/// Decide it in one place, because the submit button and the enable/disable
-/// rule must not be able to disagree about it.
-///
-/// Extracted so a test can hold the line that an untouched address field does
-/// not silently beat the code. That is not hypothetical: when these tabs were
-/// first merged, `server_url` kept its `ws://localhost:9000` default, so the
-/// address arm was always taken and joining by code became unreachable — with
-/// the field looking untouched, because its placeholder was the same string.
-fn join_by(server_url: &str, code: &str, rendezvous_url: &str) -> JoinBy {
-    if !server_url.trim().is_empty() {
-        JoinBy::Url
-    } else if !code.trim().is_empty() && !rendezvous_url.trim().is_empty() {
-        JoinBy::Code
-    } else {
-        JoinBy::Nothing
-    }
-}
-
-const INPUT: &str = "w-full bg-transparent border border-[var(--border)] rounded px-3 py-2 text-sm text-[var(--text)] focus:outline-none focus:border-[var(--accent)] transition-colors";
 const INPUT_SM: &str = "w-full bg-transparent border border-[var(--border)] rounded px-2 py-1 text-xs text-[var(--text)] focus:outline-none focus:border-[var(--accent)] transition-colors";
 const LABEL: &str = "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]";
 
+/// Connect straight to a gateway URL, ignoring the directory entirely.
+///
+/// Its own form with its own button, which is what keeps the old ambiguity
+/// from coming back: when the address and the code shared one submit, an
+/// untouched address field with a `ws://localhost:9000` *placeholder* still
+/// won, and joining by code became unreachable while looking fine. Two forms
+/// cannot disagree about which one you pressed.
 #[component]
-pub fn ConnectView(
-    identity: Identity,
-    error: Option<String>,
-    last_session: Option<SavedSession>,
-    on_connect: EventHandler<SessionParams>,
-    on_rename: EventHandler<String>,
-    on_sign_out: EventHandler<()>,
-    /// Close and go back to home. This screen is no longer a gate — home works
-    /// without a gateway — so it needs a way out that is not "connect".
-    on_dismiss: EventHandler<()>,
-) -> Element {
-    let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
-    let default_rendezvous = settings.read().active_rendezvous();
-
-    let mut mode = use_signal(initial_mode);
-    // Empty, not `ws://localhost:9000`: `join_by` prioritizes the address, so
-    // a prefilled default would prevent code-based joins from ever resolving.
+pub fn AddressForm(on_go: EventHandler<SessionMode>) -> Element {
     let mut server_url = use_signal(String::new);
+
+    let go = move || {
+        let url = server_url().trim().to_string();
+        if url.is_empty() {
+            return;
+        }
+        on_go.call(SessionMode::Remote { server_url: url });
+    };
+
+    rsx! {
+        form {
+            class: "space-y-1.5",
+            onsubmit: move |_| go(),
+            label { class: LABEL, "Server address" }
+            input {
+                class: INPUT_SM,
+                r#type: "text",
+                placeholder: "ws://localhost:9000",
+                value: "{server_url}",
+                oninput: move |e| server_url.set(e.value()),
+            }
+            div { class: "text-[10px] text-[var(--text-dim)] leading-relaxed",
+                "Connects straight to a gateway, ignoring the directory above."
+            }
+            button {
+                r#type: "submit",
+                class: "px-3 py-1.5 rounded text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors disabled:opacity-40",
+                disabled: server_url().trim().is_empty(),
+                "Connect to this address"
+            }
+        }
+    }
+}
+
+/// Run the server on this machine.
+///
+/// The consequential half of arriving anywhere: it can reserve a name, publish
+/// you to a public list, and make a home address dialable. That is why it is
+/// folded shut rather than sitting open beside the directory.
+#[component]
+pub fn HostForm(on_go: EventHandler<SessionMode>) -> Element {
+    let settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let mut allow_lan = use_signal(|| false);
     let mut publish_to_rendezvous = use_signal(|| true);
-    let mut rendezvous_url = use_signal(|| default_rendezvous.clone());
-    let mut code = use_signal(String::new);
-
     let mut publish_name = use_signal(String::new);
     let mut description = use_signal(String::new);
     let mut publish_public = use_signal(|| true);
 
-    let identity_for_submit = identity.clone();
-    let submit = move |_| {
-        let name = identity_for_submit.display_name.clone();
-        let params = match mode() {
-            Mode::Join => match join_by(&server_url(), &code(), &rendezvous_url()) {
-                JoinBy::Url => SessionParams {
-                    mode: SessionMode::Remote {
-                        server_url: server_url().trim().to_string(),
-                    },
-                    username: name,
-                    identity: identity_for_submit.clone(),
-                },
-                JoinBy::Code => SessionParams {
-                    mode: SessionMode::ByCode {
-                        rendezvous_url: rendezvous_url().trim().to_string(),
-                        code: code().trim().to_string(),
-                    },
-                    username: name,
-                    identity: identity_for_submit.clone(),
-                },
-                JoinBy::Nothing => return,
-            },
-            Mode::Create => {
-                let r_url = if publish_to_rendezvous() {
-                    let r = rendezvous_url().trim().to_string();
-                    if r.is_empty() { None } else { Some(r) }
-                } else {
-                    None
-                };
-                let pn = publish_name().trim().to_string();
-                let desc = description().trim().to_string();
-                SessionParams {
-                    mode: SessionMode::SelfHost {
-                        allow_lan: allow_lan(),
-                        rendezvous_url: r_url,
-                        publish_name: if pn.is_empty() { None } else { Some(pn) },
-                        description: if desc.is_empty() { None } else { Some(desc) },
-                        publish_public: publish_to_rendezvous() && publish_public(),
-                    },
-                    username: name,
-                    identity: identity_for_submit.clone(),
-                }
-            }
+    let go = move || {
+        let rendezvous = settings.read().active_rendezvous();
+        let r_url = if publish_to_rendezvous() && !rendezvous.trim().is_empty() {
+            Some(rendezvous.trim().to_string())
+        } else {
+            None
         };
-        let r = rendezvous_url().trim().to_string();
-        if !r.is_empty() {
-            let mut next = settings.read().clone();
-            next.use_rendezvous(&r);
-            settings.set(next.clone());
-            crate::settings::save(&next);
-        }
-        on_connect.call(params);
-    };
-
-    let disabled = match mode() {
-        Mode::Create => false,
-        Mode::Join => join_by(&server_url(), &code(), &rendezvous_url()) == JoinBy::Nothing,
-    };
-
-    // macOS has a transparent titlebar with content extending to the top;
-    // padding avoids overlapping traffic lights.
-    let mac_top_pad = if cfg!(target_os = "macos") {
-        "pt-7"
-    } else {
-        "pt-0"
+        let pn = publish_name().trim().to_string();
+        let desc = description().trim().to_string();
+        on_go.call(SessionMode::SelfHost {
+            allow_lan: allow_lan(),
+            rendezvous_url: r_url,
+            publish_name: if pn.is_empty() { None } else { Some(pn) },
+            description: if desc.is_empty() { None } else { Some(desc) },
+            publish_public: publish_to_rendezvous() && publish_public(),
+        });
     };
 
     rsx! {
-        div { class: "h-full w-full flex bg-[var(--bg)]",
-            div {
-                class: "dxf-drag-region hidden md:flex w-2/5 min-w-[340px] max-w-[520px] flex-col items-center justify-center px-10 bg-[var(--bg)]",
-                onmousedown: move |_| crate::app::start_window_drag(),
-                div {
-                    class: "w-28 h-28 rounded-3xl flex items-center justify-center mb-8",
-                    style: "background: linear-gradient(160deg, var(--panel2), var(--bg2)); \
-                            border: 1px solid var(--edge); \
-                            box-shadow: 0 0 60px -12px color-mix(in srgb, var(--accent) 45%, transparent);",
-                    crate::app::DiscordiaLogo { class: "w-16 h-16" }
+        form {
+            class: "border border-[var(--border)] rounded p-3 text-xs space-y-3",
+            onsubmit: move |_| go(),
+            p { class: "text-[var(--text-muted)]",
+                // Not "your machine runs the voice SFU": a rendezvous that has
+                // its own wins and the bundled one is never started, so the old
+                // sentence claimed the opposite of what happens in the case it
+                // described. See host.rs.
+                "Your machine runs the server and keeps its history. Voice runs here too, unless the rendezvous supplies its own."
+            }
+            label { class: "flex items-center gap-2 cursor-pointer text-[var(--text)]",
+                input {
+                    r#type: "checkbox",
+                    checked: publish_to_rendezvous(),
+                    oninput: move |e| publish_to_rendezvous.set(e.value() == "true"),
                 }
-                h1 { class: "dxf-display dxf-wordmark text-6xl font-extrabold tracking-tight",
-                    "Discordia"
-                }
-                p { class: "text-[15px] text-[var(--text-muted)] mt-5 text-center max-w-[320px] leading-relaxed",
-                    "Chat you actually own. Self-hosted, cryptographic identity, and a room you rearrange like furniture."
-                }
-                div { class: "flex flex-wrap items-center justify-center gap-2 mt-7",
-                    span { class: "flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-[var(--edge)] text-xs text-[var(--accent)]",
-                        style: "background: var(--accent-soft);", "🔑 Nostr identity"
+                "Give it a join code friends can use"
+            }
+            div { class: "flex items-center gap-1.5",
+                label { class: "flex items-center gap-2 cursor-pointer text-[var(--text)]",
+                    input {
+                        r#type: "checkbox",
+                        checked: allow_lan(),
+                        oninput: move |e| allow_lan.set(e.value() == "true"),
                     }
-                    span { class: "flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-[var(--edge)] text-xs",
-                        style: "background: color-mix(in srgb, var(--up) 10%, transparent); color: var(--up);",
-                        "⌂ Self-hosted"
+                    "Accept direct connections"
+                }
+                // Outside the label, or clicking the hint would toggle the
+                // checkbox it explains.
+                span {
+                    class: "w-4 h-4 shrink-0 flex items-center justify-center rounded-full border border-[var(--border)] text-[9px] text-[var(--text-dim)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors cursor-help",
+                    // Gateway binds loopback without this, so it governs port
+                    // mapping too, not just LAN.
+                    title: "Friends here reach you directly, and Discordia asks your router (UPnP / NAT-PMP) to let in friends elsewhere. Your home IP becomes visible to anyone who joins that way.",
+                    "?"
+                }
+            }
+            if publish_to_rendezvous() {
+                div { class: "pl-3 border-l border-[var(--border)] space-y-2",
+                    div { class: "space-y-1",
+                        label { class: LABEL, "Server name" }
+                        input {
+                            // Rendezvous canonicalizes names to lowercase on
+                            // registration/lookup, so `MiServidor` resolves as
+                            // `miservidor`.
+                            class: "{INPUT_SM} lowercase",
+                            r#type: "text",
+                            placeholder: "my-server",
+                            value: "{publish_name}",
+                            oninput: move |e| publish_name.set(e.value()),
+                        }
+                        div { class: "text-[10px] text-[var(--text-dim)]",
+                            "Becomes your join code, reserved to your key. Letters, digits, '-', '_' and '.'"
+                        }
+                    }
+                    div { class: "space-y-1",
+                        label { class: LABEL, "Description (optional)" }
+                        input {
+                            class: INPUT_SM,
+                            r#type: "text",
+                            placeholder: "Friends-only chat",
+                            value: "{description}",
+                            oninput: move |e| description.set(e.value()),
+                        }
+                    }
+                    label { class: "flex items-center gap-2 cursor-pointer text-[var(--text)]",
+                        input {
+                            r#type: "checkbox",
+                            checked: publish_public(),
+                            oninput: move |e| publish_public.set(e.value() == "true"),
+                        }
+                        "List it publicly, so strangers can find it by name"
                     }
                 }
             }
-
-            // Top strip is a drag region so the empty bar acts as a titlebar
-            // when the brand panel is hidden at narrow widths.
-            div { class: "flex-1 flex flex-col overflow-hidden min-w-0",
-                div {
-                    class: "dxf-drag-region h-8 shrink-0 flex items-center justify-end pr-3 {mac_top_pad}",
-                    onmousedown: move |_| crate::app::start_window_drag(),
-                    button {
-                        r#type: "button",
-                        class: "dxf-no-drag text-[10px] uppercase tracking-wider text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors",
-                        onmousedown: move |e| e.stop_propagation(),
-                        onclick: move |_| on_dismiss.call(()),
-                        "← Home"
-                    }
-                }
-                form {
-                    class: "flex-1 overflow-auto px-8 py-8 flex flex-col items-stretch dxf-no-drag",
-                    onsubmit: submit,
-                    // Use `my-auto` instead of `justify-center`: auto margins
-                    // collapse to zero when content overflows, keeping the top
-                    // reachable. `justify-center` pushes content above the
-                    // scroll origin.
-                    div { class: "w-full max-w-md mx-auto my-auto space-y-5 flex flex-col",
-
-                IdentityCard { identity: identity.clone(), on_rename, on_sign_out }
-
-                if let Some(saved) = last_session.clone() {
-                    {
-                        let identity_for_reconnect = identity.clone();
-                        let on_connect_for_reconnect = on_connect;
-                        rsx! {
-                            button {
-                                r#type: "button",
-                                class: "panel-hover w-full flex items-center gap-2 border border-[var(--border)] hover:border-[var(--accent)] rounded p-2 text-xs text-left group",
-                                onclick: move |_| {
-                                    let params = SessionParams {
-                                        mode: saved.mode.clone(),
-                                        username: saved.username.clone(),
-                                        identity: identity_for_reconnect.clone(),
-                                    };
-                                    on_connect_for_reconnect.call(params);
-                                },
-                                div { class: "flex-1 min-w-0",
-                                    div { class: "text-[10px] uppercase tracking-wider text-[var(--text-muted)]",
-                                        "Last session"
-                                    }
-                                    div { class: "text-[var(--text)] truncate group-hover:text-[var(--accent)] transition-colors",
-                                        "{session::label(&saved)}"
-                                    }
-                                }
-                                span { class: "text-[10px] text-[var(--accent)] uppercase tracking-wider font-medium",
-                                    "reconnect →"
-                                }
-                            }
-                        }
-                    }
-                }
-
-                div { class: "h-px bg-[var(--border)]" }
-
-                // Placed above tabs because this address serves join codes,
-                // the public list, and server publishing simultaneously.
-                // Duplicating it per tab required manual sync and obscured its
-                // multi-purpose role.
-                div { class: "space-y-1.5",
-                    RendezvousPicker {
-                        selected: rendezvous_url(),
-                        on_select: move |u: String| rendezvous_url.set(u),
-                    }
-                    div { class: "text-[10px] text-[var(--text-dim)] leading-relaxed",
-                        "Codes are looked up here, the public list comes from here, and a server of your own is published and named here."
-                    }
-                }
-
-                // Labels specify "server" to distinguish from "community"
-                // (which is `CreateGuild` and requires an existing
-                // connection). Bare "Join"/"Create" caused user confusion.
-                div { class: "flex gap-1 text-xs",
-                    TabButton { active: mode() == Mode::Join, label: "Join a server", onclick: move |_| mode.set(Mode::Join) }
-                    TabButton { active: mode() == Mode::Create, label: "Create a server", onclick: move |_| mode.set(Mode::Create) }
-                }
-
-                if let Some(err) = error {
-                    div { class: "text-xs text-[var(--danger)] border border-[var(--border)] rounded px-3 py-2",
-                        "{err}"
-                    }
-                }
-
-                // No `key:` — rsx! honours one only on a body root, so a nested
-                // one is dropped. See docs/AUDIT-2026-08-17.md.
-                div { class: "fade-in flex-1",
-                match mode() {
-                    // Code first because it is the primary input for
-                    // newcomers; the list is a fallback that fills the code
-                    // field rather than acting as a separate submission path.
-                    Mode::Join => rsx! {
-                        div { class: "space-y-3",
-                            div { class: "space-y-1",
-                                // Label is "Code" not "Join code" to avoid
-                                // redundancy with the tab and button. Renamed
-                                // from "Shortcode" in PR 90 to avoid internal
-                                // jargon.
-                                label { class: LABEL, "Code" }
-                                input {
-                                    class: "{INPUT} lowercase",
-                                    r#type: "text",
-                                    placeholder: "purple-fox-42 or a server name",
-                                    value: "{code}",
-                                    oninput: move |e| code.set(e.value()),
-                                }
-                            }
-
-                            crate::features::discover::ServerDirectory {
-                                on_pick: move |entry: DiscoverEntry| {
-                                    code.set(entry.shortcode);
-                                },
-                                picked_shortcode: code(),
-                                rendezvous_url: rendezvous_url(),
-                            }
-
-                            // Folded because gateway address entry is rare and
-                            // ignores the directory above. Must start empty:
-                            // an open stale default looks filled, while a
-                            // closed one silently dictates connections.
-                            details {
-                                summary { class: "cursor-pointer text-[10px] uppercase tracking-wider text-[var(--text-muted)] hover:text-[var(--text)] transition-colors",
-                                    "Other ways to connect"
-                                }
-                                div { class: "space-y-1 mt-2",
-                                    label { class: LABEL, "Server address" }
-                                    input {
-                                        class: INPUT_SM,
-                                        r#type: "text",
-                                        placeholder: "ws://localhost:9000",
-                                        value: "{server_url}",
-                                        oninput: move |e| server_url.set(e.value()),
-                                    }
-                                    div { class: "text-[10px] text-[var(--text-dim)] leading-relaxed",
-                                        "Connects straight to a gateway, ignoring the code and the directory. Leave it empty to use the code above."
-                                    }
-                                }
-                            }
-                        }
-                    },
-                    Mode::Create => rsx! {
-                        div { class: "border border-[var(--border)] rounded p-3 text-xs space-y-3",
-                            p { class: "text-[var(--text-muted)]",
-                                // Not "your machine runs the voice SFU": a
-                                // rendezvous that has its own wins and the
-                                // bundled one is never started, so the old
-                                // sentence claimed the opposite of what happens
-                                // in the case it described. See host.rs.
-                                "Your machine runs the server and keeps its history. Voice runs here too, unless the rendezvous above supplies its own."
-                            }
-                            label { class: "flex items-center gap-2 cursor-pointer text-[var(--text)]",
-                                input {
-                                    r#type: "checkbox",
-                                    checked: publish_to_rendezvous(),
-                                    oninput: move |e| publish_to_rendezvous.set(e.value() == "true"),
-                                }
-                                "Give it a join code friends can use"
-                            }
-                            div { class: "flex items-center gap-1.5",
-                                label { class: "flex items-center gap-2 cursor-pointer text-[var(--text)]",
-                                    input {
-                                        r#type: "checkbox",
-                                        checked: allow_lan(),
-                                        oninput: move |e| allow_lan.set(e.value() == "true"),
-                                    }
-                                    "Accept direct connections"
-                                }
-                                // Outside the label, or clicking the hint would
-                                // toggle the checkbox it explains.
-                                span {
-                                    class: "w-4 h-4 shrink-0 flex items-center justify-center rounded-full border border-[var(--border)] text-[9px] text-[var(--text-dim)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors cursor-help",
-                                    // Gateway binds loopback without this, so it
-                                    // governs port mapping too, not just LAN.
-                                    title: "Friends here reach you directly, and Discordia asks your router (UPnP / NAT-PMP) to let in friends elsewhere. Your home IP becomes visible to anyone who joins that way.",
-                                    "?"
-                                }
-                            }
-                            if publish_to_rendezvous() {
-                                div { class: "pl-3 border-l border-[var(--border)] space-y-2",
-                                    div { class: "space-y-1",
-                                        label { class: LABEL, "Server name" }
-                                        input {
-                                            // Rendezvous canonicalizes names
-                                            // to lowercase on
-                                            // registration/lookup, so
-                                            // `MiServidor` resolves as
-                                            // `miservidor`.
-                                            class: "{INPUT_SM} lowercase",
-                                            r#type: "text",
-                                            placeholder: "my-server",
-                                            value: "{publish_name}",
-                                            oninput: move |e| publish_name.set(e.value()),
-                                        }
-                                        div { class: "text-[10px] text-[var(--text-dim)]",
-                                            "Becomes your join code, reserved to your key. Letters, digits, '-', '_' and '.'"
-                                        }
-                                    }
-                                    div { class: "space-y-1",
-                                        label { class: LABEL, "Description (optional)" }
-                                        input {
-                                            class: INPUT_SM,
-                                            r#type: "text",
-                                            placeholder: "Friends-only chat",
-                                            value: "{description}",
-                                            oninput: move |e| description.set(e.value()),
-                                        }
-                                    }
-                                    label { class: "flex items-center gap-2 cursor-pointer text-[var(--text)]",
-                                        input {
-                                            r#type: "checkbox",
-                                            checked: publish_public(),
-                                            oninput: move |e| publish_public.set(e.value() == "true"),
-                                        }
-                                        "List it publicly, so strangers can find it by name"
-                                    }
-                                }
-                            }
-                        }
-                    },
-                }
-                }
-
-                button {
-                    class: "dxf-cta w-full py-2.5 rounded-xl transition-all disabled:opacity-30 disabled:cursor-not-allowed text-sm",
-                    r#type: "submit",
-                    disabled,
-                    {match mode() {
-                        Mode::Join => "Connect  →",
-                        Mode::Create => "Launch  →",
-                    }}
-                }
-                    }
-                }
+            button {
+                r#type: "submit",
+                class: "dxf-cta w-full py-2 rounded text-xs",
+                "Launch it  \u{2192}"
             }
         }
     }
@@ -431,7 +178,7 @@ pub fn ConnectView(
 /// three separate "advanced" URL boxes — the address is a thing you keep, not
 /// something to retype per tab.
 #[component]
-fn RendezvousPicker(selected: String, on_select: EventHandler<String>) -> Element {
+pub fn RendezvousPicker(selected: String, on_select: EventHandler<String>) -> Element {
     let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let mut adding = use_signal(|| false);
     let mut draft = use_signal(String::new);
@@ -524,24 +271,7 @@ fn RendezvousPicker(selected: String, on_select: EventHandler<String>) -> Elemen
 }
 
 #[component]
-fn TabButton(active: bool, label: &'static str, onclick: EventHandler<()>) -> Element {
-    let cls = if active {
-        "text-[var(--accent)] border-[var(--accent)]"
-    } else {
-        "text-[var(--text-muted)] border-transparent hover:text-[var(--text)]"
-    };
-    rsx! {
-        button {
-            r#type: "button",
-            class: "flex-1 px-2 py-1.5 border-b font-medium transition-colors {cls}",
-            onclick: move |_| onclick.call(()),
-            "{label}"
-        }
-    }
-}
-
-#[component]
-fn IdentityCard(
+pub fn IdentityCard(
     identity: Identity,
     on_rename: EventHandler<String>,
     on_sign_out: EventHandler<()>,
@@ -658,58 +388,5 @@ fn IdentityCard(
                 }
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{JoinBy, Mode, initial_mode, join_by};
-
-    const R: &str = "ws://rendezvous.example:7700";
-
-    /// A launch lands on joining. Creating a server can reserve a name, publish
-    /// you to a public list and make a home address dialable, so it is chosen
-    /// rather than landed in.
-    #[test]
-    fn a_launch_opens_on_the_half_that_costs_nothing() {
-        assert_eq!(initial_mode(), Mode::Join);
-    }
-
-    /// The regression that made these tabs worth merging carefully: the address
-    /// field used to be born holding `ws://localhost:9000`, which took priority
-    /// and made joining by code unreachable. An untouched field must lose.
-    #[test]
-    fn an_untouched_address_does_not_beat_a_code() {
-        assert_eq!(join_by("", "purple-fox-42", R), JoinBy::Code);
-    }
-
-    /// Typed on purpose, it wins: it is the more specific thing to have gone
-    /// looking for, and the disclosure says it ignores the code.
-    #[test]
-    fn a_typed_address_beats_a_code() {
-        assert_eq!(
-            join_by("ws://box.local:9000", "purple-fox-42", R),
-            JoinBy::Url
-        );
-    }
-
-    /// Whitespace is not an address — otherwise a stray space in the field
-    /// would silently take the same priority a real one does.
-    #[test]
-    fn blank_space_is_not_an_address() {
-        assert_eq!(join_by("   ", "purple-fox-42", R), JoinBy::Code);
-    }
-
-    /// A code needs somewhere to be looked up, so without a directory it is not
-    /// something that can be submitted.
-    #[test]
-    fn a_code_without_a_directory_is_not_submittable() {
-        assert_eq!(join_by("", "purple-fox-42", ""), JoinBy::Nothing);
-    }
-
-    /// Empty form, dead button — this is what `disabled` is reading.
-    #[test]
-    fn an_empty_form_has_nothing_to_submit() {
-        assert_eq!(join_by("", "", R), JoinBy::Nothing);
     }
 }

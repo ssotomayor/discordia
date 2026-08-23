@@ -7,6 +7,32 @@ use crate::protocol::{Channel, ChannelKind, ClientMessage, Id, Permission, Voice
 use crate::state::DmInfo;
 use crate::state::{AppState, GatewayTx, VoicePhase, use_app_state, use_gateway};
 
+/// One conversation as the sidebar draws it: the peer, plus the three things
+/// the comps put beside their name.
+#[derive(Clone, PartialEq)]
+struct DmRow {
+    info: DmInfo,
+    /// Last message, prefixed with "You:" when it is ours — which is how you
+    /// tell "they replied" from "I said the last thing" without opening it.
+    preview: Option<String>,
+    when: Option<String>,
+    unread: u32,
+}
+
+impl DmRow {
+    /// Whether the search field is asking for this row. An empty field asks
+    /// for everything; anything else matches the name or the key, because both
+    /// are ways people refer to somebody here.
+    fn matches(&self, needle: &str) -> bool {
+        let needle = needle.trim().to_lowercase();
+        if needle.is_empty() {
+            return true;
+        }
+        self.info.other.username.to_lowercase().contains(&needle)
+            || self.info.other.pubkey.to_lowercase().contains(&needle)
+    }
+}
+
 /// The position changes that put `moved` where `target` sits.
 ///
 /// Separated from the rows that call it because it is the only part of a
@@ -158,7 +184,35 @@ pub fn ChannelsColumn() -> Element {
 
     let snapshot = state.read();
     let dm_mode = snapshot.dm_mode;
-    let dms: Vec<DmInfo> = snapshot.dms.clone();
+    // Most recent first, each carrying what the row draws beside the name.
+    // Assembled here rather than per row so the whole list costs one borrow of
+    // state instead of one per conversation.
+    let self_pk = snapshot.self_user.as_ref().map(|u| u.pubkey.clone());
+    let dms: Vec<DmRow> = snapshot
+        .dms_by_recency()
+        .into_iter()
+        .map(|dm| {
+            let last = snapshot.dm_last_message(dm.channel_id);
+            DmRow {
+                preview: last.map(|m| {
+                    let body = if m.content.trim().is_empty() && m.image.is_some() {
+                        "\u{1f4ce} image".to_string()
+                    } else {
+                        m.content.clone()
+                    };
+                    if self_pk.as_deref() == Some(m.author.pubkey.as_str()) {
+                        format!("You: {body}")
+                    } else {
+                        body
+                    }
+                }),
+                when: last.map(|m| m.created_at.format("%H:%M").to_string()),
+                unread: snapshot.dm_unread.get(&dm.channel_id).copied().unwrap_or(0),
+                info: dm,
+            }
+        })
+        .collect();
+    let dm_unread_total = snapshot.dm_unread_total();
     let selected_guild = snapshot.selected_guild;
     let selected_channel = snapshot.selected_channel;
     let guild =
@@ -204,6 +258,9 @@ pub fn ChannelsColumn() -> Element {
         .map(|c| (*c).clone())
         .collect();
 
+    // One field for two jobs, as the comps draw it: it narrows the list as you
+    // type, and a pasted key is not a search term but a conversation to open.
+    let filter = use_signal(String::new);
     let mut chan_menu = use_signal::<Option<ChanMenu>>(|| None);
     let mut show_create = use_signal(|| false);
     // Cleared on drop and dragend so an abandoned drag does not leave a stale
@@ -259,44 +316,80 @@ pub fn ChannelsColumn() -> Element {
             if dm_mode {
                 div { class: "flex-1 overflow-y-auto px-2 py-3 space-y-1",
                     crate::features::home::HomeNav {}
-                    StartDmByKey {}
+                    StartDmByKey { input: filter }
+                    div { class: "flex items-baseline gap-2 px-2 pt-1 pb-0.5",
+                        span { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-dim)]",
+                            "Direct messages"
+                        }
+                        span { class: "flex-1" }
+                        if dm_unread_total > 0 {
+                            span { class: "font-mono text-[10px] text-[var(--accent)]",
+                                "{dm_unread_total} unread"
+                            }
+                        }
+                    }
                     if dms.is_empty() {
                         div { class: "px-2 text-xs text-[var(--text-dim)] leading-relaxed",
                             "No conversations yet. Paste someone's npub above, or click a member."
                         }
                     }
-                    for dm in dms.iter().cloned() {
+                    for row in dms.iter().filter(|r| r.matches(&filter())).cloned() {
                         {
-                            let cid = dm.channel_id;
+                            let cid = row.info.channel_id;
                             let active = selected_channel == Some(cid);
                             let cls = if active {
-                                "text-[var(--accent)] bg-[var(--accent-soft)]"
+                                "bg-[var(--accent-soft)] border-[var(--border-strong)]"
                             } else {
-                                "text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-white/[0.03]"
+                                "border-transparent hover:bg-white/[0.03]"
+                            };
+                            // Unread reads as weight, not only as a badge: the
+                            // badge is a number you have to look for, and the
+                            // list is scanned rather than read.
+                            let name_cls = if active || row.unread > 0 {
+                                "text-[var(--text)]"
+                            } else {
+                                "text-[var(--text-muted)]"
                             };
                             let g2 = gateway.clone();
-                            let uname = dm.other.username.clone();
-                            let disc = discriminator(&dm.other.pubkey);
+                            let uname = row.info.other.username.clone();
+                            let disc = discriminator(&row.info.other.pubkey);
                             rsx! {
                                 button {
                                     key: "{cid}",
-                                    class: "w-full flex items-center gap-2 px-2 py-1 rounded text-left text-sm transition-colors {cls}",
+                                    class: "w-full flex items-center gap-2 px-2 py-1.5 rounded border text-left transition-colors {cls}",
                                     onclick: move |_| select_dm(&mut state, &g2, cid),
                                     crate::features::profiles::Avatar {
-                                        pubkey: dm.other.pubkey.clone(),
+                                        pubkey: row.info.other.pubkey.clone(),
                                         name: uname.clone(),
-                                        size: "w-6 h-6",
+                                        size: "w-7 h-7",
                                         text: "text-[10px]",
                                     }
-                                    span { class: "truncate flex-1",
-                                        "{uname}"
-                                        span { class: "text-[var(--text-dim)] font-mono text-[10px] ml-0.5", "#{disc}" }
+                                    span { class: "flex-1 min-w-0",
+                                        span { class: "flex items-baseline gap-1",
+                                            span { class: "truncate text-sm {name_cls}",
+                                                "{uname}"
+                                                span { class: "text-[var(--text-dim)] font-mono text-[10px] ml-0.5", "#{disc}" }
+                                            }
+                                            span { class: "flex-1" }
+                                            if let Some(when) = row.when.clone() {
+                                                span { class: "shrink-0 font-mono text-[9px] text-[var(--text-dim)]", "{when}" }
+                                            }
+                                        }
+                                        if let Some(preview) = row.preview.clone() {
+                                            span { class: "block truncate text-[11px] text-[var(--text-muted)]", "{preview}" }
+                                        }
+                                    }
+                                    if row.unread > 0 {
+                                        span { class: "shrink-0 min-w-4 h-4 px-1 rounded-full bg-[var(--accent)] text-[var(--bg)] text-[9px] font-bold flex items-center justify-center",
+                                            "{row.unread}"
+                                        }
                                     }
                                 }
                             }
                         }
                     }
                 }
+                crate::features::home::IdentityFooter {}
             } else {
             div { class: "flex-1 overflow-y-auto px-2 py-3 space-y-3",
                 if !text_channels.is_empty() {
@@ -2230,11 +2323,15 @@ mod tests {
 /// menu: reaching somebody by key is the whole difference between messages that
 /// belong to a server and messages that belong to you.
 #[component]
-fn StartDmByKey() -> Element {
+fn StartDmByKey(input: Signal<String>) -> Element {
     let nostr = use_context::<crate::nostr::service::NostrTx>();
-    let mut input = use_signal(String::new);
+    let mut input = input;
     let mut error = use_signal(|| Option::<String>::None);
 
+    // Enter means "open this conversation", which only has an answer when what
+    // was typed is a key. A name typed to narrow the list is not a failed key
+    // and must not be reported as one, so the error is only raised for input
+    // that was plausibly meant as one.
     let mut start = move || {
         let raw = input().trim().to_string();
         if raw.is_empty() {
@@ -2246,7 +2343,11 @@ fn StartDmByKey() -> Element {
                 input.set(String::new());
                 nostr.send(crate::nostr::service::NostrCmd::Open { peer: pubkey });
             }
-            Err(e) => error.set(Some(e)),
+            Err(e) => {
+                if looks_like_a_key(&raw) {
+                    error.set(Some(e));
+                }
+            }
         }
     };
 
@@ -2255,7 +2356,7 @@ fn StartDmByKey() -> Element {
             input {
                 class: "w-full bg-[var(--bg2)] border border-[var(--border)] rounded px-2 py-1 text-xs outline-none focus:border-[var(--accent)]",
                 r#type: "text",
-                placeholder: "npub1… or hex key",
+                placeholder: "Search, or paste an npub",
                 value: "{input}",
                 oninput: move |e| { input.set(e.value()); error.set(None); },
                 onkeydown: move |e| {
@@ -2267,4 +2368,13 @@ fn StartDmByKey() -> Element {
             }
         }
     }
+}
+
+/// Whether a failed parse is worth complaining about.
+///
+/// The field is a search box as well as a key box, so most of what fails to
+/// parse here is somebody typing a name. Only the two shapes that could not be
+/// anything else earn an error message.
+fn looks_like_a_key(raw: &str) -> bool {
+    raw.starts_with("npub") || (raw.len() >= 32 && raw.chars().all(|c| c.is_ascii_hexdigit()))
 }

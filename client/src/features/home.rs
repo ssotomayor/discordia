@@ -12,6 +12,14 @@ use crate::protocol::rendezvous::DiscoverEntry;
 use crate::protocol::{ClientMessage, GuildSummary};
 use crate::state::{ConnectionStatus, HomeView, SessionMode, use_app_state, use_gateway};
 
+/// Renaming and signing out, in context because the identity card now lives in
+/// home's column while the identity itself is owned by `App`.
+#[derive(Clone, Copy)]
+pub struct IdentityActions {
+    pub on_rename: EventHandler<String>,
+    pub on_sign_out: EventHandler<()>,
+}
+
 /// Which explore pane home leads with: the level you are missing.
 ///
 /// The two are not interchangeable. Communities live *inside* a host, so
@@ -54,6 +62,7 @@ pub fn HomeNav() -> Element {
     let joinable = snapshot.joinable_communities().len();
     let joined = snapshot.joined_communities();
     let offline = snapshot.status == ConnectionStatus::Offline;
+    let server_label = snapshot.server_label.clone();
     drop(snapshot);
 
     // Offline there is no host, so there is no catalog to browse and the row
@@ -115,6 +124,19 @@ pub fn HomeNav() -> Element {
 
     rsx! {
         div { class: "px-1 pb-2 space-y-0.5 border-b border-[var(--border)] mb-2",
+            // Which server this session is attached to, and a way off it. The
+            // rail below shows the communities *inside* it, which is not the
+            // same question and never answered this one.
+            if let Some(label) = server_label.clone() {
+                button {
+                    class: "w-full flex items-center gap-2 px-2 py-1.5 mb-1 rounded border border-[var(--border)] bg-[var(--panel2)] text-left hover:border-[var(--accent)] transition-colors",
+                    title: "The server this session is on. Opens the directory to change it.",
+                    onclick: move |_| open_servers(),
+                    span { class: "text-[9px] font-mono uppercase tracking-wider text-[var(--text-dim)]", "on" }
+                    span { class: "flex-1 min-w-0 truncate text-xs text-[var(--text)]", "{label}" }
+                    span { class: "shrink-0 text-[var(--text-dim)] text-[10px]", "\u{25be}" }
+                }
+            }
             if offline {
                 {servers}
             } else if communities_first {
@@ -255,12 +277,30 @@ fn CommunitiesPane() -> Element {
                                 button {
                                     key: "{gid}",
                                     class: "flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-[var(--panel)] border border-[var(--border)] hover:border-[var(--accent)] text-left transition-colors",
-                                    onclick: move |_| {
-                                        let mut s = state.write();
-                                        s.dm_mode = false;
-                                        s.home_view = HomeView::Dms;
-                                        s.selected_guild = Some(gid);
-                                        s.selected_channel = None;
+                                    onclick: {
+                                        let gateway = gateway.clone();
+                                        move |_| {
+                                            // Same path the rail takes, and for
+                                            // the same reason: setting
+                                            // `selected_guild` alone lands you
+                                            // in a guild with no channel open
+                                            // and no history fetched.
+                                            let target = {
+                                                let mut s = state.write();
+                                                s.dm_mode = false;
+                                                s.home_view = HomeView::Dms;
+                                                s.selected_guild = Some(gid);
+                                                s.selected_channel = None;
+                                                s.default_channel_of(gid)
+                                            };
+                                            if let Some(cid) = target {
+                                                crate::features::channels::select_text_channel(
+                                                    &mut state.clone(),
+                                                    &gateway,
+                                                    cid,
+                                                );
+                                            }
+                                        }
                                     },
                                     span { class: "w-6 h-6 shrink-0 rounded border border-[var(--border)] flex items-center justify-center text-[10px] text-[var(--text-muted)]",
                                         "{label}"
@@ -281,10 +321,16 @@ fn CommunitiesPane() -> Element {
 /// The rendezvous directory of other hosts: the level-1 answer.
 #[component]
 fn ServersPane(on_switch: EventHandler<SessionMode>) -> Element {
-    let settings = use_context::<Signal<crate::settings::ClientSettings>>();
+    let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let rendezvous = settings.read().active_rendezvous();
-    let offline = use_app_state().read().status == ConnectionStatus::Offline;
+    let state = use_app_state();
+    let snapshot = state.read();
+    let offline = snapshot.status == ConnectionStatus::Offline;
+    let open_host = snapshot.home_open_host;
+    drop(snapshot);
     let mut code = use_signal(String::new);
+    // Read once: it is a file, and it cannot change while this pane is open.
+    let last_session = use_hook(|| crate::session::load().ok().flatten());
 
     let rz_for_go = rendezvous.clone();
     let go = move || {
@@ -301,6 +347,14 @@ fn ServersPane(on_switch: EventHandler<SessionMode>) -> Element {
         });
     };
 
+    // Picking a row fills the field rather than connecting, so the button has
+    // to say what the pick will do — otherwise the click above it looks like it
+    // did nothing at all.
+    let go_label = match code().trim() {
+        "" => "Connect".to_string(),
+        picked => format!("Connect to {picked}"),
+    };
+
     rsx! {
         div { class: "flex-1 overflow-y-auto p-4 space-y-4",
             div { class: "flex items-baseline gap-2",
@@ -315,6 +369,31 @@ fn ServersPane(on_switch: EventHandler<SessionMode>) -> Element {
                 } else {
                     "Each server is a machine somebody runs. Joining one swaps this session for
                      that one — your direct messages come with you, they belong to your key."
+                }
+            }
+
+            // Offered before the directory, because coming back to where you
+            // were is the commonest reason to be looking at this pane at all,
+            // and it was the one thing the old connect screen did that home
+            // could not.
+            if offline {
+                if let Some(saved) = last_session.clone() {
+                    {
+                        let label = saved.mode.label();
+                        rsx! {
+                            button {
+                                class: "w-full flex items-center gap-3 px-3 py-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--panel)] text-left hover:border-[var(--accent)] transition-colors",
+                                onclick: move |_| on_switch.call(saved.mode.clone()),
+                                span { class: "flex-1 min-w-0",
+                                    span { class: "block text-[10px] font-mono uppercase tracking-wider text-[var(--text-dim)]",
+                                        "last session"
+                                    }
+                                    span { class: "block truncate text-sm text-[var(--text)]", "{label}" }
+                                }
+                                span { class: "shrink-0 text-xs text-[var(--accent)]", "Reconnect" }
+                            }
+                        }
+                    }
                 }
             }
 
@@ -338,12 +417,47 @@ fn ServersPane(on_switch: EventHandler<SessionMode>) -> Element {
                     r#type: "submit",
                     class: "dxf-cta px-4 py-2 rounded text-sm disabled:opacity-40",
                     disabled: code().trim().is_empty(),
-                    "Go"
+                    "{go_label}"
                 }
             }
 
-            div { class: "text-[11px] text-[var(--text-dim)] leading-relaxed",
-                "To host your own or reach one by address, open Connection in the top bar."
+            // Both folded: the directory and a pasted code answer this pane's
+            // question almost every time, and an open form beside them reads as
+            // something you are expected to fill in.
+            details {
+                summary { class: "cursor-pointer text-[10px] uppercase tracking-wider text-[var(--text-muted)] hover:text-[var(--text)] transition-colors",
+                    "Connect by address"
+                }
+                div { class: "mt-2",
+                    crate::features::connect::AddressForm { on_go: move |mode| on_switch.call(mode) }
+                }
+            }
+
+            details {
+                open: open_host,
+                summary { class: "cursor-pointer text-[10px] uppercase tracking-wider text-[var(--text-muted)] hover:text-[var(--text)] transition-colors",
+                    "Host your own"
+                }
+                div { class: "mt-2",
+                    crate::features::connect::HostForm { on_go: move |mode| on_switch.call(mode) }
+                }
+            }
+
+            details {
+                summary { class: "cursor-pointer text-[10px] uppercase tracking-wider text-[var(--text-muted)] hover:text-[var(--text)] transition-colors",
+                    "Directory settings"
+                }
+                div { class: "mt-2",
+                    crate::features::connect::RendezvousPicker {
+                        selected: rendezvous.clone(),
+                        on_select: move |url: String| {
+                            let mut next = settings.read().clone();
+                            next.use_rendezvous(&url);
+                            settings.set(next.clone());
+                            crate::settings::save(&next);
+                        },
+                    }
+                }
             }
         }
     }
@@ -356,7 +470,7 @@ fn ServersPane(on_switch: EventHandler<SessionMode>) -> Element {
 /// whether this app works without a server. It does, and this is where that
 /// gets stated.
 #[component]
-pub fn HomeWelcome(on_open_connect: EventHandler<()>) -> Element {
+pub fn HomeWelcome() -> Element {
     let mut state = use_app_state();
     let snapshot = state.read();
     let offline = snapshot.status == ConnectionStatus::Offline;
@@ -395,16 +509,69 @@ pub fn HomeWelcome(on_open_connect: EventHandler<()>) -> Element {
                         div { class: "flex items-center justify-center gap-2",
                             button {
                                 class: "dxf-cta px-4 py-2 rounded text-sm",
-                                onclick: move |_| state.write().home_view = HomeView::Servers,
+                                onclick: move |_| {
+                                    let mut s = state.write();
+                                    s.home_view = HomeView::Servers;
+                                    s.home_open_host = false;
+                                },
                                 "Find a server"
                             }
                             button {
                                 class: "px-4 py-2 rounded text-sm border border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors",
-                                onclick: move |_| on_open_connect.call(()),
+                                onclick: move |_| {
+                                    let mut s = state.write();
+                                    s.home_view = HomeView::Servers;
+                                    s.home_open_host = true;
+                                },
                                 "Host my own"
                             }
                         }
                     }
+                }
+            }
+        }
+    }
+}
+
+/// Who you are, at the foot of home's column.
+///
+/// It was the first thing on the connect screen, which is where somebody
+/// looked for it exactly once. Your key is the account here, so it belongs
+/// where you can see it every day rather than on a screen you passed through.
+#[component]
+pub fn IdentityFooter() -> Element {
+    let identity = use_context::<crate::identity::Identity>();
+    let actions = use_context::<IdentityActions>();
+    let mut open = use_signal(|| false);
+
+    rsx! {
+        div { class: "shrink-0 border-t border-[var(--border)] px-2 py-2",
+            if open() {
+                div { class: "mb-2",
+                    crate::features::connect::IdentityCard {
+                        identity: identity.clone(),
+                        on_rename: actions.on_rename,
+                        on_sign_out: actions.on_sign_out,
+                    }
+                }
+            }
+            button {
+                class: "w-full flex items-center gap-2 px-1 py-1 rounded text-left hover:bg-white/[0.03] transition-colors",
+                onclick: move |_| open.set(!open()),
+                crate::features::profiles::Avatar {
+                    pubkey: identity.pubkey.clone(),
+                    name: identity.display_name.clone(),
+                    size: "w-7 h-7",
+                    text: "text-[10px]",
+                }
+                span { class: "flex-1 min-w-0",
+                    span { class: "block truncate text-sm text-[var(--text)]", "{identity.display_name}" }
+                    span { class: "block truncate font-mono text-[9px] text-[var(--text-dim)]",
+                        "{identity.npub()}"
+                    }
+                }
+                span { class: "shrink-0 text-[10px] text-[var(--text-dim)]",
+                    if open() { "\u{25b4}" } else { "\u{25be}" }
                 }
             }
         }

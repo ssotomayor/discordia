@@ -70,9 +70,14 @@ pub fn WorkspaceView(
     identity: Identity,
     on_disconnect: EventHandler<String>,
     on_switch: EventHandler<SessionMode>,
-    /// Open the connect screen for the things home cannot do itself — hosting
-    /// a server, dialling a raw address, managing the identity.
-    on_open_connect: EventHandler<()>,
+    /// Why the last session ended, when it ended badly. The connect screen
+    /// used to be where this landed; without it, a dropped connection would
+    /// otherwise return you to home with no account of itself.
+    notice: Option<String>,
+    /// Identity edits, owned by `App` because the identity outlives any
+    /// session, and rendered by home's column footer.
+    on_rename: EventHandler<String>,
+    on_sign_out: EventHandler<()>,
 ) -> Element {
     let state = use_signal(AppState::empty);
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
@@ -115,9 +120,13 @@ pub fn WorkspaceView(
         // gated on `status` rather than left to discover it. Nothing here
         // routes a message to a server that was never dialled.
         let gateway_tx = match params.clone() {
-            Some(p) => spawn_gateway(p, state, voice_tx.clone(), move |reason| {
-                on_disconnect.call(reason);
-            }),
+            Some(p) => {
+                let mut app = state;
+                app.write().server_label = Some(p.mode.label());
+                spawn_gateway(p, state, voice_tx.clone(), move |reason| {
+                    on_disconnect.call(reason);
+                })
+            }
             None => {
                 let mut app = state;
                 let mut w = app.write();
@@ -145,6 +154,10 @@ pub fn WorkspaceView(
         };
         let nostr_tx = crate::nostr::service::spawn_nostr(identity.clone(), relays, state);
         (gateway_tx, voice_tx, nostr_tx)
+    });
+    provide_context(crate::features::home::IdentityActions {
+        on_rename,
+        on_sign_out,
     });
     provide_context(gateway_tx.clone());
     provide_context(nostr_tx.clone());
@@ -289,15 +302,9 @@ pub fn WorkspaceView(
                 EncryptionBadge {}
                 div { class: "dxf-no-drag shrink-0 flex items-center gap-2",
                     onmousedown: move |e| e.stop_propagation(),
-                    button {
-                        class: "h-8 px-3 flex items-center rounded-md border border-[var(--border)] text-[10px] uppercase tracking-wider text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors",
-                        title: "Host a server, connect by address, or manage your identity",
-                        onclick: move |_| on_open_connect.call(()),
-                        "Connection"
-                    }
                     // Only where there is something to unplug from. Offline is
-                    // where this button used to land you, so offering it there
-                    // would be a control that does nothing.
+                    // where this button lands you, so offering it there would be
+                    // a control that does nothing.
                     if status != ConnectionStatus::Offline {
                         button {
                             class: "w-8 h-8 flex items-center justify-center rounded-md border border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--danger)] hover:border-[var(--danger)] transition-colors",
@@ -305,6 +312,15 @@ pub fn WorkspaceView(
                             onclick: move |_| on_disconnect.call(String::new()),
                             dangerous_inner_html: UNPLUG_ICON_SVG,
                         }
+                    }
+                }
+            }
+
+            if let Some(text) = notice.clone() {
+                div { class: "shrink-0 flex items-start gap-2 px-3 py-2 rounded-lg border border-[var(--danger)] bg-[var(--panel)]",
+                    span { class: "text-[var(--danger)] text-sm leading-none mt-0.5", "!" }
+                    span { class: "flex-1 min-w-0 text-xs text-[var(--text)]",
+                        "The connection ended: {text}"
                     }
                 }
             }
@@ -344,7 +360,7 @@ pub fn WorkspaceView(
                             } else if matches!(home_pane, Some(HomeView::Communities) | Some(HomeView::Servers)) {
                                 crate::features::home::HomePane { on_switch }
                             } else if home_empty {
-                                crate::features::home::HomeWelcome { on_open_connect }
+                                crate::features::home::HomeWelcome {}
                             } else {
                                 ChatView {}
                             }
