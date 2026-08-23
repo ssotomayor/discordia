@@ -212,7 +212,10 @@ fn CommunitiesPane() -> Element {
                 }
             } else {
                 div { class: LABEL, "You haven't joined" }
-                div { class: "space-y-2",
+                // Two across, as the comps lay them out: a community is chosen
+                // by comparing a few, and a single column makes comparing them
+                // a scroll.
+                div { class: "grid grid-cols-1 md:grid-cols-2 gap-2",
                     for g in joinable.iter().cloned() {
                         {
                             let gid = g.id;
@@ -232,7 +235,7 @@ fn CommunitiesPane() -> Element {
                                         }
                                     }
                                     button {
-                                        class: "px-3 py-1 rounded text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors",
+                                        class: "shrink-0 px-3 py-1 rounded text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors",
                                         onclick: move |_| gw.send(ClientMessage::JoinGuild {
                                             guild_id: gid,
                                             accept: false,
@@ -399,6 +402,15 @@ fn ServersPane(on_switch: EventHandler<SessionMode>) -> Element {
 
             crate::features::discover::ServerDirectory {
                 on_pick: move |entry: DiscoverEntry| code.set(entry.shortcode),
+                on_enter: {
+                    let rz = rendezvous.clone();
+                    move |entry: DiscoverEntry| {
+                        on_switch.call(SessionMode::ByCode {
+                            rendezvous_url: rz.clone(),
+                            code: entry.shortcode,
+                        })
+                    }
+                },
                 picked_shortcode: code(),
                 rendezvous_url: rendezvous.clone(),
                 list_height: "max-h-72".to_string(),
@@ -576,6 +588,187 @@ pub fn IdentityFooter() -> Element {
             }
         }
     }
+}
+
+/// Home's third column: the people, rather than a guild's roster.
+///
+/// The comps group this into online and offline. Only half of that is
+/// knowable: `online` is a fact the *gateway* reports about members of guilds
+/// you share, and a Nostr contact you share no guild with has no status at
+/// all — there is no presence on a relay. So the groups here are what can be
+/// said truthfully: people the server says are online, everyone you have a
+/// conversation with, and the rest of your contact list. Nobody is drawn as
+/// offline on the strength of not being known.
+#[component]
+pub fn PeoplePanel() -> Element {
+    let mut state = use_app_state();
+    let nostr = use_context::<crate::nostr::service::NostrTx>();
+
+    let snapshot = state.read();
+    let self_pk = snapshot
+        .self_user
+        .as_ref()
+        .map(|u| u.pubkey.clone())
+        .unwrap_or_default();
+
+    // Anyone the gateway currently reports as online, across every guild we
+    // are in — deduplicated, because sharing three guilds is not three people.
+    let mut online: Vec<(String, String)> = Vec::new();
+    for m in snapshot.members.iter() {
+        if m.online
+            && m.user.pubkey != self_pk
+            && !online.iter().any(|(pk, _)| *pk == m.user.pubkey)
+        {
+            online.push((m.user.pubkey.clone(), m.user.username.clone()));
+        }
+    }
+    online.sort_by_key(|(_, name)| name.to_lowercase());
+
+    // Conversations, most recent first — the same order the column uses.
+    let talking: Vec<(String, String, crate::protocol::Id)> = snapshot
+        .dms_by_recency()
+        .into_iter()
+        .map(|d| (d.other.pubkey, d.other.username, d.channel_id))
+        .collect();
+
+    // Contacts with no conversation yet: the only group here you can act on
+    // in a way you could not already.
+    let contacts: Vec<(String, String)> = snapshot
+        .contacts
+        .contacts
+        .iter()
+        .filter(|c| c.pubkey != self_pk)
+        .filter(|c| !talking.iter().any(|(pk, _, _)| *pk == c.pubkey))
+        .map(|c| {
+            let name = c
+                .petname
+                .clone()
+                .unwrap_or_else(|| format!("npub…{}", short_key(&c.pubkey)));
+            (c.pubkey.clone(), name)
+        })
+        .collect();
+    drop(snapshot);
+
+    rsx! {
+        aside { class: "panel-hover w-full h-full bg-[var(--panel)] border border-[var(--border)] rounded-lg flex flex-col overflow-hidden",
+            div { class: "h-11 px-3 flex items-center border-b border-[var(--border)] shrink-0",
+                h2 { class: "text-sm text-[var(--accent)] font-medium flex-1", "People" }
+            }
+            div { class: "flex-1 overflow-y-auto px-2 py-3 space-y-3",
+                if !online.is_empty() {
+                    div {
+                        div { class: "{LABEL} px-1 pb-1", "Online — {online.len()}" }
+                        for (pk, name) in online.iter().cloned() {
+                            {
+                                let nostr = nostr.clone();
+                                rsx! {
+                                    PersonRow {
+                                        key: "on-{pk}",
+                                        pubkey: pk,
+                                        name,
+                                        dot: true,
+                                        on_pick: move |peer: String| {
+                                            nostr.send(crate::nostr::service::NostrCmd::Open { peer });
+                                        },
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if !talking.is_empty() {
+                    div {
+                        div { class: "{LABEL} px-1 pb-1", "Conversations — {talking.len()}" }
+                        for (pk, name, cid) in talking.iter().cloned() {
+                            PersonRow {
+                                key: "dm-{pk}",
+                                pubkey: pk,
+                                name,
+                                dot: false,
+                                on_pick: move |_: String| {
+                                    let mut s = state.write();
+                                    s.dm_mode = true;
+                                    s.home_view = HomeView::Dms;
+                                    s.selected_channel = Some(cid);
+                                    s.dm_unread.remove(&cid);
+                                },
+                            }
+                        }
+                    }
+                }
+
+                if !contacts.is_empty() {
+                    div {
+                        div { class: "{LABEL} px-1 pb-1", "Contacts — {contacts.len()}" }
+                        for (pk, name) in contacts.iter().cloned() {
+                            {
+                                let nostr = nostr.clone();
+                                rsx! {
+                                    PersonRow {
+                                        key: "ct-{pk}",
+                                        pubkey: pk,
+                                        name,
+                                        dot: false,
+                                        on_pick: move |peer: String| {
+                                            nostr.send(crate::nostr::service::NostrCmd::Open { peer });
+                                        },
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if online.is_empty() && talking.is_empty() && contacts.is_empty() {
+                    div { class: "px-2 text-xs text-[var(--text-dim)] leading-relaxed",
+                        "Nobody here yet. Paste an npub in the column to start a conversation —
+                         it needs no server and no invitation."
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn PersonRow(
+    pubkey: String,
+    name: String,
+    /// Only ever set from a gateway-reported `online`, never inferred.
+    dot: bool,
+    on_pick: EventHandler<String>,
+) -> Element {
+    let pk = pubkey.clone();
+    rsx! {
+        button {
+            class: "w-full flex items-center gap-2 px-2 py-1.5 rounded text-left hover:bg-white/[0.03] transition-colors",
+            onclick: move |_| on_pick.call(pk.clone()),
+            span { class: "relative shrink-0",
+                crate::features::profiles::Avatar {
+                    pubkey: pubkey.clone(),
+                    name: name.clone(),
+                    size: "w-7 h-7",
+                    text: "text-[10px]",
+                }
+                if dot {
+                    span {
+                        class: "absolute -right-0.5 -bottom-0.5 w-2.5 h-2.5 rounded-full border-2 border-[var(--panel)]",
+                        style: "background: var(--up);",
+                        title: "Online — the server you're on says so",
+                    }
+                }
+            }
+            span { class: "flex-1 min-w-0 truncate text-sm text-[var(--text-muted)]", "{name}" }
+        }
+    }
+}
+
+/// Last six characters of a key, which is what distinguishes two people whose
+/// keys share a prefix in a list.
+fn short_key(pubkey: &str) -> String {
+    let n = pubkey.len().saturating_sub(6);
+    pubkey[n..].to_string()
 }
 
 /// The strip that keeps the other level visible while you're reading a DM.

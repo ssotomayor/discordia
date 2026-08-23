@@ -374,7 +374,13 @@ pub fn WorkspaceView(
                         }
                     }
                     GridItem { id: "members", x: 10, y: 0, w: 2, h: GRID_ROWS, min_w: 2, min_h: 10,
-                        MembersPanel {}
+                        // A guild roster is a guild's answer, and home is not
+                        // in one — the panel was simply empty there.
+                        if home_pane.is_some() {
+                            crate::features::home::PeoplePanel {}
+                        } else {
+                            MembersPanel {}
+                        }
                     }
                 }
             }

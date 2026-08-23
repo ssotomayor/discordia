@@ -315,8 +315,10 @@ pub fn ChannelsColumn() -> Element {
             NoDrag {
             if dm_mode {
                 div { class: "flex-1 overflow-y-auto px-2 py-3 space-y-1",
-                    crate::features::home::HomeNav {}
+                    // Above the doors, as the comps place it: it searches
+                    // people, and people are what the column is mostly made of.
                     StartDmByKey { input: filter }
+                    crate::features::home::HomeNav {}
                     div { class: "flex items-baseline gap-2 px-2 pt-1 pb-0.5",
                         span { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-dim)]",
                             "Direct messages"
