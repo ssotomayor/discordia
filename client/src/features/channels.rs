@@ -217,6 +217,7 @@ pub fn ChannelsColumn() -> Element {
         })
         .collect();
     let dm_unread_total = snapshot.dm_unread_total();
+    let snapshot_offline = snapshot.status == crate::state::ConnectionStatus::Offline;
     let selected_guild = snapshot.selected_guild;
     let selected_channel = snapshot.selected_channel;
     let guild =
@@ -271,6 +272,13 @@ pub fn ChannelsColumn() -> Element {
     // grip.
     let mut dragging = use_signal::<Option<Id>>(|| None);
 
+    // What the column holds differs by state, and so does what searching it can
+    // reach: outside a server there is no catalog to match against.
+    let search_placeholder = if snapshot_offline {
+        "Search people, servers, npub\u{2026}".to_string()
+    } else {
+        "Search people, communities, npub\u{2026}".to_string()
+    };
     // Home's title names the panel; the accent is reserved for the guild you
     // are actually inside, so it does not read as a selection here.
     let home_title_cls = if dm_mode {
@@ -328,7 +336,7 @@ pub fn ChannelsColumn() -> Element {
                 div { class: "flex-1 overflow-y-auto px-2 py-3 space-y-1",
                     // Above the doors, as the comps place it: it searches
                     // people, and people are what the column is mostly made of.
-                    StartDmByKey { input: filter }
+                    StartDmByKey { input: filter, placeholder: search_placeholder }
                     crate::features::home::HomeNav {}
                     div { class: "px-2 pt-1 pb-0.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-dim)]",
                         if dm_unread_total > 0 {
@@ -2341,7 +2349,7 @@ mod tests {
 /// menu: reaching somebody by key is the whole difference between messages that
 /// belong to a server and messages that belong to you.
 #[component]
-fn StartDmByKey(input: Signal<String>) -> Element {
+fn StartDmByKey(input: Signal<String>, placeholder: String) -> Element {
     let nostr = use_context::<crate::nostr::service::NostrTx>();
     let mut input = input;
     let mut error = use_signal(|| Option::<String>::None);
@@ -2374,7 +2382,7 @@ fn StartDmByKey(input: Signal<String>) -> Element {
             input {
                 class: "w-full bg-[var(--bg2)] border border-[var(--border)] rounded px-2 py-1 text-xs outline-none focus:border-[var(--accent)]",
                 r#type: "text",
-                placeholder: "Search people, servers, npub\u{2026}",
+                placeholder: "{placeholder}",
                 value: "{input}",
                 oninput: move |e| { input.set(e.value()); error.set(None); },
                 onkeydown: move |e| {

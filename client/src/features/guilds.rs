@@ -4,9 +4,6 @@ use dioxus_grid_layout::NoDrag;
 use crate::protocol::{ClientMessage, GuildSummary, Id, Permission};
 use crate::state::{ConnectionStatus, HomeView, use_app_state, use_gateway};
 
-const HEADER: &str =
-    "h-11 px-2 flex items-center justify-center border-b border-[var(--border)] shrink-0";
-
 /// Right-click menu anchored over a guild the current user can manage (or at
 /// least leave).
 #[derive(Clone, PartialEq)]
@@ -54,11 +51,11 @@ pub fn GuildsSidebar() -> Element {
 
     rsx! {
         nav { class: "panel-hover w-full h-full bg-[var(--panel)] border border-[var(--border)] rounded-lg flex flex-col overflow-hidden",
-            div { class: HEADER,
-                span { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]",
-                    "Guilds"
-                }
-            }
+            // No heading. The first thing in this rail is home, which is not
+            // a guild, and calling the strip "Guilds" filed it under something
+            // it is not — the comps label nothing here and let the icons say
+            // what they are.
+            div { class: "h-2 shrink-0" }
 
             NoDrag {
             div { class: "flex-1 overflow-y-auto flex flex-col items-center py-3 gap-2",
@@ -389,10 +386,12 @@ fn DmHomeButton(active: bool, count: usize, onclick: EventHandler<()>) -> Elemen
     };
     rsx! {
         button {
-            class: "relative w-10 h-10 rounded-md border flex items-center justify-center text-xs font-semibold tracking-wide transition-colors {cls}",
-            title: "Direct messages",
+            class: "relative w-10 h-10 rounded-xl border flex items-center justify-center text-base transition-colors {cls}",
+            // It stopped being only the DM button when the two explore doors
+            // moved into home; "DM" understated where it goes.
+            title: "Home \u{2014} conversations, servers and communities",
             onclick: move |_| onclick.call(()),
-            "DM"
+            "\u{25c6}"
             if count > 0 {
                 span { class: "dxf-pop absolute -top-1 -right-1 min-w-4 h-4 px-1 rounded-full bg-[var(--accent)] text-[var(--bg)] text-[9px] font-bold flex items-center justify-center",
                     "{count}"

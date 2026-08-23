@@ -128,24 +128,69 @@ pub fn HomeNav() -> Element {
             onclick: move |_| open_communities(),
             span { class: GLYPH, "◎" }
             span { class: "flex-1 min-w-0",
-                span { class: "block text-sm truncate", "Browse communities" }
+                span { class: "block text-sm truncate", "Discover communities" }
                 span { class: "block text-[10px] text-[var(--text-dim)]",
                     if joinable == 1 { "1 you haven't joined" } else { "{joinable} you haven't joined" }
                 }
             }
         }
     };
+    // Two shapes, because the comps give the two states different rows rather
+    // than the same rows relabelled. Inside a server the code door folds into
+    // "Another server": arriving somewhere new is one intention there, not the
+    // whole screen.
     let servers = rsx! {
         button {
             class: "{cls_servers}",
             onclick: move |_| open_servers(),
-            span { class: GLYPH, "⇥" }
+            span { class: GLYPH, "⌘" }
             span { class: "flex-1 min-w-0",
                 span { class: "block text-sm truncate",
                     if communities_first { "Another server" } else { "Discover servers" }
                 }
                 span { class: "block text-[10px] text-[var(--text-dim)]",
-                    if offline { "you're not on one yet" } else { "directory · code · host your own" }
+                    if communities_first {
+                        "directory · code · host your own"
+                    } else if offline {
+                        "you're not on one yet"
+                    } else {
+                        "the public directory"
+                    }
+                }
+            }
+        }
+    };
+    let code = rsx! {
+        button {
+            class: "{cls_code}",
+            onclick: move |_| open_code(),
+            span { class: GLYPH, style: "color: var(--up);", "⇥" }
+            span { class: "flex-1 min-w-0",
+                span { class: "block text-sm truncate", "Enter with a code" }
+                span { class: "block text-[10px] text-[var(--text-dim)]",
+                    "or an address · or host your own"
+                }
+            }
+        }
+    };
+    let people = rsx! {
+        button {
+            class: "{cls_people}",
+            onclick: move |_| {
+                let mut s = state.write();
+                s.dm_mode = true;
+                s.home_view = HomeView::People;
+            },
+            span { class: GLYPH, style: "color: var(--violet);", "☺" }
+            span { class: "flex-1 min-w-0",
+                span { class: "block text-sm truncate", "Friends" }
+                span { class: "block text-[10px] text-[var(--text-dim)]",
+                    if online_count == 1 { "1 online" } else { "{online_count} online" }
+                }
+            }
+            if contact_count > 0 {
+                span { class: "shrink-0 min-w-4 h-4 px-1 rounded-full border border-[var(--border)] text-[9px] font-mono text-[var(--text-dim)] flex items-center justify-center",
+                    "{contact_count}"
                 }
             }
         }
@@ -166,48 +211,16 @@ pub fn HomeNav() -> Element {
                     span { class: "shrink-0 text-[var(--text-dim)] text-[10px]", "\u{25be}" }
                 }
             }
-            if offline {
-                {servers}
-            } else if communities_first {
+            // State A: discover servers, enter with a code, friends.
+            // State B: discover communities, friends, another server.
+            if communities_first {
                 {communities}
+                {people}
                 {servers}
             } else {
                 {servers}
-                {communities}
-            }
-            // Its own row because it is its own intention: somebody handed you
-            // a code, and you are not browsing. It lands on the same pane,
-            // which is where the field is.
-            button {
-                class: "{cls_code}",
-                onclick: move |_| open_code(),
-                span { class: GLYPH, style: "color: var(--up);", "⇥" }
-                span { class: "flex-1 min-w-0",
-                    span { class: "block text-sm truncate", "Enter with a code" }
-                    span { class: "block text-[10px] text-[var(--text-dim)]",
-                        "or an address · or host your own"
-                    }
-                }
-            }
-            button {
-                class: "{cls_people}",
-                onclick: move |_| {
-                    let mut s = state.write();
-                    s.dm_mode = true;
-                    s.home_view = HomeView::People;
-                },
-                span { class: GLYPH, style: "color: var(--violet);", "☺" }
-                span { class: "flex-1 min-w-0",
-                    span { class: "block text-sm truncate", "Friends" }
-                    span { class: "block text-[10px] text-[var(--text-dim)]",
-                        if online_count == 1 { "1 online" } else { "{online_count} online" }
-                    }
-                }
-                if contact_count > 0 {
-                    span { class: "shrink-0 min-w-4 h-4 px-1 rounded-full border border-[var(--border)] text-[9px] font-mono text-[var(--text-dim)] flex items-center justify-center",
-                        "{contact_count}"
-                    }
-                }
+                {code}
+                {people}
             }
         }
     }
@@ -423,16 +436,26 @@ fn ServersPane(on_switch: EventHandler<SessionMode>) -> Element {
         div { class: "flex-1 overflow-y-auto p-4 space-y-3",
             div { class: "flex items-center gap-2 flex-wrap",
                 h2 { class: "dxf-display text-[15px] font-semibold text-[var(--text)]",
-                    "Discover servers"
+                    if by_code { "Enter with a code" } else { "Discover servers" }
                 }
-                span { class: "px-2 py-0.5 rounded-full border border-[var(--border)] font-mono text-[10px] text-[var(--text-dim)]",
-                    "{rendezvous}"
+                if !by_code {
+                    span { class: "px-2 py-0.5 rounded-full border border-[var(--border)] font-mono text-[10px] text-[var(--text-dim)]",
+                        "{rendezvous}"
+                    }
                 }
                 span { class: "flex-1" }
-                button {
-                    class: "px-3 py-1.5 rounded-lg border border-[var(--border)] text-xs text-[var(--text-muted)] hover:text-[var(--text)] hover:border-[var(--border-strong)] transition-colors",
-                    onclick: move |_| show_picker.set(!show_picker()),
-                    "Change directory"
+                if by_code {
+                    button {
+                        class: "px-3 py-1.5 rounded-lg border border-[var(--border)] text-xs text-[var(--text-muted)] hover:text-[var(--text)] hover:border-[var(--border-strong)] transition-colors",
+                        onclick: move |_| state.write().home_by_code = false,
+                        "Browse the directory"
+                    }
+                } else {
+                    button {
+                        class: "px-3 py-1.5 rounded-lg border border-[var(--border)] text-xs text-[var(--text-muted)] hover:text-[var(--text)] hover:border-[var(--border-strong)] transition-colors",
+                        onclick: move |_| show_picker.set(!show_picker()),
+                        "Change directory"
+                    }
                 }
                 button {
                     class: "dxf-cta px-3 py-1.5 rounded-lg text-xs",
@@ -442,7 +465,11 @@ fn ServersPane(on_switch: EventHandler<SessionMode>) -> Element {
             }
 
             div { class: "text-xs text-[var(--text-muted)] leading-relaxed",
-                if offline {
+                if by_code {
+                    "You already know where you are going. A code is looked up on the directory,
+                     which then steps aside \u{2014} the connection goes straight to the host whenever
+                     it published an address."
+                } else if offline {
                     "Each server is a machine somebody runs \u{2014} it gives you communities, channels
                      and voice. Your direct messages need none of it and are already working."
                 } else {
@@ -469,8 +496,11 @@ fn ServersPane(on_switch: EventHandler<SessionMode>) -> Element {
                 crate::features::connect::HostForm { on_go: move |mode| on_switch.call(mode) }
             }
 
-            // Offered above the directory, because coming back to where you
-            // were is the commonest reason to be looking at this pane at all.
+            // The directory is the whole of the other door. Somebody who came
+            // here with a code in hand does not need fourteen alternatives to
+            // it — showing them anyway is what made these two rows feel like
+            // one button with two labels.
+            if !by_code {
             if offline {
                 if let Some(saved) = last_session.clone() {
                     {
@@ -507,10 +537,11 @@ fn ServersPane(on_switch: EventHandler<SessionMode>) -> Element {
                 rendezvous_url: rendezvous.clone(),
                 list_height: "max-h-80".to_string(),
             }
+            }
 
             // The two ways in that owe the directory nothing, side by side as
             // the comps draw them: a code somebody handed you, and being the
-            // server yourself.
+            // server yourself. Behind the code door they are the pane.
             div { class: "grid grid-cols-1 md:grid-cols-[1.6fr_1fr] gap-2",
                 form {
                     class: "flex items-center gap-2 px-3 py-2.5 rounded-lg border border-[var(--border-strong)]",
@@ -609,7 +640,7 @@ pub fn HomeWelcome() -> Element {
                                     s.home_view = HomeView::Servers;
                                     s.home_open_host = false;
                                 },
-                                "Find a server"
+                                "Discover servers"
                             }
                             button {
                                 class: "px-4 py-2 rounded text-sm border border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors",
@@ -880,9 +911,12 @@ pub fn ExploreStrip() -> Element {
     let gw_fetch = gateway.clone();
 
     rsx! {
-        div { class: "shrink-0 border-t border-[var(--border)] bg-[var(--panel)] px-3 py-2 flex items-center gap-2 overflow-x-auto",
-            span { class: "{LABEL} shrink-0",
-                if communities_first { "Communities" } else { "Servers" }
+        // `pr-28` keeps the right-hand buttons clear of the workspace's fixed
+        // bottom-right controls, which float above this strip and were sitting
+        // on top of them.
+        div { class: "shrink-0 border-t border-[var(--border)] bg-[var(--panel)] pl-3 pr-28 py-2 flex items-center gap-2 overflow-x-auto",
+            if communities_first {
+                span { class: "{LABEL} shrink-0", "Communities" }
             }
             if communities_first {
                 for g in shown.iter().cloned() {
@@ -941,8 +975,12 @@ pub fn ExploreStrip() -> Element {
             }
             button {
                 class: "shrink-0 text-[10px] uppercase tracking-wider text-[var(--text-muted)] border border-[var(--border)] rounded px-2.5 py-1 hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors",
-                onclick: move |_| state.write().home_view = HomeView::Servers,
-                "Servers"
+                onclick: move |_| {
+                    let mut s = state.write();
+                    s.home_view = HomeView::Servers;
+                    s.home_by_code = false;
+                },
+                if communities_first { "Servers" } else { "Discover servers" }
             }
         }
     }
