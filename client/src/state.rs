@@ -381,6 +381,11 @@ pub struct AppState {
     /// Which of home's panes fills the main area. Only meaningful while
     /// `dm_mode` is on — a guild is always its own channel view.
     pub home_view: HomeView,
+    /// Which door was used to reach home's servers pane. Both land there, so
+    /// without this they would be two rows performing one action — and the
+    /// highlight would sit on the wrong one, because the pane is all either of
+    /// them selects.
+    pub home_by_code: bool,
     /// Whether home's servers pane should arrive with the hosting form already
     /// unfolded. Set by the buttons that promise hosting specifically, so the
     /// label is true: landing on the pane with the form still shut leaves the
@@ -685,6 +690,7 @@ impl AppState {
             nostr_relays_up: std::collections::HashSet::new(),
             dm_mode: false,
             home_view: HomeView::Dms,
+            home_by_code: false,
             home_open_host: false,
             server_label: None,
             catalog: Vec::new(),

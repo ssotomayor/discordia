@@ -373,12 +373,12 @@ pub fn WorkspaceView(
                             }
                         }
                     }
-                    GridItem { id: "members", x: 10, y: 0, w: 2, h: GRID_ROWS, min_w: 2, min_h: 10,
-                        // A guild roster is a guild's answer, and home is not
-                        // in one — the panel was simply empty there.
-                        if home_pane.is_some() {
-                            crate::features::home::PeoplePanel {}
-                        } else {
+                    // A roster is a guild's answer, and home is not in one. The
+                    // panel is absent there rather than empty or repurposed:
+                    // home reaches people through its own column, and the
+                    // Friends row opens them in the main pane.
+                    if home_pane.is_none() {
+                        GridItem { id: "members", x: 10, y: 0, w: 2, h: GRID_ROWS, min_w: 2, min_h: 10,
                             MembersPanel {}
                         }
                     }

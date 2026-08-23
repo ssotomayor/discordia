@@ -76,6 +76,7 @@ pub fn HomeNav() -> Element {
     }
     let online_count = seen.len();
     let contact_count = snapshot.contacts.contacts.len();
+    let by_code = snapshot.home_by_code;
     drop(snapshot);
 
     // Offline there is no host, so there is no catalog to browse and the row
@@ -95,16 +96,30 @@ pub fn HomeNav() -> Element {
         s.dm_mode = true;
         s.home_view = HomeView::Communities;
     };
+    // Two arrivals at one pane, each leaving it in a different state: browsing
+    // the directory, or with the cursor already in the code field. Without the
+    // distinction these are two labels for one action.
     let mut open_servers = move || {
         let mut s = state.write();
         s.dm_mode = true;
         s.home_view = HomeView::Servers;
+        s.home_by_code = false;
+        s.home_open_host = false;
+    };
+    let mut open_code = move || {
+        let mut s = state.write();
+        s.dm_mode = true;
+        s.home_view = HomeView::Servers;
+        s.home_by_code = true;
+        s.home_open_host = false;
     };
 
     let cls = |on: bool| format!("{ROW} {}", if on { ROW_ON } else { ROW_IDLE });
     let cls_communities = cls(view == HomeView::Communities);
-    let cls_servers = cls(view == HomeView::Servers);
-    let cls_code = cls(false);
+    // Both rows point at the same pane, so which of them is lit is the door
+    // that was used, not the destination.
+    let cls_servers = cls(view == HomeView::Servers && !by_code);
+    let cls_code = cls(view == HomeView::Servers && by_code);
     let cls_people = cls(view == HomeView::People);
 
     let communities = rsx! {
@@ -127,7 +142,7 @@ pub fn HomeNav() -> Element {
             span { class: GLYPH, "⇥" }
             span { class: "flex-1 min-w-0",
                 span { class: "block text-sm truncate",
-                    if communities_first { "Another server" } else { "Find a server" }
+                    if communities_first { "Another server" } else { "Discover servers" }
                 }
                 span { class: "block text-[10px] text-[var(--text-dim)]",
                     if offline { "you're not on one yet" } else { "directory · code · host your own" }
@@ -165,7 +180,7 @@ pub fn HomeNav() -> Element {
             // which is where the field is.
             button {
                 class: "{cls_code}",
-                onclick: move |_| open_servers(),
+                onclick: move |_| open_code(),
                 span { class: GLYPH, style: "color: var(--up);", "⇥" }
                 span { class: "flex-1 min-w-0",
                     span { class: "block text-sm truncate", "Enter with a code" }
@@ -207,7 +222,7 @@ pub fn HomePane(on_switch: EventHandler<SessionMode>) -> Element {
         match view {
             HomeView::Communities => rsx! { CommunitiesPane {} },
             HomeView::Servers => rsx! { ServersPane { on_switch } },
-            HomeView::People => rsx! { PeoplePanel {} },
+            HomeView::People => rsx! { PeoplePane {} },
             HomeView::Dms => rsx! { Fragment {} },
         }
     }
@@ -369,8 +384,22 @@ fn ServersPane(on_switch: EventHandler<SessionMode>) -> Element {
     let snapshot = state.read();
     let offline = snapshot.status == ConnectionStatus::Offline;
     let open_host = snapshot.home_open_host;
+    let by_code = snapshot.home_by_code;
     drop(snapshot);
     let mut code = use_signal(String::new);
+    // Held so the effect below can focus the field on a later press too, not
+    // only when the pane happens to be mounting for the first time.
+    let mut code_el = use_signal(|| None::<Event<MountedData>>);
+    use_effect(move || {
+        if !by_code {
+            return;
+        }
+        if let Some(el) = code_el() {
+            spawn(async move {
+                let _ = el.set_focus(true).await;
+            });
+        }
+    });
     let mut show_picker = use_signal(|| false);
     // Read once: it is a file, and it cannot change while this pane is open.
     let last_session = use_hook(|| crate::session::load().ok().flatten());
@@ -487,12 +516,15 @@ fn ServersPane(on_switch: EventHandler<SessionMode>) -> Element {
                     class: "flex items-center gap-2 px-3 py-2.5 rounded-lg border border-[var(--border-strong)]",
                     style: "background: var(--accent-soft);",
                     onsubmit: move |_| go(),
-                    span { class: "shrink-0 text-xs text-[var(--text)]", "Were you given a code?" }
+                    span { class: "shrink-0 text-xs text-[var(--text)]",
+                        if by_code { "Paste the code" } else { "Were you given a code?" }
+                    }
                     input {
                         class: "flex-1 min-w-0 bg-[var(--bg)] border border-[var(--border)] focus:border-[var(--accent)] rounded px-2 py-1.5 text-xs font-mono text-[var(--text)] outline-none transition-colors lowercase",
                         placeholder: "purple-fox-42",
                         value: "{code}",
                         oninput: move |e| code.set(e.value()),
+                        onmounted: move |e| code_el.set(Some(e)),
                     }
                     button {
                         r#type: "submit",
@@ -641,7 +673,7 @@ pub fn IdentityFooter() -> Element {
     }
 }
 
-/// Home's third column: the people, rather than a guild's roster.
+/// Everyone you can reach, as the Friends row opens it.
 ///
 /// The comps group this into online and offline. Only half of that is
 /// knowable: `online` is a fact the *gateway* reports about members of guilds
@@ -651,7 +683,7 @@ pub fn IdentityFooter() -> Element {
 /// conversation with, and the rest of your contact list. Nobody is drawn as
 /// offline on the strength of not being known.
 #[component]
-pub fn PeoplePanel() -> Element {
+fn PeoplePane() -> Element {
     let mut state = use_app_state();
     let nostr = use_context::<crate::nostr::service::NostrTx>();
 
@@ -701,11 +733,14 @@ pub fn PeoplePanel() -> Element {
     drop(snapshot);
 
     rsx! {
-        aside { class: "panel-hover w-full h-full bg-[var(--panel)] border border-[var(--border)] rounded-lg flex flex-col overflow-hidden",
-            div { class: "h-11 px-3 flex items-center border-b border-[var(--border)] shrink-0",
-                h2 { class: "text-sm text-[var(--accent)] font-medium flex-1", "People" }
+        div { class: "flex-1 overflow-y-auto p-4 space-y-4",
+            div { class: "flex items-baseline gap-2",
+                h2 { class: "dxf-display text-[15px] font-semibold text-[var(--text)]", "Friends" }
+                span { class: "text-[11px] text-[var(--text-dim)]",
+                    "everyone you can reach, with or without a server"
+                }
             }
-            div { class: "flex-1 overflow-y-auto px-2 py-3 space-y-3",
+            div { class: "space-y-3",
                 if !online.is_empty() {
                     div {
                         div { class: "{LABEL} px-1 pb-1", "Online — {online.len()}" }
@@ -772,7 +807,7 @@ pub fn PeoplePanel() -> Element {
                 }
 
                 if online.is_empty() && talking.is_empty() && contacts.is_empty() {
-                    div { class: "px-2 text-xs text-[var(--text-dim)] leading-relaxed",
+                    div { class: "border border-dashed border-[var(--border)] rounded-lg px-4 py-6 text-center text-xs text-[var(--text-dim)] leading-relaxed",
                         "Nobody here yet. Paste an npub in the column to start a conversation —
                          it needs no server and no invitation."
                     }
