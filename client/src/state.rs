@@ -508,6 +508,22 @@ impl AppState {
         self.dms.iter().find(|d| d.channel_id == channel_id)
     }
 
+    pub fn dm_last_message(&self, channel_id: Id) -> Option<&Message> {
+        self.messages.get(&channel_id).and_then(|m| m.last())
+    }
+
+    /// Empty conversations sort last: one just opened by pasting a key has no
+    /// activity to be recent about.
+    pub fn dms_by_recency(&self) -> Vec<DmInfo> {
+        let mut v = self.dms.clone();
+        v.sort_by(|a, b| {
+            let at = self.dm_last_message(a.channel_id).map(|m| m.created_at);
+            let bt = self.dm_last_message(b.channel_id).map(|m| m.created_at);
+            bt.cmp(&at)
+        });
+        v
+    }
+
     pub fn dm_unread_total(&self) -> u32 {
         self.dm_unread.values().copied().sum()
     }

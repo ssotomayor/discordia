@@ -1,7 +1,7 @@
 use dioxus::prelude::*;
 
 use crate::features::{
-    connect::ConnectView, identity_setup::IdentitySetupView, workspace::WorkspaceView,
+    home::HomeView, identity_setup::IdentitySetupView, workspace::WorkspaceView,
 };
 use crate::identity::Identity;
 use crate::session::{self, SavedSession};
@@ -481,7 +481,7 @@ pub fn App() -> Element {
                     }
                 },
                 (Some(id), None) => rsx! {
-                    ConnectView {
+                    HomeView {
                         identity: id,
                         error: error(),
                         last_session: last_session.read().clone(),

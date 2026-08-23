@@ -38,14 +38,14 @@ const INPUT: &str = "w-full bg-transparent border border-[var(--border)] rounded
 const INPUT_SM: &str = "w-full bg-transparent border border-[var(--border)] rounded px-2 py-1 text-xs text-[var(--text)] focus:outline-none focus:border-[var(--accent)] transition-colors";
 const LABEL: &str = "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]";
 
+/// Everything about arriving at a server. A panel now, not a screen: the hero
+/// and the identity card moved to `features::home`, which mounts this.
 #[component]
-pub fn ConnectView(
+pub fn ConnectForm(
     identity: Identity,
     error: Option<String>,
     last_session: Option<SavedSession>,
     on_connect: EventHandler<SessionParams>,
-    on_rename: EventHandler<String>,
-    on_sign_out: EventHandler<()>,
 ) -> Element {
     let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let default_rendezvous = settings.read().active_rendezvous();
@@ -61,6 +61,7 @@ pub fn ConnectView(
     let mut description = use_signal(String::new);
     let mut publish_public = use_signal(|| true);
 
+    let identity_for_rows = identity.clone();
     let identity_for_submit = identity.clone();
     let submit = move |_| {
         let name = identity_for_submit.display_name.clone();
@@ -120,52 +121,13 @@ pub fn ConnectView(
         Mode::Join => join_by(&server_url(), &code(), &rendezvous_url()) == JoinBy::Nothing,
     };
 
-    let mac_top_pad = if cfg!(target_os = "macos") {
-        "pt-7"
-    } else {
-        "pt-0"
-    };
-
     rsx! {
-        div { class: "h-full w-full flex bg-[var(--bg)]",
-            div {
-                class: "dxf-drag-region hidden md:flex w-2/5 min-w-[340px] max-w-[520px] flex-col items-center justify-center px-10 bg-[var(--bg)]",
-                onmousedown: move |_| crate::app::start_window_drag(),
-                div {
-                    class: "w-28 h-28 rounded-3xl flex items-center justify-center mb-8",
-                    style: "background: linear-gradient(160deg, var(--panel2), var(--bg2)); \
-                            border: 1px solid var(--edge); \
-                            box-shadow: 0 0 60px -12px color-mix(in srgb, var(--accent) 45%, transparent);",
-                    crate::app::DiscordiaLogo { class: "w-16 h-16" }
-                }
-                h1 { class: "dxf-display dxf-wordmark text-6xl font-extrabold tracking-tight",
-                    "Discordia"
-                }
-                p { class: "text-[15px] text-[var(--text-muted)] mt-5 text-center max-w-[320px] leading-relaxed",
-                    "Chat you actually own. Self-hosted, cryptographic identity, and a room you rearrange like furniture."
-                }
-                div { class: "flex flex-wrap items-center justify-center gap-2 mt-7",
-                    span { class: "flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-[var(--edge)] text-xs text-[var(--accent)]",
-                        style: "background: var(--accent-soft);", "🔑 Nostr identity"
-                    }
-                    span { class: "flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-[var(--edge)] text-xs",
-                        style: "background: color-mix(in srgb, var(--up) 10%, transparent); color: var(--up);",
-                        "⌂ Self-hosted"
-                    }
-                }
-            }
-
+        div { class: "h-full w-full flex flex-col min-w-0",
             div { class: "flex-1 flex flex-col overflow-hidden min-w-0",
-                div {
-                    class: "dxf-drag-region h-8 shrink-0 {mac_top_pad}",
-                    onmousedown: move |_| crate::app::start_window_drag(),
-                }
                 form {
-                    class: "flex-1 overflow-auto px-8 py-8 flex flex-col items-stretch dxf-no-drag",
+                    class: "flex-1 overflow-auto px-5 py-5 flex flex-col items-stretch dxf-no-drag",
                     onsubmit: submit,
-                    div { class: "w-full max-w-md mx-auto my-auto space-y-5 flex flex-col",
-
-                IdentityCard { identity: identity.clone(), on_rename, on_sign_out }
+                    div { class: "w-full space-y-4 flex flex-col",
 
                 if let Some(saved) = last_session.clone() {
                     {
@@ -201,16 +163,9 @@ pub fn ConnectView(
 
                 div { class: "h-px bg-[var(--border)]" }
 
-                div { class: "space-y-1.5",
-                    RendezvousPicker {
-                        selected: rendezvous_url(),
-                        on_select: move |u: String| rendezvous_url.set(u),
-                    }
-                    div { class: "text-[10px] text-[var(--text-dim)] leading-relaxed",
-                        "Codes are looked up here, the public list comes from here, and a server of your own is published and named here."
-                    }
-                }
-
+                // Labels specify "server" to distinguish from "community"
+                // (which is `CreateGuild` and requires an existing
+                // connection). Bare "Join"/"Create" caused user confusion.
                 div { class: "flex gap-1 text-xs",
                     TabButton { active: mode() == Mode::Join, label: "Join a server", onclick: move |_| mode.set(Mode::Join) }
                     TabButton { active: mode() == Mode::Create, label: "Create a server", onclick: move |_| mode.set(Mode::Create) }
@@ -241,10 +196,37 @@ pub fn ConnectView(
                                 on_pick: move |entry: DiscoverEntry| {
                                     code.set(entry.shortcode);
                                 },
+                                on_enter: move |entry: DiscoverEntry| {
+                                    let params = SessionParams {
+                                        mode: SessionMode::ByCode {
+                                            rendezvous_url: rendezvous_url().trim().to_string(),
+                                            code: entry.shortcode,
+                                        },
+                                        username: identity_for_rows.display_name.clone(),
+                                        identity: identity_for_rows.clone(),
+                                    };
+                                    on_connect.call(params);
+                                },
                                 picked_shortcode: code(),
                                 rendezvous_url: rendezvous_url(),
                             }
 
+                            // One address serves the codes, the list and publishing
+                            // your own, so it belongs under the rows it produced.
+                            div { class: "space-y-1.5",
+                                RendezvousPicker {
+                                    selected: rendezvous_url(),
+                                    on_select: move |u: String| rendezvous_url.set(u),
+                                }
+                                div { class: "text-[10px] text-[var(--text-dim)] leading-relaxed",
+                                    "Codes are looked up here, the public list comes from here, and a server of your own is published and named here."
+                                }
+                            }
+
+                            // Folded because gateway address entry is rare and
+                            // ignores the directory above. Must start empty:
+                            // an open stale default looks filled, while a
+                            // closed one silently dictates connections.
                             details {
                                 summary { class: "cursor-pointer text-[10px] uppercase tracking-wider text-[var(--text-muted)] hover:text-[var(--text)] transition-colors",
                                     "Other ways to connect"
@@ -266,6 +248,16 @@ pub fn ConnectView(
                         }
                     },
                     Mode::Create => rsx! {
+                        div { class: "space-y-3",
+                        div { class: "space-y-1.5",
+                            RendezvousPicker {
+                                selected: rendezvous_url(),
+                                on_select: move |u: String| rendezvous_url.set(u),
+                            }
+                            div { class: "text-[10px] text-[var(--text-dim)] leading-relaxed",
+                                "Your server is published and named here."
+                            }
+                        }
                         div { class: "border border-[var(--border)] rounded p-3 text-xs space-y-3",
                             p { class: "text-[var(--text-muted)]",
                                 "Your machine runs the server and keeps its history. Voice runs here too, unless the rendezvous above supplies its own."
@@ -329,6 +321,7 @@ pub fn ConnectView(
                                 }
                             }
                         }
+                        }
                     },
                 }
                 }
@@ -350,7 +343,7 @@ pub fn ConnectView(
 }
 
 #[component]
-fn RendezvousPicker(selected: String, on_select: EventHandler<String>) -> Element {
+pub fn RendezvousPicker(selected: String, on_select: EventHandler<String>) -> Element {
     let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let mut adding = use_signal(|| false);
     let mut draft = use_signal(String::new);
@@ -457,7 +450,7 @@ fn TabButton(active: bool, label: &'static str, onclick: EventHandler<()>) -> El
 }
 
 #[component]
-fn IdentityCard(
+pub fn IdentityCard(
     identity: Identity,
     on_rename: EventHandler<String>,
     on_sign_out: EventHandler<()>,
@@ -574,10 +567,32 @@ fn IdentityCard(
     }
 }
 
+/// The rendezvous drops a host at 60s, so a listed entry can already be gone;
+/// saying *when* it last answered lets the reader judge that themselves.
+fn freshness(idle_secs: u64) -> (String, bool) {
+    match idle_secs {
+        0..=25 => ("active now".to_string(), true),
+        s if s < HOST_STALE_AFTER_SECS => (format!("active {s}s ago"), true),
+        s if s < 3600 => (format!("quiet {}m", s / 60), false),
+        s => (format!("quiet {}h", s / 3600), false),
+    }
+}
+
+/// Two letters distinguish rows at a glance without inventing an avatar.
+fn initials(name: &str) -> String {
+    name.split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .filter_map(|w| w.chars().next())
+        .take(2)
+        .collect::<String>()
+        .to_uppercase()
+}
+
 #[component]
 fn BrowseTab(
     rendezvous_url: String,
     on_pick: EventHandler<DiscoverEntry>,
+    on_enter: EventHandler<DiscoverEntry>,
     picked_shortcode: String,
 ) -> Element {
     let mut refresh_tick = use_signal(|| 0u32);
@@ -606,27 +621,25 @@ fn BrowseTab(
                     r#type: "button",
                     class: "text-[10px] text-[var(--accent)] hover:text-[var(--accent-strong)] transition-colors",
                     onclick: move |_| refresh_tick.set(refresh_tick() + 1),
-                    "↻ Refresh"
+                    "\u{21bb} Refresh"
                 }
             }
 
-            div { class: "max-h-64 overflow-y-auto border border-[var(--border)] rounded",
+            div { class: "max-h-64 overflow-y-auto space-y-1.5 pr-0.5",
                 match &*entries.read_unchecked() {
                     None => rsx! {
-                        div { class: "text-xs text-[var(--text-dim)] px-3 py-4 text-center", "Loading…" }
+                        div { class: "text-xs text-[var(--text-dim)] px-3 py-4 text-center border border-[var(--border)] rounded", "Loading\u{2026}" }
                     },
                     Some(Err(e)) => rsx! {
-                        div { class: "text-xs px-3 py-4 space-y-1",
-                            div { class: "text-[var(--danger)]",
-                                "Couldn't reach the server directory."
-                            }
+                        div { class: "text-xs px-3 py-4 space-y-1 border border-[var(--border)] rounded",
+                            div { class: "text-[var(--danger)]", "Couldn't reach the server directory." }
                             div { class: "text-[var(--text-dim)]",
                                 "A code from a friend still works, or create your own server. ({e})"
                             }
                         }
                     },
                     Some(Ok(list)) if list.is_empty() => rsx! {
-                        div { class: "text-xs text-[var(--text-dim)] px-3 py-4 text-center",
+                        div { class: "text-xs text-[var(--text-dim)] px-3 py-4 text-center border border-dashed border-[var(--border)] rounded",
                             "Nobody has listed a public server on this directory yet. A code from \
                              a friend works without one, or make your own from the Create tab."
                         }
@@ -636,42 +649,58 @@ fn BrowseTab(
                             {
                                 let sc = entry.shortcode.clone();
                                 let selected = picked_shortcode == sc;
+                                let title = entry.name.clone().unwrap_or_else(|| sc.clone());
+                                let named = entry.name.is_some();
+                                let (fresh_label, fresh_ok) = freshness(entry.idle_secs);
+                                let direct = entry.endpoint.is_some();
+                                // Whether a relay operator sits in the middle is the
+                                // one property worth reading before the name.
+                                let stripe = if direct { "#8fb0ff" } else { "var(--violet, #b98cff)" };
                                 let row_cls = if selected {
-                                    "bg-[var(--accent-soft)] border-l-2 border-[var(--accent)]"
+                                    "border-[var(--accent)] bg-[var(--accent-soft)]"
                                 } else {
-                                    "border-l-2 border-transparent hover:bg-white/[0.02]"
+                                    "border-[var(--border)] hover:border-[var(--border-strong)]"
                                 };
-                                let entry_for_pick = entry.clone();
+                                let mark = initials(&title);
+                                let for_pick = entry.clone();
+                                let for_enter = entry.clone();
                                 rsx! {
-                                    button {
+                                    div {
                                         key: "{sc}",
-                                        r#type: "button",
-                                        class: "w-full text-left px-3 py-2 {row_cls} transition-colors",
-                                        onclick: move |_| on_pick.call(entry_for_pick.clone()),
-                                        div { class: "flex items-baseline gap-2",
-                                            span {
-                                                class: "w-1.5 h-1.5 rounded-full shrink-0 self-center",
-                                                style: if entry.idle_secs >= HOST_STALE_AFTER_SECS {
-                                                    "background: var(--warn);"
-                                                } else {
-                                                    "background: var(--up);"
-                                                },
-                                                title: if entry.idle_secs >= HOST_STALE_AFTER_SECS {
-                                                    "Not responding — this host may already be offline"
-                                                } else {
-                                                    "Online"
-                                                },
+                                        class: "flex items-center gap-3 pl-2.5 pr-2.5 py-2 rounded-lg border transition-colors {row_cls}",
+                                        style: "border-left: 3px solid {stripe};",
+                                        button {
+                                            r#type: "button",
+                                            class: "flex-1 min-w-0 flex items-center gap-3 text-left",
+                                            onclick: move |_| on_pick.call(for_pick.clone()),
+                                            span { class: "w-8 h-8 shrink-0 rounded-lg border border-[var(--border)] flex items-center justify-center text-[11px] text-[var(--text-muted)]",
+                                                "{mark}"
                                             }
-                                            span { class: "text-sm font-medium text-[var(--text)]",
-                                                {entry.name.clone().unwrap_or_else(|| entry.shortcode.clone())}
-                                            }
-                                            span { class: "text-[10px] text-[var(--text-dim)]", "{entry.shortcode}" }
-                                            if entry.idle_secs >= HOST_STALE_AFTER_SECS {
-                                                span { class: "text-[10px] text-[var(--warn)]", "not responding" }
+                                            span { class: "flex-1 min-w-0",
+                                                span { class: "flex items-baseline gap-1.5",
+                                                    span { class: "truncate text-[13px] text-[var(--text)]", "{title}" }
+                                                    if named {
+                                                        span {
+                                                            class: "shrink-0 text-[9px] text-[var(--text-dim)]",
+                                                            title: "A reserved name, proved with the host's key",
+                                                            "\u{1f511}"
+                                                        }
+                                                    }
+                                                }
+                                                span { class: "block truncate text-[9px] font-mono uppercase tracking-wider text-[var(--text-dim)]",
+                                                    if direct { "{fresh_label} \u{b7} direct" } else { "{fresh_label} \u{b7} relayed" }
+                                                }
+                                                if let Some(d) = entry.description.clone() {
+                                                    span { class: "block truncate text-[11px] text-[var(--text-muted)]", "{d}" }
+                                                }
                                             }
                                         }
-                                        if let Some(d) = entry.description.clone() {
-                                            div { class: "text-xs text-[var(--text-muted)] mt-0.5", "{d}" }
+                                        button {
+                                            r#type: "button",
+                                            class: "shrink-0 px-3 py-1 rounded-md border border-[var(--border)] text-[11px] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors",
+                                            style: if fresh_ok { "" } else { "opacity: .6;" },
+                                            onclick: move |_| on_enter.call(for_enter.clone()),
+                                            "Enter"
                                         }
                                     }
                                 }
