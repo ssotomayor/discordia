@@ -57,7 +57,7 @@ impl SessionMode {
 /// Host (and port) of a gateway URL, or the whole string when it does not
 /// parse as one — a label should degrade to something recognisable rather than
 /// to nothing.
-fn host_of(url: &str) -> String {
+pub(crate) fn host_of(url: &str) -> String {
     let rest = url
         .strip_prefix("wss://")
         .or_else(|| url.strip_prefix("ws://"))
@@ -323,8 +323,8 @@ pub struct CameraDevice {
     pub label: String,
 }
 
-/// A one-to-one conversation, from the viewpoint of one participant: `other`
-/// is the person on the far side.
+/// A one-to-one conversation, from the viewpoint of one participant:
+/// `other_pubkey` is the person on the far side.
 ///
 /// **Client-side only.** It used to be a wire type, back when a DM was a
 /// channel on the host and the server told you which ones you had. Direct
@@ -332,10 +332,20 @@ pub struct CameraDevice {
 /// this describes what the sidebar draws, nothing more. The `channel_id` is
 /// derived from the peer's pubkey by `nostr::service::conversation_id`, which
 /// is what lets the DM views keep working unchanged.
+///
+/// **A key, not a `User`, and that is the fix for a shipped bug.** Nostr
+/// carries no username: the name for a peer comes from the gateway roster (a
+/// guild you share) or from your own contact petname, and *both* arrive after
+/// the conversation is first drawn — the roster only once the gateway's Ready
+/// snapshot lands, the petname only once the contact list is replayed. Storing
+/// a name here meant storing whichever answer happened to be true at insert
+/// time, so a friend read as a truncated key until something re-derived it.
+/// Every surface now resolves the name through `AppState::display_name` at
+/// render, which cannot go stale.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DmInfo {
     pub channel_id: Id,
-    pub other: User,
+    pub other_pubkey: String,
 }
 
 #[derive(Clone)]
@@ -372,6 +382,15 @@ pub struct AppState {
     /// The Nostr contact list (NIP-02), as the relays hold it. Public, unlike
     /// the messages: adding someone here is visible to anyone.
     pub contacts: crate::nostr::nip02::ContactList,
+    /// Names keys publish for themselves (NIP-01 kind 0), by pubkey.
+    ///
+    /// The only name available for a DM peer you share no server with. Ranked
+    /// last of the three in `display_name`, because unlike a gateway username
+    /// or a petname nobody has vouched for it — see `nostr::metadata`, which is
+    /// also where the string is made safe to draw. Only names are kept: the
+    /// rest of a kind 0 event (picture, about, nip05) is not read anywhere, and
+    /// a stored field nothing renders is a field that looks live and is not.
+    pub nostr_names: HashMap<String, String>,
     /// Relays currently connected, for the DM status line. A set rather than a
     /// count because which relay is up is the useful thing when one is not.
     pub nostr_relays_up: std::collections::HashSet<String>,
@@ -391,12 +410,15 @@ pub struct AppState {
     /// label is true: landing on the pane with the form still shut leaves the
     /// person who pressed "Host my own" to go looking for it.
     pub home_open_host: bool,
-    /// What to call the server this session is attached to, in home's column.
+    /// How this session reached its gateway, or `None` when there is none.
     ///
-    /// Derived from `SessionParams` at mount rather than from anything the
-    /// host tells us: a gateway has no name of its own on this wire, and the
-    /// thing a person recognises is the code or address they arrived by.
-    pub server_label: Option<String>,
+    /// Kept rather than only its label because the label answers "what do I
+    /// call this" and the directory needs to answer "is that row me" — see
+    /// `features::discover::is_current_host`. Set from `SessionParams` at mount
+    /// rather than from anything the host tells us: a gateway has no name of
+    /// its own on this wire, and the thing a person recognises is the code or
+    /// address they arrived by.
+    pub session_mode: Option<SessionMode>,
     /// Public directory of guilds on the host we've fetched so far (paginated,
     /// browse-and-join). May be a prefix of the whole directory — see
     /// `catalog_total`.
@@ -687,12 +709,13 @@ impl AppState {
             dm_unread: HashMap::new(),
             nostr_event_ids: HashMap::new(),
             contacts: Default::default(),
+            nostr_names: HashMap::new(),
             nostr_relays_up: std::collections::HashSet::new(),
             dm_mode: false,
             home_view: HomeView::Dms,
             home_by_code: false,
             home_open_host: false,
-            server_label: None,
+            session_mode: None,
             catalog: Vec::new(),
             catalog_total: 0,
             profiles: HashMap::new(),
@@ -1083,20 +1106,52 @@ impl AppState {
             .map(|m| &m.user)
     }
 
-    /// What to show for a pubkey: their username, or a truncated key.
+    /// What to show for a pubkey: their username, your own name for them, or a
+    /// truncated key.
     ///
     /// The fallback is the honest answer rather than a placeholder — an
     /// audit-log actor or an emoji uploader who has since left the guild is not
     /// in `members` any more, and the key is still who they were.
     ///
-    /// Here rather than inline at each site because the pair `user_of` +
-    /// `truncate_pubkey` is the whole rule, and it is spelled out identically
-    /// in several places. Anything that changes it later — nicknames, a
-    /// per-guild display name — should have one place to change.
+    /// Here rather than inline at each site because this *is* the whole rule,
+    /// and it was spelled out identically in several places.
+    ///
+    /// **The order is by who stands behind the name**, most accountable first,
+    /// which matters because the last two reach people no server has ever
+    /// heard of:
+    ///
+    /// 1. a gateway username — a name on a server you are both on, which that
+    ///    server can moderate;
+    /// 2. a NIP-02 petname — a name *you* chose for them, so it outranks
+    ///    anything they say about themselves;
+    /// 3. a NIP-01 kind 0 name — self-published and vouched for by nobody, but
+    ///    the only name a DM peer you share no server with will ever have.
+    ///
+    /// Impersonation is not settled by this order and is not meant to be: a
+    /// gateway username is mutable and non-unique too. The key-derived
+    /// `#discriminator` and signature colour drawn beside every name are what
+    /// distinguish two people who claim one name.
+    ///
+    /// **Call this at render, never to fill a field.** Every source arrives
+    /// asynchronously and any of them can go away (change servers and the
+    /// roster does), so a copy taken once is a copy that will eventually be
+    /// wrong.
     pub fn display_name(&self, pubkey: &str) -> String {
-        self.user_of(pubkey)
-            .map(|u| u.username.clone())
-            .unwrap_or_else(|| crate::identity::truncate_pubkey(pubkey))
+        if let Some(u) = self.user_of(pubkey) {
+            return u.username.clone();
+        }
+        if let Some(pet) = self.contacts.petname(pubkey) {
+            return pet.to_string();
+        }
+        if let Some(published) = self.nostr_names.get(pubkey) {
+            return published.clone();
+        }
+        crate::identity::truncate_pubkey(pubkey)
+    }
+
+    /// What to call the server this session is attached to, in home's column.
+    pub fn server_label(&self) -> Option<String> {
+        self.session_mode.as_ref().map(SessionMode::label)
     }
 }
 
@@ -1287,6 +1342,30 @@ mod tests {
             s.display_name(&stranger),
             crate::identity::truncate_pubkey(&stranger)
         );
+    }
+
+    /// A Nostr contact you share no guild with is in no roster, so the petname
+    /// is the only name they can ever have — and it must not win over the
+    /// roster, which is the name they answer to where you both are.
+    #[test]
+    fn display_name_uses_a_petname_when_no_roster_knows_them() {
+        let mut s = AppState::empty();
+        let friend = "c".repeat(64);
+        let stranger = "d".repeat(64);
+        s.contacts = s.contacts.clone().with(crate::nostr::nip02::Contact {
+            pubkey: friend.clone(),
+            relay: None,
+            petname: Some("Ana".into()),
+        });
+
+        assert_eq!(s.display_name(&friend), "Ana");
+        assert_eq!(
+            s.display_name(&stranger),
+            crate::identity::truncate_pubkey(&stranger)
+        );
+
+        s.members.push(member(&friend, true));
+        assert_eq!(s.display_name(&friend), format!("u-{friend}"));
     }
 
     /// `user_of` answers for the logged-in user before it looks at `members`,

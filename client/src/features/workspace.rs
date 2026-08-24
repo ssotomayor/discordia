@@ -122,7 +122,7 @@ pub fn WorkspaceView(
         let gateway_tx = match params.clone() {
             Some(p) => {
                 let mut app = state;
-                app.write().server_label = Some(p.mode.label());
+                app.write().session_mode = Some(p.mode.clone());
                 spawn_gateway(p, state, voice_tx.clone(), move |reason| {
                     on_disconnect.call(reason);
                 })

@@ -27,7 +27,7 @@ use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 
 use super::event::Event;
 use super::relay::{Filter, RelayEvent, RelayPool};
-use super::{nip02, nip17, nip59};
+use super::{metadata, nip02, nip17, nip59};
 use crate::identity::Identity;
 use crate::protocol::{Id, Message, User};
 use crate::state::{AppState, DmInfo};
@@ -93,31 +93,58 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
 
         // No author filter: gift wraps are signed by ephemeral keys. `p` is
         // the only handle.
-        pool.subscribe(vec![
-            Filter {
-                kinds: Some(vec![nip59::KIND_GIFT_WRAP]),
-                p: Some(vec![our_pubkey.clone()]),
-                limit: Some(500),
-                ..Default::default()
-            },
-            Filter {
-                kinds: Some(vec![nip02::KIND_CONTACTS, nip17::KIND_DM_RELAYS]),
-                authors: Some(vec![our_pubkey.clone()]),
-                limit: Some(4),
-                ..Default::default()
-            },
-        ]);
+        pool.subscribe(
+            SUB_DM,
+            vec![
+                Filter {
+                    kinds: Some(vec![nip59::KIND_GIFT_WRAP]),
+                    p: Some(vec![our_pubkey.clone()]),
+                    limit: Some(500),
+                    ..Default::default()
+                },
+                Filter {
+                    kinds: Some(vec![nip02::KIND_CONTACTS, nip17::KIND_DM_RELAYS]),
+                    authors: Some(vec![our_pubkey.clone()]),
+                    limit: Some(4),
+                    ..Default::default()
+                },
+            ],
+        );
 
         pool.publish(nip17::dm_relay_list(&secret, &relays, now()));
+
+        // Offline nothing else ever sets this, and your own messages then read
+        // as your own truncated key. The gateway's `Ready` overwrites it with
+        // the authoritative username when there is one — hence `is_none`, which
+        // is what keeps this a fallback rather than a competing source.
+        {
+            let mut s = state.write();
+            if s.self_user.is_none() {
+                s.self_user = Some(User {
+                    pubkey: our_pubkey.clone(),
+                    username: identity.display_name.clone(),
+                });
+            }
+        }
+
+        // Whoever the metadata subscription currently asks about. Held so the
+        // REQ is re-issued when the set grows and not on every message.
+        let mut named: Vec<String> = Vec::new();
+        request_names(&pool, &state, &our_pubkey, &mut named);
 
         loop {
             tokio::select! {
                 cmd = rx.recv() => match cmd {
                     Some(NostrCmd::Send { peer, text, reply_to }) => {
                         send_message(&pool, &secret, &our_pubkey, &peer, &text, reply_to, &mut state);
+                        // Speaking first also introduces somebody: this is the
+                        // path a pasted npub takes when the composer is used
+                        // before the conversation exists.
+                        request_names(&pool, &state, &our_pubkey, &mut named);
                     }
                     Some(NostrCmd::Open { peer }) => {
                         open_conversation(&peer, &mut state);
+                        request_names(&pool, &state, &our_pubkey, &mut named);
                     }
                     Some(NostrCmd::SetContact { peer, keep }) => {
                         // Read-modify-write, never append: kind 3 is
@@ -135,6 +162,7 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
                         };
                         pool.publish(nip02::contact_list_event(&secret, &next, now()));
                         state.write().contacts = next;
+                        request_names(&pool, &state, &our_pubkey, &mut named);
                     }
                     None => break,
                 },
@@ -142,9 +170,19 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
                     Some(RelayEvent::Event(event)) => match event.kind {
                         nip02::KIND_CONTACTS if event.pubkey == our_pubkey => {
                             state.write().contacts = nip02::parse_contact_list(&event);
+                            request_names(&pool, &state, &our_pubkey, &mut named);
+                        }
+                        metadata::KIND_METADATA => {
+                            // Anyone's, not only the people we asked about: a
+                            // relay may answer another filter with one, and a
+                            // name we did not ask for costs a map entry.
+                            if let Some(name) = metadata::name_from(&event) {
+                                state.write().nostr_names.insert(event.pubkey.clone(), name);
+                            }
                         }
                         nip59::KIND_GIFT_WRAP => {
                             receive(&secret, &our_pubkey, &event, &mut state);
+                            request_names(&pool, &state, &our_pubkey, &mut named);
                         }
                         _ => {}
                     },
@@ -189,18 +227,84 @@ fn now() -> i64 {
     chrono::Utc::now().timestamp()
 }
 
+/// The subscription carrying gift wraps and our own replaceable events.
+const SUB_DM: &str = "dxf-dm";
+/// The subscription carrying kind 0 for the people we can see.
+///
+/// Its own id because it is re-issued whenever a new peer appears, and a `REQ`
+/// replays everything under the id it names — sharing `SUB_DM` would have
+/// re-delivered every gift wrap each time somebody new said hello.
+const SUB_NAMES: &str = "dxf-names";
+
+/// Most keys the name subscription will ask about at once.
+///
+/// A `REQ` is one frame and relays cap how large one may be; a contact list of
+/// two thousand keys would get the whole filter rejected and leave us with no
+/// names at all rather than most of them. Conversation peers are taken first
+/// because they are the names actually on screen.
+const NAME_AUTHOR_CAP: usize = 256;
+
+/// Whose name is worth asking a relay for, in the order it matters.
+///
+/// Ourselves first: offline there is no gateway roster to say who we are, so
+/// our own published name is the only one there is. Then the people we are
+/// talking to, then the rest of the contact list — the cap bites at the far end
+/// of that, which is the end nobody is looking at.
+fn names_wanted(state: &AppState, our_pubkey: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let push = |pk: &str, out: &mut Vec<String>| {
+        if pk.len() == 64 && !out.iter().any(|p| p == pk) {
+            out.push(pk.to_string());
+        }
+    };
+    push(our_pubkey, &mut out);
+    for dm in &state.dms {
+        push(&dm.other_pubkey, &mut out);
+    }
+    for c in &state.contacts.contacts {
+        push(&c.pubkey, &mut out);
+    }
+    out.truncate(NAME_AUTHOR_CAP);
+    out
+}
+
+/// Re-issue the name subscription if the set of people it covers has grown.
+///
+/// `asked` is what the standing REQ currently names. Comparing against it is
+/// what keeps this off the hot path: every inbound message calls this, and all
+/// but the ones that introduce somebody new return without touching a relay.
+fn request_names(
+    pool: &RelayPool,
+    state: &Signal<AppState>,
+    our_pubkey: &str,
+    asked: &mut Vec<String>,
+) {
+    let want = names_wanted(&state.read(), our_pubkey);
+    if want == *asked || want.is_empty() {
+        return;
+    }
+    *asked = want.clone();
+    // No `limit`: kind 0 is replaceable, so a relay holds at most one per key
+    // and the author list is the bound. A limit here would instead cap the
+    // *total*, quietly starving whoever sorted last.
+    pool.subscribe(
+        SUB_NAMES,
+        vec![Filter {
+            kinds: Some(vec![metadata::KIND_METADATA]),
+            authors: Some(want),
+            ..Default::default()
+        }],
+    );
+}
+
 /// Make sure the conversation exists in the list and select it.
 fn open_conversation(peer: &str, state: &mut Signal<AppState>) {
     let cid = conversation_id(peer);
     let mut s = state.write();
     if !s.dms.iter().any(|d| d.channel_id == cid) {
-        let username = s.display_name(peer);
         s.dms.push(DmInfo {
             channel_id: cid,
-            other: User {
-                pubkey: peer.to_string(),
-                username,
-            },
+            other_pubkey: peer.to_string(),
         });
     }
     s.dm_mode = true;
@@ -278,18 +382,13 @@ fn insert_message(msg: &nip17::ChatMessage, our_pubkey: &str, state: &mut Signal
     let mut s = state.write();
 
     if !s.dms.iter().any(|d| d.channel_id == cid) {
-        let username = s.display_name(&msg.peer);
         s.dms.push(DmInfo {
             channel_id: cid,
-            other: User {
-                pubkey: msg.peer.clone(),
-                username,
-            },
+            other_pubkey: msg.peer.clone(),
         });
     }
     s.nostr_event_ids.insert(mid, msg.id.clone());
 
-    let author_name = s.display_name(&msg.author);
     let entry = s.messages.entry(cid).or_default();
     if entry.iter().any(|m| m.id == mid) {
         return;
@@ -299,7 +398,14 @@ fn insert_message(msg: &nip17::ChatMessage, our_pubkey: &str, state: &mut Signal
         channel_id: cid,
         author: User {
             pubkey: msg.author.clone(),
-            username: author_name,
+            // The key, deliberately — not a name looked up now. Nostr carries
+            // no username, so any name here would be borrowed from the gateway
+            // roster or the contact list, and both of those arrive later than
+            // this and can go away again. `features::chat` resolves the name
+            // for DM authors at render; storing one froze whichever answer was
+            // true when the wrap was opened, which is why a friend read as a
+            // key until the next message re-derived it.
+            username: crate::identity::truncate_pubkey(&msg.author),
         },
         content: msg.content.clone(),
         image: None,
@@ -334,5 +440,84 @@ mod tests {
         // And the two derivations must not collide with each other, or a
         // message could be mistaken for a conversation.
         assert_ne!(conversation_id(&a).as_bytes(), message_id(&a).as_bytes());
+    }
+
+    fn key(c: char) -> String {
+        c.to_string().repeat(64)
+    }
+
+    fn with_dm(state: &mut AppState, peer: &str) {
+        state.dms.push(crate::state::DmInfo {
+            channel_id: conversation_id(peer),
+            other_pubkey: peer.to_string(),
+        });
+    }
+
+    /// Ourselves, then the people on screen, then the rest — and each key once,
+    /// because a contact you are also talking to is one person.
+    #[test]
+    fn the_people_worth_naming_are_ordered_and_deduplicated() {
+        let me = key('a');
+        let talking = key('b');
+        let contact = key('c');
+        let mut s = AppState::empty();
+        with_dm(&mut s, &talking);
+        with_dm(&mut s, &contact);
+        for pk in [&talking, &contact] {
+            s.contacts = s.contacts.clone().with(nip02::Contact {
+                pubkey: pk.clone(),
+                relay: None,
+                petname: None,
+            });
+        }
+
+        assert_eq!(names_wanted(&s, &me), vec![me, talking, contact]);
+    }
+
+    /// A contact list is public and can be anything; a malformed key in one
+    /// must not go into a filter, because a relay may reject the whole `REQ`
+    /// over it and then no name resolves at all.
+    #[test]
+    fn a_malformed_key_never_reaches_a_filter() {
+        let me = key('a');
+        let mut s = AppState::empty();
+        with_dm(&mut s, "not-a-pubkey");
+        s.contacts = s.contacts.clone().with(nip02::Contact {
+            pubkey: String::new(),
+            relay: None,
+            petname: None,
+        });
+
+        assert_eq!(names_wanted(&s, &me), vec![me]);
+    }
+
+    /// The cap has to bite at the end nobody is looking at: a long contact list
+    /// must not push the conversation you have open out of the filter.
+    #[test]
+    fn the_cap_drops_contacts_not_conversations() {
+        let me = key('a');
+        let talking = key('b');
+        let mut s = AppState::empty();
+        with_dm(&mut s, &talking);
+        for i in 0..NAME_AUTHOR_CAP * 2 {
+            s.contacts = s.contacts.clone().with(nip02::Contact {
+                pubkey: format!("{i:064x}"),
+                relay: None,
+                petname: None,
+            });
+        }
+
+        let want = names_wanted(&s, &me);
+        assert_eq!(want.len(), NAME_AUTHOR_CAP);
+        assert_eq!(want[0], me);
+        assert_eq!(want[1], talking);
+    }
+
+    /// Offline with nobody to talk to, our own name is still worth asking for —
+    /// it is the only one there is when no gateway roster exists.
+    #[test]
+    fn our_own_name_is_always_asked_for() {
+        let me = key('a');
+        assert_eq!(names_wanted(&AppState::empty(), &me), vec![me]);
     }
 }

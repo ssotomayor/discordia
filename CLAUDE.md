@@ -356,15 +356,25 @@ identity bullets under `features/*.rs`:
   somebody messaged you and never who), `nip17` (chat semantics — and note every
   message is wrapped *twice*, to them and to us, because a wrap can only be
   opened by the key it was addressed to, including by its sender). `nip02` is
-  the contact list, which travels the same way; `relay` is the client;
-  `service` is the task that owns it and feeds `AppState`, shaped like
-  `net::spawn_gateway` deliberately.
-  Two things to know before touching it. The DM views are keyed by `Uuid`
+  the contact list, which travels the same way; `metadata` is kind 0, the name
+  a key publishes for itself; `relay` is the client; `service` is the task that
+  owns it and feeds `AppState`, shaped like `net::spawn_gateway` deliberately.
+  Four things to know before touching it. The DM views are keyed by `Uuid`
   because they were written for server channels, so `service::conversation_id`
   *derives* one from a pubkey — stable across launches and devices, and the
-  reason the whole DM surface kept working unchanged. And **the contact list is
+  reason the whole DM surface kept working unchanged. **The contact list is
   a public, replaceable event**: publishing a partial list deletes everyone
   missing from it, which is why `ContactList` is read-modify-written whole.
+  **A relay subscription is replaced by its id**, so `RelayPool::subscribe`
+  takes one and holds a map — the DM filters and the name filter have different
+  lifetimes (wraps are asked for once, names are re-asked as peers appear), and
+  a shared id meant the second `REQ` silently cancelled the first. And **a name
+  is resolved at render, never stored**: `AppState::display_name` is the whole
+  rule, ordered by who stands behind the answer — gateway roster, then your own
+  petname, then the self-published kind 0 — because each source arrives
+  asynchronously and any of them can go away. `DmInfo` holds a pubkey rather
+  than a `User` for exactly that reason; storing a name is what made a friend
+  read as a truncated key until the next message re-derived it.
 - `protocol/mod.rs` — re-exports `dioxusfun-protocol` so the client says
   `crate::protocol::…`.
 

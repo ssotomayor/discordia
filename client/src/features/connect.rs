@@ -23,10 +23,27 @@ const LABEL: &str = "text-[10px] font-semibold uppercase tracking-wider text-[va
 #[component]
 pub fn AddressForm(on_go: EventHandler<SessionMode>) -> Element {
     let mut server_url = use_signal(String::new);
+    let state = crate::state::use_app_state();
+
+    // The third door to the same mistake the directory row and the code field
+    // now refuse: switching to the session you already have drops a live
+    // gateway to dial the same host back. Matched on host:port rather than the
+    // whole string, so `ws://host:9000` and `ws://host:9000/gateway` are not
+    // two different servers.
+    let already_here = {
+        let typed = server_url().trim().to_string();
+        let s = state.read();
+        match s.session_mode.as_ref() {
+            Some(SessionMode::Remote { server_url: cur }) if !typed.is_empty() => {
+                crate::state::host_of(cur).eq_ignore_ascii_case(&crate::state::host_of(&typed))
+            }
+            _ => false,
+        }
+    };
 
     let go = move || {
         let url = server_url().trim().to_string();
-        if url.is_empty() {
+        if url.is_empty() || already_here {
             return;
         }
         on_go.call(SessionMode::Remote { server_url: url });
@@ -45,12 +62,16 @@ pub fn AddressForm(on_go: EventHandler<SessionMode>) -> Element {
                 oninput: move |e| server_url.set(e.value()),
             }
             div { class: "text-[10px] text-[var(--text-dim)] leading-relaxed",
-                "Connects straight to a gateway, ignoring the directory above."
+                if already_here {
+                    "That is the gateway this session is already on."
+                } else {
+                    "Connects straight to a gateway, ignoring the directory above."
+                }
             }
             button {
                 r#type: "submit",
                 class: "px-3 py-1.5 rounded text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors disabled:opacity-40",
-                disabled: server_url().trim().is_empty(),
+                disabled: server_url().trim().is_empty() || already_here,
                 "Connect to this address"
             }
         }

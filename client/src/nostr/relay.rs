@@ -20,7 +20,7 @@
 //! is also the reason a failed connection is logged and retried rather than
 //! surfaced — one relay refusing is not a condition the user can act on.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -95,8 +95,18 @@ pub enum RelayEvent {
 
 enum Command {
     Publish(Box<Event>),
-    Subscribe(Vec<Filter>),
+    Subscribe { id: String, filters: Vec<Filter> },
 }
+
+/// Standing subscriptions, by the id the relay knows them under.
+///
+/// A `REQ` replaces whatever the relay held under that id, which is what makes
+/// this a map rather than one slot: the DM subscription and the metadata one
+/// want different lifetimes — wraps are asked for once, names are re-asked
+/// every time a new peer appears — and sharing an id meant the second `REQ`
+/// silently cancelled the first. Ordered so a reconnect re-issues them the same
+/// way every time.
+type Subscriptions = BTreeMap<String, Vec<Filter>>;
 
 /// A set of relay connections, driven as one.
 #[derive(Clone)]
@@ -116,9 +126,9 @@ impl RelayPool {
         // Dedup across relays; bounded by eviction rather than growing for the
         // session.
         let seen: Arc<Mutex<SeenSet>> = Arc::new(Mutex::new(SeenSet::default()));
-        // The current subscription, kept so a relay that reconnects — or one
-        // that was down when it was issued — can pick it up.
-        let filter: Arc<Mutex<Option<Vec<Filter>>>> = Arc::new(Mutex::new(None));
+        // The standing subscriptions, kept so a relay that reconnects — or one
+        // that was down when they were issued — can pick them up.
+        let subs: Arc<Mutex<Subscriptions>> = Arc::new(Mutex::new(Subscriptions::new()));
 
         let mut senders = Vec::new();
         for url in urls {
@@ -129,19 +139,22 @@ impl RelayPool {
                 relay_rx,
                 out_tx.clone(),
                 Arc::clone(&seen),
-                Arc::clone(&filter),
+                Arc::clone(&subs),
             ));
         }
 
         tokio::spawn(async move {
             while let Some(cmd) = cmd_rx.recv().await {
-                if let Command::Subscribe(f) = &cmd {
-                    *filter.lock().await = Some(f.clone());
+                if let Command::Subscribe { id, filters } = &cmd {
+                    subs.lock().await.insert(id.clone(), filters.clone());
                 }
                 for s in &senders {
                     let copy = match &cmd {
                         Command::Publish(e) => Command::Publish(e.clone()),
-                        Command::Subscribe(f) => Command::Subscribe(f.clone()),
+                        Command::Subscribe { id, filters } => Command::Subscribe {
+                            id: id.clone(),
+                            filters: filters.clone(),
+                        },
                     };
                     let _ = s.send(copy);
                 }
@@ -157,14 +170,23 @@ impl RelayPool {
         let _ = self.cmd.send(Command::Publish(Box::new(event)));
     }
 
-    /// Replace the standing subscription on every relay.
+    /// Open or replace the subscription `id` on every relay.
     ///
-    /// Several filters rather than one, because a `REQ` ORs them and the two
-    /// things this client wants are unrelated: gift wraps addressed to us, and
+    /// Several filters rather than one, because a `REQ` ORs them and the things
+    /// one subscription wants can be unrelated: gift wraps addressed to us, and
     /// our own replaceable events (the contact list, the DM relay list). One
     /// filter cannot express both without also matching everything in between.
-    pub fn subscribe(&self, filters: Vec<Filter>) {
-        let _ = self.cmd.send(Command::Subscribe(filters));
+    ///
+    /// **`id` is the unit of replacement**, on the relay and here — re-issuing
+    /// one leaves the others running, and re-issuing the same one replays its
+    /// stored events. That is why the metadata subscription has an id of its
+    /// own: it is re-asked whenever a new peer appears, and sharing an id with
+    /// the DM filters would have replayed every gift wrap each time.
+    pub fn subscribe(&self, id: &str, filters: Vec<Filter>) {
+        let _ = self.cmd.send(Command::Subscribe {
+            id: id.to_string(),
+            filters,
+        });
     }
 }
 
@@ -205,17 +227,17 @@ async fn run_relay(
     mut cmds: mpsc::UnboundedReceiver<Command>,
     out: mpsc::UnboundedSender<RelayEvent>,
     seen: Arc<Mutex<SeenSet>>,
-    filter: Arc<Mutex<Option<Vec<Filter>>>>,
+    subs: Arc<Mutex<Subscriptions>>,
 ) {
     let mut backoff = RECONNECT_MIN;
-    // Only the newest subscription matters; publishes are dropped rather than
-    // queued to avoid stale delivery.
+    // Only the newest subscription per id matters; publishes are dropped rather
+    // than queued to avoid stale delivery.
     loop {
         match tokio_tungstenite::connect_async(&url).await {
             Ok((stream, _)) => {
                 backoff = RECONNECT_MIN;
                 let _ = out.send(RelayEvent::Connected(url.clone()));
-                let why = serve(&url, stream, &mut cmds, &out, &seen, &filter).await;
+                let why = serve(&url, stream, &mut cmds, &out, &seen, &subs).await;
                 let _ = out.send(RelayEvent::Disconnected {
                     relay: url.clone(),
                     why,
@@ -243,22 +265,19 @@ async fn serve(
     cmds: &mut mpsc::UnboundedReceiver<Command>,
     out: &mpsc::UnboundedSender<RelayEvent>,
     seen: &Arc<Mutex<SeenSet>>,
-    filter: &Arc<Mutex<Option<Vec<Filter>>>>,
+    subs: &Arc<Mutex<Subscriptions>>,
 ) -> String {
     use tokio_tungstenite::tungstenite::Message;
     let (mut tx, mut rx) = stream.split();
-    let sub_id = "dxf-dm";
 
-    // Re-issue the standing subscription; a fresh connection without a REQ
+    // Re-issue every standing subscription; a fresh connection without a REQ
     // receives nothing.
-    if let Some(f) = filter.lock().await.clone() {
-        let mut req = vec![serde_json::json!("REQ"), serde_json::json!(sub_id)];
-        req.extend(
-            f.iter()
-                .map(|x| serde_json::to_value(x).unwrap_or_default()),
-        );
-        let req = serde_json::Value::Array(req).to_string();
-        if tx.send(Message::Text(req)).await.is_err() {
+    for (id, filters) in subs.lock().await.iter() {
+        if tx
+            .send(Message::Text(req_frame(id, filters)))
+            .await
+            .is_err()
+        {
             return "could not send the subscription".into();
         }
     }
@@ -272,11 +291,8 @@ async fn serve(
                         return "send failed".into();
                     }
                 }
-                Some(Command::Subscribe(f)) => {
-                    let mut parts = vec![serde_json::json!("REQ"), serde_json::json!(sub_id)];
-                    parts.extend(f.iter().map(|x| serde_json::to_value(x).unwrap_or_default()));
-                    let req = serde_json::Value::Array(parts).to_string();
-                    if tx.send(Message::Text(req)).await.is_err() {
+                Some(Command::Subscribe { id, filters }) => {
+                    if tx.send(Message::Text(req_frame(&id, &filters))).await.is_err() {
                         return "send failed".into();
                     }
                 }
@@ -293,6 +309,18 @@ async fn serve(
             },
         }
     }
+}
+
+/// `["REQ", <id>, <filter>…]` — the frame that opens or replaces a
+/// subscription.
+fn req_frame(id: &str, filters: &[Filter]) -> String {
+    let mut parts = vec![serde_json::json!("REQ"), serde_json::json!(id)];
+    parts.extend(
+        filters
+            .iter()
+            .map(|f| serde_json::to_value(f).unwrap_or_default()),
+    );
+    serde_json::Value::Array(parts).to_string()
 }
 
 /// Parse one relay frame and report it.
@@ -377,6 +405,40 @@ mod tests {
         // close a `r#"` literal in the middle of the expected string.
         assert_eq!(json, r##"{"kinds":[1059],"#p":["abc"],"limit":100}"##);
         assert!(!json.contains("null"), "absent fields must be omitted");
+    }
+
+    /// The id is what a relay replaces on, so a frame that carries the wrong
+    /// one cancels a subscription somebody else is relying on. Two ids, two
+    /// frames, and the filters ride along in order.
+    ///
+    /// The keys *within* a filter come out alphabetical rather than in
+    /// declaration order, because the frame is built through
+    /// `serde_json::Value` and its map is sorted. Pinned rather than corrected:
+    /// a JSON object has no order to a relay, and the test above already fixes
+    /// the shape a filter serializes to on its own.
+    #[test]
+    fn a_req_frame_names_its_own_subscription() {
+        let dm = Filter {
+            kinds: Some(vec![1059]),
+            ..Default::default()
+        };
+        let meta = Filter {
+            kinds: Some(vec![0]),
+            authors: Some(vec!["abc".into()]),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            req_frame("dxf-dm", std::slice::from_ref(&dm)),
+            r#"["REQ","dxf-dm",{"kinds":[1059]}]"#
+        );
+        assert_eq!(
+            req_frame("dxf-meta", &[meta]),
+            r#"["REQ","dxf-meta",{"authors":["abc"],"kinds":[0]}]"#
+        );
+        // Several filters on one id are ORed by the relay, and their order is
+        // ours to keep.
+        assert!(req_frame("dxf-dm", &[dm.clone(), dm]).starts_with(r#"["REQ","dxf-dm","#));
     }
 
     /// Deduplication is what stops four relays delivering one message four

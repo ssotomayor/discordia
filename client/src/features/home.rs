@@ -62,7 +62,7 @@ pub fn HomeNav() -> Element {
     let joinable = snapshot.joinable_communities().len();
     let joined = snapshot.joined_communities();
     let offline = snapshot.status == ConnectionStatus::Offline;
-    let server_label = snapshot.server_label.clone();
+    let server_label = snapshot.server_label();
     let self_pk = snapshot
         .self_user
         .as_ref()
@@ -398,6 +398,30 @@ fn ServersPane(on_switch: EventHandler<SessionMode>) -> Element {
     let offline = snapshot.status == ConnectionStatus::Offline;
     let open_host = snapshot.home_open_host;
     let by_code = snapshot.home_by_code;
+    // The join code this session already answers to, when it has one. The
+    // directory hides its own row's Enter button; this is the same guard for
+    // the code you can type by hand, which reaches the same place. Only when
+    // the code would be looked up on the registry that issued it — a code is
+    // unique to one rendezvous, not across them.
+    let same_rendezvous = |theirs: &str| {
+        let a = crate::state::host_of(theirs.trim());
+        !a.is_empty() && a.eq_ignore_ascii_case(&crate::state::host_of(rendezvous.trim()))
+    };
+    let current_code = match snapshot.session_mode.as_ref() {
+        Some(SessionMode::ByCode {
+            rendezvous_url,
+            code,
+        }) if same_rendezvous(rendezvous_url) => Some(code.trim().to_lowercase()),
+        Some(SessionMode::SelfHost {
+            rendezvous_url: Some(rz),
+            ..
+        }) if same_rendezvous(rz) => snapshot
+            .host_info
+            .as_ref()
+            .and_then(|h| h.shortcode.clone())
+            .map(|c| c.to_lowercase()),
+        _ => None,
+    };
     drop(snapshot);
     let mut code = use_signal(String::new);
     // Held so the effect below can focus the field on a later press too, not
@@ -417,10 +441,16 @@ fn ServersPane(on_switch: EventHandler<SessionMode>) -> Element {
     // Read once: it is a file, and it cannot change while this pane is open.
     let last_session = use_hook(|| crate::session::load().ok().flatten());
 
+    // Recomputed per keystroke so the button can say why it is off rather than
+    // accepting the code and dropping the session it is already on.
+    let already_here = current_code
+        .as_deref()
+        .is_some_and(|cur| cur == code().trim().to_lowercase());
+
     let rz_for_go = rendezvous.clone();
     let go = move || {
         let c = code().trim().to_string();
-        if c.is_empty() {
+        if c.is_empty() || already_here {
             return;
         }
         // The same mode a picked row submits: `ByCode` resolves the host's
@@ -548,7 +578,13 @@ fn ServersPane(on_switch: EventHandler<SessionMode>) -> Element {
                     style: "background: var(--accent-soft);",
                     onsubmit: move |_| go(),
                     span { class: "shrink-0 text-xs text-[var(--text)]",
-                        if by_code { "Paste the code" } else { "Were you given a code?" }
+                        if already_here {
+                            "That's where you are"
+                        } else if by_code {
+                            "Paste the code"
+                        } else {
+                            "Were you given a code?"
+                        }
                     }
                     input {
                         class: "flex-1 min-w-0 bg-[var(--bg)] border border-[var(--border)] focus:border-[var(--accent)] rounded px-2 py-1.5 text-xs font-mono text-[var(--text)] outline-none transition-colors lowercase",
@@ -560,7 +596,8 @@ fn ServersPane(on_switch: EventHandler<SessionMode>) -> Element {
                     button {
                         r#type: "submit",
                         class: "dxf-cta shrink-0 px-3 py-1.5 rounded text-xs disabled:opacity-40",
-                        disabled: code().trim().is_empty(),
+                        disabled: code().trim().is_empty() || already_here,
+                        title: if already_here { "This session is already on that server" } else { "" },
                         "Enter"
                     }
                 }
@@ -742,7 +779,10 @@ fn PeoplePane() -> Element {
     let talking: Vec<(String, String, crate::protocol::Id)> = snapshot
         .dms_by_recency()
         .into_iter()
-        .map(|d| (d.other.pubkey, d.other.username, d.channel_id))
+        .map(|d| {
+            let name = snapshot.display_name(&d.other_pubkey);
+            (d.other_pubkey, name, d.channel_id)
+        })
         .collect();
 
     // Contacts with no conversation yet: the only group here you can act on
@@ -753,13 +793,7 @@ fn PeoplePane() -> Element {
         .iter()
         .filter(|c| c.pubkey != self_pk)
         .filter(|c| !talking.iter().any(|(pk, _, _)| *pk == c.pubkey))
-        .map(|c| {
-            let name = c
-                .petname
-                .clone()
-                .unwrap_or_else(|| format!("npub…{}", short_key(&c.pubkey)));
-            (c.pubkey.clone(), name)
-        })
+        .map(|c| (c.pubkey.clone(), snapshot.display_name(&c.pubkey)))
         .collect();
     drop(snapshot);
 
@@ -879,13 +913,6 @@ fn PersonRow(
             span { class: "flex-1 min-w-0 truncate text-sm text-[var(--text-muted)]", "{name}" }
         }
     }
-}
-
-/// Last six characters of a key, which is what distinguishes two people whose
-/// keys share a prefix in a list.
-fn short_key(pubkey: &str) -> String {
-    let n = pubkey.len().saturating_sub(6);
-    pubkey[n..].to_string()
 }
 
 /// The strip that keeps the other level visible while you're reading a DM.

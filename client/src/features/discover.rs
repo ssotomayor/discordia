@@ -8,6 +8,64 @@
 use dioxus::prelude::*;
 
 use crate::protocol::rendezvous::DiscoverEntry;
+use crate::state::{SessionMode, host_of};
+
+/// Whether a row is the host this session is already attached to.
+///
+/// Not cosmetic. "Enter" swaps the session, and the workspace is keyed on the
+/// session so it is torn down and rebuilt — for a row you are already on that
+/// costs you the live gateway to gain the same one back, and when the row *is*
+/// this machine it stops the embedded server the row is advertising. So the
+/// directory has to be able to recognise itself, and the answer is not one
+/// comparison: how you got here decides what identifies the host.
+///
+/// - Self-hosting: the code the rendezvous handed us. `None` when this host
+///   registered with no rendezvous, and then no row can be us — we are not
+///   listed.
+/// - By code: the code *is* the join key, for a claimed name as much as for a
+///   random shortcode — the registry is keyed by it either way.
+/// - By address: the host:port we dialled against the one the row advertises.
+///   Best-effort by nature — a host reachable under two addresses is two
+///   strings — so a miss here degrades to the old behaviour rather than to a
+///   wrong claim.
+///
+/// `directory_url` is the rendezvous whose listing is being read, and the two
+/// code cases require it to be the one that issued the code. A shortcode is
+/// only unique within one registry — `adjective-animal-NN` is a small space and
+/// every relay draws from it independently — so without this a stranger's host
+/// on another directory could inherit the badge, and its Enter button with it.
+pub fn is_current_host(
+    entry: &DiscoverEntry,
+    directory_url: &str,
+    mode: Option<&SessionMode>,
+    own_shortcode: Option<&str>,
+) -> bool {
+    let same_directory = |theirs: &str| {
+        let a = host_of(theirs.trim());
+        !a.is_empty() && a.eq_ignore_ascii_case(&host_of(directory_url.trim()))
+    };
+    let same_code = |code: &str| {
+        let code = code.trim();
+        !code.is_empty() && code.eq_ignore_ascii_case(&entry.shortcode)
+    };
+    match mode {
+        Some(SessionMode::SelfHost { rendezvous_url, .. }) => {
+            rendezvous_url.as_deref().is_some_and(same_directory)
+                && own_shortcode.is_some_and(same_code)
+        }
+        Some(SessionMode::ByCode {
+            rendezvous_url,
+            code,
+        }) => same_directory(rendezvous_url) && same_code(code),
+        // No directory check: an address was dialled without one, and the row
+        // advertising that address is that host on whichever relay lists it.
+        Some(SessionMode::Remote { server_url }) => entry.endpoint.as_deref().is_some_and(|ep| {
+            let ours = host_of(server_url);
+            !ours.is_empty() && ours.eq_ignore_ascii_case(&host_of(ep))
+        }),
+        None => false,
+    }
+}
 
 /// How quiet a host has to be before the list stops presenting it as
 /// reachable. The rendezvous pings every 20s and unregisters at 60s, so a host
@@ -86,6 +144,16 @@ pub fn ServerDirectory(
     let mut refresh_tick = use_signal(|| 0u32);
     let mut filter = use_signal(|| Filter::All);
     let mut query = use_signal(String::new);
+    // Read here rather than taken as a prop: every mount of this list wants the
+    // same answer, and it is one the app state already holds.
+    let state = crate::state::use_app_state();
+    let (session_mode, own_shortcode) = {
+        let s = state.read();
+        (
+            s.session_mode.clone(),
+            s.host_info.as_ref().and_then(|h| h.shortcode.clone()),
+        )
+    };
     let url_for_fetch = rendezvous_url.clone();
     let entries = use_resource(move || {
         let _ = refresh_tick();
@@ -190,12 +258,20 @@ pub fn ServerDirectory(
                             for entry in shown {
                                 {
                                     let sc = entry.shortcode.clone();
-                                    let selected = picked_shortcode == sc;
+                                    let here = is_current_host(
+                                        &entry,
+                                        &rendezvous_url,
+                                        session_mode.as_ref(),
+                                        own_shortcode.as_deref(),
+                                    );
+                                    let selected = picked_shortcode == sc && !here;
                                     let named = entry.name.is_some();
                                     let title = entry.name.clone().unwrap_or_else(|| sc.clone());
                                     let (fresh_label, fresh_ok) = freshness(entry.idle_secs);
                                     let direct = entry.endpoint.is_some();
-                                    let row_cls = if selected {
+                                    let row_cls = if here {
+                                        "border-[var(--border-strong)] bg-[var(--panel2)]"
+                                    } else if selected {
                                         "border-[var(--accent)] bg-[var(--accent-soft)]"
                                     } else {
                                         "border-[var(--border)] hover:border-[var(--border-strong)]"
@@ -222,7 +298,8 @@ pub fn ServerDirectory(
                                             button {
                                                 r#type: "button",
                                                 class: "flex-1 min-w-0 flex items-center gap-3 text-left",
-                                                onclick: move |_| on_pick.call(for_pick.clone()),
+                                                style: if here { "cursor: default;" } else { "" },
+                                                onclick: move |_| if !here { on_pick.call(for_pick.clone()) },
                                                 span { class: "w-9 h-9 shrink-0 rounded-lg border border-[var(--border)] flex items-center justify-center text-xs text-[var(--text-muted)]",
                                                     "{initials}"
                                                 }
@@ -267,11 +344,24 @@ pub fn ServerDirectory(
                                                     if direct { "direct" } else { "relayed" }
                                                 }
                                             }
-                                            button {
-                                                r#type: "button",
-                                                class: "dxf-cta shrink-0 px-3 py-1.5 rounded text-[11px]",
-                                                onclick: move |_| on_enter.call(for_enter.clone()),
-                                                "Enter"
+                                            // No Enter on the host you are on:
+                                            // pressing it would drop the live
+                                            // session to dial the same one
+                                            // again.
+                                            if here {
+                                                span {
+                                                    class: "shrink-0 px-2.5 py-1 rounded-full border text-[10px] whitespace-nowrap",
+                                                    style: "color: var(--up); border-color: color-mix(in srgb, var(--up) 40%, transparent);",
+                                                    title: "This session is already on this server",
+                                                    "You're here"
+                                                }
+                                            } else {
+                                                button {
+                                                    r#type: "button",
+                                                    class: "dxf-cta shrink-0 px-3 py-1.5 rounded text-[11px]",
+                                                    onclick: move |_| on_enter.call(for_enter.clone()),
+                                                    "Enter"
+                                                }
                                             }
                                         }
                                     }
@@ -367,5 +457,133 @@ mod tests {
         let e = entry(Some("nexo"), "nexo", Some("Rust en espanol"));
         assert!(matches_query(&e, "rust"));
         assert!(!matches_query(&e, "haskell"));
+    }
+
+    const RZ: &str = "wss://rz.example";
+
+    fn by_code(code: &str) -> SessionMode {
+        SessionMode::ByCode {
+            rendezvous_url: RZ.into(),
+            code: code.into(),
+        }
+    }
+
+    fn self_host(rendezvous: Option<&str>) -> SessionMode {
+        SessionMode::SelfHost {
+            allow_lan: true,
+            rendezvous_url: rendezvous.map(Into::into),
+            publish_name: None,
+            description: None,
+            publish_public: true,
+        }
+    }
+
+    /// The case that was reported: the row you arrived through is still in the
+    /// list, and entering it again costs the session you already have.
+    #[test]
+    fn the_code_you_arrived_by_marks_its_own_row() {
+        let e = entry(Some("hormiguero"), "viento-tapir-04", None);
+        assert!(is_current_host(
+            &e,
+            RZ,
+            Some(&by_code("viento-tapir-04")),
+            None
+        ));
+        assert!(!is_current_host(
+            &e,
+            RZ,
+            Some(&by_code("otro-codigo-11")),
+            None
+        ));
+    }
+
+    /// A claimed name is the join code, so it matches the same way — and
+    /// codes are lowercase by convention rather than by rule.
+    #[test]
+    fn a_named_host_matches_on_its_name() {
+        let e = entry(Some("Hormiguero"), "hormiguero", None);
+        assert!(is_current_host(
+            &e,
+            "https://rz.example/",
+            Some(&by_code(" Hormiguero ")),
+            None
+        ));
+    }
+
+    /// A shortcode is unique to one registry, so the same one on another
+    /// directory is a stranger — and must keep its Enter button.
+    #[test]
+    fn the_same_code_on_another_directory_is_someone_else() {
+        let e = entry(None, "viento-tapir-04", None);
+        assert!(!is_current_host(
+            &e,
+            "wss://otra.example",
+            Some(&by_code("viento-tapir-04")),
+            None
+        ));
+    }
+
+    /// Your own listed host is the worst version of the bug: entering it stops
+    /// the server the row is advertising.
+    #[test]
+    fn your_own_host_knows_itself() {
+        let e = entry(None, "purple-fox-42", None);
+        let mine = self_host(Some(RZ));
+        assert!(is_current_host(&e, RZ, Some(&mine), Some("purple-fox-42")));
+        assert!(!is_current_host(&e, RZ, Some(&mine), Some("verde-oso-07")));
+    }
+
+    /// Hosting without a rendezvous means being in no directory at all, so no
+    /// row may claim to be us.
+    #[test]
+    fn an_unregistered_host_matches_nothing() {
+        let e = entry(None, "purple-fox-42", None);
+        assert!(!is_current_host(
+            &e,
+            RZ,
+            Some(&self_host(None)),
+            Some("purple-fox-42")
+        ));
+        assert!(!is_current_host(&e, RZ, Some(&self_host(Some(RZ))), None));
+        assert!(!is_current_host(
+            &e,
+            RZ,
+            Some(&self_host(Some(RZ))),
+            Some("")
+        ));
+    }
+
+    /// Typed an address, then found the same host listed: the endpoint is the
+    /// only thing the two have in common, and it holds on any directory.
+    #[test]
+    fn an_address_session_matches_the_advertised_endpoint() {
+        let mut e = entry(Some("nexo"), "nexo", None);
+        e.endpoint = Some("ws://203.0.113.9:9000".into());
+        let mine = SessionMode::Remote {
+            server_url: "ws://203.0.113.9:9000/gateway".into(),
+        };
+        assert!(is_current_host(&e, "wss://otra.example", Some(&mine), None));
+        let other = SessionMode::Remote {
+            server_url: "ws://198.51.100.4:9000/gateway".into(),
+        };
+        assert!(!is_current_host(&e, RZ, Some(&other), None));
+    }
+
+    /// A relay-only row publishes no address, so an address session has
+    /// nothing to compare and must not guess.
+    #[test]
+    fn a_relayed_row_cannot_be_matched_by_address() {
+        let e = entry(Some("nexo"), "nexo", None);
+        let mine = SessionMode::Remote {
+            server_url: "ws://203.0.113.9:9000/gateway".into(),
+        };
+        assert!(!is_current_host(&e, RZ, Some(&mine), None));
+    }
+
+    /// Offline every row is somewhere to go.
+    #[test]
+    fn with_no_session_no_row_is_current() {
+        let e = entry(Some("nexo"), "nexo", None);
+        assert!(!is_current_host(&e, RZ, None, Some("nexo")));
     }
 }

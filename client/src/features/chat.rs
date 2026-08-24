@@ -196,6 +196,7 @@ pub fn ChatView() -> Element {
     let snapshot = state.read();
     let selected_channel = snapshot.selected_channel;
     let dm = selected_channel.and_then(|cid| snapshot.dm_of(cid).cloned());
+    let dm_name = dm.as_ref().map(|d| snapshot.display_name(&d.other_pubkey));
     let channel_meta =
         selected_channel.and_then(|cid| snapshot.channels.iter().find(|c| c.id == cid).cloned());
     let messages: Vec<Message> = selected_channel
@@ -212,12 +213,8 @@ pub fn ChatView() -> Element {
     };
     drop(snapshot);
 
-    let (is_dm, header_name, composer_label) = match &dm {
-        Some(d) => (
-            true,
-            d.other.username.clone(),
-            format!("@{}", d.other.username),
-        ),
+    let (is_dm, header_name, composer_label) = match dm_name {
+        Some(name) => (true, name.clone(), format!("@{name}")),
         None => {
             let name = channel_meta
                 .as_ref()
@@ -401,9 +398,20 @@ fn MessageRow(message: Message, grouped: bool) -> Element {
     let author_pubkey = message.author.pubkey.clone();
     let channel_id = message.channel_id;
     let message_id = message.id;
-    // For the reply banner. Truncated the same way the server truncates its
-    // authoritative excerpt, so the banner and the eventual quote match.
-    let author_name = message.author.username.clone();
+    // A DM author's name is resolved here, not read off the message. Nostr
+    // carries no username, so the stored one is the key — while a *guild*
+    // message keeps the server's copy on purpose: it is authoritative, and
+    // somebody who has since left should keep the name they posted under.
+    let author_name = {
+        let s = state.read();
+        if s.dm_of(channel_id).is_some() {
+            s.display_name(&message.author.pubkey)
+        } else {
+            message.author.username.clone()
+        }
+    };
+    // Truncated the same way the server truncates its authoritative excerpt,
+    // so the reply banner and the eventual quote match.
     let content_for_reply = {
         let flat = message
             .content
@@ -481,7 +489,7 @@ fn MessageRow(message: Message, grouped: bool) -> Element {
                     onclick: move |_| state.write().profile_card = Some(author_pubkey.clone()),
                     crate::features::profiles::Avatar {
                         pubkey: message.author.pubkey.clone(),
-                        name: message.author.username.clone(),
+                        name: author_name.clone(),
                         size: "w-8 h-8",
                     }
                 }
@@ -494,7 +502,7 @@ fn MessageRow(message: Message, grouped: bool) -> Element {
                             class: "text-sm font-semibold",
                             style: "color: {crate::identity::signature_accent(&message.author.pubkey)};",
                             title: "{message.author.pubkey}",
-                            "{message.author.username}"
+                            "{author_name}"
                             span { class: "text-[var(--text-dim)] font-mono text-[10px] ml-0.5 font-normal",
                                 "#{discriminator(&message.author.pubkey)}"
                             }
@@ -898,7 +906,7 @@ fn Composer(channel_id: Id, composer_label: String, drag_over: Signal<bool>) -> 
         let dm_peer = state
             .read()
             .dm_of(channel_id)
-            .map(|d| d.other.pubkey.clone());
+            .map(|d| d.other_pubkey.clone());
         if let Some(peer) = dm_peer {
             if image.is_some() {
                 // Nostr path does not yet support attachments (NIP-17 kind:15

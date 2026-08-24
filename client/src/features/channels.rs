@@ -12,6 +12,9 @@ use crate::state::{AppState, GatewayTx, VoicePhase, use_app_state, use_gateway};
 #[derive(Clone, PartialEq)]
 struct DmRow {
     info: DmInfo,
+    /// Resolved when the list is assembled, never stored on the conversation —
+    /// see `DmInfo`.
+    name: String,
     /// Last message, prefixed with "You:" when it is ours — which is how you
     /// tell "they replied" from "I said the last thing" without opening it.
     preview: Option<String>,
@@ -31,8 +34,8 @@ impl DmRow {
         if needle.is_empty() {
             return true;
         }
-        self.info.other.username.to_lowercase().contains(&needle)
-            || self.info.other.pubkey.to_lowercase().contains(&needle)
+        self.name.to_lowercase().contains(&needle)
+            || self.info.other_pubkey.to_lowercase().contains(&needle)
     }
 }
 
@@ -211,7 +214,8 @@ pub fn ChannelsColumn() -> Element {
                 }),
                 when: last.map(|m| m.created_at.format("%H:%M").to_string()),
                 unread: snapshot.dm_unread.get(&dm.channel_id).copied().unwrap_or(0),
-                online: snapshot.is_online(&dm.other.pubkey),
+                online: snapshot.is_online(&dm.other_pubkey),
+                name: snapshot.display_name(&dm.other_pubkey),
                 info: dm,
             }
         })
@@ -368,8 +372,8 @@ pub fn ChannelsColumn() -> Element {
                                 "text-[var(--text-muted)]"
                             };
                             let g2 = gateway.clone();
-                            let uname = row.info.other.username.clone();
-                            let disc = discriminator(&row.info.other.pubkey);
+                            let uname = row.name.clone();
+                            let disc = discriminator(&row.info.other_pubkey);
                             rsx! {
                                 button {
                                     key: "{cid}",
@@ -377,7 +381,7 @@ pub fn ChannelsColumn() -> Element {
                                     onclick: move |_| select_dm(&mut state, &g2, cid),
                                     span { class: "relative shrink-0",
                                         crate::features::profiles::Avatar {
-                                            pubkey: row.info.other.pubkey.clone(),
+                                            pubkey: row.info.other_pubkey.clone(),
                                             name: uname.clone(),
                                             size: "w-7 h-7",
                                             text: "text-[10px]",
