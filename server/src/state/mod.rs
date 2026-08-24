@@ -12,75 +12,39 @@ use crate::protocol::{
 };
 use crate::store::Store;
 
-/// Log-and-continue for write-through persistence. Memory is authoritative on
-/// this (single-writer) node; a failed DB write means the mutation survives
-/// the session but not a restart — loud in the logs, never a user-facing error.
+/// A failed write is logged and ignored: the change survives the session but
+/// not a restart, and is never a user-facing error.
 fn persist(res: Result<(), sqlx::Error>, what: &str) {
     if let Err(e) = res {
         tracing::error!(error = %e, what, "write-through persist FAILED — state will regress on restart");
     }
 }
 
-/// Per-connection outbound queue depth. A connection whose queue fills (a
-/// consumer too slow to keep up) is dropped; the client reconnects and gets a
-/// fresh snapshot — the bounded-and-drop successor to the old lag→resync.
 const CONN_QUEUE_CAP: usize = 256;
 
-/// Max length of an inline image data URL (~2.2 MB of raw bytes once base64
-/// is accounted for). Keeps a single broadcast frame from getting absurd.
 pub const MAX_IMAGE_LEN: usize = 3_000_000;
 
-/// A registered connection's outbound handle. The connection's own task drains
-/// the matching receiver and writes to its websocket (applying bot-intent
-/// filtering on the way out). Routing to this handle is what makes `deliver`
-/// cost O(recipients) instead of O(all connections).
 struct Conn {
     tx: mpsc::Sender<ServerMessage>,
 }
 
-/// One invite code, with whatever limits it was minted under.
-///
-/// **Both limits are `Option`, and `None` means unlimited** — which is what
-/// every code minted before this existed already was, so an old code keeps
-/// working rather than expiring the moment the server restarts.
-///
-/// Validation belongs here rather than at the call site because there are two
-/// callers with different jobs: `invite_guild` resolves a code *before* the
-/// join gate, so an expired code is refused instead of being handed a
-/// proof-of-work challenge it can never spend, and `join_by_invite` resolves
-/// it again and consumes a use. Both have to agree about what "still valid"
-/// means.
 #[derive(Debug, Clone)]
 pub struct Invite {
-    /// The code itself. Duplicated from the map key so an `Invite` handed to a
-    /// caller is complete on its own.
     pub code: String,
     pub guild_id: Id,
-    /// Unix ms after which the code stops working. `None` = never expires.
     pub expires_at_ms: Option<i64>,
-    /// Successful joins the code allows. `None` = unlimited.
     pub max_uses: Option<u32>,
-    /// Joins already spent. Only a join that actually happened counts — a
-    /// challenge issued and never answered must not burn one.
     pub uses: u32,
-    /// Who minted it. The "per-code attribution" half of the entry: an owner
-    /// looking at a leaked code can now tell which moderator created it.
     pub created_by: String,
 }
 
-/// How long an unreferenced blob is left alone before the sweep may take it.
-///
-/// Generous on purpose: the cost of waiting is a day of disk, and the cost of
-/// being wrong is a picture disappearing from a message somebody just sent.
 const MEDIA_GRACE: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
 
-/// Wall clock in Unix milliseconds — the unit every timestamp on the wire uses.
 fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
 
 impl Invite {
-    /// Whether the code can still admit somebody, at `now_ms`.
     fn is_live(&self, now_ms: i64) -> bool {
         let unexpired = self.expires_at_ms.is_none_or(|at| now_ms < at);
         let unspent = self.max_uses.is_none_or(|max| self.uses < max);
@@ -89,75 +53,31 @@ impl Invite {
 }
 
 pub struct AppState {
-    /// Durable persistence (SQLite). Messages live ONLY there; the metadata
-    /// maps below are the in-memory authority, written through on mutation and
-    /// rehydrated at boot.
     pub store: Store,
-    /// Content-addressed blob storage for message images.
     pub media: MediaStore,
     pub guilds: DashMap<Id, Guild>,
     pub channels: DashMap<Id, Channel>,
     pub channels_by_guild: DashMap<Id, Vec<Id>>,
-    /// Members per guild, by user pubkey.
     pub members: DashMap<Id, DashMap<String, Member>>,
-    /// Every user we've ever seen identify, by pubkey. Lets us resolve a
-    /// display name for a DM partner who may not share a guild with us.
     pub users: DashMap<String, User>,
-    /// Public profiles (avatar/bio) by pubkey. Owned by the client, uploaded
-    /// on connect; cached here so we can hand them to everyone.
     pub profiles: DashMap<String, Profile>,
-    /// Voice state per user pubkey (global; a user can only be in one voice
-    /// channel at a time across all guilds, same as Discord).
     pub voice_states: DashMap<String, VoiceState>,
-    /// Installed bots, indexed by bot pubkey then guild. Grants apply to
-    /// connections that self-declare as bots (`Identify { bot: true }`); an
-    /// install alone never restricts a human connection. Managed via
-    /// `ManageGuild`.
     pub bot_installs: DashMap<String, DashMap<Id, BotInstall>>,
-    /// Guild roles, by guild. A member's effective permissions are the union
-    /// over their assigned roles (see `effective_permissions`).
     pub roles: DashMap<Id, Vec<Role>>,
-    /// Custom emoji, by guild. The catalog only — the images live in the
-    /// content-addressed media store and are served on demand (`FetchEmoji`).
     pub emojis: DashMap<Id, Vec<GuildEmoji>>,
-    /// Invite codes: code -> the invite. High-entropy random strings — invites are
-    /// a ban-evasion surface, so guessability matters.
     pub invites: DashMap<String, Invite>,
-    /// The (single, rotating) invite code per guild, reverse index.
     pub invite_by_guild: DashMap<Id, String>,
-    /// Banned pubkeys per guild. Checked FIRST on every join path.
     pub bans: DashMap<Id, std::collections::HashSet<String>>,
-    /// Last-post instant per (channel, pubkey), for slowmode. Ephemeral.
     pub last_post: DashMap<(Id, String), std::time::Instant>,
-    /// Recent join instants per guild, for mass-join (raid) detection.
-    /// Ephemeral; trimmed on each join.
     pub recent_joins: DashMap<Id, Vec<std::time::Instant>>,
-    /// Server-authoritative message-XP per pubkey (drives the level display).
-    /// Kept separate from `profiles` so the client-owned profile data stays
-    /// clean; XP is injected onto members on emit (`stamp_xp`). Keyed
-    /// guild → pubkey: levels are standing in ONE community, not a cross-guild
-    /// reputation, and they survive leave/kick/rejoin.
     pub xp: DashMap<Id, DashMap<String, u64>>,
-    /// Pubkeys treated as owners of SYSTEM guilds (empty `owner_pubkey`, e.g.
-    /// the seeded Lobby) — the escape hatch that makes the shared landing
-    /// space moderatable. Self-host sets this to the host's own pubkey; a
-    /// central deployment reads it from `DIOXUSFUN_OPERATORS`. Operators get
-    /// full permissions in system guilds but those guilds stay undeletable and
-    /// non-transferable (see `delete_guild` / `transfer_ownership`).
     pub operators: std::collections::HashSet<String>,
-    /// Registered connections by id → outbound handle. The routing table that
-    /// replaced the single broadcast-everything hub.
     conns: DashMap<u64, Conn>,
-    /// Identified connections indexed by user pubkey (a user may hold several —
-    /// multiple devices/tabs). Lets `deliver` find exactly the target sockets.
     conn_ids_by_pubkey: DashMap<String, std::collections::HashSet<u64>>,
-    /// Monotonic source of connection ids.
     next_conn_id: AtomicU64,
 }
 
 impl AppState {
-    /// Rehydrate from the store, or seed a fresh instance (the system Lobby)
-    /// if the database is empty. `operators` are owners of system guilds.
     pub async fn load_or_seed(
         store: Store,
         media: MediaStore,
@@ -221,8 +141,6 @@ impl AppState {
                     online: false,
                     bot,
                     roles: role_ids,
-                    // Stored rows keep xp at 0 — the xp map is the truth,
-                    // stamped at emit (`stamp_xp`).
                     xp: 0,
                 },
             );
@@ -265,8 +183,6 @@ impl AppState {
         Ok(state)
     }
 
-    /// Seed the default system guild (empty owner: undeletable, auto-joined,
-    /// manageable only by operators) with a text + voice channel.
     async fn seed_lobby(&self) {
         let lobby = Guild {
             id: Uuid::new_v4(),
@@ -314,9 +230,6 @@ impl AppState {
         self.guilds.insert(lobby.id, lobby);
     }
 
-    /// Register a fresh connection. Returns its id and the receiver its task
-    /// drains. The connection joins `conns` immediately (so `broadcast` reaches
-    /// it) but is not yet resolvable by pubkey until `identify_conn`.
     pub fn register_conn(&self) -> (u64, mpsc::Receiver<ServerMessage>) {
         let id = self.next_conn_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = mpsc::channel(CONN_QUEUE_CAP);
@@ -324,9 +237,6 @@ impl AppState {
         (id, rx)
     }
 
-    /// Associate a registered connection with its identified user so targeted
-    /// delivery (`deliver`) can find it. Call this BEFORE sending the identify
-    /// snapshot so no concurrently-delivered frame is lost in the gap.
     pub fn identify_conn(&self, conn_id: u64, pubkey: &str) {
         self.conn_ids_by_pubkey
             .entry(pubkey.to_string())
@@ -334,8 +244,6 @@ impl AppState {
             .insert(conn_id);
     }
 
-    /// Tear a connection down on disconnect (or when it's dropped for being too
-    /// slow). Idempotent.
     pub fn unregister_conn(&self, conn_id: u64, pubkey: Option<&str>) {
         self.conns.remove(&conn_id);
         if let Some(pk) = pubkey {
@@ -346,21 +254,13 @@ impl AppState {
                 false
             };
             if now_empty {
-                // Only remove if still empty (a racing reconnect may have
-                // re-added the pubkey under a new conn id).
                 self.conn_ids_by_pubkey
                     .remove_if(pk, |_, set| set.is_empty());
             }
         }
     }
 
-    /// Enqueue `msg` for one connection. A full queue means the consumer can't
-    /// keep up: drop the connection (its task ends, the client reconnects and
-    /// resnapshots) rather than block every other recipient.
     fn route(&self, conn_id: u64, msg: &ServerMessage) {
-        // Clone the sender out so the DashMap shard guard is released before we
-        // ever call `remove` (removing while holding a ref to the same shard
-        // would deadlock).
         let tx = match self.conns.get(&conn_id) {
             Some(c) => c.tx.clone(),
             None => return,
@@ -370,9 +270,6 @@ impl AppState {
         }
     }
 
-    /// Send a message to every connected client. Now rare — only truly global
-    /// frames (a profile/level update that could show anywhere) use this; guild
-    /// and DM traffic goes through `deliver`.
     pub fn broadcast(&self, msg: ServerMessage) {
         let ids: Vec<u64> = self.conns.iter().map(|e| *e.key()).collect();
         for id in ids {
@@ -380,9 +277,6 @@ impl AppState {
         }
     }
 
-    /// Deliver a message only to the connections whose user is in `to`
-    /// (deduplicated across a user's multiple devices). O(recipient
-    /// connections), not O(all connections).
     pub fn deliver(&self, to: Vec<String>, msg: ServerMessage) {
         let mut ids: Vec<u64> = Vec::new();
         for pk in &to {
@@ -397,13 +291,11 @@ impl AppState {
         }
     }
 
-    /// Record (or refresh) a user in the global directory.
     pub async fn remember_user(&self, user: &User) {
         self.users.insert(user.pubkey.clone(), user.clone());
         persist(self.store.upsert_user(user).await, "user");
     }
 
-    /// Store/overwrite a user's profile and return it.
     pub async fn set_profile(
         &self,
         pubkey: &str,
@@ -426,7 +318,6 @@ impl AppState {
         profile
     }
 
-    /// A member's message-XP in a guild (0 if they've never posted there).
     pub fn xp_of(&self, guild_id: Id, pubkey: &str) -> u64 {
         self.xp
             .get(&guild_id)
@@ -434,17 +325,11 @@ impl AppState {
             .unwrap_or(0)
     }
 
-    /// Stamp a member with their authoritative per-guild XP. Called at every
-    /// member emit point (stored rows keep xp at 0 — the map is the truth).
     pub fn stamp_xp(&self, mut member: Member) -> Member {
         member.xp = self.xp_of(member.guild_id, &member.user.pubkey);
         member
     }
 
-    /// Increment a member's message-XP in a guild by one. Returns
-    /// `Some(member)` — stamped with the new XP — only when the derived level
-    /// changed, so callers deliver a `MemberUpdate` to that guild on level-up
-    /// (rare) rather than per message.
     pub async fn add_xp(&self, guild_id: Id, pubkey: &str) -> Option<Member> {
         let new_xp = {
             let guild = self.xp.entry(guild_id).or_default();
@@ -468,8 +353,6 @@ impl AppState {
         Some(self.stamp_xp(member))
     }
 
-    /// Toggle a user's emoji reaction on a message. Returns the message's full
-    /// reaction set afterwards, or None if the message doesn't exist.
     pub async fn toggle_reaction(
         &self,
         channel_id: Id,
@@ -490,11 +373,6 @@ impl AppState {
         }
     }
 
-    /// True if `pubkey` is the effective owner of `guild_id` for PERMISSION
-    /// purposes. A normal guild: the literal `owner_pubkey`. A system guild
-    /// (empty owner, e.g. the Lobby): a configured operator. Note this is not
-    /// consulted by `delete_guild` / `transfer_ownership`, which guard on the
-    /// literal empty owner so system guilds stay undeletable + non-transferable.
     pub fn is_owner(&self, guild_id: Id, pubkey: &str) -> bool {
         match self.guilds.get(&guild_id) {
             Some(g) if !g.owner_pubkey.is_empty() => g.owner_pubkey == pubkey,
@@ -503,11 +381,6 @@ impl AppState {
         }
     }
 
-    /// A member's effective permission set: owner ⇒ everything; otherwise the
-    /// union over their assigned roles (dangling role ids are ignored). This
-    /// is the HUMAN grant path — bot connections derive per-guild powers from
-    /// `bot_install` only, never from roles. System guilds have no owner and
-    /// can never mint roles, so this returns empty there by construction.
     pub fn effective_permissions(
         &self,
         guild_id: Id,
@@ -535,12 +408,10 @@ impl AppState {
             .collect()
     }
 
-    /// Whether `pubkey` holds `perm` in `guild_id` (owner ⇒ always).
     pub fn has_permission(&self, guild_id: Id, pubkey: &str, perm: Permission) -> bool {
         self.effective_permissions(guild_id, pubkey).contains(&perm)
     }
 
-    /// Gate helper: `Err` with a uniform message when `perm` is missing.
     pub fn require_permission(
         &self,
         guild_id: Id,
@@ -560,16 +431,12 @@ impl AppState {
         }
     }
 
-    /// Requires `ManageGuild`: set/clear a guild's accent. Returns the updated
-    /// guild on success.
     pub async fn set_guild_accent(
         &self,
         guild_id: Id,
         accent: Option<String>,
         by_pubkey: &str,
     ) -> Result<Guild, String> {
-        // Check BEFORE taking the entry guard — require_permission reads the
-        // same map.
         self.require_permission(guild_id, by_pubkey, Permission::ManageGuild)?;
         let updated = {
             let mut guild = self
@@ -583,16 +450,6 @@ impl AppState {
         Ok(updated)
     }
 
-    /// Flip a user's screen-share flag; `None` when it was already there.
-    ///
-    /// Same shape as `update_camera`, and it replaced a channel-keyed
-    /// `DashMap<Id, HashSet<String>>`. Three things came off with that map: the
-    /// unchanged-means-`None` short-circuit here bounds the fan-out a spammed
-    /// toggle can cause, where the old setter re-broadcast its whole sorted list
-    /// on every redundant call; the map leaked an empty `HashSet` per channel
-    /// through `entry().or_default()` even when *stopping*; and teardown no
-    /// longer needs call sites of its own, because leaving, disconnecting, being
-    /// kicked and channel deletion all already clear the whole `VoiceState`.
     pub fn update_screen_share(&self, user_pubkey: &str, sharing: bool) -> Option<VoiceState> {
         let mut entry = self.voice_states.get_mut(user_pubkey)?;
         if entry.screen_sharing == sharing {
@@ -602,13 +459,6 @@ impl AppState {
         Some(entry.clone())
     }
 
-    /// The sorted pubkeys sharing a screen in a channel, derived from the voice
-    /// states rather than stored.
-    ///
-    /// Only `ServerMessage::ScreenShareState` needs this. That message is kept
-    /// because dropping it would silently take the LIVE badge away from any
-    /// client older than `screen_sharing`, and nothing on this wire carries a
-    /// version to detect that with. Deriving it means the two can never disagree.
     pub fn screen_sharers_in(&self, channel_id: Id) -> Vec<String> {
         let mut list: Vec<String> = self
             .voice_states
@@ -620,12 +470,6 @@ impl AppState {
         list
     }
 
-    /// Live voice presence inside one guild.
-    ///
-    /// The single-guild counterpart of the filter `snapshot_for` runs across
-    /// every guild you are in — `GuildJoined` needs exactly one, because that
-    /// is the only guild the joiner has just gained the right to see voice
-    /// presence for.
     pub fn voice_states_in(&self, guild_id: Id) -> Vec<VoiceState> {
         self.voice_states
             .iter()
@@ -634,13 +478,10 @@ impl AppState {
             .collect()
     }
 
-    /// Snapshot of all known profiles.
     pub fn profiles_snapshot(&self) -> Vec<Profile> {
         self.profiles.iter().map(|p| p.value().clone()).collect()
     }
 
-    /// Resolve a display `User` for a pubkey, falling back to a truncated
-    /// pubkey label if we've never seen them identify.
     fn resolve_user(&self, pubkey: &str) -> User {
         self.users
             .get(pubkey)
@@ -651,10 +492,6 @@ impl AppState {
             })
     }
 
-    /// Create a new guild from a community `template` and make `creator` its
-    /// first (online) member. Returns the guild, its channels, and the
-    /// creator's membership so the caller can broadcast them. The returned
-    /// roles are broadcast separately by the caller.
     pub async fn create_guild(
         &self,
         name: &str,
@@ -740,8 +577,6 @@ impl AppState {
     }
 
     pub async fn snapshot_for(&self, user: &User) -> ServerMessage {
-        // System guilds (empty owner) are auto-joined as a landing space; all
-        // other guilds are private.
         let system_guilds: Vec<Id> = self
             .guilds
             .iter()
@@ -810,7 +645,6 @@ impl AppState {
         }
     }
 
-    /// Roles of the given guilds, flattened (for `Ready`).
     pub fn roles_for_guilds(&self, guild_ids: &[Id]) -> Vec<crate::protocol::Role> {
         guild_ids
             .iter()
@@ -818,7 +652,6 @@ impl AppState {
             .collect()
     }
 
-    /// A guild's roles (empty if none defined).
     pub fn guild_roles(&self, guild_id: Id) -> Vec<crate::protocol::Role> {
         self.roles
             .get(&guild_id)
@@ -828,12 +661,6 @@ impl AppState {
 
     const MAX_ROLES_PER_GUILD: usize = 50;
 
-    /// The anti-escalation gate every role mutation runs: the actor must hold
-    /// `ManageRoles`, may only touch roles whose permissions they hold
-    /// themselves (the subset rule), and roles carrying `ManageRoles` /
-    /// `ManageGuild` are owner-touch-only (kills demotion wars between equal
-    /// moderators). `role_perms` is every permission set involved — a role's
-    /// current set, its updated set, or both.
     fn authorize_role_touch(
         &self,
         guild_id: Id,
@@ -862,7 +689,6 @@ impl AppState {
         Ok(())
     }
 
-    /// Validate + normalize a role name/color. Shared by create/update.
     fn sanitize_role(
         name: &str,
         color: Option<String>,
@@ -875,7 +701,6 @@ impl AppState {
         Ok((name.to_string(), color))
     }
 
-    /// Create a role. Returns it on success.
     pub async fn create_role(
         &self,
         guild_id: Id,
@@ -907,7 +732,6 @@ impl AppState {
         Ok(role)
     }
 
-    /// Full-replace a role's name/color/permissions.
     pub async fn update_role(
         &self,
         guild_id: Id,
@@ -918,8 +742,6 @@ impl AppState {
         by_pubkey: &str,
     ) -> Result<Role, String> {
         let permissions = unique(permissions);
-        // Subset rule applies to current and new permissions to prevent
-        // hollowing out senior roles.
         let current = self
             .roles
             .get(&guild_id)
@@ -946,10 +768,6 @@ impl AppState {
         Ok(updated)
     }
 
-    // Client-side `can()` only hides UI; server must re-check `ManageEmojis`
-    // on every mutation.
-
-    /// The guild's emoji catalog (empty slice if it has none).
     pub fn emojis_of(&self, guild_id: Id) -> Vec<GuildEmoji> {
         self.emojis
             .get(&guild_id)
@@ -957,15 +775,10 @@ impl AppState {
             .unwrap_or_default()
     }
 
-    /// Catalogs for every guild in `guild_ids` — used to build the Ready
-    /// snapshot without leaking the emoji of guilds you aren't in.
     pub fn emojis_for_guilds(&self, guild_ids: &[Id]) -> Vec<GuildEmoji> {
         guild_ids.iter().flat_map(|g| self.emojis_of(*g)).collect()
     }
 
-    /// Add a custom emoji. `image` is the media-store sentinel the caller has
-    /// already stored (the gateway owns blob decoding, as it does for message
-    /// attachments).
     pub async fn create_emoji(
         &self,
         guild_id: Id,
@@ -1003,8 +816,6 @@ impl AppState {
         Ok(emoji)
     }
 
-    /// Rename an emoji, leaving its image alone — clients that already hold the
-    /// bytes keep them, since the content address hasn't moved.
     pub async fn rename_emoji(
         &self,
         guild_id: Id,
@@ -1036,9 +847,6 @@ impl AppState {
         Ok(updated)
     }
 
-    /// Remove an emoji from the catalog. The blob stays: it is content-
-    /// addressed and may be shared with a message attachment, so dropping it
-    /// needs refcounting (the blob-GC item in docs/AUDIT-2026-08-17.md).
     pub async fn delete_emoji(
         &self,
         guild_id: Id,
@@ -1059,8 +867,6 @@ impl AppState {
         Ok(())
     }
 
-    /// Delete a role, stripping it from every member. Returns the members
-    /// whose role set changed (for `MemberUpdate` broadcasts).
     pub async fn delete_role(
         &self,
         guild_id: Id,
@@ -1096,8 +902,6 @@ impl AppState {
         Ok(changed)
     }
 
-    /// Grant (or revoke, for `assign = false`) a role on a member. Returns the
-    /// updated member. Roles never apply to bots — assignment is rejected.
     pub async fn set_member_role(
         &self,
         guild_id: Id,
@@ -1140,9 +944,6 @@ impl AppState {
         Ok(self.stamp_xp(updated))
     }
 
-    /// Insert `user` as an online member of `guild_id` if not already present;
-    /// otherwise just flip them online. Returns the resulting membership.
-    /// (Presence isn't persisted — only NEW memberships hit the store.)
     pub async fn add_member(&self, guild_id: Id, user: &User) -> Member {
         let (member, is_new) = {
             let guild_members = self.members.entry(guild_id).or_default();
@@ -1168,7 +969,6 @@ impl AppState {
         self.stamp_xp(member)
     }
 
-    /// Pubkeys of every member of a guild (for member-scoped delivery).
     pub fn guild_member_pubkeys(&self, guild_id: Id) -> Vec<String> {
         self.members
             .get(&guild_id)
@@ -1183,13 +983,10 @@ impl AppState {
             .unwrap_or(false)
     }
 
-    /// The guild a channel belongs to, if it's a known guild channel.
     pub fn channel_guild(&self, channel_id: Id) -> Option<Id> {
         self.channels.get(&channel_id).map(|c| c.guild_id)
     }
 
-    /// Snapshot of PUBLIC guilds for the browse directory (private guilds are
-    /// invite-only and never listed).
     pub fn guild_catalog(&self) -> Vec<crate::protocol::GuildSummary> {
         self.guilds
             .iter()
@@ -1203,9 +1000,6 @@ impl AppState {
             .collect()
     }
 
-    /// A page of the public directory: `limit` summaries starting at `offset`
-    /// (sorted by member count desc, then name, for a stable order), plus the
-    /// total public-guild count. Backs the on-demand `FetchCatalog`.
     pub fn guild_catalog_page(
         &self,
         offset: u32,
@@ -1226,7 +1020,6 @@ impl AppState {
         (page, total)
     }
 
-    /// True if `pubkey` is banned from `guild_id`.
     pub fn is_banned(&self, guild_id: Id, pubkey: &str) -> bool {
         self.bans
             .get(&guild_id)
@@ -1234,9 +1027,6 @@ impl AppState {
             .unwrap_or(false)
     }
 
-    /// Add `user` to an existing PUBLIC guild from the directory. Returns the
-    /// guild, its channels, members, and roles so the joiner's client can
-    /// render it. Bans are checked before anything else.
     pub async fn join_guild(
         &self,
         guild_id: Id,
@@ -1258,17 +1048,11 @@ impl AppState {
         Ok(self.admit_member(guild, user).await)
     }
 
-    /// Redeem an invite code. Everything is validated at redemption time (the
-    /// server is the sole oracle): the code must exist, map to a live guild,
-    /// and the redeemer must not be banned. Works for private guilds — that's
-    /// the point of invites.
     pub async fn join_by_invite(
         &self,
         code: &str,
         user: &User,
     ) -> Result<(Guild, Vec<Channel>, Vec<Member>, Vec<Role>), String> {
-        // Checked and spent under the same entry lock, so two joins racing the
-        // last use of a capped code cannot both win it.
         let code = code.trim();
         let guild_id = {
             let mut entry = self
@@ -1287,8 +1071,6 @@ impl AppState {
             .map(|g| g.clone())
             .ok_or_else(|| "unknown or expired invite code".to_string())?;
         if self.is_banned(guild_id, &user.pubkey) {
-            // Refund use on ban to prevent banned keys from exhausting capped
-            // codes.
             if let Some(mut entry) = self.invites.get_mut(code) {
                 entry.uses = entry.uses.saturating_sub(1);
             }
@@ -1298,8 +1080,6 @@ impl AppState {
         Ok(self.admit_member(guild, user).await)
     }
 
-    /// Shared tail of both join paths: add the member and snapshot the guild
-    /// bundle for `GuildJoined`.
     async fn admit_member(
         &self,
         guild: Guild,
@@ -1322,7 +1102,6 @@ impl AppState {
         (guild, channels, members, roles)
     }
 
-    /// Requires `ManageGuild`: flip a guild between public and private.
     pub async fn set_guild_visibility(
         &self,
         guild_id: Id,
@@ -1342,9 +1121,6 @@ impl AppState {
         Ok(updated)
     }
 
-    /// Requires `CreateInvite` or `ManageGuild`: return the guild's invite
-    /// code, minting one if absent. `rotate` replaces (and invalidates) the
-    /// current code.
     pub async fn get_or_create_invite(
         &self,
         guild_id: Id,
@@ -1359,9 +1135,6 @@ impl AppState {
         {
             self.require_permission(guild_id, by_pubkey, Permission::ManageGuild)?;
         }
-        // Only return an existing code if it is still live; otherwise the
-        // caller would receive a dead code with no way to distinguish it from
-        // a valid one.
         if !rotate
             && let Some(existing) = self.invite_by_guild.get(&guild_id)
             && let Some(invite) = self.invites.get(existing.value())
@@ -1381,8 +1154,6 @@ impl AppState {
         let invite = Invite {
             code: code.clone(),
             guild_id,
-            // Store absolute expiry so a restart does not silently extend the
-            // TTL.
             expires_at_ms: expires_in_secs.map(|s| now_ms() + (s as i64) * 1000),
             max_uses,
             uses: 0,
@@ -1405,9 +1176,6 @@ impl AppState {
         Ok(invite)
     }
 
-    /// Common target validation for kick/ban ("moderator immunity"): never the
-    /// owner, never yourself, never a bot (uninstall instead), and moderators
-    /// can't moderate moderators — only the owner can.
     fn validate_moderation_target(
         &self,
         guild_id: Id,
@@ -1444,9 +1212,6 @@ impl AppState {
         Ok(())
     }
 
-    /// Remove `target` from the guild (membership row + any voice state there).
-    /// Shared tail of kick, ban, and leave. Returns the target's cleared voice
-    /// state (if they were in voice in THIS guild) for broadcasting.
     fn remove_membership(&self, guild_id: Id, target_pubkey: &str) -> Option<VoiceState> {
         if let Some(gm) = self.members.get(&guild_id) {
             gm.remove(target_pubkey);
@@ -1463,7 +1228,6 @@ impl AppState {
         }
     }
 
-    /// Requires `KickMembers`: remove a member (they may rejoin later).
     pub async fn kick_member(
         &self,
         guild_id: Id,
@@ -1483,9 +1247,6 @@ impl AppState {
         Ok(cleared)
     }
 
-    /// Requires `BanMembers`: atomically remove membership AND record the ban
-    /// (no join-between-kick-and-ban window — the ban set is written first,
-    /// in the DB as well as in memory).
     pub async fn ban_member(
         &self,
         guild_id: Id,
@@ -1494,9 +1255,8 @@ impl AppState {
     ) -> Result<Option<VoiceState>, String> {
         self.require_permission(guild_id, by_pubkey, Permission::BanMembers)?;
         self.validate_moderation_target(guild_id, target_pubkey, by_pubkey)?;
-        // DB ban row FIRST: a crash mid-ban must never restart into
-        // "membership removed but not banned" — the safe failure mode is
-        // "banned and still listed as member", which the join gates ignore.
+        // Ban row before the member removal: a crash in between must not restart
+        // into a removed-but-unbanned member.
         persist(
             self.store.insert_ban(guild_id, target_pubkey).await,
             "ban insert",
@@ -1513,7 +1273,6 @@ impl AppState {
         Ok(cleared)
     }
 
-    /// Requires `BanMembers`: lift a ban.
     pub async fn unban_member(
         &self,
         guild_id: Id,
@@ -1537,7 +1296,6 @@ impl AppState {
         }
     }
 
-    /// Requires `BanMembers`: the guild's ban list with display names resolved.
     pub fn ban_list(&self, guild_id: Id, by_pubkey: &str) -> Result<Vec<User>, String> {
         self.require_permission(guild_id, by_pubkey, Permission::BanMembers)?;
         Ok(self
@@ -1547,8 +1305,6 @@ impl AppState {
             .unwrap_or_default())
     }
 
-    /// Voluntarily leave a guild. Rejected for system guilds (you'd be
-    /// auto-rejoined on reconnect) and for the owner (transfer or delete).
     pub async fn leave_guild(
         &self,
         guild_id: Id,
@@ -1576,7 +1332,6 @@ impl AppState {
         Ok(cleared)
     }
 
-    /// Requires `ManageChannels`: add a channel. Position appends at the end.
     pub async fn create_channel(
         &self,
         guild_id: Id,
@@ -1615,18 +1370,6 @@ impl AppState {
         Ok(channel)
     }
 
-    /// Requires `ManageChannels`: full-replace a channel's
-    /// name/topic/read_only/position.
-    /// Move channels within one guild, touching **only** their positions.
-    ///
-    /// The permission is checked once for the guild rather than once per row,
-    /// and every id is required to belong to it — a caller must not be able to
-    /// renumber a channel in a guild they can manage *into* one they cannot, or
-    /// use a guild they own to move somebody else's rows.
-    ///
-    /// Returns the updated channels so the caller can broadcast them; an empty
-    /// list is a no-op rather than an error, because a drag that ends where it
-    /// started is not a failure.
     pub async fn reorder_channels(
         &self,
         guild_id: Id,
@@ -1656,7 +1399,6 @@ impl AppState {
         Ok(updated)
     }
 
-    // Argument count tracks channel shape; splitting is not worth it.
     #[allow(clippy::too_many_arguments)]
     pub async fn update_channel(
         &self,
@@ -1684,7 +1426,7 @@ impl AppState {
                 .map(|t| t.chars().take(120).collect());
             channel.read_only =
                 read_only && matches!(channel.kind, crate::protocol::ChannelKind::Text);
-            channel.slowmode_secs = slowmode_secs.min(21_600); // cap at 6h
+            channel.slowmode_secs = slowmode_secs.min(21_600);
             channel.position = position;
             channel.clone()
         };
@@ -1692,9 +1434,6 @@ impl AppState {
         Ok(updated)
     }
 
-    /// Requires `ManageChannels`: delete a channel. A guild's last text
-    /// channel is protected (clients need somewhere to land). Returns the
-    /// guild id and the voice states evicted from a deleted voice channel.
     pub async fn delete_channel(
         &self,
         channel_id: Id,
@@ -1729,8 +1468,6 @@ impl AppState {
             .filter_map(|pk| self.clear_voice(pk))
             .collect();
         self.channels.remove(&channel_id);
-        // No screen-share map to prune: the flag rides `VoiceState`, and the
-        // `clear_voice` sweep above already took it with the occupants.
         if let Some(mut ids) = self.channels_by_guild.get_mut(&guild_id) {
             ids.retain(|c| *c != channel_id);
         }
@@ -1741,18 +1478,12 @@ impl AppState {
         Ok((guild_id, cleared))
     }
 
-    /// Owner-only: hand the guild to another member. The target must be an
-    /// existing human member (a bot can't own a guild). The old owner stays a
-    /// member but instantly loses the implicit permissions.
     pub async fn transfer_ownership(
         &self,
         guild_id: Id,
         new_owner_pubkey: &str,
         by_pubkey: &str,
     ) -> Result<Guild, String> {
-        // Guard on the LITERAL owner, not is_owner: a system guild (empty
-        // owner) has no transferable ownership, and an operator isn't the
-        // literal owner, so this correctly rejects both.
         let owner = self
             .guilds
             .get(&guild_id)
@@ -1793,9 +1524,6 @@ impl AppState {
         Ok(updated)
     }
 
-    /// Requires `ManageGuild`: full-replace the guild's description and
-    /// icon/banner images (None clears). Validation mirrors `SetProfile`:
-    /// http(s) URLs (≤2048) or data:image URLs under the size cap.
     pub async fn set_guild_profile(
         &self,
         guild_id: Id,
@@ -1814,9 +1542,6 @@ impl AppState {
         if icon_image.as_ref().is_some_and(|i| !valid_image(i))
             || banner.as_ref().is_some_and(|i| !valid_image(i))
         {
-            // Reached when a client sends something odd (an old build, a bot,
-            // a non-image mime slipping through) — say what would work rather
-            // than restating the rule in wire terms.
             return Err(format!(
                 "Guild icon and banner must be an image (PNG, JPEG, GIF or WebP) \
                  under {} MB, or a link to one.",
@@ -1840,17 +1565,11 @@ impl AppState {
         Ok(updated)
     }
 
-    /// Reclaim blob files no row points at any more.
-    ///
-    /// Runs after the retention sweep on purpose: retention is what *creates*
-    /// unreferenced blobs, by deleting the messages that named them. Doing it
-    /// the other way round would leave every freshly-orphaned picture on disk
-    /// for another hour.
+    /// Runs after the retention sweep, which is what *creates* unreferenced
+    /// blobs. A failed query means we do not know what is referenced — so keep.
     pub async fn sweep_media(&self) -> crate::media::SweepReport {
         match self.store.referenced_media().await {
             Ok(referenced) => self.media.sweep(&referenced, MEDIA_GRACE),
-            // A failed query means we do not know what is referenced, and the
-            // only safe answer to that is to delete nothing.
             Err(e) => {
                 tracing::error!(error = %e, "media sweep skipped: could not read references");
                 crate::media::SweepReport::default()
@@ -1858,8 +1577,6 @@ impl AppState {
         }
     }
 
-    /// Requires `ManageGuild`: set/clear the guild's message retention (days).
-    /// Clamped to 1..=3650; the hourly sweep enforces it.
     pub async fn set_guild_retention(
         &self,
         guild_id: Id,
@@ -1880,7 +1597,6 @@ impl AppState {
         Ok(updated)
     }
 
-    /// Requires `ManageGuild`: configure the join gate + rules text.
     pub async fn set_join_gate(
         &self,
         guild_id: Id,
@@ -1910,7 +1626,6 @@ impl AppState {
         Ok(updated)
     }
 
-    /// Requires `ManageGuild`: toggle anti-raid lockdown.
     pub async fn set_panic_mode(
         &self,
         guild_id: Id,
@@ -1924,7 +1639,6 @@ impl AppState {
         Ok(updated)
     }
 
-    /// Flip the panic flag without a permission check (used by auto-detection).
     async fn set_panic_flag(&self, guild_id: Id, on: bool) -> Result<Guild, String> {
         let updated = {
             let mut guild = self
@@ -1938,7 +1652,6 @@ impl AppState {
         Ok(updated)
     }
 
-    /// The guild an invite code maps to, if any (for pre-join gate checks).
     pub fn invite_guild(&self, code: &str) -> Option<Id> {
         let now = now_ms();
         self.invites
@@ -1947,7 +1660,6 @@ impl AppState {
             .map(|i| i.guild_id)
     }
 
-    /// The guild's current gate config (gate, rules, panic) for the join flow.
     pub fn join_requirements(
         &self,
         guild_id: Id,
@@ -1957,9 +1669,6 @@ impl AppState {
             .map(|g| (g.join_gate, g.rules.clone(), g.panic_mode))
     }
 
-    /// Record a join for raid detection; if joins-per-minute crosses the
-    /// threshold, auto-enable panic mode and return the updated guild so the
-    /// caller can broadcast it.
     pub async fn note_join_and_maybe_panic(&self, guild_id: Id) -> Option<Guild> {
         const WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
         const THRESHOLD: usize = 10; // >10 joins/min → lock down
@@ -1993,8 +1702,6 @@ impl AppState {
         None
     }
 
-    /// Slowmode check + record. Moderators are exempt (checked by caller).
-    /// Returns Err(remaining_secs) if the user must still wait.
     pub fn slowmode_check(&self, channel_id: Id, pubkey: &str) -> Result<(), u64> {
         let secs = self
             .channels
@@ -2016,7 +1723,6 @@ impl AppState {
         Ok(())
     }
 
-    /// Append a moderation action to the guild's audit log (fire-and-forget).
     pub async fn audit(&self, guild_id: Id, actor: &str, action: &str, target: &str, detail: &str) {
         let entry = crate::protocol::AuditEntry {
             at_ms: chrono::Utc::now().timestamp_millis(),
@@ -2028,7 +1734,6 @@ impl AppState {
         persist(self.store.append_audit(guild_id, &entry).await, "audit");
     }
 
-    /// Requires `ManageGuild`: the guild's recent audit entries (newest first).
     pub async fn audit_log(
         &self,
         guild_id: Id,
@@ -2041,8 +1746,6 @@ impl AppState {
             .map_err(|e| format!("store error: {e}"))
     }
 
-    /// Hourly sweep: enforce per-guild message retention. Returns total rows
-    /// deleted (for logs).
     pub async fn sweep_retention(&self) -> u64 {
         let targets: Vec<(Id, u32)> = self
             .guilds
@@ -2060,7 +1763,6 @@ impl AppState {
         total
     }
 
-    /// True if a channel is flagged read-only.
     pub fn channel_read_only(&self, channel_id: Id) -> bool {
         self.channels
             .get(&channel_id)
@@ -2068,9 +1770,6 @@ impl AppState {
             .unwrap_or(false)
     }
 
-    /// Delete a message. Authors always may; in guild channels `ManageMessages`
-    /// holders may delete anyone's; DM messages are author-only (your DMs are
-    /// nobody's moderation surface).
     pub async fn delete_message(
         &self,
         channel_id: Id,
@@ -2095,8 +1794,6 @@ impl AppState {
             .map_err(|e| format!("store error: {e}"))
     }
 
-    /// Delete a guild and everything under it. Returns `Err` with a reason if
-    /// the guild is unknown or `by_pubkey` is not its owner.
     pub async fn delete_guild(&self, guild_id: Id, by_pubkey: &str) -> Result<(), String> {
         let owner = self
             .guilds
@@ -2122,8 +1819,6 @@ impl AppState {
         Ok(())
     }
 
-    /// The most recent `limit` messages of a channel (oldest-first), with any
-    /// blob-stored images inlined back into data URLs for the wire.
     pub async fn history(
         &self,
         channel_id: Id,
@@ -2146,8 +1841,6 @@ impl AppState {
         }
     }
 
-    /// The DM conversations `pubkey` participates in, each described from their
-    /// point of view (so `other` is the partner).
     pub async fn push_message(
         &self,
         channel_id: Id,
@@ -2165,8 +1858,6 @@ impl AppState {
         if !kind_ok {
             return None;
         }
-        // Unresolved quote ids are dropped (not rejected) so the reply still
-        // sends without a quote.
         let reply_ref = match reply_to {
             Some(id) => self.store.reply_ref(channel_id, id).await.unwrap_or(None),
             None => None,
@@ -2177,21 +1868,6 @@ impl AppState {
         )
     }
 
-    /// The name a message should be attributed to, which is not always the one
-    /// the sender declared.
-    ///
-    /// A human's username is their own business — the Identify signature commits
-    /// to it, and one person's display name is not a claim about anybody else.
-    /// **An installed bot is different:** its label was chosen by the owner who
-    /// installed it, the roster already shows that label, and the message list
-    /// was showing whatever the bot process declared on connect. So a bot
-    /// installed as "PingBot" could post as "Server Admin" and look like one,
-    /// in the surface where it matters most.
-    ///
-    /// Resolved per guild, because the same bot can be installed in two guilds
-    /// under two names and each owner's choice governs their own guild. A bot
-    /// with no install here — which the permission checks would have refused
-    /// already — keeps what it declared rather than being renamed to nothing.
     fn attributed_author(&self, channel_id: Id, author: User) -> User {
         let Some(guild_id) = self.channel_guild(channel_id) else {
             return author;
@@ -2205,9 +1881,6 @@ impl AppState {
         }
     }
 
-    /// Persist a message. Inbound data-URL images are offloaded to the blob
-    /// store (the DB row keeps a tiny `media:` sentinel); the returned message
-    /// carries the ORIGINAL image so the broadcast needs no re-read.
     async fn append_message(
         &self,
         channel_id: Id,
@@ -2239,21 +1912,6 @@ impl AppState {
         Message { image, ..message }
     }
 
-    /// Change a display name everywhere it is shown, without a reconnect.
-    ///
-    /// The name lives in three places — the global directory, one member row
-    /// per guild, and the `User` the connection carries — and before this only
-    /// the first two were ever written, at Identify. So editing your name took
-    /// effect on your next connect and nowhere else in the meantime.
-    ///
-    /// **Bot member rows are deliberately skipped.** A bot's row shows the
-    /// label whoever installed it chose, not the name the bot process declares;
-    /// letting a bot rename its own row here would undo that in the one place
-    /// it is most visible. A bot renaming itself still updates the global
-    /// directory, which is cosmetic, and changes nothing anybody is shown.
-    ///
-    /// Returns the member rows that actually changed, so the caller broadcasts
-    /// exactly those guilds and nothing else.
     pub async fn rename_user(&self, pubkey: &str, username: &str) -> Vec<Member> {
         if let Some(mut u) = self.users.get_mut(pubkey) {
             u.username = username.to_string();
@@ -2281,9 +1939,6 @@ impl AppState {
         changed
     }
 
-    /// Mark a user offline in every guild they're a member of. Returns the
-    /// guild_id + pubkey pairs that were actually flipped (so callers know
-    /// which broadcasts to send).
     pub fn mark_offline(&self, user_pubkey: &str) -> Vec<(Id, String)> {
         let mut affected = Vec::new();
         for entry in self.members.iter() {
@@ -2319,12 +1974,6 @@ impl AppState {
             deafened: prev.as_ref().map(|p| p.deafened).unwrap_or(false),
             speaking: false,
             screen_sharing: false,
-            // Reset, not carried over from `prev` like mute/deafen: the camera
-            // publishes into the *channel's* `screen-…` room, so a channel
-            // switch leaves the room it was published to. The webview has to
-            // republish into the new one, and until it does, claiming the
-            // camera is on would put a tile in front of everyone that never
-            // fills in.
             camera_on: false,
         };
         if channel_id.is_some() {
@@ -2343,26 +1992,11 @@ impl AppState {
         deafened: bool,
     ) -> Option<VoiceState> {
         let mut entry = self.voice_states.get_mut(user_pubkey)?;
-        // Deafen implies mute (can't talk if you can't hear), but not vice
-        // versa. Coerce here to keep state consistent for all watchers, rather
-        // than trusting the client.
         entry.muted = muted || deafened;
         entry.deafened = deafened;
         Some(entry.clone())
     }
 
-    /// Flip a user's camera flag; `None` when it was already there.
-    ///
-    /// Modelled on `update_speaking` rather than `update_voice_flags`, and the
-    /// unchanged-means-`None` short-circuit is the reason why. A camera button
-    /// can be clicked as fast as a mouse allows, and every accepted call fans
-    /// out to *every member of the guild* — so collapsing no-ops here is what
-    /// keeps a spammed toggle from becoming a broadcast storm, without a rate
-    /// limiter. `set_screen_share` does re-broadcast its whole sorted list on a
-    /// redundant call; that is a wart, not a precedent.
-    ///
-    /// Returns `None` for a user with no voice state at all, which is what
-    /// gates this on membership: only `JoinVoice` creates one, and it checks.
     pub fn update_camera(&self, user_pubkey: &str, on: bool) -> Option<VoiceState> {
         let mut entry = self.voice_states.get_mut(user_pubkey)?;
         if entry.camera_on == on {
@@ -2381,33 +2015,23 @@ impl AppState {
         Some(entry.clone())
     }
 
-    /// Tombstone voice state for a disconnecting user; returns the cleared state if any.
     pub fn clear_voice(&self, user_pubkey: &str) -> Option<VoiceState> {
         let prev = self.voice_states.remove(user_pubkey)?.1;
         Some(VoiceState {
             channel_id: None,
             speaking: false,
-            // Explicit `false` required: `..prev` would carry a live `true`
-            // into the tombstone, which clients silently drop, hiding the
-            // stale flag.
             camera_on: false,
-            // Explicit `false` required: unlike camera, this flag is rendered
-            // in multiple places, so a stale `true` from `..prev` would be
-            // visible.
             screen_sharing: false,
             ..prev
         })
     }
 
-    /// The grants a bot has in a specific guild, if installed there.
     pub fn bot_install(&self, guild_id: Id, bot_pubkey: &str) -> Option<BotInstall> {
         self.bot_installs
             .get(bot_pubkey)
             .and_then(|g| g.get(&guild_id).map(|i| i.clone()))
     }
 
-    /// Every guild a bot is installed in, with its grants. Used to scope a bot
-    /// connection's `Ready` and its inbound event stream.
     pub fn bot_guilds(&self, bot_pubkey: &str) -> Vec<BotInstall> {
         self.bot_installs
             .get(bot_pubkey)
@@ -2415,7 +2039,6 @@ impl AppState {
             .unwrap_or_default()
     }
 
-    /// All bot installs in a guild (for the owner's Integrations panel).
     pub fn guild_installs(&self, guild_id: Id) -> Vec<BotInstall> {
         self.bot_installs
             .iter()
@@ -2423,10 +2046,6 @@ impl AppState {
             .collect()
     }
 
-    /// Requires `ManageGuild`: install (or update the grants of) a bot in a
-    /// guild. Adds the bot as a `bot: true` guild member so it shows in the
-    /// roster. Returns the stored install and the bot's membership for
-    /// broadcasting. Only `Permission::BOT_INSTALLABLE` grants are accepted.
     pub async fn install_bot(
         &self,
         guild_id: Id,
@@ -2472,8 +2091,6 @@ impl AppState {
             .or_default()
             .insert(guild_id, install.clone());
 
-        // Preserve the online flag if the bot is already connected; fresh
-        // installs start offline.
         let member = {
             let guild_members = self.members.entry(guild_id).or_default();
             if let Some(mut existing) = guild_members.get_mut(bot_pubkey) {
@@ -2501,8 +2118,6 @@ impl AppState {
         Ok((install, member))
     }
 
-    /// Requires `ManageGuild`: remove a bot from a guild (drops its grants and
-    /// roster row).
     pub async fn uninstall_bot(
         &self,
         guild_id: Id,
@@ -2510,8 +2125,6 @@ impl AppState {
         by_pubkey: &str,
     ) -> Result<(), String> {
         self.require_permission(guild_id, by_pubkey, Permission::ManageGuild)?;
-        // Remove the bot entirely if this was its last install, so `is_bot`
-        // flips false.
         let now_empty = if let Some(g) = self.bot_installs.get(bot_pubkey) {
             g.remove(&guild_id);
             g.is_empty()
@@ -2535,9 +2148,6 @@ impl AppState {
         Ok(())
     }
 
-    /// Scoped `Ready` for a bot connection: only the guilds it's installed in,
-    /// their channels, and — gated behind the `Members` intent — their rosters.
-    /// No DMs, no profiles, no public catalog (a bot doesn't browse).
     pub fn snapshot_for_bot(&self, bot: &User) -> ServerMessage {
         let installs = self.bot_guilds(&bot.pubkey);
         let my_guild_ids: Vec<Id> = installs.iter().map(|i| i.guild_id).collect();
@@ -2560,7 +2170,6 @@ impl AppState {
             .filter(|c| my_guild_ids.contains(&c.guild_id))
             .map(|c| c.clone())
             .collect();
-        // Only expose rosters for guilds where the bot has the Members intent.
         let mut members: Vec<Member> = Vec::new();
         for install in &installs {
             if !install.has_intent(Intent::Members) {
@@ -2581,20 +2190,17 @@ impl AppState {
             voice_states: Vec::new(),
             catalog: Vec::new(),
             profiles: Vec::new(),
-            // Roles never apply to bot connections — don't leak them.
+            // Roles never apply to a bot connection, and operators are never
+            // bots: sending either would leak a guild's structure to it.
             roles: Vec::new(),
             emojis: Vec::new(),
-            // Bots are never operators.
             operator: false,
         }
     }
 }
 
-/// A community preset applied at guild creation: channel layout, role presets,
-/// default visibility + join gate. Two choices at creation, not a hundred
-/// toggles (roadmap Phase 4).
 struct GuildTemplate {
-    channels: Vec<(&'static str, crate::protocol::ChannelKind, bool)>, // (name, kind, read_only)
+    channels: Vec<(&'static str, crate::protocol::ChannelKind, bool)>,
     roles: Vec<(&'static str, Vec<Permission>)>,
     visibility: crate::protocol::GuildVisibility,
     join_gate: crate::protocol::JoinGate,
@@ -2655,8 +2261,6 @@ impl GuildTemplate {
                     ),
                     ("Moderator", vec![ManageMessages, KickMembers, BanMembers]),
                 ],
-                // Public communities start private + rules-gated so the owner
-                // can set up before opening the doors.
                 visibility: Private,
                 join_gate: JoinGate::Rules,
             },
@@ -2670,7 +2274,6 @@ impl GuildTemplate {
     }
 }
 
-/// Channel names mirror guild-name rules: trimmed, 1..=64 chars.
 fn sanitize_channel_name(raw: &str) -> Result<String, String> {
     let name = raw.trim();
     if name.is_empty() || name.chars().count() > 64 {
@@ -2679,9 +2282,6 @@ fn sanitize_channel_name(raw: &str) -> Result<String, String> {
     Ok(name.to_string())
 }
 
-/// 12 random alphanumerics from the OS RNG (~62 bits of entropy). Invite codes
-/// gate private guilds and ban evasion, so they must be unguessable — the cute
-/// `adj-animal-NN` rendezvous format (~17 bits) is not enough here.
 pub(crate) fn random_invite_code() -> String {
     use rand::Rng;
     const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
@@ -2691,7 +2291,6 @@ pub(crate) fn random_invite_code() -> String {
         .collect()
 }
 
-/// Accept only short `#rrggbb`/`#rgb` hex colors (guild accents, role colors).
 pub fn is_hex_color(s: &str) -> bool {
     let s = s.trim();
     let Some(hex) = s.strip_prefix('#') else {
@@ -2700,8 +2299,6 @@ pub fn is_hex_color(s: &str) -> bool {
     (hex.len() == 3 || hex.len() == 6) && hex.chars().all(|c| c.is_ascii_hexdigit())
 }
 
-/// The wire (snake_case) name of a unit enum variant, for error messages that
-/// match what API users see in JSON (e.g. `manage_guild`).
 fn serde_variant_name<T: serde::Serialize>(v: T) -> String {
     serde_json::to_string(&v)
         .unwrap_or_default()
@@ -2709,7 +2306,6 @@ fn serde_variant_name<T: serde::Serialize>(v: T) -> String {
         .to_string()
 }
 
-/// Order-preserving dedup for small grant vectors.
 fn unique<T: PartialEq>(items: Vec<T>) -> Vec<T> {
     let mut out: Vec<T> = Vec::with_capacity(items.len());
     for item in items {
@@ -2720,7 +2316,6 @@ fn unique<T: PartialEq>(items: Vec<T>) -> Vec<T> {
     out
 }
 
-/// Derive a short (≤2 char) uppercase icon label from a guild name.
 fn guild_initials(name: &str) -> String {
     let initials: String = name
         .split_whitespace()

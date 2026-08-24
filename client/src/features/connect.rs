@@ -5,54 +5,25 @@ use crate::protocol::rendezvous::DiscoverEntry;
 use crate::session::{self, SavedSession};
 use crate::state::{SessionMode, SessionParams};
 
-/// How quiet a host has to be before the browse list stops presenting it as
-/// reachable. The rendezvous pings every 20s and unregisters at 60s, so a host
-/// past this mark has already missed at least one beat and is on its way out.
 const HOST_STALE_AFTER_SECS: u64 = 45;
 
-/// The two things anyone came here to do.
-///
-/// Browsing, pasting a code and typing an address were never three intentions —
-/// they are three ways of arriving at somebody else's server, so they live
-/// under `Join` together. What is left is the one real fork: go somewhere, or
-/// run one here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mode {
     Join,
     Create,
 }
 
-/// Which of the two a launch opens on.
-///
-/// Always joining, with or without a session to come back to. Creating is the
-/// consequential half — it can reserve a name, publish you to a public list and
-/// make a home address dialable — so it is the half somebody chooses rather
-/// than lands in. Pulled out of the `use_signal` closure so a test can hold
-/// that line; inside one it is unreachable from any test.
 fn initial_mode() -> Mode {
     Mode::Join
 }
 
-/// Which way of joining the form is currently describing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum JoinBy {
-    /// A typed address, which is the more specific thing to have gone looking
-    /// for and so wins over a code.
     Url,
-    /// A code, resolved against the directory above the tabs.
     Code,
-    /// Neither is filled in, so there is nothing to submit.
     Nothing,
 }
 
-/// Decide it in one place, because the submit button and the enable/disable
-/// rule must not be able to disagree about it.
-///
-/// Extracted so a test can hold the line that an untouched address field does
-/// not silently beat the code. That is not hypothetical: when these tabs were
-/// first merged, `server_url` kept its `ws://localhost:9000` default, so the
-/// address arm was always taken and joining by code became unreachable — with
-/// the field looking untouched, because its placeholder was the same string.
 fn join_by(server_url: &str, code: &str, rendezvous_url: &str) -> JoinBy {
     if !server_url.trim().is_empty() {
         JoinBy::Url
@@ -80,8 +51,6 @@ pub fn ConnectView(
     let default_rendezvous = settings.read().active_rendezvous();
 
     let mut mode = use_signal(initial_mode);
-    // Empty, not `ws://localhost:9000`: `join_by` prioritizes the address, so
-    // a prefilled default would prevent code-based joins from ever resolving.
     let mut server_url = use_signal(String::new);
     let mut allow_lan = use_signal(|| false);
     let mut publish_to_rendezvous = use_signal(|| true);
@@ -151,8 +120,6 @@ pub fn ConnectView(
         Mode::Join => join_by(&server_url(), &code(), &rendezvous_url()) == JoinBy::Nothing,
     };
 
-    // macOS has a transparent titlebar with content extending to the top;
-    // padding avoids overlapping traffic lights.
     let mac_top_pad = if cfg!(target_os = "macos") {
         "pt-7"
     } else {
@@ -188,8 +155,6 @@ pub fn ConnectView(
                 }
             }
 
-            // Top strip is a drag region so the empty bar acts as a titlebar
-            // when the brand panel is hidden at narrow widths.
             div { class: "flex-1 flex flex-col overflow-hidden min-w-0",
                 div {
                     class: "dxf-drag-region h-8 shrink-0 {mac_top_pad}",
@@ -198,10 +163,6 @@ pub fn ConnectView(
                 form {
                     class: "flex-1 overflow-auto px-8 py-8 flex flex-col items-stretch dxf-no-drag",
                     onsubmit: submit,
-                    // Use `my-auto` instead of `justify-center`: auto margins
-                    // collapse to zero when content overflows, keeping the top
-                    // reachable. `justify-center` pushes content above the
-                    // scroll origin.
                     div { class: "w-full max-w-md mx-auto my-auto space-y-5 flex flex-col",
 
                 IdentityCard { identity: identity.clone(), on_rename, on_sign_out }
@@ -240,10 +201,6 @@ pub fn ConnectView(
 
                 div { class: "h-px bg-[var(--border)]" }
 
-                // Placed above tabs because this address serves join codes,
-                // the public list, and server publishing simultaneously.
-                // Duplicating it per tab required manual sync and obscured its
-                // multi-purpose role.
                 div { class: "space-y-1.5",
                     RendezvousPicker {
                         selected: rendezvous_url(),
@@ -254,9 +211,6 @@ pub fn ConnectView(
                     }
                 }
 
-                // Labels specify "server" to distinguish from "community"
-                // (which is `CreateGuild` and requires an existing
-                // connection). Bare "Join"/"Create" caused user confusion.
                 div { class: "flex gap-1 text-xs",
                     TabButton { active: mode() == Mode::Join, label: "Join a server", onclick: move |_| mode.set(Mode::Join) }
                     TabButton { active: mode() == Mode::Create, label: "Create a server", onclick: move |_| mode.set(Mode::Create) }
@@ -268,20 +222,11 @@ pub fn ConnectView(
                     }
                 }
 
-                // No `key:` — rsx! honours one only on a body root, so a nested
-                // one is dropped. See docs/AUDIT-2026-08-17.md.
                 div { class: "fade-in flex-1",
                 match mode() {
-                    // Code first because it is the primary input for
-                    // newcomers; the list is a fallback that fills the code
-                    // field rather than acting as a separate submission path.
                     Mode::Join => rsx! {
                         div { class: "space-y-3",
                             div { class: "space-y-1",
-                                // Label is "Code" not "Join code" to avoid
-                                // redundancy with the tab and button. Renamed
-                                // from "Shortcode" in PR 90 to avoid internal
-                                // jargon.
                                 label { class: LABEL, "Code" }
                                 input {
                                     class: "{INPUT} lowercase",
@@ -300,10 +245,6 @@ pub fn ConnectView(
                                 rendezvous_url: rendezvous_url(),
                             }
 
-                            // Folded because gateway address entry is rare and
-                            // ignores the directory above. Must start empty:
-                            // an open stale default looks filled, while a
-                            // closed one silently dictates connections.
                             details {
                                 summary { class: "cursor-pointer text-[10px] uppercase tracking-wider text-[var(--text-muted)] hover:text-[var(--text)] transition-colors",
                                     "Other ways to connect"
@@ -327,11 +268,6 @@ pub fn ConnectView(
                     Mode::Create => rsx! {
                         div { class: "border border-[var(--border)] rounded p-3 text-xs space-y-3",
                             p { class: "text-[var(--text-muted)]",
-                                // Not "your machine runs the voice SFU": a
-                                // rendezvous that has its own wins and the
-                                // bundled one is never started, so the old
-                                // sentence claimed the opposite of what happens
-                                // in the case it described. See host.rs.
                                 "Your machine runs the server and keeps its history. Voice runs here too, unless the rendezvous above supplies its own."
                             }
                             label { class: "flex items-center gap-2 cursor-pointer text-[var(--text)]",
@@ -351,12 +287,8 @@ pub fn ConnectView(
                                     }
                                     "Accept direct connections"
                                 }
-                                // Outside the label, or clicking the hint would
-                                // toggle the checkbox it explains.
                                 span {
                                     class: "w-4 h-4 shrink-0 flex items-center justify-center rounded-full border border-[var(--border)] text-[9px] text-[var(--text-dim)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors cursor-help",
-                                    // Gateway binds loopback without this, so it
-                                    // governs port mapping too, not just LAN.
                                     title: "Friends here reach you directly, and Discordia asks your router (UPnP / NAT-PMP) to let in friends elsewhere. Your home IP becomes visible to anyone who joins that way.",
                                     "?"
                                 }
@@ -366,11 +298,6 @@ pub fn ConnectView(
                                     div { class: "space-y-1",
                                         label { class: LABEL, "Server name" }
                                         input {
-                                            // Rendezvous canonicalizes names
-                                            // to lowercase on
-                                            // registration/lookup, so
-                                            // `MiServidor` resolves as
-                                            // `miservidor`.
                                             class: "{INPUT_SM} lowercase",
                                             r#type: "text",
                                             placeholder: "my-server",
@@ -422,9 +349,6 @@ pub fn ConnectView(
     }
 }
 
-/// Saved rendezvous servers as a pick-list, with add/remove. Replaces the
-/// three separate "advanced" URL boxes — the address is a thing you keep, not
-/// something to retype per tab.
 #[component]
 fn RendezvousPicker(selected: String, on_select: EventHandler<String>) -> Element {
     let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
@@ -484,9 +408,6 @@ fn RendezvousPicker(selected: String, on_select: EventHandler<String>) -> Elemen
             }
             div { class: "flex items-center gap-1",
                 select {
-                    // Inline colors as well as classes: the webview renders a
-                    // native listbox, which ignores the Tailwind background on
-                    // the popup and would otherwise draw dark text on dark.
                     class: "flex-1 min-w-0 rounded border border-[var(--border)] px-2 py-1 font-mono text-[11px] focus:outline-none focus:border-[var(--accent)] transition-colors",
                     style: "color: var(--text); background: var(--panel-solid);",
                     onchange: move |e| on_select.call(e.value()),
@@ -570,9 +491,6 @@ fn IdentityCard(
                             r#type: "text",
                             value: "{draft}",
                             autofocus: true,
-                            // Truncates on input because `maxlength` cannot
-                            // express the protocol's signing-time limit (see
-                            // `protocol::truncate_username`).
                             oninput: move |e| draft.set(crate::protocol::truncate_username(&e.value())),
                             onkeydown: move |e| {
                                 let key = e.key().to_string();
@@ -731,9 +649,6 @@ fn BrowseTab(
                                         class: "w-full text-left px-3 py-2 {row_cls} transition-colors",
                                         onclick: move |_| on_pick.call(entry_for_pick.clone()),
                                         div { class: "flex items-baseline gap-2",
-                                            // Rendezvous drops stale hosts up
-                                            // to a minute late; this dot shows
-                                            // the gap immediately.
                                             span {
                                                 class: "w-1.5 h-1.5 rounded-full shrink-0 self-center",
                                                 style: if entry.idle_secs >= HOST_STALE_AFTER_SECS {
@@ -785,24 +700,16 @@ mod tests {
 
     const R: &str = "ws://rendezvous.example:7700";
 
-    /// A launch lands on joining. Creating a server can reserve a name, publish
-    /// you to a public list and make a home address dialable, so it is chosen
-    /// rather than landed in.
     #[test]
     fn a_launch_opens_on_the_half_that_costs_nothing() {
         assert_eq!(initial_mode(), Mode::Join);
     }
 
-    /// The regression that made these tabs worth merging carefully: the address
-    /// field used to be born holding `ws://localhost:9000`, which took priority
-    /// and made joining by code unreachable. An untouched field must lose.
     #[test]
     fn an_untouched_address_does_not_beat_a_code() {
         assert_eq!(join_by("", "purple-fox-42", R), JoinBy::Code);
     }
 
-    /// Typed on purpose, it wins: it is the more specific thing to have gone
-    /// looking for, and the disclosure says it ignores the code.
     #[test]
     fn a_typed_address_beats_a_code() {
         assert_eq!(
@@ -811,21 +718,16 @@ mod tests {
         );
     }
 
-    /// Whitespace is not an address — otherwise a stray space in the field
-    /// would silently take the same priority a real one does.
     #[test]
     fn blank_space_is_not_an_address() {
         assert_eq!(join_by("   ", "purple-fox-42", R), JoinBy::Code);
     }
 
-    /// A code needs somewhere to be looked up, so without a directory it is not
-    /// something that can be submitted.
     #[test]
     fn a_code_without_a_directory_is_not_submittable() {
         assert_eq!(join_by("", "purple-fox-42", ""), JoinBy::Nothing);
     }
 
-    /// Empty form, dead button — this is what `disabled` is reading.
     #[test]
     fn an_empty_form_has_nothing_to_submit() {
         assert_eq!(join_by("", "", R), JoinBy::Nothing);

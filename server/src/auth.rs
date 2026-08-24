@@ -1,6 +1,3 @@
-//! Schnorr (BIP-340 / Nostr) signature verification for the `Identify`
-//! handshake.
-
 use rand::RngCore;
 use secp256k1::schnorr::Signature;
 use secp256k1::{Message, Secp256k1, XOnlyPublicKey};
@@ -8,16 +5,12 @@ use sha2::{Digest, Sha256};
 
 const NONCE_LEN: usize = 32;
 
-/// Generate a fresh per-connection nonce (32 random bytes, base58 encoded).
 pub fn fresh_nonce() -> String {
     let mut bytes = [0u8; NONCE_LEN];
     rand::rngs::OsRng.fill_bytes(&mut bytes);
     bs58::encode(bytes).into_string()
 }
 
-/// Verify that `signature` is a valid Schnorr signature over
-/// `SHA256(nonce || pubkey_hex || username)` from the key matching `pubkey`.
-/// `pubkey` is a 64-char hex x-only Nostr pubkey; `signature` is 128-char hex.
 pub fn verify_identify(
     pubkey_hex: &str,
     signature_hex: &str,

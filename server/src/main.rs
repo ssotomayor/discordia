@@ -20,16 +20,12 @@ async fn main() {
         .parse()
         .expect("DIOXUSFUN_ADDR must be host:port");
 
-    // Auto-spawn bundled LiveKit unless an external instance is configured via
-    // LIVEKIT_URL.
     let want_autospawn = std::env::var("DIOXUSFUN_LIVEKIT_AUTOSPAWN")
         .map(|v| !matches!(v.as_str(), "0" | "false" | "no"))
         .unwrap_or(true);
     let livekit_present = std::env::var("LIVEKIT_URL").is_ok();
 
     let _livekit_handle = if want_autospawn && !livekit_present {
-        // Pass None for address: standalone LiveKit needs no NAT config. Set
-        // LIVEKIT_URL if behind NAT.
         match dioxusfun_server::livekit_bundle::spawn_livekit(None).await {
             Ok(child) => {
                 tracing::info!("bundled livekit-server started on port 7880");
@@ -56,8 +52,6 @@ async fn main() {
         "livekit configured (URLs handed to clients are derived per-connection unless explicit_url is set)"
     );
 
-    // Operators (comma-separated hex pubkeys) can moderate the seeded Lobby.
-    // Empty leaves it unmanaged.
     let operators: std::collections::HashSet<String> = std::env::var("DIOXUSFUN_OPERATORS")
         .unwrap_or_default()
         .split(',')
@@ -95,7 +89,6 @@ async fn main() {
     }
 }
 
-/// The durable data root the CLI operates on (same default as the server).
 fn cli_data_dir() -> std::path::PathBuf {
     std::env::var("DIOXUSFUN_DATA_DIR")
         .unwrap_or_else(|_| "./discordia-data".into())
@@ -112,7 +105,6 @@ async fn open_store() -> dioxusfun_server::store::Store {
         })
 }
 
-/// `discordia export --guild <uuid> <out.json>` | `--all <out-dir>`
 async fn run_export(args: &[String]) {
     let store = open_store().await;
     match args.first().map(String::as_str) {
@@ -145,8 +137,6 @@ async fn run_export(args: &[String]) {
                 eprintln!("usage: discordia export --all <out-dir>");
                 std::process::exit(2);
             };
-            // Fail loudly: a backup that reports success while writing nothing
-            // is worse than one that fails.
             if let Err(e) = std::fs::create_dir_all(dir) {
                 eprintln!("could not create {dir}: {e}");
                 std::process::exit(1);
@@ -186,7 +176,6 @@ async fn run_export(args: &[String]) {
     }
 }
 
-/// `discordia import <archive.json>` — writes the guild in under fresh ids.
 async fn run_import(args: &[String]) {
     let store = open_store().await;
     let Some(path) = args.first() else {

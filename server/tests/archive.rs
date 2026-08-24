@@ -1,10 +1,3 @@
-//! Phase 6 — guild export/import round-trip.
-//!
-//! Seeds a guild (with a template, so it has multiple channels + roles),
-//! posts messages, exports it, imports it back into the SAME store, and
-//! asserts the copy is structurally identical under FRESH ids while every
-//! pubkey is preserved.
-
 use std::collections::HashSet;
 
 use chrono::Utc;
@@ -14,7 +7,6 @@ use dioxusfun_server::state::AppState;
 use dioxusfun_server::store::Store;
 use uuid::Uuid;
 
-/// Unique temp dir per test so SQLite + media are hermetic and parallel-safe.
 fn temp_dir(tag: &str) -> std::path::PathBuf {
     std::env::temp_dir().join(format!(
         "dioxusfun-archive-{tag}-{}-{}",

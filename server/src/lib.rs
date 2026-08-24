@@ -1,9 +1,3 @@
-//! Library entry point for embedding the gateway in another process
-//! (i.e. the Dioxus client's self-host mode).
-//!
-//! The thin `bin/dioxusfun-server` shim in `src/main.rs` is just a wrapper
-//! that wires logging + env config and calls [`serve`].
-
 pub mod archive;
 pub mod auth;
 pub mod gateway;
@@ -15,8 +9,6 @@ pub mod quic;
 pub mod state;
 pub mod store;
 
-/// Wire protocol — re-exported from the shared `dioxusfun-protocol` crate so
-/// `crate::protocol::…` paths throughout the server keep working unchanged.
 pub use dioxusfun_protocol as protocol;
 
 use std::net::SocketAddr;
@@ -30,14 +22,9 @@ pub struct AppContext {
     pub livekit: LiveKitConfig,
 }
 
-/// Everything a gateway instance needs besides its bind address. One struct so
-/// embedded self-host, the standalone binary, and tests all configure the same
-/// way (see docs/ROADMAP.md "run-modes").
 pub struct ServerConfig {
     pub livekit: LiveKitConfig,
-    /// Pubkeys treated as owners of system guilds (the seeded Lobby).
     pub operators: std::collections::HashSet<String>,
-    /// Root for durable data: `<data_dir>/discordia.db` + `<data_dir>/media/`.
     pub data_dir: PathBuf,
 }
 
@@ -52,8 +39,6 @@ impl ServerHandle {
     }
 }
 
-/// Build the shared context: open the store + media dir, rehydrate (or seed)
-/// state, and start the hourly retention sweep.
 async fn build_context(cfg: ServerConfig) -> std::io::Result<Arc<AppContext>> {
     let store = store::Store::open(&cfg.data_dir.join("discordia.db"))
         .await
@@ -76,8 +61,6 @@ async fn build_context(cfg: ServerConfig) -> std::io::Result<Arc<AppContext>> {
             if deleted > 0 {
                 tracing::info!(deleted, "retention sweep removed expired messages");
             }
-            // After retention, not before: expiring a message is what orphans
-            // its picture, and sweeping first would leave it for another hour.
             let media = sweep_state.sweep_media().await;
             if media.deleted > 0 {
                 tracing::info!(
@@ -93,7 +76,6 @@ async fn build_context(cfg: ServerConfig) -> std::io::Result<Arc<AppContext>> {
     Ok(ctx)
 }
 
-/// Bind + serve in the foreground until the underlying axum server exits.
 pub async fn serve(addr: SocketAddr, cfg: ServerConfig) -> std::io::Result<()> {
     let ctx = build_context(cfg).await?;
     let app = http::router(ctx);
@@ -103,9 +85,6 @@ pub async fn serve(addr: SocketAddr, cfg: ServerConfig) -> std::io::Result<()> {
     axum::serve(listener, app).await
 }
 
-/// Bind on the first free port in `preferred..=preferred+max_attempts` and
-/// spawn the server as a background task. Returns the bound address so the
-/// caller knows which port we actually got.
 pub async fn spawn(
     preferred: SocketAddr,
     max_attempts: u16,
@@ -115,13 +94,6 @@ pub async fn spawn(
     spawn_on(listener, cfg).await
 }
 
-/// Serve on a listener the caller already bound.
-///
-/// Self-host needs the port before the gateway starts: it advertises a
-/// port-mapped address to the rendezvous at registration time, and a mapping
-/// has to name the port the gateway actually got — which, with the fallback
-/// above, is not necessarily the one asked for. Binding first and serving
-/// second is what makes that answerable in the right order.
 pub async fn spawn_on(
     listener: tokio::net::TcpListener,
     cfg: ServerConfig,
@@ -130,20 +102,11 @@ pub async fn spawn_on(
     Ok(serve_router(listener, router))
 }
 
-/// Open the store, rehydrate state, and build the HTTP router — without
-/// serving it anywhere yet.
-///
-/// Exposed because a router can have more than one front door. Self-host serves
-/// this same router on a TCP listener *and* on a QUIC endpoint (`quic::serve_on`),
-/// and handing out the router rather than serving it twice is what keeps the two
-/// from drifting: a route added for one is a route for both, because there is
-/// only one.
 pub async fn build_router(cfg: ServerConfig) -> std::io::Result<axum::Router> {
     let ctx = build_context(cfg).await?;
     Ok(http::router(ctx))
 }
 
-/// Serve an already-built router on an already-bound listener.
 pub fn serve_router(listener: tokio::net::TcpListener, router: axum::Router) -> ServerHandle {
     let addr = listener
         .local_addr()
@@ -159,7 +122,6 @@ pub fn serve_router(listener: tokio::net::TcpListener, router: axum::Router) -> 
     ServerHandle { addr, task }
 }
 
-/// Bind the first free port in `preferred..=preferred+max_attempts`.
 pub async fn bind_with_fallback(
     preferred: SocketAddr,
     max_attempts: u16,

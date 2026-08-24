@@ -1,7 +1,3 @@
-//! Profile UI — the reusable `Avatar`, the click-to-view `ProfileCard`, and
-//! the self-service `ProfileEditor`. Profiles are client-owned (see
-//! `crate::profile`) and looked up by pubkey from `AppState.profiles`.
-
 use base64::Engine as _;
 use dioxus::prelude::*;
 
@@ -9,7 +5,6 @@ use crate::identity::discriminator;
 use crate::protocol::ClientMessage;
 use crate::state::{use_app_state, use_gateway};
 
-/// CSS color for a presence status string.
 pub fn status_color(status: &str) -> &'static str {
     match status {
         "away" => "var(--warn)",
@@ -19,27 +14,11 @@ pub fn status_color(status: &str) -> &'static str {
     }
 }
 
-/// Sanity ceiling on how big a file we'll even read for upload.
 pub(crate) const MAX_UPLOAD_BYTES: usize = 15_000_000;
-/// Largest image we'll embed as a data URL when Blossom is unavailable (kept
-/// under the server's data-URL cap).
-///
-/// This is the number that actually matters to a user: an image under it always
-/// works, because the embed fallback can carry it even when no media server is
-/// reachable. Above it we are betting on Blossom, which may be down, may not
-/// accept anonymous uploads, or may not be configured at all.
 pub(crate) const EMBED_MAX_BYTES: usize = 2_000_000;
 
-/// The formats and size we tell users about, in one place so every picker in
-/// the app says the same thing.
 pub(crate) const IMAGE_HELP: &str = "PNG, JPEG, GIF or WebP. Under 2 MB always works; larger needs a reachable Blossom media server.";
 
-/// Pre-flight an image the user just picked, without uploading it.
-///
-/// Returns `Err(message)` with something the user can act on. The point is to
-/// fail here rather than let the upload path fail later with a note about
-/// Blossom, which tells someone who just wanted to set a guild icon nothing
-/// they can use.
 pub(crate) fn check_image(bytes: &[u8], mime: &str) -> Result<(), String> {
     if bytes.is_empty() {
         return Err("That file is empty.".into());
@@ -56,22 +35,17 @@ pub(crate) fn check_image(bytes: &[u8], mime: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Wrap raw bytes as a `data:` URL, which is what the crop editor and every
-/// `<img src>` in the app want.
 pub(crate) fn to_data_url(bytes: &[u8], mime: &str) -> String {
     let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
     format!("data:{mime};base64,{b64}")
 }
 
-/// Decode a `data:` URL back to bytes. Returns empty on anything malformed —
-/// callers treat that as a failed upload, which is the honest outcome.
 pub(crate) fn data_url_bytes(url: &str) -> Vec<u8> {
     url.split_once(";base64,")
         .and_then(|(_, b64)| base64::engine::general_purpose::STANDARD.decode(b64).ok())
         .unwrap_or_default()
 }
 
-/// The mime declared by a `data:` URL, defaulting to PNG.
 pub(crate) fn data_url_mime(url: &str) -> String {
     url.strip_prefix("data:")
         .and_then(|rest| rest.split_once(';'))
@@ -80,24 +54,12 @@ pub(crate) fn data_url_mime(url: &str) -> String {
         .unwrap_or_else(|| "image/png".to_string())
 }
 
-/// Best guess at an image mime type for a picked file.
-///
-/// The webview reports `File.type` from the extension and can hand back
-/// `application/octet-stream` for anything it doesn't recognise. Passing that
-/// through builds a `data:application/octet-stream;...` URL, which the server
-/// rejects outright ("must be http(s) or data:image") — a confusing bounce for
-/// what is a perfectly good picture. Fall back to PNG: browsers sniff the real
-/// format from the bytes when rendering, and the server only checks the prefix.
 pub(crate) fn image_mime(reported: Option<String>) -> String {
     reported
         .filter(|m| m.starts_with("image/"))
         .unwrap_or_else(|| "image/png".to_string())
 }
 
-/// Upload an image to Blossom, returning `(value, note)`: on success the value
-/// is the Blossom URL; on failure it falls back to an embedded data URL (if it
-/// fits) and a note explaining what happened. Shared with the guild-branding
-/// editor (`guild_settings.rs`).
 pub(crate) async fn image_to_ref(
     server: String,
     identity: crate::identity::Identity,
@@ -137,9 +99,6 @@ pub(crate) async fn image_to_ref(
     }
 }
 
-/// Renders a user's avatar (looked up by pubkey) or, failing that, the first
-/// letter of their name in a bordered box. `size` carries the Tailwind sizing
-/// (e.g. "w-8 h-8") plus any extra classes like rings/opacity.
 #[component]
 pub fn Avatar(
     #[props(into)] pubkey: String,
@@ -163,8 +122,6 @@ pub fn Avatar(
     }
 }
 
-/// Modal profile card, shown when `AppState.profile_card` is set (clicking a
-/// member opens it). Large avatar, name, bio, and a Send-Message button.
 #[component]
 pub fn ProfileCard() -> Element {
     let mut state = use_app_state();
@@ -180,8 +137,6 @@ pub fn ProfileCard() -> Element {
         .and_then(|p| p.bio.clone())
         .filter(|b| !b.trim().is_empty());
     let banner = snapshot.profile_of(&pubkey).and_then(|p| p.banner.clone());
-    // Effective presence, not the self-set label: a user who is disconnected
-    // reads "offline" here even if their profile still says "online".
     let status = snapshot.presence_of(&pubkey).to_string();
     let custom_status = snapshot
         .profile_of(&pubkey)
@@ -216,8 +171,6 @@ pub fn ProfileCard() -> Element {
     let (level, into, span) = crate::protocol::level_progress(xp);
     let xp_pct = (into as f64 / span.max(1) as f64 * 100.0) as u32;
     let copy_pubkey = pubkey.clone();
-    // Roles are guild-scoped; a card opened from a DM (no selected guild)
-    // shows none.
     let member_roles: Vec<crate::protocol::Role> = {
         let s = state.read();
         s.selected_guild
@@ -306,8 +259,6 @@ pub fn ProfileCard() -> Element {
                             div { class: "flex flex-wrap gap-1.5",
                                 for role in member_roles.iter() {
                                     {
-                                        // Fallback to muted text so uncolored
-                                        // roles remain visible as chips.
                                         let color = role.color.clone()
                                             .filter(|c| !c.trim().is_empty())
                                             .unwrap_or_else(|| "var(--text-muted)".into());
@@ -333,8 +284,6 @@ pub fn ProfileCard() -> Element {
                         span { class: "text-[10px] text-[var(--text-dim)] shrink-0", "{into}/{span}" }
                     }
                     if !is_self {
-                        // Nostr contact lists are public (kind:3), unlike the
-                        // private DMs below.
                         button {
                             class: "mt-4 w-full py-2 rounded-xl text-xs border border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--text)] transition-all",
                             title: if is_contact { "Remove from your Nostr contact list. This list is public." } else { "Add to your Nostr contact list, so they follow you to any server. This list is public." },
@@ -349,8 +298,6 @@ pub fn ProfileCard() -> Element {
                         button {
                             class: "dxf-cta mt-2 w-full py-2.5 rounded-xl text-sm transition-all",
                             onclick: move |_| {
-                                // Opens a Nostr DM; no server channel is
-                                // created until a message is sent.
                                 nostr.send(crate::nostr::service::NostrCmd::Open {
                                     peer: dm_pubkey.clone(),
                                 });
@@ -365,16 +312,12 @@ pub fn ProfileCard() -> Element {
     }
 }
 
-/// Self-service profile editor: pick an avatar (file → base64 data URL) and a
-/// bio, then save locally and publish to the host. Rendered as a small button
-/// that expands into a modal.
 #[component]
 pub fn ProfileEditor() -> Element {
     let state = use_app_state();
     let gateway = use_gateway();
     let identity = use_context::<crate::identity::Identity>();
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
-    // Separate clones for avatar/banner pickers (Identity is not Copy).
     let id_avatar_crop = identity.clone();
     let id_banner_crop = identity.clone();
 
@@ -385,8 +328,6 @@ pub fn ProfileEditor() -> Element {
     let mut status = use_signal(|| "online".to_string());
     let mut custom_status = use_signal(String::new);
     let mut err = use_signal::<Option<String>>(|| None);
-    // Separate signals for avatar/banner so the crop dialog knows the target
-    // shape.
     let mut editing_avatar = use_signal(|| None::<String>);
     let mut editing_banner = use_signal(|| None::<String>);
 
@@ -601,8 +542,6 @@ pub fn ProfileEditor() -> Element {
 
                                                     }
 
-                                                    // crop dialog, which uploads on accept.
-
                                                     editing_banner.set(Some(to_data_url(&bytes, &mime)));
                                                 }
                                                 Err(_) => err.set(Some("Couldn't read that file.".into())),
@@ -662,8 +601,6 @@ pub fn ProfileEditor() -> Element {
                         oninput: move |e| bio.set(e.value()),
                     }
 
-                    // Shared with guild branding pickers to avoid trial-and-
-                    // error.
                     div { class: "mt-2 text-[10px] text-[var(--text-dim)]", {IMAGE_HELP} }
                     if let Some(e) = err() {
                         div { class: "mt-2 text-[10px] text-[var(--danger)]", "{e}" }

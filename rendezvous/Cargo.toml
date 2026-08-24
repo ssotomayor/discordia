@@ -4,24 +4,14 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-# Rendezvous-specific.
 rand = "0.8"
-# Minting LiveKit access tokens for hosts that use our shared SFU (the secret
-# never leaves this process).
 livekit-api = { version = "0.4", default-features = false, features = ["access-token"] }
-# Ownership proof for claimed names: Schnorr (BIP-340 / Nostr), same scheme as
-# the server's Identify handshake.
 secp256k1 = { workspace = true }
 sha2 = "0.10"
 hex = { workspace = true }
 bs58 = { workspace = true }
 
-# Shared deps inherited from workspace.
-# The host side of this protocol is spoken by the client, so the wire types
-# live in the shared crate instead of here.
 dioxusfun-protocol = { workspace = true }
-# Runs in-process (see src/relay_server.rs): one service to deploy, and the
-# rendezvous knows its own relay's address without being told.
 iroh-relay = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
@@ -37,7 +27,4 @@ uuid = { workspace = true }
 [dev-dependencies]
 tokio-tungstenite = { workspace = true }
 secp256k1 = { workspace = true }
-# `/resolve/{code}` is an HTTP endpoint, and the client reaches it with reqwest —
-# so the test that pins its shape does too, rather than asserting on the
-# registry alone. Already in the workspace lockfile via the client and server.
 reqwest = { workspace = true }

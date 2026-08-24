@@ -1,15 +1,3 @@
-//! macOS system-audio capture via ScreenCaptureKit (macOS 13+).
-//!
-//! Bound with `objc2` rather than the higher-level `screencapturekit` crate on
-//! purpose: that one builds a Swift component, so the app would have to ship
-//! the Swift runtime and link with an extra rpath. This is more code here and
-//! nothing extra in the binary.
-//!
-//! Permission: ScreenCaptureKit needs the Screen Recording (TCC) grant — the
-//! same one screen sharing already requires, so no second prompt appears. If it
-//! hasn't been granted, `SCShareableContent` fails and we report that instead
-//! of hanging.
-
 use std::sync::mpsc as std_mpsc;
 use std::time::Duration;
 
@@ -29,22 +17,15 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::sysvideo::Target;
 
-/// How long to wait for the shareable-content query. It is asynchronous and,
-/// when the permission dialog is showing, can take as long as the user does.
 const CONTENT_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// Per-callback state for the stream output delegate.
 struct TapState {
-    /// Accumulates callback buffers into whole 10 ms frames.
     cutter: std::cell::RefCell<super::frames::FrameCutter>,
-    /// Reports an extraction failure once rather than silently dropping every
-    /// callback and leaving a published track permanently quiet.
     fatal: UnboundedSender<String>,
     failed: std::sync::atomic::AtomicBool,
 }
 
 define_class!(
-    // ScreenCaptureKit calls this back on its own dispatch queue.
     #[unsafe(super(NSObject))]
     #[name = "DxfSystemAudioTap"]
     #[ivars = TapState]
@@ -90,7 +71,6 @@ impl Tap {
         }
     }
 
-    /// Pull PCM out of a sample buffer and forward it as mono 10 ms frames.
     fn handle_audio(&self, sample: &CMSampleBuffer) {
         if self
             .ivars()
@@ -99,17 +79,11 @@ impl Tap {
         {
             return;
         }
-        // SAFETY: a property read on the live sample passed to this callback.
         if !unsafe { sample.is_valid() } {
             self.fail("ScreenCaptureKit returned an invalid audio sample".into());
             return;
         }
 
-        // Read the format instead of assuming the configured format was
-        // honoured. There is no resampler on this path, so accepting anything
-        // else would reinterpret bytes or publish with the wrong clock.
-        // SAFETY: both objects are retained for this scope; CoreMedia returns a
-        // pointer into the retained format description.
         let format = unsafe { sample.format_description() };
         let Some(format) = format else {
             self.fail("screen audio has no format description".into());
@@ -132,10 +106,7 @@ impl Tap {
             return;
         }
 
-        // Query size first: `size_of::<AudioBufferList>()` only fits one
-        // entry, but ScreenCaptureKit supplies two.
         let mut needed = 0usize;
-        // SAFETY: only the size out-pointer is requested in this first pass.
         let query_status = unsafe {
             sample.audio_buffer_list_with_retained_block_buffer(
                 std::ptr::from_mut(&mut needed),
@@ -154,15 +125,11 @@ impl Tap {
             return;
         }
 
-        // `Vec<usize>` gives the storage pointer at least pointer alignment,
-        // which is sufficient for AudioBufferList on the supported macOS ABIs.
         let word = std::mem::size_of::<usize>();
         let mut storage = vec![0usize; needed.div_ceil(word)];
         let list_ptr = storage.as_mut_ptr().cast::<AudioBufferList>();
         let mut block: *mut CMBlockBuffer = std::ptr::null_mut();
 
-        // SAFETY: storage has the queried size and suitable alignment; `block`
-        // receives a +1 reference retained for all reads below.
         let status = unsafe {
             sample.audio_buffer_list_with_retained_block_buffer(
                 std::ptr::null_mut(),
@@ -181,7 +148,6 @@ impl Tap {
             return;
         }
 
-        // SAFETY: the successful retained-buffer call returned a +1 reference.
         let _block = if block.is_null() {
             self.fail("screen audio returned no backing buffer".into());
             return;
@@ -190,24 +156,18 @@ impl Tap {
                 objc2_core_foundation::CFRetained::from_raw(std::ptr::NonNull::new_unchecked(block))
             }
         };
-        // SAFETY: `list_ptr` points into `storage`, which outlives all accesses.
         let list = unsafe { &*list_ptr };
 
-        // Handle both interleaved and non-interleaved PCM. AudioBuffer says how
-        // many channels its data holds, so this also remains correct if the OS
-        // changes layout while preserving the requested 48 kHz f32 format.
         let n = list.mNumberBuffers as usize;
         let mut mono: Vec<f32> = Vec::new();
         let mut mixed_channels = 0usize;
         for i in 0..n {
-            // SAFETY: the queried allocation accommodates mNumberBuffers.
             let buf = unsafe { &*list.mBuffers.as_ptr().add(i) };
             let channels = buf.mNumberChannels as usize;
             if buf.mData.is_null() || channels == 0 {
                 continue;
             }
             let sample_count = buf.mDataByteSize as usize / std::mem::size_of::<f32>();
-            // SAFETY: mDataByteSize is the length of mData in bytes.
             let samples =
                 unsafe { std::slice::from_raw_parts(buf.mData.cast::<f32>(), sample_count) };
             let frames = sample_count / channels;
@@ -250,18 +210,12 @@ impl MacCapture {
     ) -> Result<Self, String> {
         let filter = crate::sysvideo::content_filter(target)?;
 
-        // SAFETY: plain ObjC object construction with checked arguments.
         unsafe {
             let config = SCStreamConfiguration::new();
             config.setCapturesAudio(true);
             config.setSampleRate(48_000);
             config.setChannelCount(2);
-            // Without this we would capture our own output — including the
-            // call we are publishing into — and feed it straight back as a
-            // howling loop.
             config.setExcludesCurrentProcessAudio(true);
-            // Video still has to be configured even though we only want audio;
-            // keep it at the smallest sane size so nothing is encoded for free.
             config.setWidth(2);
             config.setHeight(2);
 
@@ -290,9 +244,6 @@ impl MacCapture {
                 )
                 .map_err(|e| format!("add audio output: {e}"))?;
 
-            // Leak the delegate for the life of the stream: ScreenCaptureKit
-            // holds it weakly, so dropping it here would leave the stream
-            // calling into freed memory.
             std::mem::forget(tap);
 
             let (done_tx, done_rx) = std_mpsc::channel();
@@ -318,8 +269,6 @@ impl MacCapture {
 
 impl Drop for MacCapture {
     fn drop(&mut self) {
-        // SAFETY: stopping a running stream; the completion handler is
-        // optional and we don't need to wait for it on teardown.
         unsafe {
             self.stream.stopCaptureWithCompletionHandler(None);
         }

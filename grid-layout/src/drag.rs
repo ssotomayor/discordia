@@ -1,7 +1,3 @@
-//! Pointer-driven interaction state shared between `GridLayout` and
-//! `GridItem`. Covers both drag (move the item) and resize (change w/h)
-//! since they share the same pointer pipeline + cell-pixel geometry.
-
 use crate::layout::{FloatRect, GridPosition};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -10,27 +6,18 @@ pub(crate) enum InteractionKind {
     Resize,
 }
 
-/// In-flight pointer interaction: which item, the layout snapshot at start,
-/// the pointer's start + current coordinates, the cached cell pixel
-/// geometry, plus item bounds (min_w/min_h) for resize clamping.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Interaction {
     pub kind: InteractionKind,
     pub item_id: String,
     pub start_pos: GridPosition,
-    /// The item's pixel rect when the interaction began, in Free mode. `None`
-    /// in Snap mode, where positions are cell indices.
     pub start_free: Option<FloatRect>,
     pub pointer_start_x: f64,
     pub pointer_start_y: f64,
-    /// Current pointer position. Updated every pointermove. Used for
-    /// snap-target projection and the smooth-drag transform.
     pub pointer_current_x: f64,
     pub pointer_current_y: f64,
     pub cell_w_px: f64,
     pub cell_h_px: f64,
-    /// Container size in pixels, for converting pointer deltas into the
-    /// fraction space free-mode rects live in.
     pub container_w: f64,
     pub container_h: f64,
     pub gap_px: f64,
@@ -40,9 +27,6 @@ pub(crate) struct Interaction {
 }
 
 impl Interaction {
-    /// Free-mode projection. The pointer delta is converted from pixels into
-    /// fractions of the container and applied verbatim — no rounding to cells,
-    /// no column clamp. `clamp_inside` on the caller keeps the result on-screen.
     pub fn project_free(&self, pointer_x: f64, pointer_y: f64) -> Option<FloatRect> {
         let start = self.start_free?;
         if self.container_w <= 0.0 || self.container_h <= 0.0 {
@@ -135,7 +119,7 @@ mod tests {
     fn drag_clamps_right() {
         let i = base(InteractionKind::Drag, GridPosition::new(5, 0, 4, 2));
         let p = i.project(10000.0, 0.0);
-        assert_eq!(p.x, 8); // max_x = 12 - 4
+        assert_eq!(p.x, 8);
     }
 
     #[test]
@@ -158,7 +142,7 @@ mod tests {
     fn resize_clamps_to_columns() {
         let i = base(InteractionKind::Resize, GridPosition::new(8, 0, 2, 2));
         let p = i.project(10000.0, 0.0);
-        assert_eq!(p.w, 4); // max_w = 12 - 8
+        assert_eq!(p.w, 4);
     }
 
     fn free(kind: InteractionKind, rect: FloatRect) -> Interaction {
@@ -171,9 +155,6 @@ mod tests {
         i
     }
 
-    /// The heart of free mode: a small nudge moves the window by exactly that
-    /// nudge, expressed as a fraction of the container. Snap mode rounds the
-    /// same gesture to zero cells and doesn't move at all.
     #[test]
     fn free_drag_applies_the_delta_verbatim() {
         let i = free(
@@ -195,8 +176,6 @@ mod tests {
         );
     }
 
-    /// Projection itself is unbounded — `clamp_inside` is what keeps a window
-    /// on-screen, and it runs on the result.
     #[test]
     fn free_drag_projection_is_unbounded_but_clamps_inside() {
         let i = free(InteractionKind::Drag, FloatRect::new(0.0, 0.0, 0.2, 0.2));
@@ -217,7 +196,6 @@ mod tests {
         assert!(r.clamp_inside().w >= 0.05, "clamp enforces the minimum");
     }
 
-    /// A container that hasn't been measured yet would divide by zero.
     #[test]
     fn free_projection_needs_a_measured_container() {
         let mut i = free(InteractionKind::Drag, FloatRect::new(0.0, 0.0, 0.2, 0.2));
@@ -225,7 +203,6 @@ mod tests {
         assert!(i.project_free(200.0, 200.0).is_none());
     }
 
-    /// No starting rect means Snap mode — nothing to project from.
     #[test]
     fn free_projection_needs_a_starting_rect() {
         let i = base(InteractionKind::Drag, GridPosition::new(0, 0, 2, 2));

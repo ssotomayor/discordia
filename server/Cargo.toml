@@ -9,56 +9,34 @@ ureq = { version = "2", default-features = false, features = ["tls"] }
 flate2 = "1"
 tar = "0.4"
 zip = { version = "2", default-features = false, features = ["deflate"] }
-# Digest of the bundled SFU, so `livekit_bundle` reads the answer instead of
-# hashing 49MB on the thread that opens self-host. Already a runtime dependency
-# below — this adds nothing to the tree.
 sha2 = "0.10"
 
 [dev-dependencies]
-# Drive both human and bot sides of the gateway in integration tests.
 dioxusfun-bot = { path = "../bot-sdk" }
 tokio = { workspace = true, features = ["full"] }
-# `rendezvous_voice.rs` runs a real relay against a real gateway: the claim
-# under test is what a *rendezvous without a shared SFU* leads the gateway to
-# hand out, and reasoning about it is exactly what left it unconfirmed.
 dioxusfun-rendezvous = { path = "../rendezvous" }
 tokio-tungstenite = { workspace = true }
 serde_json = { workspace = true }
 
 [dependencies]
-# Server-specific.
 axum = { workspace = true, features = ["macros"] }
 tokio = { workspace = true, features = ["full"] }
 livekit-api = { version = "0.4", default-features = false, features = ["access-token"] }
-# The QUIC front door (src/quic.rs). Serves the same axum router the TCP
-# listener does, over a transport that authenticates by public key.
 iroh = { workspace = true }
 hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
-# Nostr identity verification: secp256k1 Schnorr (BIP-340).
 secp256k1 = { workspace = true }
 hex = { workspace = true }
 sha2 = "0.10"
 bs58 = { workspace = true }
 rand = "0.8"
 
-# Persistence (Phase 1): SQLite via sqlx. Postgres lands behind the same
-# Store seam in a later phase (see docs/ROADMAP.md).
-#
-# No `macros` feature on purpose. `store.rs` builds every statement with the
-# runtime API — `sqlx::query(…)` and friends, 49 call sites — and uses neither
-# `query!` nor `#[derive(FromRow)]`, which are the only things that feature
-# provides. Carrying it cost a *second, host-side* build of `sqlx-core`,
-# `tokio` and `serde_json` for the proc macro: 14 of this crate's duplicate
-# compilations, for nothing anyone called. Adding it back is fine — just check
-# first that something actually needs a compile-time-checked query.
+# No `macros` feature on purpose: store.rs builds every statement at runtime,
+# so there is no compile-time database to point them at.
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }
-# Media blob store: decode data-URLs into content-addressed files.
 base64 = "0.22"
-# Error type for guild export/import (bridges sqlx + validation errors).
 anyhow = "1"
 
-# Shared deps inherited from workspace.
 dioxusfun-protocol = { workspace = true }
 tower-http = { workspace = true }
 serde = { workspace = true }

@@ -1,7 +1,3 @@
-# libwebrtc (via the livekit crate / webrtc-sys) defines ObjC categories on
-# NSString that the runtime looks up by selector. Without `-ObjC`, Apple's
-# linker strips them as "unused" and PeerConnectionFactory creation aborts
-# with `unrecognized selector +[NSString stringForAbslStringView:]`.
 [target.aarch64-apple-darwin]
 rustflags = ["-C", "link-arg=-ObjC"]
 

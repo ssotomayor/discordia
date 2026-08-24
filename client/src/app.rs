@@ -7,13 +7,6 @@ use crate::identity::Identity;
 use crate::session::{self, SavedSession};
 use crate::state::{SessionMode, SessionParams};
 
-/// App brand mark, inlined as raw SVG markup. We render it inline (rather
-/// than via an `<img>` asset) so the two halves and the splatter layer are
-/// real DOM nodes the stylesheet can animate independently on hover — an
-/// `<img>` exposes none of its internals to CSS. The `.dxf-logo-left`,
-/// `.dxf-logo-right` and `.dxf-splat` classes are the animation handles
-/// (see BASE_CSS). Gradient/filter ids are prefixed `dxf` to avoid clashing
-/// with anything else on the page.
 const DISCORDIA_LOGO_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="Discordia">
   <defs>
     <linearGradient id="dxfYellowGrad" x1="250" y1="325" x2="565" y2="760" gradientUnits="userSpaceOnUse">
@@ -56,26 +49,14 @@ const DISCORDIA_LOGO_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" vie
   </g>
 </svg>"##;
 
-/// Start a native window drag. wry/WKWebView does NOT honour Electron's
-/// `-webkit-app-region: drag` CSS, so our `.dxf-drag-region` strips can't move
-/// the window on their own — they need an explicit `onmousedown` that asks tao
-/// to drag. Interactive children must `stop_propagation()` so clicks/selection
-/// still work (the CSS equivalent of `-webkit-app-region: no-drag`).
 pub fn start_window_drag() {
     dioxus::desktop::window().drag();
 }
 
-/// Open a URL in the user's real browser (not the in-app webview, which would
-/// navigate away from the app). Best-effort, per-platform.
 pub fn open_external(url: &str) {
     let url = url.to_string();
     #[cfg(target_os = "macos")]
     let cmd = ("open", vec![url]);
-    // The empty string is the window title, and leaving it out is a trap rather
-    // than a tidiness question: `start` reads a single quoted token as a title
-    // and opens an empty console instead of running anything. Rust quotes any
-    // argument containing a space, so the moment one reaches here — a path, a
-    // URL with an encoded space — the call silently does nothing.
     #[cfg(target_os = "windows")]
     let cmd = (
         "cmd",
@@ -85,8 +66,6 @@ pub fn open_external(url: &str) {
     let cmd = ("xdg-open", vec![url]);
     let mut command = std::process::Command::new(cmd.0);
     command.args(cmd.1);
-    // A windowed build has no console for `cmd` to inherit, so Windows would
-    // give it one: a console flashing open on every link click.
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
@@ -96,7 +75,6 @@ pub fn open_external(url: &str) {
     let _ = command.spawn();
 }
 
-/// Inline Discordia brand mark. `class` sets the size (e.g. "w-32 h-32").
 #[component]
 pub fn DiscordiaLogo(#[props(into)] class: String) -> Element {
     rsx! {
@@ -107,64 +85,17 @@ pub fn DiscordiaLogo(#[props(into)] class: String) -> Element {
     }
 }
 
-/// Tailwind utility classes, generated at build time from `assets/tailwind.css`
-/// by `npx @tailwindcss/cli`. Inlined into the binary via `include_str!()` so
-/// it works with both `cargo run` and `dx serve` — `asset!()` requires the `dx`
-/// CLI as a custom linker to process assets, which breaks `cargo run`. This
-/// renders a `<style>` tag with the full CSS in the `<head>`, same as
-/// `BASE_CSS` and `font_face_css()`. No CDN, no runtime compiler, no FOUC,
-/// works offline.
 const TAILWIND_CSS: &str = include_str!("../assets/tailwind.out.css");
 
-/// The LiveKit JS SDK, vendored. It drives the webview half of screen sharing:
-/// rendering everyone's share on both platforms, and capturing on Windows.
-///
-/// It used to be a `<script src>` against jsDelivr, which meant a client with
-/// no route to the internet could not show a single share — including the two
-/// cases this project exists for, a self-hosted server and a LAN call, where
-/// everything else already works offline. The rest of the app is built that
-/// way on purpose: Tailwind above, the DeepFilterNet weights, the LiveKit
-/// server itself via `include_bytes!`. This was the one runtime dependency on
-/// somebody else's host, and it sat on the media path.
-///
-/// Pinned to the same 2.19.2 the URL pinned, byte-identical to what npm and
-/// jsDelivr serve, so the file can be re-verified rather than trusted:
-///
-/// ```text
-/// curl -sL https://cdn.jsdelivr.net/npm/livekit-client@2.19.2/dist/livekit-client.umd.js | sha256sum
-/// 2e8fd28afad004dcad97c0eb124d4d28ce5437205a881f533f2667960de83990
-/// ```
-///
-/// The `.umd.js` name has no `.min`, but the contents are minified — 526 KB,
-/// not the ~2 MB the naming suggests. It ends in a `sourceMappingURL` comment
-/// for a `.map` we do not ship; devtools will 404 that and nothing else cares,
-/// which is a smaller price than editing a file whose whole value is being
-/// checkable against upstream.
+/// Inlined, not `src`: a machine with no route to the internet must still be
+/// able to show a share.
 const LIVEKIT_JS: &str = include_str!("../assets/livekit-client.umd.js");
 
-/// The E2EE worker, which the SDK needs and the UMD bundle does not contain.
-///
-/// LiveKit encrypts and decrypts frames on a worker thread, and the bundle
-/// expects the caller to supply one — `e2ee: { keyProvider, worker }`. It ships
-/// as a separate file, so it is vendored on the same terms as the SDK itself
-/// and pinned to the same 2.19.2:
-///
-/// ```text
-/// curl -sL https://cdn.jsdelivr.net/npm/livekit-client@2.19.2/dist/livekit-client.e2ee.worker.js | sha256sum
-/// f9e5289f11fe0a8f47245f041202fe85af8d2bf76a2e12b4bb3e19449464ba09
-/// ```
-///
-/// Handed to the page as a string rather than as a file because a `Worker`
-/// needs a URL and the webview has no origin to serve one from — `dxScreen`
-/// turns this into a blob URL at connect time. JSON-encoded on the way in so
-/// the script tag cannot be broken by its own contents.
 const LIVEKIT_E2EE_WORKER_JS: &str = include_str!("../assets/livekit-client.e2ee.worker.js");
 
 const BASE_CSS: &str = "
-/* Default (ember) palette. Per-theme overrides are applied inline on the app
-   root by `theme_vars()`. The existing variable *names* are kept as the
-   styling interface so components need no churn; the design's richer palette
-   (bg2/panel2/up/violet/amber) is layered on as additional vars. */
+/* Variable *names* are the styling interface, so new palette entries are added
+   rather than renamed; `theme_vars()` overrides these inline on the app root. */
 :root {
   --bg: #0e0b08; --bg2: #171017;
   --panel-solid: #17110c; --panel: #17110c; --panel2: #1e160f;
@@ -179,10 +110,6 @@ const BASE_CSS: &str = "
 }
 html, body, #main { height: 100%; margin: 0; }
 
-/* Optional local background image: two fixed layers (image + darkening
-   scrim) behind a relatively-positioned app shell. When a background is set,
-   the root's inline vars make the app backdrop transparent and panels
-   translucent (see App) so the image shows through. */
 .app-bg-layer { position: fixed; inset: 0; z-index: 0; background-size: cover; background-position: center; pointer-events: none; }
 .app-shell { position: relative; z-index: 1; height: 100%; width: 100%; }
 body {
@@ -190,7 +117,6 @@ body {
   color: var(--text);
   font-family: 'Space Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
 }
-/* Display face for the wordmark + headings; mono face for keys/codes. */
 .dxf-display { font-family: 'Bricolage Grotesque', 'Space Grotesk', sans-serif; letter-spacing: -0.015em; }
 code, kbd, .dxf-mono, .font-mono { font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; }
 * { box-sizing: border-box; }
@@ -202,8 +128,6 @@ button { cursor: pointer; }
 button:disabled { cursor: not-allowed; }
 input::placeholder { color: var(--text-dim); }
 
-/* Gradient CTA (blue→accent, the primary action buttons in the design) and the
-   gradient wordmark treatment. */
 .dxf-cta {
   background-image: linear-gradient(100deg, #8fb0ff, var(--accent));
   color: #0e0b08; font-weight: 600; border: none;
@@ -216,9 +140,6 @@ input::placeholder { color: var(--text-dim); }
   -webkit-text-fill-color: transparent; color: transparent;
 }
 
-/* Procedural app backgrounds (selectable in the theme popover). The layer
-   sits behind .app-shell (z-0). Only one is active at a time via a class on
-   .app-bg-pattern. */
 .app-bg-pattern { position: fixed; inset: 0; z-index: 0; pointer-events: none; }
 .app-bg-grid {
   background-color: var(--bg);
@@ -249,9 +170,8 @@ input::placeholder { color: var(--text-dim); }
     radial-gradient(circle at 70% 15%, color-mix(in srgb, var(--accent) 26%, transparent), transparent 45%);
 }
 
-/* Smooth color/border transitions on every interactive surface. Excluded
-   from `transform` so drag-in-progress (which is driven by transform via
-   document::eval) doesn't get interpolated. */
+/* `transform` is deliberately absent: drags are driven by transform through
+   document::eval, and interpolating it would fight the pointer. */
 button, a, input, textarea, select, summary, [role='button'] {
   transition: color 0.15s var(--ease),
               background-color 0.15s var(--ease),
@@ -260,8 +180,6 @@ button, a, input, textarea, select, summary, [role='button'] {
 }
 button:active:not(:disabled) { transform: scale(0.985); }
 
-/* Apply to any bordered panel/widget for a subtle hover brightening plus a
-   very slight warm glow bleeding off the border. */
 .panel-hover {
   transition: border-color 0.2s var(--ease), background-color 0.2s var(--ease),
               box-shadow 0.25s var(--ease);
@@ -271,8 +189,6 @@ button:active:not(:disabled) { transform: scale(0.985); }
   box-shadow: 0 0 10px -1px rgba(224, 160, 106, 0.16);
 }
 
-/* Fade-in animation used on tab content / step content so switches feel
-   intentional instead of jarring snaps. */
 @keyframes dxf-fade-in {
   from { opacity: 0; transform: translateY(4px); }
   to   { opacity: 1; transform: translateY(0); }
@@ -280,7 +196,6 @@ button:active:not(:disabled) { transform: scale(0.985); }
 .fade-in { animation: dxf-fade-in 0.18s var(--ease) both; }
 .dxf-fade { animation: dxf-fade-in 0.2s var(--ease) both; }
 
-/* Small spinner used in popovers for reconnection state. */
 .dx-spinner { width: 12px; height: 12px; border-radius: 50%; border: 2px solid rgba(255,255,255,0.12); border-top-color: var(--accent); display: inline-block; margin-right: 8px; animation: dxf-spin 1s linear infinite; }
 @keyframes dxf-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 
@@ -300,7 +215,6 @@ button:active:not(:disabled) { transform: scale(0.985); }
 }
 .dxf-msg-in { animation: dxf-msg-in 0.16s var(--ease) backwards; }
 
-/* Pop — reaction chips and badges springing in. */
 @keyframes dxf-pop {
   0%   { transform: scale(0.6); opacity: 0; }
   60%  { transform: scale(1.12); }
@@ -308,7 +222,6 @@ button:active:not(:disabled) { transform: scale(0.985); }
 }
 .dxf-pop { animation: dxf-pop 0.18s var(--ease) both; }
 
-/* Dialogs zoom in with a little overshoot bounce; their backdrop fades. */
 @keyframes dxf-modal-in {
   0%   { opacity: 0; transform: scale(0.92) translateY(6px); }
   60%  { opacity: 1; transform: scale(1.02) translateY(0); }
@@ -318,12 +231,10 @@ button:active:not(:disabled) { transform: scale(0.985); }
 @keyframes dxf-backdrop-in { from { opacity: 0; } to { opacity: 1; } }
 .dxf-backdrop-in { animation: dxf-backdrop-in 0.15s var(--ease) both; }
 
-/* Lighter, quicker scale for small popovers/menus. */
 @keyframes dxf-pop-in { from { opacity: 0; transform: scale(0.96); } to { opacity: 1; transform: scale(1); } }
 .dxf-pop-in { animation: dxf-pop-in 0.12s var(--ease) both; }
 
-/* Online presence — a soft expanding ring. The dot sets `color` to its
-   status color so the ring (currentColor) matches. */
+/* The dot sets `color` to its status colour so the currentColor ring matches. */
 @keyframes dxf-dot-pulse {
   0%   { box-shadow: 0 0 0 0 currentColor; }
   70%  { box-shadow: 0 0 0 4px transparent; }
@@ -331,21 +242,13 @@ button:active:not(:disabled) { transform: scale(0.985); }
 }
 .dxf-dot-pulse { animation: dxf-dot-pulse 2.4s var(--ease) infinite; }
 
-/* Window drag regions. With macOS fullsize content view + transparent
-   titlebar, there's no OS titlebar strip — so the user needs SOME region
-   they can grab to move the window. Anything tagged .dxf-drag-region is
-   draggable; buttons / inputs inside such a region must opt out with
-   .dxf-no-drag so they remain clickable. The traffic lights stay at
-   the top-left and float over our content. */
+/* macOS fullsize content view leaves no titlebar to grab. Controls inside a
+   drag region must opt out with .dxf-no-drag or they stop being clickable. */
 .dxf-drag-region { -webkit-app-region: drag; user-select: none; }
 .dxf-no-drag { -webkit-app-region: no-drag; }
 
-/* Discordia brand mark. Rendered as INLINE svg (see DiscordiaLogo) so the
-   two halves + the splatter layer are real DOM nodes we can drive here.
-   At rest: a near-imperceptible bob so it feels alive without nagging.
-   On hover: the halves swing apart along the seam, hang for a beat, then
-   slam back together with a slight overshoot while a burst of paint specks
-   splatters out of the seam and fades. Eased in-out throughout. */
+/* Inline SVG (see DiscordiaLogo) so the halves and splatter are real DOM
+   nodes this stylesheet can drive. */
 @keyframes dxf-logo-bob {
   0%, 100% { transform: translateY(0); }
   50%      { transform: translateY(-3%); }
@@ -363,9 +266,8 @@ button:active:not(:disabled) { transform: scale(0.985); }
   animation-play-state: paused;
 }
 
-/* The two halves split along the diagonal seam. transform-box: fill-box pins
-   each rotation to that half's own centre; translate values are in viewBox
-   user units (the artwork is ~1024 wide), so they scale with the logo. */
+/* fill-box pins each rotation to that half's own centre; translates are in
+   viewBox units (~1024 wide) so they scale with the logo. */
 .dxf-logo-left, .dxf-logo-right {
   transform-box: fill-box;
   transform-origin: center;
@@ -387,8 +289,6 @@ button:active:not(:disabled) { transform: scale(0.985); }
 .dxf-logo:hover .dxf-logo-left  { animation: dxf-part-left  0.95s cubic-bezier(0.65, 0, 0.35, 1) both; }
 .dxf-logo:hover .dxf-logo-right { animation: dxf-part-right 0.95s cubic-bezier(0.65, 0, 0.35, 1) both; }
 
-/* Paint splatter — hidden until the halves slam back together, then a quick
-   burst that radiates out of the seam and fades. */
 .dxf-splat {
   transform-box: view-box;
   transform-origin: 495px 515px;
@@ -402,21 +302,13 @@ button:active:not(:disabled) { transform: scale(0.985); }
 .dxf-logo:hover .dxf-splat { animation: dxf-splat-burst 0.95s cubic-bezier(0.65, 0, 0.35, 1) both; }
 ";
 
-/// A selectable color theme: a set of CSS custom-property overrides. `--ease`
-/// and structural rules stay in BASE_CSS; themes only restyle colors.
 pub struct ThemeDef {
     pub id: &'static str,
     pub label: &'static str,
-    /// A swatch color for the picker (the accent).
     pub swatch: &'static str,
     vars: &'static str,
 }
 
-/// Available themes (the five from the Discordia design). Each sets the full
-/// variable set: the legacy names components already consume, plus the design's
-/// extras (`--bg2/--panel2/--up/--violet/--amber`). `--panel` and
-/// `--panel-solid` share a value; the background-image path makes `--panel`
-/// translucent at runtime (see `App`).
 pub const THEMES: &[ThemeDef] = &[
     ThemeDef {
         id: "ember",
@@ -475,9 +367,6 @@ pub const THEMES: &[ThemeDef] = &[
     },
 ];
 
-/// The raw CSS custom-property declarations for a theme id. Applied as an
-/// inline `style` on the app root (deterministic + reactive — far more reliable
-/// than swapping a `<style>` block, whose `:root` can lose to BASE_CSS).
 pub fn theme_vars(id: &str) -> &'static str {
     THEMES
         .iter()
@@ -486,7 +375,6 @@ pub fn theme_vars(id: &str) -> &'static str {
         .unwrap_or(THEMES[0].vars)
 }
 
-/// CSS variable declarations for an accent-color override (layered on a theme).
 pub fn accent_vars(accent: &str) -> String {
     format!(
         "--accent: {accent}; --accent-strong: {accent}; \
@@ -494,14 +382,10 @@ pub fn accent_vars(accent: &str) -> String {
     )
 }
 
-/// The three bundled variable fonts (latin subset). Declared as `@font-face`
-/// at runtime because the asset URLs are only known then (see `font_face_css`).
 const FONT_SPACE_GROTESK: Asset = asset!("/assets/fonts/spacegrotesk.woff2");
 const FONT_BRICOLAGE: Asset = asset!("/assets/fonts/bricolage.woff2");
 const FONT_JETBRAINS_MONO: Asset = asset!("/assets/fonts/jetbrainsmono.woff2");
 
-/// Build the `@font-face` block pointing at the bundled woff2 assets. They're
-/// variable fonts, so one file covers the whole weight range per family.
 fn font_face_css() -> String {
     format!(
         "@font-face{{font-family:'Space Grotesk';font-style:normal;font-weight:300 700;\
@@ -516,8 +400,6 @@ fn font_face_css() -> String {
     )
 }
 
-/// The CSS class for a procedural background pattern id (empty for "none" or
-/// when a user background image is set).
 fn background_pattern_class(pattern: &str) -> &'static str {
     match pattern {
         "grid" => "app-bg-pattern app-bg-grid",
@@ -536,8 +418,6 @@ pub fn App() -> Element {
     let mut error = use_signal(|| None::<String>);
     let last_session = use_signal(|| session::load().ok().flatten());
 
-    // Check once at app root: the label remounts on disconnect, which would
-    // waste the 60/hour unauthenticated rate limit.
     let mut update = use_signal(|| None::<crate::version::Update>);
     use_future(move || async move {
         if let Some(found) = crate::version::check_for_update().await {
@@ -565,19 +445,12 @@ pub fn App() -> Element {
         root_style.push_str(&accent_vars(a));
     }
     if background.is_some() {
-        // Let the background show through: transparent backdrop + translucent
-        // panels (no blur — backdrop-filter would trap fixed-position modals).
         root_style.push_str(
             "--bg: transparent; --panel: color-mix(in srgb, var(--panel-solid) 66%, transparent);",
         );
     }
 
     rsx! {
-        // Head elements (CSS + scripts) live in a separate prop-less component
-        // so Dioxus memoizes it and never tries to diff their props — which
-        // would log "Changing the props of Style/Script is not supported"
-        // on every re-render of App (e.g. when moving the mic sensitivity
-        // slider, which mutates the settings signal App reads).
         AppHead {}
 
         div {
@@ -590,16 +463,9 @@ pub fn App() -> Element {
                 div { class: "app-bg-layer", style: "background-image: url('{img}');" }
                 div { class: "app-bg-layer", style: "background: rgba(0,0,0,{scrim});" }
             }
-            // Shown only pre-connection: it's the first version read and the
-            // only one reachable when nothing works.
-            // Omitted in-workspace to avoid permanent chrome and conflict with
-            // existing bottom-corner controls.
             if session.read().is_none() {
                 div { class: "fixed bottom-3 right-3 z-40 flex items-center gap-2",
                     crate::version::VersionLabel {}
-                    // Downloads and installs now, but only on a click, and
-                    // only what verifies against the key compiled into this
-                    // binary. See .
                     if let Some(u) = update() {
                         crate::update::UpdateNotice { update: u }
                     }
@@ -627,8 +493,6 @@ pub fn App() -> Element {
                             session.set(Some(params));
                         },
                         on_rename: move |new_name: String| {
-                            // New name takes effect on next Connect; we don't
-                            // mutate the in-flight gateway session.
                             let mut current = identity.write();
                             if let Some(id) = current.as_mut() {
                                 let _ = id.set_display_name(new_name);
@@ -648,9 +512,6 @@ pub fn App() -> Element {
                             key: "{session_key(&params)}",
                             params: params.clone(),
                             on_disconnect: move |reason: String| {
-                                // An empty reason means the user deliberately
-                                // unplugged — return to the connect screen
-                                // without flagging it as an error.
                                 error.set(if reason.is_empty() { None } else { Some(reason) });
                                 session.set(None);
                             },
@@ -688,20 +549,13 @@ fn session_key(p: &SessionParams) -> String {
     format!("{mode}|{}|{}", p.username, p.identity.pubkey)
 }
 
-/// All `<head>` injections: Tailwind, the LiveKit SDK, font faces, and the base
-/// stylesheet — every one of them compiled into the binary. Extracted into a
-/// prop-less component so Dioxus memoizes it and never re-evaluates it —
-/// re-rendering `App` (e.g. on settings changes) no longer triggers "Changing
-/// the props of Style/Script is not supported" warnings.
 #[component]
+/// Prop-less so Dioxus memoizes it — re-evaluating it warns "Changing the
+/// props of Style/Script is not supported".
 fn AppHead() -> Element {
     rsx! {
-        // Inlined to avoid CDN/runtime compiler/FOUC; works offline.
         document::Style { {TAILWIND_CSS} }
-        // Inlined rather than `src` for the reasons on LIVEKIT_JS.
         document::Script { {LIVEKIT_JS} }
-        // Parked on `window` for `dxScreen` to build a blob URL from when a
-        // key is configured.
         document::Script {
             {format!(
                 "window.__dxfE2eeWorkerSrc = {};",

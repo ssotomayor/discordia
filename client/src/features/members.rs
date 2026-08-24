@@ -4,7 +4,6 @@ use dioxus_grid_layout::NoDrag;
 use crate::protocol::{ClientMessage, Id, Member, Permission, VoiceState};
 use crate::state::{use_app_state, use_gateway};
 
-/// Right-click moderation menu over a member row.
 #[derive(Clone, PartialEq)]
 struct MemberMenu {
     guild_id: Id,
@@ -12,7 +11,6 @@ struct MemberMenu {
     username: String,
     x: f64,
     y: f64,
-    /// Armed destructive action awaiting inline confirm.
     confirming: Option<ModAction>,
 }
 
@@ -38,7 +36,6 @@ pub fn MembersPanel() -> Element {
         })
         .unwrap_or_default();
     let voice_states: Vec<VoiceState> = snapshot.voice_states.clone();
-    // Decides whether right-click opens a menu; server re-checks permissions.
     let (can_kick, can_ban, can_roles, owner_pk, self_pk) = guild_id
         .map(|gid| {
             (
@@ -67,7 +64,6 @@ pub fn MembersPanel() -> Element {
     let online_count = members.iter().filter(|m| m.online).count();
     let offline_count = members.len() - online_count;
 
-    // Excludes self, bots (uninstall via Integrations), and owner.
     let on_context = {
         let owner_pk = owner_pk.clone();
         let self_pk = self_pk.clone();
@@ -140,7 +136,6 @@ pub fn MembersPanel() -> Element {
     }
 }
 
-/// The floating moderation popover (assign roles, kick, ban).
 #[component]
 fn MemberMenuPopover(
     menu: MemberMenu,
@@ -327,8 +322,6 @@ fn MemberRow(
     let dim = if member.online { "" } else { "opacity-60" };
     let card_pubkey = member.user.pubkey.clone();
 
-    // Presence: connection state trumps the self-set status (see
-    // `AppState::presence_of`); only actually-online users pulse.
     let (dot_color, pulse) = {
         let status = state.read().presence_of(&member.user.pubkey).to_string();
         let pulse = if status == "online" {
@@ -401,7 +394,6 @@ fn VoiceBadges(vs: VoiceState) -> Element {
             if vs.channel_id.is_some() {
                 span { class: "text-[var(--accent)]", title: "In voice", "v" }
             }
-            // Deafened implies muted server-side, so the two never both show.
             if vs.deafened {
                 span { class: "text-[var(--text-dim)]", title: "Deafened", "d" }
             } else if vs.muted {

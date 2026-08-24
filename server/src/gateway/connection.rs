@@ -18,7 +18,6 @@ pub async fn handle_connection(
     client_host: Option<String>,
 ) {
     let (mut ws_tx, mut ws_rx) = socket.split();
-    // Register before identify so frames broadcast in the gap still reach us.
     let (conn_id, mut outbound_rx) = ctx.state.register_conn();
 
     let nonce = auth::fresh_nonce();
@@ -35,9 +34,7 @@ pub async fn handle_connection(
     }
 
     let mut user: Option<User> = None;
-    // Bots get an intent-filtered stream and narrow action surface.
     let mut is_bot = false;
-    // Protects against runaway/malicious clients.
     let mut limiter = RateLimiter::new();
 
     loop {
@@ -57,8 +54,6 @@ pub async fn handle_connection(
                     continue;
                 };
 
-                // Bots are limited to fetch, post, and react; other actions
-                // are human-only.
                 if is_bot
                     && !matches!(
                         client_msg,
@@ -96,11 +91,7 @@ pub async fn handle_connection(
                         }
                         let new_user = User { pubkey: pubkey.clone(), username };
                         ctx.state.remember_user(&new_user).await;
-                        // Bot status is self-declared to prevent privilege
-                        // stripping via pubkey installation.
                         is_bot = bot;
-                        // Map connection before snapshotting to avoid losing
-                        // concurrent frames.
                         ctx.state.identify_conn(conn_id, &new_user.pubkey);
                         let ready = if is_bot {
                             ctx.state.snapshot_for_bot(&new_user)
@@ -110,8 +101,6 @@ pub async fn handle_connection(
                         if send(&mut ws_tx, &ready).await.is_err() {
                             break;
                         }
-                        // Collect first to avoid re-entering the DashMap while
-                        // iterating.
                         let joins: Vec<(uuid::Uuid, Member)> = ctx
                             .state
                             .members
@@ -126,18 +115,12 @@ pub async fn handle_connection(
                             let targets = ctx.state.guild_member_pubkeys(gid);
                             ctx.state.deliver(targets, ServerMessage::MemberJoin(member));
                         }
-                        // Log-only version: no server state stored. "unknown"
-                        // placeholder prevents log lines reading as truncated.
                         let client_version = sanitize_client_version(&client_version);
                         let client_version = if client_version.is_empty() {
                             "unknown".to_string()
                         } else {
                             client_version
                         };
-                        // Use `?` for free-text to quote/escape boundaries
-                        // (prevents log injection); `%` only for types that
-                        // cannot contain newlines. See
-                        // docs/AUDIT-2026-08-17.md.
                         tracing::info!(
                             user = ?new_user.username,
                             pubkey = %new_user.pubkey,
@@ -153,8 +136,6 @@ pub async fn handle_connection(
                             }).await;
                             continue;
                         };
-                        // Never hand DM history to a non-participant, nor guild
-                        // channel history to a non-member.
                         let forbidden = if let Some(gid) = ctx.state.channel_guild(channel_id) {
                             !ctx.state.is_guild_member(gid, &u.pubkey)
                         } else {
@@ -397,7 +378,6 @@ pub async fn handle_connection(
                             }).await;
                             continue;
                         };
-                        // Capture members BEFORE deletion removes them.
                         let targets = ctx.state.guild_member_pubkeys(guild_id);
                         match ctx.state.delete_guild(guild_id, &u.pubkey).await {
                             Ok(()) => {
@@ -466,7 +446,7 @@ pub async fn handle_connection(
                             continue;
                         };
                         if !audience.iter().any(|p| p == &u.pubkey) {
-                            continue; // not allowed in this channel
+                            continue;
                         }
                         if is_bot && !bot_can(&ctx.state, channel_id, &u.pubkey, Permission::AddReactions) {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
@@ -513,10 +493,6 @@ pub async fn handle_connection(
                             }).await;
                             continue;
                         };
-                        // Emoji render at ~24px next to text, so the cap is far
-                        // tighter than a message attachment's: a multi-megabyte
-                        // emoji would be re-sent to every member of the guild
-                        // and gains nothing on screen.
                         if !image.starts_with("data:image/") || image.len() > MAX_EMOJI_DATA_LEN {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "emoji must be an image under 256 KB".into(),
@@ -529,9 +505,6 @@ pub async fn handle_connection(
                             }).await;
                             continue;
                         };
-                        // Strip the `media:` prefix: `GuildEmoji.image` is a
-                        // client-side cache key/filename, so the prefix would
-                        // break `FetchEmoji` and client validation.
                         let address = stored.strip_prefix("media:").unwrap_or(&stored).to_string();
                         match ctx.state.create_emoji(guild_id, &shortcode, address, &u.pubkey).await {
                             Ok(_) => broadcast_emojis(&ctx.state, guild_id),
@@ -575,8 +548,6 @@ pub async fn handle_connection(
                             }).await;
                             continue;
                         }
-                        // Bounded per request to prevent a single client from
-                        // reading the entire blob directory in one frame.
                         let blobs: Vec<EmojiBlob> = images
                             .into_iter()
                             .take(MAX_EMOJI_FETCH)
@@ -643,13 +614,10 @@ pub async fn handle_connection(
                             }).await;
                             continue;
                         };
-                        // Capture recipients before removal drops the bot from
-                        // the roster.
                         let targets = ctx.state.guild_member_pubkeys(guild_id);
                         match ctx.state.uninstall_bot(guild_id, &bot_pubkey, &u.pubkey).await {
                             Ok(()) => {
                                 tracing::info!(%guild_id, bot = ?bot_pubkey, by = ?u.username, "bot uninstalled");
-                                // Removal, not offline — clients drop the row.
                                 ctx.state.deliver(
                                     targets,
                                     ServerMessage::MemberRemove { guild_id, user_pubkey: bot_pubkey },
@@ -684,10 +652,6 @@ pub async fn handle_connection(
                             bots: ctx.state.guild_installs(guild_id),
                         }).await;
                     }
-                    // channel_id is ignored; the channel is derived from the
-                    // sender's VoiceState to prevent claiming a share in a
-                    // channel they are not in. The field remains for backward
-                    // compatibility with older clients.
                     ClientMessage::SetScreenShare { channel_id: _, sharing } => {
                         let Some(u) = user.as_ref() else { continue };
                         let Some(vs) = ctx.state.update_screen_share(&u.pubkey, sharing) else {
@@ -697,8 +661,6 @@ pub async fn handle_connection(
                         let channel = vs.channel_id;
                         ctx.state
                             .deliver(targets.clone(), ServerMessage::VoiceStateUpdate(vs));
-                        // And the legacy frame, derived from the same source, for
-                        // clients older than `VoiceState::screen_sharing`.
                         if let Some(cid) = channel {
                             ctx.state.deliver(
                                 targets,
@@ -745,22 +707,12 @@ pub async fn handle_connection(
                                     },
                                 )
                                 .await;
-                                // Three tokens are issued because LiveKit
-                                // permits only one connection per identity per
-                                // room, and the webview/native clients join
-                                // under different identities. An empty token
-                                // indicates a server predating that identity;
-                                // clients degrade gracefully, but failed mints
-                                // are logged to distinguish old servers from
-                                // transient errors.
                                 let screen_name = format!("{} (screen)", u.username);
                                 let screen_token = livekit::screen_token_as(
                                     &ctx.livekit,
                                     &u.pubkey,
                                     &screen_name,
                                     channel_id,
-                                    // The webview both renders and, on Windows,
-                                    // captures.
                                     true,
                                 )
                                 .await;
@@ -797,12 +749,6 @@ pub async fn handle_connection(
                                         .await;
                                     }
                                     Err(err) => {
-                                        // This token has no fallback: without
-                                        // it, the webview cannot render or
-                                        // publish screen shares. Previously
-                                        // swallowed by `if let Ok`, this now
-                                        // logs the error and notifies the
-                                        // user.
                                         tracing::error!(
                                             %err, %channel_id,
                                             "screen token mint failed"
@@ -832,7 +778,6 @@ pub async fn handle_connection(
                     }
                     ClientMessage::LeaveVoice => {
                         let Some(u) = user.as_ref() else { continue };
-                        // Captured before the clear: that is what ends the share.
                         let was_sharing = sharing_in(&ctx.state, &u.pubkey);
                         if let Some(cleared) = ctx.state.clear_voice(&u.pubkey) {
                             let targets = ctx.state.guild_member_pubkeys(cleared.guild_id);
@@ -856,24 +801,14 @@ pub async fn handle_connection(
                             ctx.state.deliver(targets, ServerMessage::VoiceStateUpdate(state));
                         }
                     }
-                    // No membership check here, unlike SetScreenShare:
-                    // update_camera only touches existing voice state (created
-                    // by JoinVoice, which checks), and revocation clears it. A
-                    // non-member gets None.
                     ClientMessage::ShareMediaKey { channel_id, to, epoch, blob } => {
                         let Some(u) = user.as_ref() else { continue };
-                        // Membership check prevents the gateway from being
-                        // used to push payloads to non-members; the blob is
-                        // sealed, so this is anti-spam, not secrecy.
                         let Some(guild_id) = ctx.state.channel_guild(channel_id) else {
                             tracing::warn!(%channel_id, "media key for a channel with no guild");
                             continue;
                         };
                         let members = ctx.state.guild_member_pubkeys(guild_id);
                         if !members.contains(&u.pubkey) || !members.contains(&to) {
-                            // Logged because this is the only place a key can
-                            // vanish silently; a member list mismatch is worth
-                            // seeing.
                             tracing::warn!(
                                 from = %u.pubkey, %to, %guild_id,
                                 "refusing to route a media key: sender or recipient is not a guild member"
@@ -1208,8 +1143,6 @@ pub async fn handle_connection(
                             reject_rate_limited(&mut ws_tx).await;
                             continue;
                         }
-                        // Same canonicalisation as handshake to prevent names
-                        // that Identify would have refused (e.g. length cap).
                         let username = sanitize_username(&username);
                         if username == u.username {
                             continue;
@@ -1227,8 +1160,6 @@ pub async fn handle_connection(
                             }).await;
                             continue;
                         };
-                        // Batched update: one rate-limit hit for the whole
-                        // move, not per-channel.
                         if !limiter.allow() {
                             reject_rate_limited(&mut ws_tx).await;
                             continue;
@@ -1431,8 +1362,6 @@ pub async fn handle_connection(
                         }
                     }
                     ClientMessage::FetchCatalog { offset, limit } => {
-                        // On-demand directory (replaces broadcast). Open to
-                        // any connection so browse works pre-join.
                         const DEFAULT_PAGE: u32 = 100;
                         const MAX_PAGE: u32 = 500;
                         let limit = if limit == 0 { DEFAULT_PAGE } else { limit.min(MAX_PAGE) };
@@ -1443,9 +1372,6 @@ pub async fn handle_connection(
             }
 
             outbound = outbound_rx.recv() => {
-                // Routing guarantees this frame is for us; no per-frame
-                // address check. `None` means sender dropped (slow consumer or
-                // shutdown), so we close and let the client reconnect.
                 let Some(msg) = outbound else { break };
                 let out = if is_bot {
                     let Some(u) = user.as_ref() else { continue };
@@ -1463,8 +1389,6 @@ pub async fn handle_connection(
         }
     }
 
-    // Drop this connection from the routing table first, so nothing is routed
-    // to a socket we're tearing down.
     ctx.state
         .unregister_conn(conn_id, user.as_ref().map(|u| u.pubkey.as_str()));
 
@@ -1500,19 +1424,6 @@ where
     tx.send(WsMessage::Text(json)).await
 }
 
-/// Tell the client its action was refused for rate, in one place.
-///
-/// **Fourteen of the seventeen rate-limited arms used to `continue` in
-/// silence** — the client asked for something, nothing happened, and nothing
-/// said why. That is worst for the actions that come in bursts: a channel
-/// reorder emits one `UpdateChannel` per row it renumbers, so a guild that has
-/// never been reordered spends its whole budget in one drag and the list is
-/// left visibly half-sorted, with no message and the same window blocking the
-/// user's next ten seconds of unrelated actions.
-///
-/// One helper rather than fourteen copies of the literal, because the message
-/// is the contract: a client that wants to distinguish "refused" from "lost"
-/// has to be able to match on something stable.
 async fn reject_rate_limited<S>(tx: &mut S)
 where
     S: SinkExt<WsMessage, Error = axum::Error> + Unpin,
@@ -1526,41 +1437,14 @@ where
     .await;
 }
 
-/// What every rate-limit refusal says. Public so a test can assert on the
-/// refusal rather than on a spelling.
 pub const RATE_LIMITED: &str = "rate limited: slow down";
 
-/// The two screen-room identities a client can do without.
-///
-/// Each one answers three questions the same way every time — which identity,
-/// whether it ever publishes, and what its absence costs — so they live here
-/// together instead of being spelled out at each call site. Adding a fourth
-/// identity to the screen room means adding a variant, which is the point.
 #[derive(Clone, Copy)]
 enum OptionalScreen {
-    /// `{pubkey}#audio`. Subscribes to stream audio so it plays through the same
-    /// cpal device as voice, and sends nothing, ever. Losing it degrades to
-    /// webview playback: still audible, just on the system's output device
-    /// rather than the chosen one — a real fallback, so the user is not told.
     Audio,
-    /// `{pubkey}#video`. Publishes natively captured screen video. Losing it has
-    /// no fallback at all — on macOS this is the only capture path — so the user
-    /// is told rather than left with a share button that does nothing.
     Video,
 }
 
-/// Mint one of the optional screen-room tokens, or report why not.
-///
-/// Empty is a real value on this wire: it is what a server predating either
-/// identity sends, and the client degrades on it. That makes an empty string the
-/// right thing to return on failure too — the client behaves identically — as
-/// long as the failure is not silent, which is what this exists to guarantee.
-///
-/// The **main** screen token deliberately does not come through here. Its
-/// failure has to suppress the whole `ScreenToken` frame rather than empty one
-/// field of it: `net.rs` stores that field unconditionally, so a frame carrying
-/// `token: ""` would have the client try to join the room with an empty token.
-/// A helper returning `String` cannot express "send nothing at all".
 async fn optional_screen_token<S>(
     cfg: &livekit::LiveKitConfig,
     which: OptionalScreen,
@@ -1604,14 +1488,6 @@ where
     }
 }
 
-/// The delivery recipe after a membership removal (kick/ban/leave): the
-/// removed user gets a targeted `GuildDelete` (their client already tears the
-/// guild down cleanly and reselects), the remaining members drop the roster
-/// row, any voice/screen presence in that guild is broadcast clear, and the
-/// public catalog refreshes (member count changed).
-/// `was_sharing` is read by the caller *before* the removal, because removing
-/// the member clears their voice state and the tombstone no longer names the
-/// channel their share was in — which the legacy `ScreenShareState` frame needs.
 fn removal_broadcasts(
     state: &crate::state::AppState,
     guild_id: crate::protocol::Id,
@@ -1620,8 +1496,8 @@ fn removal_broadcasts(
     cleared_voice: Option<crate::protocol::VoiceState>,
     was_sharing: Option<(Id, Id)>,
 ) {
-    // Compute the remaining audience AFTER removal so the target never
-    // receives the roster frames meant for members.
+    // `was_sharing` and `cleared_voice` are read by the caller *before* the
+    // removal, because removing the member is what ends the share.
     let rest = state.guild_member_pubkeys(guild_id);
     if was_member {
         state.deliver(
@@ -1637,9 +1513,6 @@ fn removal_broadcasts(
         );
     }
     if let Some(vs) = cleared_voice {
-        // Include the removed user so their client sees channel_id=None and
-        // force-idles its live voice session (net.rs), which hangs up their
-        // audio.
         let mut vs_targets = rest.clone();
         vs_targets.push(target.to_string());
         state.deliver(vs_targets, ServerMessage::VoiceStateUpdate(vs));
@@ -1649,32 +1522,15 @@ fn removal_broadcasts(
     }
 }
 
-/// Largest emoji upload accepted, as data-URL length. Emoji are rendered at
-/// roughly text height and pushed to every member of the guild, so the cap is
-/// far tighter than a message attachment's `MAX_IMAGE_LEN`.
 const MAX_EMOJI_DATA_LEN: usize = 350_000; // ~256 KB of bytes once base64 is undone
-/// Emoji images served per `FetchEmoji`, so one frame can't ask us to read the
-/// whole blob directory. Clients batch and come back for the rest.
 const MAX_EMOJI_FETCH: usize = 64;
 
-/// Push a guild's whole emoji catalog to its members.
-///
-/// The full list rather than a delta: it is bounded by `MAX_EMOJIS_PER_GUILD`,
-/// so a replace is cheap and cannot drift out of sync the way an add/remove
-/// stream can. `deliver` (not `broadcast`) keeps it to the guild's members —
-/// emoji are guild configuration, not public data.
 fn broadcast_emojis(state: &crate::state::AppState, guild_id: Id) {
     let targets = state.guild_member_pubkeys(guild_id);
     let emojis = state.emojis_of(guild_id);
     state.deliver(targets, ServerMessage::GuildEmojis { guild_id, emojis });
 }
 
-/// Where a user is sharing right now, if they are — `(guild, channel)`.
-///
-/// Read *before* their voice state is cleared, because clearing it is what ends
-/// the share and the tombstone no longer names the channel. Returns `None` when
-/// they were not sharing, which is what keeps a plain leave from broadcasting a
-/// sharer list that has not changed.
 fn sharing_in(state: &crate::state::AppState, pubkey: &str) -> Option<(Id, Id)> {
     let vs = state.voice_states.get(pubkey)?;
     if !vs.screen_sharing {
@@ -1683,12 +1539,6 @@ fn sharing_in(state: &crate::state::AppState, pubkey: &str) -> Option<(Id, Id)> 
     vs.channel_id.map(|cid| (vs.guild_id, cid))
 }
 
-/// Tell a channel who is still sharing, after someone stopped.
-///
-/// The state itself needs no clearing — the flag rides `VoiceState`, so
-/// `clear_voice` already took it. This exists only to re-derive the legacy
-/// `ScreenShareState` frame for clients older than `VoiceState::screen_sharing`,
-/// which have no other way to drop the LIVE badge.
 fn broadcast_screen_state(state: &crate::state::AppState, guild_id: Id, channel_id: Id) {
     let targets = state.guild_member_pubkeys(guild_id);
     state.deliver(
@@ -1700,11 +1550,6 @@ fn broadcast_screen_state(state: &crate::state::AppState, guild_id: Id, channel_
     );
 }
 
-/// The set of pubkeys allowed to see activity in a channel: a guild's members.
-///
-/// Every channel this server knows about belongs to a guild. Direct messages
-/// used to be the exception — a channel with two participants and no guild —
-/// and are now Nostr gift wraps that never reach this process at all.
 fn channel_audience(
     state: &crate::state::AppState,
     channel_id: crate::protocol::Id,
@@ -1716,80 +1561,33 @@ fn channel_audience(
 
 use crate::state::is_hex_color;
 
-/// Canonicalise a username the same way the client does before it signs.
-///
-/// This used to be its own trim-and-truncate here, and that was the bug: the
-/// server canonicalised before verifying while the client signed the raw
-/// string, so a name this altered could never authenticate. The definition now
-/// lives in `protocol` so there is exactly one of it — see
-/// `protocol::canonical_username`.
 fn sanitize_username(raw: &str) -> String {
     crate::protocol::canonical_username(raw)
 }
 
-/// Longest self-declared version we will repeat, **in bytes**. Generous against
-/// the ~20 the real ones use (`v0.1.0-pre.223`, `bot-sdk/0.1.0`), tight enough
-/// that a peer cannot write a paragraph to our disk on every connect.
-///
-/// Bytes and not characters, because bytes are what the justification above is
-/// about. Counting characters let 64 four-byte codepoints through as 256 bytes
-/// — four times the budget, for a string nobody reads as text anyway. Every
-/// real value is ASCII, so the two units agree wherever it matters.
 const MAX_CLIENT_VERSION_BYTES: usize = 64;
 
-/// Make a self-declared version string safe to repeat into a log line.
-///
-/// **This comment used to claim `username` had the same treatment via
-/// `sanitize_username`, and that was wrong.** `canonical_username` trims and
-/// truncates; it has never filtered control characters, and `verify_identify`
-/// takes the name as opaque bytes — so `"al\nice"` reaches the log intact. The
-/// signature commits to it either way. Every username log site is therefore
-/// formatted with `?` rather than `%`; see the note there.
-///
-/// `client_version` needs its own cap regardless: it is unauthenticated by
-/// design, written on every identify, and unlike a username it has no length
-/// bound anywhere upstream. The server's subscriber is the plain-text
-/// `tracing_subscriber::fmt()`, which escapes nothing, so an embedded newline
-/// turns one field into a forged log line — CWE-117 — and a forged line defeats
-/// the only thing this field exists for, which is counting what is connected.
-///
-/// Control characters are stripped *before* the cap, so a run of them cannot
-/// consume the budget and leave nothing behind.
 fn sanitize_client_version(raw: &str) -> String {
     let mut out = String::with_capacity(MAX_CLIENT_VERSION_BYTES);
     for c in raw.trim().chars().filter(|c| !breaks_a_line(*c)) {
         if out.len() + c.len_utf8() > MAX_CLIENT_VERSION_BYTES {
-            // Break, not continue: taking a shorter char later would make the
-            // result a filtered subset rather than a prefix.
             break;
         }
         out.push(c);
     }
-    // Trim again in place: filtering can expose padding hidden by removed
-    // chars (e.g. NUL). Use truncate/drain to avoid double allocation.
     out.truncate(out.trim_end().len());
     out.drain(..out.len() - out.trim_start().len());
     out
 }
 
-/// Characters that can end a line somewhere downstream.
-///
-/// `char::is_control()` alone is not that set, which is the trap. It covers
-/// category Cc — `\n`, `\r`, ESC, and U+0085 — and stops there. **U+2028 LINE
-/// SEPARATOR and U+2029 PARAGRAPH SEPARATOR are Zl and Zp**, so `is_control()`
-/// returns false for them and they would survive a filter built on it alone.
-///
-/// Whether they *render* as a break depends on the consumer — some viewers and
-/// log processors honour them, `tracing_subscriber::fmt()` does not — which is
-/// exactly why they belong here rather than in a judgement call at each sink.
-/// The point of this function is that a peer cannot end a line; a character
-/// that ends one for *somebody* qualifies.
+/// `char::is_control()` alone misses U+2028/2029, which a log line treats as
+/// breaks — an attacker-chosen string must not write a second line.
 fn breaks_a_line(c: char) -> bool {
     c.is_control() || c == '\u{2028}' || c == '\u{2029}'
 }
 
-/// True if `bot_pubkey` is installed in `channel_id`'s guild with `perm`. DM
-/// channels (no guild) never grant a bot anything.
+/// A DM or any channel with no guild grants a bot nothing: installs are
+/// per-guild, and there is no guild here to have been installed in.
 fn bot_can(
     state: &crate::state::AppState,
     channel_id: crate::protocol::Id,
@@ -1803,10 +1601,6 @@ fn bot_can(
         .unwrap_or(false)
 }
 
-/// Adapt an outbound frame for a bot connection. Returns `None` to drop the
-/// frame (outside the bot's installed/intent-granted scope), or the (possibly
-/// content-stripped) frame to deliver. This is the data-minimization boundary:
-/// by default a bot learns that a message happened, not what it said.
 fn filter_for_bot(
     state: &crate::state::AppState,
     bot_pubkey: &str,
@@ -1814,7 +1608,6 @@ fn filter_for_bot(
 ) -> Option<ServerMessage> {
     match msg {
         ServerMessage::MessageCreate(m) => {
-            // DMs have no guild — bots never receive them.
             let gid = state.channel_guild(m.channel_id)?;
             let install = state.bot_install(gid, bot_pubkey)?;
             if !install.has_intent(Intent::GuildMessages) {
@@ -1855,8 +1648,6 @@ fn filter_for_bot(
                 .has_intent(Intent::GuildMessages)
                 .then(|| msg.clone())
         }
-        // Channel topology is part of the base guild state (sent in Ready), so
-        // it requires an install but no specific intent.
         ServerMessage::ChannelCreate(ch) | ServerMessage::ChannelUpdate(ch) => state
             .bot_install(ch.guild_id, bot_pubkey)
             .map(|_| msg.clone()),
@@ -1864,18 +1655,10 @@ fn filter_for_bot(
             .bot_install(*guild_id, bot_pubkey)
             .map(|_| msg.clone()),
         ServerMessage::Error { .. } => Some(msg.clone()),
-        // Everything else (typing, voice, screen share, profiles, the public
-        // catalog, guild metadata, DMs, integrations) is outside a bot's event
-        // surface — never delivered.
         _ => None,
     }
 }
 
-/// Common tail of both successful join paths: announce the new member to the
-/// existing roster, hand the joiner their `GuildJoined` bundle, refresh the
-/// public catalog, and run mass-join (raid) detection — auto-locking the guild
-/// and broadcasting the change if a raid is underway. `Err(())` = the joiner's
-/// socket closed (caller should break).
 async fn deliver_join<S>(
     state: &crate::state::AppState,
     ws_tx: &mut S,
@@ -1908,8 +1691,6 @@ where
         }),
     );
     let emojis = state.emojis_of(guild_id);
-    // Fetched after `MemberJoin` is sent to ensure voice states include
-    // members already in channels, which this snapshot is meant to capture.
     let voice_states = state.voice_states_in(guild_id);
     if send(
         ws_tx,
@@ -1934,18 +1715,12 @@ where
     Ok(())
 }
 
-/// Proof-of-work difficulty (leading zero BITS) for the `Pow` join gate.
-/// ~2^16 hashes ≈ sub-second for one joiner, brutal for a keygen raid.
 const POW_BITS: u32 = 16;
 
-/// Deterministic per-(guild,user) PoW challenge string. Includes both ids so a
-/// solution can't be reused across guilds or by a different keypair — each
-/// raid identity must redo the work.
 fn pow_challenge(guild_id: crate::protocol::Id, pubkey: &str) -> String {
     format!("{guild_id}:{pubkey}")
 }
 
-/// True if SHA-256(challenge ++ nonce) has ≥ `bits` leading zero bits.
 fn pow_ok(challenge: &str, nonce: &str, bits: u32) -> bool {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
@@ -1964,9 +1739,6 @@ fn pow_ok(challenge: &str, nonce: &str, bits: u32) -> bool {
     seen >= bits
 }
 
-/// Outcome of the join-gate check.
-// Built once per join attempt and consumed immediately, so boxing the large
-// `ServerMessage` variant would cost an allocation to save nothing.
 #[allow(clippy::large_enum_variant)]
 enum Gate {
     Proceed,
@@ -1974,9 +1746,6 @@ enum Gate {
     Reject(String),
 }
 
-/// Evaluate a guild's join gate for a would-be joiner. Members (incl. the
-/// owner) bypass; panic mode rejects everyone; otherwise Rules/Pow must be
-/// satisfied by `accept`/`pow_nonce`.
 fn check_join_gate(
     state: &crate::state::AppState,
     guild_id: crate::protocol::Id,
@@ -2032,9 +1801,6 @@ fn check_join_gate(
     }
 }
 
-/// Sliding-window limiter for message-producing actions. Bounds how fast any
-/// one connection can append/broadcast, which is the practical defense against
-/// a spammy or compromised bot.
 struct RateLimiter {
     hits: VecDeque<Instant>,
 }
@@ -2049,7 +1815,6 @@ impl RateLimiter {
         }
     }
 
-    /// Record an action; returns false if the window is already full.
     fn allow(&mut self) -> bool {
         let now = Instant::now();
         while let Some(front) = self.hits.front() {
@@ -2072,11 +1837,6 @@ mod tests {
     use super::{MAX_CLIENT_VERSION_BYTES, RateLimiter, sanitize_client_version};
     use std::time::{Duration, Instant};
 
-    /// The limiter admits a full window and then refuses.
-    ///
-    /// Exercised end to end by the reorder tests, never directly — and the
-    /// boundary is the interesting part: off by one here is either a limit that
-    /// never fires or one that fires a message early.
     #[test]
     fn a_full_window_is_admitted_and_the_next_hit_is_not() {
         let mut limiter = RateLimiter::new();
@@ -2089,12 +1849,6 @@ mod tests {
         );
     }
 
-    /// And the window *slides*: a hit older than it stops counting.
-    ///
-    /// This is the half no integration test can reach — asserting it through
-    /// the gateway would mean sleeping ten seconds. Without it, a limiter that
-    /// never evicted would look correct in every test we have and would refuse
-    /// a connection forever after its first busy moment.
     #[test]
     fn a_hit_older_than_the_window_stops_counting() {
         let mut limiter = RateLimiter::new();
@@ -2113,8 +1867,6 @@ mod tests {
         );
     }
 
-    /// The injection this exists to stop. A peer choosing its own version
-    /// string must not be able to write a second log line, or a second field.
     #[test]
     fn a_version_cannot_forge_a_log_line() {
         let forged = "v1.0\nINFO identified user=admin pubkey=deadbeef version=v1.0";
@@ -2126,9 +1878,6 @@ mod tests {
             "a control character survived: {clean:?}"
         );
 
-        // The Unicode separators, which `is_control()` does *not* cover — they
-        // are categories Zl and Zp, not Cc, so a filter written on
-        // `is_control()` alone lets them straight through.
         for sep in ['\u{2028}', '\u{2029}'] {
             let forged = format!("v1.0{sep}INFO identified user=admin");
             let clean = sanitize_client_version(&forged);
@@ -2138,13 +1887,9 @@ mod tests {
                 sep as u32
             );
         }
-        // What is left is one line, and the log site quotes it — so the
-        // remaining `key=value` text cannot read as fields of its own.
         assert!(clean.starts_with("v1.0"));
     }
 
-    /// Unbounded is the other half: this is written on every identify, by
-    /// anyone who can open a socket.
     #[test]
     fn a_version_is_capped() {
         let long = "a".repeat(10_000);
@@ -2154,16 +1899,6 @@ mod tests {
         );
     }
 
-    /// Control characters are stripped *before* the cap. Filtering after it
-    /// would let a run of them eat the whole budget and leave nothing, turning
-    /// a hostile string into an indistinguishable "unknown".
-    ///
-    /// **The padding must not be whitespace.** An earlier version of this test
-    /// padded with `\n`, which the `raw.trim()` at the top of the function
-    /// removes before `filter`/`take` ever run — so it passed with the two
-    /// steps in either order and pinned nothing. Verified by swapping them:
-    /// the newline version stayed green, this one fails. NUL is not Unicode
-    /// whitespace, so it survives the trim and actually reaches the cap.
     #[test]
     fn control_characters_do_not_consume_the_cap() {
         let padded = format!(
@@ -2172,23 +1907,15 @@ mod tests {
         );
         assert_eq!(sanitize_client_version(&padded), "v0.1.0-pre.223");
 
-        // Interior whitespace survives `trim()` because it is not at an edge.
         let interior = format!("v0.1.0{}pre.223", "\n".repeat(MAX_CLIENT_VERSION_BYTES * 2));
         assert_eq!(sanitize_client_version(&interior), "v0.1.0pre.223");
     }
 
-    /// Why the function trims twice. Filtering can *expose* padding the first
-    /// trim could not see, because a control character is not whitespace and
-    /// stands between it and the edge.
     #[test]
     fn filtering_does_not_leave_exposed_padding() {
         assert_eq!(sanitize_client_version("\u{0} v0.1.0 \u{0}"), "v0.1.0");
     }
 
-    /// The cap is bytes, and this is the input that tells the two units apart.
-    /// `Chars::take(64)` would have let 64 four-byte codepoints through as 256
-    /// bytes — four times the budget the constant's own doc justifies in terms
-    /// of what a peer can write to disk per connection.
     #[test]
     fn the_cap_counts_bytes_not_characters() {
         let wide = "🙂".repeat(1000);
@@ -2198,14 +1925,9 @@ mod tests {
             "{} bytes, over the {MAX_CLIENT_VERSION_BYTES}-byte budget",
             clean.len()
         );
-        // Spent in whole characters: the budget divides exactly here, and a
-        // string that stopped mid-codepoint could not exist as a `String` at
-        // all — the loop breaks rather than slicing.
         assert_eq!(clean.chars().count(), MAX_CLIENT_VERSION_BYTES / 4);
     }
 
-    /// The ordinary values still pass through untouched — a sanitiser that
-    /// mangles the real input answers nothing.
     #[test]
     fn real_versions_survive_unchanged() {
         for v in ["v0.1.0-pre.223", "0.1.0-dev+a1b2c3d", "bot-sdk/0.1.0"] {

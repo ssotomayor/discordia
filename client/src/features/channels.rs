@@ -7,38 +7,8 @@ use crate::protocol::{Channel, ChannelKind, ClientMessage, Id, Permission, Voice
 use crate::state::DmInfo;
 use crate::state::{AppState, GatewayTx, VoicePhase, use_app_state, use_gateway};
 
-/// The position changes that put `moved` where `target` sits.
-///
-/// Separated from the rows that call it because it is the only part of a
-/// reorder that can be tested: the gesture needs a mouse, the arithmetic does
-/// not.
-///
-/// `guild` is **every channel in the guild**, in the order the sidebar draws
-/// them — the text section, then the voice section, each sorted by `position`
-/// then name. That is not a convenience; it is what `position` means.
-/// `protocol::Channel::position` documents it as "sort order within the guild's
-/// channel list", and the server assigns it that way: `create_channel` takes
-/// `max(position) + 1` over every channel in the guild regardless of kind, and
-/// `create_guild`'s template loop enumerates once across a mixed text+voice
-/// list. An earlier version of this function numbered each kind group from 0
-/// on its own, which is wrong the moment a guild has both kinds — which is
-/// every guild made from a template.
-///
-/// Two things follow:
-///
-/// - Positions are assigned `0..n` across the guild rather than permuting the
-///   values it already holds. Channels default to 0, so a guild that has never
-///   been reordered has no distinct values to permute, and anything that tried
-///   would sort by name forever.
-/// - The first reorder in a guild whose positions interleave the two kinds
-///   renumbers more rows than it moves, once, as it normalises them. Nothing
-///   the user sees changes — each section filters by kind before sorting, so
-///   the visible order of both is preserved exactly — and every reorder after
-///   it touches only the rows that move.
-///
-/// A drop across kinds returns nothing. The sections are drawn separately and
-/// numbering is the only thing they share, so "text channel dropped onto a
-/// voice channel" has no meaning to express.
+/// `guild` is **every** channel in the guild, in draw order — `position` is
+/// assigned 0..n across kinds, so numbering each kind from 0 corrupts it.
 fn reorder_positions(guild: &[Channel], moved: Id, target: Id) -> Vec<(Id, u32)> {
     if moved == target {
         return Vec::new();
@@ -57,18 +27,9 @@ fn reorder_positions(guild: &[Channel], moved: Id, target: Id) -> Vec<(Id, u32)>
     let dragged = order.remove(from);
     order.insert(to, dragged);
 
-    // Only the span between from/to changes order, so reusing existing
-    // positions keeps the update minimal. This is critical: the server rate-
-    // limits UpdateChannel messages and silently drops excess, causing partial
-    // reorders.
     let (lo, hi) = (from.min(to), from.max(to));
     let mut slots: Vec<u32> = guild[lo..=hi].iter().map(|c| c.position).collect();
     slots.sort_unstable();
-    // Check uniqueness against neighbors too: rows render by (position, name)
-    // with no server-side uniqueness enforcement, so a tie with an outside row
-    // breaks the tie-break. Guild is not globally sorted by position
-    // (text/voice blocks are separate), but within a kind it is, so adjacent
-    // duplicates are the only risk.
     let guard = &guild[lo.saturating_sub(1)..(hi + 2).min(guild.len())];
     let mut window: Vec<u32> = guard.iter().map(|c| c.position).collect();
     window.sort_unstable();
@@ -81,8 +42,6 @@ fn reorder_positions(guild: &[Channel], moved: Id, target: Id) -> Vec<(Id, u32)>
             .collect();
     }
 
-    // Fallback for duplicate positions (e.g., default 0): full renumbering is
-    // required to establish a valid order.
     order
         .iter()
         .enumerate()
@@ -91,22 +50,6 @@ fn reorder_positions(guild: &[Channel], moved: Id, target: Id) -> Vec<(Id, u32)>
         .collect()
 }
 
-/// Send what a drop implies, and nothing when it implies nothing.
-///
-/// **One `ReorderChannels` frame carrying positions only.** This used to send
-/// one `UpdateChannel` per renumbered row, and the comment here defended it:
-/// `UpdateChannel` is a full replace, so every field had to travel back
-/// untouched or a reorder would drop a topic. That was true and it was the
-/// problem — the fields travelled back as they were *when this client last
-/// rendered*, so somebody else's edit to a row that merely got renumbered was
-/// overwritten by a client that was not trying to change it.
-///
-/// The frame count mattered too: one rate-limit hit per row meant a guild whose
-/// channels have never been reordered (all at position 0, so the whole guild
-/// renumbers) could spend the entire window on a single drag.
-///
-/// The server re-checks `ManageChannels`, so the caller's gate is only there to
-/// keep the affordance off a row nobody may move.
 fn send_reorder(gw: &GatewayTx, group: &[Channel], moved: Id, target: Id) {
     let positions = reorder_positions(group, moved, target);
     if positions.is_empty() {
@@ -121,7 +64,6 @@ fn send_reorder(gw: &GatewayTx, group: &[Channel], moved: Id, target: Id) {
     });
 }
 
-/// Right-click management menu over a channel row (`ManageChannels` only).
 #[derive(Clone, PartialEq)]
 struct ChanMenu {
     channel: Channel,
@@ -133,13 +75,10 @@ struct ChanMenu {
 #[derive(Clone, PartialEq)]
 enum ChanMenuMode {
     Menu,
-    /// Inline rename + topic form (buffers are in the popover component).
     Edit,
     ConfirmDelete,
 }
 
-/// Drag interaction for the audio settings popover. Same Move model as the
-/// floating activity/screen-share windows — no resize grip (popover is small).
 #[derive(Clone, Copy, PartialEq)]
 enum AudioDrag {
     Move { dx: f64, dy: f64 },
@@ -196,8 +135,6 @@ pub fn ChannelsColumn() -> Element {
         .iter()
         .filter(|c| matches!(c.kind, ChannelKind::Voice))
         .collect();
-    // Owned copy in sidebar draw order (text then voice) for reorder handlers;
-    // position is guild-wide, so this order matches reorder_positions.
     let guild_order: Vec<Channel> = text_channels
         .iter()
         .chain(voice_channels.iter())
@@ -206,8 +143,6 @@ pub fn ChannelsColumn() -> Element {
 
     let mut chan_menu = use_signal::<Option<ChanMenu>>(|| None);
     let mut show_create = use_signal(|| false);
-    // Cleared on drop and dragend so an abandoned drag does not leave a stale
-    // grip.
     let mut dragging = use_signal::<Option<Id>>(|| None);
 
     let banner = if dm_mode {
@@ -221,7 +156,6 @@ pub fn ChannelsColumn() -> Element {
             if let Some(src) = banner {
                 div { class: "relative h-20 shrink-0 overflow-hidden border-b border-[var(--border)]",
                     img { class: "w-full h-full object-cover block", src: "{src}", alt: "guild banner" }
-                    // Scrim so the name below stays readable over a busy image.
                     div {
                         class: "absolute inset-0",
                         style: "background: linear-gradient(180deg, transparent 40%, var(--panel-solid));",
@@ -321,9 +255,6 @@ pub fn ChannelsColumn() -> Element {
                                         class: "w-full flex items-center gap-1.5 px-2 py-1 rounded text-left text-sm transition-colors {cls}",
                                         draggable: can_manage_channels,
                                         ondragstart: move |_| dragging.set(Some(cid)),
-                                        // prevent_default is required for the
-                                        // drop to register; guarded to ignore
-                                        // external file drags.
                                         ondragover: move |e: Event<DragData>| {
                                             if dragging().is_some() {
                                                 e.prevent_default();
@@ -337,9 +268,6 @@ pub fn ChannelsColumn() -> Element {
                                                 send_reorder(&g_drop, &drop_group, moved, cid);
                                             }
                                         },
-                                        // Clears the grip if the drag ends
-                                        // outside the list, preventing stale
-                                        // state on the next drop.
                                         ondragend: move |_| dragging.set(None),
                                         onclick: move |_| select_text_channel(&mut state, &g2, cid),
                                         oncontextmenu: move |e: MouseEvent| {
@@ -354,10 +282,6 @@ pub fn ChannelsColumn() -> Element {
                                                 }));
                                             }
                                         },
-                                        // Labels are draggable:false so clicks
-                                        // select the channel; the row
-                                        // padding/badges remain the drag
-                                        // handle.
                                         span { class: "text-[var(--text-dim)]", draggable: false, "#" }
                                         span { class: "truncate flex-1", draggable: false, "{ch.name}" }
                                         if ch.read_only {
@@ -461,8 +385,6 @@ pub fn ChannelsColumn() -> Element {
     }
 }
 
-/// Inline "create a channel" form under the header (mirrors CreateGuild's
-/// expand-in-place pattern).
 #[component]
 fn CreateChannelForm(guild_id: Id, on_done: EventHandler<()>) -> Element {
     let gateway = use_gateway();
@@ -518,22 +440,15 @@ fn CreateChannelForm(guild_id: Id, on_done: EventHandler<()>) -> Element {
     }
 }
 
-/// Floating channel-management popover: rename/topic, read-only toggle (text
-/// channels), delete with confirm.
 #[component]
 fn ChannelMenuPopover(
     menu: ChanMenu,
-    /// Every channel in the guild, in the order the sidebar draws them — what
-    /// `reorder_positions` needs, and the reason the move items live here
-    /// rather than on the row.
     guild_order: Vec<Channel>,
     on_close: EventHandler<()>,
     on_mode: EventHandler<ChanMenuMode>,
 ) -> Element {
     let gateway = use_gateway();
     let ch = menu.channel.clone();
-    // Menu reorder mirrors the drag logic, providing a mouse-free path for the
-    // same operation.
     let siblings: Vec<Channel> = guild_order
         .iter()
         .filter(|c| std::mem::discriminant(&c.kind) == std::mem::discriminant(&ch.kind))
@@ -722,8 +637,6 @@ fn VoiceChannelRow(
                 onclick: move |_| {
                     if connected { on_leave.call(()) } else { on_join.call(()) }
                 },
-                // Prevents pointer drift during click from initiating a
-                // channel drag (wrapper is draggable).
                 span { class: "text-[var(--text-dim)] text-xs", draggable: false, "♪" }
                 span { class: "truncate flex-1", draggable: false, "{channel.name}" }
                 if connected {
@@ -733,8 +646,6 @@ fn VoiceChannelRow(
             if !occupants.is_empty() {
                 div {
                     class: "ml-5 mt-0.5 space-y-0.5",
-                    // Prevents HTML5 drag from starting on descendants (e.g.
-                    // volume sliders) and grabbing the channel row.
                     draggable: false,
                     for vs in occupants.iter() {
                         {
@@ -751,13 +662,7 @@ fn VoiceChannelRow(
                                     remote_deafened: vs.deafened,
                                     is_self,
                                     is_sharing,
-                                    // Straight off the voice state, because the
-                                    // server puts the camera flag there — no
-                                    // separate map to look it up in.
                                     has_camera: vs.camera_on,
-                                    // Watching requires being in the channel
-                                    // (JS screen room connects then) and
-                                    // cannot watch own share.
                                     can_watch: is_sharing && connected && !is_self,
                                     can_watch_camera: vs.camera_on && connected && !is_self,
                                 }
@@ -770,11 +675,6 @@ fn VoiceChannelRow(
     }
 }
 
-/// A measured rate, or an em dash while there is nothing to measure against.
-///
-/// The outbound numbers are deltas between two readings, so the tick that opens
-/// the panel has nothing to divide. A dash says "measuring"; a zero would say
-/// "sending nothing", which is the opposite.
 fn rate_or_dash(v: Option<u32>, unit: &str) -> String {
     match v {
         Some(n) => format!("{n} {unit}"),
@@ -782,13 +682,6 @@ fn rate_or_dash(v: Option<u32>, unit: &str) -> String {
     }
 }
 
-/// The numbers behind "it sounds bad", for whoever is in the call.
-///
-/// Mounting is the subscription: polling the peer connection costs a walk of
-/// every track every second, so it runs only while this is on screen. Tying
-/// that to mount/unmount rather than to the toggle's own handler is what makes
-/// closing the whole popover — or the call ending under it — stop the poll
-/// too, without every close path having to remember.
 #[component]
 fn ConnectionStats() -> Element {
     let state = use_app_state();
@@ -804,8 +697,6 @@ fn ConnectionStats() -> Element {
         });
     }
 
-    // Sort by name to prevent arbitrary HashMap order from reshuffling rows on
-    // every tick.
     let mut rows: Vec<(String, crate::state::TrackStats)> = {
         let s = state.read();
         s.voice_stats
@@ -847,9 +738,6 @@ fn ConnectionStats() -> Element {
                         crate::state::TrackStats::Outbound { bitrate_kbps, packets_per_sec, target_kbps } => rsx! {
                             span {
                                 class: "text-[var(--text-dim)]",
-                                // Payload only (RTP headers add overhead). RED
-                                // redundancy (SDK default) doubles cost,
-                                // explaining why measured rate exceeds target.
                                 title: "What the encoder produced, measured between readings (payload only, so the wire is a little higher) — it is aiming for {target_kbps} kbit/s, and redundancy against packet loss roughly doubles what that costs",
                                 {rate_or_dash(*bitrate_kbps, "kbit/s out")}
                             }
@@ -866,15 +754,6 @@ fn ConnectionStats() -> Element {
     }
 }
 
-/// One participant in a voice channel's roster, with the local audio controls
-/// for them: a volume slider and a local mute.
-///
-/// Everything here is *listener-side*. The gain is applied to their incoming
-/// stream in our own playback mixer (`features::voice`), so turning someone
-/// down changes only what this machine plays — it never touches their
-/// microphone, is never sent to the server, and no other listener sees it.
-/// That is also why local mute is kept separate from `remote_muted`, the
-/// speaker's own mute state pushed by the server.
 #[component]
 fn VoiceOccupant(
     pubkey: String,
@@ -899,9 +778,6 @@ fn VoiceOccupant(
         .copied()
         .unwrap_or(100);
     let locally_muted = state.read().user_muted.contains(&pubkey);
-    // Only rendered when the SFU says something is wrong: a dot on every name
-    // in a healthy call is noise, and trains people to ignore the one that
-    // matters. `None` covers both "fine" and "no reading yet".
     let health_dot = state
         .read()
         .voice_quality
@@ -914,8 +790,6 @@ fn VoiceOccupant(
     } else {
         "bg-[var(--text-dim)]"
     };
-    // Read gain via the shared accessor to prevent drift between UI and mixer.
-    // Call after writing state.
     let apply = {
         let pubkey = pubkey.clone();
         let voice = voice.clone();
@@ -943,8 +817,6 @@ fn VoiceOccupant(
                     "{name}"
                     if is_self { " (you)" }
                 }
-                // Deafened subsumes muted — the server forces mute on with it —
-                // so showing both would be permanent noise in a narrow column.
                 if remote_deafened {
                     span { class: "text-[9px] text-[var(--text-dim)] uppercase tracking-wider", "deafened" }
                 } else if remote_muted {
@@ -957,8 +829,6 @@ fn VoiceOccupant(
                         title: "{label}",
                     }
                 }
-                // No volume control for yourself: your own voice is never
-                // played back, so there'd be nothing for it to change.
                 if !is_self {
                     button {
                         class: if locally_muted {
@@ -980,8 +850,6 @@ fn VoiceOccupant(
                         },
                     }
                 }
-                // Red indicates broadcasting (true regardless of viewer
-                // state); filled background indicates active viewing.
                 if is_sharing {
                     button {
                         class: if is_watching_screen {
@@ -1000,8 +868,6 @@ fn VoiceOccupant(
                         onclick: move |_| {
                             if can_watch {
                                 let mut s = state.write();
-                                // One screen at a time — the viewer is a single
-                                // large window, so choosing another replaces it.
                                 s.screen_viewing = if s.screen_viewing.as_deref() == Some(pk_watch.as_str()) {
                                     None
                                 } else {
@@ -1019,10 +885,6 @@ fn VoiceOccupant(
                         } else {
                             "w-5 h-5 flex items-center justify-center rounded text-[var(--danger)] hover:bg-[var(--danger)]/10 shrink-0 disabled:opacity-70 disabled:cursor-default"
                         },
-                        // Same gate as the screen icon, and for the same reason:
-                        // the webview only joins the room the video is in once
-                        // you are in the voice channel, so outside it a click
-                        // would mount a tile that never fills.
                         disabled: !can_watch_camera,
                         title: if !can_watch_camera {
                             "Their camera is on — join the channel to watch"
@@ -1036,8 +898,6 @@ fn VoiceOccupant(
                                 return;
                             }
                             let mut s = state.write();
-                            // Cameras are small tiles in a shared grid, so these
-                            // accumulate rather than replacing one another.
                             if !s.cameras_watching.remove(&pk_camera) {
                                 s.cameras_watching.insert(pk_camera.clone());
                             }
@@ -1091,14 +951,8 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
     let voice = use_voice_tx();
     let mut state = use_app_state();
     let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
-    // Shared by the four audio sliders to avoid redundant disk writes during
-    // drag.
-    // Not extended to checkboxes: they persist on click (no drag), so folding
-    // them in would change write timing.
     let persist_settings = move |_: FormEvent| crate::settings::save(&settings.read());
     let screen_capture_available = state.read().screen_capture_available;
-    // macOS webview lacks `getDisplayMedia`, so capture is driven from Rust
-    // via `sysvideo` (no user gesture needed).
     let native_capture = crate::sysvideo::supported();
     let self_pubkey = state.read().self_user.as_ref().map(|u| u.pubkey.clone());
     let sharing = state.read().screen_sharing;
@@ -1106,7 +960,6 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
     let camera_starting = state.read().camera_starting;
     let camera_capture_available = state.read().camera_capture_available;
     let name = self_username.clone().unwrap_or_else(|| "—".into());
-    // Own level + progress in the CURRENTLY SELECTED guild (XP is per-guild).
     let (level, xp_pct) = {
         let s = state.read();
         let xp = match (s.selected_guild, self_pubkey.as_ref()) {
@@ -1143,35 +996,17 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
     let g_for_share = gateway.clone();
     let voice_channel = self_voice.channel_id;
 
-    // Popover is a free-floating window; initial coords approximate the old
-    // anchor for a ~1280px viewport.
     let mut show_audio_settings = use_signal(|| false);
-    // Not persisted: reopening the app should not silently resume polling.
     let mut show_stats = use_signal(|| false);
-    // Where the settings panel opens. 880 rather than the old 1000 because the
-    // panel is now 384px wide: 880 + 384 lands 16px inside the 1280-wide window
-    // this app opens at, where 1000 + 384 would have hung 104px off the right
-    // edge with the close button among them.
-    //
-    // A fixed number and not a clamp, deliberately. This panel has never bounded
-    // itself and doing it properly needs the viewport width, which is not
-    // something Rust has here — and the half-measure, capping the rendered
-    // position while the drag still reads the signal, is worse than no bound at
-    // all: it breaks dragging. See the `style` below.
     let mut audio_x = use_signal(|| 880.0_f64);
     let mut audio_y = use_signal(|| 48.0_f64);
     let mut audio_drag = use_signal(|| None::<AudioDrag>);
 
-    // Snapshot device lists & selections so RSX body can use them without
-    // attempting inline `let` bindings inside the macro.
     let available_input_devices = state.read().available_input_devices.clone();
     let available_output_devices = state.read().available_output_devices.clone();
     let selected_input_device = state.read().selected_input_device.clone();
     let selected_output_device = state.read().selected_output_device.clone();
     let available_cameras = state.read().available_cameras.clone();
-    // The camera choice lives only in settings, not mirrored into AppState: no
-    // background service needs it, unlike the audio devices the voice service
-    // is driven by.
     let selected_camera_id = settings.read().camera_device_id.clone();
     let mic_sensitivity = state.read().mic_sensitivity;
     let mic_level = state.read().mic_level;
@@ -1179,9 +1014,6 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
     let atten_lim_db = state.read().denoise_atten_lim_db;
     let mic_volume = state.read().mic_volume;
     let auto_gain_control = state.read().auto_gain_control;
-    // Only offered where the OS has capture processing (see `crate::rawmic`).
-    // `mic_bypass_error` is `Some` exactly when the switch is on and audio is
-    // not bypassing it.
     let bypass_supported = crate::rawmic::supported();
     let bypass_system_audio = state.read().bypass_system_audio_processing;
     let bypass_error = state.read().mic_bypass_error.clone();
@@ -1201,21 +1033,13 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
 
     let voice_phase = state.read().voice.phase;
     let reconnecting = matches!(voice_phase, VoicePhase::Connecting);
-    // VU bar + threshold marker, both on a dB scale. A linear amplitude meter
-    // reads 3-30% for ordinary speech and made the default threshold display as
-    // "2%", which looks broken even when the audio is fine.
     let mic_level_pct = crate::features::voice::peak_to_meter_pct(mic_level);
-    // The same hop before DeepFilterNet. Only drawn when the model is on and
-    // actually taking something off — with it off the two are the same value
-    // and a second bar would be a ghost of the first, which reads as a bug.
     let mic_level_pre = state.read().mic_level_pre;
     let mic_level_pre_pct = crate::features::voice::peak_to_meter_pct(mic_level_pre);
     let show_pre = noise_cancellation && mic_level_pre > mic_level;
     let threshold_pct = crate::features::voice::peak_to_meter_pct(mic_sensitivity);
     let sensitivity_display = crate::features::voice::peak_to_db_label(mic_sensitivity);
     let mic_level_display = crate::features::voice::peak_to_db_label(mic_level);
-    // Screen-share preset lives only in local settings — it's a capture-side
-    // choice the server never sees.
     let screenshare_quality = settings.read().screenshare_quality.clone();
     let screenshare_audio = settings.read().screenshare_audio;
     let screenshare_hint = crate::features::screenshare::QUALITY_PRESETS
@@ -1235,8 +1059,6 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                             title: "{phase_text}",
                         }
                         div { class: "flex-1" }
-                        // Capture must happen inside the click gesture (see
-                        // `camera::toggle_camera`).
                         button {
                             class: if camera_on {
                                 "w-7 h-7 flex items-center justify-center rounded text-[var(--accent)] transition-colors"
@@ -1258,8 +1080,6 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                 crate::features::icons::CAMERA_OFF
                             },
                         }
-                        // Calls getDisplayMedia inside the click gesture; must
-                        // not be deferred.
                         button {
                             class: if sharing {
                                 "w-7 h-7 flex items-center justify-center rounded text-[var(--accent)] transition-colors"
@@ -1271,11 +1091,6 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                             } else if sharing { "Stop sharing your screen" } else { "Share your screen" },
                             onclick: move |_| {
                                 let now = !sharing;
-                                // Start is not announced here: the picker may
-                                // cancel, and claiming share before a track
-                                // exists causes false UI state. JS reports
-                                // `share-started` once published; stopping is
-                                // immediate.
                                 if !now {
                                     state.write().screen_sharing = false;
                                     if let Some(cid) = voice_channel {
@@ -1286,20 +1101,6 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                                             let q = settings.read().screenshare_quality.clone();
                                                             let a = settings.read().screenshare_audio;
                                                             if native_capture {
-                                                                // Native path:
-                                                                // button only
-                                                                // opens
-                                                                // picker.
-                                                                // Publishing
-                                                                // belongs to `
-                                                                // ScreenShareB
-                                                                // ridge`
-                                                                // effect so
-                                                                // voice-
-                                                                // session
-                                                                // restarts re-
-                                                                // issue the
-                                                                // share.
                                                                 if now && state.peek().screen_video_token.is_none() {
                                                                     state.write().error_toast = Some(
                                                                         "This server is too old to accept a natively \
@@ -1310,17 +1111,6 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                                                 } else {
                                                                     let mut s = state.write();
                                                                     s.screen_native_audio = false;
-                                                                    // Forget
-                                                                    // surface
-                                                                    // so next
-                                                                    // share
-                                                                    // opens
-                                                                    // picker
-                                                                    // instead
-                                                                    // of
-                                                                    // reusing
-                                                                    // last
-                                                                    // target.
                                                                     s.screen_share_target = None;
                                                                 }
                                                             } else if now {
@@ -1378,19 +1168,12 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                         if now {
                             let v = v_for_audio_button.clone();
                             v.send(crate::features::voice::VoiceCmd::ListDevices);
-                            // Cameras come from the webview, not the voice
-                            // service, so they need their own refresh — and it
-                            // matters here because labels appear only after a
-                            // grant, which may have happened since last time.
                             let _ = document::eval(&crate::features::camera::list_cameras_js());
                         }
                     },
                     dangerous_inner_html: crate::features::icons::GEAR,
                 }
 
-                // Drag overlay (z-50) captures pointer events so the cursor
-                // can leave the header without dropping the drag. Dismiss
-                // layer (z-30) sits below to close on outside click.
                 if show_audio_settings() {
                     div {
                         class: "fixed inset-0 z-30",
@@ -1411,18 +1194,6 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                     }
                     div {
                         class: "fixed z-40 flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-lg overflow-hidden w-96",
-                        // Max-height is computed from current Y position
-                        // because the window is draggable; a fixed max-height
-                        // would clip content when dragged near the bottom.
-                        //
-                        // `left` is the signal and nothing else. Capping it here
-                        // with `min()` was tried and is wrong: the drag handler
-                        // takes its offset from `audio_x`, so the moment the
-                        // rendered position stops being `audio_x` the two
-                        // disagree by whatever the cap swallowed — dragging
-                        // right does nothing and dragging left crosses a dead
-                        // zone of that size first. Whatever bounds this panel
-                        // has to be the same number the drag reads.
                         style: "left: {audio_x}px; top: {audio_y}px; max-height: calc(100vh - {audio_y}px - 12px);",
                         onclick: move |e| e.stop_propagation(),
 
@@ -1497,9 +1268,6 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                                 "window.dxSfx && window.dxSfx.setVolume({v});"
                                             ));
                                         },
-                                        // The write to disk waits for the drag to
-                                        // end — see the note on the sensitivity
-                                        // slider below.
                                         onchange: persist_settings,
                                     }
                                     span { class: "text-[10px] text-[var(--text-dim)] w-8 text-right", "{settings.read().sfx_volume}%" }
@@ -1533,9 +1301,6 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                     }
                                 }
                             }
-                            // VU bar — live mic level with threshold marker.
-                            // Only meaningful while a voice session is capturing;
-                            // otherwise show a hint so the user knows why it's flat.
                             div { class: "mb-2",
                                 div { class: "flex items-center justify-between",
                                     span { class: "text-[11px] text-[var(--text-muted)]", "Level" }
@@ -1551,9 +1316,6 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                     div {
                                         class: "relative w-full h-2 mt-1 rounded-full overflow-hidden",
                                         style: "background: var(--bg2);",
-                                        // Faint bar is pre-noise-cancellation
-                                        // level; the gap past the bright fill
-                                        // shows what was removed.
                                         if show_pre {
                                             div {
                                                 class: "absolute inset-y-0 left-0 rounded-full transition-all duration-75",
@@ -1564,9 +1326,6 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                             class: "absolute inset-y-0 left-0 rounded-full transition-all duration-75",
                                             style: "width: {mic_level_pct}%; background: linear-gradient(90deg, var(--up), var(--accent), var(--danger));",
                                         }
-                                        // Gate opens when the bright (post-N)
-                                        // fill passes this marker, not the
-                                        // faint one.
                                         div {
                                             class: "absolute top-0 bottom-0 w-0.5 bg-white/70 pointer-events-none",
                                             style: "left: {threshold_pct}%;",
@@ -1584,8 +1343,6 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                     }
                                 }
                             }
-                            // Applied before metering and gating, so the VU
-                            // bar above reflects this volume.
                             div { class: "mb-2",
                                 div { class: "flex items-center justify-between",
                                     span { class: "text-[11px] text-[var(--text-muted)]", "Microphone Input" }
@@ -1594,8 +1351,6 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                 input {
                                     r#type: "range",
                                     min: "0",
-                                    // Above unity so a quiet mic can be rescued
-                                    // without reaching for the OS mixer.
                                     max: "200",
                                     value: "{mic_volume}",
                                     class: "w-full mt-1 accent-[var(--accent)]",
@@ -1623,10 +1378,6 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                 }
                                 input {
                                     r#type: "range",
-                                    // The slider moves in even dB steps, not
-                                    // even amplitude steps — otherwise the
-                                    // entire useful range is crammed into the
-                                    // bottom few percent of its travel.
                                     min: "0",
                                     max: "100",
                                     value: "{threshold_pct}",
@@ -1634,9 +1385,6 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                     oninput: move |e| {
                                         let pct: u32 = e.value().parse().unwrap_or(40).clamp(0, 100);
                                         let val = crate::features::voice::meter_pct_to_peak(pct);
-                                        // In-memory only; `oninput` fires per
-                                        // drag step, and `settings::save`
-                                        // rewrites the whole file each time.
                                         let mut next = settings.read().clone();
                                         next.mic_sensitivity = val;
                                         settings.set(next);
@@ -1644,9 +1392,6 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                         let v = v_for_sensitivity.clone();
                                         v.send(crate::features::voice::VoiceCmd::SetSensitivity { threshold: val });
                                     },
-                                    // Persist once on drag end; live updates
-                                    // above keep the knob immediate without
-                                    // blocking the UI thread.
                                     onchange: persist_settings,
                                 }
                                 if voice_phase == VoicePhase::Connected && !reconnecting {
@@ -1659,9 +1404,6 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                     }
                                 }
                             }
-                            // First in order because it acts on the driver
-                            // signal before downstream processing; hidden
-                            // where unsupported.
                             if bypass_supported {
                                 div { class: "mb-2",
                                     label { class: "flex items-center gap-2 cursor-pointer select-none",
@@ -1684,8 +1426,6 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                     span { class: "text-[10px] text-[var(--text-dim)] mt-0.5 block",
                                         "Skips the suppression and gain your audio driver applies before we hear anything, so only this app's processing touches your voice. Reopens the microphone."
                                     }
-                                    // A lit switch over an unchanged audio path
-                                    // is the one thing this must never be.
                                     if let Some(err) = bypass_error {
                                         span { class: "text-[10px] mt-0.5 block", style: "color: var(--danger);",
                                             "Couldn't bypass it: {err}. The microphone is open the usual way."
@@ -1693,9 +1433,6 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                     }
                                 }
                             }
-                            // AGC and the input slider are competing controls;
-                            // leaving AGC on will walk a manual level back
-                            // toward its target.
                             div { class: "mb-2",
                                 label { class: "flex items-center gap-2 cursor-pointer select-none",
                                     input {
@@ -1716,8 +1453,6 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                     span { class: "text-[11px] text-[var(--text-muted)]", "Automatic gain control" }
                                 }
                             }
-                            // Model loads on first enable (~200ms), then
-                            // applies to live capture.
                             div { class: "mb-2",
                                 label { class: "flex items-center gap-2 cursor-pointer select-none",
                                     input {
@@ -1740,10 +1475,6 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                     "Removes fans, keyboards and room noise (DeepFilterNet, ~1.5% CPU)."
                                 }
                             }
-                            // This is a ceiling, not a strength dial; the
-                            // model decides how much to use. Rarely reaches
-                            // half on ordinary speech, but bites in noisier
-                            // rooms.
                             if noise_cancellation {
                                 div { class: "mb-2",
                                     div { class: "flex items-center justify-between",
@@ -1766,9 +1497,6 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                             next.denoise_atten_lim_db = db;
                                             settings.set(next);
                                             state.write().denoise_atten_lim_db = db;
-                                            // Live: DSP thread reapplies on
-                                            // next hop, so no model reload
-                                            // needed.
                                             v_for_atten.send(crate::features::voice::VoiceCmd::SetDenoiseAttenLim { db });
                                         },
                                         onchange: persist_settings,
@@ -1781,9 +1509,6 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                             div { class: "mt-3 mb-1.5 pb-1 border-b border-[var(--border)]",
                                 span { class: "text-[10px] font-semibold uppercase tracking-wide text-[var(--text)]", "Transmission" }
                             }
-                            // Encoder is configured when the mic track is
-                            // published, so this only takes effect on the next
-                            // join.
                             div { class: "mb-2",
                                 span { class: "text-[11px] text-[var(--text-muted)]", "Voice quality" }
                                 select {
@@ -1809,16 +1534,9 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                     }
                                 }
                             }
-                            // ---- Video ----
-                            // Its own group rather than trailing off the end of
-                            // Transmission, which is about the *voice* encoder:
-                            // these two are the things that put a picture out.
                             div { class: "mt-3 mb-1.5 pb-1 border-b border-[var(--border)]",
                                 span { class: "text-[10px] font-semibold uppercase tracking-wide text-[var(--text)]", "Video" }
                             }
-                            // Use a select rather than a modal: camera is a
-                            // persistent machine preference, unlike screen
-                            // sources which are ephemeral per-share choices.
                             div { class: "mb-2",
                                 span { class: "text-[11px] text-[var(--text-muted)]", "Camera" }
                                 select {
@@ -1828,10 +1546,6 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                         let val = e.value();
                                         let mut next = settings.read().clone();
                                         next.camera_device_id = (!val.is_empty()).then(|| val.clone());
-                                        // Remember the label with the id: ids are
-                                        // origin-salted and can rotate between
-                                        // sessions, and the label is what recovers
-                                        // the choice when one does.
                                         next.camera_device_label = state
                                             .read()
                                             .available_cameras
@@ -1841,10 +1555,6 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                             .filter(|l| !l.is_empty());
                                         settings.set(next.clone());
                                         crate::settings::save(&next);
-                                        // Restart a running camera onto the new
-                                        // device, from this handler — so the fresh
-                                        // getUserMedia rides the change event's
-                                        // own user activation.
                                         if state.read().camera_on {
                                             crate::features::camera::toggle_camera(state, settings, false);
                                             crate::features::camera::toggle_camera(state, settings, true);
@@ -1855,10 +1565,6 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                         option {
                                             selected: selected_camera_id.as_ref().map(|id| id == &cam.id).unwrap_or(false),
                                             value: "{cam.id}",
-                                            // `enumerateDevices` withholds labels
-                                            // until a camera grant exists, so
-                                            // number them until one does rather
-                                            // than showing a row of blanks.
                                             if cam.label.is_empty() { "Camera {i + 1}" } else { "{cam.label}" }
                                         }
                                     }
@@ -1870,9 +1576,6 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                     }
                                 }
                             }
-                            // Screen-share quality. Applies to the next share —
-                            // the encoding is fixed when the track is published,
-                            // so changing it mid-share has no effect.
                             div { class: "mb-2",
                                 span { class: "text-[11px] text-[var(--text-muted)]", "Screen share" }
                                 select {
@@ -1895,9 +1598,6 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                 span { class: "text-[10px] text-[var(--text-dim)] mt-0.5 block",
                                     "{screenshare_hint}"
                                 }
-                                // Default on: a shared video without audio is
-                                // the surprising outcome. Applies to the next
-                                // share.
                                 label { class: "flex items-center gap-2 cursor-pointer select-none mt-1.5",
                                     input {
                                         r#type: "checkbox",
@@ -1913,9 +1613,6 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                     span { class: "text-[11px] text-[var(--text-muted)] flex-1", "Share computer sound" }
                                 }
                             }
-                            // Not persisted: diagnostic only, and the
-                            // underlying poll runs only while this panel is
-                            // open.
                             div { class: "mb-1",
                                 label { class: "flex items-center gap-2 cursor-pointer select-none",
                                     input {
@@ -1943,8 +1640,6 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                     title: mute_label,
                     onclick: move |_| {
                         let new_muted = !muted;
-                        // Mute is only ever about the mic — deafen rides along
-                        // untouched instead of being forged from it.
                         g_for_mute.send(ClientMessage::SetVoiceMute { muted: new_muted, deafened });
                         v_for_mute.send(VoiceCmd::SetMute { muted: new_muted });
                     },
@@ -2032,8 +1727,6 @@ mod tests {
         }
     }
 
-    /// Rendered order, which is what `reorder_positions` is defined against:
-    /// `position`, then name. The same sort the list itself uses.
     fn group(names: &[(&str, u32)]) -> Vec<Channel> {
         let mut v: Vec<Channel> = names.iter().map(|(n, p)| chan(n, *p)).collect();
         v.sort_by(|a, b| {
@@ -2044,10 +1737,6 @@ mod tests {
         v
     }
 
-    /// Apply the updates the way the server does — a full replace of
-    /// `position` on each named channel — and re-sort. Asserting on this rather
-    /// than on the update list is the point: what a user sees is the order, and
-    /// two different update lists can produce the same one.
     fn applied(group: &[Channel], updates: &[(Id, u32)]) -> Vec<String> {
         let mut after: Vec<Channel> = group.to_vec();
         for (id, pos) in updates {
@@ -2077,13 +1766,6 @@ mod tests {
         assert_eq!(applied(&g, &updates), ["a", "d", "b", "c"]);
     }
 
-    /// The state every guild that has never been reordered is in: every
-    /// position is 0, so the list is really sorted by name and there are no
-    /// distinct values to permute. They get assigned instead.
-    ///
-    /// Note what this also shows — the moved channel needs no message of its
-    /// own here. `gamma` is already at 0, so renumbering the two it passed is
-    /// enough, and sending it a redundant update would be the only difference.
     #[test]
     fn a_group_that_never_had_positions_gets_them() {
         let g = group(&[("alpha", 0), ("beta", 0), ("gamma", 0)]);
@@ -2096,9 +1778,6 @@ mod tests {
         );
     }
 
-    /// One slot is two messages, not the whole list. The wire message is a full
-    /// replace of the channel, so every one of these is a round trip that can
-    /// race an edit — sending the untouched tail would widen that for nothing.
     #[test]
     fn only_the_rows_that_move_are_sent() {
         let g = group(&[("a", 0), ("b", 1), ("c", 2), ("d", 3), ("e", 4)]);
@@ -2107,15 +1786,6 @@ mod tests {
         assert_eq!(applied(&g, &updates), ["b", "a", "c", "d", "e"]);
     }
 
-    /// The shape every guild made from a template is in, and the one an earlier
-    /// version of this got wrong: `position` is guild-wide, so a voice channel
-    /// in a guild with two text channels starts at 2, not at 0.
-    ///
-    /// Numbering the voice group from 0 on its own would have rewritten both
-    /// voice rows to move one — and each rewrite is a full-replace
-    /// `UpdateChannel` carrying a render-time snapshot of name, topic,
-    /// read-only and slowmode, so the rows swept in for nothing are rows whose
-    /// concurrent edit can be clobbered.
     #[test]
     fn a_mixed_guild_numbers_across_both_kinds() {
         let guild = vec![
@@ -2132,8 +1802,6 @@ mod tests {
         );
     }
 
-    /// Sections are drawn separately and share only the numbering, so a drop
-    /// from one onto the other has nothing to express. It must not renumber.
     #[test]
     fn a_drop_across_kinds_does_nothing() {
         let guild = vec![
@@ -2144,13 +1812,6 @@ mod tests {
         assert!(reorder_positions(&guild, guild[1].id, guild[0].id).is_empty());
     }
 
-    /// The burst the server would silently drop. Positions with gaps in them —
-    /// what a guild looks like after any channel is deleted — used to force a
-    /// full renumber, so one drag in a large guild could exceed the shared
-    /// 30-per-10s budget and have the excess dropped with no error.
-    ///
-    /// Reusing the span's own values keeps it at two messages no matter how
-    /// large the guild is.
     #[test]
     fn a_one_slot_move_costs_two_messages_however_big_the_guild() {
         let guild: Vec<Channel> = (0..40u32)
@@ -2164,7 +1825,6 @@ mod tests {
         );
     }
 
-    /// The same guild, moved further: the span is the cost, not the guild.
     #[test]
     fn the_span_is_what_costs_messages() {
         let guild: Vec<Channel> = (0..40u32)
@@ -2183,15 +1843,6 @@ mod tests {
         );
     }
 
-    /// The boundary case the first version of the fast path got wrong: a
-    /// duplicate position just *outside* the span it reuses values from.
-    ///
-    /// Nothing enforces unique positions — the server stores what it is sent —
-    /// and rows render by `(position, name)`. So reusing the span's values can
-    /// hand the dragged row a number it shares with an untouched neighbour, and
-    /// the name tie-break then decides the order. Here `b` was dragged onto
-    /// `c`, and the span-only check let it land past `d`, which had nothing to
-    /// do with the drag.
     #[test]
     fn a_tie_just_outside_the_span_cannot_swallow_the_dragged_row() {
         let guild = vec![chan("a", 1), chan("zzz", 2), chan("c", 3), chan("d", 3)];
@@ -2209,8 +1860,6 @@ mod tests {
         assert!(reorder_positions(&g, g[0].id, g[0].id).is_empty());
     }
 
-    /// A drop that lands after the list changed under it — a channel deleted
-    /// mid-drag, or a guild switch. Silence beats renumbering a stale list.
     #[test]
     fn dropping_onto_something_that_left_sends_nothing() {
         let g = group(&[("a", 0), ("b", 1)]);
@@ -2220,11 +1869,6 @@ mod tests {
     }
 }
 
-/// A box that turns an `npub…` or hex pubkey into an open conversation.
-///
-/// Deliberately the *first* thing in the DM list rather than hidden behind a
-/// menu: reaching somebody by key is the whole difference between messages that
-/// belong to a server and messages that belong to you.
 #[component]
 fn StartDmByKey() -> Element {
     let nostr = use_context::<crate::nostr::service::NostrTx>();

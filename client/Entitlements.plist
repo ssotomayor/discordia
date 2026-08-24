@@ -1,56 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!--
-  Entitlements for a signed macOS build, passed via the `apple-entitlements` flag by
-  `bundle-macos.sh`. Not referenced from Dioxus.toml: see the comment there for
-  why signing configuration stays out of shared files.
-
-  The microphone entry earns its place the moment anything turns on the
-  **hardened runtime**, which denies mic access outright unless the app is
-  entitled to it — regardless of what was granted in System Settings, and with
-  the plist usage description not being enough on its own. Setting
-  `signing_identity` in Dioxus.toml *did* enable hardened runtime (codesign flag
-  0x10000) and would have broken voice again in a way that looks exactly like the
-  TCC problem the signing was meant to fix.
-
-  **This entitlement is load-bearing on every signed build — do not remove it.**
-  An earlier version of this comment claimed the `codesign` CLI path leaves the
-  runtime off (flag 0x0) and that the entitlement was therefore belt-and-braces.
-  That was already false when written: `bundle-macos.sh` signs with the `options
-  runtime` flag, so a signed bundle has the hardened runtime on, and without this
-  key the mic is denied no matter what System Settings says. Verify rather than
-  trust either claim — `codesign -dvv` prints the flags.
-
-  (The flag is spelled without its leading dashes above on purpose: a literal
-  double-hyphen is illegal inside an XML comment, and codesign's AMFI parser
-  rejects the whole file for it — the same trap the script's `xmllint` check
-  exists to catch.)
-
-  The camera entry is the same rule applied a second time, and it was added when
-  the camera button was. It is needed because the hardened runtime is on, exactly
-  as above; what differs is where the denial surfaces. Camera capture runs in the
-  webview rather than in our own process, so without this key `getUserMedia`
-  rejects inside WKWebView and the failure arrives as a JavaScript error about a
-  device, with nothing pointing at code signing. It pairs with
-  `NSCameraUsageDescription` in Info.plist: the plist declares the reason, this
-  file grants the capability, and a signed build needs both. Screen sharing needs
-  neither, which is why the two features fail so differently.
-
-  Only these two devices are listed, deliberately:
-
-  * Screen and window capture need **no** entitlement. ScreenCaptureKit is gated
-    purely by the Screen Recording TCC grant, so `sysvideo` works without one.
-  * The App Sandbox is *not* enabled, so outbound network (the gateway
-    WebSocket, LiveKit, Blossom uploads) needs no entitlement either. Adding
-    `com.apple.security.app-sandbox` would change that and much else — don't,
-    without testing the whole app against it.
-  * JavaScriptCore's JIT runs in WebKit's own out-of-process content process,
-    which carries Apple's entitlements rather than ours, so `allow-jit` is not
-    needed here.
-
-  If a notarised distribution build is ever wanted, this is the file that grows —
-  see docs/AUDIT-2026-08-17.md.
--->
+<!-- The microphone entitlement is load-bearing on every signed build — the
+     hardened runtime denies mic access without it. Do not remove it. -->
 <plist version="1.0">
 <dict>
 	<key>com.apple.security.device.audio-input</key>

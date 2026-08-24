@@ -1,17 +1,9 @@
-//! Locally-owned user profile (avatar + bio). The profile belongs to the
-//! user, not any host: it lives next to `identity.json` in the config dir and
-//! is uploaded to whatever host they connect to (see `ClientMessage::SetProfile`).
-//! This is the "Option B" model — portable across independent hosts with no
-//! external storage, pinning, or tokens.
-
 use serde::{Deserialize, Serialize};
 
 use crate::identity::config_dir;
 
 const FILE_VERSION: u32 = 1;
 
-/// The user's own profile as stored on disk. `avatar` is a
-/// `data:image/...;base64,...` URL (kept small — capped by the editor).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LocalProfile {
     #[serde(default)]
@@ -20,7 +12,6 @@ pub struct LocalProfile {
     pub banner: Option<String>,
     #[serde(default)]
     pub bio: Option<String>,
-    /// "online" | "away" | "dnd"
     #[serde(default)]
     pub status: Option<String>,
     #[serde(default)]

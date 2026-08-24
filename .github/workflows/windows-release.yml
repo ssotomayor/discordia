@@ -1,18 +1,3 @@
-# Build a distributable Windows client on a real Windows runner.
-#
-# Trigger it manually (Actions tab → "Windows build" → Run workflow) or by
-# pushing a `v*` tag. The result is an uploaded artifact (zip) containing the
-# bundled app — download it and send it to whoever needs it. On tag pushes the
-# bundle is also attached to a GitHub Release.
-#
-# Notes:
-# - Unlike CI, this build KEEPS the bundled livekit-server.exe (build.rs
-#   downloads the official Windows release) so self-host voice works.
-# - WebView2 (the wry backend) ships with Windows 10/11, so most recipients
-#   need no extra runtime. For the ones that do, both artifacts carry the
-#   ~2MB Evergreen bootstrapper rather than the ~130MB offline runtime —
-#   the setup runs it automatically, the portable ships it alongside for the
-#   user to run once. See `webview_install_mode` in client/Dioxus.toml.
 
 name: Windows build
 
@@ -23,10 +8,6 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  # LiveKit's prebuilt libwebrtc is linked against the STATIC MSVC runtime
-  # (/MT). Rust defaults to the dynamic one (/MD), so both C++ runtimes end up
-  # in the link and collide (LNK2038 / LNK1169). Match libwebrtc by making
-  # Rust use the static CRT too.
   RUSTFLAGS: "-C target-feature=+crt-static"
 
 jobs:
@@ -34,13 +15,6 @@ jobs:
     name: bundle windows client
     runs-on: windows-latest
     env:
-      # Stamped into the binary by the client's build.rs, so the version on
-      # screen is the tag this bundle gets attached to.
-      #
-      # Only on the tag path. This workflow also runs manually from a branch,
-      # where `ref_name` is the branch and there is no release to name — the
-      # empty string is what build.rs treats as unset, and the build then calls
-      # itself `-dev` rather than claiming a release that does not exist.
       DISCORDIA_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
     steps:
       - uses: actions/checkout@v4
@@ -48,14 +22,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - uses: cargo-bins/cargo-binstall@main
-      # --force: rust-cache restores ~/.cargo metadata, so binstall thinks dx is
-      # already installed and later steps fail with "'dx' is not recognized".
-      # GITHUB_TOKEN: anonymous API lookups hit the 60/h per-IP limit and 403
-      # into a source build, which needs --locked to compile.
-      # Pinned to the `dioxus` version in Cargo.lock, and kept in step with the
-      # DIOXUS_CLI_VERSION in ci.yml. Unpinned, binstall takes the newest CLI and
-      # dx bundles anyway after printing "dx and dioxus versions are
-      # incompatible!", so the mismatch ships instead of failing.
       - name: Install Dioxus CLI
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -63,10 +29,6 @@ jobs:
       - name: Verify dx
         run: dx --version
 
-      # One download, two artifacts. `webview_install_mode = "Skip"` means dx
-      # fetches nothing itself, so this is the only copy: the NSIS hook embeds it
-      # from here (client/nsis/, via ${__FILEDIR__}) and the portable zip below
-      # ships the same file.
       - name: Fetch WebView2 Evergreen bootstrapper
         shell: pwsh
         run: |
@@ -74,23 +36,12 @@ jobs:
           Invoke-WebRequest -Uri 'https://go.microsoft.com/fwlink/p/?LinkId=2124703' -OutFile $dest
           $size = (Get-Item $dest).Length
           "bootstrapper: {0:N0} bytes" -f $size | Write-Host
-          # The Evergreen stub is ~1-2MB; anything near the offline runtime's
-          # ~130MB means the link started serving something else entirely.
           if ($size -lt 500KB -or $size -gt 20MB) { throw "unexpected bootstrapper size ($size bytes) - refusing to ship it" }
 
       - name: Bundle
         working-directory: client
         run: dx bundle --release
 
-      # dx emits the app three times (standalone exe, NSIS installer, and the
-      # installer's staging copy). Ship a portable zip (exe + the assets that
-      # live beside it, not embedded) and the installer, not the whole tree.
-      #
-      # The portable has no installer to run the WebView2 stub for it, so it
-      # carries the bootstrapper for the user to run once if their machine has
-      # no runtime. It is the very file `dx bundle` already fetched into
-      # ~/.dx/tools for the NSIS setup — copied, not re-downloaded, so both
-      # artifacts ship the identical stub.
       - name: Package
         shell: pwsh
         run: |
@@ -104,8 +55,6 @@ jobs:
           $assets = Join-Path $root.FullName 'nsis/_staging/assets'
           if (Test-Path $assets) { Copy-Item $assets portable/assets -Recurse }
 
-          # The same file the NSIS hook embedded, so the portable and the
-          # installed layout both find it beside Discordia.exe.
           Copy-Item client/nsis/MicrosoftEdgeWebview2Setup.exe portable/
           Copy-Item .github/portable/WEBVIEW2.txt portable/
 
@@ -114,8 +63,6 @@ jobs:
           $setup = Get-ChildItem -Recurse -Filter '*-setup.exe' $root.FullName | Select-Object -First 1
           if ($setup) { Copy-Item $setup.FullName Discordia-windows-setup.exe }
 
-          # Fail loudly if the offline runtime ever creeps back in: it is ~130MB
-          # and would silently undo the point of this configuration.
           $tools = Join-Path $env:USERPROFILE '.dx/tools'
           if (Test-Path $tools) {
             if (Get-ChildItem $tools -Filter 'MicrosoftEdgeWebView2RuntimeInstaller_*.exe') {
@@ -133,7 +80,6 @@ jobs:
             Discordia-windows-setup.exe
           retention-days: 14
 
-      # On tag pushes, also attach to a release for a shareable download link.
       - name: Attach to release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2

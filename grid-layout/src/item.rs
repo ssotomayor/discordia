@@ -1,5 +1,3 @@
-//! `GridItem` — a single tile inside a `GridLayout`.
-
 use dioxus::prelude::*;
 use dioxus_elements::input_data::MouseButton;
 
@@ -7,11 +5,6 @@ use crate::drag::{Interaction, InteractionKind};
 use crate::grid::GridContext;
 use crate::layout::{FloatRect, GridPosition};
 
-/// Positions a child element at `(x, y)` and gives it `w` columns × `h` rows.
-///
-/// When the parent `GridLayout` has a `store`, drag and resize interactions
-/// mutate the store and re-render the item at its new position. Without a
-/// store the props are used directly (static render).
 #[component]
 pub fn GridItem(
     #[props(into)] id: String,
@@ -72,7 +65,6 @@ pub fn GridItem(
     };
 
     let item_id_for_drag = id.clone();
-    // Read only by the `gtrace!`s below, which compile out of release.
     #[cfg_attr(not(debug_assertions), allow(unused_variables))]
     let id_for_log = id.clone();
     let onpointerdown_drag = move |evt: PointerEvent| {
@@ -178,14 +170,9 @@ pub fn GridItem(
             class: "dioxus-grid-item{pinned_class} {class}",
             "data-id": "{id}",
             style: "{cell_style}",
-            // Raise on any press: popovers inside a panel paint within its
-            // stacking order, so without this they end up behind later DOM
-            // siblings.
             onpointerdown: onpointerdown_raise,
             {children}
             if interactive {
-                // Strip, not whole panel: full-surface drag blocks widget
-                // interaction and shows grab cursor everywhere.
                 div {
                     class: "dioxus-grid-drag-handle",
                     style: "position: absolute; left: 0; right: 0; top: 0; \
@@ -211,24 +198,10 @@ pub fn GridItem(
     }
 }
 
-/// Absolute placement CSS for free mode.
-///
-/// Always returns an absolute rule — never grid properties. That distinction
-/// matters more than it looks: in free mode the container is
-/// `position: relative`, not a grid, so emitting `grid-column`/`grid-row` there
-/// leaves an item with no position and no size, and every panel collapses into
-/// a pile in the top-left corner. Falling back to grid CSS in a non-grid
-/// container is what "the layout completely breaks" looked like.
-///
-/// An item the user has never dragged has no pixel rect yet, and rather than
-/// invent one (or write to the store mid-render, which is its own bug) it is
-/// placed by *percentage* derived from its grid cell. That needs no
-/// measurement, can never be off-screen, and lands exactly where the snap
-/// layout had it — so switching to Free looks like nothing moved.
 fn free_style(id: &str, ctx: GridContext, cell: GridPosition) -> String {
-    // Omit z-index when 0: it establishes a stacking context that traps
-    // internal popovers behind sibling panels.
     let z = ctx.store.map(|s| s.z_of(id)).unwrap_or(0);
+    // Omitted at 0: any z-index establishes a stacking context, which traps
+    // fixed-position children inside the panel.
     let z_rule = if z > 0 {
         format!(" z-index: {z};")
     } else {
@@ -250,8 +223,6 @@ fn free_style(id: &str, ctx: GridContext, cell: GridPosition) -> String {
     )
 }
 
-/// Fractional rect for a grid cell — the starting point for the first drag of
-/// an item that has never been placed by hand.
 pub(crate) fn cell_to_frac(ctx: GridContext, cell: GridPosition) -> FloatRect {
     let cols = ctx.cols.max(1) as f64;
     let rows = ctx.rows.unwrap_or_else(|| cell.y + cell.h).max(1) as f64;

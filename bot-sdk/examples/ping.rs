@@ -1,20 +1,3 @@
-//! A minimal example bot.
-//!
-//! It replies "pong" to "!ping" and reacts 🎲 to "!roll". To run it:
-//!
-//! 1. Start a gateway (the desktop client's Self-host mode, or `cargo run -p
-//!    dioxusfun-server`).
-//! 2. `cargo run -p dioxusfun-bot --example ping`
-//!    On first run it prints a freshly generated **pubkey** and **secret**.
-//!    Save the secret as `BOT_SECRET` so the bot keeps its identity:
-//!    `BOT_SECRET=<printed> cargo run -p dioxusfun-bot --example ping`
-//! 3. In the app, as the guild owner, open Integrations and install the bot by
-//!    its pubkey. Grant it **Send messages** + **Message content** (the latter
-//!    is privileged — without it the bot can't read "!ping", which is the whole
-//!    point of the demo) and, for the 🎲 reaction, **Add reactions**.
-//!
-//! Override the server with `SERVER_URL` (default `ws://localhost:9000`).
-
 use dioxusfun_bot::protocol::ServerMessage;
 use dioxusfun_bot::{Bot, BotIdentity};
 
@@ -66,8 +49,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         bot.react(msg.channel_id, msg.id, "🎲").await?;
                     }
                     "" => {
-                        // Empty content means we were installed WITHOUT the
-                        // privileged MessageContent intent — a useful signal.
                         eprintln!(
                             "saw a message but its content was withheld (grant the Message content intent)"
                         );

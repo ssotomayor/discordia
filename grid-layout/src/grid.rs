@@ -1,5 +1,3 @@
-//! `GridLayout` — the container component.
-
 use std::collections::HashSet;
 
 use dioxus::prelude::*;
@@ -9,22 +7,10 @@ use crate::drag::{Interaction, InteractionKind};
 use crate::layout::{GridPosition, LayoutMode};
 use crate::store::LayoutStore;
 
-/// Container that positions its `GridItem` children on a CSS grid.
-///
-/// # Props
-/// - `cols`, `row_height`, `gap`: CSS grid configuration
-/// - `editable`: when false, drag/resize are disabled regardless of `store`
-/// - `store`: optional [`LayoutStore`] (positions stored + mutated reactively)
-/// - `on_change`: fired with the full layout snapshot after each user-driven
-///   commit (drag end, resize end). Use it to persist the layout.
 #[component]
 pub fn GridLayout(
     #[props(default = 12)] cols: u32,
     #[props(default = 30.0)] row_height: f64,
-    /// When set, the grid uses `repeat(rows, 1fr)` instead of fixed-pixel rows,
-    /// so the layout fills — and keeps filling — the container's height. This
-    /// is what makes panels grow with the window instead of holding whatever
-    /// size they were measured at on mount.
     rows: Option<u32>,
     #[props(default = 10.0)] gap: f64,
     #[props(default = String::new())] class: String,
@@ -39,8 +25,6 @@ pub fn GridLayout(
     let pinned_ids = use_signal::<HashSet<String>>(HashSet::new);
     let on_change_cb = use_hook(|| on_change);
 
-    // Props don't flow into context initializers after the first render, so we
-    // sync this signal on every render.
     let mut editable_signal = use_signal(|| editable);
     if *editable_signal.peek() != editable {
         editable_signal.set(editable);
@@ -65,16 +49,11 @@ pub fn GridLayout(
         on_change: on_change_cb,
     });
 
-    // Free rects are fractions of the container, so they rescale with it and
-    // never go off-screen.
-
     let style = match mode {
         LayoutMode::Free => "position: relative; width: 100%; height: 100%; \
                              overflow: hidden; touch-action: none;"
             .to_string(),
         LayoutMode::Snap => {
-            // Use `repeat(n, 1fr)` so the browser re-divides height on resize;
-            // `grid-auto-rows` covers items past the last template row.
             let rows_rule = match rows {
                 Some(n) => format!("grid-template-rows: repeat({n}, 1fr); "),
                 None => String::new(),
@@ -108,8 +87,6 @@ pub fn GridLayout(
                     }
                 });
             },
-            // Re-measure on resize; taking it once at mount leaves derived
-            // numbers wrong after window changes.
             onresize: move |evt| {
                 let mut cs = container_size;
                 if let Ok(size) = evt.get_content_box_size() {
@@ -123,13 +100,9 @@ pub fn GridLayout(
     }
 }
 
-/// Translucent box showing where the active drag will snap to. Only renders
-/// during a Drag-kind interaction.
 #[component]
 fn DragPlaceholder() -> Element {
     let ctx: GridContext = use_context();
-    // No preview in Free mode: the item follows the pointer exactly, so a
-    // ghost would just sit underneath it.
     if ctx.is_free() {
         return rsx! { Fragment {} };
     }
@@ -157,8 +130,6 @@ fn DragPlaceholder() -> Element {
     rsx! { div { class: "dioxus-grid-placeholder", style } }
 }
 
-/// Viewport-covering overlay that survives the cursor leaving any
-/// individual item. Translates pointer events into store mutations.
 #[component]
 fn DragOverlay() -> Element {
     let ctx: GridContext = use_context();
@@ -176,8 +147,6 @@ fn DragOverlay() -> Element {
             onpointermove: move |evt| {
                 let (cx, cy) = (evt.client_coordinates().x, evt.client_coordinates().y);
 
-                // Snapshot state to release the read lock before acquiring the
-                // write lock.
                 let (kind, item_id, dx, dy, projected) = {
                     let Some(state) = drag.read().clone() else { return };
                     let dx = cx - state.pointer_start_x;
@@ -193,17 +162,11 @@ fn DragOverlay() -> Element {
                     }
                 });
 
-                // Free mode: apply delta directly. No projection or
-                // settle_layout, as compaction enforces non-overlap which Free
-                // mode drops.
                 if ctx.is_free() {
                     let (Some(mut s), Some(state)) = (store, drag.read().clone()) else {
                         return;
                     };
                     if let Some(rect) = state.project_free(cx, cy) {
-                        // Magnetic alignment replaces grid snapping: allows
-                        // free placement but snaps edges for alignment without
-                        // pixel-perfect aim.
                         let others: Vec<_> = s
                             .free_snapshot()
                             .into_iter()
@@ -222,8 +185,6 @@ fn DragOverlay() -> Element {
 
                 match kind {
                     InteractionKind::Drag => {
-                        // Move via CSS transform to bypass Dioxus render;
-                        // layout commits on pointerup.
                         let js = format!(
                             "var el=document.querySelector('[data-id=\"{}\"]');\
                              if(el){{el.style.transform='translate({:.2}px,{:.2}px)';\
@@ -254,8 +215,6 @@ fn DragOverlay() -> Element {
     }
 }
 
-/// Recompute non-active item positions given the active item's intended
-/// position, then write any changed positions back to the store.
 fn settle_layout(
     mut store: LayoutStore,
     active_id: &str,
@@ -300,8 +259,6 @@ fn commit_and_clear(
         return;
     };
     if is_free {
-        // Free mode commits positions live, so no snap/undo is needed on
-        // release.
         drag.set(None);
         if let (Some(handler), Some(s)) = (on_change, store) {
             handler.call(s.snapshot());
@@ -328,8 +285,6 @@ fn commit_and_clear(
     }
 }
 
-/// Internal: GridLayout settings + shared interaction state, exposed to
-/// GridItem via Dioxus context.
 #[derive(Clone, Copy)]
 pub(crate) struct GridContext {
     pub store: Option<LayoutStore>,
@@ -337,8 +292,6 @@ pub(crate) struct GridContext {
     pub row_height: f64,
     pub rows: Option<u32>,
     pub gap: f64,
-    /// Reactive — host can toggle this at any time and GridItems see it
-    /// without remounting.
     pub editable: Signal<bool>,
     pub mode: Signal<LayoutMode>,
     pub drag: Signal<Option<Interaction>>,
@@ -354,10 +307,6 @@ impl GridContext {
         (cell > 0.0).then_some(cell)
     }
 
-    /// Row height in pixels. With `rows` set the tracks are `1fr`, so the real
-    /// height comes from the measured container rather than the `row_height`
-    /// prop — using the prop here is what made drag projection drift after a
-    /// resize.
     pub fn cell_h_px(&self) -> f64 {
         let h = (*self.container_size.read()).map(|(_, h)| h);
         match (self.rows, h) {
@@ -370,8 +319,6 @@ impl GridContext {
         *self.container_size.read()
     }
 
-    /// Edge-snap tolerance in fraction units, derived from a fixed pixel
-    /// distance so the magnet feels the same at any window size.
     pub fn snap_tolerance(&self) -> f64 {
         const SNAP_PX: f64 = 12.0;
         match *self.container_size.read() {

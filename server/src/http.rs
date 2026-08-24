@@ -27,8 +27,6 @@ pub fn router(ctx: Arc<AppContext>) -> Router {
         .layer(cors)
 }
 
-/// Serve a content-addressed media blob (`/media/<sha256>.<ext>`). Immutable
-/// by construction, so cache hard.
 async fn serve_media(
     axum::extract::Path(name): axum::extract::Path<String>,
     State(ctx): State<Arc<AppContext>>,
@@ -73,8 +71,6 @@ async fn gateway_upgrade(
     State(ctx): State<Arc<AppContext>>,
     headers: axum::http::HeaderMap,
 ) -> impl IntoResponse {
-    // Capture the host the client used to reach us so we can hand back a
-    // matching LiveKit URL when they JoinVoice.
     let client_host = headers
         .get(axum::http::header::HOST)
         .and_then(|v| v.to_str().ok())

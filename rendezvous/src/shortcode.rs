@@ -1,5 +1,3 @@
-//! Generate readable shortcodes like `purple-fox-42`.
-
 use rand::Rng;
 use rand::seq::SliceRandom;
 

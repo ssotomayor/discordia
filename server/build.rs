@@ -1,22 +1,3 @@
-//! Make a `livekit-server` binary available at `$OUT_DIR/livekit-server` so
-//! it can be `include_bytes!`'d into the dioxusfun binary for self-host mode.
-//!
-//! - Linux / Windows: downloads the release archive from GitHub.
-//! - macOS: LiveKit doesn't publish darwin binaries on GitHub anymore (they
-//!   ship via Homebrew, which builds from Go source). We do the same — clone
-//!   the repo and `go build`. Requires `go` on PATH (`brew install go`).
-//!
-//! Overrides:
-//! - `LIVEKIT_BUNDLE_VERSION=1.12.0` to pin a specific release
-//! - `LIVEKIT_BUNDLE_SKIP=1` to skip entirely (writes an empty stub; the
-//!   runtime treats voice as unavailable in this build). Note this is checked
-//!   with `is_ok()`, so *any* value counts — including an empty string. A
-//!   workflow cannot disable it by setting it to `""`; the variable has to be
-//!   out of scope.
-//!
-//! Anything else going wrong is a build failure, not a warning: an artifact
-//! that cannot host voice must not be mistakable for one that can.
-
 use std::env;
 use std::fs;
 use std::io::{Cursor, Read};
@@ -25,7 +6,6 @@ use std::process::Command;
 
 const DEFAULT_VERSION: &str = "1.12.0";
 
-/// Where the digest below is left for `livekit_bundle` to `include_str!`.
 const DIGEST_NAME: &str = "livekit-server.sha";
 
 fn main() {
@@ -44,25 +24,10 @@ fn main() {
 
     ensure_binary(&out_dir, &target_os, &bin_path);
 
-    // The runtime extracts this binary under a name carrying its content hash,
-    // and used to compute that hash itself on every self-host. It is a hash of
-    // a compile-time constant, so the answer cannot change while the program
-    // runs — and unoptimised it costs ~650ms over the 49MB Windows build
-    // (against 19ms optimised), on whichever thread asked to host. On the
-    // client that is the thread drawing the UI, which is why opening self-host
-    // froze the window for about a second every time.
-    //
-    // `cargo run` and `dx serve` are unoptimised by definition, so this is not
-    // a case of a developer build being merely slower — it is the shape the
-    // tract stack already has an opt-level override for in the workspace
-    // manifest. Here there is nothing to optimise: the work does not need to
-    // happen at runtime at all.
     let bytes = fs::read(&bin_path).expect("read the bundled livekit binary back");
     fs::write(out_dir.join(DIGEST_NAME), short_digest(&bytes)).expect("write the livekit digest");
 }
 
-/// First 8 bytes of the SHA-256, hex — the same 16 characters the extracted
-/// filename has always carried.
 fn short_digest(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     Sha256::digest(bytes)
@@ -72,7 +37,6 @@ fn short_digest(bytes: &[u8]) -> String {
         .collect()
 }
 
-/// Put a `livekit-server` at `bin_path`, however this platform gets one.
 fn ensure_binary(out_dir: &Path, target_os: &str, bin_path: &Path) {
     if env::var("LIVEKIT_BUNDLE_SKIP").is_ok() {
         println!(
@@ -94,8 +58,6 @@ fn ensure_binary(out_dir: &Path, target_os: &str, bin_path: &Path) {
         _ => download_release(target_os, &target_arch, &version, bin_path),
     };
 
-    // Panic instead of warn: a missing bundle previously shipped as a silent
-    // stub for weeks because warnings are ignored in passing CI jobs.
     if let Err(e) = result {
         panic!(
             "livekit bundle failed: {e}\n\
@@ -224,10 +186,6 @@ fn build_from_source(out_dir: &Path, version: &str, bin_path: &Path) -> Result<(
     Ok(())
 }
 
-/// Look for a binary in PATH first, then in common Homebrew / official Go /
-/// Xcode CLT install locations on macOS and Linux. Build scripts often run
-/// with a minimal PATH (especially under `dx serve` or IDE launchers), so PATH
-/// alone isn't enough.
 fn find_executable(name: &str) -> Option<PathBuf> {
     if Command::new(name).arg("--version").output().is_ok() {
         return Some(PathBuf::from(name));
@@ -237,10 +195,10 @@ fn find_executable(name: &str) -> Option<PathBuf> {
     }
 
     let mut candidates: Vec<PathBuf> = vec![
-        PathBuf::from("/opt/homebrew/bin").join(name), // Apple Silicon brew
-        PathBuf::from("/usr/local/bin").join(name),    // Intel brew + many Linux
-        PathBuf::from("/usr/bin").join(name),          // system
-        PathBuf::from("/usr/local/go/bin").join(name), // official Go installer
+        PathBuf::from("/opt/homebrew/bin").join(name),
+        PathBuf::from("/usr/local/bin").join(name),
+        PathBuf::from("/usr/bin").join(name),
+        PathBuf::from("/usr/local/go/bin").join(name),
     ];
     if let Ok(home) = env::var("HOME") {
         candidates.push(PathBuf::from(&home).join("go/bin").join(name));

@@ -1,7 +1,4 @@
 #!/usr/bin/env bash
-# Regenerate Tailwind CSS (if npx is available) then run the Dioxus client.
-# The committed tailwind.out.css is used as a fallback when Node.js isn't
-# installed — cargo build/check don't need it, only regeneration does.
 set -euo pipefail
 cd "$(dirname "$0")"
 if [[ "${FAST:-0}" == "1" ]]; then export LIVEKIT_BUNDLE_SKIP=1; fi

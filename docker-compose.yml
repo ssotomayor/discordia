@@ -1,23 +1,5 @@
-# Discordia on a VPS. Two ways to use this — pick one (or run both):
-#
-#   A) ALWAYS-ON SERVER (recommended, simplest)
-#      The gateway lives here; friends connect straight to it by URL, and
-#      nobody port-forwards anything at home.
-#        cp .env.example .env    # set PUBLIC_HOST + secrets
-#        docker compose up -d discordia livekit
-#      Friends use:  ws://<your-host>:9000   (the "URL" tab)
-#
-#   B) RENDEZVOUS ONLY
-#      You keep hosting from your laptop; this box just makes you reachable
-#      and provides the shared SFU so voice works over the internet.
-#        docker compose up -d rendezvous livekit
-#      You + friends use:  ws://<your-host>:7700   (rendezvous picker)
-#
-# Durable data (SQLite + media blobs) lives in the named volumes — back the
-# server up by copying them. Message retention is per-guild, in-app.
 
 services:
-  # ---- A: the gateway (text, guilds, roles, bots) -------------------------
   discordia:
     build: .
     restart: unless-stopped
@@ -26,16 +8,13 @@ services:
     environment:
       DIOXUSFUN_ADDR: 0.0.0.0:9000
       DIOXUSFUN_DATA_DIR: /data
-      # Hand clients a LiveKit URL they can actually reach from the internet.
       LIVEKIT_URL: ws://${PUBLIC_HOST:?set PUBLIC_HOST in .env}:7880
       LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-devkey}
       LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-secret-must-be-at-least-32-chars-long}
-      # Comma-separated hex pubkeys allowed to moderate the seeded Lobby.
       DIOXUSFUN_OPERATORS: ${DIOXUSFUN_OPERATORS:-}
     volumes:
       - discordia-data:/data
 
-  # ---- B: discovery + NAT traversal for laptop-hosted servers -------------
   rendezvous:
     build:
       context: .
@@ -43,33 +22,18 @@ services:
     restart: unless-stopped
     ports:
       - "7700:7700"
-      # The iroh relay this rendezvous runs, so it can introduce two peers
-      # behind NAT instead of sending them to a public relay nobody chose.
       - "7701:7701"
     environment:
       DIOXUSFUN_RENDEZVOUS_ADDR: 0.0.0.0:7700
       DIOXUSFUN_RENDEZVOUS_DATA_DIR: /data
-      # What a *client* should dial — not the bind address, which is a wildcard
-      # and would tell clients to dial themselves. Unset this and the rendezvous
-      # offers no coordination at all: its users fall back to the WebSocket
-      # proxy, rather than being handed to somebody else's servers.
       DIOXUSFUN_RENDEZVOUS_RELAY_URL: http://${PUBLIC_HOST:?set PUBLIC_HOST in .env}:7701
       DIOXUSFUN_RENDEZVOUS_RELAY_ADDR: 0.0.0.0:7701
-      # Handed to every host that registers, so their friends use THIS shared
-      # SFU instead of the host's unreachable LAN address. This is the piece
-      # that makes voice work over the internet for laptop-hosted servers.
       LIVEKIT_URL: ws://${PUBLIC_HOST:?set PUBLIC_HOST in .env}:7880
-      # The SFU signing credentials stay HERE. Hosts never receive them — they
-      # get a per-session grant and ask us to mint (POST /voice-token), so no
-      # host on this relay can mint tokens into another host's rooms.
       LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-devkey}
       LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-secret-must-be-at-least-32-chars-long}
     volumes:
       - rendezvous-data:/data
 
-  # ---- shared SFU (voice + screenshare media) -----------------------------
-  # host networking: WebRTC needs a wide UDP range, and publishing 100+ ports
-  # through docker's NAT is slow and mangles ICE candidate addressing.
   livekit:
     image: livekit/livekit-server:latest
     restart: unless-stopped

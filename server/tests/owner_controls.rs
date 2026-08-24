@@ -1,9 +1,3 @@
-//! End-to-end tests for guild owner controls: the roles/permissions engine
-//! (this file grows with membership, channels, moderation, delegation as the
-//! phases land). Same harness as `bots.rs`: spawn a real gateway, drive human
-//! sessions through the bot SDK's `connect_as_user` (it can send arbitrary
-//! `ClientMessage`s).
-
 use std::net::SocketAddr;
 use std::time::Duration;
 
@@ -20,11 +14,7 @@ async fn next_timeout(session: &mut Bot) -> ServerMessage {
         .expect("connection closed unexpectedly")
 }
 
-/// Per-test ServerConfig: unique temp data dir (SQLite + media) so tests are
-/// hermetic and parallel-safe.
 fn test_config(operators: std::collections::HashSet<String>) -> dioxusfun_server::ServerConfig {
-    // Use counter, not clock: `as_nanos()` has ~1us resolution on macOS,
-    // causing collisions and SQLite lock errors in parallel tests.
     use std::sync::atomic::{AtomicU32, Ordering};
     static N: AtomicU32 = AtomicU32::new(0);
     let dir = std::env::temp_dir().join(format!(
@@ -39,7 +29,6 @@ fn test_config(operators: std::collections::HashSet<String>) -> dioxusfun_server
     }
 }
 
-/// Spawn a gateway on a free port and return its `ws://` URL plus the handle.
 async fn spawn_gateway() -> (String, dioxusfun_server::ServerHandle) {
     let preferred: SocketAddr = "127.0.0.1:19200".parse().unwrap();
     let handle = dioxusfun_server::spawn(preferred, 100, test_config(Default::default()))
@@ -49,8 +38,6 @@ async fn spawn_gateway() -> (String, dioxusfun_server::ServerHandle) {
     (url, handle)
 }
 
-/// Connect a human session and swallow its Ready, returning the session and
-/// the guilds it landed with.
 async fn connect_user(
     url: &str,
     id: &BotIdentity,
@@ -65,7 +52,6 @@ async fn connect_user(
     (session, guilds)
 }
 
-/// Owner creates a guild; returns (guild_id, first text channel id).
 async fn create_guild(owner: &mut Bot, name: &str) -> (Id, Id) {
     owner
         .send(&ClientMessage::CreateGuild {
@@ -89,7 +75,6 @@ async fn create_guild(owner: &mut Bot, name: &str) -> (Id, Id) {
     }
 }
 
-/// Wait for the next `Error` frame and return its message.
 async fn next_error(session: &mut Bot) -> String {
     loop {
         if let ServerMessage::Error { message } = next_timeout(session).await {
@@ -468,8 +453,6 @@ async fn private_guild_hidden_and_invite_flow() {
         }
     }
 
-    // A fresh user's catalog must not list the private guild, and a direct
-    // join is rejected.
     let guest_id = BotIdentity::generate();
     let mut guest = Bot::connect_as_user(&url, &guest_id, "Guest")
         .await
@@ -1171,8 +1154,6 @@ async fn delete_message_rules() {
     let err = next_error(&mut plain).await;
     assert!(err.contains("manage_messages"), "got: {err}");
 
-    // Loop until the matching delete arrives; the author's queue may still
-    // hold the first one.
     owner
         .send(&ClientMessage::DeleteMessage {
             channel_id: text_channel,
@@ -1187,12 +1168,6 @@ async fn delete_message_rules() {
             break;
         }
     }
-
-    // The DM half of this test is gone with the feature: direct messages are
-    // Nostr gift wraps now and never reach this server, so there is no DM
-    // channel here whose deletion rules could be checked. The guild half above
-    // still covers the rule that mattered — a moderator may delete in a channel
-    // they moderate, and the author-only rule is what DMs were demonstrating.
 
     handle.abort();
 }
@@ -1341,7 +1316,6 @@ async fn guild_branding() {
         .await
         .unwrap();
     let err = next_error(&mut owner).await;
-    // Error must include the size limit, not just a generic rejection.
     assert!(err.contains("MB"), "got: {err}");
 
     member
@@ -1359,7 +1333,6 @@ async fn guild_branding() {
     handle.abort();
 }
 
-/// Spawn a gateway that designates `operator` as owner of system guilds.
 async fn spawn_with_operator(operator: &str) -> (String, dioxusfun_server::ServerHandle) {
     let preferred: SocketAddr = "127.0.0.1:19400".parse().unwrap();
     let ops = std::collections::HashSet::from([operator.to_string()]);
@@ -1454,8 +1427,6 @@ async fn message_xp_levels_up_per_guild() {
     let (mut owner, _) = connect_user(&url, &owner_id, "Grinder").await;
     let (guild_id, text) = create_guild(&mut owner, "XP Farm").await;
 
-    // Level 1 requires 10 XP; the 10th message triggers a MemberUpdate with
-    // the new level.
     for i in 0..10 {
         owner.send_message(text, &format!("msg {i}")).await.unwrap();
     }
@@ -1475,7 +1446,6 @@ async fn message_xp_levels_up_per_guild() {
         "10 messages → level 2"
     );
 
-    // XP is per-guild; verify reset via a second session's Ready roster.
     let (guild2, _) = create_guild(&mut owner, "Fresh Start").await;
     let mut second = Bot::connect_as_user(&url, &owner_id, "Grinder")
         .await
@@ -1501,7 +1471,6 @@ async fn message_xp_levels_up_per_guild() {
 
 use dioxusfun_server::protocol::JoinGate;
 
-/// SHA-256 leading-zero-bits PoW solver (mirrors the client/server).
 fn solve_pow(challenge: &str, bits: u32) -> String {
     use sha2::{Digest, Sha256};
     let mut n: u64 = 0;
@@ -1633,8 +1602,6 @@ async fn pow_gate_requires_valid_nonce() {
             break (pow_challenge.unwrap(), pow_difficulty.unwrap());
         }
     };
-    // Bogus nonce must be rejected (re-challenged), not admitted. This
-    // assertion prevents the gate from accepting any nonce.
     joiner
         .send(&ClientMessage::JoinGuild {
             guild_id,
@@ -1643,9 +1610,6 @@ async fn pow_gate_requires_valid_nonce() {
         })
         .await
         .unwrap();
-    // "0" satisfying 16 leading zero bits by luck is a 1-in-65,536 event, and
-    // the challenge is derived from a fresh keypair, so this is not flaky in
-    // any way a rerun would show.
     match next_timeout(&mut joiner).await {
         ServerMessage::JoinChallenge { .. } => {}
         ServerMessage::GuildJoined { .. } => {
@@ -1765,7 +1729,6 @@ async fn slowmode_throttles_posting() {
     let err = next_error(&mut member).await;
     assert!(err.contains("slowmode"), "got: {err}");
 
-    // The owner (ManageMessages) is exempt.
     owner.send_message(text, "mod says hi").await.unwrap();
     owner.send_message(text, "and again").await.unwrap();
     let mut owner_msgs = 0;
@@ -1877,8 +1840,6 @@ async fn fetch_catalog_returns_public_guilds_paginated() {
         create_guild(&mut owner, n).await;
     }
 
-    // Total includes any seeded public system guilds, so it may exceed the 3
-    // created here.
     owner
         .send(&ClientMessage::FetchCatalog {
             offset: 0,
@@ -1945,8 +1906,6 @@ async fn creating_a_guild_no_longer_floods_bystanders_with_catalog() {
         }
     }
 
-    // Bystander is not a member; assert no unsolicited GuildCatalog push
-    // arrives.
     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
     let got_push = tokio::time::timeout(
         std::time::Duration::from_millis(200),
@@ -1961,13 +1920,6 @@ async fn creating_a_guild_no_longer_floods_bystanders_with_catalog() {
     handle.abort();
 }
 
-/// A rate-limited action must say so, not vanish.
-///
-/// Fourteen of the seventeen rate-limited arms used to `continue` in silence.
-/// `UpdateChannel` is the one that hurts most, because a channel reorder emits
-/// one per row it renumbers: a guild that has never been reordered spends the
-/// whole budget in a single drag and the client is left showing a
-/// half-reordered list with nothing to explain it.
 #[tokio::test]
 async fn a_rate_limited_channel_update_is_refused_out_loud() {
     let (url, handle) = spawn_gateway().await;
@@ -1976,9 +1928,6 @@ async fn a_rate_limited_channel_update_is_refused_out_loud() {
     let (mut owner, _) = connect_user(&url, &owner_id, "Owner").await;
     let (_guild_id, text) = create_guild(&mut owner, "Busy").await;
 
-    // The window is 30 actions per 10s and guild creation already spent some of
-    // it, so this is comfortably past the limit without depending on the exact
-    // remainder.
     for i in 0..40 {
         owner
             .send(&ClientMessage::UpdateChannel {
@@ -1993,8 +1942,6 @@ async fn a_rate_limited_channel_update_is_refused_out_loud() {
             .unwrap();
     }
 
-    // Not "an error eventually": the refusal has to be the rate-limit one, so a
-    // future permission or validation bug cannot pass this test by accident.
     let message = next_error(&mut owner).await;
     assert_eq!(
         message,
@@ -2005,7 +1952,6 @@ async fn a_rate_limited_channel_update_is_refused_out_loud() {
     handle.abort();
 }
 
-/// Fetch (or mint) an invite and return the whole frame, limits included.
 async fn mint_invite(
     owner: &mut Bot,
     guild_id: Id,
@@ -2036,9 +1982,6 @@ async fn mint_invite(
     }
 }
 
-/// A capped code admits exactly as many people as it says, and the refusal is
-/// the same one an unknown code gets — a spent code must not be distinguishable
-/// from a wrong guess, or it becomes an oracle for "this guild exists".
 #[tokio::test]
 async fn an_invite_stops_working_once_its_uses_are_spent() {
     let (url, handle) = spawn_gateway().await;
@@ -2087,8 +2030,6 @@ async fn an_invite_stops_working_once_its_uses_are_spent() {
     handle.abort();
 }
 
-/// An expired code is refused before the join gate, not after it: a code that
-/// can never be spent must not hand out a proof-of-work challenge.
 #[tokio::test]
 async fn an_expired_invite_is_refused_without_a_challenge() {
     let (url, handle) = spawn_gateway().await;
@@ -2097,7 +2038,6 @@ async fn an_expired_invite_is_refused_without_a_challenge() {
     let (mut owner, _) = connect_user(&url, &owner_id, "Owner").await;
     let (guild_id, _) = create_guild(&mut owner, "Fleeting").await;
 
-    // Zero seconds: expires_at is now, and `is_live` is a strict `<`.
     let (code, expires_at, _, _) = mint_invite(&mut owner, guild_id, Some(0), None).await;
     assert!(expires_at.is_some(), "a TTL was asked for");
 
@@ -2118,8 +2058,6 @@ async fn an_expired_invite_is_refused_without_a_challenge() {
     handle.abort();
 }
 
-/// Asking for the guild's invite must never hand back a code that no longer
-/// works — the caller has no way to tell, and would paste it to somebody.
 #[tokio::test]
 async fn fetching_an_invite_replaces_a_dead_one() {
     let (url, handle) = spawn_gateway().await;
@@ -2149,12 +2087,6 @@ async fn fetching_an_invite_replaces_a_dead_one() {
     handle.abort();
 }
 
-/// Reordering must not carry anybody else's fields back with it.
-///
-/// The old path sent one `UpdateChannel` per renumbered row, each one a full
-/// replace built from the mover's render snapshot — so an edit that landed
-/// between the render and the drop was silently overwritten by someone who was
-/// only dragging. `ReorderChannels` carries positions and nothing else.
 #[tokio::test]
 async fn a_reorder_does_not_overwrite_a_concurrent_edit() {
     let (url, handle) = spawn_gateway().await;
@@ -2198,8 +2130,6 @@ async fn a_reorder_does_not_overwrite_a_concurrent_edit() {
         }
     }
 
-    // A reorder built from a snapshot taken *before* that edit — the exact race
-    // the old full-replace path lost.
     owner
         .send(&ClientMessage::ReorderChannels {
             guild_id,
@@ -2226,8 +2156,6 @@ async fn a_reorder_does_not_overwrite_a_concurrent_edit() {
     handle.abort();
 }
 
-/// A whole-guild renumber is one frame, so it costs one rate-limit hit rather
-/// than one per channel — which is what let a single drag exhaust the window.
 #[tokio::test]
 async fn reordering_a_whole_guild_costs_one_rate_limit_hit() {
     let (url, handle) = spawn_gateway().await;
@@ -2255,8 +2183,6 @@ async fn reordering_a_whole_guild_costs_one_rate_limit_hit() {
         }
     }
 
-    // Thirteen rows renumbered at once; under the old path this was thirteen
-    // frames against a 30-per-10s window already spent on the creates.
     let positions: Vec<(Id, u32)> = ids
         .iter()
         .rev()
@@ -2285,9 +2211,6 @@ async fn reordering_a_whole_guild_costs_one_rate_limit_hit() {
     handle.abort();
 }
 
-/// A rename reaches everyone in the guild, and the sender's next message
-/// carries the new name — the whole point being that it takes effect *now*
-/// rather than on the next connect.
 #[tokio::test]
 async fn a_rename_reaches_the_guild_without_a_reconnect() {
     let (url, handle) = spawn_gateway().await;
@@ -2322,9 +2245,6 @@ async fn a_rename_reaches_the_guild_without_a_reconnect() {
         .await
         .unwrap();
 
-    // Match on guild_id as well as pubkey: a rename touches every guild the
-    // user is in, and DashMap iteration order is non-deterministic across
-    // platforms.
     let updated = loop {
         if let ServerMessage::MemberUpdate(m) = next_timeout(&mut owner).await
             && m.user.pubkey == friend_id.pubkey()
@@ -2335,8 +2255,6 @@ async fn a_rename_reaches_the_guild_without_a_reconnect() {
     };
     assert_eq!(updated.user.username, "Bartolomé");
 
-    // Verifies the name attribution moved too, which a member-row update alone
-    // would miss.
     friend.send_message(text, "same me").await.unwrap();
     let posted = loop {
         if let ServerMessage::MessageCreate(m) = next_timeout(&mut owner).await
@@ -2350,14 +2268,6 @@ async fn a_rename_reaches_the_guild_without_a_reconnect() {
     handle.abort();
 }
 
-/// A bot cannot rename itself at all — the gateway refuses the frame.
-///
-/// Worth a test because the reason is not where you would look for it. The
-/// member row a bot shows is its installer's label, and `rename_user` skips bot
-/// rows to protect that — but that guard never runs, because bots are held to
-/// an allowlist of three message types and `UpdateUsername` is not one of them.
-/// The guard stays as defence in depth for the day the allowlist grows; this
-/// asserts the door that is actually shut.
 #[tokio::test]
 async fn a_bot_cannot_rename_itself() {
     let (url, handle) = spawn_gateway().await;
@@ -2406,7 +2316,6 @@ async fn a_bot_cannot_rename_itself() {
         "expected the bot allowlist refusal, got: {refusal}"
     );
 
-    // Verifies the bot's label still names its messages.
     bot.send_message(text, "hello").await.unwrap();
     let posted = loop {
         if let ServerMessage::MessageCreate(m) = next_timeout(&mut owner).await

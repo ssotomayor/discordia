@@ -2,95 +2,53 @@
 name = "dioxusfun"
 version = "0.1.0"
 edition = "2024"
-# Read at compile time by `version::releases_url` to decide *whose* releases the
-# update check asks about. A fork that changes this line checks its own; one
-# that does not, checks nobody's, because an unrecognised host disables the
-# check rather than defaulting to ours.
 repository = "https://github.com/ssotomayor/discordia"
 
 [dependencies]
-# Dioxus-specific deps (not shared with server/rendezvous, no need to hoist).
 dioxus = "0.7"
 tokio-tungstenite = { workspace = true }
 url = "2"
 
-# Voice: livekit Rust SDK (wraps libwebrtc via webrtc-sys) + cpal for native
-# audio device I/O. First build downloads ~50MB of precompiled libwebrtc.
 livekit = "0.7"
 cpal = "0.15"
 parking_lot = "0.12"
 local-ip-address = "0.6"
 
-# Port mapping for self-host (see src/portmap.rs). Two protocols because
-# routers implement one or the other and rarely both: UPnP-IGD is the common
-# one, NAT-PMP/PCP is what Apple's and a few others speak. Both are best-effort
-# — a host behind carrier-grade NAT gets neither, which is a supported outcome,
-# not an error.
 igd-next = { version = "0.17", features = ["aio_tokio"] }
-# The QUIC transport's client half (src/quic.rs). The server half lives in
-# dioxusfun-server, which this crate already embeds for self-host.
 iroh = { workspace = true }
 natpmp = { version = "0.5", default-features = false, features = ["tokio"] }
 reqwest = { workspace = true }
-# Crypto identity: Nostr secp256k1/Schnorr keypair derived from a BIP39
-# mnemonic via NIP-06 (see src/identity.rs). `bech32` for npub/nsec, `hex`
-# for wire encoding.
 secp256k1 = { workspace = true }
 hex = { workspace = true }
 bech32 = "0.11"
 bip39 = "2"
 hmac = "0.12"
 sha2 = "0.10"
-# Sealing a channel's media key to one recipient (see src/mediakey.rs).
-# XChaCha20-Poly1305 for its 24-byte nonce: the key is sealed once per member
-# per rekey with a random nonce, and a 96-bit one is not comfortable for that.
 chacha20poly1305 = "0.10"
-# NIP-44 v2 needs raw ChaCha20 (not the AEAD) and HKDF-SHA256. Both are already
-# in the tree — `chacha20` under `chacha20poly1305`, `hkdf` transitively — so
-# naming them directly costs no new supply chain, only an honest dependency.
 chacha20 = "0.9"
 hkdf = "0.12"
 dirs = "5"
 rand = "0.8"
 
-# base64 for inline image / avatar data URLs (chat + profiles).
 base64 = "0.22"
 
-# Decodes the app icon PNG into RGBA for the native window icon (taskbar).
 image = { version = "0.25", default-features = false, features = ["png"] }
 
-# Microphone noise suppression: DeepFilterNet 3 running on the `tract` pure-Rust
-# inference engine, with the network weights compiled in (`default-model`). See
-# `src/denoise.rs` for why this model/runtime pair and what it costs.
-#
-# Pinned to a git rev because crates.io only carries deep_filter 0.2.5, which
-# predates the `tract` backend entirely. `default-features = false` drops the
-# vorbis/flac decoders (dataset tooling we don't use).
-#
-# tract is pinned to =0.21.4 on purpose: DeepFilterNet's `^0.21.4` resolves to
-# 0.21.17, where `Graph::symbol_table` moved and the crate no longer compiles.
-# Bump these four together, and only after checking DeepFilterNet builds.
 deep_filter = { git = "https://github.com/Rikorose/DeepFilterNet.git", rev = "d375b2d", default-features = false, features = ["tract", "default-model"] }
+# Pinned: DeepFilterNet asks for ^0.21.4 and the model does not load at all on
+# a newer tract. See the [profile.dev.package] note in the workspace root.
 tract-core = "=0.21.4"
 tract-onnx = "=0.21.4"
 tract-pulse = "=0.21.4"
 tract-hir = "=0.21.4"
-# Array views for handing hops to the DeepFilterNet model. Its API is built on
-# ndarray 0.15, so this must track deep_filter's version, not the newest one.
 ndarray = "0.15"
 
-# High-quality audio resampler (FFT-based, pure Rust, no C deps). Replaces the
-# naive linear-interpolation resampler that caused aliasing artefacts. Works on
-# Windows (MSVC), macOS (Intel + Apple Silicon) and Linux.
 rubato = "0.16"
 
-# Shared wire protocol (client, server, bot SDK all depend on this one crate).
 dioxusfun-protocol = { workspace = true }
-# Self-host mode: embed the gateway server in-process.
 dioxusfun-server = { workspace = true }
 dioxus-grid-layout = { path = "../grid-layout" }
 
-# Shared deps inherited from workspace.
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
@@ -98,9 +56,6 @@ chrono = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "process"] }
 futures-util = { workspace = true }
 tracing = { workspace = true }
-# Without a subscriber every `tracing::` call in this crate is discarded, which
-# is how sixteen diagnostics along the networking paths came to be written and
-# never seen. See `main.rs`.
 tracing-subscriber = { workspace = true }
 minisign-verify = "0.2.5"
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
@@ -111,23 +66,10 @@ desktop = ["dioxus/desktop"]
 mobile = ["dioxus/mobile"]
 web = ["dioxus/web"]
 
-# The executable (and therefore the .app / installer name) is "Discordia";
-# the crate keeps its workspace name.
 [[bin]]
 name = "Discordia"
 path = "src/main.rs"
 
-# Native system-audio capture for screen sharing (see src/sysaudio/). macOS
-# only for now: WebKit's getDisplayMedia is video-only, so a macOS share is
-# silent unless we capture the machine's output ourselves. objc2 rather than the
-# `screencapturekit` crate deliberately — that one builds a Swift component and
-# would put the Swift runtime (plus an extra rpath) in the shipped app.
-# Native system-audio capture on Windows: WASAPI *process* loopback, which is
-# the only variant that can leave our own process tree out of the mix (see
-# src/sysaudio/windows.rs). Version 0.61 deliberately: wry/webview2-com already
-# pull that exact major, so this reuses the copy already in the tree instead of
-# compiling a second one. `Wdk_System_SystemServices` is only for RtlGetVersion,
-# which is how the build number is read honestly — see sysaudio::os_build.
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.61", features = [
     "Wdk_System_SystemServices",
@@ -136,29 +78,14 @@ windows = { version = "0.61", features = [
     "Win32_Security",
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
-    # SetStdHandle: a windowed build has no stderr, so every `eprintln!` in the
-    # crate writes into nothing. See `redirect_std_handles` in src/main.rs.
     "Win32_System_Console",
     "Win32_System_SystemInformation",
     "Win32_System_Threading",
     "Win32_System_Variant",
-    # `IMMDevice::OpenPropertyStore`, which is the only way to read an
-    # endpoint's friendly name — the name cpal reports and the one the device
-    # dropdown stores, so `rawmic` opens the microphone the user picked.
     "Win32_UI_Shell_PropertiesSystem",
-    # MessageBoxW, for the one error we cannot draw in our own UI: the missing
-    # WebView2 runtime that would have drawn it (see src/webview2.rs).
     "Win32_UI_WindowsAndMessaging",
 ] }
-# The `#[implement]` macro expands to `::windows_core::…` paths, so the crate
-# has to be nameable here even though every other reference goes through
-# `windows::core`. Same version the `windows` crate itself pulls — two copies
-# would make the generated impls fail to match the interface.
 windows-core = "0.61"
-# `GetAvailableCoreWebView2BrowserVersionString` — Microsoft's own "is a runtime
-# available, and which" entry point. Already in the tree via wry, and it tracks
-# the same windows-core 0.61, so this names a copy that is already compiled
-# rather than adding one.
 webview2-com-sys = "0.38"
 
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -168,31 +95,13 @@ objc2-screen-capture-kit = "0.3"
 objc2-core-media = "0.3"
 objc2-core-audio-types = "0.3"
 objc2-core-foundation = "0.3"
-# CVPixelBuffer, for handing ScreenCaptureKit's frames to libwebrtc without a
-# copy (`sysvideo`). Already in the tree — objc2-core-media enables it by
-# default, which is what makes `CMSampleBuffer::image_buffer()` exist — so this
-# names a copy that is already compiled rather than adding one.
 objc2-core-video = "0.3"
 block2 = "0.6"
 dispatch2 = "0.3"
 
-# cargo-machete flags these as unused because nothing `use`s them by their
-# package name. Both reasons are deliberate, so they're recorded here rather than
-# rediscovered — deleting any of them breaks noise cancellation.
-#
-#  * deep_filter's library is named `df` (see `use df::tract::…` in denoise.rs),
-#    which the scanner doesn't map back to the package name.
-#  * The tract crates are declared purely to pin `=0.21.4`. DeepFilterNet asks
-#    for `^0.21.4`, and on a newer tract the model does not load at all — see the
-#    `[profile.dev.package]` comment in the workspace root.
 [package.metadata.cargo-machete]
 ignored = ["deep_filter", "tract-core", "tract-onnx", "tract-pulse", "tract-hir"]
 
-
 [dev-dependencies]
-# `tests/live_sfu.rs` mints its own tokens so it can put a `can_publish: false`
-# one in front of a real SFU. Both are already in the workspace lockfile —
-# livekit-api via dioxusfun-server, uuid via the protocol crate — so nothing new
-# enters the tree; they are only unavailable to *this* package's tests.
 livekit-api = { version = "0.4", default-features = false, features = ["access-token"] }
 uuid = { workspace = true }

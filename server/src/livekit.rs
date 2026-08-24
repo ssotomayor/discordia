@@ -1,70 +1,29 @@
-//! LiveKit access-token minting and URL resolution.
-
 use livekit_api::access_token::{AccessToken, VideoGrants};
 
 use crate::protocol::Id;
 
-/// A voice-token request. Rooms are named by the gateway; a delegated minter
-/// may namespace them further (see the rendezvous).
 #[derive(Debug, Clone)]
 pub struct MintRequest {
     pub room: String,
     pub identity: String,
     pub name: String,
-    /// Whether this connection may send anything at all.
-    ///
-    /// The local mint has asked this per identity since `screen_token_as` grew
-    /// the argument — the `#audio` connection only subscribes. This carries the
-    /// same answer across the delegation seam, which previously dropped it: the
-    /// relay signed its own fixed grant set with publish on, so the narrowing
-    /// applied on a self-signed gateway and not on a rendezvous-delegated one.
-    ///
-    /// Like `screen_token_as`, this is the caller's answer rather than
-    /// something inferred from the identity string — a grant should never be
-    /// read by parsing a suffix.
     pub can_publish: bool,
 }
 
 pub type BoxFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
 
-/// Something that can sign LiveKit tokens on our behalf.
-///
-/// When a self-hosting gateway uses a *shared* SFU it doesn't own (e.g. the one
-/// a public rendezvous operates), it must not hold that SFU's signing secret —
-/// otherwise every host on that relay could mint tokens for every other host's
-/// rooms. Instead the gateway asks the operator to mint, and the operator scopes
-/// the room to this host. See `client::rendezvous::RendezvousMinter`.
 pub trait VoiceTokenMinter: Send + Sync {
     fn mint<'a>(&'a self, req: MintRequest) -> BoxFuture<'a, Result<String, String>>;
 }
 
 #[derive(Clone)]
 pub struct LiveKitConfig {
-    /// Explicit URL that overrides per-connection resolution. Set this when
-    /// LiveKit lives at a known address (LiveKit Cloud, a separate host,
-    /// behind a reverse proxy, etc.).
     pub explicit_url: Option<String>,
-    /// LiveKit WebSocket port. Used when deriving the URL from the host the
-    /// client used to dial the gateway (self-host / same-machine case).
     pub port: u16,
-    /// This machine's LAN address, when self-hosting. Used INSTEAD of a
-    /// loopback-derived host: a client whose `Host` header is 127.0.0.1 is
-    /// either us (LAN IP works fine too) or — critically — a friend arriving
-    /// through the rendezvous proxy, which dials our gateway on loopback.
-    /// Handing that friend `ws://127.0.0.1:7880` points them at their OWN
-    /// machine ("Connection refused"); the LAN address is at least reachable
-    /// from the same network.
     pub lan_host: Option<String>,
-    /// This machine's *internet-facing* address, when a port mapping obtained
-    /// one. Preferred over `lan_host` for the same loopback-origin clients,
-    /// because it is the only one of the two a relayed friend somewhere else
-    /// can dial — and it is equally reachable from the LAN wherever the router
-    /// hairpins, which `client::portmap` checks before this is set.
     pub public_host: Option<String>,
     pub api_key: String,
     pub api_secret: String,
-    /// When set, tokens are minted by this delegate instead of signed locally
-    /// (we don't hold the shared SFU's secret).
     pub minter: Option<std::sync::Arc<dyn VoiceTokenMinter>>,
 }
 
@@ -85,23 +44,11 @@ impl LiveKitConfig {
         }
     }
 
-    /// Resolve the LiveKit URL to hand back to a specific client.
-    ///
-    /// - If an explicit URL was configured (e.g. via `LIVEKIT_URL`), return it.
-    /// - Otherwise, build `ws://{client connection host}:{port}` so the
-    ///   client dials LiveKit on the same host they used to reach the
-    ///   gateway. This makes a self-host operator's `192.168.0.48:9000`
-    ///   gateway naturally pair with `192.168.0.48:7880` for LiveKit.
     pub fn url_for_client(&self, client_host: Option<&str>) -> String {
         if let Some(url) = &self.explicit_url {
             return url.clone();
         }
         let host = client_host.map(host_without_port).unwrap_or("127.0.0.1");
-        // Loopback is indistinguishable between local and relay-proxied
-        // connections, so the substituted address must serve both.
-        // A public address works for all; a LAN address only works for
-        // local/LAN peers and causes timeouts for remote peers, so it is the
-        // last resort.
         let host = match (&self.public_host, &self.lan_host, is_loopback(host)) {
             (Some(public), _, true) => public.as_str(),
             (None, Some(lan), true) => lan.as_str(),
@@ -111,12 +58,10 @@ impl LiveKitConfig {
     }
 }
 
-/// True for hosts that only resolve on the machine itself.
 fn is_loopback(host: &str) -> bool {
     host == "localhost" || host == "127.0.0.1" || host == "[::1]" || host == "::1"
 }
 
-/// Strip the port from a HTTP `Host` header, handling IPv6 in brackets.
 fn host_without_port(host: &str) -> &str {
     if host.starts_with('[')
         && let Some(end) = host.find(']')
@@ -126,9 +71,6 @@ fn host_without_port(host: &str) -> &str {
     host.rsplit_once(':').map(|(h, _)| h).unwrap_or(host)
 }
 
-/// Build a LiveKit JWT scoped to the given voice channel room. Identity is
-/// the user's x-only secp256k1 pubkey so LiveKit's participant identifiers
-/// match dioxusfun's universal user id.
 pub fn mint_token(
     cfg: &LiveKitConfig,
     user_pubkey: &str,
@@ -151,7 +93,6 @@ pub fn mint_token(
         .map_err(|e| format!("livekit token: {e}"))
 }
 
-/// Mint a voice token, delegating to `cfg.minter` when one is configured.
 pub async fn voice_token(
     cfg: &LiveKitConfig,
     user_pubkey: &str,
@@ -172,44 +113,14 @@ pub async fn voice_token(
     }
 }
 
-/// The screen-share room is joined up to three times by the same user: by the
-/// webview (renders everyone's video, and captures it where it can), and by the
-/// native client twice — once to subscribe to stream audio, once to *publish*
-/// video on platforms where the webview cannot capture. LiveKit evicts a
-/// duplicate identity, so each connection needs its own — hence these suffixes.
-///
-/// The suffix names the connection; it does not carry the permission. What each
-/// one may do is decided at the call site and passed to `screen_token_as`, so
-/// that reading a grant never means parsing an identity string.
 pub fn screen_audio_identity(user_pubkey: &str) -> String {
     format!("{user_pubkey}#audio")
 }
 
-/// Identity the native client publishes captured screen video under.
-///
-/// Watchers resolve a sharer to their track by identity, and a sharer announced
-/// over our own protocol is announced by bare pubkey — so anything matching
-/// publications to sharers has to know this suffix too. See `attach` in
-/// `features::screenshare`'s JS controller, which tries both.
 pub fn screen_video_identity(user_pubkey: &str) -> String {
     format!("{user_pubkey}#video")
 }
 
-/// Mint a screen-share token under an explicit identity.
-///
-/// `can_publish` is the caller's answer to "does this connection ever send
-/// anything?". One of the three does not: the `#audio` identity only subscribes.
-///
-/// **It binds on both paths.** It used to bind only on the local one: a gateway
-/// delegating to a rendezvous sent a `MintRequest` carrying no grants, and the
-/// relay signed its own fixed set with publish on — so the narrowing that stops
-/// a subscribe-only connection from sending simply did not apply to anyone
-/// hosting through a relay. The answer now rides `MintRequest::can_publish`.
-///
-/// One caveat survives, and it is a deployment one rather than a code one: a
-/// relay older than that field ignores it and grants publish, exactly as it does
-/// today. Nothing on this wire carries a version, so the gateway cannot detect
-/// it.
 pub async fn screen_token_as(
     cfg: &LiveKitConfig,
     identity: &str,
@@ -235,28 +146,10 @@ pub fn room_name(channel_id: Id) -> String {
     format!("voice-{channel_id}")
 }
 
-/// Screen sharing rides in a SEPARATE room from voice so peers in `voice-…`
-/// never auto-subscribe to — and waste bandwidth decoding — the screen video,
-/// which only the webview JS clients render.
-///
-/// Native clients do join this room, but audio-only and opt-in per track
-/// (`auto_subscribe: false`), so stream sound plays through the same output
-/// device as voice without any video being pulled down. That means one user
-/// holds two connections here, under two identities — see
-/// `screen_audio_identity`.
 pub fn screen_room_name(channel_id: Id) -> String {
     format!("screen-{channel_id}")
 }
 
-/// Mint a token to join the screen-share room under `identity`.
-///
-/// `identity` is a parameter rather than the pubkey because the same user joins
-/// this room twice — webview for video, native client for audio — and LiveKit
-/// allows only one connection per identity. See `screen_audio_identity`.
-///
-/// `can_publish_data` follows `can_publish`: the data channel is a publishing
-/// capability too, and a connection that has nothing to send has nothing to say
-/// on it either.
 pub fn mint_screen_token(
     cfg: &LiveKitConfig,
     identity: &str,
@@ -284,10 +177,6 @@ pub fn mint_screen_token(
 mod tests {
     use super::*;
 
-    /// The three screen-room identities and what each is allowed to do. The
-    /// grants used to be identical for all three, so the `#audio` connection —
-    /// which only ever subscribes — could have published into a room it shares
-    /// with everyone in the channel.
     #[test]
     fn screen_grants_follow_the_connection() {
         use livekit_api::access_token::TokenVerifier;
@@ -377,8 +266,6 @@ mod tests {
         assert_eq!(cfg.url_for_client(None), "ws://127.0.0.1:7880");
     }
 
-    /// A rendezvous-proxied friend reaches the gateway on loopback; without
-    /// the LAN substitution they'd be told to dial LiveKit on their own box.
     #[test]
     fn loopback_client_gets_lan_host() {
         let cfg = LiveKitConfig {
@@ -399,10 +286,6 @@ mod tests {
         );
     }
 
-    /// Once a port mapping exists, the substitution for a loopback-origin
-    /// client is the public address — the LAN one is only dialable by a friend
-    /// who turns out to be on this network, and the relay exists for the ones
-    /// who are not.
     #[test]
     fn public_host_outranks_lan_host() {
         let cfg = LiveKitConfig {

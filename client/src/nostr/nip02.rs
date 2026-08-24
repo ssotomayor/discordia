@@ -1,52 +1,25 @@
-//! NIP-02 contact list — the friends that come with you.
-//!
-//! The other half of "changing servers loses your people". Direct messages
-//! stopped belonging to a host when they became gift wraps; this does the same
-//! for the list of who you talk to. A kind:3 event holds the whole list, signed
-//! by you and stored on relays, so a fresh install on a new machine — or a
-//! different Discordia server entirely — pulls it back from your key alone.
-//!
-//! **It is a public event, and that is not a detail.** Anyone can read who you
-//! follow. That is how Nostr's social graph has always worked and it is the
-//! opposite of the gift-wrapped messages beside it, so the UI must never let
-//! the two be confused: adding a contact is a public act, sending them a
-//! message is not.
-//!
-//! **The list is replaced wholesale, never appended to.** Kind 3 is a
-//! *replaceable* event: relays keep only the newest per author, so publishing a
-//! list with one name deletes every other name you had. Anything that edits it
-//! must read the current list first, which is why `ContactList` carries the
-//! whole set and there is no `add_one` here.
+//! Kind 3 is public and replaceable: publishing a partial list deletes
+//! everyone missing from it, so the list is read-modify-written whole.
 
 use secp256k1::SecretKey;
 
 use super::event::{self, Event};
 
-/// A contact list, per NIP-02.
 pub const KIND_CONTACTS: u16 = 3;
 
-/// One entry: a key, optionally where to find them and what you call them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Contact {
     pub pubkey: String,
-    /// Relay where this person's notes can be found, if the list says.
     pub relay: Option<String>,
-    /// A local nickname. Yours, not theirs — it is what *you* chose to call
-    /// them, and it travels with the list rather than with their profile.
     pub petname: Option<String>,
 }
 
-/// The whole list, which is the only unit that can be published.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ContactList {
     pub contacts: Vec<Contact>,
 }
 
 impl ContactList {
-    /// Add or update one entry, keeping the rest.
-    ///
-    /// Returns the list so a caller has to publish the *result* rather than
-    /// forgetting that a partial list is a deletion.
     pub fn with(mut self, contact: Contact) -> Self {
         match self
             .contacts
@@ -59,7 +32,6 @@ impl ContactList {
         self
     }
 
-    /// Remove one entry, keeping the rest.
     pub fn without(mut self, pubkey: &str) -> Self {
         self.contacts.retain(|c| c.pubkey != pubkey);
         self
@@ -69,11 +41,6 @@ impl ContactList {
         self.contacts.iter().any(|c| c.pubkey == pubkey)
     }
 
-    /// What we call `pubkey`, if we call them anything.
-    ///
-    /// Unreached: nothing sets a petname yet, so nothing reads one. Kept
-    /// because the field is parsed and re-published either way — dropping the
-    /// accessor would not stop us carrying the data, only stop us reading it.
     #[allow(dead_code)]
     pub fn petname(&self, pubkey: &str) -> Option<&str> {
         self.contacts
@@ -83,15 +50,11 @@ impl ContactList {
     }
 }
 
-/// Build the signed kind:3 event for a list.
 pub fn contact_list_event(secret: &SecretKey, list: &ContactList, now: i64) -> Event {
     let tags = list
         .contacts
         .iter()
         .map(|c| {
-            // Positional, per NIP-02: ["p", pubkey, relay, petname]. A petname
-            // with no relay still needs the relay slot present, or the petname
-            // would be read as the relay.
             vec![
                 "p".to_string(),
                 c.pubkey.clone(),
@@ -103,7 +66,6 @@ pub fn contact_list_event(secret: &SecretKey, list: &ContactList, now: i64) -> E
     event::sign_with(secret, now, KIND_CONTACTS, tags, String::new())
 }
 
-/// Read a kind:3 back into a list.
 pub fn parse_contact_list(event: &Event) -> ContactList {
     if event.kind != KIND_CONTACTS {
         return ContactList::default();
@@ -114,8 +76,6 @@ pub fn parse_contact_list(event: &Event) -> ContactList {
         .filter(|t| t.first().map(String::as_str) == Some("p"))
         .filter_map(|t| {
             let pubkey = t.get(1)?.clone();
-            // Reject malformed pubkeys to avoid creating uncontactable
-            // entries.
             if pubkey.len() != 64 || !pubkey.chars().all(|c| c.is_ascii_hexdigit()) {
                 return None;
             }
@@ -142,7 +102,6 @@ mod tests {
         std::iter::repeat_n(c, 64).collect()
     }
 
-    /// A list survives a publish and a read, petnames and all.
     #[test]
     fn a_contact_list_round_trips() {
         let list = ContactList::default()
@@ -161,7 +120,6 @@ mod tests {
         assert_eq!(parse_contact_list(&e), list);
     }
 
-    /// A petname with no relay must not slide into the relay slot.
     #[test]
     fn a_petname_without_a_relay_stays_a_petname() {
         let list = ContactList::default().with(Contact {
@@ -174,8 +132,6 @@ mod tests {
         assert_eq!(parsed.contacts[0].relay, None);
     }
 
-    /// Editing replaces in place rather than duplicating, because a list with
-    /// the same key twice is one a relay may resolve either way.
     #[test]
     fn editing_a_contact_does_not_duplicate_it() {
         let list = ContactList::default()
@@ -193,8 +149,6 @@ mod tests {
         assert_eq!(list.petname(&pk('a')), Some("new"));
     }
 
-    /// Removal keeps everyone else — the trap being that kind 3 is replaceable,
-    /// so a list that drops someone by accident deletes them for good.
     #[test]
     fn removing_one_contact_keeps_the_others() {
         let list = ContactList::default()
@@ -213,8 +167,6 @@ mod tests {
         assert!(list.contains(&pk('b')));
     }
 
-    /// A junk entry from another client is skipped rather than becoming a
-    /// contact whose key cannot be used.
     #[test]
     fn malformed_entries_are_skipped() {
         let e = event::sign_with(

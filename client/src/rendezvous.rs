@@ -1,12 +1,3 @@
-//! Host-side rendezvous client.
-//!
-//! When self-host mode publishes to a rendezvous, this module:
-//! 1. Opens a long-lived control WebSocket to `{rendezvous}/control`
-//! 2. Sends `Register`, receives `Registered { shortcode, livekit_url }`
-//! 3. For each `NewFriend { session_id }` notification, opens a pair of
-//!    WebSockets — one outbound to `{rendezvous}/proxy/{session_id}` and one
-//!    inbound to the local gateway — and pipes frames between them.
-
 use std::net::SocketAddr;
 
 use futures_util::{SinkExt, StreamExt};
@@ -18,18 +9,10 @@ use crate::protocol::rendezvous::{HostToRendezvous, RendezvousToHost};
 pub struct PublishInfo {
     pub shortcode: String,
     pub livekit_url: Option<String>,
-    /// Grant letting us ask the rendezvous to mint voice tokens for its shared
-    /// SFU. We never receive its signing secret.
     pub voice_token_grant: Option<String>,
     pub rendezvous_base: String,
 }
 
-/// Asks the rendezvous to mint LiveKit tokens for us.
-///
-/// A public rendezvous can't hand out its SFU signing secret — any host holding
-/// it could mint tokens into any other host's rooms. So we send the room and
-/// identity along with our session grant, and the operator signs a token scoped
-/// to a room namespaced under our shortcode.
 pub struct RendezvousMinter {
     endpoint: String,
     grant: String,
@@ -68,8 +51,6 @@ impl dioxusfun_server::livekit::VoiceTokenMinter for RendezvousMinter {
                     "room": req.room,
                     "identity": req.identity,
                     "name": req.name,
-                    // Older relays ignore `can_publish` and grant publish;
-                    // current ones respect it. Sending it is safe for both.
                     "can_publish": req.can_publish,
                 }))
                 .send()
@@ -89,12 +70,6 @@ impl dioxusfun_server::livekit::VoiceTokenMinter for RendezvousMinter {
     }
 }
 
-/// Ask a rendezvous whether it will introduce peers, and through what.
-///
-/// One HTTP GET before anything is bound. A rendezvous that runs no relay — or
-/// is too old to have the endpoint — answers nothing, and the caller does no
-/// coordination at all. That is the deliberate shape: the only third party that
-/// can introduce you is the one you already chose by using it.
 pub async fn coordination_offered(rendezvous_url: &str) -> dioxusfun_server::quic::Coordination {
     #[derive(serde::Deserialize)]
     struct Offered {
@@ -131,12 +106,9 @@ pub async fn coordination_offered(rendezvous_url: &str) -> dioxusfun_server::qui
     }
 }
 
-/// The QUIC transport key a host advertises, and where to try it.
 #[derive(Debug, Clone)]
 pub struct TransportAdvert {
-    /// The endpoint id, as the joiner will parse it.
     pub key: String,
-    /// UDP addresses, most useful first.
     pub addrs: Vec<String>,
 }
 
@@ -147,19 +119,6 @@ pub struct PublishOptions {
     pub publish_public: bool,
 }
 
-/// Connect to rendezvous, register, and return the published info.
-/// The caller then runs [`run_adapter`] to handle ongoing NewFriend events.
-///
-/// `identity` signs the ownership proof when a name is claimed (`publish_name`
-/// set) — the rendezvous binds the name to this key and persists the claim.
-///
-/// `endpoint` is the gateway URL a port mapping made dialable, when there is
-/// one. Sending it is what lets a friend holding our code try us directly and
-/// keep the relay as a fallback; sending `None` keeps every friend relayed.
-///
-/// `transport` is the QUIC key and addresses, which are signed here rather than
-/// by the caller: the signature has to be over the rendezvous' challenge nonce,
-/// and that nonce does not exist until this function has opened the socket.
 pub async fn register(
     rendezvous_url: &str,
     options: PublishOptions,
@@ -201,8 +160,6 @@ pub async fn register(
         None => (None, None),
     };
 
-    // Relays drop unsigned transport keys, so this signature is required for
-    // the QUIC path to work.
     let (transport_key, transport_signature, transport_addrs) = match &transport {
         Some(t) => {
             let pk = identity.pubkey.clone();
@@ -218,8 +175,6 @@ pub async fn register(
         }
         None => (None, None, Vec::new()),
     };
-    // Anonymous hosts must send a pubkey so the relay can verify the transport
-    // key signature.
     let pubkey = pubkey.or_else(|| transport.as_ref().map(|_| identity.pubkey.clone()));
 
     let hello = HostToRendezvous::Register {
@@ -266,11 +221,6 @@ pub async fn register(
                 return Ok((info, ControlStream { ws }));
             }
             RendezvousToHost::Error { message } => return Err(message),
-            // Only ever sent in answer to `ReleaseName`, which this client has
-            // no way to send — releasing a name is an administrative act with
-            // no UI behind it yet. Named rather than swept into the arm below
-            // so that adding the affordance is a compile error here, not a
-            // frame that silently means "keep waiting".
             RendezvousToHost::Released { name } => {
                 eprintln!("[rendezvous] unexpected release confirmation for '{name}'");
                 continue;
@@ -280,17 +230,12 @@ pub async fn register(
     }
 }
 
-/// The still-open control socket after Register/Registered. Pass to
-/// [`run_adapter`] to start receiving NewFriend notifications.
 pub struct ControlStream {
     ws: tokio_tungstenite::WebSocketStream<
         tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
     >,
 }
 
-/// Run the long-lived adapter loop: receive NewFriend notifications on the
-/// control stream, and for each spawn a task that bridges the rendezvous
-/// proxy WS to the local gateway.
 pub fn run_adapter(
     mut stream: ControlStream,
     rendezvous_base: String,

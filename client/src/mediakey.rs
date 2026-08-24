@@ -1,45 +1,12 @@
-//! The channel media key, and how it reaches the people entitled to it.
-//!
-//! Stage 3's second half. `e2ee` proved media *can* be encrypted; this is what
-//! makes it worth doing, because a key typed into two machines by hand is not a
-//! feature. The requirement is narrow and awkward: every member of a voice
-//! channel needs the same 32 bytes, the server has to carry them, and the
-//! server must not learn them.
-//!
-//! So the key is never sent — it is *sealed*, once per recipient, to a secret
-//! only that recipient and the sender can compute (ECDH over the Nostr identity
-//! keys both already have; see `identity::shared_secret_with`). What crosses the
-//! gateway is ciphertext addressed to one pubkey. The server routes it without
-//! being able to read it, and needs no new trust.
-//!
-//! **Epochs, not rotation in place.** A key carries a number that only goes up.
-//! A member kicked from a guild keeps whatever they captured, and keeps the key
-//! they were given — so the remaining members move to a new epoch and the old
-//! one becomes useless for anything published afterwards. Without that, kicking
-//! somebody out of a call is theatre. The epoch is what lets a client tell "this
-//! is the key I already have" from "this is newer, take it".
-//!
-//! What this does *not* do is hide who is talking to whom, or when. The server
-//! sees a sealed key move from one member to another, and that is inherent to it
-//! carrying anything at all.
-
 use chacha20poly1305::aead::{Aead, KeyInit};
 use chacha20poly1305::{Key, XChaCha20Poly1305, XNonce};
 
 use crate::identity::Identity;
 
-/// Bytes in a media key. LiveKit derives its own frame keys from this, so its
-/// only job is to be unguessable.
 pub const KEY_LEN: usize = 32;
 
-/// Nonce length for XChaCha20-Poly1305.
-///
-/// The extended nonce is the reason for choosing XChaCha: a key is resealed
-/// per member and per epoch with a random nonce, and 96 bits is not a
-/// comfortable margin for that. 192 bits is.
 const NONCE_LEN: usize = 24;
 
-/// A freshly generated channel key.
 pub fn generate() -> [u8; KEY_LEN] {
     use rand::RngCore;
     let mut key = [0u8; KEY_LEN];
@@ -47,11 +14,6 @@ pub fn generate() -> [u8; KEY_LEN] {
     key
 }
 
-/// Seal `key` so that only the holder of `to_pubkey` can open it.
-///
-/// The epoch is authenticated but not hidden: it travels in the clear on the
-/// wire anyway, and binding it here stops a relay or a server reordering
-/// epochs to push members back onto a key a removed member still holds.
 pub fn seal(
     key: &[u8; KEY_LEN],
     to_pubkey: &str,
@@ -79,11 +41,6 @@ pub fn seal(
     Ok(hex::encode(blob))
 }
 
-/// Open a key sealed to us by `from_pubkey`.
-///
-/// Failure here is ordinary, not exceptional: a stale epoch, a member who left
-/// mid-rekey, or a blob addressed to somebody else all land here. The caller
-/// keeps the key it has.
 pub fn open(
     blob: &str,
     from_pubkey: &str,
@@ -100,9 +57,6 @@ pub fn open(
     let cipher = XChaCha20Poly1305::new(Key::from_slice(&shared));
     let payload = chacha20poly1305::aead::Payload {
         msg: ct,
-        // Our *own* pubkey: the sender sealed it to us, so this is the only
-        // value that can reproduce the tag. A blob addressed to somebody else
-        // fails here rather than decrypting to nonsense.
         aad: &aad(epoch, &identity.pubkey),
     };
     let opened = cipher
@@ -114,8 +68,6 @@ pub fn open(
         .map_err(|_| "sealed key had the wrong length".to_string())
 }
 
-/// Associated data: what this ciphertext is *for*. Not secret, but bound, so a
-/// blob cannot be replayed under a different epoch or at a different member.
 fn aad(epoch: u32, recipient: &str) -> Vec<u8> {
     let mut aad = Vec::with_capacity(8 + recipient.len());
     aad.extend_from_slice(b"dioxusfun/media-key/v1");
@@ -133,7 +85,6 @@ mod tests {
             .expect("identity")
     }
 
-    /// The whole point: the intended recipient gets the key back, byte for byte.
     #[test]
     fn a_sealed_key_opens_for_its_recipient() {
         let alice = identity(1);
@@ -144,9 +95,6 @@ mod tests {
         assert_eq!(open(&blob, &alice.pubkey, 7, &bob).unwrap(), key);
     }
 
-    /// And the other half of the point: nobody else does. This is the property
-    /// the server's ability to carry the blob depends on — it holds the
-    /// ciphertext and cannot be a recipient.
     #[test]
     fn nobody_else_can_open_it() {
         let alice = identity(1);
@@ -159,8 +107,6 @@ mod tests {
         assert!(open(&blob, &eve.pubkey, 7, &bob).is_err());
     }
 
-    /// The epoch is bound, so a blob cannot be replayed to push a member back
-    /// onto a key a removed member still holds.
     #[test]
     fn an_epoch_cannot_be_swapped_under_the_ciphertext() {
         let alice = identity(1);
@@ -172,8 +118,6 @@ mod tests {
         assert!(open(&blob, &alice.pubkey, 6, &bob).is_err());
     }
 
-    /// Two seals of the same key differ, because the nonce is fresh. Equal
-    /// ciphertexts would leak that a rekey did not happen.
     #[test]
     fn sealing_twice_does_not_repeat() {
         let alice = identity(1);
@@ -187,16 +131,12 @@ mod tests {
         assert_eq!(open(&b, &alice.pubkey, 1, &bob).unwrap(), key);
     }
 
-    /// Generated keys are not a constant, and not each other.
     #[test]
     fn generated_keys_differ() {
         assert_ne!(generate(), generate());
         assert_ne!(generate(), [0u8; KEY_LEN]);
     }
 
-    /// ECDH is symmetric: each side derives the same secret from the other's
-    /// public key. If this ever stopped holding, sealing would still "work" and
-    /// opening would fail for everyone — so it is pinned directly.
     #[test]
     fn both_sides_derive_the_same_secret() {
         let alice = identity(1);
@@ -213,126 +153,48 @@ use dioxus::prelude::*;
 use crate::protocol::{ClientMessage, Id};
 use crate::state::{use_app_state, use_gateway};
 
-/// What we have already handed to whom, so the same key is not sent twice.
-///
-/// The effect that sends keys reads `AppState`, so it re-runs on anything that
-/// touches it — a speaking flag, a mic level, a heartbeat. Without a ledger
-/// that meant re-sealing and re-sending the key to every member several times a
-/// second, which is not merely wasteful: the gateway's outbound queue per
-/// connection is bounded, and overflowing it drops the connection. A member was
-/// flooded off voice by the mechanism meant to let them hear it.
-///
-/// Keyed by channel and recipient, holding the epoch last sent. A rekey raises
-/// the epoch and so sends again, which is the one case that must not be
-/// suppressed.
-///
-/// **The epoch does not identify the key, and this is why entries have to be
-/// forgotten.** `net::supersedes` exists precisely because two members can hold
-/// two different epoch-1 keys for the same channel. So "already sent epoch 1 to
-/// them" is not the same claim as "they have our key", and treating it as one
-/// is silence: see `forget_absent`.
 type Ledger = std::collections::HashMap<(Id, String), u32>;
 
 static SENT: std::sync::Mutex<Option<Ledger>> = std::sync::Mutex::new(None);
 
-/// Whether this key still needs sending to this member.
-///
-/// **Asking does not record anything.** The ledger is written by `mark_sent`,
-/// once the key is actually on its way — see there for what recording an
-/// intention instead used to cost.
 fn needs_send(channel: Id, to: &str, epoch: u32) -> bool {
     let mut guard = SENT.lock().expect("media key ledger");
     let sent = guard.get_or_insert_with(Ledger::new);
     should_send(sent, channel, to, epoch)
 }
 
-/// Note that this member has it, so the sending effect stops resealing it.
 fn sent(channel: Id, to: &str, epoch: u32) {
     let mut guard = SENT.lock().expect("media key ledger");
     let sent = guard.get_or_insert_with(Ledger::new);
     mark_sent(sent, channel, to, epoch);
 }
 
-/// `needs_send` over a ledger we are handed, so it can be tested without owning
-/// the process-wide one.
 fn should_send(sent: &Ledger, channel: Id, to: &str, epoch: u32) -> bool {
     !matches!(sent.get(&(channel, to.to_string())), Some(&already) if already >= epoch)
 }
 
-/// The write half, kept apart from the question on purpose.
-///
-/// These used to be one call that answered and recorded at once, which meant the
-/// ledger was written *before* the key was sealed. Sealing can fail — it is an
-/// ECDH against a pubkey that arrived over the wire — and when it did, the
-/// entry claiming we had sent the key survived the failure to send it. That
-/// member then never got it for that epoch, by the same mechanism as the stale
-/// entry in `forget_absent`: a ledger that overstates what the far side has is
-/// silence, and silence here has no error attached to it.
 fn mark_sent(sent: &mut Ledger, channel: Id, to: &str, epoch: u32) {
     sent.insert((channel, to.to_string()), epoch);
 }
 
-/// Drop what we remember about members no longer in this channel.
-///
-/// A member who left and came back is a **new session**, which may have restarted
-/// the app and so lost the key entirely — its own `media_keys` and its own copy
-/// of this ledger both start empty. Ours does not, and without this the stale
-/// entry suppresses the one send that would have fixed them:
-///
-/// 1. they rejoin with no key, wait `KEY_WAIT`, and we send nothing
-/// 2. they generate their own epoch-1 key and send it to us
-/// 3. `supersedes` breaks the tie by pubkey — if ours wins we keep ours, and the
-///    ledger stops us handing it over
-///
-/// Two keys, and silence in both directions with nothing on screen to say why.
-/// There is no recovery from the far side either: the protocol has
-/// `ShareMediaKey` and no request for one. The fix has to be here, on the side
-/// that sends.
-///
-/// Scoped to one channel because `present` describes one channel; entries for
-/// other channels say nothing about who is in them. Returns how many were
-/// dropped, for the caller to log.
 fn forget_absent(sent: &mut Ledger, channel: Id, present: &[String]) -> usize {
     let before = sent.len();
     sent.retain(|(ch, to), _| *ch != channel || present.iter().any(|p| p == to));
     before - sent.len()
 }
 
-/// `forget_absent` against the process-wide ledger.
 fn forget_absent_now(channel: Id, present: &[String]) -> usize {
     let mut guard = SENT.lock().expect("media key ledger");
     let sent = guard.get_or_insert_with(Ledger::new);
     forget_absent(sent, channel, present)
 }
 
-/// How long a joiner waits to be given the channel's key before generating one.
-///
-/// Someone already in the channel should send it within a round trip. Waiting
-/// past that means nobody is going to — every other member is on an older
-/// build, or the message was lost — and a call with no key at all is worse than
-/// a call whose key changed once at the start.
 const KEY_WAIT: std::time::Duration = std::time::Duration::from_secs(4);
 
-/// Who, of the members present, drives a *rekey* after somebody is removed.
-///
-/// The lowest pubkey — deterministic, needing no coordination and no state.
-/// Exclusivity is worth having here because a removal is a discrete event every
-/// remaining member observes at once, and without a rule each of them would
-/// mint a key for the same event.
-///
-/// It is deliberately **not** used for the two jobs it used to do. Handing an
-/// existing key to an arrival is gated on *holding* the key, because being
-/// lowest says nothing about having one. And generating a first key is no
-/// longer exclusive at all: `net::supersedes` makes two keys converge, so the
-/// worse failure is a member who waits for a key nobody was going to send.
-///
-/// `None` when the set is empty, which is the caller's cue that there is nobody
-/// to be responsible.
 fn designated<'a>(present: impl Iterator<Item = &'a str>) -> Option<&'a str> {
     present.min()
 }
 
-/// Everyone in `channel`, by pubkey.
 fn present_in(state: &crate::state::AppState, channel: Id) -> Vec<String> {
     state
         .voice_states
@@ -342,20 +204,11 @@ fn present_in(state: &crate::state::AppState, channel: Id) -> Vec<String> {
         .collect()
 }
 
-/// Keeps a channel's media key alive: generates one when nobody else will, hands
-/// it to arrivals, and replaces it when someone is removed from the guild.
-///
-/// Renders nothing. Mounted once at the workspace root beside the other
-/// bridges — it reacts to the voice roster, which is already kept current by
-/// `VoiceStateUpdate`, so it needs no protocol of its own beyond the sealed
-/// hand-off.
 #[component]
 pub fn MediaKeyBridge() -> Element {
     let mut state = use_app_state();
     let gateway = use_gateway();
 
-    // Rekey on member removal. Done here because `apply` lacks a gateway to
-    // send on.
     let rekey_gateway = gateway.clone();
     use_effect(move || {
         if !state.read().pending_rekey {
@@ -365,8 +218,6 @@ pub fn MediaKeyBridge() -> Element {
         rekey_after_removal(state, rekey_gateway.clone());
     });
 
-    // Sorted roster ensures this memo only re-runs on membership changes, not
-    // mute/speaking flag updates.
     let roster = use_memo(move || {
         let s = state.read();
         let channel = s.voice.channel_id?;
@@ -392,18 +243,12 @@ pub fn MediaKeyBridge() -> Element {
             return;
         };
 
-        // Forget absent members before the match: applies to both arms, and
-        // the early-return arm requires recording the last departure.
         let forgotten = forget_absent_now(channel, &present);
         if forgotten > 0 {
             tracing::debug!(%channel, forgotten, "forgot the media key ledger for members who left");
         }
 
         match held {
-            // Not gated on being the lowest pubkey: a host holding a key must
-            // send it even if a lower-pubkey member joins, otherwise both
-            // generate keys and silence results. Holding the key is the only
-            // qualification.
             Some((epoch, key)) => {
                 let others: Vec<&str> = present
                     .iter()
@@ -427,8 +272,6 @@ pub fn MediaKeyBridge() -> Element {
                                 epoch,
                                 blob,
                             });
-                            // Mark sent only after successful seal; a failed
-                            // seal must leave the member eligible to retry.
                             sent(channel, to, epoch);
                         }
                         Err(e) => {
@@ -437,8 +280,6 @@ pub fn MediaKeyBridge() -> Element {
                     }
                 }
             }
-            // If others are present, wait for a key from them before
-            // generating one ourselves.
             None => {
                 let alone = present.iter().all(|p| p == &me);
                 let mut state = state;
@@ -450,10 +291,6 @@ pub fn MediaKeyBridge() -> Element {
                         if state.peek().media_keys.contains_key(&channel) {
                             return;
                         }
-                        // Generate locally rather than deferring to the lowest
-                        // pubkey: exclusivity caused members to wait forever
-                        // for a key that would never arrive. Convergence is
-                        // now handled by `net::supersedes`.
                         tracing::info!(
                             %channel,
                             "no key arrived while waiting — making one rather than waiting longer"
@@ -489,13 +326,6 @@ pub fn MediaKeyBridge() -> Element {
     rsx! { Fragment {} }
 }
 
-/// Move the channel to a new key, because somebody who had the old one should
-/// no longer be able to use it.
-///
-/// Called when a member is removed from the guild. The key they hold cannot be
-/// taken back — nothing can un-give bytes — so the point is that everything
-/// published from now on is under a key they never had. Whatever they already
-/// captured stays captured, which is the honest limit of rekeying.
 pub fn rekey_after_removal(
     mut state: Signal<crate::state::AppState>,
     gateway: crate::state::GatewayTx,
@@ -517,8 +347,6 @@ pub fn rekey_after_removal(
         (channel, identity, me, epoch)
     };
 
-    // One of us, deterministically, or the channel gets as many new keys as it
-    // has members and settles on whichever arrived last.
     let present = present_in(&state.peek(), channel);
     if designated(present.iter().map(String::as_str)) != Some(me.as_str()) {
         return;
@@ -528,10 +356,6 @@ pub fn rekey_after_removal(
     let next = epoch.saturating_add(1);
     tracing::info!(%channel, epoch = next, "rekeying after a member was removed");
 
-    // Send before adopting to minimize the window where new-key frames are
-    // unreadable by peers still on the old key. Adopting last shrinks this to
-    // ~1 network hop. Proper fix (LiveKit key ring) is blocked by JS SDK
-    // limitations; see docs/AUDIT-2026-08-17.md.
     for to in &present {
         if to == &me || !needs_send(channel, to, next) {
             continue;
@@ -546,10 +370,6 @@ pub fn rekey_after_removal(
                 });
                 sent(channel, to, next);
             }
-            // A rekey that cannot be sealed for one member is the worst place
-            // to record it as delivered: the point of the new epoch is that
-            // the removed member's key stops working, and this member would be
-            // left on the old one with no second attempt.
             Err(e) => tracing::warn!(%to, error = %e, "could not seal the rekey"),
         }
     }
@@ -561,9 +381,6 @@ pub fn rekey_after_removal(
 mod orchestration_tests {
     use super::designated;
 
-    /// Every client has to reach the same answer without talking about it —
-    /// that is the entire reason the rule is "lowest pubkey" and not an
-    /// election. Order of the input must not matter.
     #[test]
     fn the_designated_sender_is_the_same_from_every_side() {
         let members = ["cc", "aa", "bb"];
@@ -572,19 +389,11 @@ mod orchestration_tests {
         assert_eq!(designated(reversed.into_iter()), Some("aa"));
     }
 
-    /// An empty channel has nobody responsible, which the caller has to handle
-    /// rather than unwrap.
     #[test]
     fn nobody_is_responsible_for_an_empty_channel() {
         assert_eq!(designated(std::iter::empty()), None);
     }
 
-    /// The ledger that stopped a member being flooded off voice.
-    ///
-    /// The sending effect re-runs on any change to `AppState` — a speaking
-    /// flag is enough — so "send the key to everyone present" ran several
-    /// times a second. What must survive that is the rekey: a raised epoch has
-    /// to go out even though the same recipient was written to a moment ago.
     #[test]
     fn a_key_is_sent_once_per_epoch_per_member() {
         use super::{needs_send, sent};
@@ -607,23 +416,10 @@ mod orchestration_tests {
         );
         sent(channel, "alice", 2);
         assert!(!needs_send(channel, "alice", 2));
-        // An older epoch arriving late must not re-open the gate.
         assert!(!needs_send(channel, "alice", 1));
-        // Channels are tracked apart, or joining a second one would go silent.
         assert!(needs_send(other, "alice", 1));
     }
 
-    /// The ledger entry that outlived the member it described.
-    ///
-    /// Restarting the app empties that member's own key and its own ledger; ours
-    /// keeps neither of those facts. Left alone, "already sent them epoch 1"
-    /// suppresses the send that would have handed the key back, both sides end
-    /// up on two different epoch-1 keys, and `net::supersedes` resolves the tie
-    /// against whichever of them nobody is willing to hand over. Silence, both
-    /// ways, permanently — the protocol has no request to recover with.
-    ///
-    /// Tested on the ledger directly rather than through `SENT`, which is
-    /// process-wide and no test can own.
     #[test]
     fn a_member_who_left_is_sent_the_key_again_on_return() {
         use super::{Ledger, forget_absent, mark_sent, should_send};
@@ -645,13 +441,6 @@ mod orchestration_tests {
         );
     }
 
-    /// Sealing is an ECDH against a pubkey that arrived over the wire, so it can
-    /// fail. When it does, nothing was sent — and the ledger must not claim
-    /// otherwise, or that member is stranded on this epoch with no second
-    /// attempt and no error anywhere the user can see.
-    ///
-    /// This is why asking and recording are two calls. As one, the question
-    /// wrote the answer before the send it was asking about had happened.
     #[test]
     fn a_key_that_could_not_be_sealed_is_still_owed() {
         use super::{Ledger, mark_sent, should_send};
@@ -666,14 +455,9 @@ mod orchestration_tests {
 
         mark_sent(&mut sent, channel, "bob", 1);
         assert!(!should_send(&sent, channel, "bob", 1));
-        // And a rekey still overrides, which is the case that must never be
-        // suppressed.
         assert!(should_send(&sent, channel, "bob", 2));
     }
 
-    /// `present` describes one channel, so it may only be used to judge that
-    /// channel. Forgetting another one's members would re-send the key to
-    /// everybody there on the next roster change.
     #[test]
     fn forgetting_is_scoped_to_the_channel_it_was_told_about() {
         use super::{Ledger, forget_absent, mark_sent, should_send};

@@ -1,6 +1,3 @@
-//! Phase-1 persistence: state survives a full server restart, and message
-//! images are offloaded to the content-addressed blob store.
-
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -17,9 +14,6 @@ async fn next_timeout(session: &mut Bot) -> ServerMessage {
 }
 
 fn temp_data_dir() -> PathBuf {
-    // Counter guarantees uniqueness: macOS SystemTime::now() has ~1us
-    // resolution, so concurrent tests can collide on timestamp-only dirs and
-    // corrupt each other's files.
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     std::env::temp_dir().join(format!(
@@ -33,9 +27,6 @@ fn temp_data_dir() -> PathBuf {
 }
 
 async fn spawn_on(dir: &Path) -> (String, dioxusfun_server::ServerHandle) {
-    // Port 0 lets the OS pick; a fixed port causes tests to race each other
-    // under cargo test --workspace, with clients accidentally talking to the
-    // wrong server.
     let preferred: SocketAddr = "127.0.0.1:0".parse().unwrap();
     let cfg = dioxusfun_server::ServerConfig {
         livekit: LiveKitConfig::from_env(),
@@ -48,7 +39,6 @@ async fn spawn_on(dir: &Path) -> (String, dioxusfun_server::ServerHandle) {
     (format!("ws://{}", handle.addr), handle)
 }
 
-/// A 1x1 red PNG, base64 (67 bytes decoded).
 const TINY_PNG: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 
 #[tokio::test]
@@ -161,12 +151,6 @@ async fn state_survives_restart_and_media_is_offloaded() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Replies: the server builds the quote from its own row, scopes the lookup to
-/// the channel, and the snapshot survives a restart.
-///
-/// The cross-channel half is the security-relevant one — a reply is the one
-/// message shape that can pull another message's *text* along with it, so an id
-/// from a channel the sender can't read must not resolve.
 #[tokio::test]
 async fn replies_are_quoted_server_side_and_survive_restart() {
     let dir = temp_data_dir();
@@ -267,8 +251,6 @@ async fn replies_are_quoted_server_side_and_survive_restart() {
             "excerpt comes from the server's row, not the client"
         );
 
-        // The same id from a different channel must not resolve: no quote, but
-        // the message still sends.
         replier
             .reply_message(chan_b, "wrong channel", parent_id)
             .await
@@ -321,12 +303,6 @@ async fn replies_are_quoted_server_side_and_survive_restart() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The blob sweep is only as safe as the query that says what is still in use:
-/// a table missing from `referenced_media` means the sweep deletes pictures
-/// people are still looking at. Both producers are exercised here — a message
-/// image (stored under the `media:` sentinel) and a guild emoji (stored as the
-/// bare filename) — because they are recorded in *different shapes*, which is
-/// exactly how one of them gets forgotten.
 #[tokio::test]
 async fn every_kind_of_blob_reference_is_found() {
     let dir = temp_data_dir();
@@ -372,10 +348,6 @@ async fn every_kind_of_blob_reference_is_found() {
         })
         .await
         .unwrap();
-    // A *different* picture on purpose. Blobs are content-addressed, so
-    // reusing TINY_PNG here would give the emoji the same file the message
-    // already referenced — and the test would pass with the emoji table
-    // missing from the query entirely. It did, until this line changed.
     const OTHER_PNG: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
     session
         .send(&ClientMessage::CreateGuildEmoji {
@@ -412,15 +384,6 @@ async fn every_kind_of_blob_reference_is_found() {
     handle.abort();
 }
 
-/// Two redemptions of the same code must both be counted, in either order.
-///
-/// The in-memory cap is enforced under the entry lock, but the lock is released
-/// before the write is awaited — so two joins can reach the store carrying
-/// counts 4 and 5 and land in either order across the pool's connections. An
-/// absolute `SET uses = <snapshot>` leaves the row at whichever wrote last, and
-/// `load_or_seed` rehydrates `uses` from that column, so a restart would hand
-/// the code back a use it had already spent. The write is relative for exactly
-/// this reason, and relative writes commute.
 #[tokio::test]
 async fn concurrent_redemptions_cannot_lose_each_other() {
     let dir = temp_data_dir();
@@ -435,7 +398,6 @@ async fn concurrent_redemptions_cannot_lose_each_other() {
         .await
         .expect("mint");
 
-    // Both in flight at once, which is the case the absolute write lost.
     let (a, b) = tokio::join!(
         store.bump_invite_uses("code12345678"),
         store.bump_invite_uses("code12345678"),
