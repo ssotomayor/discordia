@@ -2,3 +2,5 @@
 @source "../src/**/*.rs";
 /* The @import must stay on line 1 or the build emits an empty stylesheet, and
    no apostrophes anywhere: the v4 CLI reads one as a string and dies. */
+/* Prose here conjures classes: candidates are extracted by pattern, not
+   parsed, so naming a utility in a comment puts it in the build. */
