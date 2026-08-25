@@ -1,38 +1,3 @@
-//! Append-only debug log, for tracking down things that only misbehave in a
-//! real session.
-//!
-//! `eprintln!` is fine when you're watching `dx serve`, but useless for a bug
-//! you notice three minutes into a call and want to read about afterwards — the
-//! interesting lines have already scrolled past, and reproducing costs another
-//! call. So debug builds also tee to a file next to `settings.json`.
-//!
-//! Deliberately **debug-only**: `dlog!` compiles to nothing in a release build,
-//! so a shipped client never grows an unbounded log of who was in which voice
-//! channel. Nothing here is on the audio path — calls sit in the command loop
-//! and in Dioxus effects, not in the cpal callback or the 10ms hop loop.
-
-/// Write one timestamped line to the dev log, `println!`-style.
-///
-/// No-op in release. Failures are swallowed: a diagnostic that can break the
-/// app it is diagnosing is worse than no diagnostic.
-///
-/// The release arm still has to *mention* its arguments. Expanding to nothing
-/// at all makes a binding that exists only to be logged look unused to the
-/// compiler, so every call site pays for the macro with an `unused_variables`
-/// warning that only appears in release builds — where no lint gate runs, since
-/// clippy is a `cargo` dev-profile job.
-///
-/// Mentioning them inside `if false` is what keeps that free. The block is
-/// name-resolved and type-checked, which is all the lint looks at, but the
-/// branch is never taken — so argument *expressions* never run. That matters
-/// more than it sounds: `format_args!` alone formats and allocates nothing, but
-/// it evaluates its arguments eagerly, exactly like a function call. Call sites
-/// here pass things like a `format!`ing closure (`features::profiles`) and a
-/// `.collect::<Vec<_>>()` (`features::screenshare`), and a bare `format_args!`
-/// would have quietly moved that work into release builds — which before this
-/// dropped the whole call, arguments included. Under `if false` the cost stays
-/// dropped, and not because an optimiser removed it: nothing is reachable to
-/// remove. Verified at `opt-level=0` as well as `-O`.
 #[macro_export]
 macro_rules! dlog {
     ($($arg:tt)*) => {
@@ -49,7 +14,6 @@ macro_rules! dlog {
     };
 }
 
-/// Where the log lands. Printed once on first write so it can actually be found.
 #[cfg(debug_assertions)]
 pub fn path() -> std::path::PathBuf {
     crate::identity::config_dir().join("dev.log")
@@ -62,8 +26,6 @@ pub fn write_line(msg: &str) {
 
     static ANNOUNCE: Once = Once::new();
     ANNOUNCE.call_once(|| {
-        // Ensure parent dir exists; appending to a file in a missing dir fails
-        // silently.
         let dir = path();
         if let Some(parent) = dir.parent() {
             let _ = std::fs::create_dir_all(parent);
@@ -71,8 +33,6 @@ pub fn write_line(msg: &str) {
         eprintln!("[devlog] writing to {}", dir.display());
     });
 
-    // Epoch millis rather than formatted clock: file is read by diffing
-    // timestamps, avoiding a date formatter dependency.
     let t = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
@@ -90,15 +50,11 @@ pub fn write_line(msg: &str) {
 
 #[cfg(all(test, debug_assertions))]
 mod tests {
-    /// The failure this guards against is the silent one: a log that compiles,
-    /// runs, and writes nothing because the directory wasn't there.
     #[test]
     fn writes_a_line_even_when_the_config_dir_is_missing() {
         let tmp =
             std::env::temp_dir().join(format!("dioxusfun-devlog-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
-        // SAFETY: single-threaded test, and the var is read through
-        // `config_dir()` only while this test holds it.
         unsafe { std::env::set_var("DIOXUSFUN_CONFIG_DIR", &tmp) };
 
         assert!(!tmp.exists(), "precondition: config dir absent");

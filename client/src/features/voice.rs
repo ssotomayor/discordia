@@ -1,11 +1,3 @@
-//! Voice service. Owns the LiveKit Room, the microphone capture pipeline,
-//! and the remote-audio playback pipeline.
-//!
-//! LiveKit is a libwebrtc-based SFU. Connecting to a room gives us libwebrtc's
-//! AEC3 / NS / AGC / Opus / congestion control end-to-end. The Rust SDK
-//! exposes only PCM frames at the edges; cpal handles the actual mic and
-//! speaker devices.
-
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
@@ -15,6 +7,8 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use dioxus::core::Task;
 use dioxus::prelude::*;
 use futures_util::StreamExt;
+#[cfg(target_os = "macos")]
+use livekit::options::VideoEncoding;
 use livekit::options::{AudioEncoding, TrackPublishOptions};
 use livekit::prelude::*;
 use livekit::webrtc::audio_frame::AudioFrame;
@@ -23,10 +17,6 @@ use livekit::webrtc::audio_source::native::NativeAudioSource;
 use livekit::webrtc::audio_stream::native::NativeAudioStream;
 use livekit::webrtc::prelude::RtcAudioSource;
 use livekit::webrtc::stats::RtcStats;
-// macOS-gated: `sysvideo` and `NativeBuffer` (CoreVideo) only exist there. On
-// other platforms, the webview handles screen sharing.
-#[cfg(target_os = "macos")]
-use livekit::options::VideoEncoding;
 #[cfg(target_os = "macos")]
 use livekit::webrtc::video_frame::native::NativeBuffer;
 #[cfg(target_os = "macos")]
@@ -47,91 +37,25 @@ const CHANNELS: u32 = 1;
 const FRAME_MS: u32 = 10;
 const FRAME_SAMPLES: usize = (SAMPLE_RATE / 1000 * FRAME_MS) as usize;
 
-/// Chunk size for the rubato resampler. Must be a power-of-two-friendly value
-/// for FFT efficiency. 512 is a good balance of latency (~10ms @ 48k) and CPU.
 const RESAMPLER_CHUNK: usize = 512;
 
-/// Playback jitter buffer cap, as a divisor of the device sample rate: 5 =>
-/// ~200ms. Must stay above `DRIFT_OVERRUN_SECS` so the two mechanisms don't
-/// fight — see `PlaybackMixer::new`. It stays generous on purpose: it is the
-/// ceiling for a burst, not the depth we aim to sit at.
 const PLAYBACK_CAP_DIVISOR: u32 = 5;
 
-/// Band the drift compensator keeps each track's buffer inside, in seconds of
-/// device-rate samples. Above the overrun mark it drops a sample now and then,
-/// below the underrun mark it repeats one; inside the band it does nothing.
-///
-/// The two marks answer different questions, which is why they moved by
-/// different amounts from the 150ms/50ms this used to hold:
-///
-///  * The **underrun** mark is what costs latency. The buffer spends most of
-///    its life being defended up toward it, so it is roughly the delay this
-///    stage adds. It can afford to be low because this is the *second* buffer
-///    in the path — libwebrtc's NetEq has already absorbed network jitter and
-///    concealed losses upstream, leaving this one only the difference between
-///    the stream's clock and the output device's. Dipping below it is not a
-///    dropout either; it just starts stretching. Silence needs the buffer to
-///    reach zero.
-///  * The **width** of the band is what costs artefacts. Every correction is a
-///    dropped or duplicated sample, so a narrow band means constant fiddling
-///    with the signal. Keeping it wide is nearly free — the ceiling only has
-///    to stay under `PLAYBACK_CAP_DIVISOR` so the producer's cap can't hide
-///    the overrun branch.
-///
-/// So: floor down (latency), ceiling roughly where it was (burst tolerance,
-/// few corrections). Start conservative and tighten with real hardware —
-/// dropping the floor further is the next thing to try if latency still reads
-/// high, and raising it is the fix if a device turns out to drift harder than
-/// this leaves room for.
+/// Must stay below the playback cap, or drift correction and the ring buffer
+/// fight each other.
 const DRIFT_OVERRUN_SECS: f64 = 0.12;
 const DRIFT_UNDERRUN_SECS: f64 = 0.03;
 
-/// How long the transmit gate stays open after the last frame above threshold,
-/// in 10ms frames. Speech has gaps — breaths, stops between words — and a gate
-/// that slams shut in them chops the front off the next syllable. 300ms is the
-/// usual compromise between "doesn't clip speech" and "doesn't leak the room".
 const GATE_HANGOVER_FRAMES: u32 = 30;
 
-/// How far below the opening threshold the gate will hold, in percent.
-///
-/// A gate that opens and closes at one level chatters on any signal sitting
-/// near it, and noise suppression is what puts a signal there: the gate judges
-/// the denoised hop, the model is allowed to pull a hop down by
-/// `denoise::ATTEN_LIM_DB`, and the material it pulls hardest — word tails,
-/// unvoiced consonants, breaths — is the quiet part of ordinary speech. Held to
-/// one threshold, that arrives at the far end as a voice that swells and drops.
-/// -6 dB of hysteresis is the standard answer.
 const GATE_CLOSE_RATIO_PCT: i32 = 50;
 
-/// Per-hop decay of the level the gate reads, in percent.
-///
-/// The gate follows a released envelope rather than each hop's own peak, so a
-/// single dip cannot start the hangover counting down. 75% per 10ms hop is
-/// about -2.5 dB a hop. It only ever makes the gate more permissive: on a
-/// rising signal the envelope *is* the peak, so the threshold marker still
-/// marks where the gate opens.
 const GATE_ENVELOPE_DECAY_PCT: i32 = 75;
 
-/// Length of the ramp applied when the gate opens or closes, in samples.
-///
-/// Dropping a frame outright takes the signal from full to nothing between one
-/// 10ms hop and the next, which is a click on the way out and a clipped
-/// consonant on the way in. 2.5ms is short enough not to soften a real onset.
 const GATE_RAMP_SAMPLES: usize = 120;
 
-/// How long to wait for a clean leave before giving up on it.
 const ROOM_CLOSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
-/// libwebrtc APM configuration.
-///
-/// `noise_suppression` is the inverse of the DeepFilterNet toggle: exactly one
-/// suppressor should be in the path. AEC is orthogonal (echo, not noise or
-/// level) and stays on regardless.
-///
-/// AGC is the user's call, because it and the manual input-gain slider are two
-/// answers to the same question. Left on, it quietly walks the level back
-/// toward its own target over a second or two, so a manual boost reads as a
-/// laggy control that half-works.
 fn apm_options(deepfilter_on: bool, agc: bool) -> AudioSourceOptions {
     AudioSourceOptions {
         echo_cancellation: true,
@@ -140,61 +64,25 @@ fn apm_options(deepfilter_on: bool, agc: bool) -> AudioSourceOptions {
     }
 }
 
-/// Live audio knobs shared between the UI thread, the cpal callbacks and the
-/// publish task.
-///
-/// These deliberately avoid Dioxus signals: the audio path runs off the UI
-/// thread and must never block on a `Signal` read (the cpal callback is
-/// realtime and the publish task runs 100 times a second). They're owned by
-/// `service_loop` and cloned into each session, so a device change or a
-/// reconnect — which tears down and rebuilds `ActiveVoice` — keeps every
-/// setting the user picked.
+/// Atomics rather than Dioxus signals: the cpal callback is realtime and must
+/// never block on a `Signal` read.
 #[derive(Clone)]
 struct AudioControls {
-    /// Transmit/speaking threshold as peak ×1000 fixed point (1..=1000), the
-    /// same scale the VU bar renders, so the slider's marker sits exactly where
-    /// the gate actually opens.
     threshold: Arc<AtomicI32>,
-    /// Microphone input gain as a percentage (100 = unity). Applied to the hop
-    /// before anything measures it, so `threshold` and the VU bar are both in
-    /// post-gain terms.
     mic_gain_pct: Arc<AtomicI32>,
-    /// libwebrtc AGC. Read when the APM options are (re)applied, not per hop.
     agc: Arc<AtomicBool>,
-    /// DeepFilterNet noise suppression on the captured mic signal.
     denoise: Arc<AtomicBool>,
-    /// Ceiling on how far that model may pull a hop down, in dB. Applied to a
-    /// loaded model on the next hop rather than at construction, so moving the
-    /// slider mid-sentence does not reload anything.
     atten_lim_db: Arc<AtomicU32>,
-    /// Opus bitrate for the mic track, in kbit/s. Read once, when the track is
-    /// published — unlike the knobs above there is nothing to re-read per hop,
-    /// because the encoder is configured at publish time.
     bitrate_kbps: Arc<AtomicU32>,
-    /// Whether the connection-stats panel is open. Gates the stats poll, which
-    /// walks every peer connection once a second and is worth nothing while
-    /// nobody is reading it.
     stats_polling: Arc<AtomicBool>,
-    /// Playback deafen. A gate rather than a level, and read ahead of the two
-    /// maps below: it overrides them instead of being written into them, so the
-    /// per-participant volumes the user picked are still there on undeafen.
     deafened: Arc<AtomicBool>,
-    /// Per-participant playback gain, keyed by LiveKit identity (= pubkey).
-    /// Absent = unity. Applied to *incoming* audio in our own mixer only.
     gains: Arc<Mutex<HashMap<String, f32>>>,
-    /// The same, for screen-share audio tracks. Absent = SILENT, not unity:
-    /// stream audio plays only while you are watching that person's share, so
-    /// the default has to be off.
+    /// Absent means **silent**, not unity — a share you have not opted into
+    /// should not start playing.
     stream_gains: Arc<Mutex<HashMap<String, f32>>>,
 }
 
 impl AudioControls {
-    /// Seed the live knobs from the settings the UI has already restored.
-    ///
-    /// Takes the state rather than six positional arguments: the list had
-    /// grown to two adjacent `u32`s (the ceiling and the bitrate) that the
-    /// compiler cannot tell apart, and every value here comes off this struct
-    /// at the one call site anyway.
     fn from_state(s: &AppState) -> Self {
         Self {
             threshold: Arc::new(AtomicI32::new(s.mic_sensitivity as i32)),
@@ -211,79 +99,22 @@ impl AudioControls {
     }
 }
 
-/// What the mic pipeline reports back to the UI: the live input peak and
-/// whether the gate is currently passing audio. Written by the capture path,
-/// polled by a task that mirrors them into `AppState`.
 #[derive(Default)]
 struct MicMeter {
-    /// Peak since the last poll, ×1000 fixed point. Swapped to 0 on read.
-    ///
-    /// This is the hop the *gate* judged — after input gain and after
-    /// DeepFilterNet — so the threshold marker on the bar sits exactly where
-    /// the gate opens.
     peak: AtomicI32,
-    /// The same hop before DeepFilterNet, on the same scale.
-    ///
-    /// Kept beside `peak` so the bar can draw both: the gap between them is
-    /// what the model is taking off, live. Nothing else in the app can show
-    /// that, and it is the difference between "noise cancellation is on" and
-    /// seeing it eat the quiet half of your speech.
     peak_pre: AtomicI32,
-    /// True while the transmit gate is open.
     open: AtomicBool,
 }
 
-/// What the DSP thread did with the hops it was handed, for the heartbeat.
-///
-/// Separate from `MicMeter` because that one is consumed by the VU bar — its
-/// peak is swapped to zero on read, so a second reader would steal frames from
-/// the meter and make the bar flicker.
-///
-/// These three exist together because no two of them answer the question
-/// alone, which a session spent measuring this the hard way established. The
-/// mic heartbeat's existing counter is incremented in the cpal callback, so it
-/// is *pre*-gate: it reports 200 of 200 hops during a stretch the gate was
-/// shut, because the microphone did deliver them. And the peak it prints is the
-/// raw one, while the gate judges the hop *after* DeepFilterNet has had it. So
-/// the two numbers that matter — how much the model took off, and how much the
-/// gate then dropped — were both invisible.
 #[derive(Default)]
 struct GateStats {
-    /// Hops the gate dropped since the last read.
     dropped: AtomicU64,
-    /// Hops that reached the encoder since the last read.
     passed: AtomicU64,
-    /// Loudest post-denoise hop since the last read, ×1000 fixed point — the
-    /// same scale as the threshold, so the pair reads directly against it.
     peak_after: AtomicI32,
-    /// The threshold the gate last judged against, stashed here so the
-    /// heartbeat can print it beside the peaks without being handed
-    /// `AudioControls` of its own. The gate reads it every hop anyway.
     threshold: AtomicI32,
-    /// The attenuation ceiling the DSP thread has actually handed the model,
-    /// or 0 when no model is loaded. Requested and applied are different
-    /// facts — the request is a UI event, this is the hop loop confirming it
-    /// — and this is the only one worth logging. It lands here rather than in
-    /// a `dlog!` at the point of change because that point *is* the hop loop,
-    /// and `dlog!` opens and writes a file synchronously; see `devlog`'s
-    /// module doc. A relaxed store costs nothing there, and the 2s heartbeat
-    /// is already the non-realtime reader.
     atten_lim_applied: AtomicU32,
 }
 
-/// The domain of the suppression ceiling, in dB — the slider's bounds, the
-/// clamp on the command that carries it, and the clamp restoring it from
-/// `settings.json`.
-///
-/// One pair rather than a literal at each of those, because they shipped
-/// disagreeing: the restore clamped to `(1, 100)` against a slider declared
-/// `6..60`, so a hand-edited 90 survived, labelled itself "90 dB max" beside a
-/// control that could not reach it, and went to the model anyway.
-///
-/// Not DeepFilterNet's own range, which is wider. 6 is the least attenuation
-/// worth the model's CPU; past about 60 the ceiling stops being reachable by
-/// anything the model does to speech, so more of it is a longer slider with no
-/// audible other end.
 pub const DENOISE_ATTEN_LIM_DB_MIN: u32 = 6;
 pub const DENOISE_ATTEN_LIM_DB_MAX: u32 = 60;
 
@@ -294,9 +125,7 @@ pub enum VoiceCmd {
         channel_id: Id,
     },
     Disconnect,
-    /// Request the voice service to enumerate devices and populate AppState lists.
     ListDevices,
-    /// Set desired devices (names). None = leave unchanged / use default.
     SetDevices {
         input: Option<String>,
         output: Option<String>,
@@ -304,110 +133,55 @@ pub enum VoiceCmd {
     SetMute {
         muted: bool,
     },
-    /// Silence *playback* — every remote voice and every stream at once.
-    ///
-    /// Deliberately separate from `SetMute`: this is a gate on the mixer, mute
-    /// is a gate on capture, and they sit at opposite ends of the pipeline.
-    /// That deafening also mutes is a rule of the UI — which sends both — not a
-    /// fact about the audio path.
     SetDeafen {
         deafened: bool,
     },
-    /// Set the microphone gate threshold (1..=1000, peak ×1000). Below it the
-    /// mic is treated as inactive and nothing is transmitted.
     SetSensitivity {
         threshold: u32,
     },
-    /// Ceiling on DeepFilterNet's attenuation, in dB — clamped to
-    /// `DENOISE_ATTEN_LIM_DB_MIN..=MAX`. Picked up by the DSP thread on its
-    /// next hop — no model rebuild, so it can be dragged mid-sentence.
     SetDenoiseAttenLim {
         db: u32,
     },
-    /// Toggle DeepFilterNet noise suppression on captured mic audio.
     SetNoiseCancellation {
         enabled: bool,
     },
-    /// Reopen the microphone with the OS's own input processing bypassed, or
-    /// without. Alone among the microphone switches this one restarts the
-    /// session: raw mode is settled when the device is opened (see
-    /// `crate::rawmic`), so there is no live stream to swap it under.
     SetBypassSystemProcessing {
         enabled: bool,
     },
-    /// Microphone input gain as a percentage (100 = unity). Takes effect on the
-    /// next 10ms hop; no session rebuild.
     SetMicVolume {
         percent: u16,
     },
-    /// Toggle libwebrtc's automatic gain control on the live capture.
     SetAutoGainControl {
         enabled: bool,
     },
-    /// Opus bitrate for the microphone track, in kbit/s. Stored for the next
-    /// publish rather than applied live: the encoder is configured when the
-    /// track is published, so changing it mid-call would mean tearing the
-    /// publication down and putting it back — a gap in everyone else's audio
-    /// for a setting nobody changes mid-sentence.
     SetVoiceBitrate {
         kbps: u32,
     },
-    /// Open or close the connection-stats readout. Only a gate on the poll —
-    /// the numbers come from the peer connection, which costs a walk of every
-    /// track per tick, so nothing is collected while the panel is closed.
     SetStatsPolling {
         enabled: bool,
     },
-    /// Start/stop capturing this machine's audio and publishing it alongside a
-    /// screen share. Only does anything where `sysaudio` has a backend.
     SetSystemAudio {
         enabled: bool,
-        /// Native macOS capture must use the same selected surface as video.
-        /// Windows ignores this because its native path applies only after a
-        /// webview whole-screen pick, which exposes no native target id.
         target: Option<crate::sysvideo::Target>,
     },
-    /// Join or leave the screen-share room as an audio-only subscriber, so a
-    /// share captured by someone else's *webview* still plays through our
-    /// chosen output device rather than the webview's.
-    ///
-    /// `None` disconnects. Sent when the set of other people sharing in our
-    /// voice channel becomes non-empty / empty.
     SetScreenAudio {
         room: Option<(String, String)>,
     },
-    /// Start/stop capturing this machine's *screen* and publishing it as a
-    /// video track, for platforms where the webview has no capture API at all
-    /// (macOS — see `sysvideo`). `None` stops.
-    ///
-    /// Carries its own `(url, token)` because this joins the screen room under a
-    /// third identity: the webview holds the bare pubkey and the audio
-    /// subscriber holds `#audio`, so a publisher needs `#video`. See
-    /// `server::livekit::screen_video_identity`.
     SetScreenVideo {
         room: Option<(String, String)>,
-        /// Which surface to capture. Ignored when `room` is None.
         target: crate::sysvideo::Target,
         settings: crate::sysvideo::Settings,
     },
-    /// Set the local playback gain for a participant's *screen-share* audio,
-    /// separately from their voice. 0.0 while you aren't watching them, which
-    /// is the default — stream audio follows the watch window.
     SetStreamVolume {
         pubkey: String,
         gain: f32,
     },
-    /// Set one participant's *local* playback gain (1.0 = unity, 0.0 = muted
-    /// for us only). Never leaves this client — it scales incoming audio in our
-    /// mixer, so it cannot touch the speaker's mic or any other listener.
     SetUserVolume {
         pubkey: String,
         gain: f32,
     },
 }
 
-/// Convenience wrapper provided via Dioxus context for UI components to send
-/// voice commands without needing to plumb the channel themselves.
 #[derive(Clone)]
 pub struct VoiceTx(pub UnboundedSender<VoiceCmd>);
 
@@ -421,7 +195,6 @@ pub fn use_voice_tx() -> VoiceTx {
     use_context::<VoiceTx>()
 }
 
-/// Spawn the voice service. Returns the command sender.
 pub fn spawn_voice_service(state: Signal<AppState>) -> UnboundedSender<VoiceCmd> {
     let (tx, rx) = unbounded_channel::<VoiceCmd>();
     spawn(async move {
@@ -438,8 +211,6 @@ async fn service_loop(
 ) -> Result<(), String> {
     let mut session: Option<ActiveVoice> = None;
     let mut last_connect: Option<(String, String, Id)> = None;
-    // Audio controls persist across reconnects so sensitivity, noise
-    // cancellation, and volumes survive session rebuilds.
     let controls = AudioControls::from_state(&state.read());
 
     while let Some(cmd) = rx.recv().await {
@@ -469,9 +240,6 @@ async fn service_loop(
                         {
                             let mut s = state.write();
                             s.voice.phase = VoicePhase::Connected;
-                            // A fresh session owns none of what the old one was
-                            // told; whoever has to re-issue those commands
-                            // watches this.
                             s.voice_session_epoch += 1;
                         }
                         session = Some(active);
@@ -521,8 +289,6 @@ async fn service_loop(
             }
             VoiceCmd::SetDevices { input, output } => {
                 eprintln!("[voice] SetDevices input={:?} output={:?}", input, output);
-                // Update AppState selections in a tight scope so the write lock
-                // is dropped before we attempt to reconnect (which awaits).
                 {
                     let mut s = state.write();
                     if let Some(i) = input.clone() {
@@ -546,12 +312,8 @@ async fn service_loop(
                 {
                     let mut s = state.write();
                     s.bypass_system_audio_processing = enabled;
-                    // Whatever the last attempt reported was about the mode we
-                    // are leaving.
                     s.mic_bypass_error = None;
                 }
-                // Unlike the APM switches this cannot be swapped under a live
-                // stream: raw mode is fixed when the device is opened.
                 restart_session(
                     &mut session,
                     &last_connect,
@@ -570,35 +332,25 @@ async fn service_loop(
             }
             VoiceCmd::SetDeafen { deafened } => {
                 eprintln!("[voice] SetDeafen deafened={deafened}");
-                // Nothing to hand to the session: the flag lives on `controls`,
-                // which outlives it, so a device change rebuilds the mixer
-                // around the same atomic and comes back up still deafened.
                 controls.deafened.store(deafened, Ordering::Relaxed);
                 state.write().voice.deafened = deafened;
             }
             VoiceCmd::SetSensitivity { threshold } => {
                 let threshold = threshold.clamp(1, 1000);
                 eprintln!("[voice] SetSensitivity threshold={threshold}");
-                // The live pipeline reads this atomic, so the change lands on
-                // the very next 10ms frame — no reconnect, no session restart.
                 controls
                     .threshold
                     .store(threshold as i32, Ordering::Relaxed);
                 state.write().mic_sensitivity = threshold;
             }
             VoiceCmd::SetDenoiseAttenLim { db } => {
-                // Clamped here to enforce the domain invariant regardless of
-                // caller; UI clamping is separate.
                 let db = db.clamp(DENOISE_ATTEN_LIM_DB_MIN, DENOISE_ATTEN_LIM_DB_MAX);
-                // Stored only; the DSP thread picks this up on its next hop.
-                // Avoids locking the audio path for a slider-driven value.
                 controls.atten_lim_db.store(db, Ordering::Relaxed);
                 state.write().denoise_atten_lim_db = db;
             }
             VoiceCmd::SetNoiseCancellation { enabled } => {
                 eprintln!("[voice] SetNoiseCancellation enabled={enabled}");
                 controls.denoise.store(enabled, Ordering::Relaxed);
-                // Reconfigures the APM live without republishing the track.
                 if let Some(active) = session.as_ref() {
                     active.set_apm(enabled, controls.agc.load(Ordering::Relaxed));
                 }
@@ -626,14 +378,10 @@ async fn service_loop(
                 state.write().voice_bitrate_kbps = kbps;
             }
             VoiceCmd::SetStatsPolling { enabled } => {
-                // Flag lives on `controls` (outlives sessions) so polling
-                // persists across device/channel changes.
                 controls.stats_polling.store(enabled, Ordering::Relaxed);
             }
             VoiceCmd::SetSystemAudio { enabled, target } => {
                 if let Some(active) = session.as_mut() {
-                    // Silent share is confusing; surface the OS error to the
-                    // user while continuing video-only.
                     if let Err(e) = active.set_system_audio(enabled, target, state).await {
                         eprintln!("[voice] system audio failed: {e}");
                         state.write().error_toast = Some(format!(
@@ -657,15 +405,10 @@ async fn service_loop(
                 settings,
             } => {
                 if let Some(active) = session.as_mut() {
-                    // Failure means the feature is down (no video-only
-                    // fallback); clear the sharing flag to reset the UI state.
                     if let Err(e) = active.set_screen_video(room, target, settings, state).await {
                         eprintln!("[voice] screen video failed: {e}");
                         let mut s = state.write();
                         s.screen_sharing = false;
-                        // Clear the surface too: the effect that owns publishing
-                        // keys on it, so leaving it set would make the next click
-                        // a no-op against an unchanged key.
                         s.screen_share_target = None;
                         s.error_toast = Some(format!("Couldn't share your screen: {e}"));
                     }
@@ -695,13 +438,6 @@ async fn service_loop(
     Ok(())
 }
 
-/// Rebuild the live session so a change to how the microphone is *opened*
-/// takes effect — which device, or whether the OS's processing is in the path.
-/// Both are settled when the stream is opened, so neither can be swapped under
-/// a running one, unlike every APM switch beside them.
-///
-/// Does nothing when there is no session: the new setting is read from
-/// `AppState` on the next connect anyway.
 async fn restart_session(
     session: &mut Option<ActiveVoice>,
     last_connect: &Option<(String, String, Id)>,
@@ -739,42 +475,19 @@ async fn restart_session(
     }
 }
 
-/// Active voice session: holds the LiveKit Room plus the audio I/O streams.
 struct ActiveVoice {
     room: Arc<Room>,
-    /// Kept so the APM can be reconfigured mid-call.
     source: NativeAudioSource,
     mic: MicCapture,
     local_audio: LocalAudioTrack,
     _playback: PlaybackMixer,
     event_task: tokio::task::JoinHandle<()>,
-    /// Live system-audio publication, when sharing a screen with sound.
     system_audio: Option<SystemAudioTrack>,
-    /// Audio-only connection to the screen-share room, live while someone else
-    /// in the channel is sharing.
     screen_audio: Option<ScreenAudioRoom>,
-    /// Publish-only connection to the screen-share room, live while *we* are
-    /// sharing on a platform whose webview cannot capture.
     screen_video: Option<ScreenVideoRoom>,
-    /// Kept so the screen-audio room can feed the same mixer as voice — which
-    /// is the entire point: one output device, one set of gains.
     mixer: PlaybackHandle,
-    /// Our own LiveKit identity, so the screen-audio room can skip our own
-    /// share. Read once here because the event task cannot touch a Signal.
-    ///
-    /// `Option` rather than a defaulted empty string: a pubkey is never
-    /// legitimately empty, so `""` could only mean "there was no `self_user`" —
-    /// and silently comparing identities against it would match nobody, leaving
-    /// the sharer subscribed to their own screen audio. Absence is a reason to
-    /// refuse the room, not to guess.
     self_pubkey: Option<String>,
-    /// Mirrors the mic meter into `AppState`. Cancelled on shutdown — left
-    /// running, one accumulates per reconnect and they fight over the same
-    /// `mic_level` / `speaking` fields.
     meter_task: Task,
-    /// Polls the peer connection for the stats panel. Cancelled on shutdown
-    /// for the same reason as `meter_task`, with one more: it holds an
-    /// `Arc<Room>`, so leaving it running would keep a closed room alive.
     stats_task: Task,
 }
 
@@ -786,21 +499,14 @@ impl ActiveVoice {
         state: Signal<AppState>,
         controls: AudioControls,
     ) -> Result<Self, String> {
-        // `RoomOptions` is `#[non_exhaustive]`, so it is built by mutation.
         let mut options = RoomOptions::default();
         options.encryption = crate::e2ee::room_options();
         let (room, mut events) = Room::connect(livekit_url, token, options)
             .await
             .map_err(|e| format!("livekit connect: {e}"))?;
         let room = Arc::new(room);
-        // Told about later keys. A key generated after this connect — which is
-        // the normal case for whoever is first into a channel — would otherwise
-        // never reach this room.
         crate::e2ee::register_room(&room, crate::e2ee::RoomKind::Voice);
 
-        // NS follows the DeepFilterNet toggle to avoid double-masking
-        // artifacts; AEC/AGC stay on. AEC is a pass-through locally (no render
-        // ref) but works in real deployments.
         let source = NativeAudioSource::new(
             apm_options(
                 controls.denoise.load(Ordering::Relaxed),
@@ -819,26 +525,6 @@ impl ActiveVoice {
                 LocalTrack::Audio(local_audio),
                 TrackPublishOptions {
                     source: TrackSource::Microphone,
-                    // `dtx` is the right default here — it costs nothing when
-                    // the transmit gate is already holding silence back.
-                    //
-                    // `red` is also the default, and **we do not get it**. The
-                    // SDK computes `disable_red = encryption_type != None ||
-                    // !options.red`, and `e2ee::room_options` attaches options
-                    // to every room whether or not a key exists, so RFC 2198
-                    // redundancy is off whenever encryption is *configured* —
-                    // which is the default. Asking for it here would change
-                    // nothing: the flag is decided from the participant, which
-                    // is constructed when the room connects. Opus in-band FEC
-                    // survives (it rides inside the encrypted bitstream, and
-                    // libwebrtc's own fmtp carries `useinbandfec=1`), so loss
-                    // resilience is reduced rather than removed. The trade and
-                    // the ways out are in `docs/AUDIT-2026-08-17.md` under Voice / audio.
-                    //
-                    // Only the bitrate is ours: the SDK's SPEECH preset is
-                    // 24 kbit/s, which is thin for anything but a close-miked
-                    // talking head, so the user picks (see
-                    // `ClientSettings::voice_bitrate_kbps`).
                     audio_encoding: Some(AudioEncoding {
                         max_bitrate: controls.bitrate_kbps.load(Ordering::Relaxed) as u64 * 1000,
                     }),
@@ -847,45 +533,18 @@ impl ActiveVoice {
             )
             .await
             .map_err(|e| format!("publish mic: {e}"))?;
-        // Read back to verify actual state, as encryption and RED are mutually
-        // exclusive and the log reports the trade-off.
         let encrypted = mic_publication.encryption_type() != livekit::e2ee::EncryptionType::None;
         eprintln!(
             "[voice] mic published: encrypted={encrypted}, red={} (opus in-band FEC unaffected)",
             !encrypted
         );
-        // A cryptor is built when the track is published and starts on slot 0.
-        // If a rekey already moved this channel's voice onto another slot —
-        // which a mic republished after a device change would miss — this is
-        // what puts the fresh publication where everyone is listening.
         crate::e2ee::place_new_voice_publication(&room);
 
-        // The capture path is three stages, for three different reasons.
-        //
-        // cpal's callback is realtime: it only downmixes, resamples and cuts
-        // the buffer into exact 10ms hops. Those hops go to a dedicated DSP
-        // thread that does the expensive work — DeepFilterNet inference and the
-        // transmit gate — because a 150µs model run inside a callback with a
-        // ~10ms budget invites xruns the moment the machine gets busy (and
-        // because the model is `!Send`, so it cannot live in a task at all).
-        // What survives the gate reaches a tokio task, which exists purely
-        // because `NativeAudioSource::capture_frame` is async: calling it from
-        // the sync audio thread and dropping the future means it never runs.
-        //
-        // Hops stay f32 until the last step so the model works at full
-        // resolution; quantization to i16 happens after the gate.
         let (frame_tx, frame_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<f32>>();
         let (gated_tx, gated_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<i16>>();
         let meter = Arc::new(MicMeter::default());
-        // Seeded from state, not hardcoded off: a device change tears this
-        // session down and rebuilds it, and nothing re-issues `SetMute`, so
-        // starting at false put the mic back on the air with the button still
-        // red. Deafen makes that worse — `AudioControls` survives the rebuild,
-        // so you would come back deafened *and* transmitting.
         let start_muted = state.peek().voice.muted;
         let muted = Arc::new(AtomicBool::new(start_muted));
-        // The atomic only gates the DSP thread; the publication has its own
-        // switch, and `set_muted` flips both — so a rebuilt session must too.
         local_audio_for_mute.rtc_track().set_enabled(!start_muted);
         let gate_stats = Arc::new(GateStats::default());
         {
@@ -907,9 +566,6 @@ impl ActiveVoice {
         let playback = PlaybackMixer::start(state, controls.clone())?;
         let mixer_handle = playback.handle();
 
-        // Bridge for "this sharer has native screen audio" notices: the event
-        // task can't touch a Signal, so it posts these here and a Dioxus task
-        // applies them.
         let (native_audio_tx, mut native_audio_rx) =
             tokio::sync::mpsc::unbounded_channel::<StreamAudio>();
         {
@@ -926,8 +582,6 @@ impl ActiveVoice {
                         }
                         StreamAudio::RoomGone => {
                             s.stream_has_audio.clear();
-                            // Log the state flip to explain the 50ms gap
-                            // between room arrival and playback handoff.
                             crate::dlog!(
                                 "voice screen_audio RoomGone -> joined=false (playback back to webview)"
                             );
@@ -938,17 +592,11 @@ impl ActiveVoice {
             });
         }
 
-        // Same bridge, for how well each participant's connection is holding
-        // up. Kept separate from the stream-audio one so a burst of quality
-        // updates — they arrive on a timer for everyone in the room — can't
-        // delay a "this sharer has sound" notice behind it.
         let (quality_tx, mut quality_rx) = tokio::sync::mpsc::unbounded_channel::<QualityMsg>();
         {
             let mut state = state;
             dioxus::prelude::spawn(async move {
                 while let Some(msg) = quality_rx.recv().await {
-                    // Peek before writing to avoid re-rendering the channel
-                    // list on every timer tick for every participant.
                     let changed = {
                         let s = state.peek();
                         match &msg {
@@ -970,8 +618,6 @@ impl ActiveVoice {
                             s.voice_quality.remove(&id);
                         }
                         QualityMsg::Clear => s.voice_quality.clear(),
-                        // Latched like the webview's; cleared by `apply_key`
-                        // when a key is adopted.
                         QualityMsg::Undecryptable => s.media_undecryptable = true,
                     }
                 }
@@ -990,12 +636,6 @@ impl ActiveVoice {
                         RoomEvent::ParticipantDisconnected(p) => {
                             crate::dlog!("[voice] participant left: {}", p.identity().0);
                             let _ = quality_tx.send(QualityMsg::Drop(p.identity().0.clone()));
-                            // Remove screen-audio gain: absent means silent,
-                            // so a leftover entry would make the next share
-                            // audible before the watch window opens.
-                            // Deliberately NOT `gains`: absent means unity
-                            // there, so dropping it would silently undo the
-                            // user's volume choice.
                             stream_gains.lock().remove(&p.identity().0);
                         }
                         RoomEvent::ConnectionQualityChanged {
@@ -1008,9 +648,6 @@ impl ActiveVoice {
                                 ConnectionQuality::Poor => ConnectionHealth::Poor,
                                 ConnectionQuality::Lost => ConnectionHealth::Lost,
                             };
-                            // Only log bad states; this fires on a timer for
-                            // every participant, so healthy rooms would drown
-                            // the log.
                             if matches!(health, ConnectionHealth::Poor | ConnectionHealth::Lost) {
                                 crate::dlog!(
                                     "[voice] connection {:?} for {}",
@@ -1049,9 +686,6 @@ impl ActiveVoice {
                                 "[voice] track unsubscribed from {}",
                                 participant.identity().0
                             );
-                            // Remove from "has stream audio" so the watch
-                            // window doesn't offer a volume slider for an
-                            // ended stream.
                             if publication.source() == TrackSource::ScreenshareAudio {
                                 let _ = native_audio_tx
                                     .send(StreamAudio::Gone(participant.identity().0.clone()));
@@ -1061,19 +695,12 @@ impl ActiveVoice {
                             eprintln!("[voice] room disconnected: {reason:?}");
                             let _ = quality_tx.send(QualityMsg::Clear);
                         }
-                        // Log reconnecting to avoid unexplained silence, which
-                        // makes users restart the app mid-conversation.
                         RoomEvent::Reconnecting => {
                             eprintln!("[voice] reconnecting");
                         }
                         RoomEvent::Reconnected => {
                             eprintln!("[voice] reconnected");
                         }
-                        // Native half of the undecryptable signal; voice is
-                        // entirely native, so without this, decryption
-                        // failures are invisible.
-                        // Only report failures; `Ok`/`New` are healthy states
-                        // sent on every key change.
                         RoomEvent::E2eeStateChanged { participant, state } => {
                             use livekit::webrtc::native::frame_cryptor::EncryptionState;
                             match state {
@@ -1101,16 +728,7 @@ impl ActiveVoice {
                                 CHANNELS as i32,
                             );
                             let mixer_handle = mixer_handle.clone();
-                            // The LiveKit identity is the user's pubkey (the
-                            // gateway mints tokens with `with_identity(pubkey)`),
-                            // which is what the per-user volume map is keyed by.
                             let identity = participant.identity().0.clone();
-                            // Tell the UI this sharer has sound, so the watch
-                            // window's volume control comes out of "no stream
-                            // audio" — the JS layer can't know about a track
-                            // that never touches the webview. Routed through a
-                            // channel because this task is `tokio::spawn`ed and
-                            // so must be Send, which a Dioxus Signal is not.
                             if is_stream {
                                 let _ =
                                     native_audio_tx.send(StreamAudio::Present(identity.clone()));
@@ -1125,10 +743,6 @@ impl ActiveVoice {
                     }
                 }
                 eprintln!("[voice] event stream ended");
-                // For a stream that ends without a Disconnected event — a
-                // dropped room handle, say. Deliberately not the shutdown
-                // path: that aborts this task, so nothing here runs and
-                // `ActiveVoice::shutdown` clears the map itself.
                 let _ = quality_tx.send(QualityMsg::Clear);
             }
         });
@@ -1159,12 +773,6 @@ impl ActiveVoice {
         })
     }
 
-    /// Start or stop publishing this machine's audio as a second track.
-    ///
-    /// Published on the voice room rather than the webview's screen room: the
-    /// native SDK is already connected here, every peer is already subscribed,
-    /// and it lands in the same mixer as everything else — so the per-sharer
-    /// volume control works on it without any new delivery path.
     async fn set_system_audio(
         &mut self,
         enabled: bool,
@@ -1184,13 +792,8 @@ impl ActiveVoice {
             let _ = self.room.local_participant().unpublish_track(&sa.sid).await;
         }
         if !enabled {
-            // Guarded to avoid logging a stop for a capture that never
-            // existed, which would be misleading evidence.
             if had_capture {
                 eprintln!("[voice] system audio stopped");
-                // Dropping `_capture` stops the OS stream (fire-and-forget on
-                // macOS); this log confirms we asked, aiding debugging if
-                // audio persists.
                 crate::dlog!("voice system audio stopped (capture dropped)");
             }
             return Ok(());
@@ -1200,11 +803,7 @@ impl ActiveVoice {
         }
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Vec<f32>>();
         let (fatal_tx, mut fatal_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-        // Use backend-specific error messages to guide users to the correct
-        // Windows settings/permissions.
         let capture = crate::sysaudio::start(tx, fatal_tx, target)?;
-        // A capture dying mid-share leaves the track published but silent;
-        // report it like an activation failure so the user knows to restart.
         {
             let mut state = state;
             dioxus::prelude::spawn(async move {
@@ -1217,9 +816,6 @@ impl ActiveVoice {
                 }
             });
         }
-        // No APM on this source: it is already-mixed program audio, not a
-        // microphone in a room. Echo cancellation and noise suppression would
-        // chew on music and game audio for no benefit.
         let source = NativeAudioSource::new(
             AudioSourceOptions {
                 echo_cancellation: false,
@@ -1241,25 +837,6 @@ impl ActiveVoice {
                 LocalTrack::Audio(track),
                 TrackPublishOptions {
                     source: TrackSource::ScreenshareAudio,
-                    // Music and game audio, not a voice. The defaults are tuned
-                    // for speech and both of them hurt here:
-                    //
-                    // - the computed bitrate lands around SPEECH (24 kbit/s),
-                    //   which is fine for a talking head and poor for anything
-                    //   with music in it;
-                    // - `dtx` (discontinuous transmission) stops sending during
-                    //   quiet passages and substitutes comfort noise. On speech
-                    //   that is free bandwidth; on music it is audible dropouts
-                    //   every time the track goes quiet.
-                    //
-                    // 96 kbit/s is generous for the mono downmix we send, and
-                    // trivial beside the multi-megabit video it accompanies.
-                    //
-                    // This track loses `red` to encryption exactly as the mic
-                    // does — see the note at the mic publish — and music is
-                    // where that shows worst, since Opus in-band FEC is tuned
-                    // for speech. Nothing to set here; recorded so the next
-                    // person tuning this does not go looking for the knob.
                     audio_encoding: Some(
                         livekit::options::audio::MUSIC_HIGH_QUALITY.encoding.clone(),
                     ),
@@ -1280,23 +857,10 @@ impl ActiveVoice {
             target,
         });
         eprintln!("[voice] system audio started");
-        // eprintln! is invisible in release builds; dev.log is the durable
-        // record and previously only logged stops, making drops
-        // indistinguishable from non-starts.
         crate::dlog!("voice system audio started (target={target:?})");
         Ok(())
     }
 
-    /// Start (or stop) publishing captured screen video into the screen room.
-    ///
-    /// This is the macOS share path in full: `sysvideo` captures, and each frame
-    /// goes straight into a LiveKit video source. Nothing here touches the
-    /// webview, which on macOS has no capture API to touch.
-    ///
-    /// A *third* connection to the screen room, and it has to be: the webview
-    /// holds the bare pubkey (it still renders everyone else's share) and the
-    /// audio subscriber holds `#audio`, so publishing needs `#video`. LiveKit
-    /// evicts duplicate identities, which would take out one of the other two.
     async fn set_screen_video(
         &mut self,
         room: Option<(String, String)>,
@@ -1311,9 +875,6 @@ impl ActiveVoice {
             }
             return Ok(());
         };
-        // Re-firing the same command is a no-op to avoid dropping watchers'
-        // video; changing the target falls through to rebuild, enabling mid-
-        // share switching.
         if let Some(existing) = &self.screen_video
             && existing.key == (url.clone(), token.clone(), target)
         {
@@ -1325,9 +886,6 @@ impl ActiveVoice {
         if !crate::sysvideo::supported() {
             return Err("screen capture isn't implemented on this platform".into());
         }
-        // Stop is a no-op if unsupported (nothing to stop); start is refused
-        // by the guard above. This arm exists because the macOS call cannot
-        // compile elsewhere.
         #[cfg(target_os = "macos")]
         {
             let r = ScreenVideoRoom::connect(&url, &token, target, settings, state).await?;
@@ -1340,15 +898,6 @@ impl ActiveVoice {
         Ok(())
     }
 
-    /// Join (or leave) the screen-share room as an audio-only subscriber.
-    ///
-    /// A share captured by the *webview* publishes its audio into the
-    /// `screen-…` room, where the JS client used to play it through an HTML
-    /// element — which follows the app's chosen output device only where
-    /// `setSinkId` exists. Subscribing to it here instead puts that audio on the
-    /// same cpal mixer as voice, so one device setting governs both. The
-    /// per-sharer volume control needs no changes: the mixer is where it
-    /// already lived.
     async fn set_screen_audio(
         &mut self,
         room: Option<(String, String)>,
@@ -1357,8 +906,6 @@ impl ActiveVoice {
         let Some(key) = room else {
             if let Some(prev) = self.screen_audio.take() {
                 prev.shutdown().await;
-                // Nobody is publishing stream audio to us any more; the volume
-                // control should stop claiming otherwise.
                 let mut s = state.write();
                 s.stream_has_audio.clear();
                 s.screen_audio_joined = false;
@@ -1366,9 +913,6 @@ impl ActiveVoice {
             }
             return;
         };
-        // Match on key AND alive status: matching key alone made dead rooms
-        // unreplaceable, so a disconnected room could never be swapped for a
-        // live one.
         match &self.screen_audio {
             Some(existing) if existing.key == key && existing.alive.load(Ordering::Relaxed) => {
                 return;
@@ -1385,8 +929,6 @@ impl ActiveVoice {
             }
             None => {}
         }
-        // Without local identity, we cannot exclude ourselves, causing the
-        // room to feed our own audio back. Refuse rather than join on a guess.
         let Some(self_pubkey) = self.self_pubkey.clone() else {
             eprintln!("[voice] screen audio skipped — no local identity yet");
             state.write().error_toast =
@@ -1399,16 +941,10 @@ impl ActiveVoice {
         {
             Ok(r) => {
                 self.screen_audio = Some(r);
-                // Native path owns playback only after successful join;
-                // webview stands down on this signal, not on token existence.
                 state.write().screen_audio_joined = true;
                 eprintln!("[voice] screen audio room joined");
-                // If true, native owns playback (webview muted); if false,
-                // webview owns it.
                 crate::dlog!("voice screen_audio_joined=true (native owns stream playback)");
             }
-            // Leaving this false hands playback to the webview (wrong device),
-            // which is better than silence.
             Err(e) => {
                 eprintln!("[voice] screen audio room failed: {e}");
                 let mut s = state.write();
@@ -1421,27 +957,6 @@ impl ActiveVoice {
         }
     }
 
-    /// Reconfigure libwebrtc's APM while the call is live — the suppressor
-    /// handover and the AGC switch both land here.
-    /// Apply the APM settings, and record whether the native side kept them.
-    ///
-    /// The read-back is here because a measurement says these may do nothing.
-    /// A sweep against a real SFU moved echo cancellation, noise suppression
-    /// and AGC together, with white noise mixed into a tone, and the share of
-    /// energy left in the tone's band did not shift: means 0.9030 against
-    /// 0.9033 over eight runs, the sign flipping between them, while the noise
-    /// itself moved that number by ten times as much. See the entry in
-    /// `docs/AUDIT-2026-08-17.md`.
-    ///
-    /// That leaves two possibilities the measurement cannot separate — never
-    /// stored, or stored and ignored — and `audio_options()` separates them for
-    /// the cost of one call. If what comes back differs from what went in, the
-    /// options are not reaching the source and it is our plumbing. If it
-    /// matches, they are held and something downstream is not acting on them,
-    /// which is libwebrtc's business and a very different fix.
-    ///
-    /// Debug-only, like every `dlog!`: this is an open question, not
-    /// instrumentation a shipped client needs to carry.
     fn set_apm(&self, deepfilter_on: bool, agc: bool) {
         let want = apm_options(deepfilter_on, agc);
         let (aec, ns, agc_on) = (
@@ -1476,32 +991,20 @@ impl ActiveVoice {
         self.event_task.abort();
         self.meter_task.cancel();
         self.stats_task.cancel();
-        // Stop capture before leaving to avoid publishing frames into a
-        // closing room.
         self.mic.stop();
         if let Some(sa) = self.screen_audio {
             sa.shutdown().await;
         }
-        // Stop ScreenCaptureKit before the room closes to prevent frame
-        // delivery into a closing source.
         if let Some(sv) = self.screen_video {
             sv.shutdown().await;
         }
-        // Clear here because the bridge's `SetScreenAudio { room: None }`
-        // arrives after `Disconnect` and lands in the no-session branch,
-        // leaving stale state.
         {
             let mut s = state.write();
             s.stream_has_audio.clear();
             s.screen_audio_joined = false;
-            // Clear quality stats here because the event task is aborted and
-            // won't send final updates; prevents stale 'weak connection'
-            // indicators.
             s.voice_quality.clear();
             s.voice_stats.clear();
         }
-        // Explicitly close the room (no `Drop` impl) to notify the SFU;
-        // bounded to prevent wedging the service loop if the network is dead.
         match tokio::time::timeout(ROOM_CLOSE_TIMEOUT, self.room.close()).await {
             Ok(Ok(())) => {}
             Ok(Err(e)) => eprintln!("[voice] room close failed: {e}"),
@@ -1510,33 +1013,14 @@ impl ActiveVoice {
     }
 }
 
-/// Publish-only member of the screen-share room, carrying natively captured
-/// screen video.
-///
-/// The mirror image of `ScreenAudioRoom`: that one subscribes and never
-/// publishes, this one publishes and never subscribes. Both exist because the
-/// webview is the wrong place for the job on the platform in question — see
-/// `ActiveVoice::set_screen_video` and the `sysvideo` module docs.
 struct ScreenVideoRoom {
     room: Arc<Room>,
-    /// The OS capture. Dropping it stops the stream, which is why it is held
-    /// here and not detached: the room outliving the capture would publish a
-    /// frozen frame forever.
-    ///
-    /// Only where `sysvideo` has a backend. The rest of this type — the room,
-    /// the key, `shutdown` — is platform-neutral and stays, so the field that
-    /// holds one of these needs no gate of its own.
     #[cfg(target_os = "macos")]
     _capture: crate::sysvideo::Capture,
-    /// The `(url, token, target)` this was started with, so a repeated command
-    /// for the same surface is a no-op while a changed one rebuilds.
     key: (String, String, crate::sysvideo::Target),
 }
 
 impl ScreenVideoRoom {
-    /// macOS only, and unconditionally so: every line past the room join is
-    /// ScreenCaptureKit or CoreVideo. `set_screen_video` refuses to reach here
-    /// on other platforms long before the compiler would have to.
     #[cfg(target_os = "macos")]
     async fn connect(
         url: &str,
@@ -1545,23 +1029,15 @@ impl ScreenVideoRoom {
         settings: crate::sysvideo::Settings,
         state: Signal<AppState>,
     ) -> Result<Self, String> {
-        // Built by mutation rather than a struct literal: `RoomOptions` is
-        // `#[non_exhaustive]`.
         let mut options = RoomOptions::default();
-        // We publish here; the webview already subscribes to this room.
-        // Subscribing again would download every stream twice.
         options.auto_subscribe = false;
         options.encryption = crate::e2ee::room_options();
         let (room, mut events) = Room::connect(url, token, options)
             .await
             .map_err(|e| format!("livekit connect: {e}"))?;
         let room = Arc::new(room);
-        // Keys generated after connect (the normal case for the first user)
-        // would otherwise never reach this room.
         crate::e2ee::register_room(&room, crate::e2ee::RoomKind::Screen);
 
-        // Tells libwebrtc this is desktop content, prioritizing detail over
-        // motion in degradation.
         let source = NativeVideoSource::new(
             VideoResolution {
                 width: settings.width,
@@ -1587,8 +1063,6 @@ impl ScreenVideoRoom {
             )
             .await
             .map_err(|e| format!("publishing the video track failed ({e})"))?;
-        // Identity and sid are what watchers match to find this track; log
-        // them first for debugging visibility.
         eprintln!(
             "[voice] screen video published sid={} identity={} target={:?} {}x{}@{}",
             publication.sid(),
@@ -1599,8 +1073,6 @@ impl ScreenVideoRoom {
             settings.fps,
         );
 
-        // A dead capture leaves the track published and frozen, invisible to
-        // the sharer. Report it like `sysaudio` does.
         let (fatal_tx, mut fatal_rx) = unbounded_channel::<String>();
         {
             let mut state = state;
@@ -1616,26 +1088,15 @@ impl ScreenVideoRoom {
             });
         }
 
-        // Push frames on ScreenCaptureKit's queue. `capture_frame` is
-        // synchronous, so the buffer lives only for the call. See
-        // `sysvideo::FrameSink`.
         let capture = crate::sysvideo::start(
             target,
             settings,
             Box::new(move |frame: crate::sysvideo::Frame| {
-                // SAFETY: a live `CVPixelBuffer` with a reference count raised
-                // for this call. `from_cv_pixel_buffer` consumes that reference
-                // (its ObjC bridge ends in `CVPixelBufferRelease`), which is why
-                // the frame hands over a retain of its own rather than the one it
-                // keeps — see `Frame::into_consumable_pixel_buffer`.
                 let buffer = unsafe {
                     NativeBuffer::from_cv_pixel_buffer(frame.into_consumable_pixel_buffer())
                 };
                 source.capture_frame(&VideoFrame {
                     rotation: VideoRotation::VideoRotation0,
-                    // libwebrtc expects capture time in microseconds for
-                    // pacing; the frame's presentation timestamp is on a
-                    // different clock.
                     timestamp_us: std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .map(|d| d.as_micros() as i64)
@@ -1647,8 +1108,6 @@ impl ScreenVideoRoom {
             fatal_tx,
         )?;
 
-        // Nothing subscribes here, but the event stream still has to be drained:
-        // an unread channel is what makes livekit's room task block.
         tokio::spawn(async move { while events.recv().await.is_some() {} });
 
         Ok(Self {
@@ -1659,8 +1118,6 @@ impl ScreenVideoRoom {
     }
 
     async fn shutdown(self) {
-        // Drop capture before closing room to prevent frames from reaching a
-        // closing source.
         #[cfg(target_os = "macos")]
         drop(self._capture);
         match tokio::time::timeout(ROOM_CLOSE_TIMEOUT, self.room.close()).await {
@@ -1671,55 +1128,23 @@ impl ScreenVideoRoom {
     }
 }
 
-/// Audio-only subscriber to the screen-share room.
-///
-/// Publishes nothing. It exists so screen audio captured by someone else's
-/// webview reaches our cpal mixer instead of theirs — see
-/// `ActiveVoice::set_screen_audio`.
 struct ScreenAudioRoom {
     room: Arc<Room>,
     event_task: tokio::task::JoinHandle<()>,
-    /// The `(url, token)` this room was joined with, so a later command carrying
-    /// a different one is recognised as a different room instead of ignored.
     key: (String, String),
-    /// Cleared when the room reports a terminal disconnect. Without it a dead
-    /// room still matches on `key`, so every later command would be answered
-    /// with "already connected" and the audio would never come back.
     alive: Arc<AtomicBool>,
 }
 
-/// What the room's event task needs the UI to know, on the same bridge as
-/// `StreamAudio` and for the same reason: the event task is `tokio::spawn`ed and
-/// so must be `Send`, which a Dioxus Signal is not.
-///
-/// Mostly connection quality, and one notice that is not — see `Undecryptable`.
-/// A second channel for a single boolean would be more moving parts than the
-/// thing it carries.
 enum QualityMsg {
     Set(String, ConnectionHealth),
     Drop(String),
-    /// The room ended. Every reading it produced is now stale, and a stale
-    /// "weak connection" dot left on a name after the call is worse than none.
     Clear,
-    /// Frames arrived that this room could not decrypt.
-    ///
-    /// Not a quality reading, and it rides here because the alternative was a
-    /// whole second bridge for one `bool`. Worth having at all because of what
-    /// the failure looks like without it: media encryption fails *silently* —
-    /// `live_sfu::media_encryption_carries_audio_only_when_the_keys_agree`
-    /// measures the frames still arriving, every sample zero — which is
-    /// indistinguishable from a peer who is not talking. Three key bugs on this
-    /// branch were found by reading `peak=0` out of a log by hand.
     Undecryptable,
 }
 
-/// What the screen/voice event tasks tell the UI about stream audio. An enum
-/// rather than `(String, bool)` because a dying room has to say "all of it",
-/// and encoding that as an empty identity would be a sentinel nobody expects.
 enum StreamAudio {
     Present(String),
     Gone(String),
-    /// The room itself went away: everything it reported is stale.
     RoomGone,
 }
 
@@ -1732,23 +1157,15 @@ impl ScreenAudioRoom {
         state: Signal<AppState>,
         key: (String, String),
     ) -> Result<Self, String> {
-        // Built by mutation rather than a struct literal: `RoomOptions` is
-        // `#[non_exhaustive]`.
         let mut options = RoomOptions::default();
-        // Disable auto-subscribe to avoid pulling screen video, which the
-        // separate screen room exists to isolate.
         options.auto_subscribe = false;
         options.encryption = crate::e2ee::room_options();
         let (room, mut events) = Room::connect(url, token, options)
             .await
             .map_err(|e| format!("livekit connect: {e}"))?;
         let room = Arc::new(room);
-        // Register room to receive keys generated after connect (common for
-        // first joiner).
         crate::e2ee::register_room(&room, crate::e2ee::RoomKind::Screen);
 
-        // Same bridge shape as the voice room's: the event task is `spawn`ed and
-        // so must be Send, which a Dioxus Signal is not.
         let (has_tx, mut has_rx) = unbounded_channel::<StreamAudio>();
         {
             let mut state = state;
@@ -1774,9 +1191,6 @@ impl ScreenAudioRoom {
             });
         }
 
-        // Anyone already sharing when we arrive. We connect *because* someone is
-        // sharing, so this is the common case, not the edge one — `TrackPublished`
-        // only fires for publications that happen after the join.
         for (_, participant) in room.remote_participants() {
             for (_, publication) in participant.track_publications() {
                 if wanted(
@@ -1820,8 +1234,6 @@ impl ScreenAudioRoom {
                                 CHANNELS as i32,
                             );
                             let _ = has_tx.send(StreamAudio::Present(identity.clone()));
-                            // `is_stream: true` — this is program audio, so
-                            // it takes the stream gains, not the voice ones.
                             tokio::spawn(consume_remote_track(
                                 stream,
                                 mixer.clone(),
@@ -1829,9 +1241,6 @@ impl ScreenAudioRoom {
                                 true,
                             ));
                         }
-                        // Filter by source: this room carries video too, and
-                        // unpublishing would otherwise retract the audio
-                        // claim.
                         RoomEvent::TrackUnsubscribed {
                             participant,
                             publication,
@@ -1848,9 +1257,6 @@ impl ScreenAudioRoom {
                         }
                         RoomEvent::Disconnected { reason } => {
                             eprintln!("[voice] screen audio room disconnected: {reason:?}");
-                            // No other handler notices this; without it, the
-                            // room stays `Some` and later commands falsely
-                            // report 'already connected'.
                             alive.store(false, Ordering::Relaxed);
                             let _ = has_tx.send(StreamAudio::RoomGone);
                         }
@@ -1870,8 +1276,6 @@ impl ScreenAudioRoom {
 
     async fn shutdown(self) {
         self.event_task.abort();
-        // `Room` has no `Drop` impl; skipping `close()` holds the SFU slot
-        // until timeout.
         match tokio::time::timeout(ROOM_CLOSE_TIMEOUT, self.room.close()).await {
             Ok(Ok(())) => {}
             Ok(Err(e)) => eprintln!("[voice] screen audio room close failed: {e}"),
@@ -1880,27 +1284,10 @@ impl ScreenAudioRoom {
     }
 }
 
-/// Screen *audio* from somebody else. Our own share is excluded deliberately:
-/// the webview publishes it under our bare pubkey while this connection holds a
-/// suffixed identity, so LiveKit sees two different participants and would hand
-/// our own machine's sound straight back to us.
 fn wanted(source: &TrackSource, publisher: &str, self_pubkey: &str) -> bool {
     *source == TrackSource::ScreenshareAudio && publisher != self_pubkey
 }
 
-/// Denoise and gate captured hops, on a thread of its own.
-///
-/// The gate is what makes the sensitivity slider mean something. Before, the
-/// threshold only tinted a dot in the UI while every frame — breathing, fans,
-/// the neighbour's drill — went out on the wire regardless. Now a frame below
-/// the threshold is simply not transmitted, which is what "the microphone is
-/// not active" has to mean for the control to be worth having.
-///
-/// This is a plain OS thread, not a task, for two reasons. `DfTract` holds `Rc`
-/// internally so it is `!Send` and cannot be held across an `.await` in a
-/// spawned task at all; and the work is a steady 150µs of CPU every 10ms, which
-/// is exactly what you don't want sharing a runtime worker with the network I/O
-/// that has to keep the call up. It exits when `MicCapture` drops the sender.
 fn denoise_gate_loop(
     mut frame_rx: UnboundedReceiver<Vec<f32>>,
     out_tx: UnboundedSender<Vec<i16>>,
@@ -1910,15 +1297,11 @@ fn denoise_gate_loop(
     stats: Arc<GateStats>,
 ) {
     let mut denoiser: Option<crate::denoise::Denoiser> = None;
-    // 0 is illegal, so it doubles as 'nothing applied' (initial state and
-    // post-release), ensuring re-enable reapplies.
     let mut applied_atten_lim = 0u32;
     let mut gate = GateState::default();
     let mut gated = 0u64;
 
     while let Some(mut samples) = frame_rx.blocking_recv() {
-        // Gain first: VU bar and gate threshold are in post-gain terms. Clamp
-        // here to prevent clipping before model/peak measurement.
         let gain_pct = controls.mic_gain_pct.load(Ordering::Relaxed);
         if gain_pct != 100 {
             let g = gain_pct as f32 / 100.0;
@@ -1927,43 +1310,25 @@ fn denoise_gate_loop(
             }
         }
 
-        // Mute skips processing but keeps metering so users can verify mic
-        // status. Measure peak on this hop to avoid stale pre-model data
-        // causing ghost flashes.
         if muted.load(Ordering::Relaxed) {
-            // Both peaks come from this hop; the model never ran on it, so the
-            // bar must not show a gap. Stale pre-model audio would falsely
-            // claim suppression.
             let peak = peak_fixed(&samples);
             meter.bump_peak(peak);
             meter.bump_peak_pre(peak);
             meter.open.store(false, Ordering::Relaxed);
-            // Gate must not remember pre-mute audio, as it saw none of this
-            // hop.
             gate.silence();
             continue;
         }
 
-        // Measured here (not in capture callback) to ensure both peaks are on
-        // the same hop/scale. Kept in hand to avoid redundant computation if
-        // suppression is off.
         let peak_pre = peak_fixed(&samples);
         meter.bump_peak_pre(peak_pre);
         let mut denoised = false;
 
-        // Noise suppression first: the gate should judge the signal the
-        // listener will actually hear, so a fan the model removes shouldn't be
-        // holding the gate open.
         if controls.denoise.load(Ordering::Relaxed) {
             if denoiser.is_none() {
                 match crate::denoise::Denoiser::new() {
                     Ok(d) => {
                         eprintln!("[voice] DeepFilterNet loaded, noise cancellation active");
                         denoiser = Some(d);
-                        // Loading took ~200ms, during which the capture callback
-                        // kept queueing hops. Playing catch-up would put that
-                        // 200ms into the call as permanent extra latency, so
-                        // throw the backlog away and resume at real time.
                         let mut dropped = 0;
                         while frame_rx.try_recv().is_ok() {
                             dropped += 1;
@@ -1971,44 +1336,31 @@ fn denoise_gate_loop(
                         if dropped > 0 {
                             eprintln!("[voice] dropped {dropped} hops queued during model load");
                         }
-                        // Reset gate: it saw no denoised audio, so its
-                        // envelope is on the wrong scale.
                         gate.silence();
                     }
                     Err(e) => {
                         eprintln!("[voice] noise cancellation unavailable: {e}");
-                        // Don't retry a model that won't load, 100 times a second.
                         controls.denoise.store(false, Ordering::Relaxed);
                     }
                 }
             }
             if let Some(d) = denoiser.as_mut() {
-                // Picked up here rather than pushed from the command loop: the
-                // model belongs to this thread, and a slider drag would
-                // otherwise need a lock on the audio path.
                 let want = controls.atten_lim_db.load(Ordering::Relaxed);
                 if want != applied_atten_lim {
                     d.set_atten_lim(want as f32);
                     applied_atten_lim = want;
-                    // Avoid dlog! here: synchronous file I/O on the 10ms hop
-                    // loop would stutter during slider interaction.
                     stats.atten_lim_applied.store(want, Ordering::Relaxed);
                 }
                 d.process_hop(&mut samples);
                 denoised = true;
             }
         } else if denoiser.is_some() {
-            // Release the model when switched off. Its state would be stale on
-            // re-enable anyway: the GRUs would resume from whatever the audio
-            // looked like at the moment the user turned it off.
             eprintln!("[voice] noise cancellation off, releasing model");
             denoiser = None;
             applied_atten_lim = 0;
             stats.atten_lim_applied.store(0, Ordering::Relaxed);
         }
 
-        // Use post-model peak only when denoised; otherwise pre-model peak is
-        // the definition, so no gap is drawn.
         let peak = if denoised {
             peak_fixed(&samples)
         } else {
@@ -2038,9 +1390,6 @@ fn denoise_gate_loop(
 
         let data: Vec<i16> = samples
             .iter()
-            // No dither here: these frames go straight into Opus. Dither is for
-            // the final quantization to an output device — feeding noise to a
-            // lossy encoder only costs bitrate.
             .map(|s| (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16)
             .collect();
         if out_tx.send(data).is_err() {
@@ -2050,48 +1399,26 @@ fn denoise_gate_loop(
     eprintln!("[voice] denoise/gate thread ended ({gated} frames gated)");
 }
 
-/// What the gate decided about the hop just measured.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum GateAction {
-    /// Send it as it is — the gate was already open and stays open.
     Pass,
-    /// Send it faded in: the gate just opened.
     RampIn,
-    /// Send it faded out: the gate just closed, and a phrase should end on
-    /// zero rather than on whatever sample the cut landed on.
     RampOut,
-    /// Send nothing.
     Drop,
 }
 
-/// The transmit gate's memory between hops.
-///
-/// A struct because the three fields have to move together, which is exactly
-/// what the first version of this got wrong: it reset the hangover counter when
-/// the mic was muted and left the envelope and the open flag alone. Unmuting
-/// into a quiet room then resumed from the level the user had last been
-/// *speaking* at — the envelope decays 25% a hop, so a peak of 900 is still
-/// over a threshold of 21 fifteen hops later — and the gate passed a third of a
-/// second of room noise before deciding it was silence. Review of #46 traced
-/// it. Anything that interrupts the audio the gate is watching has to say so
-/// through `silence`, not by poking one field.
 #[derive(Default)]
 struct GateState {
-    /// Frames left before the gate closes. Non-zero = currently transmitting.
     hangover: u32,
-    /// Released peak, so a single dip cannot start the hangover counting down.
     envelope: i32,
-    /// Whether the previous hop was sent — what the ramps key off.
     was_open: bool,
 }
 
 impl GateState {
-    /// Forget everything, because the next hop does not continue the last one.
     fn silence(&mut self) {
         *self = Self::default();
     }
 
-    /// Judge one hop's peak, on the ×1000 fixed-point scale the slider uses.
     fn step(&mut self, peak: i32, open_at: i32) -> GateAction {
         self.envelope = peak.max(self.envelope * GATE_ENVELOPE_DECAY_PCT / 100);
         let hold_at = open_at * GATE_CLOSE_RATIO_PCT / 100;
@@ -2113,12 +1440,6 @@ impl GateState {
     }
 }
 
-/// Fade a hop in or out over `GATE_RAMP_SAMPLES`, in place.
-///
-/// Applied to the hop the gate changes state on: rising, so an onset is not
-/// asserted at full level from a standing start; falling, so the last hop of a
-/// phrase ends on zero instead of on whatever sample the cut happened to land
-/// on. A hop shorter than the ramp uses its whole length.
 fn ramp(samples: &mut [f32], rising: bool) {
     let n = GATE_RAMP_SAMPLES.min(samples.len());
     if n == 0 {
@@ -2133,14 +1454,6 @@ fn ramp(samples: &mut [f32], rising: bool) {
     }
 }
 
-/// Map a peak (×1000 fixed point) to a 0..=100 meter position on a dB scale.
-///
-/// Amplitude is linear but hearing is not, which is why the old linear bar
-/// always looked broken: ordinary speech peaks around 0.03–0.3, so a linear
-/// meter sat between 3% and 30% and the default threshold rendered as "2%" —
-/// numbers that look like something is wrong when the audio is perfectly fine.
-/// On a dBFS scale (-60 dB at the bottom, 0 dBFS at the top) that same speech
-/// lands between 50% and 90%, which is where a meter is meant to sit.
 pub fn peak_to_meter_pct(peak_fixed: u32) -> u32 {
     if peak_fixed == 0 {
         return 0;
@@ -2149,15 +1462,12 @@ pub fn peak_to_meter_pct(peak_fixed: u32) -> u32 {
     (((db - METER_FLOOR_DB) / -METER_FLOOR_DB) * 100.0).clamp(0.0, 100.0) as u32
 }
 
-/// Inverse of `peak_to_meter_pct`, so the sensitivity slider can move in even
-/// dB steps while the stored value stays the ×1000 peak the gate compares.
 pub fn meter_pct_to_peak(pct: u32) -> u32 {
     let db = (pct.min(100) as f64 / 100.0) * -METER_FLOOR_DB + METER_FLOOR_DB;
     let amp = 10f64.powf(db / 20.0);
     ((amp * 1000.0).round() as i64).clamp(1, 1000) as u32
 }
 
-/// A peak as a dBFS label for the UI ("-32 dB").
 pub fn peak_to_db_label(peak_fixed: u32) -> String {
     if peak_fixed == 0 {
         return "−∞".into();
@@ -2165,18 +1475,12 @@ pub fn peak_to_db_label(peak_fixed: u32) -> String {
     format!("{:.0} dB", 20.0 * (peak_fixed as f64 / 1000.0).log10())
 }
 
-/// Bottom of the meter. -60 dBFS is below the noise floor of any usable mic,
-/// so nothing interesting is hidden underneath it.
 const METER_FLOOR_DB: f64 = -60.0;
 
-/// A published system-audio track and the capture feeding it.
 struct SystemAudioTrack {
     sid: livekit::prelude::TrackSid,
-    /// Dropping this stops the OS-level capture.
     _capture: crate::sysaudio::Capture,
     task: tokio::task::JoinHandle<()>,
-    /// The selected surface this capture follows. `None` on Windows, whose
-    /// native path is whole-machine loopback after a webview monitor pick.
     target: Option<crate::sysvideo::Target>,
 }
 
@@ -2186,8 +1490,6 @@ impl Drop for SystemAudioTrack {
     }
 }
 
-/// Forward captured PCM frames to a libwebrtc source. Same shape as the mic's
-/// publish loop, without the gate — program audio isn't voice-activated.
 async fn publish_pcm(mut rx: UnboundedReceiver<Vec<f32>>, source: NativeAudioSource) {
     while let Some(samples) = rx.recv().await {
         let data: Vec<i16> = samples
@@ -2206,15 +1508,10 @@ async fn publish_pcm(mut rx: UnboundedReceiver<Vec<f32>>, source: NativeAudioSou
     }
 }
 
-/// Peak absolute sample as ×1000 fixed point — the scale the threshold slider
-/// and the VU bar both speak.
 fn peak_fixed(samples: &[f32]) -> i32 {
     (samples.iter().fold(0.0f32, |m, s| m.max(s.abs())) * 1_000.0) as i32
 }
 
-/// Hand gated frames to libwebrtc. `capture_frame` is async, which is the only
-/// reason this is a task at all — everything expensive already happened on the
-/// denoise/gate thread.
 async fn publish_loop(mut rx: UnboundedReceiver<Vec<i16>>, source: NativeAudioSource) {
     let mut sent = 0u64;
     while let Some(data) = rx.recv().await {
@@ -2236,22 +1533,15 @@ async fn publish_loop(mut rx: UnboundedReceiver<Vec<i16>>, source: NativeAudioSo
 }
 
 impl MicMeter {
-    /// Raise the pre-model peak to `value` if it's louder. Reset on read.
     fn bump_peak_pre(&self, value: i32) {
         self.peak_pre.fetch_max(value, Ordering::Relaxed);
     }
 
-    /// Raise the stored peak to `value` if it's louder. Reset on read.
     fn bump_peak(&self, value: i32) {
         self.peak.fetch_max(value, Ordering::Relaxed);
     }
 }
 
-/// Mirror the mic meter into `AppState` for the VU bar and the speaking dot.
-///
-/// Both come from the *same* gate the publish path uses, so the indicator can't
-/// disagree with what is actually being transmitted — which it did when the UI
-/// ran its own copy of the threshold comparison.
 fn spawn_meter_task(mut state: Signal<AppState>, meter: Arc<MicMeter>) -> Task {
     dioxus::prelude::spawn(async move {
         let mut last_speaking = false;
@@ -2262,8 +1552,6 @@ fn spawn_meter_task(mut state: Signal<AppState>, meter: Arc<MicMeter>) -> Task {
             let level = meter.peak.swap(0, Ordering::Relaxed).clamp(0, 1000) as u32;
             let level_pre = meter.peak_pre.swap(0, Ordering::Relaxed).clamp(0, 1000) as u32;
             let speaking = meter.open.load(Ordering::Relaxed);
-            // Only write on change: this ticks 6x a second and every write
-            // re-renders the app.
             if level != last_level {
                 last_level = level;
                 state.write().mic_level = level;
@@ -2280,14 +1568,6 @@ fn spawn_meter_task(mut state: Signal<AppState>, meter: Arc<MicMeter>) -> Task {
     })
 }
 
-/// Poll the peer connection for the numbers behind "it sounds bad": loss,
-/// jitter, and how much delay the decoder is holding.
-///
-/// Gated rather than started and stopped. Spawning the task once and having it
-/// check a flag costs one atomic load a second while the panel is closed, and
-/// avoids threading a `Task` handle through the command loop to be cancelled
-/// and respawned — the flag already lives on `AudioControls`, which survives
-/// the session rebuilds a device change causes.
 fn spawn_stats_task(
     mut state: Signal<AppState>,
     room: Arc<Room>,
@@ -2302,12 +1582,8 @@ fn spawn_stats_task(
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
             if !enabled.load(Ordering::Relaxed) {
-                // Clear on disable so a reopened panel doesn't show stale
-                // stats as live.
                 if was_enabled {
                     was_enabled = false;
-                    // Reset prev_out to avoid calculating a rate over the
-                    // entire disabled period.
                     prev_out = None;
                     if !state.peek().voice_stats.is_empty() {
                         state.write().voice_stats.clear();
@@ -2320,8 +1596,6 @@ fn spawn_stats_task(
             let mut next: HashMap<String, TrackStats> = HashMap::new();
             for (identity, participant) in room.remote_participants() {
                 for publication in participant.track_publications().into_values() {
-                    // Filter to Microphone to avoid reporting screen-share
-                    // audio stats on the voice row.
                     if publication.source() != TrackSource::Microphone {
                         continue;
                     }
@@ -2335,9 +1609,6 @@ fn spawn_stats_task(
                         RtcStats::InboundRtp(i) => Some(i),
                         _ => None,
                     }) {
-                        // Log raw cumulative counters (rx, lost) alongside
-                        // loss_pct to reveal bursty spikes hidden by the
-                        // session average.
                         let st = inbound_stats(s);
                         if let TrackStats::Inbound {
                             loss_pct,
@@ -2374,16 +1645,8 @@ fn spawn_stats_task(
                 let rates = outbound_rates(prev_out, packets, bytes, now);
                 prev_out = Some((packets, bytes, now));
                 let target_kbps = (o.outbound.target_bitrate / 1000.0).round() as u32;
-                // Split once and used by both, the way `target_kbps` already
-                // is. Nothing here can drift the way the inbound formulas
-                // could — `rates` is a single source and these only pick a
-                // field off it — but the log and the panel showing the same
-                // number should be visible in the code rather than left to two
-                // call sites happening to agree.
                 let bitrate_kbps = rates.map(|(_, kbit)| kbit);
                 let packets_per_sec = rates.map(|(pkt, _)| pkt);
-                // Log target bitrate alongside actual to detect congestion
-                // control pulling the rate down.
                 crate::dlog!(
                     "stats out bitrate={} pkt/s={} target={target_kbps}kbps sent={} bytes={}",
                     bitrate_kbps.map_or("-".into(), |kbit| format!("{kbit:.0}kbps")),
@@ -2401,7 +1664,6 @@ fn spawn_stats_task(
                 );
             }
 
-            // Ticks once a second; every write re-renders.
             if state.peek().voice_stats != next {
                 state.write().voice_stats = next;
             }
@@ -2409,13 +1671,10 @@ fn spawn_stats_task(
     })
 }
 
-/// Reduce a raw inbound report to the four numbers the panel shows.
 fn inbound_stats(s: &livekit::webrtc::stats::InboundRtpStats) -> TrackStats {
     let received = s.received.packets_received;
     let lost = s.received.packets_lost.max(0) as u64;
     let total = received + lost;
-    // jitterBufferTargetDelay is a running sum in seconds; divide by emitted
-    // count to get average.
     let emitted = s.inbound.jitter_buffer_emitted_count;
     TrackStats::Inbound {
         loss_pct: if total == 0 {
@@ -2433,20 +1692,6 @@ fn inbound_stats(s: &livekit::webrtc::stats::InboundRtpStats) -> TrackStats {
     }
 }
 
-/// Turn two readings of libwebrtc's monotonic send counters into
-/// `(packets_per_sec, kbit_s)`.
-///
-/// Divided by the time actually elapsed rather than by the poll interval: the
-/// loop sleeps a second and *then* awaits one `get_stats()` per participant, so
-/// the real gap is a second plus however long that walk took. Same reason the
-/// Windows capture path reads its clock instead of counting iterations — it is
-/// self-correcting, which also means a tick where the read failed costs
-/// accuracy on nothing.
-///
-/// `None` until there is a previous reading to subtract from, and `None` again
-/// if a counter went backwards — which is what a renegotiated ssrc looks like
-/// from here, and which would otherwise wrap into an enormous number. Reporting
-/// zero instead would be indistinguishable from sending nothing.
 fn outbound_rates(
     prev: Option<(u64, u64, Instant)>,
     packets: u64,
@@ -2468,18 +1713,11 @@ fn outbound_rates(
 
 struct MicCapture {
     _backend: MicBackend,
-    /// Shared with the DSP thread, which is where muted frames are dropped
-    /// (after metering, so the VU bar keeps working while muted).
     muted: Arc<AtomicBool>,
-    /// The 2s diagnostic loop, held only so `stop` can end it.
     heartbeat: tokio::task::JoinHandle<()>,
 }
 
-/// Who opened the microphone. Both ends feed the same `forward_mic`, at the
-/// device's own rate and channel count — the difference is only whether the
-/// OS's input processing is in the path (see `crate::rawmic`).
 enum MicBackend {
-    // Held for Drop; dropping stops capture.
     Cpal {
         _stream: cpal::Stream,
     },
@@ -2499,11 +1737,8 @@ impl MicCapture {
         let raw_peak = Arc::new(AtomicI32::new(0));
         let frames_pushed = Arc::new(AtomicU64::new(0));
         let selected = state.read().selected_input_device.clone();
-        // Whatever a previous session reported was about a capture that is gone.
         state.write().mic_bypass_error = None;
 
-        // Raw first when it was asked for: it is another way to open the same
-        // device, so if it opens there is nothing left for cpal to do.
         let backend = match Self::maybe_raw(&frame_tx, state, &selected, &raw_peak, &frames_pushed)
         {
             Some(raw) => raw,
@@ -2511,8 +1746,6 @@ impl MicCapture {
         };
 
         let heartbeat = Self::spawn_heartbeat(raw_peak, frames_pushed, gate_stats);
-        // Speaking detection/VU bar live on the publish task to avoid
-        // disagreement with actual audio.
         Ok(Self {
             _backend: backend,
             muted,
@@ -2520,12 +1753,6 @@ impl MicCapture {
         })
     }
 
-    /// The raw-mode backend, when the user asked for it and the device gave it.
-    ///
-    /// A refusal is not fatal — the microphone still works on the ordinary
-    /// path — but it is *recorded*, because a lit switch over an unchanged
-    /// audio path is exactly the kind of quiet lie this setting exists to
-    /// remove.
     #[cfg(target_os = "windows")]
     fn maybe_raw(
         frame_tx: &tokio::sync::mpsc::UnboundedSender<Vec<f32>>,
@@ -2538,8 +1765,6 @@ impl MicCapture {
             return None;
         }
 
-        // A dead capture leaves the track published but quiet, invisible to
-        // the speaker.
         let (fatal_tx, mut fatal_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         dioxus::prelude::spawn(async move {
             if let Some(e) = fatal_rx.recv().await {
@@ -2556,8 +1781,6 @@ impl MicCapture {
         let (frame_tx, raw_peak, frames_pushed) =
             (frame_tx.clone(), raw_peak.clone(), frames_pushed.clone());
         let sink: crate::rawmic::SinkBuilder = Box::new(move |rate: u32, channels: u32| {
-            // Built here because the device's rate is only known once its
-            // client is initialised.
             let accum: Arc<Mutex<Vec<f32>>> =
                 Arc::new(Mutex::new(Vec::with_capacity(FRAME_SAMPLES * 4)));
             let resampler = Arc::new(Mutex::new(AudioResampler::new(rate, SAMPLE_RATE)));
@@ -2592,7 +1815,6 @@ impl MicCapture {
         }
     }
 
-    /// Nothing to bypass here, so nothing to try. See `crate::rawmic`.
     #[cfg(not(target_os = "windows"))]
     fn maybe_raw(
         _frame_tx: &tokio::sync::mpsc::UnboundedSender<Vec<f32>>,
@@ -2646,13 +1868,9 @@ impl MicCapture {
         let raw_peak_cb = raw_peak.clone();
         let frames_pushed_cb = frames_pushed.clone();
 
-        // Accumulates samples across callbacks to ensure each frame handed to
-        // libwebrtc is exactly `FRAME_SAMPLES` long.
         let accum: Arc<Mutex<Vec<f32>>> =
             Arc::new(Mutex::new(Vec::with_capacity(FRAME_SAMPLES * 4)));
 
-        // None if device already runs at SAMPLE_RATE (48kHz) — most common
-        // case on macOS CoreAudio.
         let resampler = Arc::new(Mutex::new(AudioResampler::new(device_rate, SAMPLE_RATE)));
         if resampler.lock().is_some() {
             eprintln!("[voice] mic: resampling {device_rate}Hz → {SAMPLE_RATE}Hz via rubato");
@@ -2749,15 +1967,6 @@ impl MicCapture {
         Ok(MicBackend::Cpal { _stream: stream })
     }
 
-    /// Heartbeat — reports loudest raw sample seen since last tick.
-    ///
-    /// The handle goes back to the caller and is aborted on drop: this outlives
-    /// the capture otherwise, and a session is rebuilt on every device change —
-    /// and now on every flip of the raw-capture switch — so the log would fill
-    /// with a chorus of dead heartbeats reporting on `GateStats` nobody writes
-    /// to any more. Worst in `dev.log`, which is read after the fact and has
-    /// nothing in a line saying which session it came from. `meter_task` on
-    /// `ActiveVoice` is cancelled for the same reason.
     fn spawn_heartbeat(
         peak_log: Arc<AtomicI32>,
         frames_log: Arc<AtomicU64>,
@@ -2780,18 +1989,9 @@ impl MicCapture {
                     "[voice] mic heartbeat: raw peak={p:.4} ({level}), frames pushed to webrtc={f} (+{})",
                     f - prev_frames
                 );
-                // Logged to `dev.log` for persistence. `raw` is mic input;
-                // `after` is post-DeepFilterNet. The gap shows the model's
-                // work relative to `thr`. `passed`/`dropped` counts are
-                // incremented upstream in the cpal callback, so they are not
-                // visible in the heartbeat counter.
                 let after = gate_stats.peak_after.swap(0, Ordering::Relaxed) as f32 / 1_000.0;
                 let passed = gate_stats.passed.swap(0, Ordering::Relaxed);
                 let dropped = gate_stats.dropped.swap(0, Ordering::Relaxed);
-                // `atten` is a level, not a counter: clearing it would blank
-                // the field on every tick but the first. Formatted inside
-                // macro args so release builds drop the allocation (see
-                // `dlog!`).
                 crate::dlog!(
                     "mic 2s raw={p:.4} after={after:.4} thr={:.4} passed={passed} dropped={dropped}{}",
                     gate_stats.threshold.load(Ordering::Relaxed) as f32 / 1_000.0,
@@ -2805,34 +2005,15 @@ impl MicCapture {
         })
     }
 
-    /// Stop capturing. Every half goes with `self` — the backend stops when it
-    /// is dropped, and the heartbeat ends in `Drop` below.
     fn stop(self) {}
 }
 
 impl Drop for MicCapture {
-    /// Ends the heartbeat. Here rather than in `stop` because `stop` is not
-    /// the only way a capture goes away: `ActiveVoice::shutdown` calls it, but
-    /// a session that fails partway through building, or one dropped without
-    /// shutting down, just drops this — and a detached `tokio::spawn` has
-    /// nothing else that would ever end it.
     fn drop(&mut self) {
         self.heartbeat.abort();
     }
 }
 
-/// Downmix, resample and cut the device's callback buffer into exact 10ms
-/// hops for the publish task. Mute is *not* checked here: the publish task
-/// still wants muted frames so the VU bar keeps moving (a muted user watching
-/// a dead meter can't tell a mute from a broken mic), and it drops them there.
-///
-/// `mono_buf` and `resampled_buf` are caller-provided reusable buffers —
-/// allocating inside cpal's realtime callback can trigger a page fault or
-/// allocator lock and cause an xrun (dropout). Both are cleared at entry.
-///
-/// Called from cpal's callback and from `rawmic`'s pump thread, which is the
-/// point: the two backends differ in how the device is opened, not in what
-/// happens to the samples afterwards.
 fn forward_mic(
     frame_tx: &tokio::sync::mpsc::UnboundedSender<Vec<f32>>,
     samples: &[f32],
@@ -2842,15 +2023,12 @@ fn forward_mic(
     mono_buf: &mut Vec<f32>,
     resampled_buf: &mut Vec<f32>,
 ) -> usize {
-    // Downmix to mono reusing the caller's buffer instead of allocating.
     mono_buf.clear();
     mono_buf.extend(
         samples
             .chunks(device_channels as usize)
             .map(|c| c.iter().copied().sum::<f32>() / c.len() as f32),
     );
-    // Uses `process_into` to avoid allocation during resampling; falls back to
-    // copy if no resampler is needed.
     {
         let mut rs = resampler.lock();
         match rs.as_mut() {
@@ -2867,8 +2045,6 @@ fn forward_mic(
 
     let mut pushed = 0usize;
     while buf.len() >= FRAME_SAMPLES {
-        // Keeps f32 to preserve resolution for DeepFilterNet; one alloc per
-        // 10ms hop is acceptable and happens outside the cpal lock.
         let chunk: Vec<f32> = buf.drain(..FRAME_SAMPLES).collect();
         if frame_tx.send(chunk).is_err() {
             break;
@@ -2886,7 +2062,6 @@ fn update_peak(peak: &Arc<std::sync::atomic::AtomicI32>, samples: &[f32]) {
             local_max = a;
         }
     }
-    // Store as fixed-point (×1000) so we can use AtomicI32.
     let local_i = (local_max * 1_000.0) as i32;
     let mut current = peak.load(std::sync::atomic::Ordering::Relaxed);
     while local_i > current {
@@ -2902,40 +2077,14 @@ fn update_peak(peak: &Arc<std::sync::atomic::AtomicI32>, samples: &[f32]) {
     }
 }
 
-/// High-quality resampler wrapping rubato's FFT-based synchronous resampler.
-/// Replaces the old `naive_resample` (linear interpolation without anti-
-/// aliasing) which introduced metallic artefacts on frequencies above ~4kHz
-/// when the device sample rate differed from LiveKit's 48kHz.
-///
-/// rubato is pure Rust (no C deps), supports Windows MSVC + macOS (Intel &
-/// Apple Silicon) + Linux, and auto-detects SIMD (AVX/SSE/Neon) at runtime.
-/// `process_into_buffer` itself does not allocate, but `process` below still
-/// returns a fresh `Vec` per call, so this is *not* strictly realtime-safe —
-/// the mic path calls it from cpal's callback. The internal buffers are reused
-/// to keep that to one allocation; removing it entirely needs a caller-provided
-/// output buffer on both call sites.
-///
-/// The resampler is stateful (it keeps the anti-aliasing filter state between
-/// calls), so one instance must live for the whole voice session. Input is
-/// buffered until a full `RESAMPLER_CHUNK` is available; the leftover tail
-/// stays in `input_accum` for the next call.
 struct AudioResampler {
     inner: FftFixedIn<f32>,
-    /// Pending input frames not yet enough for a full resampler chunk.
     input_accum: Vec<f32>,
-    /// Reusable input chunk handed to rubato, so the per-chunk `drain().
-    /// collect()` doesn't allocate on the mic's realtime thread.
     chunk_in: Vec<f32>,
-    /// Reusable output scratch. `process_into_buffer` requires this to be
-    /// pre-sized to at least `output_frames_next()` — it validates the length
-    /// (not the capacity) and refuses to write into a short buffer. Keeping it
-    /// alive across calls also avoids allocating on the mic's realtime thread.
     scratch_out: Vec<f32>,
 }
 
 impl AudioResampler {
-    /// Create a resampler for mono audio. Returns None if `from == to` (no
-    /// resampling needed — caller passes samples through unchanged).
     fn new(from_rate: u32, to_rate: u32) -> Option<Self> {
         if from_rate == to_rate {
             return None;
@@ -2953,13 +2102,6 @@ impl AudioResampler {
         })
     }
 
-    /// Realtime-safe variant of resampling: writes into a caller-provided
-    /// buffer instead of allocating a new Vec per call. Used inside cpal's
-    /// audio callback, where a heap allocation can trigger a page fault or
-    /// allocator lock and cause an xrun (dropout).
-    ///
-    /// Feeds the internal resampler in chunks of `RESAMPLER_CHUNK` frames;
-    /// leftover input is kept for the next call.
     fn process_into(&mut self, input: &[f32], out: &mut Vec<f32>) {
         out.clear();
         self.input_accum.extend_from_slice(input);
@@ -2988,11 +2130,6 @@ impl AudioResampler {
     }
 }
 
-/// xorshift32 — a handful of instructions, no thread-local lookup and no
-/// locking, so it is safe to call from an audio callback. `rand::random()`
-/// reaches for a thread-local `ThreadRng` on every call, which at 48kHz stereo
-/// meant ~96k of those per second inside cpal's realtime thread. Dither only
-/// needs uniform noise, not cryptographic quality.
 #[inline]
 fn xorshift32(state: &mut u32) -> f32 {
     let mut x = *state;
@@ -3000,22 +2137,11 @@ fn xorshift32(state: &mut u32) -> f32 {
     x ^= x >> 17;
     x ^= x << 5;
     *state = x;
-    // Top 24 bits -> [0, 1). f32 has 24 bits of mantissa, so this is the most
-    // resolution the type can carry anyway.
     (x >> 8) as f32 / (1u32 << 24) as f32
 }
 
-/// Seed for the dither RNG. Any non-zero value works; xorshift is a fixed point
-/// at zero and would emit a constant.
 const DITHER_SEED: u32 = 0x9E37_79B9;
 
-/// TPDF dither + quantization to i16. Reduces quantization distortion on
-/// quiet signals (the classic "metallic hiss" at low bit depths). TPDF
-/// (triangular probability density function) is the standard choice — it
-/// eliminates noise modulation, unlike uniform (RPDF) dither.
-///
-/// Only worth doing on the *final* conversion to the output device. Dithering
-/// audio on its way into a lossy encoder just spends bitrate on noise.
 #[inline]
 fn dither_to_i16(sample: f32, rng: &mut u32) -> i16 {
     let clamped = sample.clamp(-1.0, 1.0);
@@ -3025,35 +2151,16 @@ fn dither_to_i16(sample: f32, rng: &mut u32) -> i16 {
     ((clamped + dither) * i16::MAX as f32) as i16
 }
 
-/// One jitter buffer per subscribed remote track, summed by the output
-/// callback.
-///
-/// These must be per-track. Previously every remote participant shared a single
-/// buffer and a single resampler, so with two or more speakers their samples
-/// were *appended* to one timeline rather than mixed, and the resampler — which
-/// is stateful (FFT overlap plus a partial-chunk accumulator) — had its filter
-/// state corrupted by interleaved chunks from different people. That is why the
-/// audio degraded when a third participant joined and stayed broken after
-/// people left: the corrupted state outlived them.
 #[derive(Default)]
 struct MixerTracks {
     buffers: std::collections::HashMap<u64, TrackBuf>,
     next_id: u64,
 }
 
-/// One remote participant's jitter buffer plus the gain we play them back at.
 struct TrackBuf {
     samples: std::collections::VecDeque<f32>,
-    /// LiveKit identity of whoever is speaking — the user's pubkey. Keyed by
-    /// identity rather than track id so a participant who leaves and rejoins
-    /// (new track, new id) comes back at the level you last set for them.
     identity: String,
-    /// Gain refreshed once per output callback from the shared map, so the
-    /// per-sample loop never touches a HashMap or a second lock.
     gain: f32,
-    /// Screen-share audio rather than someone's voice. The two are mixed the
-    /// same way but take their gain from different maps, so turning a stream
-    /// down doesn't quieten the person talking over it.
     is_stream: bool,
 }
 
@@ -3061,19 +2168,12 @@ struct TrackBuf {
 struct PlaybackHandle {
     tracks: Arc<Mutex<MixerTracks>>,
     device_rate: u32,
-    /// Shared with the UI via `AudioControls` — see `VoiceCmd::SetUserVolume`.
     gains: Arc<Mutex<HashMap<String, f32>>>,
     stream_gains: Arc<Mutex<HashMap<String, f32>>>,
 }
 
 impl PlaybackHandle {
-    /// Claim a jitter buffer for one remote track. The id is opaque; the caller
-    /// hands it back to `push`/`remove_track`.
     fn add_track(&self, identity: String, is_stream: bool) -> u64 {
-        // Read the gain and release that lock BEFORE taking `tracks`: the
-        // output callback locks them the other way round (tracks, then gains
-        // in `refresh_gains`), and holding both here in the opposite order is
-        // a deadlock against the audio thread.
         let gain = if is_stream {
             self.stream_gains
                 .lock()
@@ -3083,8 +2183,6 @@ impl PlaybackHandle {
         } else {
             self.gains.lock().get(&identity).copied().unwrap_or(1.0)
         };
-        // Stream tracks are keyed by `{pubkey}#audio` while voice uses bare
-        // pubkey; mismatched keys cause lookup misses.
         crate::dlog!(
             "mixer add_track identity={identity} is_stream={is_stream} initial_gain={gain:.2}"
         );
@@ -3125,9 +2223,6 @@ impl PlaybackHandle {
     }
 }
 
-/// Copy the user's chosen volumes onto the live tracks. Called once per output
-/// callback: a HashMap lookup per *sample* would be absurd, and the volume only
-/// needs to be as fresh as one buffer (a few ms).
 fn refresh_gains(
     tracks: &mut MixerTracks,
     gains: &Arc<Mutex<HashMap<String, f32>>>,
@@ -3137,11 +2232,6 @@ fn refresh_gains(
     if tracks.buffers.is_empty() {
         return;
     }
-    // Deafen overrides both maps and returns before either lock is taken: the
-    // user's own levels have to survive it, and there is no reason for the
-    // realtime callback to contend for a map it is about to ignore. Only the
-    // gain is touched — the per-sample loop still pops every track, which is
-    // what keeps a 200ms burst from escaping on undeafen.
     if deafened.load(Ordering::Relaxed) {
         for track in tracks.buffers.values_mut() {
             track.gain = 0.0;
@@ -3152,8 +2242,6 @@ fn refresh_gains(
     let sg = stream_gains.lock();
     for track in tracks.buffers.values_mut() {
         track.gain = if track.is_stream {
-            // Absent means "not watching", which is silence — the opposite
-            // default from voice, where absent means normal volume.
             sg.get(&track.identity).copied().unwrap_or(0.0)
         } else {
             g.get(&track.identity).copied().unwrap_or(1.0)
@@ -3161,9 +2249,6 @@ fn refresh_gains(
     }
 }
 
-/// Pop one sample from a track's jitter buffer, nudging its depth back toward
-/// the target by skipping or duplicating a sample occasionally — a cheap
-/// time-stretch that doesn't shift pitch.
 #[inline]
 fn pop_drift_compensated(
     buf: &mut std::collections::VecDeque<f32>,
@@ -3228,8 +2313,6 @@ impl PlaybackMixer {
             "[voice] playback: device={device_name} format={sample_format:?} rate={device_rate} ch={device_channels}"
         );
 
-        // VecDeque for O(1) pop_front — Vec::remove(0) is O(n) and was
-        // starving the audio callback at our buffer sizes.
         let tracks = Arc::new(Mutex::new(MixerTracks::default()));
         let tracks_cb = tracks.clone();
         let cb_counter = Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -3237,22 +2320,15 @@ impl PlaybackMixer {
         let pulled_counter = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let pulled_cb = pulled_counter.clone();
 
-        // Drift compensation: cycles 0..255 to skip/duplicate samples for
-        // smooth buffer adjustment.
         let drift_counter = Arc::new(std::sync::atomic::AtomicU32::new(0));
         let drift_counter_cb = drift_counter.clone();
         let device_rate_cb = device_rate;
-        // Only one of these callbacks is ever built, but both closures must be
-        // constructible, so each needs its own clone of the gain map.
         let gains_f32 = controls.gains.clone();
         let gains_i16 = controls.gains.clone();
         let stream_gains_f32 = controls.stream_gains.clone();
         let stream_gains_i16 = controls.stream_gains.clone();
         let deafened_f32 = controls.deafened.clone();
         let deafened_i16 = controls.deafened.clone();
-        // Dither PRNG state. Moved into the i16 callback so it advances across
-        // invocations (a per-callback reseed would emit the same noise pattern
-        // every buffer, which is audible as a tone).
         let mut dither_rng = DITHER_SEED;
 
         let err = |e| eprintln!("output stream error: {e}");
@@ -3264,25 +2340,13 @@ impl PlaybackMixer {
                     let mut tracks = tracks_cb.lock();
                     refresh_gains(&mut tracks, &gains_f32, &stream_gains_f32, &deafened_f32);
                     let mut pulled = 0u64;
-                    // Drift compensation thresholds (in samples at device rate).
-                    // The overrun mark must stay under the producer-side cap
-                    // (PLAYBACK_CAP_DIVISOR, ~200ms) or it can never be reached
-                    // and the branch is dead.
                     let overrun_threshold = (device_rate_cb as f64 * DRIFT_OVERRUN_SECS) as usize;
                     let underrun_threshold = (device_rate_cb as f64 * DRIFT_UNDERRUN_SECS) as usize;
                     let mut counter = drift_counter_cb.load(Ordering::Relaxed);
                     for frame in data.chunks_mut(device_channels) {
                         counter = counter.wrapping_add(1);
-                        // Per-track soft knee prevents a single loud speaker
-                        // from saturating the bus before the global limiter
-                        // sees other tracks. Gentle (15% reduction at full
-                        // scale) so solo unity gain is untouched.
                         let mut acc = 0.0f32;
                         for track in tracks.buffers.values_mut() {
-                            // Always pop, even at zero gain: a locally-muted
-                            // participant whose buffer stops draining would
-                            // overflow and then blast 200ms of stale audio the
-                            // moment they're unmuted.
                             let s = track.gain
                                 * pop_drift_compensated(
                                     &mut track.samples,
@@ -3290,20 +2354,9 @@ impl PlaybackMixer {
                                     overrun_threshold,
                                     underrun_threshold,
                                 );
-                            // Transparent limiter: identity below 1.0, soft
-                            // clip above. tanh compressed normal speech and
-                            // squashed multi-speaker sums to flat/distorted.
                             acc += s * (1.0 - 0.15 * s.abs().min(1.0));
                         }
-                        // Transparent limiter: identity below 1.0 (no
-                        // compression of normal-level speech), soft clip above.
-                        // tanh compressed everything — even a single speaker at
-                        // 0.5 lost ~2% to the curve — and several simultaneous
-                        // speakers at unity summed to 3.0 which tanh squashed
-                        // to 0.995, flat and slightly distorted.
                         let sample = if acc.abs() > 1.0 {
-                            // Continuous at ±1, asymptotes to ±2; maps 3.0 to
-                            // 1.67 (loud but not flat).
                             acc.signum() * (2.0 - 1.0 / acc.abs())
                         } else {
                             acc
@@ -3323,8 +2376,6 @@ impl PlaybackMixer {
             ),
             cpal::SampleFormat::I16 => device.build_output_stream(
                 &config.into(),
-                // Owned by callback to avoid shared state/locks on the
-                // realtime thread.
                 move |data: &mut [i16], _| {
                     cb_counter_cb.fetch_add(1, Ordering::Relaxed);
                     let mut tracks = tracks_cb.lock();
@@ -3364,8 +2415,6 @@ impl PlaybackMixer {
         }
         .map_err(|e| format!("build_output_stream: {e}"))?;
 
-        // Weak refs end the task when the stream drops; strong refs would leak
-        // tasks and report stale 'alive' status.
         let cb_for_log = Arc::downgrade(&cb_counter);
         let pulled_for_log = Arc::downgrade(&pulled_counter);
         tokio::spawn(async move {
@@ -3373,8 +2422,6 @@ impl PlaybackMixer {
             let mut prev_pulled = 0u64;
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                // Upgrade per tick to avoid keeping counters alive across
-                // sleep, which would defeat the exit check.
                 let (Some(cb_counter), Some(pulled_counter)) =
                     (cb_for_log.upgrade(), pulled_for_log.upgrade())
                 else {
@@ -3399,8 +2446,6 @@ impl PlaybackMixer {
         if device_rate != SAMPLE_RATE {
             eprintln!("[voice] playback: resampling {SAMPLE_RATE}Hz → {device_rate}Hz via rubato");
         }
-        // Created per track in consume_remote_track because it carries filter
-        // state for a single continuous stream.
         let handle = PlaybackHandle {
             tracks,
             device_rate,
@@ -3428,18 +2473,9 @@ async fn consume_remote_track(
     let mut frames = 0u64;
     let mut sample_count = 0u64;
     let mut peak_recent: i16 = 0;
-    // Per-track state. The resampler keeps FFT overlap and a partial-chunk
-    // accumulator across calls, so it belongs to exactly one stream — sharing
-    // one between participants corrupts it for everyone.
     let mut resampler = AudioResampler::new(SAMPLE_RATE, handle.device_rate);
-    // Reusable buffers — avoids allocating a fresh Vec for every 10ms frame
-    // received from the network. Not as critical as the cpal callback (this
-    // runs on a tokio task, not a realtime thread) but still ~100 allocs/s
-    // per remote participant that the allocator doesn't need to handle.
     let mut f32_buf: Vec<f32> = Vec::with_capacity(FRAME_SAMPLES * 4);
     let mut resampled_buf: Vec<f32> = Vec::with_capacity(FRAME_SAMPLES * 4);
-    // Suffix distinguishes microphone from screen audio (see
-    // `livekit::screen_audio_identity`).
     let who = match identity.split_once('#') {
         Some((pk, suffix)) => format!("{}#{suffix}", crate::identity::truncate_pubkey(pk)),
         None => crate::identity::truncate_pubkey(&identity),
@@ -3467,9 +2503,6 @@ async fn consume_remote_track(
             peak_recent = frame_peak;
         }
         {
-            // No per-track limiting here — the callback limits the summed mix
-            // instead, which is the only place that can see whether several
-            // people talking at once are driving the output past full scale.
             f32_buf.clear();
             f32_buf.extend(frame.data.iter().map(|s| *s as f32 / i16::MAX as f32));
             match resampler.as_mut() {
@@ -3494,8 +2527,6 @@ async fn consume_remote_track(
             peak_recent = 0;
         }
     }
-    // Drop this track's jitter buffer, otherwise a participant who left keeps
-    // contributing silence to the mix (and leaks a buffer per rejoin).
     handle.remove_track(track_id);
     eprintln!("[voice] remote-track {who} stream ended after {frames} frames");
 }
@@ -3504,11 +2535,6 @@ async fn consume_remote_track(
 mod tests {
     use super::*;
 
-    /// The complaint that prompted the ramp and the hysteresis: with noise
-    /// suppression on, a listener heard the speaker's level swelling and
-    /// dropping. The gate reads the denoised hop, the model may pull one down
-    /// by 30 dB, and one threshold for both directions turns that into
-    /// chatter.
     #[test]
     fn the_gate_holds_below_the_level_it_opened_at() {
         let open_at = 21; // the reporter's own sensitivity setting
@@ -3518,8 +2544,6 @@ mod tests {
             "hysteresis has to hold below the opening"
         );
 
-        // A denoised word tail: too quiet to have opened the gate, loud enough
-        // that cutting the speaker off mid-word would be wrong.
         let tail = 14;
         assert!(tail < open_at, "precondition: would not open the gate");
         assert!(
@@ -3528,8 +2552,6 @@ mod tests {
         );
     }
 
-    /// The envelope only ever makes the gate more permissive — otherwise the
-    /// threshold marker would stop marking where the gate opens.
     #[test]
     fn the_gate_envelope_never_reads_below_the_hop() {
         let mut env = 0i32;
@@ -3537,20 +2559,9 @@ mod tests {
             env = peak.max(env * GATE_ENVELOPE_DECAY_PCT / 100);
             assert!(env >= peak, "envelope {env} read under its own hop {peak}");
         }
-        // And it decays rather than latching: 900 must not still be there.
         assert!(env < 900, "envelope latched at the loudest hop it ever saw");
     }
 
-    /// Review of #46, traced by hand before it was written down here: the first
-    /// version of the hysteresis reset the hangover counter on mute and left
-    /// the envelope and the open flag standing, so unmuting into a quiet room
-    /// resumed from the level the user had last been speaking at.
-    ///
-    /// The arithmetic is why it lasted long enough to hear. The envelope keeps
-    /// 75% a hop, so a peak of 900 is still above a threshold of 21 fifteen
-    /// hops later, and the hangover it keeps refreshing is another 30 — about a
-    /// third of a second of room noise, transmitted, right after the user
-    /// un-muted expecting to be heard only when they speak.
     #[test]
     fn muting_makes_the_gate_forget_the_level_it_was_hearing() {
         let open_at = 21;
@@ -3569,8 +2580,6 @@ mod tests {
         );
     }
 
-    /// Without the reset, the same trace passes room noise for long enough to
-    /// be the bug this file's hysteresis was added to fix, in reverse.
     #[test]
     fn a_gate_that_kept_its_envelope_would_hold_open_for_a_third_of_a_second() {
         let open_at = 21;
@@ -3589,8 +2598,6 @@ mod tests {
         );
     }
 
-    /// The ramps are what the state machine exists to place, so it has to place
-    /// exactly one of each around a phrase.
     #[test]
     fn one_ramp_in_at_the_start_and_one_ramp_out_at_the_end() {
         let open_at = 21;
@@ -3609,7 +2616,6 @@ mod tests {
         assert_eq!(*tail.last().unwrap(), GateAction::Drop);
     }
 
-    /// A fade that does not reach zero is the click it was added to remove.
     #[test]
     fn a_closing_ramp_ends_on_silence() {
         let mut hop = vec![1.0f32; FRAME_SAMPLES];
@@ -3629,28 +2635,22 @@ mod tests {
             "past the ramp the signal is untouched"
         );
 
-        // A hop shorter than the ramp must not panic on the slice.
         let mut short = vec![1.0f32; GATE_RAMP_SAMPLES / 2];
         ramp(&mut short, false);
         assert_eq!(short[0], 1.0);
     }
 
-    /// The panel's own row is two deltas, and getting the arithmetic wrong is
-    /// the failure that looks plausible: a rate is believable at any value, so
-    /// nothing about the UI would give it away.
     #[test]
     fn outbound_rates_are_per_second_and_need_two_readings() {
         let t0 = Instant::now();
         assert_eq!(outbound_rates(None, 50, 6_000, t0), None);
 
-        // 50 packets in 1s at 20ms frames; 6000 bytes is 48 kbit/s.
         let t1 = t0 + std::time::Duration::from_secs(1);
         assert_eq!(
             outbound_rates(Some((0, 0, t0)), 50, 6_000, t1),
             Some((50, 48))
         );
 
-        // Proves elapsed time is divided, not assumed.
         let t2 = t0 + std::time::Duration::from_secs(2);
         assert_eq!(
             outbound_rates(Some((0, 0, t0)), 50, 6_000, t2),
@@ -3658,8 +2658,6 @@ mod tests {
         );
     }
 
-    /// A renegotiated ssrc restarts the counters. Subtracting anyway would wrap
-    /// into an enormous number presented as a measurement.
     #[test]
     fn outbound_rates_refuse_a_counter_that_went_backwards() {
         let t0 = Instant::now();
@@ -3669,11 +2667,8 @@ mod tests {
         assert_eq!(outbound_rates(Some((0, 0, t0)), 50, 6_000, t0), None);
     }
 
-    /// The complaint that prompted the dB scale: ordinary speech should not
-    /// read as a nearly-empty meter.
     #[test]
     fn speech_sits_in_the_middle_of_the_meter() {
-        // -30 dBFS (peak 0.032) is a comfortable speaking level.
         let pct = peak_to_meter_pct(32);
         assert!((45..=55).contains(&pct), "quiet speech read as {pct}%");
         assert!(peak_to_meter_pct(700) > 90);
@@ -3683,11 +2678,9 @@ mod tests {
     fn meter_endpoints_behave() {
         assert_eq!(peak_to_meter_pct(0), 0);
         assert_eq!(peak_to_meter_pct(1000), 100);
-        // Below the floor clamps rather than going negative.
         assert_eq!(peak_to_meter_pct(1), 0);
     }
 
-    /// The slider round-trips: what the user sets is what the gate compares.
     #[test]
     fn meter_pct_round_trips_through_the_peak_scale() {
         for pct in [10, 25, 50, 75, 100] {
@@ -3697,32 +2690,12 @@ mod tests {
         }
     }
 
-    /// Never returns 0: a zero threshold would gate nothing at all and the
-    /// stored value is documented as 1..=1000.
     #[test]
     fn threshold_never_collapses_to_zero() {
         assert!(meter_pct_to_peak(0) >= 1);
         assert!(meter_pct_to_peak(1000) <= 1000);
     }
 
-    /// Does `set_audio_options` reach the source at all?
-    ///
-    /// This exists to halve an open question. A sweep against a real SFU found
-    /// the APM making no measurable difference to noise on this path — eight
-    /// runs, means 0.9030 against 0.9033 with the sign flipping — and that has
-    /// two explanations the sweep cannot tell apart: the options never arrive,
-    /// or they arrive and nothing acts on them. Only the first is our bug.
-    ///
-    /// Needs no SFU, no room and no device: a `NativeAudioSource` is just an
-    /// object, and `audio_options()` reads back what it believes it holds. If
-    /// this fails, the client's `set_apm` is writing into nothing and the
-    /// suppressor question is answered. If it passes, the options are held and
-    /// the remaining suspect is downstream, inside libwebrtc — which the
-    /// `docs/AUDIT-2026-08-17.md` entry says how to chase.
-    ///
-    /// Deliberately asserts only the round trip. Whether libwebrtc *honours*
-    /// what it stored is not a property this can see, and pretending otherwise
-    /// is how the original claim went unchecked for so long.
     #[test]
     fn the_apm_options_survive_the_round_trip_into_the_source() {
         use livekit::webrtc::audio_source::native::NativeAudioSource;

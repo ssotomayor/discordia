@@ -1,16 +1,3 @@
-//! Content-addressed blob storage for message images.
-//!
-//! Message attachments arrive on the wire as `data:image/...;base64,...` URLs
-//! (unchanged protocol). Instead of storing megabytes of base64 inside message
-//! rows, the gateway writes the decoded bytes here once (SHA-256 addressed, so
-//! duplicates are free) and the DB stores a tiny `media:<hash>.<ext>` sentinel.
-//! When a message is served, the sentinel is inlined back into a data URL —
-//! clients (including rendezvous-proxied ones) need no changes. A direct
-//! `GET /media/{file}` route also exists for future thin/web clients.
-//!
-//! GC of unreferenced blobs is deferred (content-addressing makes blobs shared,
-//! so deletion needs refcounting — tracked in docs/AUDIT-2026-08-17.md).
-
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
@@ -20,13 +7,9 @@ use sha2::{Digest, Sha256};
 
 const SENTINEL: &str = "media:";
 
-/// What one sweep did. Counted rather than logged line by line: a store with
-/// ten thousand blobs would otherwise write ten thousand lines to say nothing.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct SweepReport {
-    /// Blobs still referenced by a row.
     pub kept: usize,
-    /// Unreferenced, but younger than the grace period — left alone.
     pub too_young: usize,
     pub deleted: usize,
     pub freed_bytes: u64,
@@ -43,9 +26,6 @@ impl MediaStore {
         Ok(MediaStore { dir })
     }
 
-    /// Store a `data:image/...;base64,...` URL as a blob file. Returns the
-    /// DB sentinel (`media:<sha256>.<ext>`), or None if the input isn't a
-    /// data URL we recognize (e.g. it's already an http URL — pass through).
     pub fn store_data_url(&self, data_url: &str) -> Option<String> {
         let rest = data_url.strip_prefix("data:")?;
         let (mime, payload) = rest.split_once(";base64,")?;
@@ -57,8 +37,6 @@ impl MediaStore {
         let name = format!("{hash}.{ext}");
         let path = self.dir.join(&name);
         if !path.exists() {
-            // Write via temp + rename so a crash never leaves a torn blob
-            // under its content address.
             let tmp = self.dir.join(format!(".{name}.tmp"));
             if std::fs::write(&tmp, &bytes).is_err() {
                 return None;
@@ -71,8 +49,6 @@ impl MediaStore {
         Some(format!("{SENTINEL}{name}"))
     }
 
-    /// Inline a stored sentinel back into a data URL for the wire. Non-sentinel
-    /// values (http URLs, legacy data URLs) pass through untouched.
     pub fn inline(&self, stored: &str) -> Option<String> {
         let Some(name) = stored.strip_prefix(SENTINEL) else {
             return Some(stored.to_string());
@@ -84,22 +60,6 @@ impl MediaStore {
         Some(format!("data:{mime};base64,{b64}"))
     }
 
-    /// Delete every blob no row points at, and report what went.
-    ///
-    /// **Mark-and-sweep rather than refcounting, deliberately.** A count has to
-    /// be right after every edit, delete, retention pass, guild import and
-    /// crash — and a count that drifts *down* deletes a picture somebody is
-    /// still looking at. The set of live references is derivable from the
-    /// database at any moment (`Store::referenced_media`), so nothing has to be
-    /// maintained and a wrong answer needs a bug in one query rather than in
-    /// every writer.
-    ///
-    /// `grace` is what makes it safe to run beside live traffic. A blob is
-    /// written *before* the row that names it, and `persist` is fire-and-forget,
-    /// so there is a window where a perfectly good blob has no reference yet.
-    /// Files younger than `grace` are therefore never swept, however unreferenced
-    /// they look. A file whose mtime cannot be read is skipped for the same
-    /// reason: unknown age is not evidence of being old.
     pub fn sweep(&self, referenced: &HashSet<String>, grace: Duration) -> SweepReport {
         let mut report = SweepReport::default();
         let Ok(entries) = std::fs::read_dir(&self.dir) else {
@@ -108,8 +68,6 @@ impl MediaStore {
         let now = SystemTime::now();
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
-            // Skip temp files; they are half-written blobs owned by
-            // `store_data_url` and not addressable.
             if name.starts_with('.') {
                 continue;
             }
@@ -136,7 +94,6 @@ impl MediaStore {
         report
     }
 
-    /// Raw bytes + mime for the HTTP route.
     pub fn read(&self, name: &str) -> Option<(Vec<u8>, &'static str)> {
         let name = sanitize(name)?;
         let bytes = std::fs::read(self.dir.join(&name)).ok()?;
@@ -144,8 +101,6 @@ impl MediaStore {
     }
 }
 
-/// Only `<64 hex>.<short alnum ext>` filenames are ever served or read —
-/// nothing else can exist in the blob dir, and this kills path traversal.
 fn sanitize(name: &str) -> Option<String> {
     let (hash, ext) = name.split_once('.')?;
     if hash.len() == 64
@@ -166,19 +121,11 @@ fn ext_for_mime(mime: &str) -> Option<&'static str> {
         "image/gif" => Some("gif"),
         "image/webp" => Some("webp"),
         "image/avif" => Some("avif"),
-        // E2E encrypted DM attachment. Bytes are ciphertext on arrival, so no
-        // sniffing/validation is possible.
-        // Distinct mime prevents dedup across senders (which would leak that
-        // two people sent the same image).
         ENCRYPTED_BLOB_MIME => Some("enc"),
         _ => None,
     }
 }
 
-/// Mime marking a blob whose bytes are sealed by the client.
-///
-/// The real mime of what is inside travels in the message's sealed payload, so
-/// the server never learns even the *kind* of file it is holding.
 pub const ENCRYPTED_BLOB_MIME: &str = "application/vnd.discordia.enc";
 
 fn mime_for_name(name: &str) -> &'static str {
@@ -188,8 +135,6 @@ fn mime_for_name(name: &str) -> &'static str {
         Some("gif") => "image/gif",
         Some("webp") => "image/webp",
         Some("avif") => "image/avif",
-        // Round-trips to the accepted mime so the client can distinguish
-        // encrypted attachments from opaque byte strings.
         Some("enc") => ENCRYPTED_BLOB_MIME,
         _ => "application/octet-stream",
     }
@@ -204,7 +149,6 @@ mod tests {
         (MediaStore::open(dir.path()).expect("open"), dir)
     }
 
-    /// Minimal scratch dir so these tests need no crate-level dev-dependency.
     mod tempdir {
         use std::path::PathBuf;
         use std::sync::atomic::{AtomicU32, Ordering};
@@ -231,7 +175,6 @@ mod tests {
         }
     }
 
-    /// A 1x1 png, small enough to inline as a literal.
     const PNG: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
 
     #[test]
@@ -253,8 +196,6 @@ mod tests {
         assert!(!dir.path().join(&name).exists());
     }
 
-    /// The window this exists for: a blob is written before the row that names
-    /// it, so a young orphan is a blob whose message is still in flight.
     #[test]
     fn a_young_orphan_survives_the_grace_period() {
         let (media, dir) = store();
@@ -267,13 +208,6 @@ mod tests {
         assert!(dir.path().join(&name).exists());
     }
 
-    /// The only thing between a URL path segment and `fs::read` on our disk.
-    ///
-    /// `GET /media/{name}` hands whatever the caller wrote straight to `read`,
-    /// which joins it onto the blob directory. `sanitize` is the guard, and it
-    /// had no test — so nothing would have noticed if the shape it accepts
-    /// widened. Each case below is a real way of asking for a file that is not
-    /// a blob.
     #[test]
     fn only_a_content_address_gets_past_sanitize() {
         let ok = format!("{}.png", "a".repeat(64));
@@ -285,7 +219,6 @@ mod tests {
             "....//....//etc/passwd",
             &format!("../{}.png", "a".repeat(64)),
             &format!("{}/../../secret.png", "a".repeat(64)),
-            // Absolute and UNC paths, which `Path::join` would honour whole.
             "/etc/passwd",
             r"C:\Windows\win.ini",
             r"\\server\share\file.png",
@@ -302,9 +235,6 @@ mod tests {
         }
     }
 
-    /// And the guard is the one `read` actually consults, not a helper that
-    /// happens to sit beside it — a traversal must come back as "no such blob"
-    /// rather than as somebody's file.
     #[test]
     fn read_refuses_a_path_that_is_not_a_content_address() {
         let (media, dir) = store();
@@ -319,7 +249,6 @@ mod tests {
         );
     }
 
-    /// A half-written blob belongs to `store_data_url`, not to the sweep.
     #[test]
     fn a_temp_file_is_never_swept() {
         let (media, dir) = store();

@@ -1,7 +1,3 @@
-//! First-launch identity setup. Three paths: create a new BIP39-derived
-//! identity, restore one from a 12-word phrase, or import a raw private key
-//! (32 or 64 base58 bytes — Phantom/Solflare export format).
-
 use dioxus::prelude::*;
 
 use crate::identity::{Identity, IdentitySource};
@@ -67,8 +63,6 @@ pub fn IdentitySetupView(on_done: EventHandler<Identity>) -> Element {
                     class: "dxf-drag-region h-8 shrink-0 {mac_top_pad}",
                     onmousedown: move |_| crate::app::start_window_drag(),
                 }
-                // flex column so my-auto has space to distribute; see
-                // connect.rs for why auto margins over justify-center.
                 div { class: "flex-1 overflow-auto px-8 py-8 flex flex-col dxf-no-drag",
                     div { class: "w-full max-w-md mx-auto my-auto space-y-5",
 
@@ -174,12 +168,6 @@ pub fn IdentitySetupView(on_done: EventHandler<Identity>) -> Element {
                                         class: INPUT,
                                         r#type: "text",
                                         value: "{display_name}",
-                                        // Clamp on input rather than via
-                                        // `maxlength` so the signed value
-                                        // matches the stored truncation.
-                                        // Relies on Dioxus `volatile` re-
-                                        // applying `value` to keep the field
-                                        // in sync.
 
                                         oninput: move |e| display_name.set(crate::protocol::truncate_username(&e.value())),
                                     }

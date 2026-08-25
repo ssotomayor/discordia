@@ -1,22 +1,11 @@
-//! Blossom media upload (Nostr media protocol, BUD-01/02).
-//!
-//! Blobs are addressed by their SHA-256 hash and uploaded with a signed Nostr
-//! `kind:24242` authorization event. The server returns a blob descriptor
-//! whose `url` is the public fetch address — that URL is what we store on the
-//! profile (avatar/banner) instead of embedding base64.
-
 use base64::Engine as _;
 use sha2::{Digest, Sha256};
 
 use crate::identity::Identity;
 
-/// Nostr event kind for Blossom authorization events.
 const KIND_BLOSSOM_AUTH: i64 = 24242;
-/// Auth event validity window (seconds).
 const AUTH_TTL_SECS: i64 = 3600;
 
-/// Upload `bytes` to a Blossom `server`, authorized by `identity`. Returns the
-/// public URL of the stored blob.
 pub async fn upload_blob(
     server: &str,
     bytes: Vec<u8>,
@@ -30,8 +19,6 @@ pub async fn upload_blob(
 
     let tags = serde_json::json!([["t", "upload"], ["x", sha_hex], ["expiration", expiration],]);
 
-    // NIP-01 event id is sha256 of canonical serialization. ASCII content/tags
-    // make serde_json's compact output canonical.
     let serialized = serde_json::to_string(&serde_json::json!([
         0,
         identity.pubkey,

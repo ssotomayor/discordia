@@ -1,57 +1,29 @@
-//! A small crop/zoom dialog shown between picking an image and uploading it.
-//!
-//! Every image the app displays is `object-cover`ed into a fixed shape — a
-//! square avatar, a wide banner — so whatever doesn't fit is cut off by the
-//! renderer, with no say from the person who chose the picture. This gives them
-//! the say: pan, zoom, and what you see in the frame is exactly what gets
-//! uploaded.
-//!
-//! Split of work: Dioxus owns the interaction (offset, zoom, the frame) and
-//! renders a live preview with a CSS transform; JavaScript does the one thing
-//! CSS cannot, which is turn that view into pixels via a canvas. The transform
-//! and the canvas draw use the same numbers, so the preview is not an
-//! approximation of the result — it is the result.
-
 use dioxus::prelude::*;
 use serde_json::Value;
 
-/// Longest edge of the exported image. Big enough to stay sharp on a retina
-/// display at the sizes these are shown, small enough that the encoded result
-/// comfortably clears the 2 MB embed limit.
 const OUT_LONG_EDGE: u32 = 1024;
 
-/// What shape the picked image is being cropped to.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum CropShape {
-    /// Avatars and guild icons.
     Square,
-    /// Profile and guild banners.
     Banner,
 }
 
 impl CropShape {
-    /// width / height of the crop.
     fn aspect(self) -> f64 {
         match self {
             CropShape::Square => 1.0,
-            // Match the banner strip aspect ratio so the preview frame
-            // reflects the actual rendered output.
             CropShape::Banner => 3.0,
         }
     }
 
-    /// Output pixel size.
     fn output(self) -> (u32, u32) {
         match self {
-            // 512px is sufficient for logos typically displayed at ~40px.
             CropShape::Square => (512, 512),
             CropShape::Banner => (OUT_LONG_EDGE, (OUT_LONG_EDGE as f64 / 3.0) as u32),
         }
     }
 
-    /// Encoded format. PNG for square art because logos carry transparency that
-    /// JPEG would flatten to black; JPEG for banners, which are photographs
-    /// where the size saving is large and alpha is never wanted.
     fn mime(self) -> &'static str {
         match self {
             CropShape::Square => "image/png",
@@ -59,7 +31,6 @@ impl CropShape {
         }
     }
 
-    /// On-screen preview width, in CSS pixels.
     fn preview_w(self) -> f64 {
         match self {
             CropShape::Square => 260.0,
@@ -70,16 +41,12 @@ impl CropShape {
 
 #[derive(Clone, Copy, PartialEq)]
 struct Pan {
-    /// Pointer position when the drag started.
     from_x: f64,
     from_y: f64,
-    /// Offset at that moment.
     base_dx: f64,
     base_dy: f64,
 }
 
-/// Crop dialog. `src` is the picked image as a data URL; `on_apply` receives
-/// the cropped image, also as a data URL, ready for the existing upload path.
 #[component]
 pub fn ImageEditor(
     src: String,
@@ -115,8 +82,6 @@ pub fn ImageEditor(
                     let h = v.get("h").and_then(|x| x.as_f64()).unwrap_or(0.0);
                     if w > 0.0 && h > 0.0 {
                         natural.set(Some((w, h)));
-                        // Initialize to "cover" (smallest zoom with no empty
-                        // corners) to match the default crop behavior.
                         zoom.set((vp_w / w).max(vp_h / h));
                     }
                 }
@@ -132,7 +97,6 @@ pub fn ImageEditor(
         };
     };
 
-    // Zoom range: never below cover (which would show empty space), up to 5x.
     let min_zoom = (vp_w / nat_w).max(vp_h / nat_h);
     let max_zoom = min_zoom * 5.0;
     let z = zoom().clamp(min_zoom, max_zoom);
@@ -154,10 +118,6 @@ pub fn ImageEditor(
         let sh = vp_h / z;
         let sx = (nat_w / 2.0) - (cur_dx / z) - sw / 2.0;
         let sy = (nat_h / 2.0) - (cur_dy / z) - sh / 2.0;
-        // No `//` comments inside this string: backslash continuations splice
-        // lines, so a comment swallows the code that follows.
-        // White fill is required for JPEG (no alpha); transparent pixels would
-        // otherwise encode as black.
         let js = format!(
             "(() => {{ const i = new Image(); \
                i.onload = () => {{ try {{ \
@@ -218,8 +178,6 @@ pub fn ImageEditor(
                     }
                 }
 
-                // Tracking overlay: allows the cursor to leave the frame mid-
-                // drag without killing the gesture.
                 if pan().is_some() {
                     div {
                         class: "fixed inset-0 z-50",

@@ -1,27 +1,3 @@
-//! Webcam sharing, captured in the webview on every platform.
-//!
-//! The camera is the one video path that is *not* split per-platform. Screen
-//! capture is native on macOS and webview on Windows (see `sysvideo` and
-//! `features::screenshare`); a camera is `getUserMedia` everywhere, which is
-//! also why the local preview costs nothing — it is the capture stream in a
-//! `<video>`, never a round trip through the SFU.
-//!
-//! **It publishes on the screen room's existing connection.** The webview is
-//! already in `screen-{channel}` under the bare pubkey with publish rights, and
-//! LiveKit tells a webcam from a screen by `TrackSource`, not by identity — so
-//! the camera needed no fourth identity, no extra token, and no change to token
-//! minting at all. The cost of that choice is that every video track in the JS
-//! controller has to be keyed by identity *and* source; see `SCREEN_JS`.
-//!
-//! Who has a camera on travels over **our** protocol, not over LiveKit's track
-//! events: `camera_on` on `VoiceState`. That is what makes it survive a
-//! reconnect (`Ready` carries the voice roster) and reach people who are not in
-//! the channel to see the publication for themselves.
-//!
-//! Surfaces, each a container the JS attaches a `<video>` into:
-//! - `#camera-self`      — your own preview, from the local stream.
-//! - `#camera-{pubkey}`  — one tile per remote publisher, in the grid window.
-
 use dioxus::prelude::*;
 use serde_json::Value;
 
@@ -29,18 +5,12 @@ use crate::features::screenshare::{Drag, SCREEN_JS, attach_js, detach_js};
 use crate::protocol::ClientMessage;
 use crate::state::{CameraDevice, use_app_state, use_gateway};
 
-/// 720p30 at 1.2 Mbit. Not a preset table like the screen share's: a face is
-/// forgiving about resolution in a way a spreadsheet is not, and the tile it
-/// lands in is usually small. Simulcast (set in the JS) is what actually keeps
-/// a grid affordable.
 const CAM_W: u32 = 1280;
 const CAM_H: u32 = 720;
 const CAM_FPS: u32 = 30;
 const CAM_BITRATE: u32 = 1_200_000;
 
 fn start_camera_js(device_id: Option<&str>, w: u32, h: u32, fps: u32, bitrate: u32) -> String {
-    // A deviceId is an opaque, origin-salted string, not hex — quote it through
-    // serde rather than interpolating it into a JS literal.
     let dev = serde_json::to_string(&device_id).unwrap_or_else(|_| "null".into());
     format!(
         "{SCREEN_JS}\nwindow.dxScreen.startCamera({{deviceId:{dev},width:{w},height:{h},\
@@ -61,13 +31,8 @@ fn attach_local_camera_js(container: &str) -> String {
     format!("{SCREEN_JS}\nwindow.dxScreen.attachLocalCamera({container});")
 }
 
-/// Which camera to open: the remembered id if it is still present, else the one
-/// whose *label* matches, else the system default.
-///
-/// The label fallback is not belt-and-braces. deviceIds are origin-salted and
-/// can rotate between sessions, so a remembered id can go stale while the
-/// camera is still plugged in — matching the label recovers the user's choice
-/// instead of silently reverting them to the built-in webcam.
+/// The label fallback is not belt-and-braces: a deviceId is origin-salted and
+/// can change between launches, so the label is often the only match left.
 fn resolve_device(
     available: &[CameraDevice],
     saved_id: Option<&str>,
@@ -87,27 +52,12 @@ fn resolve_device(
     None
 }
 
-/// Turn the camera on or off.
-///
-/// **Must be called from a user event, never from an effect.** `getUserMedia`
-/// does not strictly require transient activation the way `getDisplayMedia`
-/// does, but WebKit has historically wanted one to *prompt*, and this codebase
-/// has already paid for deferring a capture call past its gesture once (see the
-/// note on the direct-publish path in `features::screenshare`). The click's
-/// activation is still valid when the eval lands — the IPC round trip is
-/// milliseconds against a multi-second window.
-///
-/// The corollary is the load-bearing half: the automatic republish after a
-/// reconnect must never call a capture API, which is why the JS holds the track
-/// across rooms rather than re-acquiring it.
 pub fn toggle_camera(
     mut state: Signal<crate::state::AppState>,
     settings: Signal<crate::settings::ClientSettings>,
     on: bool,
 ) {
     if !on {
-        // Stopping is local/immediate, so update UI before eval (unlike
-        // starting).
         state.write().camera_on = false;
         state.write().camera_starting = false;
         let _ = document::eval(&stop_camera_js());
@@ -132,21 +82,12 @@ pub fn toggle_camera(
     ));
 }
 
-/// Owns the camera's side channel: the JS message pump, the capability probe,
-/// and the teardown that follows the screen room.
-///
-/// Renders nothing. Mounted once at the workspace root, like `ScreenShareBridge`
-/// — which it deliberately does not extend: the two pumps wire independent
-/// listeners so a change to one cannot silently swallow the other's messages.
 #[component]
 pub fn CameraBridge() -> Element {
     let mut state = use_app_state();
     let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let gateway = use_gateway();
 
-    // Can this webview open a camera at all? Deliberately *not* short-circuited
-    // on `sysvideo::supported()` the way the screen probe is — there is no
-    // native camera path to fall back to on any platform.
     use_future(move || {
         let mut s = state;
         async move {
@@ -155,8 +96,6 @@ pub fn CameraBridge() -> Element {
             );
             match eval.recv::<bool>().await {
                 Ok(v) => s.write().camera_capture_available = v,
-                // Fail open: false negative disables working feature; false
-                // positive costs one failed attempt.
                 Err(e) => {
                     eprintln!("[camera] capture probe failed, assuming available: {e:?}");
                     s.write().camera_capture_available = true;
@@ -169,8 +108,6 @@ pub fn CameraBridge() -> Element {
         let _ = document::eval(&list_cameras_js());
     });
 
-    // Screen room disconnect releases camera device; this is the Rust-side
-    // cleanup.
     let mut had_token = use_signal(|| false);
     use_effect(move || {
         let has = state.read().screen_token.is_some();
@@ -190,9 +127,6 @@ pub fn CameraBridge() -> Element {
         let mut state = state;
         let gateway = gateway_pump.clone();
         async move {
-            // Listener registered once, sink reassigned every eval: remounts
-            // kill the old send, so a registration-only guard would drop all
-            // messages after the first remount.
             let bridge_js = r#"
             window.__dxfCameraSink = function (m) { try { dioxus.send(m); } catch (err) {} };
             if (!window.__dxfCameraWired) {
@@ -215,8 +149,8 @@ pub fn CameraBridge() -> Element {
                             w.camera_on = true;
                             w.camera_starting = false;
                         }
-                        // Persist the actual device, not the requested one, so
-                        // a fallback isn't remembered as the user's choice.
+                        // Persist what actually opened, not what was asked
+                        // for, so a fallback is not saved as the choice.
                         let id = msg.get("deviceId").and_then(|v| v.as_str()).unwrap_or("");
                         let label = msg.get("label").and_then(|v| v.as_str()).unwrap_or("");
                         if !id.is_empty() {
@@ -236,15 +170,10 @@ pub fn CameraBridge() -> Element {
                             w.camera_on = false;
                             w.camera_starting = false;
                         }
-                        // Only announce if we announced the start, otherwise a
-                        // failed start would tell the channel a camera it
-                        // never saw has stopped.
                         if was {
                             gateway.send(ClientMessage::SetCamera { on: false });
                         }
                     }
-                    // Retrying a denied permission is futile; point the user
-                    // to OS settings instead.
                     Some("camera-denied") => {
                         let mut w = state.write();
                         w.camera_on = false;
@@ -303,19 +232,8 @@ pub fn CameraBridge() -> Element {
     rsx! { Fragment {} }
 }
 
-/// Height of the self-preview's title bar, in the same units its `style` is
-/// written in. It is the `h-8` on the header, and it exists as a number because
-/// the resize keeps the *video* at 16/9, not the window — so the chrome has to
-/// be added back. Change the header's height and this must follow, or the
-/// preview starts cropping.
 const SELF_CHROME: f64 = 32.0;
 
-/// Small floating preview of your own camera.
-///
-/// Shows the *local capture stream*, not a subscription to our own publication:
-/// it has to be up while the room is still connecting, and has to keep working
-/// if publishing fails outright. That is the opposite of `ScreenSelfPreview`,
-/// which subscribes on macOS precisely to prove the frames crossed the wire.
 #[component]
 pub fn CameraSelfPreview() -> Element {
     let state = use_app_state();
@@ -323,8 +241,6 @@ pub fn CameraSelfPreview() -> Element {
 
     let mut px = use_signal(|| 968.0_f64);
     let mut py = use_signal(|| 280.0_f64);
-    // Sized for 16:9 video (what cameras produce) plus title bar; the old
-    // 240x176 resulted in a letterboxed, too-small preview.
     let mut pw = use_signal(|| 360.0_f64);
     let mut ph = use_signal(|| 360.0 * 9.0 / 16.0 + SELF_CHROME);
     let mut drag = use_signal(|| None::<Drag>);
@@ -332,8 +248,6 @@ pub fn CameraSelfPreview() -> Element {
     let on = use_memo(move || state.read().camera_on);
     let starting = use_memo(move || state.read().camera_starting);
 
-    // Covers window remounts after capture has already begun, complementing
-    // the JS attach.
     let mut last = use_signal(|| false);
     use_effect(move || {
         let v = on();
@@ -357,9 +271,6 @@ pub fn CameraSelfPreview() -> Element {
                     let c = e.client_coordinates();
                     match drag() {
                         Some(Drag::Move { dx, dy }) => { px.set(c.x - dx); py.set(c.y - dy); }
-                        // Width drives, height follows at 16/9 to preserve the
-                        // `object-fit: cover` assumption in
-                        // `attachLocalCamera`.
                         Some(Drag::Resize { px: spx, w0, .. }) => {
                             let w = (w0 + (c.x - spx)).max(240.0);
                             pw.set(w);
@@ -387,8 +298,6 @@ pub fn CameraSelfPreview() -> Element {
                 }
                 button {
                     class: "text-[9px] uppercase tracking-wider text-[var(--danger)] hover:text-[var(--accent-strong)] font-semibold",
-                    // mousedown, not click, and before the header's drag handler
-                    // — same wry/WebView2 reason as the share preview's Stop.
                     onmousedown: move |e| {
                         e.stop_propagation();
                         toggle_camera(state, settings, false);
@@ -396,9 +305,6 @@ pub fn CameraSelfPreview() -> Element {
                     "Stop"
                 }
             }
-            // Empty on purpose: the JS owns every child of an attach container
-            // (`innerHTML = ''`), so anything Dioxus renders inside would be
-            // torn out from under the VDOM.
             div { id: "camera-self", class: "flex-1 min-h-0 bg-black" }
             div {
                 class: "absolute right-0 bottom-0 w-3 h-3 cursor-nwse-resize",
@@ -411,7 +317,6 @@ pub fn CameraSelfPreview() -> Element {
     }
 }
 
-/// One remote camera. The container is empty; siblings carry the chrome.
 #[component]
 fn CameraTile(pubkey: String) -> Element {
     let state: Signal<crate::state::AppState> = use_app_state();
@@ -432,12 +337,6 @@ fn CameraTile(pubkey: String) -> Element {
 
     rsx! {
         div {
-            // No fixed ratio any more. The tile used to be `aspect-ratio: 16/9`
-            // inside an `auto-fill` grid, which is the pair that produced the
-            // reported bug: widening the window added *columns* instead of
-            // growing the tile, so one camera stayed 200px wide in a 900px
-            // window, and heightening it added nothing at all. The grid now
-            // hands out fixed cells and the tile fills whatever it is given.
             class: "relative rounded overflow-hidden bg-black w-full h-full min-h-0",
             div {
                 class: "absolute inset-0 flex items-center justify-center text-[10px] text-[var(--text-dim)]",
@@ -452,16 +351,6 @@ fn CameraTile(pubkey: String) -> Element {
     }
 }
 
-/// Floating grid of the cameras you have chosen to watch.
-///
-/// One window with a grid rather than one window per person: N windows means N
-/// drag positions to keep track of, and a screen that fills up on the fourth
-/// participant.
-///
-/// It shows only who is in `cameras_watching` — nobody appears uninvited. That
-/// is a bandwidth control as much as a courtesy one: a tile that is not mounted
-/// has no attached element, and `adaptiveStream` then tells the SFU not to send
-/// that video at all.
 #[component]
 pub fn CameraGridWindow() -> Element {
     let mut state = use_app_state();
@@ -472,8 +361,6 @@ pub fn CameraGridWindow() -> Element {
     let mut ph = use_signal(|| 500.0_f64);
     let mut drag = use_signal(|| None::<Drag>);
 
-    // Intersect with actual publishers to avoid tiles stuck on "Connecting…"
-    // for stopped cameras. Exclude self to avoid pointless SFU round trips.
     let others = use_memo(move || {
         let s = state.read();
         let Some(cid) = s.voice.channel_id else {
@@ -513,8 +400,6 @@ pub fn CameraGridWindow() -> Element {
         }
         div {
             class: "fixed flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl overflow-hidden dxf-pop-in",
-            // z-index 35 is inline because no Tailwind utility exists for it,
-            // and adding one would bloat the CSS.
             style: "left: {px}px; top: {py}px; width: {pw}px; height: {ph}px; z-index: 35;",
             div {
                 class: "h-8 px-2.5 flex items-center gap-1.5 border-b border-[var(--border)] shrink-0 cursor-move select-none",
@@ -528,9 +413,6 @@ pub fn CameraGridWindow() -> Element {
                     title: "Stop watching every camera",
                     onmousedown: move |e| {
                         e.stop_propagation();
-                        // Clears the whole set because the roster icons are
-                        // the switches; hiding just this window would leave
-                        // subscriptions active and misrepresent the state.
                         state.write().cameras_watching.clear();
                     },
                     "✕"
@@ -538,19 +420,6 @@ pub fn CameraGridWindow() -> Element {
             }
             div {
                 class: "flex-1 min-h-0 overflow-hidden p-1.5",
-                // Explicit column *and row* counts, both `1fr`, so the tiles
-                // divide the window and grow with it. `auto-fill` did the
-                // opposite of what a resize should do: it kept the tile at its
-                // 200px minimum and spent the extra width on more empty
-                // columns, so a window dragged twice as wide showed the same
-                // small picture. Rows were worse — the tiles carried their own
-                // aspect ratio, so extra *height* went nowhere at all.
-                //
-                // The count is still derived rather than fixed, just from the
-                // number of people instead of the pixel width; a square-ish
-                // layout is what fills an arbitrary rectangle most evenly.
-                // Written inline for the same reason as before: `grid-cols-N`
-                // would be a new Tailwind class per participant count.
                 style: "display: grid; grid-template-columns: repeat({cols()}, minmax(0, 1fr)); grid-template-rows: repeat({rows()}, minmax(0, 1fr)); gap: 6px;",
                 for pk in others() {
                     CameraTile { key: "{pk}", pubkey: pk.clone() }

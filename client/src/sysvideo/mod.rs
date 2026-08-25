@@ -1,181 +1,59 @@
-//! Native screen-*video* capture, for platforms where the webview has no
-//! capture API at all.
-//!
-//! The webview path in `features::screenshare` is the original and still the
-//! only one on Windows, where WebView2 is Chromium and `getDisplayMedia` works.
-//! macOS is why it was written: the webview capture branch could not run there,
-//! because `navigator.mediaDevices` was `undefined` and `getDisplayMedia` with
-//! it. Probed from inside a bundled app, the origin was a secure context and the
-//! API was simply absent.
-//!
-//! That turned out to be *our* fault rather than WKWebView's, and the correction
-//! matters more than the original claim: WKWebView gates media capture on the
-//! host app declaring a usage description, and the bundle had none. Adding
-//! `NSMicrophoneUsageDescription` to Info.plist (for the microphone, not for
-//! this) made `navigator.mediaDevices.getDisplayMedia` appear on macOS —
-//! re-probed and confirmed.
-//!
-//! So this module is now a *choice*, not a necessity, and the reasons to keep it
-//! are the ones that were incidental before: frames reach the encoder with no
-//! copy and no colour conversion, the surface picker is ours rather than the
-//! engine's, and capture does not depend on what the webview is permitted to do.
-//! The webview path remains the only one on Windows.
-//!
-//! Capturing natively sidesteps the engine the same way `sysaudio` does for
-//! sound: frames become an ordinary LiveKit video track published from Rust.
-//!
-//! Frames are handed to a sink as owned `Frame`s wrapping the platform's own
-//! image buffer, so nothing is copied or converted on the way — see `Frame`.
-
 #[cfg(target_os = "macos")]
 mod macos;
 
-/// One captured frame, holding a reference to the platform image buffer that
-/// backs it.
-///
-/// Deliberately opaque and deliberately *owned*: the point is that no pixels
-/// are copied between the OS capture callback and the encoder. `libwebrtc` can
-/// wrap a `CVPixelBuffer` directly (`NativeBuffer::from_cv_pixel_buffer`), and
-/// on Apple silicon that lets the frame reach the hardware encoder without a
-/// colour conversion in our process at all. Dropping this releases the buffer.
-///
-/// Carries no dimensions on purpose: libwebrtc reads them from the pixel buffer
-/// itself, so a second copy here could only ever disagree with it — which is
-/// exactly what happens when the display mode changes mid-share.
 #[cfg(target_os = "macos")]
 pub struct Frame {
-    /// Retained for as long as this `Frame` lives; released on drop by
-    /// `CFRetained`.
     buffer: objc2_core_foundation::CFRetained<objc2_core_video::CVPixelBuffer>,
 }
 
 #[cfg(target_os = "macos")]
 impl Frame {
-    /// A **+1** reference to the underlying `CVPixelBuffer`, for handing to code
-    /// that consumes one — specifically `NativeBuffer::from_cv_pixel_buffer`.
-    ///
-    /// The extra retain is not defensive. `from_cv_pixel_buffer` is documented
-    /// as "does not bump the reference count", which reads like a borrow and is
-    /// the opposite: the ObjC bridge behind it
-    /// (`new_native_buffer_from_platform_image_buffer`) ends with
-    /// `CVPixelBufferRelease(pixelBuffer)`, so it *takes over* the reference it
-    /// is given. Handing it this `Frame`'s own reference meant every frame was
-    /// released twice — once by libwebrtc and once when the `Frame` dropped —
-    /// and CoreFoundation traps on an over-release: `EXC_BREAKPOINT` inside
-    /// `CFRelease`, on the capture queue, the instant a share started.
-    ///
-    /// So the caller gets a reference of its own to give away, and the `Frame`
-    /// keeps releasing exactly the one it owns.
-    ///
-    /// Which is exactly why this takes `&self` and clippy's `wrong_self_convention`
-    /// is wrong about it: `into_` here describes what the *returned pointer* is
-    /// for, not that the `Frame` is consumed — consuming it is the double-release
-    /// this function exists to prevent. Silenced rather than obeyed. (Renaming it
-    /// to something without the `into_` prefix would also settle the lint and is
-    /// the tidier answer if anyone is touching these call sites anyway.)
     #[allow(clippy::wrong_self_convention)]
     pub fn into_consumable_pixel_buffer(&self) -> *mut std::ffi::c_void {
-        // `clone` retains; `into_raw` hands the pointer over without releasing.
         objc2_core_foundation::CFRetained::into_raw(self.buffer.clone())
             .as_ptr()
             .cast()
     }
 }
 
-/// Where captured frames go. Called on the OS capture thread, once per frame.
-///
-/// A callback rather than a channel, and that is a correctness choice, not a
-/// style one. A channel would have to either copy each frame (defeating the
-/// whole point) or send the buffer reference to another thread, where it would
-/// outlive the callback and pile up behind any consumer slower than the
-/// capture. Invoking the sink inline means the frame is alive exactly as long
-/// as the encoder needs it and the queue depth is the OS's to manage.
 #[cfg(target_os = "macos")]
 pub type FrameSink = Box<dyn Fn(Frame) + Send + Sync>;
 
-/// A running capture. Dropping it stops the capture and releases the OS
-/// resources behind it.
 #[cfg(target_os = "macos")]
 pub struct Capture {
     _inner: macos::MacVideoCapture,
 }
 
-/// What to capture and how.
-///
-/// Mirrors the webview path's quality presets (see
-/// `features::screenshare::quality_preset`) so the same setting means the same
-/// thing on both paths.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Settings {
     pub width: u32,
     pub height: u32,
     pub fps: u32,
-    /// Encoder ceiling in bits per second. Not a target: congestion control
-    /// still decides what a given uplink actually sends, so a high cap only
-    /// helps links that can use it.
     pub max_bitrate: u64,
 }
 
-/// Which surface a share is pointed at.
-///
-/// Plain ids rather than retained OS objects, deliberately: this is stored in
-/// `AppState` and re-sent by the effect that survives a voice-session restart,
-/// so it has to be `Copy`, comparable, and free of anything thread-bound. The
-/// backend re-resolves the id against a fresh `SCShareableContent` at capture
-/// time — which is also the only honest way to do it, since the window may have
-/// closed between the pick and the start.
-///
-/// The enum itself is not gated, because `AppState`, the share effect and
-/// `sysaudio` all carry a `Target` on every platform — but the only code that
-/// *builds* a `Window` or an `Application` is the picker in the macOS backend,
-/// so off macOS the dead-code lint sees two variants nobody constructs. It is
-/// right about the build it is looking at and wrong about the type, hence the
-/// narrowest possible silencing rather than a blanket allow.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Target {
-    /// A whole display, wallpaper and dock included.
     Display(u32),
-    /// One window, wherever it sits and whatever is in front of it.
     Window(u32),
-    /// Every window belonging to one application, addressed by the pid of the
-    /// app that owns it. Windows opened *after* the share starts are included,
-    /// which is the behaviour that makes "share an app" useful.
     Application(i32),
 }
 
-/// A pickable surface, as the picker UI needs it.
-///
-/// Flattened for the UI rather than mirroring the OS types: `title` is what to
-/// show, `app` is what to group by, and `target` is the only part the capture
-/// path cares about.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Source {
     pub target: Target,
-    /// What to show in the list: a window's title, "Entire screen" / "Screen N"
-    /// for a display, or "<App> — all N windows" for an application.
     pub title: String,
-    /// Owning application, for grouping windows under a heading. `None` for
-    /// displays and for the application entries themselves.
     pub app: Option<String>,
     pub width: u32,
     pub height: u32,
 }
 
-/// Everything shareable right now: displays first, then applications, then
-/// individual windows.
-///
-/// Blocks on the OS query (it is asynchronous and can sit behind the permission
-/// dialog for as long as the user takes), so call it off the UI thread.
 #[cfg(target_os = "macos")]
 pub fn sources() -> Result<Vec<Source>, String> {
     macos::sources()
 }
 
-/// Resolve a native capture target to the ScreenCaptureKit filter used by both
-/// video and system audio. Keeping this in one place is a privacy boundary:
-/// changing from a display to an app/window must change what can be heard as
-/// well as what can be seen.
 #[cfg(target_os = "macos")]
 pub(crate) fn content_filter(
     target: Target,
@@ -188,41 +66,17 @@ pub fn sources() -> Result<Vec<Source>, String> {
     Err("native screen capture isn't implemented on this platform".into())
 }
 
-/// Whether this build can capture the screen without help from the webview.
-///
-/// `false` does not mean sharing is impossible — it means the webview path is
-/// the one in charge, which on Windows is where it works.
 pub fn supported() -> bool {
     cfg!(target_os = "macos")
 }
 
-/// Frames handed to the sink since the current capture started.
-///
-/// A process-global counter rather than plumbed state, which is honest about the
-/// shape of the thing: there is at most one screen capture per process. It is
-/// written from the OS capture thread and read by the UI, so it is an atomic and
-/// nothing more — no allocation, no lock, nothing that could stall a capture
-/// callback.
-///
-/// It exists because the sharer otherwise has no way to tell a working share
-/// from a dead one. There is no self-preview on this path (LiveKit does not loop
-/// a publication back to its publisher, and the webview holds no local track),
-/// so "frames are leaving this machine" is the only confidence signal available
-/// — and a number that climbs is a real one.
 pub(crate) static FRAMES_CAPTURED: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
-/// How many frames the running capture has produced. 0 when nothing is running.
 pub fn frames_captured() -> u64 {
     FRAMES_CAPTURED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// Begin capturing the screen, handing each frame to `sink`.
-///
-/// `fatal` carries the reason a *running* capture died. Starting successfully is
-/// only half of it: ScreenCaptureKit reports a stream that stops on its own
-/// through its delegate, and without that the track stays published and simply
-/// freezes — the one failure a sharer cannot see for themselves.
 #[cfg(target_os = "macos")]
 pub fn start(
     target: Target,
@@ -230,35 +84,14 @@ pub fn start(
     sink: FrameSink,
     fatal: tokio::sync::mpsc::UnboundedSender<String>,
 ) -> Result<Capture, String> {
-    // Zeroed here rather than on stop, so a UI reading it during teardown sees
-    // the count from the share that just ended instead of a stale one from the
-    // share before it.
     FRAMES_CAPTURED.store(0, std::sync::atomic::Ordering::Relaxed);
     Ok(Capture {
         _inner: macos::MacVideoCapture::start(target, settings, sink, fatal)?,
     })
 }
 
-// Gated to macOS: the test drives ScreenCaptureKit, which is unavailable
-// elsewhere. Without this, `--all-targets` fails on other platforms.
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
-    /// Regression test for the over-release that crashed every share the moment
-    /// it started: `EXC_BREAKPOINT` inside `CFRelease` on the capture queue,
-    /// because `from_cv_pixel_buffer` consumes the reference it is handed and
-    /// `Frame` released the same one again on drop. See
-    /// `Frame::into_consumable_pixel_buffer`.
-    ///
-    /// Exercises the real path — an actual ScreenCaptureKit capture feeding real
-    /// `NativeVideoSource::capture_frame` calls — because that is the only thing
-    /// that reproduces it; nothing about the types is wrong, only the ownership.
-    ///
-    /// `#[ignore]`d because it needs the Screen Recording (TCC) grant and a
-    /// display, so it cannot run headlessly in CI. Run it on a Mac with:
-    ///
-    /// ```sh
-    /// cargo test -p dioxusfun --bin Discordia -- --ignored --nocapture
-    /// ```
     #[ignore = "needs Screen Recording permission and a display"]
     #[tokio::test(flavor = "multi_thread")]
     async fn frames_survive_the_encoder_handoff() {

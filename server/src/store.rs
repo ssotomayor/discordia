@@ -1,17 +1,3 @@
-//! Phase-1 persistence: a SQLite-backed store (sqlx).
-//!
-//! Design (see docs/ROADMAP.md):
-//! - **Messages live only here** — they're the unbounded dataset, queried and
-//!   paginated from the DB, never held in RAM.
-//! - **Metadata (guilds/channels/roles/members/bans/invites/profiles/…)** is
-//!   authoritative in `AppState`'s in-memory maps (that's what every tested
-//!   security invariant runs against) and **written through** here on every
-//!   mutation, then **rehydrated** at boot. Single-node, single-writer: no
-//!   cache-invalidation windows, no TOCTOU reopened.
-//! - Encodings are deliberately portable (TEXT ids, INTEGER unix-ms times,
-//!   JSON TEXT for small vecs) so a Postgres backend can slot in behind the
-//!   same API later without a schema redesign.
-
 use std::path::Path;
 
 use chrono::{DateTime, Utc};
@@ -26,10 +12,6 @@ use crate::protocol::{
     Profile, Reaction, ReplyRef, Role, User,
 };
 
-/// One invite code as it sits on disk.
-///
-/// `None` for either limit means "no limit", which is what every row created
-/// before these columns existed meant — so the migration needs no backfill.
 #[derive(Debug, Clone)]
 pub struct InviteRow {
     pub code: String,
@@ -40,16 +22,13 @@ pub struct InviteRow {
     pub created_by: String,
 }
 
-/// Everything rehydrated into `AppState` at boot.
 #[derive(Default)]
 pub struct LoadedState {
     pub users: Vec<User>,
     pub profiles: Vec<Profile>,
-    /// (guild_id, pubkey, xp) — message-XP is earned per guild.
     pub guild_xp: Vec<(Id, String, u64)>,
     pub guilds: Vec<Guild>,
     pub channels: Vec<Channel>,
-    /// (guild_id, pubkey, username, bot, role ids)
     pub members: Vec<(Id, String, String, bool, Vec<Id>)>,
     pub roles: Vec<Role>,
     pub emojis: Vec<GuildEmoji>,
@@ -66,9 +45,6 @@ pub struct Store {
 type Result<T> = std::result::Result<T, sqlx::Error>;
 
 impl Store {
-    /// Open (creating if needed) the SQLite database at `path` and ensure the
-    /// schema exists. WAL journaling + incremental autovacuum so the retention
-    /// sweep actually returns disk space.
     pub async fn open(path: &Path) -> Result<Store> {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
@@ -88,8 +64,6 @@ impl Store {
     }
 
     async fn init_schema(&self) -> Result<()> {
-        // IF NOT EXISTS for idempotent boot; no migration framework until
-        // schema shape changes.
         let ddl = [
             "CREATE TABLE IF NOT EXISTS users (
                 pubkey TEXT PRIMARY KEY, username TEXT NOT NULL)",
@@ -131,17 +105,12 @@ impl Store {
                 color TEXT, permissions TEXT NOT NULL DEFAULT '[]',
                 position INTEGER NOT NULL DEFAULT 0)",
             "CREATE INDEX IF NOT EXISTS idx_roles_guild ON roles(guild_id)",
-            // UNIQUE(guild_id, shortcode) enforces uniqueness at the DB level
-            // to avoid admin race conditions.
             "CREATE TABLE IF NOT EXISTS guild_emojis (
                 id TEXT PRIMARY KEY, guild_id TEXT NOT NULL, shortcode TEXT NOT NULL,
                 image TEXT NOT NULL, added_by TEXT NOT NULL DEFAULT '',
                 created_ms INTEGER NOT NULL DEFAULT 0,
                 UNIQUE (guild_id, shortcode))",
             "CREATE INDEX IF NOT EXISTS idx_emojis_guild ON guild_emojis(guild_id)",
-            // reply_* columns are a denormalized snapshot, not a FK (see
-            // protocol::ReplyRef). reply_id non-null implies the others are
-            // set.
             "CREATE TABLE IF NOT EXISTS messages (
                 id TEXT PRIMARY KEY, channel_id TEXT NOT NULL,
                 author_pubkey TEXT NOT NULL, author_username TEXT NOT NULL,
@@ -171,22 +140,11 @@ impl Store {
             sqlx::query(stmt).execute(&self.pool).await?;
         }
 
-        // Additive migrations for databases created before a column existed.
-        // `CREATE TABLE IF NOT EXISTS` is a no-op on an existing table, so a
-        // column added to the DDL above never reaches an older file — the
-        // server would boot fine and then fail every insert.
-        //
-        // SQLite has no `ADD COLUMN IF NOT EXISTS`, and re-running these on an
-        // up-to-date database errors with "duplicate column name". That error is
-        // the success case on the second boot, so it's the one thing we swallow;
-        // anything else still propagates.
         for stmt in [
             "ALTER TABLE messages ADD COLUMN reply_id TEXT",
             "ALTER TABLE messages ADD COLUMN reply_author_pubkey TEXT",
             "ALTER TABLE messages ADD COLUMN reply_author_username TEXT",
             "ALTER TABLE messages ADD COLUMN reply_excerpt TEXT",
-            // Defaults match pre-migration semantics (no expiry/cap), so they
-            // are the migration, not placeholders.
             "ALTER TABLE invites ADD COLUMN expires_at_ms INTEGER",
             "ALTER TABLE invites ADD COLUMN max_uses INTEGER",
             "ALTER TABLE invites ADD COLUMN uses INTEGER NOT NULL DEFAULT 0",
@@ -431,8 +389,6 @@ impl Store {
         Ok(())
     }
 
-    /// Delete a guild and everything under it (channels, messages, members,
-    /// roles, bans, invites, installs) in one transaction.
     pub async fn delete_guild(&self, guild_id: Id) -> Result<()> {
         let gid = guild_id.to_string();
         let mut tx = self.pool.begin().await?;
@@ -487,8 +443,6 @@ impl Store {
         Ok(())
     }
 
-    /// Append an audit-log row and return the guild's recent entries (newest
-    /// first, capped) — trims older rows opportunistically.
     pub async fn append_audit(&self, guild_id: Id, e: &crate::protocol::AuditEntry) -> Result<()> {
         sqlx::query(
             "INSERT INTO audit_log (guild_id, at_ms, actor_pubkey, action, target, detail)
@@ -622,8 +576,6 @@ impl Store {
         Ok(())
     }
 
-    /// Ban rows are written BEFORE the membership row is removed by the caller
-    /// — the DB can never say "not banned but also not a member" mid-ban.
     pub async fn insert_ban(&self, guild_id: Id, pubkey: &str) -> Result<()> {
         sqlx::query(
             "INSERT INTO bans (guild_id, pubkey) VALUES (?, ?)
@@ -673,14 +625,6 @@ impl Store {
         tx.commit().await
     }
 
-    /// Every blob filename any row still points at.
-    ///
-    /// The two producers are the only two readers: `messages.image` holds the
-    /// `media:` sentinel, and `guild_emojis.image` holds the bare filename
-    /// (the sentinel is stripped there because the client renders that column
-    /// as a URL path). Anything that starts storing blobs has to be added here
-    /// or the sweep will delete what it wrote — which is why this lives next
-    /// to the schema rather than in `media.rs`.
     pub async fn referenced_media(&self) -> Result<HashSet<String>> {
         let mut out = HashSet::new();
         for r in sqlx::query("SELECT image FROM messages WHERE image IS NOT NULL")
@@ -702,21 +646,6 @@ impl Store {
         Ok(out)
     }
 
-    /// Record a redemption. Written after the join succeeds, so a use is only
-    /// spent on a join that actually happened.
-    ///
-    /// **Relative, and it has to be.** This used to take the count the caller
-    /// had read and write it absolutely, which loses a redemption: the caller
-    /// snapshots `uses` under the in-memory entry lock and then releases it
-    /// before awaiting here, so two redemptions of the same code can arrive
-    /// carrying 4 and 5 and land in either order across the pool's eight
-    /// connections. The row is left at whichever wrote last, and because
-    /// `load_or_seed` rehydrates `uses` straight from this column, a restart
-    /// would hand the code back a use it had already spent.
-    ///
-    /// `uses = uses + 1` is order-independent, so the two writes commute and
-    /// the count is right whichever lands first. The database counts
-    /// redemptions; memory enforces the cap.
     pub async fn bump_invite_uses(&self, code: &str) -> Result<()> {
         sqlx::query("UPDATE invites SET uses = uses + 1 WHERE code = ?")
             .bind(code)
@@ -776,12 +705,6 @@ impl Store {
         Ok(())
     }
 
-    /// Build the quoted snapshot for a reply, from the server's own row.
-    ///
-    /// Scoped to `channel_id` on purpose: that is what stops a reply pointing at
-    /// a message in a channel the sender can't read and pulling its text into
-    /// one they can. Returns None when the id doesn't resolve there, and the
-    /// caller sends the message without a quote rather than rejecting it.
     pub async fn reply_ref(&self, channel_id: Id, message_id: Id) -> Result<Option<ReplyRef>> {
         let row = sqlx::query(
             "SELECT author_pubkey, author_username, content, image
@@ -803,15 +726,6 @@ impl Store {
         }))
     }
 
-    /// The most recent `limit` messages of a channel, oldest-first (the shape
-    /// clients render). `before` (unix ms) paginates further back.
-    ///
-    /// The tiebreak is `rowid`, not `id`. Two messages sent inside the same
-    /// millisecond tie on `created_at`, and `id` is a random UUID — so their
-    /// order came out arbitrary, and differently on each fetch. `rowid` is
-    /// SQLite's own insertion counter, which is exactly the order they arrived
-    /// in. Found as a flaky assertion in `persistence.rs`; it is a real
-    /// ordering bug, not a test artefact.
     pub async fn history(
         &self,
         channel_id: Id,
@@ -848,13 +762,10 @@ impl Store {
             }
         };
         let mut out: Vec<Message> = rows.into_iter().map(row_to_message).collect();
-        out.reverse(); // delivered oldest-first
+        out.reverse();
         Ok(out)
     }
 
-    /// Toggle `pubkey`'s reaction with `emoji` on a message (read-modify-write;
-    /// safe under this process's single-writer design). Returns the updated
-    /// reaction set, or None if the message doesn't exist.
     pub async fn toggle_reaction(
         &self,
         channel_id: Id,
@@ -893,7 +804,6 @@ impl Store {
         Ok(Some(reactions))
     }
 
-    /// The author pubkey of a message, if it exists (for delete permission).
     pub async fn message_author(&self, channel_id: Id, message_id: Id) -> Result<Option<String>> {
         let row = sqlx::query("SELECT author_pubkey FROM messages WHERE id = ? AND channel_id = ?")
             .bind(message_id.to_string())
@@ -912,8 +822,6 @@ impl Store {
         Ok(())
     }
 
-    /// Retention sweep: delete messages in `guild_id`'s channels older than
-    /// `cutoff_ms`, then reclaim freed pages. Returns rows deleted.
     pub async fn sweep_guild_messages(&self, guild_id: Id, cutoff_ms: i64) -> Result<u64> {
         let res = sqlx::query(
             "DELETE FROM messages WHERE created_at < ? AND channel_id IN
@@ -924,7 +832,6 @@ impl Store {
         .execute(&self.pool)
         .await?;
         if res.rows_affected() > 0 {
-            // Deleting rows alone never shrinks a SQLite file.
             let _ = sqlx::query("PRAGMA incremental_vacuum")
                 .execute(&self.pool)
                 .await;
@@ -935,8 +842,6 @@ impl Store {
 
 fn row_to_message(r: sqlx::sqlite::SqliteRow) -> Message {
     let ms: i64 = r.get(11);
-    // Only check `reply_id` to avoid breaking rows from older servers that
-    // lack the other reply columns.
     let reply_id: Option<String> = r.get(7);
     let reply_to = reply_id.and_then(|id| {
         Some(ReplyRef {
@@ -961,15 +866,6 @@ fn row_to_message(r: sqlx::sqlite::SqliteRow) -> Message {
     }
 }
 
-/// One line of the parent, for a reply's quote.
-///
-/// Newlines are flattened because the quote renders as a single line; a
-/// multi-line parent would otherwise stretch every reply to it. An image-only
-/// parent has no text at all, so it gets a placeholder rather than quoting as
-/// blank — a reply to a picture should still say what it is replying to.
-///
-/// Truncation counts *characters*, not bytes: slicing a UTF-8 string mid-scalar
-/// panics, and message content is arbitrary user text.
 fn excerpt_for_reply(content: &str, has_image: bool) -> String {
     let flat = content.split_whitespace().collect::<Vec<_>>().join(" ");
     if flat.is_empty() {

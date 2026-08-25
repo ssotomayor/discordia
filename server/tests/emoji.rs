@@ -1,8 +1,3 @@
-//! End-to-end tests for guild custom emoji: who may manage them, that the
-//! catalog reaches members, and that images come back through the on-demand
-//! fetch. Same harness as `owner_controls.rs` — a real gateway driven through
-//! the bot SDK's `connect_as_user`.
-
 use std::net::SocketAddr;
 use std::time::Duration;
 
@@ -10,8 +5,6 @@ use dioxusfun_bot::{Bot, BotIdentity};
 use dioxusfun_server::livekit::LiveKitConfig;
 use dioxusfun_server::protocol::{ChannelKind, ClientMessage, Id, ServerMessage};
 
-/// A 1x1 transparent PNG, as a data URL — small enough to keep the test fast,
-/// real enough that the media store decodes and hashes it like any other image.
 const PIXEL_PNG: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
 
 async fn next_timeout(session: &mut Bot) -> ServerMessage {
@@ -22,8 +15,6 @@ async fn next_timeout(session: &mut Bot) -> ServerMessage {
 }
 
 fn test_config(operators: std::collections::HashSet<String>) -> dioxusfun_server::ServerConfig {
-    // pid + nanos is not unique (macOS `as_nanos()` ~1us resolution), causing
-    // SQLite lock conflicts in parallel tests.
     use std::sync::atomic::{AtomicU32, Ordering};
     static N: AtomicU32 = AtomicU32::new(0);
     let dir = std::env::temp_dir().join(format!(
@@ -80,7 +71,6 @@ async fn create_guild(owner: &mut Bot, name: &str) -> (Id, Id) {
     }
 }
 
-/// Wait for the next emoji catalog push.
 async fn next_emojis(session: &mut Bot) -> Vec<dioxusfun_server::protocol::GuildEmoji> {
     loop {
         if let ServerMessage::GuildEmojis { emojis, .. } = next_timeout(session).await {
@@ -116,7 +106,6 @@ async fn owner_can_add_rename_and_delete_emoji() {
     assert_eq!(emojis.len(), 1);
     assert_eq!(emojis[0].shortcode, "blobcat");
     assert_eq!(emojis[0].added_by, owner_id.pubkey());
-    // The image is a content address, never the bytes.
     assert!(
         emojis[0].image.ends_with(".png") && emojis[0].image.len() == 68,
         "expected <64 hex>.png, got {}",
@@ -134,7 +123,6 @@ async fn owner_can_add_rename_and_delete_emoji() {
         .unwrap();
     let renamed = next_emojis(&mut owner).await;
     assert_eq!(renamed[0].shortcode, "blobcat_hug");
-    // Renaming must not move the image — clients holding the bytes keep them.
     assert_eq!(renamed[0].image, emojis[0].image);
 
     owner
@@ -146,8 +134,6 @@ async fn owner_can_add_rename_and_delete_emoji() {
     handle.abort();
 }
 
-/// A plain member holds no `ManageEmojis`, and the client-side `can()` is only
-/// advisory — so the gateway has to refuse.
 #[tokio::test]
 async fn member_without_permission_is_refused() {
     let (url, handle) = spawn_gateway().await;
@@ -188,8 +174,6 @@ async fn member_without_permission_is_refused() {
     handle.abort();
 }
 
-/// The catalog goes to the guild's members, and the images come back through
-/// the separate on-demand fetch rather than riding along with it.
 #[tokio::test]
 async fn catalog_reaches_members_and_images_fetch_on_demand() {
     let (url, handle) = spawn_gateway().await;
@@ -284,7 +268,6 @@ async fn shortcodes_are_validated_and_unique() {
         .unwrap();
     assert!(next_error(&mut owner).await.contains("already exists"));
 
-    // A non-image payload never reaches the blob store.
     owner
         .send(&ClientMessage::CreateGuildEmoji {
             guild_id,

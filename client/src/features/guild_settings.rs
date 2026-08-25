@@ -1,14 +1,3 @@
-//! "Guild settings" dialog: branding (description + icon/banner images),
-//! visibility (public directory vs invite-only), the invite code, custom emoji,
-//! and the ban list. Everything here needs `ManageGuild` (bans need
-//! `BanMembers`, emoji need `ManageEmojis`); the server enforces — the dialog
-//! just won't be reachable without the menu entry.
-//!
-//! Guild-facing copy says "guild", never "server". In this project a *server*
-//! is the host you connect to (`dioxusfun-server`, "Server URL", the self-host
-//! flow), so Discord's habit of calling a guild a server collides with a term
-//! that already means something else here.
-
 use base64::Engine as _;
 use dioxus::prelude::*;
 
@@ -52,8 +41,6 @@ pub fn GuildSettingsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element 
         let fetch_bans = can_ban;
         use_hook(move || {
             gw.send(ClientMessage::CreateInvite {
-                // No TTL/cap controls in this UI yet; server enforces limits,
-                // UI just omits them.
                 expires_in_secs: None,
                 max_uses: None,
                 guild_id,
@@ -75,8 +62,6 @@ pub fn GuildSettingsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element 
             .and_then(|g| g.description.clone())
             .unwrap_or_default()
     });
-    // Flag distinguishes success from failure to drive color, avoiding a
-    // misleading 'done' state.
     let mut upload_note = use_signal(|| None::<(bool, String)>);
     let mut copied = use_signal(|| false);
 
@@ -168,8 +153,6 @@ pub fn GuildSettingsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element 
                                     let banner = g.banner.clone();
                                     move |(url, note): (Option<String>, Option<String>)| {
                                         let ok = url.is_some();
-                                        // A silent success looked identical to a
-                                        // silent failure; say which happened.
                                         upload_note.set(match note {
                                             Some(n) => Some((true, n)),
                                             None if ok => Some((false, "Icon updated.".into())),
@@ -303,8 +286,6 @@ pub fn GuildSettingsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element 
                                 class: "rounded px-2 py-1 text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors",
                                 onclick: move |_| {
                                     if let Some(code) = invite() {
-                                        // The code is minted server-side, so it
-                                        // is not ours to trust into a literal.
                                         let code =
                                             crate::features::screenshare::js_str(&code);
                                         let js = format!(
@@ -383,7 +364,6 @@ pub fn GuildSettingsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element 
     }
 }
 
-/// Retention editor: a days field (blank = keep forever) + Save.
 #[component]
 fn RetentionRow(guild_id: Id, current: Option<u32>) -> Element {
     let gateway = use_gateway();
@@ -413,9 +393,6 @@ fn RetentionRow(guild_id: Id, current: Option<u32>) -> Element {
     }
 }
 
-/// Join-gate + panic + audit-log controls. The gate/rules are edited locally
-/// and pushed on Save; panic mode toggles immediately (it's an emergency
-/// switch). The audit log is read from state (fetched on dialog open).
 #[component]
 fn SafetyControls(
     guild_id: Id,
@@ -523,8 +500,6 @@ fn SafetyControls(
             div { class: "max-h-32 overflow-y-auto space-y-0.5",
                 for e in entries().iter().rev().take(50).cloned() {
                     {
-                        // actor_pubkey was persisted but never rendered; this
-                        // adds the "who" to the audit log.
                         let actor = state.read().display_name(&e.actor_pubkey);
                         rsx! {
                             div {
@@ -549,13 +524,9 @@ fn SafetyControls(
     }
 }
 
-/// A small "pick an image file" button that uploads via Blossom (with the
-/// data-URL fallback) and reports `(url, note)` — the same pipeline profile
-/// avatars use.
 #[component]
 fn ImagePickButton(
     label: &'static str,
-    /// Shape the picked image is cropped to before upload.
     shape: crate::features::image_editor::CropShape,
     onpicked: EventHandler<(Option<String>, Option<String>)>,
     identity: crate::identity::Identity,
@@ -574,8 +545,6 @@ fn ImagePickButton(
                     let server = settings.read().blossom_server.clone();
                     let onpicked = onpicked;
                     spawn(async move {
-                        // The crop is already a data URL; hand the bytes to the
-                        // same upload path a raw pick used to take.
                         let bytes = crate::features::profiles::data_url_bytes(&cropped);
                         let mime = crate::features::profiles::data_url_mime(&cropped);
                         let result = crate::features::profiles::image_to_ref(
@@ -600,15 +569,9 @@ fn ImagePickButton(
                         let Some(file) = files.into_iter().next() else { return };
                         match file.read_bytes().await {
                             Ok(bytes) => {
-                                // Normalise mime before validation: webview
-                                // reports `application/octet-stream` for
-                                // unknown extensions, which the server
-                                // rejects.
                                 let mime = crate::features::profiles::image_mime(
                                     file.content_type(),
                                 );
-                                // Say what's wrong here rather than letting the
-                                // upload fail later with a note about Blossom.
                                 if let Err(msg) =
                                     crate::features::profiles::check_image(&bytes, &mime)
                                 {
@@ -630,26 +593,8 @@ fn ImagePickButton(
     }
 }
 
-/// Largest emoji image accepted before upload. Matches the server's cap, so a
-/// too-big file is refused here with a message instead of bouncing back as a
-/// generic error.
 const MAX_EMOJI_BYTES: usize = 256_000;
 
-/// The "added by X · date" line under an emoji's shortcode, or `None` when
-/// there is nothing honest to say.
-///
-/// `added_by` and `created_ms` are both written by the upload path and were
-/// both unread by anything until now — so "who added this emoji, and when" was
-/// recorded and unanswerable. They are also both *optional in storage*:
-/// `guild_emojis` declares `added_by TEXT NOT NULL DEFAULT ''` and `created_ms
-/// INTEGER NOT NULL DEFAULT 0`, so a row written before those columns existed
-/// carries an empty key and the Unix epoch. Rendering that verbatim would
-/// claim the emoji was added by nobody on 1 January 1970, which is worse than
-/// saying nothing — hence four cases rather than one format string.
-///
-/// The date is UTC, like every other timestamp the client renders: `Message::
-/// created_at` is a `DateTime<Utc>` and `chat.rs` formats it without
-/// converting.
 fn emoji_provenance(added_by: &str, adder: &str, created_ms: i64) -> Option<String> {
     let when = (created_ms > 0)
         .then(|| chrono::DateTime::from_timestamp_millis(created_ms))
@@ -663,9 +608,6 @@ fn emoji_provenance(added_by: &str, adder: &str, created_ms: i64) -> Option<Stri
     }
 }
 
-/// Custom-emoji management for a guild. Needs `ManageEmojis` — which the guild
-/// owner implicitly holds, like every other permission. The server re-checks
-/// every operation here; this only decides what's worth showing.
 #[component]
 fn EmojiSettings(guild_id: Id) -> Element {
     let state = use_app_state();
@@ -740,9 +682,6 @@ fn EmojiSettings(guild_id: Id) -> Element {
                                     let Some(file) = files.into_iter().next() else { return };
                                     match file.read_bytes().await {
                                         Ok(bytes) => {
-                                            // Fail here rather than bouncing off
-                                            // the server, so the message can say
-                                            // something useful.
                                             if bytes.len() > MAX_EMOJI_BYTES {
                                                 error.set(Some("That image is over 256 KB.".into()));
                                                 return;
@@ -867,8 +806,6 @@ fn EmojiSettings(guild_id: Id) -> Element {
 mod tests {
     use super::emoji_provenance;
 
-    /// 2026-08-14T12:00:00Z — midday, so the assertions cannot pass by landing
-    /// on a boundary the formatter rounds either way.
     const WHEN: i64 = 1_786_708_800_000;
 
     #[test]
@@ -879,9 +816,6 @@ mod tests {
         );
     }
 
-    /// The `DEFAULT ''` / `DEFAULT 0` columns. A row from before those existed
-    /// must not be rendered as "added by nobody on 1 January 1970" — each half
-    /// drops out on its own, and a row with neither says nothing at all.
     #[test]
     fn missing_halves_drop_out_rather_than_lying() {
         assert_eq!(
@@ -895,9 +829,6 @@ mod tests {
         assert_eq!(emoji_provenance("", "", 0), None);
     }
 
-    /// A negative timestamp is a pre-epoch date, which nothing in this codebase
-    /// can legitimately produce — `created_ms` is stamped from
-    /// `Utc::now().timestamp_millis()`. Treated as absent rather than rendered.
     #[test]
     fn a_pre_epoch_timestamp_is_treated_as_absent() {
         assert_eq!(

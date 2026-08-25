@@ -1,7 +1,3 @@
-//! End-to-end rendezvous name-claim handshake over a real WebSocket:
-//! Challenge → signed Register → Registered, and the rejection paths (bad
-//! signature, name already owned by a different key).
-
 use std::sync::Arc;
 
 use dioxusfun_protocol::rendezvous::DiscoverEntry;
@@ -11,13 +7,10 @@ use secp256k1::{Keypair, Secp256k1, SecretKey};
 use sha2::{Digest, Sha256};
 use tokio_tungstenite::tungstenite::Message;
 
-/// Spawn the rendezvous router on an ephemeral port; return its ws base URL.
 async fn spawn() -> String {
     spawn_with(Config::default()).await.0
 }
 
-/// Spawn with a specific config, handing back the registry so a test can see
-/// what the rendezvous thinks is live.
 async fn spawn_with(config: Config) -> (String, Arc<Registry>) {
     let registry = Arc::new(Registry::new());
     let ctx = AppCtx {
@@ -32,7 +25,6 @@ async fn spawn_with(config: Config) -> (String, Arc<Registry>) {
     (format!("ws://{addr}"), registry)
 }
 
-/// A test identity: (secret, 64-char x-only pubkey hex).
 fn identity(seed: u8) -> (SecretKey, String) {
     let secp = Secp256k1::new();
     let secret = SecretKey::from_slice(&[seed; 32]).unwrap();
@@ -65,7 +57,6 @@ async fn next_json(ws: &mut Ws) -> serde_json::Value {
     }
 }
 
-/// Connect to /control, read the challenge nonce.
 async fn connect_control(base: &str) -> (Ws, String) {
     let (mut ws, _) = tokio_tungstenite::connect_async(format!("{base}/control"))
         .await
@@ -84,10 +75,6 @@ async fn send_register(ws: &mut Ws, name: &str, pubkey: &str, signature: &str) {
     ws.send(Message::Text(frame.to_string())).await.unwrap();
 }
 
-/// An endpoint a host advertises has to survive the round trip to a friend who
-/// only holds a join code — that is the whole path a direct connection depends
-/// on, and it crosses two hops (`Register`, then `/resolve`) either of which
-/// could quietly drop the field.
 #[tokio::test]
 async fn an_advertised_endpoint_reaches_a_friend_holding_the_code() {
     let (base, registry) = spawn_with(Config::default()).await;
@@ -99,8 +86,6 @@ async fn an_advertised_endpoint_reaches_a_friend_holding_the_code() {
         "op": "register",
         "d": {
             "name": "Casa", "pubkey": pubkey, "signature": sig,
-            // Unlisted on purpose: a code handed to friends is exactly the case
-            // that wants the direct path, and it never appears in `/discover`.
             "publish_public": false,
             "endpoint": "ws://203.0.113.5:9000",
         }
@@ -111,7 +96,6 @@ async fn an_advertised_endpoint_reaches_a_friend_holding_the_code() {
     let entry = registry.lookup("casa").expect("host is live");
     assert_eq!(entry.endpoint.as_deref(), Some("ws://203.0.113.5:9000"));
 
-    // HTTP resolve matches codes case-insensitively, like `/join`.
     let http = base.replace("ws://", "http://");
     let fetched: DiscoverEntry = reqwest::get(format!("{http}/resolve/CASA"))
         .await
@@ -123,8 +107,6 @@ async fn an_advertised_endpoint_reaches_a_friend_holding_the_code() {
     assert!(registry.discover().is_empty());
 }
 
-/// A host that obtained no address is not an error and not a special case: the
-/// field is simply absent, and the joiner falls back to the relay.
 #[tokio::test]
 async fn a_host_without_an_endpoint_resolves_to_none() {
     let (base, _registry) = spawn_with(Config::default()).await;
@@ -144,20 +126,12 @@ async fn a_host_without_an_endpoint_resolves_to_none() {
         .unwrap();
     assert!(fetched.endpoint.is_none());
 
-    // An unknown code is a 404 rather than an empty entry, so a joiner can tell
-    // "no direct address" from "no such host".
     let missing = reqwest::get(format!("{http}/resolve/nobody-here-01"))
         .await
         .unwrap();
     assert_eq!(missing.status(), reqwest::StatusCode::NOT_FOUND);
 }
 
-/// A transport key is published only when the registering key signs for it.
-///
-/// This is what stops the QUIC path being pointed somewhere else: the transport
-/// authenticates whoever holds the key it is given, so an unattested key would
-/// move the trust problem rather than solve it — a joiner would faithfully
-/// verify a connection to the wrong host.
 #[tokio::test]
 async fn a_transport_key_is_published_only_when_it_is_signed_for() {
     let (base, registry) = spawn_with(Config::default()).await;
@@ -185,12 +159,6 @@ async fn a_transport_key_is_published_only_when_it_is_signed_for() {
     assert_eq!(entry.transport_addrs.len(), 2);
 }
 
-/// And an unsigned — or wrongly signed — key is dropped rather than published,
-/// while the host still registers.
-///
-/// Dropping rather than refusing on purpose: a host whose transport key cannot
-/// be attested is still perfectly good over the relay, and locking it out would
-/// turn a degraded path into no path at all.
 #[tokio::test]
 async fn an_unattested_transport_key_is_dropped_but_the_host_still_registers() {
     let (base, registry) = spawn_with(Config::default()).await;
@@ -204,8 +172,6 @@ async fn an_unattested_transport_key_is_dropped_but_the_host_still_registers() {
             "name": "Unsigned", "pubkey": pubkey, "signature": name_sig,
             "publish_public": false,
             "transport_key": "k51qzi5uqu5dl",
-            // Signed over the *name* rather than the key: a real signature from
-            // the right identity, vouching for the wrong thing.
             "transport_signature": name_sig,
             "transport_addrs": ["203.0.113.5:41234"],
         }
@@ -264,14 +230,6 @@ async fn a_second_key_cannot_take_a_claimed_name() {
     assert!(reply["d"]["message"].as_str().unwrap().contains("taken"));
 }
 
-/// A host that stops answering must lose its listing.
-///
-/// This is the case that left dead hosts in the browse list: the process is
-/// gone (or asleep, or behind a dropped link) but the TCP connection was never
-/// closed, so the rendezvous' read side simply never yields and nothing
-/// unregisters it. Reproduced here by registering and then never polling the
-/// socket again — tungstenite answers pings while it is being polled, so a
-/// client that stops reading stops ponging, exactly like a host that died.
 #[tokio::test]
 async fn silent_host_is_dropped_from_the_listing() {
     let (base, registry) = spawn_with(Config {
@@ -297,8 +255,6 @@ async fn silent_host_is_dropped_from_the_listing() {
         "host should be listed while alive"
     );
 
-    // Hold the socket open but never poll it again: no Pong will be sent, while
-    // the kernel keeps ACKing so the rendezvous' writes still succeed.
     let _held = ws;
     tokio::time::sleep(std::time::Duration::from_millis(700)).await;
 
@@ -308,8 +264,6 @@ async fn silent_host_is_dropped_from_the_listing() {
     );
 }
 
-/// The converse: a host that keeps answering must NOT be dropped, or the
-/// heartbeat would be worse than the bug it fixes.
 #[tokio::test]
 async fn responsive_host_keeps_its_listing() {
     let (base, registry) = spawn_with(Config {
@@ -329,7 +283,6 @@ async fn responsive_host_keeps_its_listing() {
     ws.send(Message::Text(frame.to_string())).await.unwrap();
     assert_eq!(next_json(&mut ws).await["op"], "registered");
 
-    // Keep polling, which is what makes tungstenite answer the pings.
     let pump = tokio::spawn(async move { while ws.next().await.is_some() {} });
     tokio::time::sleep(std::time::Duration::from_millis(700)).await;
     assert_eq!(
@@ -342,7 +295,6 @@ async fn responsive_host_keeps_its_listing() {
     pump.abort();
 }
 
-/// Send a release frame and return whatever the rendezvous answers.
 async fn send_release(ws: &mut Ws, name: &str, pubkey: &str, signature: &str) -> serde_json::Value {
     let frame = serde_json::json!({
         "op": "release_name",
@@ -352,11 +304,6 @@ async fn send_release(ws: &mut Ws, name: &str, pubkey: &str, signature: &str) ->
     next_json(ws).await
 }
 
-/// The owner can give a name back, and it is claimable by somebody else after.
-///
-/// Before this a reservation was permanent: `claim_name` persisted and nothing
-/// removed one, so a name claimed by mistake was stuck for the life of the
-/// relay's data directory.
 #[tokio::test]
 async fn an_owner_can_release_a_name_and_another_key_can_then_take_it() {
     let (base, registry) = spawn_with(Config::default()).await;
@@ -369,7 +316,6 @@ async fn an_owner_can_release_a_name_and_another_key_can_then_take_it() {
         send_register(&mut ws, "Mudanza", &owner, &sig).await;
         assert_eq!(next_json(&mut ws).await["op"], "registered");
     }
-    // The host entry is dropped when the socket closes; wait for it.
     for _ in 0..50 {
         if registry.reservation_owner("mudanza").is_some() && registry.lookup("mudanza").is_none() {
             break;
@@ -381,7 +327,6 @@ async fn an_owner_can_release_a_name_and_another_key_can_then_take_it() {
         Some(&owner[..])
     );
 
-    // Somebody else cannot take it while it is reserved.
     {
         let (mut ws, nonce) = connect_control(&base).await;
         let sig = sign(&other_secret, &nonce, &other, "Mudanza");
@@ -406,10 +351,6 @@ async fn an_owner_can_release_a_name_and_another_key_can_then_take_it() {
     }
 }
 
-/// A stranger cannot release somebody else's name, and is told the same thing
-/// they would be told about a name nobody has claimed — otherwise this becomes
-/// an oracle for which names are taken by hosts that are offline, which
-/// `/discover` deliberately does not answer.
 #[tokio::test]
 async fn a_stranger_cannot_release_a_name_and_learns_nothing_from_trying() {
     let (base, registry) = spawn_with(Config::default()).await;
@@ -435,9 +376,6 @@ async fn a_stranger_cannot_release_a_name_and_learns_nothing_from_trying() {
     };
 
     assert_eq!(taken["op"], "error");
-    // Blank the slug before comparing: a literal match would always differ,
-    // asserting nothing. The rest of the message must be identical so a
-    // stranger cannot distinguish claimed from free names.
     let blank = |v: &serde_json::Value, slug: &str| {
         v["d"]["message"].as_str().unwrap().replace(slug, "<name>")
     };
@@ -453,7 +391,6 @@ async fn a_stranger_cannot_release_a_name_and_learns_nothing_from_trying() {
     );
 }
 
-/// A forged signature is refused even when it names the real owner's key.
 #[tokio::test]
 async fn a_release_with_a_bad_signature_is_refused() {
     let (base, registry) = spawn_with(Config::default()).await;
@@ -466,9 +403,6 @@ async fn a_release_with_a_bad_signature_is_refused() {
         assert_eq!(next_json(&mut ws).await["op"], "registered");
     }
 
-    // Wait for the registration to drop with its socket. Otherwise the release
-    // below may be refused for being *live* rather than for its signature, and
-    // an assertion checking only "some error" is satisfied by the wrong one.
     for _ in 0..50 {
         if registry.lookup("sellada").is_none() {
             break;

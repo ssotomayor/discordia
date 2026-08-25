@@ -1,22 +1,3 @@
-//! End-to-end tests for the voice/screen-share token handshake, and for voice
-//! *presence* — who is in a channel and what their camera is doing.
-//!
-//! `JoinVoice` is the only client message that mints LiveKit credentials, and
-//! until now nothing exercised it: the three screen-room identities, their
-//! grants, and what happens when a mint fails were all covered by reasoning.
-//! Same harness as `owner_controls.rs` — a real gateway, driven over a real
-//! WebSocket through the bot SDK's `connect_as_user`.
-//!
-//! What these can and cannot settle is worth being clear about. They prove what
-//! the *server* hands out: which identities, which grants, and which frames on
-//! failure. Whether an SFU then lets a `can_publish: false` peer subscribe is a
-//! property of LiveKit, not of this code, and needs a live room.
-//!
-//! The camera tests at the bottom are the first coverage of the
-//! `VoiceStateUpdate` fan-out anywhere in the repo — `ScreenShareState`,
-//! `SetVoiceMute` and `SetSpeaking` still have none — so they pin the shape of
-//! that broadcast as much as they test the camera.
-
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -39,9 +20,6 @@ async fn next_timeout(session: &mut Bot) -> ServerMessage {
         .expect("connection closed unexpectedly")
 }
 
-/// Per-test data dir, counter-based rather than clock-based: `8f95f22` found
-/// that two tests in one binary starting together shared a directory when the
-/// key was pid + nanos, because macOS resolves that to about a microsecond.
 fn test_config(livekit: LiveKitConfig) -> dioxusfun_server::ServerConfig {
     use std::sync::atomic::{AtomicU32, Ordering};
     static N: AtomicU32 = AtomicU32::new(0);
@@ -57,11 +35,6 @@ fn test_config(livekit: LiveKitConfig) -> dioxusfun_server::ServerConfig {
     }
 }
 
-/// A config that signs locally, so the grants can be read straight out of the
-/// JWT. The delegated path carries the same answers now, but a scripted minter
-/// returns a placeholder string rather than a real token — see
-/// `a_delegated_mint_is_told_which_connection_may_publish`, which asserts on
-/// what the seam is *handed* instead.
 fn local_signing() -> LiveKitConfig {
     LiveKitConfig {
         explicit_url: Some("ws://127.0.0.1:7880".into()),
@@ -74,10 +47,6 @@ fn local_signing() -> LiveKitConfig {
     }
 }
 
-/// A delegated minter under test control. `fail_when` decides, per request,
-/// whether that mint blows up — which is the only way to make one of the three
-/// screen mints fail while the others succeed, since a single config's key and
-/// secret either work for all of them or none.
 struct ScriptedMinter {
     fail_when: Box<dyn Fn(&MintRequest) -> bool + Send + Sync>,
 }
@@ -95,13 +64,6 @@ impl VoiceTokenMinter for ScriptedMinter {
     }
 }
 
-/// A minter that records what it was asked for and always succeeds.
-///
-/// The delegated path is the one that used to drop `can_publish` on the floor —
-/// it sent room, identity and name and nothing else, so the relay signed its own
-/// fixed grants with publish on. What this seam *receives* is therefore the
-/// thing worth pinning; what the relay then does with it is asserted on the
-/// relay's own side, in `dioxusfun-rendezvous`.
 struct RecordingMinter {
     seen: Arc<std::sync::Mutex<Vec<(String, String, bool)>>>,
 }
@@ -127,7 +89,6 @@ fn delegated(fail_when: impl Fn(&MintRequest) -> bool + Send + Sync + 'static) -
 }
 
 async fn spawn_gateway(livekit: LiveKitConfig) -> (String, dioxusfun_server::ServerHandle) {
-    // Port 0: let the OS pick, so these run alongside the other suites.
     let preferred: SocketAddr = "127.0.0.1:0".parse().unwrap();
     let handle = dioxusfun_server::spawn(preferred, 100, test_config(livekit))
         .await
@@ -146,10 +107,6 @@ async fn connect_user(url: &str, id: &BotIdentity, name: &str) -> Bot {
     session
 }
 
-/// Create a guild and a voice channel in it, returning both ids.
-///
-/// The guild id is returned because the camera tests need a *second* member,
-/// and joining one means naming the guild.
 async fn voice_channel(owner: &mut Bot) -> (Id, Id) {
     owner
         .send(&ClientMessage::CreateGuild {
@@ -182,17 +139,6 @@ async fn voice_channel(owner: &mut Bot) -> (Id, Id) {
     (guild_id, channel_id)
 }
 
-/// Drive a `JoinVoice` and collect what comes back, stopping once the gateway
-/// goes quiet. Every arm under test sends between one and three frames, so a
-/// short idle window is the honest terminator — a fixed count would pass by
-/// accident if the wrong number arrived, and the negative assertions ("no
-/// ScreenToken") need a quiet period rather than a count anyway.
-///
-/// Two windows, not one. The wait for the *first* frame is generous because it
-/// includes whatever the runner is doing; the gap between frames is short
-/// because there is nothing between them but local HS256 signing. A single
-/// 700ms budget would make a loaded CI box look like a server that sent
-/// nothing.
 async fn join_voice(session: &mut Bot, channel_id: Id) -> Vec<ServerMessage> {
     session
         .send(&ClientMessage::JoinVoice { channel_id })
@@ -241,11 +187,6 @@ fn has_voice_token(frames: &[ServerMessage]) -> bool {
         .any(|m| matches!(m, ServerMessage::VoiceToken { .. }))
 }
 
-/// The happy path, and the one assertion that matters most: the subscribe-only
-/// `#audio` identity is minted **without** publish rights, while the other two
-/// keep them. That grant is the change with the highest regression risk in this
-/// area, and it was previously only checked at the unit level against
-/// `mint_screen_token` directly — not through a real `JoinVoice`.
 #[tokio::test]
 async fn join_voice_mints_three_identities_with_the_right_grants() {
     let (url, _handle) = spawn_gateway(local_signing()).await;
@@ -294,10 +235,6 @@ async fn join_voice_mints_three_identities_with_the_right_grants() {
     }
 }
 
-/// The main screen token has no fallback, so its failure must suppress the
-/// whole frame rather than send one with an empty field: the client stores that
-/// field unconditionally and would try to join with an empty token. Before
-/// `3df2fd3` this was an `if let Ok`, which sent nothing and said nothing.
 #[tokio::test]
 async fn a_failed_screen_mint_reports_and_sends_no_token() {
     let (url, _handle) = spawn_gateway(delegated(|req| req.room.starts_with("screen-"))).await;
@@ -319,11 +256,6 @@ async fn a_failed_screen_mint_reports_and_sends_no_token() {
     );
 }
 
-/// The video token *does* have a frame to travel in, so its failure empties one
-/// field and tells the user why. Without the message the client blames the
-/// server's age: "This server is too old to accept a natively captured screen
-/// share" is what an empty video token means on macOS, and it is a diagnosis
-/// rather than a fact when the mint simply failed.
 #[tokio::test]
 async fn a_failed_video_mint_still_sends_the_frame_and_explains_itself() {
     let (url, _handle) = spawn_gateway(delegated(|req| req.identity.ends_with("#video"))).await;
@@ -344,10 +276,6 @@ async fn a_failed_video_mint_still_sends_the_frame_and_explains_itself() {
     );
 }
 
-/// The counterpart: a failed `#audio` mint is deliberately quiet, because the
-/// client degrades to playing stream audio in the webview. That still works —
-/// it just lands on the system's output device instead of the chosen one — and
-/// a message about a working fallback is noise.
 #[tokio::test]
 async fn a_failed_audio_mint_is_not_reported_to_the_user() {
     let (url, _handle) = spawn_gateway(delegated(|req| req.identity.ends_with("#audio"))).await;
@@ -367,13 +295,6 @@ async fn a_failed_audio_mint_is_not_reported_to_the_user() {
     );
 }
 
-// SetCamera rides VoiceStateUpdate rather than a dedicated frame like
-// ScreenShareState.
-// These tests pin that fan-out shape, as no other tests cover it.
-
-/// Join a guild as a second member. Guilds are public by default, so no invite.
-///
-/// Returns the voice presence the joiner was handed, which most callers ignore.
 async fn join_guild(
     session: &mut Bot,
     guild_id: Id,
@@ -399,8 +320,6 @@ async fn join_guild(
     }
 }
 
-/// Wait for a `VoiceStateUpdate` about `pubkey`, ignoring everything else —
-/// joining voice emits member and voice traffic these tests do not care about.
 async fn next_voice_state(
     session: &mut Bot,
     pubkey: &str,
@@ -414,9 +333,6 @@ async fn next_voice_state(
     }
 }
 
-/// Collect frames until the gateway goes quiet, for the negative assertions.
-/// Same reasoning as `join_voice`: silence is the only honest terminator when
-/// what you are asserting is that nothing was sent.
 async fn drain_quiet(session: &mut Bot) -> Vec<ServerMessage> {
     let mut out = Vec::new();
     while let Ok(Some(msg)) =
@@ -437,9 +353,6 @@ fn camera_states(frames: &[ServerMessage], pubkey: &str) -> Vec<bool> {
         .collect()
 }
 
-/// The happy path: a member's camera flag reaches the *other* people in the
-/// guild, which is the whole point of routing it through the server rather than
-/// letting the SFU's own track events speak for themselves.
 #[tokio::test]
 async fn camera_flag_reaches_the_other_members() {
     let (url, _handle) = spawn_gateway(local_signing()).await;
@@ -473,9 +386,6 @@ async fn camera_flag_reaches_the_other_members() {
     assert!(!vs.camera_on, "and see it go off again");
 }
 
-/// The `..prev` trap in `clear_voice`. The tombstone must carry `camera_on:
-/// false`; a spread would carry a live `true` into a frame that says the user
-/// is in no channel at all.
 #[tokio::test]
 async fn leaving_voice_clears_the_camera() {
     let (url, _handle) = spawn_gateway(local_signing()).await;
@@ -487,9 +397,6 @@ async fn leaving_voice_clears_the_camera() {
     let mut member = connect_user(&url, &member_id, "member").await;
     join_guild(&mut member, guild_id).await;
     let _ = join_voice(&mut member, channel_id).await;
-    // Joining voice emits its own `VoiceStateUpdate` for this member; drain it,
-    // or the assertion below reads the join frame and sees a camera that has
-    // not been turned on yet.
     let _ = drain_quiet(&mut owner).await;
     member
         .send(&ClientMessage::SetCamera { on: true })
@@ -508,9 +415,6 @@ async fn leaving_voice_clears_the_camera() {
     );
 }
 
-/// `SetCamera` from someone who never joined voice must do nothing at all —
-/// this is what makes the missing `is_guild_member` check safe, since only
-/// `JoinVoice` (which checks) creates the state `update_camera` can touch.
 #[tokio::test]
 async fn camera_outside_voice_is_ignored() {
     let (url, _handle) = spawn_gateway(local_signing()).await;
@@ -519,7 +423,6 @@ async fn camera_outside_voice_is_ignored() {
     let mut owner = connect_user(&url, &owner_id, "owner").await;
     let (_guild_id, _channel_id) = voice_channel(&mut owner).await;
 
-    // Deliberately never joins the guild or voice.
     let mut outsider = connect_user(&url, &outsider_id, "outsider").await;
     let _ = drain_quiet(&mut owner).await;
     outsider
@@ -534,8 +437,6 @@ async fn camera_outside_voice_is_ignored() {
     );
 }
 
-/// The dedupe in `update_camera`. Without it every redundant click fans out to
-/// every member of the guild, which is why no rate limiter is needed here.
 #[tokio::test]
 async fn a_repeated_camera_on_broadcasts_once() {
     let (url, _handle) = spawn_gateway(local_signing()).await;
@@ -564,10 +465,6 @@ async fn a_repeated_camera_on_broadcasts_once() {
     );
 }
 
-// ScreenShareState is still sent (derived from VoiceState) because the wire
-// has no versioning;
-// dropping it would silently break the LIVE badge on older clients.
-
 fn share_states(frames: &[ServerMessage], pubkey: &str) -> Vec<bool> {
     frames
         .iter()
@@ -590,8 +487,6 @@ fn legacy_sharers(frames: &[ServerMessage]) -> Vec<Vec<String>> {
         .collect()
 }
 
-/// Both frames, from one toggle, agreeing — the legacy one derived from the new
-/// flag rather than from a map that could drift out of step with it.
 #[tokio::test]
 async fn sharing_announces_on_both_the_new_flag_and_the_legacy_frame() {
     let (url, _handle) = spawn_gateway(local_signing()).await;
@@ -626,12 +521,6 @@ async fn sharing_announces_on_both_the_new_flag_and_the_legacy_frame() {
     );
 }
 
-/// The gap this migration exists to close: a member reconnecting while someone
-/// is *already* sharing used to learn nothing until that person next toggled it,
-/// because `Ready` carries `voice_states` and no screen-share snapshot. A
-/// reconnect rather than a fresh user because `Ready`'s roster is scoped to the
-/// guilds you are in — and reconnects are designed for here, since the transport
-/// drops a slow consumer on purpose.
 #[tokio::test]
 async fn a_reconnecting_member_sees_a_share_already_in_progress() {
     let (url, _handle) = spawn_gateway(local_signing()).await;
@@ -652,7 +541,6 @@ async fn a_reconnecting_member_sees_a_share_already_in_progress() {
         .unwrap();
     let _ = drain_quiet(&mut owner).await;
 
-    // The owner reconnects, as a client dropped by the transport would.
     drop(owner);
     let mut owner = Bot::connect_as_user(&url, &owner_id, "owner")
         .await
@@ -674,7 +562,6 @@ async fn a_reconnecting_member_sees_a_share_already_in_progress() {
     );
 }
 
-/// The `..prev` trap, for the older of the two flags.
 #[tokio::test]
 async fn leaving_voice_clears_the_share() {
     let (url, _handle) = spawn_gateway(local_signing()).await;
@@ -712,18 +599,6 @@ async fn leaving_voice_clears_the_share() {
     );
 }
 
-/// The grants a delegated mint is told to ask for.
-///
-/// `screen_token_as` has taken `can_publish` per identity since the local mint
-/// stopped handing publish rights to the subscribe-only `#audio` connection.
-/// That answer used to stop at the delegation seam: `MintRequest` carried room,
-/// identity and name, so a gateway hosting through a rendezvous got a relay's
-/// own fixed grants with publish on — and the narrowing applied to
-/// self-signing deployments only.
-///
-/// This asserts the three screen-room mints now carry the same answers the
-/// local path signs, which `join_voice_mints_three_identities_with_the_right_grants`
-/// checks on the other side of the same `if`.
 #[tokio::test]
 async fn a_delegated_mint_is_told_which_connection_may_publish() {
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -760,11 +635,6 @@ async fn a_delegated_mint_is_told_which_connection_may_publish() {
     );
 }
 
-// GuildJoined previously omitted voice presence, so joiners saw an empty
-// roster until a state update arrived.
-
-/// The gap itself: someone already in voice is visible to a member who joins
-/// afterwards, without waiting for a `VoiceStateUpdate` that may never come.
 #[tokio::test]
 async fn joining_a_guild_shows_who_is_already_in_voice() {
     let (url, _handle) = spawn_gateway(local_signing()).await;
@@ -797,10 +667,6 @@ async fn joining_a_guild_shows_who_is_already_in_voice() {
     assert!(seen.camera_on, "and that their camera is on");
 }
 
-/// And the scoping. `voice_states_in` filters by guild for the same reason
-/// `snapshot_for` does: sharing one guild with someone says nothing about where
-/// else on the server they are. Without the filter this frame would hand every
-/// joiner the location of everyone in voice anywhere.
 #[tokio::test]
 async fn the_join_bundle_does_not_disclose_other_guilds() {
     let (url, _handle) = spawn_gateway(local_signing()).await;

@@ -1,11 +1,3 @@
-//! "Roles" dialog: create/edit/delete a guild's roles and their permission
-//! grants. Requires `ManageRoles` (the server enforces the grant-subset rule:
-//! you can only hand out permissions you hold, and roles carrying
-//! `ManageRoles`/`ManageGuild` are owner-touch-only — those two are shown
-//! disabled for non-owners).
-//!
-//! Assigning roles to people happens in the member list's context menu.
-
 use dioxus::prelude::*;
 
 use crate::protocol::{ClientMessage, Id, Permission, Role};
@@ -16,12 +8,9 @@ pub fn RolesDialog(guild_id: Id, on_close: EventHandler<()>) -> Element {
     let state = use_app_state();
     let gateway = use_gateway();
 
-    // Live role list — arrives in Ready/GuildJoined and stays fresh via
-    // GuildRoles pushes; no fetch-on-open needed.
     let roles: Vec<Role> = use_memo(move || state.read().roles_of(guild_id).to_vec())();
     let is_owner = state.read().is_owner(guild_id);
 
-    // Editing state: None = creating a new role.
     let mut editing = use_signal(|| None::<Id>);
     let mut name = use_signal(String::new);
     let mut color = use_signal(|| None::<String>);

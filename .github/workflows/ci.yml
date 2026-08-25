@@ -7,38 +7,17 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  # Must match the `dioxus` version in Cargo.lock. Unpinned, binstall takes the
-  # newest CLI, which drifts from the crate on every dx release — and dx prints
-  # "dx and dioxus versions are incompatible!" and then bundles anyway, so the
-  # mismatch reaches a published artifact instead of a red job. Bump this in the
-  # same commit that bumps the crate.
   DIOXUS_CLI_VERSION: "0.7.10"
-  # LIVEKIT_BUNDLE_SKIP deliberately does NOT live here. It used to, back when
-  # this file only ran checks — and then the pre-release jobs were added to it
-  # and inherited the skip, so every published binary went out with an empty
-  # stub in place of the 51MB livekit-server and could not host voice at all.
-  # It is now set per job, on the three that build nothing anyone downloads.
 
 jobs:
   test:
     name: fmt · clippy · test
     runs-on: ubuntu-latest
-    # Nothing here is downloaded by anyone, and voice is exercised only in
-    # manual runs — so skip the ~50MB fetch. Safe precisely because this job
-    # publishes no artifact.
     env:
       LIVEKIT_BUNDLE_SKIP: "1"
     steps:
       - uses: actions/checkout@v4
 
-      # Before the toolchain, because it needs nothing but the lockfile and it
-      # guards the release path: `DIOXUS_CLI_VERSION` and the `dioxus` crate were
-      # kept in step by comment alone, and drift is not loud. dx warns "dx and
-      # dioxus versions are incompatible!" and then bundles ANYWAY when the CLI
-      # is ahead, and fails outright when it is behind — which is how the Linux
-      # AppImage broke on the very commit that introduced the pin. Failing here
-      # costs seconds; the alternative is finding out in a bundle job, or not at
-      # all.
       - name: dx pin matches Cargo.lock
         run: |
           lock=$(awk '/^name = "dioxus"$/{getline; gsub(/[",]/,""); print $3; exit}' Cargo.lock)
@@ -57,17 +36,9 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
 
-      # The desktop client needs system GTK/WebKit to compile, so its tests run
-      # in the desktop-build job below, which installs them. This job covers the
-      # four server-side crates. (It used to claim that was where "all the tests
-      # live" — that stopped being true long before anyone noticed, which is the
-      # whole reason the client's now run at all.)
       - name: Format
         run: cargo fmt --all --check
 
-      # --all-targets, not --tests: examples are a build target the tests don't
-      # cover, and a dead-code sweep once broke bot-sdk/examples/ping.rs with
-      # nothing catching it.
       - name: Clippy (server crates)
         run: cargo clippy -p dioxusfun-protocol -p dioxusfun-server -p dioxusfun-bot -p dioxusfun-rendezvous --all-targets -- -D warnings
 
@@ -77,7 +48,6 @@ jobs:
   desktop-build:
     name: client compiles (linux)
     runs-on: ubuntu-latest
-    # Compile check only; nothing leaves this job.
     env:
       LIVEKIT_BUNDLE_SKIP: "1"
     steps:
@@ -92,52 +62,22 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             libwebkit2gtk-4.1-dev libgtk-3-dev libxdo-dev \
             libasound2-dev libssl-dev pkg-config
-      # The remaining two crates, and the only job that can lint them: both
-      # need GTK/WebKit, which the `test` job above deliberately does not
-      # install. Clippy compiles what it lints, so this is still the compile
-      # check this job exists for — one build, not two.
       - name: Clippy (client + grid-layout)
         run: cargo clippy -p dioxusfun -p dioxus-grid-layout --all-targets -- -D warnings
 
-      # Second profile, different lint set: `unused_variables` and friends fire
-      # only with `debug_assertions` off, which nothing above compiles — that is
-      # how nine of them reached a published build (`c685828`). Costs a second
-      # compile, since the flag changes the fingerprint.
       - name: Clippy (release profile)
         env:
           RUSTFLAGS: "-C debug-assertions=off"
         run: cargo clippy -p dioxusfun -p dioxus-grid-layout --all-targets -- -D warnings
 
-      # These two crates' tests had never been run by any job. They live here
-      # rather than in the `test` job because they need the GTK/WebKit deps
-      # installed above, and this job is the only one that has them.
-      #
-      # It is the first time CI *links* the client — clippy and check never do —
-      # so it costs more than the step above it looks like it should. What it
-      # buys: identity and NIP-06 derivation, the resampler and mixer
-      # arithmetic, the emoji shortcode scanner, the connection-stats rates, and
-      # the collision and clamping maths behind the panel layout. None of it
-      # platform-specific, all of it the kind that fails quietly.
-      #
-      # The `#[ignore]`d ones stay ignored and are tracked separately: the
-      # `CVPixelBuffer` double-release test needs a display and a Screen
-      # Recording grant, and is macOS-only besides.
       - name: Tests (client + grid-layout)
         run: cargo test -p dioxusfun -p dioxus-grid-layout
 
-  # The Linux job above compiles the client, but never the `#[cfg(target_os =
-  # "windows")]` half of it — and the release job that would is gated on `push`,
-  # so a pull request can't tell whether the Windows-only code even builds. That
-  # code is unsafe FFI against WASAPI, which is precisely the kind that should
-  # not reach master on the strength of having been read.
   windows-build:
     name: client compiles (windows)
     runs-on: windows-latest
     env:
-      # libwebrtc links the STATIC MSVC runtime (/MT); Rust defaults to /MD and
-      # the two collide (LNK2038). Same flag as the release jobs below.
       RUSTFLAGS: "-C target-feature=+crt-static"
-      # Compile check only; nothing leaves this job.
       LIVEKIT_BUNDLE_SKIP: "1"
     steps:
       - uses: actions/checkout@v4
@@ -145,61 +85,20 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      # Clippy rather than `check`, for the same reason the macOS job below uses
-      # it: nothing linted the `cfg(target_os = "windows")` half of the client,
-      # which is where `sysaudio/windows.rs` and `rawmic/windows.rs` live. The
-      # Linux job lints what it can compile, and that is neither. Clippy
-      # compiles what it lints, so this is still the compile check this job
-      # existed for — one build, not two — and `--all-targets` adds the test
-      # modules in those two files, which `cargo check` was not looking at.
-      #
-      # Unlike the macOS job, turning this on took **no** findings with it. Both
-      # profiles were run on a Windows 11 26200 host before the gate went in —
-      # this one, and `-C debug-assertions=off`, which is the pair the Linux job
-      # runs because `unused_variables` and friends fire only under the second.
-      # Zero either way, so this step gates code that already passes it rather
-      # than accompanying a fix.
       - name: Clippy (client, Windows-only code)
         run: cargo clippy -p dioxusfun --all-targets -- -D warnings
 
-      # The second profile, for the reason `desktop-build` runs one:
-      # `unused_variables` and friends fire only with `debug_assertions` off,
-      # and that is how nine of them reached a published build (`c685828`).
-      #
-      # `RUSTFLAGS` is spelled out in full here rather than adding one flag,
-      # because a step-level value REPLACES the job-level one instead of
-      # extending it. Dropping `+crt-static` would put libwebrtc's /MT back
-      # against Rust's /MD, and `--all-targets` links the test binaries, so the
-      # failure would be a LNK2038 in this step and nowhere else.
-      #
-      # The cost is real: it doubles the slowest job in the matrix, because the
-      # changed flag changes the fingerprint and nothing above is reusable.
       - name: Clippy (client, Windows-only code, debug-assertions off)
         env:
           RUSTFLAGS: "-C target-feature=+crt-static -C debug-assertions=off"
         run: cargo clippy -p dioxusfun --all-targets -- -D warnings
-      # `sysaudio/windows.rs` and `rawmic/windows.rs` are 61 unsafe WASAPI FFI
-      # sites that compile nowhere else, and one of them shipped a heap
-      # corruption that only running its test ever caught. Until this step there
-      # was no `cargo test` on Windows at all, so those tests executed nowhere.
-      # The hardware-gated ones stay `#[ignore]`d — a runner has no audio device
-      # — but the rest now run on every push.
       - name: Tests (client, Windows-only code)
         run: cargo test -p dioxusfun
 
-  # And the same hole on the other side. `client/src/sysvideo/macos.rs` and
-  # `client/src/sysaudio/macos.rs` are unsafe FFI against ScreenCaptureKit and
-  # CoreVideo — one of them shipped a double-release of a CVPixelBuffer that
-  # trapped inside CFRelease the instant a share started. Neither compiles on
-  # Linux or Windows, and the only job that did build them, prerelease-macos,
-  # is gated on `push`. So a pull request could not tell whether the macOS half
-  # of the client built at all, which is exactly how c1442ab reached master.
   macos-build:
     name: client compiles (macos)
     runs-on: macos-latest
     env:
-      # No crt-static here: that flag is an MSVC concern, not a darwin one.
-      # Compile check only; nothing leaves this job.
       LIVEKIT_BUNDLE_SKIP: "1"
     steps:
       - uses: actions/checkout@v4
@@ -207,18 +106,6 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      # Clippy rather than `check`, because until now *nothing* linted the
-      # macOS-only half of the client: `sysvideo/` is entirely
-      # `#[cfg(target_os = "macos")]`, and so is `sysaudio/macos.rs`. The Linux
-      # job lints what it can compile, which is neither. Turning this on took
-      # four accumulated findings with it (a `sort_by` that wanted
-      # `sort_by_key`, two platform-conditional dead-code hits in
-      # `sysaudio::frames`, and a `wrong_self_convention` on
-      # `Frame::into_consumable_pixel_buffer` that is silenced on purpose — see
-      # the comment there before touching it).
-      #
-      # Clippy compiles what it lints, so this is still the compile check the
-      # job existed for. One build, not two.
       - name: Clippy (client, macOS-only code)
         run: cargo clippy -p dioxusfun --all-targets -- -D warnings
 
@@ -233,38 +120,22 @@ jobs:
           cache: npm
           cache-dependency-path: client/package-lock.json
 
-      # `npx @tailwindcss/cli` fetches only the CLI binary, but the
-      # `@import "tailwindcss"` in assets/tailwind.css has to resolve the
-      # `tailwindcss` package itself from the input file's directory — that
-      # comes from package.json devDependencies, so install them first.
       - name: Install Node deps
         run: cd client && npm ci
 
       - name: Regenerate Tailwind CSS
         run: cd client && npx @tailwindcss/cli -i assets/tailwind.css -o assets/tailwind.out.css --minify
 
-      # tailwind.out.css is committed and baked into the binary via
-      # include_str!, so Node is never needed to build or run the app — only to
-      # regenerate this file. Drift means someone added a utility class without
-      # regenerating, and it would silently render unstyled at runtime.
       - name: Committed CSS matches source
         run: git diff --exit-code client/assets/tailwind.out.css
-
-  # Pre-Release: every push to master/main builds Linux/Windows/macOS artifacts
-  # and publishes v0.1.0-pre.<run_number>. `if: push` keeps these off
-  # pull_request events, where GITHUB_TOKEN can't create releases (PR #13's 403).
 
   prerelease-linux:
     name: pre-release · server+client (linux · x86_64)
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     env:
-      # The exact tag `publish-prerelease` will create below, handed to the
-      # client's build.rs so the string on screen names the release someone can
-      # actually go and find. Set per publishing job rather than at workflow
-      # level on purpose: a check job that inherited it would produce a binary
-      # claiming to be a published release when nothing was published, and
-      # `version.rs` has a test that fails if that ever happens.
+      # Per publishing job, never at workflow level: a check job that inherited
+      # it would build a binary claiming to be a release nobody published.
       DISCORDIA_VERSION: v0.1.0-pre.${{ github.run_number }}
     steps:
       - uses: actions/checkout@v4
@@ -277,9 +148,6 @@ jobs:
             libwebkit2gtk-4.1-dev libgtk-3-dev libxdo-dev \
             libasound2-dev libssl-dev pkg-config
       - uses: cargo-bins/cargo-binstall@main
-      # --force: rust-cache restores ~/.cargo metadata, so binstall thinks dx is
-      # already installed. GITHUB_TOKEN: anonymous API lookups hit the 60/h
-      # per-IP limit and 403 into a source build, which needs --locked to compile.
       - name: Install Dioxus CLI
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -288,15 +156,6 @@ jobs:
         run: dx --version
       - name: Build server (release)
         run: cargo build --release -p dioxusfun-server
-      # The direct assertion, and the only one that does not have to guess a
-      # threshold from a compressed container: this binary *is* the embed. It
-      # is ~10MB with an empty stub and ~61MB with the real thing, so 40MB has
-      # room on both sides, and it is the same number on all three platforms.
-      # Runs before `strip` so nothing depends on which sections strip keeps.
-      #
-      # It also covers the published `dioxusfun-server-*` assets, which are
-      # release artifacts in their own right (rung 2/3 of SELF_HOSTING.md) and
-      # which no size check reached before.
       - name: Verify livekit-server is embedded
         shell: pwsh
         run: |
@@ -312,13 +171,6 @@ jobs:
         run: |
           $appimg = Get-ChildItem -Recurse -Filter '*.AppImage' target/dx | Select-Object -First 1
           if (-not $appimg) { throw "no AppImage produced by dx bundle" }
-          # No size floor here on purpose. The broken AppImage published as
-          # v0.1.0-pre.125 was 116,663,488 bytes — a floor reasoned across from
-          # the Windows numbers would have been inert, because the AppImage
-          # carries a GTK/WebKit payload the exe does not. A floor that would
-          # actually fire has to come from measuring a real bundled build, and
-          # there has never been one. The check on `dioxusfun-server` above is
-          # the direct assertion and needs no such number.
           Copy-Item $appimg.FullName Discordia-linux-x86_64.AppImage
       - uses: actions/upload-artifact@v4
         with:
@@ -333,10 +185,7 @@ jobs:
     if: github.event_name == 'push'
     runs-on: windows-latest
     env:
-      # libwebrtc links the STATIC MSVC runtime (/MT); Rust defaults to /MD and
-      # the two collide (LNK2038). Same flag as windows-release.yml.
       RUSTFLAGS: "-C target-feature=+crt-static"
-      # See prerelease-linux.
       DISCORDIA_VERSION: v0.1.0-pre.${{ github.run_number }}
     steps:
       - uses: actions/checkout@v4
@@ -351,13 +200,11 @@ jobs:
         run: dx --version
       - name: Build server (release)
         run: cargo build --release -p dioxusfun-server
-      # See the linux job — same check, same number.
       - name: Verify livekit-server is embedded
         shell: pwsh
         run: |
           $srv = Get-Item target/release/dioxusfun-server.exe
           if ($srv.Length -lt 40MB) { throw "dioxusfun-server.exe is $($srv.Length) bytes - the ~51MB bundled livekit-server is missing; refusing to publish it" }
-      # One download, two artifacts — see windows-release.yml for the reasoning.
       - name: Fetch WebView2 Evergreen bootstrapper
         shell: pwsh
         run: |
@@ -368,13 +215,6 @@ jobs:
       - name: Bundle client
         working-directory: client
         run: dx bundle --release
-      # dx emits the app three times (standalone exe, NSIS installer, and the
-      # installer's staging copy). Ship a portable zip (exe + the assets that
-      # live beside it, not embedded) and the installer, not the whole tree.
-      #
-      # The portable has no installer to run the WebView2 stub for it, so it
-      # carries the bootstrapper `dx bundle` already fetched into ~/.dx/tools
-      # for the setup — copied, not re-downloaded, so both ship the same file.
       - name: Package client artifacts
         shell: pwsh
         run: |
@@ -382,11 +222,6 @@ jobs:
                   Where-Object { $_.Name -eq 'windows' } | Select-Object -First 1
           if (-not $root) { throw "no windows bundle output found under target/dx" }
 
-          # The one artifact-level floor kept, because it is the only one with a
-          # measurement on both sides: 74,465,280 bytes broken against
-          # 125,901,312 fixed, so 100MB sits between them with room to spare.
-          # It guards something the server-binary check cannot — the *client*
-          # embeds its own copy, and this is the binary users actually run.
           $exe = Get-Item "$($root.FullName)/Discordia.exe"
           if ($exe.Length -lt 100MB) { throw "Discordia.exe is $($exe.Length) bytes - too small to contain the bundled livekit-server; refusing to publish it" }
 
@@ -395,20 +230,9 @@ jobs:
           $assets = Join-Path $root.FullName 'nsis/_staging/assets'
           if (Test-Path $assets) { Copy-Item $assets portable/assets -Recurse }
 
-          # The same file the NSIS hook embedded.
           Copy-Item client/nsis/MicrosoftEdgeWebview2Setup.exe portable/
           Copy-Item .github/portable/WEBVIEW2.txt portable/
 
-          # How the running app knows which of the two Windows builds it is, and
-          # therefore which artifact updating means. Without it, a portable copy
-          # downloads the installer, installs a second Discordia somewhere else,
-          # and reports success while the copy the user keeps opening stays on
-          # the old version.
-          #
-          # A file rather than something derived from the install path: the
-          # portable lives wherever the user unzipped it, and there is nothing
-          # about that location to recognise. It travels inside the zip, so an
-          # update replaces it along with everything else.
           Set-Content -Path portable/PORTABLE -Encoding ascii -Value @(
             'This marks the portable build.',
             'Discordia reads it to know that updating means replacing the files',
@@ -421,7 +245,6 @@ jobs:
           $setup = Get-ChildItem -Recurse -Filter '*-setup.exe' $root.FullName | Select-Object -First 1
           if ($setup) { Copy-Item $setup.FullName Discordia-windows-setup.exe }
 
-          # Fail loudly if the offline runtime ever creeps back in.
           $tools = Join-Path $env:USERPROFILE '.dx/tools'
           if (Test-Path $tools) {
             if (Get-ChildItem $tools -Filter 'MicrosoftEdgeWebView2RuntimeInstaller_*.exe') {
@@ -442,18 +265,12 @@ jobs:
     if: github.event_name == 'push'
     runs-on: macos-latest           # macOS 14 = Apple Silicon (M1)
     env:
-      # See prerelease-linux.
       DISCORDIA_VERSION: v0.1.0-pre.${{ github.run_number }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: cargo-bins/cargo-binstall@main
-      # LiveKit publishes no darwin binaries, so `server/build.rs` clones the
-      # repo and `go build`s it here. The runner image happens to carry Go, but
-      # as a *cached tool* — which is a promise about the image, not about PATH,
-      # and now that a missing bundle fails the build instead of warning, that
-      # difference is the difference between a release and a red job. Pin it.
       - uses: actions/setup-go@v5
         with:
           go-version: '1.25'
@@ -467,9 +284,6 @@ jobs:
         run: dx --version
       - name: Build server (release)
         run: cargo build --release -p dioxusfun-server
-      # See the linux job — same check, same number. Worth the most here: this
-      # is the platform that builds livekit-server from source with `go`, so it
-      # has a way to come up empty that a failed download does not cover.
       - name: Verify livekit-server is embedded
         shell: pwsh
         run: |
@@ -487,14 +301,6 @@ jobs:
 
           $dmg = Get-ChildItem -Recurse -Filter '*.dmg' $root.FullName | Select-Object -First 1
           if (-not $dmg) { throw "no .dmg produced by dx bundle" }
-          # No size floor here either, and this one was worse than inert. The
-          # broken dmg was 35,017,024 bytes; scaling by the uncompressed growth
-          # measured on Windows (×1.69) projects ~56.5MB for a *fixed* one —
-          # under the 60MB floor this used to carry. `publish-prerelease` needs
-          # all three jobs, so a false positive here would have stopped every
-          # pre-release, and only once the release actually worked. UDZO on a Go
-          # binary is not the Windows ratio, which is the point: the number was
-          # extrapolated, and the check above does not need one.
           Copy-Item $dmg.FullName Discordia-macos-arm64.dmg
       - uses: actions/upload-artifact@v4
         with:
@@ -520,9 +326,6 @@ jobs:
       - name: Stage release artifacts
         run: |
           mkdir -p release
-          # find, not fixed paths: upload-artifact@v4 keeps the least-common-
-          # ancestor structure, so the server binaries land nested under
-          # target/release/ inside the downloaded artifact.
           find artifacts/prerelease-linux -type f -name dioxusfun-server \
             -exec cp {} release/dioxusfun-server-linux \;
           find artifacts/prerelease-linux -type f -name '*.AppImage' \
@@ -540,14 +343,6 @@ jobs:
           ls -l release/
           test "$(find release -type f | wc -l)" -eq 7 || { echo "ERROR: expected 7 artifacts"; exit 1; }
 
-      # minisign rather than cosign: the verifier is meant to end up inside the
-      # client, and `minisign-verify` costs zero transitive dependencies against
-      # 281 for sigstore — and verifies with no network, which an app that can
-      # be self-hosted on an isolated machine needs.
-      #
-      # This signs; it does not make the OS trust anything. Gatekeeper and
-      # SmartScreen still want Developer ID and Authenticode, so a signature
-      # here proves the download is the one CI built and nothing more.
       - name: Sign release artifacts
         env:
           MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
@@ -564,18 +359,11 @@ jobs:
           printf '%s' "$MINISIGN_SECRET_KEY" > "$RUNNER_TEMP/minisign.key"
           tag="v0.1.0-pre.${{ github.run_number }}"
           for f in release/*; do
-            # The trusted comment is covered by the signature; the untrusted one
-            # is not. Naming the tag and the file in it is what stops a valid
-            # signature being lifted onto a different release's artifact.
             minisign -S -s "$RUNNER_TEMP/minisign.key" -m "$f" \
               -t "discordia $tag $(basename "$f")"
           done
           rm -f "$RUNNER_TEMP/minisign.key"
 
-      # Verify with the *committed* public key, not the one derived from the
-      # secret. That is the whole point: if the two ever stop matching, this
-      # fails here instead of shipping signatures that verify against a key
-      # nobody has.
       - name: Verify against the committed public key
         run: |
           test -f release-signing.pub || {

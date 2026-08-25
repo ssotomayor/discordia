@@ -9,7 +9,6 @@ dioxusfun-protocol = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync"] }
 tokio-tungstenite = { workspace = true }
 futures-util = { workspace = true }
-# Nostr identity (secp256k1 / Schnorr).
 secp256k1 = { workspace = true }
 hex = { workspace = true }
 sha2 = "0.10"
@@ -19,5 +18,4 @@ url = "2"
 rand = "0.8"
 
 [dev-dependencies]
-# Examples use the full tokio runtime macros.
 tokio = { workspace = true, features = ["full"] }

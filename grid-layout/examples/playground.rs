@@ -1,11 +1,3 @@
-//! Runnable playground for `dioxus-grid-layout`.
-//!
-//! Run with:
-//!
-//! ```bash
-//! cargo run --example playground -p dioxus-grid-layout
-//! ```
-
 use dioxus::prelude::*;
 use dioxus_grid_layout::{GridItem, GridLayout, GridPosition, NoDrag, use_layout_store};
 

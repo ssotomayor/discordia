@@ -1,28 +1,3 @@
-//! The QUIC front door: the same gateway, over a transport that encrypts and
-//! authenticates by public key.
-//!
-//! Everything the TCP listener serves is plaintext — see `docs/AUDIT-2026-08-17.md` under
-//! Security. A self-hosted machine at a home address has no domain and no CA,
-//! so ordinary TLS would mean a self-signed certificate pinned to the host's
-//! key and a hand-written verifier, whose failure mode is the silent one where
-//! accepting everything looks like working. A QUIC transport where the peer's
-//! identity *is* its public key removes that verifier from our hands entirely,
-//! which is the whole argument for it (`docs/NETWORKING.md`, Stage 2).
-//!
-//! **It serves the ordinary axum router, unchanged.** A QUIC bi-stream is a
-//! byte stream, so `hyper` speaks HTTP/1.1 over it exactly as it does over TCP,
-//! WebSocket upgrade included — `axum::serve` does the same thing to a
-//! `TcpStream` a few layers down. That is deliberate: `handle_connection` is
-//! two thousand lines with a hundred-odd references to its socket, and making
-//! it generic over a transport would be a large diff through the most
-//! load-bearing code in the repo to arrive at the same place. The WebSocket
-//! stays as the framing, and this changes what carries it. `/media/{name}` and
-//! the health route come along for free.
-//!
-//! One connection carries many streams, and each bi-stream is one HTTP
-//! connection — so a client can open the gateway socket and fetch blobs over
-//! the same QUIC connection without a second handshake.
-
 use std::net::SocketAddr;
 use std::time::Duration;
 
@@ -30,38 +5,19 @@ use axum::Router;
 use iroh::endpoint::presets;
 use iroh::{Endpoint, EndpointId, SecretKey};
 
-/// ALPN for the gateway protocol. Versioned separately from anything in
-/// `protocol`: it names the transport contract, and a peer that speaks a
-/// different one should be refused at the handshake rather than after it.
 pub const GATEWAY_ALPN: &[u8] = b"dioxusfun/gateway/1";
 
-/// Whether a third party may help two peers find each other.
-///
-/// This is `docs/NETWORKING.md`'s tier 1 / tier 2 line, and it is a setting
-/// rather than a default because contacting a coordinator silently is exactly
-/// the surprise the design exists to remove.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Coordination {
-    /// Nobody else. Peers reach each other at addresses they were told, or not
-    /// at all.
     None,
-    /// This relay may introduce the two ends so they can punch a hole — and
-    /// then it is *required to step out*. See [`require_direct`].
-    ///
-    /// Always a named relay, never a default: the third party doing the
-    /// introducing has to be one somebody chose. In practice it is the one the
-    /// user's own rendezvous runs, handed over at registration, so there is no
-    /// separate address to configure and no public relay to fall back to.
     Relay(String),
 }
 
 impl Coordination {
-    /// Whether anything at all is being asked of a third party.
     pub fn is_coordinated(&self) -> bool {
         matches!(self, Coordination::Relay(_))
     }
 
-    /// The relay map for a named relay, or `None` for no coordination.
     pub fn relay_mode(&self) -> Result<iroh::RelayMode, String> {
         match self {
             Coordination::None => Ok(iroh::RelayMode::Disabled),
@@ -75,25 +31,11 @@ impl Coordination {
     }
 }
 
-/// How long to wait for hole punching to produce a direct path.
-///
-/// A relayed path comes up almost immediately and a direct one follows it, so
-/// this is the window in which the punch either succeeds or has not. Long
-/// enough for a round of candidates, short enough that a person is still
-/// waiting rather than gone.
 const PUNCH_WINDOW: Duration = Duration::from_secs(6);
 
-/// What a connection's paths add up to, reduced to the two facts the policy
-/// turns on.
-///
-/// A separate type because iroh's `PathList` borrows the connection and cannot
-/// be constructed by hand — reducing first is what lets the decision below be
-/// tested without a live relay.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PathSummary {
-    /// A direct IP path exists and is the one in use.
     pub direct_selected: bool,
-    /// A direct path exists at all, selected or not.
     pub direct_available: bool,
 }
 
@@ -107,17 +49,8 @@ impl PathSummary {
     }
 }
 
-/// Whether this connection may carry a session, under `coordination`.
-///
-/// **This is the whole difference between tier 2 and tier 3.** A relay that
-/// coordinates a hole punch will just as happily carry the data when the punch
-/// fails, and the connection still works — which is precisely why it has to be
-/// refused rather than assumed away. Honouring the setting means checking, and
-/// then saying no.
 pub fn verdict(summary: PathSummary, coordination: &Coordination) -> Result<(), String> {
     match coordination {
-        // Nothing to enforce: with no relay configured there is no other kind
-        // of path this connection could be riding on.
         Coordination::None => Ok(()),
         Coordination::Relay(_) if summary.direct_selected => Ok(()),
         Coordination::Relay(_) if summary.direct_available => Err(
@@ -134,11 +67,6 @@ pub fn verdict(summary: PathSummary, coordination: &Coordination) -> Result<(), 
     }
 }
 
-/// Wait for hole punching to produce a direct path, then insist on it.
-///
-/// Returns once a direct path is selected, or an error once the window closes.
-/// The connection is left open either way — closing it is the caller's decision,
-/// because the caller knows whether it has anything better to fall back to.
 pub async fn require_direct(
     conn: &iroh::endpoint::Connection,
     coordination: &Coordination,
@@ -159,18 +87,10 @@ pub async fn require_direct(
     }
 }
 
-/// Whether the watcher below is the reason a connection ended.
-///
-/// A closed QUIC connection tells the side that owned the session only that its
-/// stream ended; *why* is a decision taken over here, in a task the session
-/// knows nothing about. Without somewhere to record it, the user is shown
-/// whatever the socket noticed — and the one screen that shows it has a
-/// Reconnect button and no other explanation.
 #[derive(Clone, Default)]
 pub struct RelayRefusal(std::sync::Arc<std::sync::atomic::AtomicBool>);
 
 impl RelayRefusal {
-    /// True once the connection was closed for falling back to the relay.
     pub fn refused(&self) -> bool {
         self.0.load(std::sync::atomic::Ordering::Relaxed)
     }
@@ -180,15 +100,6 @@ impl RelayRefusal {
     }
 }
 
-/// Kill the connection if it ever falls back onto the relay.
-///
-/// Checking once at the start is not enough and the difference is not
-/// theoretical: iroh will move traffic back to the relay when a direct path
-/// degrades, so a session that began direct can quietly become a relayed one
-/// while the UI still says otherwise. Spawned for the life of the connection.
-///
-/// The returned flag is how the closing reaches whoever owns the session; a
-/// caller with nobody to tell can drop it.
 pub fn watch_for_relay_fallback(
     conn: iroh::endpoint::Connection,
     coordination: &Coordination,
@@ -208,8 +119,6 @@ pub fn watch_for_relay_fallback(
                     "connection fell back to the relay — closing, because a coordinator was \
                      allowed to introduce us and not to carry us"
                 );
-                // Set before closing, so the session cannot observe its socket
-                // ending and read the flag before it says why.
                 flag.set();
                 conn.close(1u32.into(), b"relay fallback refused");
                 return;
@@ -219,54 +128,28 @@ pub fn watch_for_relay_fallback(
     refusal
 }
 
-/// A bound QUIC endpoint serving the gateway.
 pub struct QuicHandle {
-    /// The public half of this host's transport key. A joiner dials *this*, not
-    /// an address — which is what makes the address itself changeable.
     pub endpoint_id: EndpointId,
-    /// The UDP sockets it is actually listening on, for advertising.
     pub sockets: Vec<SocketAddr>,
     endpoint: Endpoint,
     task: tokio::task::JoinHandle<()>,
 }
 
 impl QuicHandle {
-    /// Stop accepting and close the endpoint.
     pub async fn shutdown(self) {
         self.task.abort();
         self.endpoint.close().await;
     }
 }
 
-/// Bind a QUIC endpoint and serve `router` on it.
-///
-/// `secret` is the host's transport identity. Pass the same one across restarts
-/// and friends keep reaching you at the same key; pass `None` and a fresh one is
-/// generated, which is right for a throwaway and wrong for a host anyone has
-/// saved.
-///
-/// **No relay and no discovery service** (`presets::Minimal`). That is the
-/// point of this stage: a peer reaches us because it was told an address, and
-/// no third party is contacted to arrange it — `docs/NETWORKING.md` tier 1.
-/// Relay-assisted connections are a later stage precisely because they involve
-/// someone else, and that has to be a choice rather than a default.
 pub async fn serve_quic(router: Router, secret: Option<SecretKey>) -> Result<QuicHandle, String> {
     serve_on(bind_quic(secret, &Coordination::None).await?, router)
 }
 
-/// Bind the endpoint without serving anything on it yet.
-///
-/// Split from `serve_on` for the same reason `bind_with_fallback` is split from
-/// `spawn_on`: a self-hosting client has to advertise its key and UDP port
-/// *before* it has a router to serve — the port needs mapping and the address
-/// goes out with the registration, both of which happen while the gateway is
-/// still being assembled.
 pub async fn bind_quic(
     secret: Option<SecretKey>,
     coordination: &Coordination,
 ) -> Result<Endpoint, String> {
-    // Use `Minimal` to avoid `N0`'s implicit public relays and discovery;
-    // relays must be explicit.
     let mut builder = Endpoint::builder(presets::Minimal)
         .alpns(vec![GATEWAY_ALPN.to_vec()])
         .relay_mode(coordination.relay_mode()?);
@@ -276,12 +159,10 @@ pub async fn bind_quic(
     builder.bind().await.map_err(|e| format!("quic bind: {e}"))
 }
 
-/// Start accepting on an endpoint bound earlier.
 pub fn serve_on(endpoint: Endpoint, router: Router) -> Result<QuicHandle, String> {
     serve_on_with(endpoint, router, Coordination::None)
 }
 
-/// As [`serve_on`], enforcing `coordination` on every connection accepted.
 pub fn serve_on_with(
     endpoint: Endpoint,
     router: Router,
@@ -313,13 +194,6 @@ pub fn serve_on_with(
     })
 }
 
-/// A dialable address for this endpoint, with loopback substituted for the
-/// wildcard.
-///
-/// `bound_sockets` reports what the socket is bound to, which is usually
-/// `0.0.0.0:port` — a valid bind and a meaningless destination. Anything
-/// handing these addresses to a peer has to make that substitution somewhere,
-/// so it lives here rather than at each caller.
 pub fn dialable_addrs(sockets: &[SocketAddr]) -> Vec<SocketAddr> {
     sockets
         .iter()
@@ -336,7 +210,6 @@ pub fn dialable_addrs(sockets: &[SocketAddr]) -> Vec<SocketAddr> {
         .collect()
 }
 
-/// One peer: accept bi-streams until they stop coming, serving HTTP on each.
 async fn serve_connection(
     incoming: iroh::endpoint::Incoming,
     router: Router,
@@ -345,9 +218,6 @@ async fn serve_connection(
     let conn = incoming.await.map_err(|e| format!("handshake: {e}"))?;
     let remote = conn.remote_id();
 
-    // Enforced on this side too, not only the dialling one. Otherwise the
-    // guarantee is only as good as the other end's build, and the relay would
-    // still end up carrying a session somebody asked it not to.
     if let Err(e) = require_direct(&conn, coordination).await {
         tracing::warn!(%remote, error = %e, "refusing a relayed connection");
         conn.close(1u32.into(), b"relayed connection refused");
@@ -368,8 +238,6 @@ async fn serve_connection(
         tokio::spawn(async move {
             let io = hyper_util::rt::TokioIo::new(tokio::io::join(recv, send));
             let service = hyper_util::service::TowerToHyperService::new(router);
-            // Required for the `/gateway` WebSocket upgrade to take over the
-            // stream.
             if let Err(e) = hyper::server::conn::http1::Builder::new()
                 .serve_connection(io, service)
                 .with_upgrades()
@@ -388,7 +256,6 @@ mod tests {
     use iroh::{EndpointAddr, TransportAddr};
     use tokio_tungstenite::tungstenite::Message;
 
-    /// The real gateway router over a temp data dir.
     async fn gateway_router() -> Router {
         use std::sync::atomic::{AtomicU32, Ordering};
         static N: AtomicU32 = AtomicU32::new(0);
@@ -407,11 +274,6 @@ mod tests {
         crate::http::router(ctx)
     }
 
-    /// Dial the endpoint and open one HTTP-over-QUIC stream to it.
-    ///
-    /// The endpoint and connection come back with the stream because dropping
-    /// either closes it — they have to stay alive for as long as the caller is
-    /// reading, which is what the `_`-bound guards in each test are doing.
     async fn open_stream(
         handle: &QuicHandle,
     ) -> (
@@ -436,10 +298,6 @@ mod tests {
         (client, conn, tokio::io::join(recv, send))
     }
 
-    /// The whole premise in one test: an ordinary axum route, served over QUIC.
-    ///
-    /// If this passes, `hyper` is speaking HTTP/1.1 over a bi-stream and the
-    /// existing router needed no changes to be reachable that way.
     #[tokio::test]
     async fn http_routes_answer_over_quic() {
         let handle = serve_quic(gateway_router().await, None)
@@ -465,11 +323,6 @@ mod tests {
         handle.shutdown().await;
     }
 
-    /// And the part that matters: the WebSocket upgrade survives the trip, so
-    /// the gateway protocol runs unchanged over an encrypted, key-authenticated
-    /// transport. `Hello` is the server's first frame, so receiving it proves
-    /// the upgrade completed *and* that a real connection handler is on the
-    /// other end rather than a socket that merely opened.
     #[tokio::test]
     async fn the_gateway_speaks_websocket_over_quic() {
         let handle = serve_quic(gateway_router().await, None)
@@ -499,12 +352,6 @@ mod tests {
         handle.shutdown().await;
     }
 
-    /// The tier-2 promise, stated as a table.
-    ///
-    /// A relay that arranges a hole punch will carry the data just as happily
-    /// when the punch fails, and the connection *works* either way — which is
-    /// exactly why "coordinator, never carrier" has to be a refusal and not an
-    /// assumption. These are the four cases that decide it.
     #[test]
     fn a_coordinator_may_introduce_but_not_carry() {
         let direct = PathSummary {
@@ -529,19 +376,11 @@ mod tests {
 
         let refused = verdict(relayed, &coordinated).unwrap_err();
         assert!(refused.contains("refused"), "{refused}");
-        // The message has to say what happened and why, because this is a
-        // working connection being turned away — a bare failure would look like
-        // the host being offline.
         assert!(refused.contains("relay"), "{refused}");
 
-        // And the subtle one: a direct path existing is not the same as it
-        // being used. Traffic on the relay is traffic the relay can read,
-        // whatever else was negotiated alongside it.
         assert!(verdict(punched_but_unused, &coordinated).is_err());
     }
 
-    /// A loopback connection has a direct path and no relay, so enforcement is
-    /// a no-op — the check must not refuse the case it is meant to allow.
     #[tokio::test]
     async fn enforcement_passes_a_genuinely_direct_connection() {
         let handle = serve_quic(gateway_router().await, None)
@@ -559,9 +398,6 @@ mod tests {
         handle.shutdown().await;
     }
 
-    /// Dialling the right address with the wrong key must fail. This is the
-    /// difference between "encrypted" and "authenticated", and the reason this
-    /// transport needs no certificate verifier of our own.
     #[tokio::test]
     async fn a_wrong_key_cannot_connect() {
         let handle = serve_quic(gateway_router().await, None)
@@ -584,8 +420,6 @@ mod tests {
             client.connect(addr, GATEWAY_ALPN),
         )
         .await;
-        // Either a refusal or no answer at all is correct; the point is that no
-        // session is established.
         if let Ok(Ok(_)) = result {
             panic!("connected to a host whose key we got wrong");
         }

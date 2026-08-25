@@ -1,11 +1,3 @@
-//! Ownership proof for claimed server names.
-//!
-//! A host that claims a persistent name must prove control of the Nostr key it
-//! binds the name to — otherwise anyone could squat a name across a restart
-//! (pubkeys are public). Same scheme as the server's `Identify`: the rendezvous
-//! issues a per-connection nonce, the host returns a Schnorr (BIP-340)
-//! signature over `SHA256(nonce || pubkey_hex || name)`.
-
 use rand::RngCore;
 use secp256k1::schnorr::Signature;
 use secp256k1::{Message, Secp256k1, XOnlyPublicKey};
@@ -13,21 +5,14 @@ use sha2::{Digest, Sha256};
 
 const NONCE_LEN: usize = 32;
 
-/// Fresh per-connection nonce (32 random bytes, base58).
+/// The signature binds a name to the pubkey that owns it — without it anyone
+/// could squat a name across a restart.
 pub fn fresh_nonce() -> String {
     let mut bytes = [0u8; NONCE_LEN];
     rand::rngs::OsRng.fill_bytes(&mut bytes);
     bs58::encode(bytes).into_string()
 }
 
-/// Verify that `signature` is a valid Schnorr signature over
-/// `SHA256(nonce || pubkey_hex || bound)` from the key matching `pubkey_hex`
-/// (64-char hex x-only Nostr pubkey; `signature_hex` is 128-char hex).
-///
-/// `bound` is whatever the key is vouching for. Two things use this: the
-/// claimed *name*, and the *transport key* a host publishes for the QUIC
-/// path — different payloads, identical proof, and the nonce is what stops
-/// either signature being replayed as the other on a later connection.
 pub fn verify_ownership(
     pubkey_hex: &str,
     signature_hex: &str,

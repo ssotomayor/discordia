@@ -1,13 +1,3 @@
-//! Guild export / import (Phase 6 — graduation).
-//!
-//! An archive is a self-contained, versioned snapshot of one guild: its
-//! metadata, channels, roles, members, bans, invite, installed bots, message
-//! history, and audit log. Import writes it into a (possibly different) store
-//! under **fresh** guild/channel/role IDs, while leaving every **pubkey
-//! unchanged** — nobody re-registers, and a member who follows the moved guild
-//! keeps their identity. This is the mechanism a community uses to graduate
-//! from one instance (or DB backend) to another.
-
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
@@ -18,39 +8,25 @@ use crate::protocol::{
 };
 use crate::store::Store;
 
-/// Current archive schema version. Bump on a breaking layout change; `import`
-/// refuses versions it doesn't understand.
 pub const ARCHIVE_VERSION: u32 = 1;
 
-/// A portable snapshot of a single guild. `messages` is keyed by the archive's
-/// (old) channel id; import remaps those to the freshly-minted channel ids.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GuildArchive {
     pub version: u32,
     pub guild: Guild,
     pub channels: Vec<Channel>,
     pub roles: Vec<Role>,
-    /// The guild's custom emoji. Only the catalog travels — `image` is a
-    /// content address, so the destination must already hold (or later
-    /// re-receive) the blob. Cross-instance blob copy is the open P6-tail item
-    /// in docs/AUDIT-2026-08-17.md; until then an imported guild keeps its shortcodes and
-    /// re-uploads are cheap because identical bytes dedupe to the same address.
     #[serde(default)]
     pub emojis: Vec<GuildEmoji>,
     pub members: Vec<Member>,
-    /// Banned pubkeys.
     pub bans: Vec<String>,
-    /// The current invite code, if any (import mints a fresh one to avoid
-    /// colliding with codes already live on the destination).
     pub invite: Option<String>,
     pub bot_installs: Vec<BotInstall>,
-    /// (old channel id, that channel's messages in chronological order).
     pub messages: Vec<(Id, Vec<Message>)>,
     pub audit: Vec<AuditEntry>,
 }
 
 impl Store {
-    /// Build a portable archive of `guild_id`, or `None` if no such guild.
     pub async fn export_guild(&self, guild_id: Id) -> anyhow::Result<Option<GuildArchive>> {
         let loaded = self.load_all().await?;
         let Some(guild) = loaded.guilds.into_iter().find(|g| g.id == guild_id) else {
@@ -117,7 +93,6 @@ impl Store {
             .filter(|b| b.guild_id == guild_id)
             .collect();
 
-        // Full history per channel, oldest-first (history() returns newest-first).
         let mut messages = Vec::new();
         for ch in &channels {
             let mut msgs = self.history(ch.id, u32::MAX, None).await?;
@@ -142,9 +117,6 @@ impl Store {
         }))
     }
 
-    /// Import an archive into this store under fresh guild/channel/role ids,
-    /// preserving every pubkey. Returns the new guild id. Refuses an archive
-    /// whose version this build doesn't understand.
     pub async fn import_guild(&self, archive: &GuildArchive) -> anyhow::Result<Id> {
         if archive.version != ARCHIVE_VERSION {
             anyhow::bail!(
@@ -208,8 +180,6 @@ impl Store {
             self.insert_ban(new_guild_id, pk).await?;
         }
 
-        // Mint a fresh code to avoid collisions; source limits do not travel
-        // (expiry/use-count are relative to the old instance).
         if archive.invite.is_some() {
             let code = crate::state::random_invite_code();
             self.set_invite(new_guild_id, &code, None, None, &archive.guild.owner_pubkey)

@@ -1,14 +1,4 @@
 #!/usr/bin/env bash
-# Open iTerm with three vertical panes running:
-#   1) rendezvous (left)
-#   2) gateway server (middle)
-#   3) Dioxus client (right)
-#
-# Usage:  ./dev.sh
-#
-# Set FAST=1 to skip the bundled-LiveKit build for faster iteration when
-# you don't care about voice end-to-end:
-#   FAST=1 ./dev.sh
 
 set -euo pipefail
 

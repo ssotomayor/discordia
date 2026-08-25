@@ -1,8 +1,3 @@
-//! End-to-end tests for the Tier 1 bot platform: install → connect → the
-//! intent-filtering and permission-gating that make it safe. Both the human
-//! owner and the bot are driven through the real gateway over a WebSocket via
-//! the bot SDK (which can speak the whole protocol, not just bot helpers).
-
 use std::net::SocketAddr;
 use std::time::Duration;
 
@@ -19,11 +14,7 @@ async fn next_timeout(bot: &mut Bot) -> ServerMessage {
         .expect("connection closed unexpectedly")
 }
 
-/// Per-test ServerConfig: unique temp data dir (SQLite + media) so tests are
-/// hermetic and parallel-safe.
 fn test_config(operators: std::collections::HashSet<String>) -> dioxusfun_server::ServerConfig {
-    // Counter, not clock: macOS `as_nanos()` has ~1us resolution, so
-    // concurrent tests collide on the same dir and hit SQLite locks.
     use std::sync::atomic::{AtomicU32, Ordering};
     static N: AtomicU32 = AtomicU32::new(0);
     let dir = std::env::temp_dir().join(format!(
@@ -38,7 +29,6 @@ fn test_config(operators: std::collections::HashSet<String>) -> dioxusfun_server
     }
 }
 
-/// Spawn a gateway on a free port and return its `ws://` URL plus the handle.
 async fn spawn_gateway() -> (String, dioxusfun_server::ServerHandle) {
     let preferred: SocketAddr = "127.0.0.1:19000".parse().unwrap();
     let handle = dioxusfun_server::spawn(preferred, 100, test_config(Default::default()))
@@ -48,7 +38,6 @@ async fn spawn_gateway() -> (String, dioxusfun_server::ServerHandle) {
     (url, handle)
 }
 
-/// Owner creates a guild; returns (guild_id, first text channel id).
 async fn create_guild(owner: &mut Bot, name: &str) -> (Id, Id) {
     owner
         .send(&ClientMessage::CreateGuild {
@@ -209,14 +198,6 @@ async fn intents_and_permissions_are_enforced() {
     handle.abort();
 }
 
-/// An installed bot is shown under the name its installer chose, not the one
-/// it declares for itself.
-///
-/// The two have always been allowed to differ — `BotInstall.name`'s own doc
-/// says the bot's `username` on connect "is cosmetic and may differ" — but
-/// nothing reconciled them, and the message author is built from the
-/// connection's self-declared user. So a bot an owner installed as "PingBot"
-/// could post under any name it liked.
 #[tokio::test]
 async fn an_installed_bot_posts_under_the_name_its_installer_chose() {
     let (url, handle) = spawn_gateway().await;

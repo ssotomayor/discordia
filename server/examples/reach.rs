@@ -1,39 +1,3 @@
-//! Is this gateway reachable from *here*, and over which transport?
-//!
-//! A headless joiner. It does what the client's connect path does — dial, run
-//! the WebSocket handshake, wait for the server's `Hello` — and then stops,
-//! without a window, an identity, or a session. That makes it runnable from
-//! anywhere a Rust toolchain is: a VPS, a container, another network.
-//!
-//! It exists because the interesting question about this branch cannot be asked
-//! from the machine doing the hosting. "Is my port mapping real" and "does the
-//! QUIC path work across a NAT" are questions about the *outside*, and the
-//! answers a host can compute for itself are all subject to the same doubt —
-//! `portmap`'s own hairpin probe reaches the router and comes back, which is
-//! evidence but not proof.
-//!
-//! ```text
-//! # plaintext, over the mapped TCP port
-//! cargo run -p dioxusfun-server --example reach -- ws://203.0.113.5:9000
-//!
-//! # QUIC, by key. Addresses are hints; the key is the destination.
-//! cargo run -p dioxusfun-server --example reach -- \
-//!     --key <endpoint-id> 203.0.113.5:41234
-//!
-//! # and it can be the far end too, which is how the QUIC half is testable at
-//! # all without a second GUI client — run this somewhere, dial it from
-//! # somewhere else.
-//! cargo run -p dioxusfun-server --example reach -- --listen
-//!
-//! # through a relay, which has to be named — ask your rendezvous:
-//! #   curl http://your-rendezvous:7700/config
-//! cargo run -p dioxusfun-server --example reach -- \
-//!     --coordinated http://your-rendezvous:7701 --key <endpoint-id>
-//! ```
-//!
-//! Build it with `LIVEKIT_BUNDLE_SKIP=1` — it never hosts voice, and without
-//! that the build downloads an SFU it will not use.
-
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
@@ -48,7 +12,6 @@ const TIMEOUT: Duration = Duration::from_secs(15);
 #[tokio::main]
 async fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
-    // Pull out before positional parsing; relay URL is required (no default).
     let coordination = match args.iter().position(|a| a == "--coordinated") {
         Some(i) => {
             args.remove(i);
@@ -79,8 +42,6 @@ async fn main() {
     }
 
     let result = if args[0] == "--key" {
-        // Address required only without a coordinator; with one, key lookup is
-        // the point.
         if args.len() < 2 {
             eprintln!("--key needs an endpoint id");
             std::process::exit(2);
@@ -106,16 +67,6 @@ async fn main() {
     }
 }
 
-/// Be the far end: serve a throwaway gateway over QUIC and print how to reach
-/// it.
-///
-/// A diagnostic that can only ever be one half of a connection cannot be
-/// checked without arranging the other half by hand, which is exactly the
-/// problem this whole file is about. Two copies of this binary on two networks
-/// are a complete test.
-///
-/// The data directory is temporary and the guilds in it are meaningless — the
-/// question is whether packets arrive, and `Hello` is proof that they did.
 async fn listen(coordination: Coordination) {
     let dir = std::env::temp_dir().join(format!("dioxusfun-reach-{}", std::process::id()));
     let router = dioxusfun_server::build_router(dioxusfun_server::ServerConfig {
@@ -130,8 +81,6 @@ async fn listen(coordination: Coordination) {
         .await
         .expect("bind quic");
 
-    // Wait for relay before printing: until then, no introduction is
-    // available.
     if coordination.is_coordinated() {
         println!("reaching a relay …");
         let _ = tokio::time::timeout(Duration::from_secs(20), endpoint.online()).await;
@@ -169,7 +118,6 @@ async fn listen(coordination: Coordination) {
     std::future::pending::<()>().await;
 }
 
-/// The plaintext path: an ordinary WebSocket to `/gateway`.
 async fn reach_ws(url: &str) -> Result<String, String> {
     let url = if url.ends_with("/gateway") {
         url.to_string()
@@ -192,7 +140,6 @@ async fn reach_ws(url: &str) -> Result<String, String> {
     ))
 }
 
-/// The private path: QUIC, authenticated by the host's key.
 async fn reach_quic(
     key: &str,
     addrs: &[String],
@@ -208,7 +155,6 @@ async fn reach_quic(
     println!("dialling key {key} at {parsed:?} (coordination: {coordination:?}) …");
     let started = Instant::now();
 
-    // Uncoordinated: no relay/discovery, to prove the address itself works.
     let endpoint = Endpoint::builder(presets::Minimal)
         .relay_mode(coordination.relay_mode()?)
         .bind()
@@ -226,8 +172,6 @@ async fn reach_quic(
         })?
         .map_err(|e| format!("quic connect: {e} (a key mismatch also lands here)"))?;
 
-    // The tier-2 question, asked out loud: a relay that arranged this will carry
-    // it just as happily, and it would work — so the refusal is the test.
     if let Err(refusal) = require_direct(&conn, &coordination).await {
         return Err(format!(
             "REFUSED (correctly, if the punch failed): {refusal}"
@@ -253,8 +197,6 @@ async fn reach_quic(
     ))
 }
 
-/// Read the gateway's opening frame. Getting this back means a real gateway is
-/// on the other end, not merely an open socket.
 async fn first_hello<S>(mut ws: tokio_tungstenite::WebSocketStream<S>) -> Result<String, String>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,

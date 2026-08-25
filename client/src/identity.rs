@@ -1,16 +1,3 @@
-//! Cryptographic identity — **Nostr** keys (secp256k1 / Schnorr, BIP-340).
-//!
-//! Each user is a secp256k1 keypair; the public key (x-only, 32 bytes) is the
-//! universal user id, encoded as 64-char hex on the wire and shown as `npub…`
-//! (NIP-19 bech32). Two ways to create one:
-//!
-//! 1. **BIP39 seed phrase** — generated at first launch and derived via
-//!    **NIP-06** (`m/44'/1237'/0'/0/0`). The 12-word phrase is the recovery
-//!    format and is interchangeable with other NIP-06 wallets.
-//! 2. **Key import** — paste an `nsec1…` (bech32) or a raw 64-char hex secret.
-//!
-//! Persisted to `dioxusfun/identity.json` in the config dir, mode 0600 on Unix.
-
 use std::path::PathBuf;
 
 use bech32::{Bech32, Hrp};
@@ -22,25 +9,16 @@ use sha2::{Digest, Sha256, Sha512};
 
 const FILE_VERSION: u32 = 1;
 
-/// Where the identity came from, so recovery UI knows what to show.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IdentitySource {
-    /// 12-word BIP39 mnemonic (NIP-06 derivable).
     Phrase(String),
-    /// An `nsec1…` bech32 secret. No seed phrase available.
     Nsec(String),
 }
 
-/// Domain separator for channel media keys.
-///
-/// **Frozen.** Every media key two peers have ever agreed on is derived under
-/// this label; changing it makes a client on either side of the change derive a
-/// different secret and hear silence, with nothing to say why.
 const MEDIA_KEY_DOMAIN: &[u8] = b"dioxusfun/media-key/v1";
 
 #[derive(Clone)]
 pub struct Identity {
-    /// x-only public key as 64-char hex — the universal user id.
     pub pubkey: String,
     pub display_name: String,
     pub source: IdentitySource,
@@ -66,7 +44,6 @@ impl std::fmt::Debug for Identity {
 }
 
 impl Identity {
-    /// Generate a fresh BIP39-derived keypair (12 words / 128 bits entropy).
     pub fn create(display_name: impl Into<String>) -> Result<Self, String> {
         use rand::RngCore;
         let mut entropy = [0u8; 16];
@@ -76,7 +53,6 @@ impl Identity {
         Self::from_mnemonic(mnemonic, display_name.into())
     }
 
-    /// Restore from a 12- or 24-word BIP39 phrase (NIP-06).
     pub fn restore_from_phrase(
         seed_phrase: impl AsRef<str>,
         display_name: impl Into<String>,
@@ -87,7 +63,6 @@ impl Identity {
         Self::from_mnemonic(mnemonic, display_name.into())
     }
 
-    /// Import from an `nsec1…` bech32 secret or a raw 64-char hex secret.
     pub fn restore_from_private_key(
         input: impl AsRef<str>,
         display_name: impl Into<String>,
@@ -140,34 +115,10 @@ impl Identity {
         }
     }
 
-    /// The raw secret, for the Nostr code that signs events with it.
-    ///
-    /// Deliberately narrow in intent: `nostr::event::sign_with` takes a
-    /// `SecretKey` because gift wrapping also signs with *ephemeral* keys that
-    /// have no `Identity` behind them, and one signing function for both is
-    /// better than two that could drift. Everything else should keep going
-    /// through `sign_hex`/`nostr_sign_id`.
     pub fn secret_key(&self) -> secp256k1::SecretKey {
         self.secret
     }
 
-    /// A stable 32-byte seed for this identity's *transport* key.
-    ///
-    /// The QUIC transport authenticates peers by an ed25519 key, which is not
-    /// the secp256k1 key that is your account — a second key, needed on a
-    /// different curve. Deriving it from the first rather than generating and
-    /// storing one means a host keeps the same transport identity across
-    /// restarts and reinstalls, so a friend who saved your address is still
-    /// reaching *you* and not a stranger who took the address over.
-    ///
-    /// Domain-separated so this hash can never collide with anything else we
-    /// sign or derive, and one-way, so handing out the transport key tells
-    /// nobody anything about the Nostr secret.
-    ///
-    /// The two keys are still only *asserted* to belong together — the binding
-    /// is a signature over the transport key, made by the Nostr key, verified
-    /// where it is published. Derivation makes the key stable; the signature is
-    /// what makes it yours.
     pub fn transport_seed(&self) -> [u8; 32] {
         use sha2::{Digest, Sha256};
         let mut h = Sha256::new();
@@ -176,33 +127,10 @@ impl Identity {
         h.finalize().into()
     }
 
-    /// A secret this identity shares with exactly one other pubkey, and nobody
-    /// else — the basis for sealing a channel's media key to one member.
-    ///
-    /// ECDH over secp256k1, then a domain-separated hash. Two details are not
-    /// free choices:
-    ///
-    /// **Parity.** A Nostr pubkey is x-only: 32 bytes, with the y-coordinate
-    /// dropped. Reconstructing a point needs a parity byte, and both sides must
-    /// pick the same one or they derive different secrets. Even (`0x02`) is what
-    /// NIP-04 and NIP-44 settled on, so it is what this uses.
-    ///
-    /// **The x-coordinate only.** `shared_secret_point` returns x‖y; the y half
-    /// is discarded before hashing, again matching the Nostr convention. Mixing
-    /// it in would be just as secure and interoperate with nothing.
-    ///
-    /// The hash is the domain separator's whole job: this secret must never
-    /// coincide with one derived for another purpose from the same pair of keys.
     pub fn shared_secret_with(&self, their_pubkey_hex: &str) -> Result<[u8; 32], String> {
         self.secret_with_domain(their_pubkey_hex, MEDIA_KEY_DOMAIN)
     }
 
-    /// ECDH, then a domain-separated hash.
-    ///
-    /// **`MEDIA_KEY_DOMAIN` must never change.** It is baked into every media
-    /// key two peers have ever agreed on; altering it would mean a client on
-    /// either side of the change derives a different secret and hears silence,
-    /// with nothing to say why.
     fn secret_with_domain(
         &self,
         their_pubkey_hex: &str,
@@ -215,7 +143,6 @@ impl Identity {
         if their_bytes.len() != 32 {
             return Err("a nostr pubkey is 32 bytes".into());
         }
-        // x-only -> compressed point, even parity by convention.
         let mut compressed = [0u8; 33];
         compressed[0] = 0x02;
         compressed[1..].copy_from_slice(&their_bytes);
@@ -229,8 +156,6 @@ impl Identity {
         Ok(h.finalize().into())
     }
 
-    /// Schnorr-sign a message (hashed to 32 bytes with SHA-256); returns hex.
-    /// The server hashes identically and verifies.
     pub fn sign_hex(&self, message: &[u8]) -> String {
         let secp = Secp256k1::new();
         let keypair = Keypair::from_secret_key(&secp, &self.secret);
@@ -240,9 +165,6 @@ impl Identity {
         hex::encode(sig.serialize())
     }
 
-    /// Schnorr-sign a 32-byte Nostr event id directly (NO extra hashing — the
-    /// id is already `sha256` of the serialized event). Returns hex. Used for
-    /// signing Nostr events like Blossom's `kind:24242` auth.
     pub fn nostr_sign_id(&self, id: &[u8; 32]) -> String {
         let secp = Secp256k1::new();
         let keypair = Keypair::from_secret_key(&secp, &self.secret);
@@ -250,13 +172,11 @@ impl Identity {
         hex::encode(secp.sign_schnorr_no_aux_rand(&msg, &keypair).serialize())
     }
 
-    /// NIP-19 `npub…` for display.
     pub fn npub(&self) -> String {
         let bytes = hex::decode(&self.pubkey).unwrap_or_default();
         to_bech32("npub", &bytes)
     }
 
-    /// NIP-19 `nsec…` for export/backup.
     #[allow(dead_code)]
     pub fn export_nsec(&self) -> String {
         to_bech32("nsec", &self.secret.secret_bytes())
@@ -294,7 +214,6 @@ impl Identity {
         Ok(())
     }
 
-    /// Returns Ok(None) if no identity file exists.
     pub fn load() -> Result<Option<Self>, String> {
         let path = identity_path();
         if !path.exists() {
@@ -353,11 +272,6 @@ fn to_bech32(hrp: &str, data: &[u8]) -> String {
     bech32::encode::<Bech32>(hrp, data).expect("bech32 encode")
 }
 
-/// Base directory for dioxusfun's on-disk state (identity + session).
-///
-/// Honors `DIOXUSFUN_CONFIG_DIR` (handy for running several isolated instances
-/// on one machine). Otherwise the OS config dir, e.g.
-/// `~/Library/Application Support/dioxusfun` on macOS.
 pub fn config_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os("DIOXUSFUN_CONFIG_DIR") {
         return PathBuf::from(dir);
@@ -378,14 +292,6 @@ pub fn truncate_pubkey(pubkey: &str) -> String {
     format!("{}…{}", &pubkey[..8], &pubkey[pubkey.len() - 4..])
 }
 
-/// Turn what a user pasted into a 64-char hex pubkey.
-///
-/// Accepts an `npub1…` (NIP-19 bech32) or raw hex, because both are in
-/// circulation and a user copying a key from another Nostr client will have
-/// whichever that client shows. Rejects `nsec1…` explicitly and by name: it is
-/// one character away from `npub` in a font people read quickly, and pasting a
-/// *secret* key into a "who do you want to message" box is a mistake worth
-/// catching loudly rather than failing as "not valid hex".
 pub fn pubkey_from_input(raw: &str) -> Result<String, String> {
     let raw = raw.trim();
     if raw.starts_with("nsec") {
@@ -409,7 +315,6 @@ pub fn pubkey_from_input(raw: &str) -> Result<String, String> {
     Ok(hex::encode(bytes))
 }
 
-/// Last 4 characters of the pubkey — a Discord-style discriminator suffix.
 pub fn discriminator(pubkey: &str) -> &str {
     if pubkey.len() <= 4 {
         return pubkey;
@@ -417,10 +322,6 @@ pub fn discriminator(pubkey: &str) -> &str {
     &pubkey[pubkey.len() - 4..]
 }
 
-/// A deterministic "color signature" for a pubkey: `n` vivid HSL colors derived
-/// by hashing the key. Purely presentational (the row of colored bars on the
-/// identity/profile card) — same key always yields the same signature, and no
-/// two keys share one. Mirrors the design's `h=(h*31+c)>>>0` seed hash.
 pub fn color_signature(pubkey: &str, n: usize) -> Vec<String> {
     let mut h: u32 = 0;
     for b in pubkey.bytes() {
@@ -430,16 +331,14 @@ pub fn color_signature(pubkey: &str, n: usize) -> Vec<String> {
         .map(|i| {
             h = h.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
             let hue = h % 360;
-            let sat = 62 + (h >> 9) % 24; // 62–86%
-            let light = 56 + (h >> 17) % 12; // 56–68%
+            let sat = 62 + (h >> 9) % 24;
+            let light = 56 + (h >> 17) % 12;
             let _ = i;
             format!("hsl({hue}, {sat}%, {light}%)")
         })
         .collect()
 }
 
-/// The single accent hue for a pubkey (first signature color) — used to tint
-/// usernames and profile banners.
 pub fn signature_accent(pubkey: &str) -> String {
     color_signature(pubkey, 1)
         .into_iter()
@@ -487,7 +386,6 @@ fn derive_nip06(seed: &[u8]) -> Result<SecretKey, String> {
 mod pubkey_input_tests {
     use super::*;
 
-    /// Both forms in circulation are accepted, and agree.
     #[test]
     fn npub_and_hex_are_the_same_key() {
         let id = Identity::create("t").expect("identity");
@@ -497,9 +395,6 @@ mod pubkey_input_tests {
         assert_eq!(from_npub, id.pubkey);
     }
 
-    /// The mistake worth catching by name. `nsec` and `npub` differ by one
-    /// character, and pasting a secret into a "who do you want to message" box
-    /// must say so rather than failing as "not valid hex".
     #[test]
     fn an_nsec_is_refused_by_name() {
         let id = Identity::create("t").expect("identity");
@@ -511,8 +406,6 @@ mod pubkey_input_tests {
         assert!(err.contains("private key"), "unhelpful error: {err}");
     }
 
-    /// Garbage, wrong-length hex and empty input all fail rather than
-    /// producing a key nobody can be reached at.
     #[test]
     fn nonsense_is_refused() {
         for bad in ["", "hello", "abcd", &"a".repeat(63), &"z".repeat(64)] {

@@ -1,8 +1,3 @@
-//! WebSocket handlers: host control, friend join, host proxy pairing.
-//!
-//! Liveness: a host holds its listing only while its `/control` socket answers
-//! heartbeats — see the loop in `handle_host_control`.
-
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -21,7 +16,6 @@ const MAX_CLAIM_ATTEMPTS: usize = 10;
 pub async fn handle_host_control(socket: WebSocket, registry: Arc<Registry>, cfg: Arc<Config>) {
     let (mut tx, mut rx) = socket.split();
 
-    // Challenge nonce for ownership proof; anonymous hosts ignore it.
     let nonce = verify::fresh_nonce();
     if send_msg(
         &mut tx,
@@ -58,8 +52,6 @@ pub async fn handle_host_control(socket: WebSocket, registry: Arc<Registry>, cfg
                 transport_signature,
                 transport_addrs,
             ),
-            // Administrative frame: verify ownership and close. Shares the
-            // challenge nonce with the claim.
             Ok(HostToRendezvous::ReleaseName {
                 name,
                 pubkey,
@@ -121,9 +113,6 @@ pub async fn handle_host_control(socket: WebSocket, registry: Arc<Registry>, cfg
         transport_addrs,
     ) = register;
 
-    // Transport key is only published if the registering key vouches for it.
-    // Unattested keys are dropped (not refused) so misconfigured clients
-    // degrade gracefully instead of being locked out.
     let transport = match (&transport_key, &pubkey, &transport_signature) {
         (Some(key), Some(pk), Some(sig)) => match verify::verify_ownership(pk, sig, &nonce, key) {
             Ok(()) => Some((key.clone(), transport_addrs)),
@@ -194,15 +183,11 @@ pub async fn handle_host_control(socket: WebSocket, registry: Arc<Registry>, cfg
         control_tx,
         last_seen_ms: Default::default(),
     };
-    // The live slot may momentarily race a same-slug reconnect; claim_name
-    // already rejected a live-elsewhere claim, but re-check for anonymous.
     let Some(entry) = registry.try_claim(&shortcode, host_entry) else {
         send_err(&mut tx, "shortcode collision").await;
         return;
     };
 
-    // Signing secret stays server-side; host uses this grant to request
-    // tokens.
     let voice_token_grant = cfg
         .livekit_api_secret
         .is_some()
@@ -220,10 +205,8 @@ pub async fn handle_host_control(socket: WebSocket, registry: Arc<Registry>, cfg
         return;
     }
 
-    // Heartbeat detects half-open sockets (sleep, NAT reset) that never send
-    // Close or error.
-    // OS TCP keepalive is too slow; Pong is automatic in tungstenite, so no
-    // host-side change needed.
+    // Detects half-open sockets (sleep, NAT reset), which never send anything
+    // and would otherwise stay registered forever.
     let mut heartbeat = tokio::time::interval(cfg.heartbeat_interval);
     heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     heartbeat.tick().await; // the first tick completes immediately
@@ -239,8 +222,6 @@ pub async fn handle_host_control(socket: WebSocket, registry: Arc<Registry>, cfg
             inbound = rx.next() => {
                 match inbound {
                     Some(Ok(Message::Close(_))) | None => break,
-                    // Any frame at all proves the peer is there — Pong, or a
-                    // control message we don't otherwise act on.
                     Some(Ok(_)) => entry.touch(),
                     Some(Err(e)) => {
                         tracing::warn!(%shortcode, err = %e, "host control recv error");
@@ -254,9 +235,6 @@ pub async fn handle_host_control(socket: WebSocket, registry: Arc<Registry>, cfg
                     tracing::info!(%shortcode, idle_ms, "host stopped answering heartbeats");
                     break;
                 }
-                // A send on a half-open socket often succeeds into the kernel
-                // buffer, so this failing is a bonus rather than the mechanism —
-                // the deadline above is what guarantees we let go.
                 if tx.send(Message::Ping(Vec::new())).await.is_err() {
                     break;
                 }
@@ -268,7 +246,6 @@ pub async fn handle_host_control(socket: WebSocket, registry: Arc<Registry>, cfg
     tracing::info!(%shortcode, "host unregistered");
 }
 
-/// Pick a free random shortcode for an anonymous (unnamed) host.
 async fn claim_anonymous_shortcode(registry: &Registry) -> Option<String> {
     for _ in 0..MAX_CLAIM_ATTEMPTS {
         let candidate = shortcode::generate();
@@ -311,7 +288,6 @@ pub async fn handle_friend_join(socket: WebSocket, registry: Arc<Registry>, code
         return;
     }
 
-    // Schedule a timeout in case the host never opens the proxy.
     registry
         .clone()
         .schedule_pairing_timeout(session_id.clone(), Duration::from_secs(10));
@@ -367,7 +343,6 @@ pub async fn handle_host_proxy(socket: WebSocket, registry: Arc<Registry>, sessi
     }
 }
 
-/// Send any control frame to the host; returns Err if the socket is gone.
 async fn send_msg<S>(tx: &mut S, msg: &RendezvousToHost) -> Result<(), ()>
 where
     S: SinkExt<Message> + Unpin,

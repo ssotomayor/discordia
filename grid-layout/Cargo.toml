@@ -13,5 +13,4 @@ dioxus = { workspace = true }
 serde = { workspace = true }
 
 [dev-dependencies]
-# Playground / examples need a real platform to render.
 dioxus = { version = "0.7", features = ["desktop"] }

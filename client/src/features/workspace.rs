@@ -13,15 +13,9 @@ use crate::state::{
     AppState, ConnectionStatus, SessionParams, VoicePhase, use_app_state, use_gateway,
 };
 
-/// Vertical row span each panel occupies, and the gap (px) between grid
-/// rows. The on-mount measurement divides the available height by these so
-/// the panels fill the viewport without scrolling.
 const GRID_ROWS: u32 = 30;
 const GRID_GAP: f64 = 8.0;
 
-/// Write the current arrangement to local settings. Called after every
-/// drag/resize commit and on reset — previously nothing persisted the layout at
-/// all, so every launch started from the default.
 fn persist_layout(
     mut settings: Signal<crate::settings::ClientSettings>,
     layout: dioxus_grid_layout::LayoutStore,
@@ -41,7 +35,6 @@ fn persist_layout(
     crate::settings::save(&next);
 }
 
-/// The stock four-column dashboard, used on first launch and by "Reset".
 fn default_layout() -> Vec<(String, GridPosition)> {
     vec![
         ("guilds".into(), GridPosition::new(0, 0, 1, GRID_ROWS)),
@@ -51,8 +44,6 @@ fn default_layout() -> Vec<(String, GridPosition)> {
     ]
 }
 
-/// Power / unplug glyph for the disconnect button. Inherits `currentColor`
-/// so it picks up the button's text colour (and the danger hover state).
 const UNPLUG_ICON_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>"##;
 
 #[component]
@@ -61,8 +52,6 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
 
     let (gateway_tx, voice_tx, nostr_tx) = use_hook(|| {
-        // Must restore persisted audio prefs before the voice service starts,
-        // as it seeds live controls from AppState on first poll.
         {
             let saved = settings.read();
             let mut app = state;
@@ -71,19 +60,12 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
             w.mic_volume = saved.mic_volume.min(200);
             w.auto_gain_control = saved.auto_gain_control;
             w.noise_cancellation = saved.noise_cancellation;
-            // Only valid where raw capture is supported; prevents a Windows
-            // settings file from leaving a macOS session believing it captures
-            // raw.
             w.bypass_system_audio_processing =
                 saved.bypass_system_audio_processing && crate::rawmic::supported();
-            // Clamps hand-edited values to the slider's domain; unlike
-            // mic_sensitivity, this is bound directly to the dB value.
             w.denoise_atten_lim_db = saved.denoise_atten_lim_db.clamp(
                 crate::features::voice::DENOISE_ATTEN_LIM_DB_MIN,
                 crate::features::voice::DENOISE_ATTEN_LIM_DB_MAX,
             );
-            // Values outside the offered set indicate a hand-edited
-            // settings.json; fall back to a valid bitrate.
             w.voice_bitrate_kbps = match saved.voice_bitrate_kbps {
                 24 => 24,
                 _ => 48,
@@ -91,12 +73,12 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
             w.selected_input_device = saved.selected_input_device.clone();
             w.selected_output_device = saved.selected_output_device.clone();
         }
+        // Audio prefs must be restored before this: the service seeds its live
+        // controls from AppState on the first poll.
         let voice_tx = spawn_voice_service(state);
         let gateway_tx = spawn_gateway(params.clone(), state, voice_tx.clone(), move |reason| {
             on_disconnect.call(reason);
         });
-        // DMs use Nostr relays, not the gateway, so this runs independently of
-        // gateway status.
         let relays = {
             let saved = settings.read();
             if saved.dm_relays.is_empty() {
@@ -115,14 +97,8 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
     provide_context(nostr_tx.clone());
     provide_context(crate::features::voice::VoiceTx(voice_tx.clone()));
     provide_context(state);
-    // The Nostr identity (with signing key) — used to authorize Blossom uploads.
     provide_context(params.identity.clone());
 
-    // Initial 4-panel dashboard layout. 12 cols, each panel spans the full
-    // GRID_ROWS height so the four columns sit side by side. The pixel row
-    // height is derived at mount from the available viewport (see below) so
-    // the panels exactly fill the window on first open instead of overflowing
-    // into a scroll. Users can still drag/resize via the corner grip.
     let mut layout = use_layout_store(|| {
         let saved = settings.read();
         if saved.layout_cells.is_empty() {
@@ -148,7 +124,6 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
     let mut edit_mode = use_signal(|| false);
     let status = state.read().status;
 
-    // Guild accent overrides app-level accent inline; suppressed in DM mode.
     let guild_accent_style = {
         let s = state.read();
         let accent = if s.dm_mode {
@@ -166,7 +141,6 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
             .unwrap_or_default()
     };
 
-    // Prune stale typing indicators (>5s) to avoid idle re-renders.
     use_future(move || async move {
         let mut state = state;
         loop {
@@ -189,8 +163,6 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
         }
     });
 
-    // macOS traffic lights overlay content; padding must be on the top row
-    // only to avoid shifting the grid.
     let mac_top_pad = if cfg!(target_os = "macos") {
         "pt-5"
     } else {
@@ -221,8 +193,6 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
             crate::features::chat::ImageViewer {}
             GuildDialogHost {}
 
-            // Row is a drag region; interactive children opt out via .dxf-no-
-            // drag.
             div { class: "dxf-drag-region flex items-center gap-2 {mac_titlebar_clear}",
                 onmousedown: move |_| crate::app::start_window_drag(),
                 div { class: "shrink-0 flex items-center gap-2 px-1",
@@ -243,24 +213,10 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
                 }
             }
 
-            // overflow-auto still matters in Snap mode: a panel dragged below
-            // the last template row lands on `grid-auto-rows` and would
-            // otherwise be clipped with no way to scroll to it. Free mode's own
-            // container is exactly 100% tall and clips deliberately, so this
-            // never produces a scrollbar there.
             div { class: "flex-1 overflow-auto min-h-0",
-                // Use CSS grid `1fr` rows instead of pixel measurement so the
-                // browser re-divides height on resize; the old `onmounted`
-                // measurement caused panels to keep their original height when
-                // the window grew.
                 GridLayout {
                     cols: 12, rows: GRID_ROWS, gap: GRID_GAP,
                     store: layout, editable: edit_mode(),
-                    // Free placement only; the Snap/Free switch was removed
-                    // because maintaining two coordinate systems and
-                    // conversions caused broken layouts, while free placement
-                    // with magnetic edges achieves the same tidy arrangement
-                    // without fighting a grid.
                     mode: LayoutMode::Free,
                     on_change: move |_: Vec<(String, GridPosition)>| persist_layout(settings, layout),
                     GridItem { id: "guilds", x: 0, y: 0, w: 1, h: GRID_ROWS, min_w: 1, min_h: 10,
@@ -287,8 +243,6 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
             }
 
             div { class: "fixed bottom-3 right-3 z-40 flex items-center gap-1.5",
-                // Reset is only offered while editing to allow recovery from
-                // messy layouts or awkwardly dragged windows in Free mode.
                 if edit_mode() {
                     button {
                         class: "border border-[var(--border)] rounded px-3 py-1 text-[10px] uppercase tracking-wider bg-[var(--panel)] hover:border-[var(--danger)] text-[var(--text-muted)] hover:text-[var(--danger)] transition-colors",
@@ -310,9 +264,6 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
     }
 }
 
-/// Bottom-center toast for `ServerMessage::Error` frames — permission and
-/// moderation rejections must be visible, not just logged. Auto-dismisses
-/// after a few seconds; click ✕ to dismiss sooner.
 #[component]
 fn ErrorToast() -> Element {
     let mut state = use_app_state();
@@ -346,32 +297,17 @@ fn ErrorToast() -> Element {
     }
 }
 
-/// UI sound effects, synthesised with Web Audio so they need no assets.
-///
-/// Everything routes through one idempotent `window.dxSfx` object with a
-/// per-cue cooldown. Two things make the naive approach double up: an effect
-/// that re-runs because some *other* signal it reads changed, and a component
-/// that gets mounted twice (hot reload, a re-keyed parent). The Rust side
-/// guards the first with explicit last-value comparisons; the cooldown catches
-/// anything that slips past, so a cue can't fire twice for one event.
 const SFX_JS: &str = r#"
 window.dxSfx = window.dxSfx || (function () {
   let ctx = null;
   const lastAt = {};
-  // Cooldown is per cue name rather than global because cues can legitimately
-  // overlap (e.g., leaving voice closes a share you were watching).
   const COOLDOWN_MS = 250;
   let masterVolume = 0.7;
   function audio() {
     if (!ctx) { try { ctx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { return null; } }
-    // Resume is a no-op if already running; autoplay policies suspend the
-    // context until a gesture.
     if (ctx.state === 'suspended') { ctx.resume().catch(function () {}); }
     return ctx;
   }
-  // Exponential ramps avoid zero (undefined for exponentialRampToValueAtTime)
-  // to prevent clicks.
-  // `peak` is scaled by masterVolume so user volume applies uniformly.
   function tone(c, at, freq, dur, peak, type) {
     const o = c.createOscillator(); const g = c.createGain();
     o.type = type || 'sine'; o.frequency.setValueAtTime(freq, at);
@@ -404,8 +340,6 @@ window.dxSfx = window.dxSfx || (function () {
       case 'disconnect':
         tone(c, t, 520, 0.14, 0.13); tone(c, t + 0.10, 330, 0.22, 0.13);
         break;
-      // Opening someone's screen share: a quick rising blip, quieter than the
-      // voice cues because it accompanies a visible window appearing.
       case 'watch-start':
         tone(c, t, 620, 0.09, 0.09, 'triangle'); tone(c, t + 0.07, 880, 0.14, 0.09, 'triangle');
         break;
@@ -453,8 +387,6 @@ window.dxSfx = window.dxSfx || (function () {
 "#;
 
 fn sfx(name: &str) {
-    // Route through `js_str` to enforce escaping at the sink, preventing
-    // future dynamic args from bypassing it.
     let name = crate::features::screenshare::js_str(name);
     let _ = document::eval(&format!("{SFX_JS}\nwindow.dxSfx.play({name});"));
 }
@@ -474,9 +406,6 @@ fn VoiceSounds() -> Element {
         last_phase.set(now);
         match now {
             VoicePhase::Connected => sfx("connect"),
-            // Leaving voice, whether the user hung up or the session died.
-            // Connecting → Idle is a cancelled/failed attempt that never made
-            // a connect sound, so it gets no disconnect sound either.
             VoicePhase::Idle | VoicePhase::Error if prev == VoicePhase::Connected => {
                 sfx("disconnect")
             }
@@ -494,8 +423,6 @@ fn VoiceSounds() -> Element {
         let was_watching = last_viewing.peek().is_some();
         last_viewing.set(now.clone());
         match now {
-            // Switching straight from one sharer to another still counts as
-            // starting to watch — the stream on screen changed.
             Some(_) => sfx("watch-start"),
             None if was_watching => sfx("watch-stop"),
             None => {}
@@ -558,8 +485,6 @@ fn VoiceSounds() -> Element {
         }
     });
 
-    // On channel switch, snapshot without playing sounds — the set changed
-    // because we moved, not because peers did.
     let voice_channel = use_memo(move || state.read().voice.channel_id);
     let voice_states = use_memo(move || state.read().voice_states.clone());
     let self_pk = use_memo(move || state.read().self_user.as_ref().map(|u| u.pubkey.clone()));
@@ -607,8 +532,6 @@ fn VoiceSounds() -> Element {
                 .unwrap_or_default(),
             _ => Vec::new(),
         };
-        // Effects may fire in different orders, so we need our own snapshot
-        // here.
         if ch != *last_channel.peek() {
             last_sharers.set(sharers);
             return;
@@ -669,8 +592,6 @@ fn HostBanner() -> Element {
     let listed_public = info.listed_public;
     let has_shortcode = info.shortcode.is_some();
     let reachability = info.reachability.clone();
-    // Whether voice works is "is there an SFU", not "did we start one" — a
-    // rendezvous that runs its own means we deliberately started nothing.
     let (voice_label, voice_color) = if info.livekit_url.is_empty() {
         ("voice unavailable", "text-[var(--warn)]")
     } else if info.voice_bundled {
@@ -696,8 +617,6 @@ fn HostBanner() -> Element {
                 onmousedown: move |e| e.stop_propagation(),
                 "{lan_text}"
             }
-            // Publishing status: a failed registration used to be silent, so
-            // the host thought friends could find them when they couldn't.
             if let Some(err) = publish_error {
                 span { class: "text-[var(--text-dim)]", "·" }
                 span { class: "text-[var(--danger)]",
@@ -707,9 +626,6 @@ fn HostBanner() -> Element {
             } else if has_shortcode && !listed_public {
                 span { class: "text-[var(--text-dim)]", "·" }
                 span { class: "text-[var(--text-muted)]",
-                    // Names no control, on purpose: the previous wording quoted
-                    // a checkbox label and pointed at a "Browse" tab, and both
-                    // were renamed out from under it.
                     title: "Reachable by code, but not shown in the public list. Turn on public listing when you create the server to appear there.",
                     "unlisted"
                 }
@@ -721,12 +637,6 @@ fn HostBanner() -> Element {
     }
 }
 
-/// How far this host reaches, in the banner, with the reason when it is short.
-///
-/// A host that cannot be reached from the internet is the normal outcome behind
-/// carrier-grade NAT and on a router with UPnP off, and it used to be invisible:
-/// the only symptom was a friend failing to connect, which looks like the
-/// friend's problem. See `docs/NETWORKING.md`.
 #[component]
 fn Reachability(reachability: crate::host::Reachability) -> Element {
     use crate::host::Reachability as R;
@@ -769,14 +679,6 @@ fn Reachability(reachability: crate::host::Reachability) -> Element {
     }
 }
 
-/// Whether this call's media is encrypted, and whether that is currently
-/// working.
-///
-/// The second half is why this exists at all. End-to-end encrypted media fails
-/// as *silence*: frames arrive, decode to noise, and everything looks connected.
-/// Somebody in that state will check their microphone, their output device and
-/// their network before suspecting a key — so the one thing worth putting on
-/// screen is that the key is the problem.
 #[component]
 fn EncryptionBadge() -> Element {
     let state = use_app_state();
@@ -814,16 +716,10 @@ fn EncryptionBadge() -> Element {
     }
 }
 
-/// Who is carrying this connection, for anyone who is *not* hosting.
-///
-/// The distinction the badge exists for: a relayed connection is readable by
-/// whoever runs the relay, and a direct one is not — but neither announces
-/// itself, and a join by code can end up as either depending on a race.
 #[component]
 fn TransportBadge() -> Element {
     let state = use_app_state();
     let snapshot = state.read();
-    // Self-host has its own banner, which says more than this would.
     if snapshot.host_info.is_some() {
         return rsx! { Fragment {} };
     }
@@ -856,13 +752,6 @@ fn TransportBadge() -> Element {
     }
 }
 
-/// Renders whichever guild-management dialog is open, at the workspace root.
-///
-/// Deliberately not inside `GuildsSidebar`, where these used to live. Panels
-/// are absolutely positioned and can be stacked above one another, and a panel
-/// with a z-index establishes a stacking context — so a modal rendered inside
-/// one is confined to that panel's layer and paints underneath any panel above
-/// it, however high its own z-index is. At the root there is nothing to escape.
 #[component]
 fn GuildDialogHost() -> Element {
     let mut state = use_app_state();

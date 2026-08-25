@@ -11,77 +11,14 @@ enable_dev_tools = true
 display_name = "Discordia"
 identifier = "com.discordia.app"
 publisher = "TehSoTo"
-# App icon: ico for Windows, icns for macOS, png fallback for other bundlers.
-#
-# The .ico is not optional dressing — the CLI embeds the FIRST `.ico` in this
-# list into the executable's resources, and with none listed it falls back to
-# its own bundled icon, which is the Dioxus logo. That is what shipped: the
-# generated .winres/icon.ico was byte-identical to the CLI's default.
-#
-# Regenerate all three from assets/icon.svg when the logo changes:
-#   resvg --width N --height N assets/icon.svg out-N.png     (N = 16..256, 1024)
-#   .ico  = those sizes combined (16/24/32/48/64/128/256)
-#   .icns = macOS, via qlmanage → sips → iconutil
-# Render each .ico size from the SVG rather than downscaling the 1024 — the
-# 16px entry is what Windows shows in the taskbar, and it needs the hinting.
 icon = ["assets/icon.ico", "assets/icon.icns", "assets/icon-1024.png"]
 
-# The macOS .app's Info.plist. This REPLACES the plist dx would generate rather
-# than merging into it, so that file has to carry every CFBundle* key as well —
-# the long comment in it explains why, and what to keep in sync. Without it the
-# bundled app has no NSMicrophoneUsageDescription, and macOS then refuses the
-# microphone in silence: voice works under `dx serve` and is dead in the DMG.
 [bundle.macos]
 info_plist_path = "Info.plist"
-# Sign with a stable identity, because ad-hoc signing breaks macOS permissions
-# on every rebuild.
-#
-# TCC records a Screen Recording / Microphone grant against the app's code
-# signature. An ad-hoc signature is derived from the binary, so it changes with
-# every build: the grant given to yesterday's build does not match today's, and
-# because a record for this bundle id already exists macOS does *not* re-prompt —
-# ScreenCaptureKit fails with "the user declined TCCs for application, window,
-# display capture", which reads as a permission bug and is a signing one. A
-# signed app's designated requirement is the bundle id plus the certificate's
-# team, both unchanged across rebuilds, so a single grant holds.
-#
-# This is a *development* certificate, which means two things worth knowing:
-# it is personal to whoever builds (change it to your own — the value is
-# whatever `security find-identity -v -p codesigning` prints), and it expires,
-# after which `dx bundle` fails at the signing step rather than silently going
-# back to ad-hoc. CI does not use this: the Linux and Windows jobs never sign,
-# and the macOS pre-release job has no certificate in its keychain, so it falls
-# back to ad-hoc there.
-# No `signing_identity` / `entitlements` here on purpose, even though signing is
-# what makes macOS permission grants survive a rebuild (see below). A signing
-# identity is per-developer: naming one in a shared file breaks `dx bundle` for
-# every other contributor and for CI, both of which fail hard rather than falling
-# back — `codesign` exits 1 with "no identity found", which is how this was
-# learned. Pass it at the command line instead:
-#
-#   ./bundle-macos.sh                # repo root; reads DISCORDIA_SIGNING_IDENTITY
-#
-# or by hand, with `--codesign true --apple-team-id "<identity>"
-# --apple-entitlements Entitlements.plist`.
 
-# WebView2 is handled by the app, not by the bundler — see `nsis.installer_hooks`
-# below and `client/src/webview2.rs`.
-#
-# "Skip" is load-bearing, not a way of ignoring the problem. Left at its default
-# the CLI uses `OfflineInstaller`, which downloads the FULL runtime (~130MB) and
-# embeds it in the setup — that alone was the bulk of the installer. The other
-# modes embed the ~2MB Evergreen bootstrapper but emit their own NSIS snippet
-# that runs it *unconditionally*, and that snippet cannot be guarded: dx writes
-# it inline in the install section, while `installer_hooks` is only `!include`d
-# after that section closes. Skipping it is what lets the check happen first.
 [bundle.windows]
 webview_install_mode = "Skip"
 
 [bundle.windows.nsis]
-# Runs the freshly installed binary as `Discordia.exe --ensure-webview2`, so the
-# installer and the portable zip share one implementation of "is the runtime
-# here, and install it if not" instead of keeping a second copy in NSIS script.
 installer_hooks = "nsis/webview2.nsh"
-# The installer window and its Add/Remove Programs entry draw their own icon,
-# which NSIS defaults to its own artwork unless told otherwise.
 installer_icon = "assets/icon.ico"

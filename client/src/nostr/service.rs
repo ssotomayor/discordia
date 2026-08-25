@@ -1,27 +1,3 @@
-//! The Nostr DM service: one task, owning the relay pool, feeding `AppState`.
-//!
-//! Shaped like `net::spawn_gateway` deliberately — a task that owns a
-//! connection and mutates the same `Signal<AppState>` the UI renders, with a
-//! command channel for the other direction. A reader who understands one
-//! understands the other.
-//!
-//! **Direct messages no longer touch the gateway.** Nothing here goes near the
-//! server: the conversation lives on relays, so it survives changing servers,
-//! self-hosting, or the host deleting its database. That is the whole reason
-//! this exists.
-//!
-//! ## Fitting Nostr into a UI built for channels
-//!
-//! The DM surface was written against `dms: Vec<DmInfo>` and
-//! `messages: HashMap<Id, Vec<Message>>`, both keyed by `Uuid`. Nostr has no
-//! Uuids — a conversation is identified by the other person's pubkey and a
-//! message by a 32-byte event id. Rather than rewrite every DM view, both are
-//! *derived*: `conversation_id` hashes the peer's pubkey into a stable Uuid,
-//! and `message_id` does the same for an event id. Deterministic, so the same
-//! conversation is the same Uuid on every launch and every device, and the
-//! mapping back to the real event id is kept in `AppState::nostr_event_ids`
-//! for replies.
-
 use dioxus::prelude::*;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 
@@ -32,21 +8,21 @@ use crate::identity::Identity;
 use crate::protocol::{Id, Message, User};
 use crate::state::{AppState, DmInfo};
 
-/// What the UI asks the service to do.
 pub enum NostrCmd {
-    /// Send `text` to `peer`, optionally answering a message.
     Send {
         peer: String,
         text: String,
         reply_to: Option<String>,
     },
-    /// Make sure a conversation with `peer` exists in the list, and select it.
-    Open { peer: String },
-    /// Add or remove a contact, and publish the whole replaced list.
-    SetContact { peer: String, keep: bool },
+    Open {
+        peer: String,
+    },
+    SetContact {
+        peer: String,
+        keep: bool,
+    },
 }
 
-/// Handle the UI holds.
 #[derive(Clone)]
 pub struct NostrTx(UnboundedSender<NostrCmd>);
 
@@ -56,11 +32,6 @@ impl NostrTx {
     }
 }
 
-/// A stable `Uuid` for the conversation with `peer`.
-///
-/// Derived rather than random so it is the same on every device and after
-/// every restart — the UI uses it as a map key, and a fresh id each launch
-/// would split one conversation into many.
 pub fn conversation_id(peer_pubkey: &str) -> Id {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
@@ -70,7 +41,6 @@ pub fn conversation_id(peer_pubkey: &str) -> Id {
     Id::from_bytes(d[..16].try_into().expect("16 bytes"))
 }
 
-/// A stable `Uuid` for a Nostr event id, so a message has a key the UI can use.
 fn message_id(event_id: &str) -> Id {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
@@ -80,7 +50,6 @@ fn message_id(event_id: &str) -> Id {
     Id::from_bytes(d[..16].try_into().expect("16 bytes"))
 }
 
-/// Start the service. Returns the handle the UI sends through.
 pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppState>) -> NostrTx {
     let (tx, mut rx) = unbounded_channel::<NostrCmd>();
     let handle = NostrTx(tx);
@@ -91,8 +60,6 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
         let secret = identity.secret_key();
         let (pool, mut events) = RelayPool::connect(relays.clone());
 
-        // No author filter: gift wraps are signed by ephemeral keys. `p` is
-        // the only handle.
         pool.subscribe(vec![
             Filter {
                 kinds: Some(vec![nip59::KIND_GIFT_WRAP]),
@@ -120,9 +87,6 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
                         open_conversation(&peer, &mut state);
                     }
                     Some(NostrCmd::SetContact { peer, keep }) => {
-                        // Read-modify-write, never append: kind 3 is
-                        // replaceable, so publishing a partial list deletes
-                        // everyone missing from it.
                         let current = state.read().contacts.clone();
                         let next = if keep {
                             current.with(nip02::Contact {
@@ -153,15 +117,10 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
                         state.write().nostr_relays_up.insert(url);
                     }
                     Some(RelayEvent::Disconnected { relay, why }) => {
-                        // Pool retries automatically; this is the only source
-                        // of the disconnect reason for status.
                         eprintln!("[nostr] {relay}: disconnected ({why}), retrying");
                         state.write().nostr_relays_up.remove(&relay);
                     }
                     Some(RelayEvent::Published { relay, id, accepted, message }) => {
-                        // Publish succeeds if any relay accepts; a single
-                        // rejection is not a failure but is the only signal of
-                        // partial delivery.
                         if !accepted {
                             eprintln!(
                                 "[nostr] {relay}: rejected event {id}{}",
@@ -189,7 +148,6 @@ fn now() -> i64 {
     chrono::Utc::now().timestamp()
 }
 
-/// Make sure the conversation exists in the list and select it.
 fn open_conversation(peer: &str, state: &mut Signal<AppState>) {
     let cid = conversation_id(peer);
     let mut s = state.write();
@@ -208,13 +166,6 @@ fn open_conversation(peer: &str, state: &mut Signal<AppState>) {
     s.dm_unread.remove(&cid);
 }
 
-/// Build, wrap and publish a message; show it immediately.
-///
-/// The local copy is added before any relay answers, because waiting would mean
-/// a visible delay on every message for a confirmation that says nothing useful
-/// — publishing succeeds if *any* relay accepts, and the copy addressed to us
-/// will arrive back through the subscription anyway. `insert_message`
-/// deduplicates by id, so the echo is a no-op rather than a double.
 #[allow(clippy::too_many_arguments)]
 fn send_message(
     pool: &RelayPool,
@@ -242,36 +193,23 @@ fn send_message(
             insert_message(&msg, our_pubkey, state);
         }
         Err(e) => {
-            // Refused rather than sent in the clear — there is no cleartext
-            // path here to fall back to, so the only honest outcome is to say
-            // it did not go.
             state.write().error_toast = Some(format!("Not sent — {e}"));
         }
     }
 }
 
-/// Open an inbound gift wrap and file it, if it is a chat message for us.
 fn receive(
     secret: &secp256k1::SecretKey,
     our_pubkey: &str,
     gift: &Event,
     state: &mut Signal<AppState>,
 ) {
-    // Failure is the normal case, not an error: the subscription asks for every
-    // gift wrap addressed to us, and other Nostr apps wrap other things. A wrap
-    // we cannot read, or that turns out not to be a chat message, is simply not
-    // ours to render.
     let Ok(msg) = nip17::open_chat(secret, our_pubkey, gift) else {
         return;
     };
     insert_message(&msg, our_pubkey, state);
 }
 
-/// Put a message into the conversation it belongs to, in time order.
-///
-/// Relays replay stored events in whatever order they like and the same message
-/// arrives from several of them, so this both deduplicates and sorts rather
-/// than appending.
 fn insert_message(msg: &nip17::ChatMessage, our_pubkey: &str, state: &mut Signal<AppState>) {
     let cid = conversation_id(&msg.peer);
     let mid = message_id(&msg.id);
@@ -320,9 +258,6 @@ fn insert_message(msg: &nip17::ChatMessage, our_pubkey: &str, state: &mut Signal
 mod tests {
     use super::*;
 
-    /// The whole UI keys off these, so they must be stable across launches and
-    /// distinct between peers. A random id would split one conversation into a
-    /// new thread every time the app started.
     #[test]
     fn derived_ids_are_stable_and_distinct() {
         let a = "a".repeat(64);
@@ -331,8 +266,6 @@ mod tests {
         assert_ne!(conversation_id(&a), conversation_id(&b));
         assert_eq!(message_id("beef"), message_id("beef"));
         assert_ne!(message_id("beef"), message_id("cafe"));
-        // And the two derivations must not collide with each other, or a
-        // message could be mistaken for a conversation.
         assert_ne!(conversation_id(&a).as_bytes(), message_id(&a).as_bytes());
     }
 }

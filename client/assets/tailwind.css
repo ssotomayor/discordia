@@ -1,38 +1,6 @@
 @import "tailwindcss" source(none);
 @source "../src/**/*.rs";
-/* Scan the Rust sources and nothing else.
-
-   Two rules about editing this file, both learned the hard way:
-   the `@import` must stay on the first line, or the build emits an empty
-   stylesheet rather than an error; and no apostrophes anywhere, because the v4
-   CLI reads one inside a comment as the start of a string and dies with
-   "Unterminated string".
-
-   `source(none)` turns off the automatic project scan, so the `@source` above is
-   the whole input. That is deliberate and was measured: building this way loses
-   exactly one rule versus letting v4 scan freely, and that rule is a phantom
-   nothing in the app uses. Every genuine utility comes from `src/**/*.rs`,
-   because that is where every class in this app is written, including the ones
-   inside JS string literals, which live in `.rs` files too.
-
-   What the automatic scan kept dragging in, and why none of it was wanted:
-
-   * Class candidates are extracted by *pattern*, not by parsing, so any text
-     that merely looks like a utility becomes one. `t.hidden!==(...)` inside the
-     vendored LiveKit bundle read as `hidden` with an `!important` modifier and
-     produced a `.hidden\!` rule.
-   * Prose about a class generates that class. The deferred-work register
-     (`docs/AUDIT-2026-08-17.md` §8) carries an entry explaining that an unused
-     drop-shadow utility had leaked into the build, and the mention inside that
-     entry was by then what kept it there. A comment
-     cannot describe a utility without conjuring it, which is why this one names
-     none, and why excluding the docs one glob at a time was never going to hold.
-   * Anything else sitting in the tree: the design comp at the repo root, an SVG
-     whose comment says shadow, a built `.app` under `client/build/`. That last
-     one is why this matters beyond tidiness, since scanning build output makes
-     the generated CSS depend on what someone happens to have built locally, and
-     `tailwind.out.css` is committed and diffed by CI.
-
-   If a genuine class ever goes missing, the cause is a source file outside
-   `src/`, and the fix is another `@source` line, not turning the scan back on.
-*/
+/* The @import must stay on line 1 or the build emits an empty stylesheet, and
+   no apostrophes anywhere: the v4 CLI reads one as a string and dies. */
+/* Prose here conjures classes: candidates are extracted by pattern, not
+   parsed, so naming a utility in a comment puts it in the build. */

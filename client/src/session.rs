@@ -1,7 +1,3 @@
-//! Persistent record of the last session config (mode + display name).
-//! Identity lives separately in `identity.json` — this file is just for
-//! offering a one-click "Reconnect" on the next launch.
-
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -65,7 +61,6 @@ pub fn clear() -> Result<(), String> {
     Ok(())
 }
 
-/// Human-friendly summary used in the "Reconnect" pill on the connect screen.
 pub fn label(session: &SavedSession) -> String {
     match &session.mode {
         SessionMode::Remote { server_url } => format!("Remote · {server_url}"),

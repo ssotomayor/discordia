@@ -7,15 +7,12 @@ use crate::state::{use_app_state, use_gateway};
 const HEADER: &str =
     "h-11 px-2 flex items-center justify-center border-b border-[var(--border)] shrink-0";
 
-/// Right-click menu anchored over a guild the current user can manage (or at
-/// least leave).
 #[derive(Clone, PartialEq)]
 struct GuildMenu {
     guild_id: Id,
     name: String,
     x: f64,
     y: f64,
-    /// Inline confirm step for a destructive action.
     confirming: Option<ConfirmAction>,
 }
 
@@ -32,15 +29,11 @@ pub fn GuildsSidebar() -> Element {
     let gateway = use_gateway();
 
     let snapshot = state.read();
-    // Owned guilds first: they are the ones you administer, and grouping them
-    // makes the cog affordance read as a property of the group.
     let guilds = {
         let mut v = snapshot.guilds.clone();
         v.sort_by_key(|g| !snapshot.is_owner(g.id));
         v
     };
-    // `is_owner` covers system guilds (empty owner) for operators, matching
-    // the rest of the app.
     let owned_count = guilds.iter().filter(|g| snapshot.is_owner(g.id)).count();
     let selected = snapshot.selected_guild;
     let dm_mode = snapshot.dm_mode;
@@ -93,11 +86,7 @@ pub fn GuildsSidebar() -> Element {
 
                 for (idx, guild) in guilds.iter().cloned().enumerate() {
                     {
-                        // System guilds (empty owner) are only manageable by
-                        // operators.
                         let has_menu = !guild.owner_pubkey.is_empty() || is_operator;
-                        // Visible cog for owners; right-click is the only way
-                        // to reach "Leave" on non-owned guilds.
                         let is_mine = idx < owned_count;
                         let gname = guild.name.clone();
                         rsx! {
@@ -113,10 +102,6 @@ pub fn GuildsSidebar() -> Element {
                                 on_select: {
                                     let gateway = gateway.clone();
                                     move |gid: Id| {
-                                        // Always land on the default text
-                                        // channel; never leave the previous
-                                        // guild's channel or land on a voice
-                                        // channel.
                                         let target = {
                                             let mut s = state.write();
                                             s.dm_mode = false;
@@ -124,11 +109,6 @@ pub fn GuildsSidebar() -> Element {
                                             s.selected_channel = None;
                                             s.default_channel_of(gid)
                                         };
-                                        // Route through the shared selector so
-                                        // the channel's history is fetched if we
-                                        // haven't loaded it yet; setting
-                                        // selected_channel directly left the
-                                        // view empty on first visit.
                                         if let Some(cid) = target {
                                             crate::features::channels::select_text_channel(
                                                 &mut state.clone(),
@@ -160,8 +140,6 @@ pub fn GuildsSidebar() -> Element {
                     onclick: {
                         let gateway = gateway.clone();
                         move |_| {
-                            // Pull the latest directory on open — the server no
-                            // longer pushes catalog updates to everyone.
                             gateway.send(ClientMessage::FetchCatalog { offset: 0, limit: 0 });
                             show_browse.set(true);
                         }
@@ -186,16 +164,11 @@ pub fn GuildsSidebar() -> Element {
                         style: "left: {m.x}px; top: {m.y}px;",
                         onclick: move |e| e.stop_propagation(),
                         {
-                            // Per-entry permission gates (server re-checks all
-                            // of these — the menu just hides dead ends).
                             let s = state.read();
                             let gid = m.guild_id;
                             let is_owner = s.is_owner(gid);
                             let can_manage = s.can(gid, Permission::ManageGuild);
                             let can_roles = s.can(gid, Permission::ManageRoles);
-                            // System guilds (the Lobby) can't be deleted, left,
-                            // or transferred — even by an operator — so those
-                            // entries are hidden there.
                             let is_system = s
                                 .guilds
                                 .iter()
@@ -354,11 +327,6 @@ pub fn GuildsSidebar() -> Element {
                 }
             }
 
-            // The management dialogs are rendered at the workspace root (see
-            // `GuildDialogHost`), not here. A modal inside this panel would be
-            // inside this panel's stacking context and could be covered by any
-            // panel stacked above it.
-
             if show_browse() {
                 div {
                     class: "dxf-backdrop-in fixed inset-0 z-50 flex items-center justify-center bg-black/50",
@@ -435,8 +403,6 @@ pub fn GuildsSidebar() -> Element {
     }
 }
 
-/// "Have an invite code?" input at the bottom of the browse modal. The server
-/// replies `GuildJoined` (which auto-selects the guild) or an `Error` toast.
 #[component]
 fn InviteJoinRow(on_joined: EventHandler<()>) -> Element {
     let gateway = use_gateway();
@@ -497,10 +463,6 @@ fn DmHomeButton(active: bool, count: usize, onclick: EventHandler<()>) -> Elemen
     }
 }
 
-/// "+" button that expands into a tiny name field. Submitting sends a
-/// `CreateGuild` to the server; the new guild arrives back over the socket
-/// (see `ServerMessage::GuildJoined`, delivered only to the creator) and is
-/// selected automatically.
 #[component]
 fn CreateGuild() -> Element {
     let gateway = use_gateway();
@@ -572,21 +534,12 @@ fn CreateGuild() -> Element {
 fn GuildIcon(
     id: Id,
     label: String,
-    /// Uploaded icon (http(s) or data URL). Falls back to `label` when absent —
-    /// which, until now, was the only thing ever drawn: an uploaded guild icon
-    /// was stored and round-tripped but never rendered anywhere.
     image: Option<String>,
     name: String,
     selected: bool,
-    /// Whether right-clicking opens the management/leave menu (false only for
-    /// system guilds, which can be neither managed nor left).
     has_menu: bool,
-    /// Whether the viewer owns this guild. Owners get a visible cog, because
-    /// "right-click the icon" is not a thing anyone discovers on their own.
     is_mine: bool,
     on_select: EventHandler<Id>,
-    /// Fired with (guild_id, x, y) when the menu should open — right-click on
-    /// anything with a menu, or the cog on a guild you own.
     on_menu: EventHandler<(Id, f64, f64)>,
 ) -> Element {
     let cls = if selected {
@@ -596,8 +549,6 @@ fn GuildIcon(
     };
 
     rsx! {
-        // relative so the cog overlays the tile corner; group so it brightens
-        // with the tile.
         div { class: "relative group",
             button {
                 class: "w-10 h-10 rounded-md border flex items-center justify-center text-xs font-medium transition-colors overflow-hidden {cls}",
@@ -626,8 +577,6 @@ fn GuildIcon(
                 button {
                     class: "absolute -right-1 -bottom-1 w-4 h-4 flex items-center justify-center rounded-full border border-[var(--border)] bg-[var(--panel-solid)] text-[var(--text-muted)] opacity-70 group-hover:opacity-100 hover:text-[var(--accent)] hover:border-[var(--accent)] transition-all",
                     title: "Guild settings",
-                    // Open at the cog, not under the cursor, so the menu lands
-                    // in the same place however the pointer arrived.
                     onclick: move |e: MouseEvent| {
                         e.stop_propagation();
                         let c = e.client_coordinates();
@@ -643,14 +592,11 @@ fn GuildIcon(
     }
 }
 
-/// Inline member picker for the "Transfer ownership" confirm step. Lists the
-/// guild's human members (excluding yourself); clicking one arms a final
-/// confirm button.
 #[component]
 fn TransferPicker(guild_id: Id, on_done: EventHandler<()>) -> Element {
     let state = use_app_state();
     let gateway = use_gateway();
-    let mut chosen = use_signal(|| None::<(String, String)>); // (pubkey, name)
+    let mut chosen = use_signal(|| None::<(String, String)>);
 
     let candidates: Vec<(String, String)> = {
         let s = state.read();

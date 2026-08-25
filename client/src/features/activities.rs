@@ -1,33 +1,13 @@
-//! Tier 3 — **client-sandboxed activities**.
-//!
-//! An activity is a mini-app rendered in a `<iframe sandbox="allow-scripts">`.
-//! Because it's sandboxed *without* `allow-same-origin`, it runs in a unique
-//! opaque origin: it can't touch the app's DOM, storage, or network. Its only
-//! channel to the host is `postMessage`, bridged to Rust through a constrained
-//! RPC surface. Each activity declares the **capabilities** it needs; the user
-//! approves them at launch, and the bridge enforces that grant on every call.
-//!
-//! This mirrors Discord's Embedded App SDK model: untrusted UI runs sandboxed
-//! in the user's own client, never on a server, and reaches the host only
-//! through a capability-checked RPC bridge.
-//!
-//! The bridge reuses the same `document::eval` JS pattern as `screenshare.rs`.
-
 use dioxus::prelude::*;
 use serde_json::{Value, json};
 
 use crate::protocol::{ClientMessage, Id};
 use crate::state::{AppState, GatewayTx, use_app_state, use_gateway};
 
-/// A capability an activity may request. The user sees these at launch and the
-/// bridge checks them on every RPC call.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Capability {
-    /// Read the current user's pubkey + display name.
     UserRead,
-    /// Read the currently-selected channel's id + name.
     ChannelRead,
-    /// Post a message to the current channel **as the user** (clearly attributed).
     MessageSend,
 }
 
@@ -41,9 +21,6 @@ impl Capability {
     }
 }
 
-/// A bundled activity. For this pass activities are local + allowlisted (no
-/// arbitrary remote URLs): the HTML is embedded and loaded via `srcdoc`, so the
-/// iframe gets an opaque origin and the strongest sandbox.
 pub struct ActivityDef {
     pub id: &'static str,
     pub name: &'static str,
@@ -52,7 +29,6 @@ pub struct ActivityDef {
     pub html: &'static str,
 }
 
-/// The allowlist of bundled activities.
 pub const ACTIVITIES: &[ActivityDef] = &[ActivityDef {
     id: "dice",
     name: "Dice Roller",
@@ -65,8 +41,6 @@ pub const ACTIVITIES: &[ActivityDef] = &[ActivityDef {
     html: DICE_HTML,
 }];
 
-/// Host surface: a floating launcher, a consent step, the sandboxed window, and
-/// the always-on RPC bridge. Mount once in the workspace.
 #[component]
 pub fn ActivityHost() -> Element {
     let state = use_app_state();
@@ -74,10 +48,6 @@ pub fn ActivityHost() -> Element {
 
     let mut picker_open = use_signal(|| false);
     let mut consenting = use_signal(|| None::<usize>);
-    // The launched activity *and the channel it was launched from*. Bound at
-    // launch rather than read per call: an activity that posts "where the user
-    // is now" misdirects every share the moment they change channel, and the
-    // person who opened it has no reason to expect that.
     let mut launched = use_signal(|| None::<Launched>);
 
     use_future(move || {
@@ -235,8 +205,6 @@ enum Drag {
     Resize { px: f64, py: f64, w0: f64, h0: f64 },
 }
 
-/// Draggable / resizable window hosting the sandboxed iframe. Same interaction
-/// model as the screen-share viewer.
 #[component]
 fn ActivityWindow(
     def_idx: usize,
@@ -289,8 +257,6 @@ fn ActivityWindow(
                     "✕"
                 }
             }
-            // Omit allow-same-origin to force an opaque origin, isolating the
-            // sandbox from the host except via postMessage.
             iframe {
                 id: "dxf-activity-frame",
                 class: "flex-1 min-h-0 w-full bg-white border-0",
@@ -310,24 +276,16 @@ fn ActivityWindow(
     }
 }
 
-/// A launched activity: which one, and the channel it was opened from.
-///
-/// The channel is captured at launch because that is what the person opening it
-/// was looking at. Resolving it per call instead means an activity that posts a
-/// result lands wherever the user happens to have navigated by the time they
-/// click — a misdirection nobody is told about.
 #[derive(Clone, Copy, PartialEq)]
 struct Launched {
     idx: usize,
     channel: Option<Id>,
 }
 
-/// Capability-checked RPC dispatch. Returns `(ok, payload)`.
 fn handle_rpc(
     method: &str,
     params: &Value,
     def: &ActivityDef,
-    // Bound to the launch channel, not the user's current selection.
     bound_channel: Option<Id>,
     state: &Signal<AppState>,
     gateway: &GatewayTx,
@@ -372,8 +330,6 @@ fn handle_rpc(
                         channel_id,
                         content,
                         image: None,
-                        // Activities post on their own behalf; they have no
-                        // concept of replying to a message.
                         reply_to: None,
                     });
                     (true, json!({ "sent": true }))
@@ -385,14 +341,6 @@ fn handle_rpc(
     }
 }
 
-/// Installed once: forwards every message from the activity iframe to Rust.
-///
-/// The listener is registered once per webview; the *sink* it calls is
-/// reassigned on every eval. Only the second half survives a remount — a
-/// listener closes over the `dioxus.send` of the eval that made it, and this
-/// component is rebuilt whenever the session is, so guarding registration alone
-/// leaves the live channel unregistered and the registered one dead. Same shape
-/// as `features::chat`'s drop handler, and the same bug the camera pump had.
 const BRIDGE_JS: &str = r#"
 window.__dxfActivitySink = function (m) { try { dioxus.send(m); } catch (err) {} };
 if (!window.__dxfActivityWired) {
@@ -407,9 +355,6 @@ if (!window.__dxfActivityWired) {
 }
 "#;
 
-/// The bundled "Dice Roller" activity. A self-contained page with an inline SDK
-/// shim that talks to the host over postMessage. Demonstrates a capability read
-/// (`user.get`) and a gated action (`message.send`).
 const DICE_HTML: &str = r##"<!doctype html><html><head><meta charset="utf-8"><style>
   body { margin:0; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
     background:#15110d; color:#e8e2da; height:100vh; display:flex; flex-direction:column;
@@ -464,8 +409,6 @@ const DICE_HTML: &str = r##"<!doctype html><html><head><meta charset="utf-8"><st
     dxf.getUser().then(function (u) { whoEl.textContent = 'Hi, ' + u.username; })
        .catch(function () { whoEl.textContent = ''; });
 
-    // Read once is sufficient because the activity is bound to its launch
-    // channel, preventing stale state.
     function showWhere() {
       dxf.getChannel()
          .then(function (c) { whereEl.textContent = c && c.name ? 'shares go to #' + c.name : ''; })

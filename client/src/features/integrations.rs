@@ -1,13 +1,3 @@
-//! "Integrations" dialog (requires `ManageGuild`): install/uninstall bots.
-//!
-//! A bot is installed by its secp256k1 **pubkey** (64 hex chars, Nostr
-//! format) — the same identity primitive users have. The installer grants it
-//! a set of **permissions** (what it may do)
-//! and **intents** (what events it receives). Privileged intents — message
-//! *content* and the member roster — are flagged distinctly, mirroring
-//! Discord's privileged-intents design: by default a bot learns that a message
-//! happened, not what it said.
-
 use dioxus::prelude::*;
 
 use crate::identity::truncate_pubkey;
@@ -120,8 +110,6 @@ fn InstallForm(guild_id: Id) -> Element {
     let mut perms = use_signal(|| vec![Permission::SendMessages]);
     let mut intents = use_signal(|| vec![Intent::GuildMessages]);
     let mut error = use_signal(|| None::<String>);
-    // Two-step confirmation for privileged intents: first click arms, second
-    // grants.
     let mut confirming = use_signal(|| false);
 
     let mut submit = move || {
@@ -130,8 +118,6 @@ fn InstallForm(guild_id: Id) -> Element {
             error.set(Some("Enter the bot's public key.".into()));
             return;
         }
-        // Privileged intents are irreversible once granted; require explicit
-        // second-click confirmation.
         if !confirming() && intents().iter().any(|i| i.is_privileged()) {
             confirming.set(true);
             error.set(None);
@@ -176,9 +162,6 @@ fn InstallForm(guild_id: Id) -> Element {
                     oninput: move |e| name.set(e.value()),
                 }
 
-                // Permissions — only the bot-installable subset; management
-                // permissions are human-only (ManageMessages is the exception:
-                // it lets announcement bots post in read-only channels).
                 div { class: "text-[10px] uppercase tracking-wider text-[var(--text-dim)] pt-1", "Permissions" }
                 for p in Permission::BOT_INSTALLABLE.iter().copied() {
                     label { class: "flex items-center gap-2 text-xs text-[var(--text)] cursor-pointer select-none",
@@ -207,9 +190,6 @@ fn InstallForm(guild_id: Id) -> Element {
                                     if let Some(idx) = v.iter().position(|x| *x == i) { v.remove(idx); }
                                     else { v.push(i); }
                                 }
-                                // Invalidates confirmation to prevent granting
-                                // a new privileged intent via a stale
-                                // confirmation click.
                                 confirming.set(false);
                             },
                         }
@@ -226,9 +206,6 @@ fn InstallForm(guild_id: Id) -> Element {
                     div { class: "text-[11px] text-[var(--danger)]", "{err}" }
                 }
 
-                // Names what the grant actually means, rather than asking
-                // "are you sure?" — the checkbox already said the name of the
-                // intent, and that is exactly what nobody reads.
                 if confirming() {
                     div { class: "rounded border border-[var(--warn)]/40 bg-[var(--warn)]/15 p-2 space-y-1",
                         div { class: "text-[11px] font-semibold text-[var(--warn)]",

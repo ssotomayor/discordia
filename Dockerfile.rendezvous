@@ -1,7 +1,3 @@
-# Discordia rendezvous relay — discovery + NAT traversal for self-hosted
-# gateways. Tiny: no LiveKit, no database.
-#
-# Build: docker build -f Dockerfile.rendezvous -t discordia-rendezvous .
 
 FROM rust:1-bookworm AS builder
 WORKDIR /src

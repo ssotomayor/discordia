@@ -1,19 +1,11 @@
-//! Appearance settings UI — theme picker + local background image. Reads and
-//! mutates the `Signal<ClientSettings>` provided by `App`, persisting every
-//! change to disk. All of this is local to the client; nothing is sent to a
-//! host.
-
 use base64::Engine as _;
 use dioxus::prelude::*;
 
 use crate::app::THEMES;
 use crate::settings::{self, ClientSettings};
 
-/// Backgrounds are local-only but still kept reasonable in size.
 const MAX_BACKGROUND_BYTES: usize = 4_000_000;
 
-/// `(id, label, preview-inline-style)` for the procedural background tiles.
-/// Previews are miniatures of the real `.app-bg-*` rules from `app.rs`.
 const BACKGROUND_TILES: &[(&str, &str, &str)] = &[
     (
         "grid",
@@ -43,15 +35,11 @@ const BACKGROUND_TILES: &[(&str, &str, &str)] = &[
     ("none", "None", "background:#0e0b08;"),
 ];
 
-/// A small "theme" button that opens the appearance modal.
 #[component]
 pub fn AppearanceButton() -> Element {
     let mut settings = use_context::<Signal<ClientSettings>>();
     let mut open = use_signal(|| false);
     let mut err = use_signal::<Option<String>>(|| None);
-    // Where the button was when it was pressed. See the comment above the
-    // markup: the popover is positioned against this rather than against the
-    // button, because it cannot live inside it.
     let mut at = use_signal(|| (0.0_f64, 0.0_f64));
 
     let mut update = move |f: &dyn Fn(&mut ClientSettings)| {
@@ -64,18 +52,6 @@ pub fn AppearanceButton() -> Element {
     let current = settings.read().clone();
     let (at_x, at_y) = at();
 
-    // Anchored to the click, not to the button, because the popover cannot be a
-    // descendant of it. It used to be `absolute` inside a `relative` wrapper —
-    // which reads well and does not work: this button lives in the channels
-    // column, whose container is `overflow-hidden`, and an absolutely
-    // positioned child is clipped by an ancestor's overflow no matter its
-    // `z-index`. The panel opened and almost none of it was on screen.
-    //
-    // `guilds.rs` already writes this rule down for the guild dialogs — they
-    // are rendered at the workspace root for the same reason. `fixed` is the
-    // cheaper way to leave the panel, and the click is the only anchor
-    // available once you do: this column is draggable, so there is no position
-    // to hardcode.
     rsx! {
         div {
             button {
@@ -91,23 +67,12 @@ pub fn AppearanceButton() -> Element {
             }
 
             if open() {
-                // No background dimming: this is a preference panel, not a
-                // modal blocking interaction.
                 div {
                     class: "fixed inset-0 z-40",
                     onclick: move |_| open.set(false),
                 }
                 div {
-                    // Opens upward: the icon sits at the bottom of the column,
-                    // so downward would go off the bottom of the window.
-                    //
-                    // Do not name Tailwind classes in comments: `tailwind.css`
-                    // scans `.rs` files and emits them to `tailwind.out.css`.
                     class: "dxf-pop-in fixed z-50 w-80 bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl p-4",
-                    // Clamped in CSS, which is safe here and was not for the
-                    // settings panel: nothing else reads this position, so it
-                    // cannot drift from a value some other handler is doing
-                    // arithmetic against. This panel does not drag.
                     style: "left: min(max({at_x}px - 14px, 8px), calc(100vw - 328px)); bottom: calc(100vh - {at_y}px + 14px); max-height: calc({at_y}px - 24px); overflow-y: auto;",
                     onclick: move |e| e.stop_propagation(),
                     h3 { class: "text-sm font-medium text-[var(--accent)] mb-3", "Appearance" }

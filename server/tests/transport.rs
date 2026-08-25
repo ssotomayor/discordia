@@ -1,14 +1,3 @@
-//! Phase 5a — transport bus correctness.
-//!
-//! The routing table replaced broadcast-everything: `deliver()` reaches only
-//! the target user's connections, `broadcast()` reaches all. These tests pin
-//! the behaviour that matters — a guild frame never reaches a non-member, it
-//! reaches ALL of a member's devices, a DM reaches only its participants, and a
-//! disconnect cleanly removes a connection from the table.
-//!
-//! NOTE: these validate *correctness* only. The 2k-connection load / restart-
-//! recovery checkpoint is a deliberate follow-up (see docs/ROADMAP.md P5a).
-
 use std::net::SocketAddr;
 use std::time::Duration;
 
@@ -96,8 +85,6 @@ async fn join(session: &mut Bot, guild_id: Id) {
     }
 }
 
-/// Drain a session for up to `ms` and return whether a `MessageCreate` with
-/// `content` ever arrives. Used for both positive and negative assertions.
 async fn saw_message(session: &mut Bot, content: &str, ms: u64) -> bool {
     let deadline = tokio::time::Instant::now() + Duration::from_millis(ms);
     loop {
@@ -130,7 +117,6 @@ async fn guild_message_never_reaches_a_non_member() {
 
     owner.send_message(text, "members only").await.unwrap();
 
-    // The member receives it; the stranger never does.
     assert!(
         saw_message(&mut member, "members only", 2000).await,
         "member got the message"
@@ -194,8 +180,6 @@ async fn disconnect_removes_connection_from_routing() {
     handle.abort();
 }
 
-/// Send a FetchMessages and return the resulting page (loops past any live
-/// MessageCreate frames queued ahead of the reply).
 async fn fetch_history(
     session: &mut Bot,
     channel_id: Id,
@@ -229,7 +213,6 @@ async fn message_history_pages_backward_with_before_ms() {
     let mut owner = connect_user(&url, &owner_id, "Owner").await;
     let (_guild_id, text) = create_guild(&mut owner, "History").await;
 
-    // Sleep to ensure distinct timestamps for pagination.
     for i in 0..5 {
         owner.send_message(text, &format!("m{i}")).await.unwrap();
         tokio::time::sleep(Duration::from_millis(8)).await;

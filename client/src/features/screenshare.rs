@@ -1,29 +1,3 @@
-//! Screen sharing via the LiveKit JS SDK running inside the webview.
-//!
-//! Audio stays on the Rust LiveKit SDK; screen *video* runs here because the
-//! webview can capture (`getDisplayMedia`) and render (`<video>`) it. The JS
-//! client joins a SEPARATE room (`screen-…`) from voice so peers never download
-//! the video just to hear a call. Who's sharing is tracked via our own protocol
-//! (`ScreenShareState`), not the JS layer.
-//!
-//! **`screen-…` is a misnomer now, and the name is load-bearing so it stays.**
-//! That room carries webcams too (`features::camera`), published on this same
-//! connection under the bare pubkey and told apart by `TrackSource`. Which is
-//! why every video track here is keyed by identity *and* source: one
-//! participant can be sending a screen and a face at once.
-//!
-//! Stream *audio* reaches the ear by one of two routes, and neither of them is
-//! this file's `<audio>` element unless the server is too old to offer the
-//! first. Either the sharer captured it natively (`sysaudio`) and published it
-//! on the voice room, or the webview captured it and `features::voice` joins
-//! this room audio-only to subscribe. Both land in the same cpal mixer, which
-//! is what makes stream volume and the output-device choice work the same way
-//! they do for voice.
-//!
-//! Two on-screen surfaces, each a container the JS attaches a `<video>` into:
-//! - `#screenshare-self`   — small draggable self-preview for the sharer.
-//! - `#screenshare-viewer` — large draggable/resizable window for watchers.
-
 use dioxus::prelude::*;
 use serde_json::Value;
 
@@ -31,82 +5,40 @@ use crate::features::voice::{VoiceCmd, use_voice_tx};
 use crate::protocol::ClientMessage;
 use crate::state::{use_app_state, use_gateway};
 
-/// The JS controller. Idempotent so it's safe to prepend to every eval.
-///
-/// `pub(crate)` because `features::camera` drives the *same* `window.dxScreen`:
-/// the camera publishes on this connection, so it must not build a second one.
+/// `screen-…` is a misnomer since the camera moved onto this same room and
+/// connection. The name is load-bearing on the wire, so it stays.
 pub(crate) const SCREEN_JS: &str = r#"
 window.dxScreen = window.dxScreen || (function () {
   let room = null;
   let desiredRoom = null;
   let reconnectTimer = null;
   let reconnectAttempt = 0;
-  // Held because we published it by hand; setScreenShareEnabled(false) only
-  // retracts SDK tracks, so this must be stopped explicitly or audio leaks
-  // after the share ends.
   let localShareAudio = null;
-  // Held across restarts so republishing skips the capture API (no user
-  // gesture needed for auto-reconnect).
-  // E2EE state held at module scope because `connect` re-runs on every
-  // reconnect.
   let e2eeKey = null;
   let e2eeOn = false;
-  // Kept past connect so a rekey can reach a live room.
   let e2eeProvider = null;
   let localCameraTrack = null;
   let localCameraStream = null;
   let lastCameraOpts = {};
   let cameraStarting = false;
-  // Keyed by identity AND source because one participant can publish screen
-  // and webcam simultaneously (both from bare pubkey on Windows); an identity-
-  // only map would show the wrong tile.
-  const tracks = {}; // "identity\0kind" -> video track
-  const audioTracks = {}; // identity -> audio track (screen-share sound)
+  const tracks = {};
+  const audioTracks = {};
   function trackKey(id, kind) { return id + '|' + kind; }
-  // Default to screen for empty sources (older peers) and anything not
-  // explicitly 'camera'.
   function kindOf(pub, track) {
     const s = (pub && pub.source) || (track && track.source) || '';
     return s === 'camera' ? 'camera' : 'screen';
   }
-  // Tracks container ownership to support detach: clearing innerHTML leaves
-  // elements in track.attachedElements, causing adaptiveStream to think
-  // viewers are still present.
-  const attached = {}; // containerId -> { identity, kind, track, el }
+  const attached = {};
   const LK = () => window.LivekitClient || window.LiveKitClient;
 
-  // --- Screen-share audio -------------------------------------------------
-  // Playback goes through LiveKit's own attach(), never a hand-rolled Web Audio
-  // graph: createMediaStreamSource() over a *remote* peer-connection stream
-  // emits silence unless the same stream is also sunk into an HTMLMediaElement.
-  // That was the original "screen share has no sound" bug — the nodes were
-  // wired correctly and carried nothing.
-  //
-  // Volume is the element's own `volume`, so it is capped at 1.0. An earlier
-  // version routed the whole Room through Web Audio (`webAudioMix`) to allow
-  // boosting past 100%, and viewers started getting stuck on "Connecting to
-  // stream…". Changing how the Room is constructed to make audio louder risks
-  // the picture, which is the thing people actually came for.
-  //
-  // All listener-side: it scales what THIS machine plays. The broadcaster and
-  // every other viewer are untouched.
-  // Set by Rust when the native screen-audio room is actually joined — not
-  // merely when a token for it exists. Everything this guards is the fallback
-  // path: it runs against older servers, and again whenever the native join
-  // fails or its room drops, so a failure degrades to playback here rather than
-  // to nobody playing at all.
   let nativeStreamAudio = false;
   function setNativeStreamAudio(on) {
     const was = nativeStreamAudio;
     nativeStreamAudio = !!on;
     if (was === nativeStreamAudio) return;
     if (nativeStreamAudio) { detachAudio(); applyAudioSubscriptions(); }
-    // Resubscribe and attach current watched track, which may have arrived
-    // while standing down (no future event would trigger attach).
     else { applyAudioSubscriptions(); attachWatched(); }
   }
-  // Unsubscribe from screen-audio in native mode to prevent double-download,
-  // since the room is shared with video which we do want to keep subscribed.
   function applyAudioSubscriptions() {
     if (!room || !room.remoteParticipants) return;
     room.remoteParticipants.forEach(function (p) {
@@ -122,13 +54,10 @@ window.dxScreen = window.dxScreen || (function () {
     const id = c && c.getAttribute('data-identity');
     if (id) attachAudio(id);
   }
-  let audioEl = null;       // element the current stream is attached to
-  let audioIdentity = null; // whose stream is currently wired up
-  let pendingGain = 1;      // volume to apply when a stream does arrive (0..1)
-  let sinkLabel = null;     // app's chosen output device, matched by label
-  // Match output device by label because cpal uses OS labels while webview
-  // exposes opaque ids. setSinkId is Chromium-only and requires mic permission
-  // to read labels.
+  let audioEl = null;
+  let audioIdentity = null;
+  let pendingGain = 1;
+  let sinkLabel = null;
   function applySink() {
     if (!sinkLabel) return;
     try {
@@ -142,12 +71,8 @@ window.dxScreen = window.dxScreen || (function () {
   }
   function setSink(label) { sinkLabel = label || null; applySink(); }
   function setStreamVolume(v) {
-    // Capped at 1.0 because without Web Audio this maps to element volume,
-    // which the spec limits to 1.0.
     pendingGain = Math.max(0, Math.min(1, v));
     const t = audioIdentity ? audioTracks[audioIdentity] : null;
-    // setVolume walks the track's attached elements, so it is a no-op until
-    // attachAudio has run — pendingGain covers that ordering.
     if (t) { try { t.setVolume(pendingGain); } catch (e) {} }
   }
   function detachAudio() {
@@ -163,15 +88,11 @@ window.dxScreen = window.dxScreen || (function () {
     if (!t) { report(identity, false); return; }
     try {
       audioEl = t.attach();
-      // Kept out of view but in the DOM: a detached element is at the browser's
-      // mercy as to whether it is allowed to play at all.
       audioEl.style.display = 'none';
       document.body.appendChild(audioEl);
       audioIdentity = identity;
       t.setVolume(pendingGain);
       applySink();
-      // startAudio requires a user gesture; the click that opened this window
-      // is the closest available gesture to satisfy autoplay policy.
       if (room && room.canPlaybackAudio === false) {
         room.startAudio().catch(function (e) { console.warn('[dxScreen] startAudio blocked', e); });
       }
@@ -181,8 +102,6 @@ window.dxScreen = window.dxScreen || (function () {
       report(identity, false);
     }
   }
-  // Tell Rust whether the stream we're watching actually carries audio, so the
-  // viewer's volume control can say so instead of appearing to do nothing.
   function report(identity, present) {
     try { window.postMessage({ __dxf: 'stream-audio', identity: identity, present: !!present }, '*'); } catch (e) {}
   }
@@ -193,34 +112,24 @@ window.dxScreen = window.dxScreen || (function () {
     const el = track.attach();
     el.muted = true; el.autoplay = true; el.playsInline = true;
     el.style.width = '100%'; el.style.height = '100%'; el.style.background = '#000';
-    // Use `contain` to avoid cropping content on variable-sized grid tiles;
-    // `cover` would crop faces on tall cells.
     el.style.objectFit = 'contain';
     c.appendChild(el);
     attached[cid] = { identity: identity, kind: kind, track: track, el: el };
   }
-  // Native shares use `{pubkey}#video` because the webview occupies the bare
-  // pubkey and LiveKit allows one connection per identity. All user-facing
-  // logic keys off the bare pubkey, so the suffix is resolved here only.
   const VIDEO_SUFFIX = '#video';
   function baseIdentity(id) {
     return id.endsWith(VIDEO_SUFFIX) ? id.slice(0, -VIDEO_SUFFIX.length) : id;
   }
-  // `id` is always the base identity. The suffix rule applies only to screens;
-  // cameras are always captured by the webview and have no suffixed form.
   function videoTrackFor(id, kind) {
     if (kind === 'camera') return tracks[trackKey(id, 'camera')];
     return tracks[trackKey(id, 'screen')] || tracks[trackKey(id + VIDEO_SUFFIX, 'screen')];
   }
-  // `identity` arrives as the publisher's identity and may carry the suffix.
   function reattach(identity, kind) {
     const base = baseIdentity(identity);
     Object.keys(attached).forEach(function (cid) {
       const a = attached[cid];
       if (!a || a.identity !== base || a.kind !== kind) return;
       const c = document.getElementById(cid);
-      // A camera tile can be unmounted by Dioxus without a detach call — the
-      // registry has to be pruned here or it grows for the whole session.
       if (!c) { delete attached[cid]; return; }
       const t = videoTrackFor(base, kind);
       if (t) attachInto(t, c, cid, base, kind);
@@ -240,8 +149,6 @@ window.dxScreen = window.dxScreen || (function () {
       if (a && a.track && a.el) { try { a.track.detach(a.el); } catch (e) {} }
       const c = document.getElementById(cid);
       if (c) c.querySelectorAll('video').forEach(function (e) { e.remove(); });
-      // Keep the entry so a reconnect can refill the container; only the track
-      // and element are gone.
       if (a) { a.track = null; a.el = null; }
     });
   }
@@ -251,9 +158,6 @@ window.dxScreen = window.dxScreen || (function () {
     reconnectAttempt++;
     reconnectTimer = setTimeout(function () {
       reconnectTimer = null;
-      // Key and encryption flag ride `desiredRoom` because the SDK cannot
-      // attach a key provider after construction; dropping them would leave
-      // the room unencrypted.
       if (desiredRoom && !room) connect(desiredRoom.url, desiredRoom.token, desiredRoom.key, desiredRoom.e2ee);
     }, delay);
   }
@@ -264,9 +168,6 @@ window.dxScreen = window.dxScreen || (function () {
     desiredRoom = { url: url, token: token, key: key || null, e2ee: e2eeOn };
     if (room) {
       if (same) return;
-      // A different token means a different channel. Previously, `if (room)
-      // return` swallowed this, leaving the webview attached to the old room
-      // and publishing the camera to the wrong channel.
       await stopLocalShareAudio();
       const previous = room;
       room = null;
@@ -280,19 +181,6 @@ window.dxScreen = window.dxScreen || (function () {
       return;
     }
     const lk = LK();
-    // Do not set `webAudioMix` here: it changes Room subscription state and
-    // causes viewers to hang on "Connecting". Volume is capped at 100% via the
-    // element instead.
-    // E2EE worker must be constructed here (not reused) because the SDK ties
-    // one worker to a Room, and this function builds a fresh Room on every
-    // reconnect.
-    // Use `ExternalE2EEKeyProvider` with the same passphrase as native rooms.
-    // Salt/derivation are SDK defaults, so Rust and Web agree implicitly; a
-    // mismatch shows up as noise, not an error.
-    // Build the provider whenever encryption is on, even if the key is
-    // missing. The key arrives after the room is up; if the provider is
-    // absent, `setE2eeKey` cannot add it later (JS SDK only accepts it in
-    // constructor), leaving the webview unencrypted for the session.
     const opts = { adaptiveStream: true, dynacast: true };
     if (e2eeOn && !window.__dxfE2eeWorkerSrc) {
       console.error('[dxScreen] e2ee requested but the worker source is missing');
@@ -319,20 +207,13 @@ window.dxScreen = window.dxScreen || (function () {
     }
     const thisRoom = new lk.Room(opts);
     room = thisRoom;
-    // Undecryptable media looks like a connected call with noise; surface the
-    // error so users don't think their mic is broken.
     thisRoom.on(lk.RoomEvent.EncryptionError, function (err) {
       console.error('[dxScreen] encryption error', err);
       post('e2ee-undecryptable', { detail: String((err && err.message) || err) });
     });
     if (e2eeProvider) {
-      // Explicitly disable E2EE if no key is present. A Room built with e2ee
-      // options considers itself enabled and will publish frames under an
-      // empty key (undecryptable to everyone). `setE2eeKey` turns it on later.
       try {
         if (e2eeKey) {
-          // setKey before enabling, so the first frames are not published under
-          // a key nobody has.
           await e2eeProvider.setKey(e2eeKey);
           await thisRoom.setE2EEEnabled(true);
         } else {
@@ -347,9 +228,6 @@ window.dxScreen = window.dxScreen || (function () {
       console.warn('[dxScreen] room disconnected', reason);
       if (room !== thisRoom) return;
       room = null;
-      // Stop local share audio to release the capture. Called after `room =
-      // null` so it skips unpublish (nothing to unpublish from) and just stops
-      // the OS indicator.
       stopLocalShareAudio();
       clearRemoteTracks();
       if (desiredRoom) {
@@ -360,8 +238,6 @@ window.dxScreen = window.dxScreen || (function () {
     thisRoom.on(lk.RoomEvent.ConnectionStateChanged, function (st) {
       console.log('[dxScreen] connection state', st);
     });
-    // Fires before the SDK's own auto-subscribe settles, so a screen-audio
-    // track published while native mode is on is dropped rather than downloaded.
     thisRoom.on(lk.RoomEvent.TrackPublished, function (pub) {
       applyAudioSubscription(pub);
     });
@@ -369,8 +245,6 @@ window.dxScreen = window.dxScreen || (function () {
       if (track.kind === 'audio') {
         audioTracks[participant.identity] = track;
         if (nativeStreamAudio) return;
-        // The viewer may already be watching this person — the audio track can
-        // arrive after the video one.
         const c = document.getElementById('screenshare-viewer');
         if (c && c.getAttribute('data-identity') === participant.identity) attachAudio(participant.identity);
         return;
@@ -384,9 +258,6 @@ window.dxScreen = window.dxScreen || (function () {
       if (track.kind === 'audio') {
         if (audioIdentity === participant.identity) detachAudio();
         delete audioTracks[participant.identity];
-        // Skip in native mode: resubscribing here would clear a flag the
-        // subscribe half no longer restores, killing controls while audio
-        // plays.
         if (!nativeStreamAudio) report(participant.identity, false);
         return;
       }
@@ -406,9 +277,6 @@ window.dxScreen = window.dxScreen || (function () {
       const kind = kindOf(pub, pub.track);
       delete tracks[trackKey(thisRoom.localParticipant.identity, kind)];
       reattach(thisRoom.localParticipant.identity, kind);
-      // Branch on kind: this fires for both local video tracks, and
-      // notifyShareEnded clears screen_sharing globally. Handles stops from
-      // outside our UI (browser bar/OS) that bypass our button.
       if (kind === 'camera') notifyCameraEnded(); else notifyShareEnded();
     });
     try {
@@ -421,11 +289,7 @@ window.dxScreen = window.dxScreen || (function () {
       scheduleReconnect();
       return;
     }
-    // Native mode is usually set before this room exists, so the initial sweep
-    // found nothing. This catches anyone already publishing on arrival.
     applyAudioSubscriptions();
-    // Republish the existing track rather than re-acquiring it, so automatic
-    // reconnects restore video without a user gesture.
     if (localCameraTrack && localCameraTrack.readyState !== 'ended') {
       try {
         await thisRoom.localParticipant.publishTrack(localCameraTrack, cameraPublishOpts(lastCameraOpts));
@@ -435,16 +299,10 @@ window.dxScreen = window.dxScreen || (function () {
       }
     }
   }
-  // Use window.postMessage, not dioxus.send: the bridge's recv() is awaited in
-  // its own eval context, so sends from this fire-and-forget eval go nowhere.
-  // Same chain as activities bridge.
   function isUserCancel(e) {
     const n = e && e.name;
     return n === 'NotAllowedError' || n === 'AbortError' || n === 'SecurityError';
   }
-  // Release acquired tracks and notify Rust to clear screen_sharing. Without
-  // this, the app believes it is still sharing after a cancel, leaving the
-  // preview stuck on "Starting…".
   function abortShare(stream) {
     if (stream) {
       try { stream.getTracks().forEach(function (t) { t.stop(); }); } catch (e) {}
@@ -458,9 +316,6 @@ window.dxScreen = window.dxScreen || (function () {
     kind = kind || 'screen';
     const c = document.getElementById(cid);
     if (!c) {
-      // Camera tiles are rendered by Dioxus in the same turn as the attach
-      // request, so the container may be a frame late. Fixed screen containers
-      // never take this path.
       if ((tries || 0) < 20) setTimeout(function () { attach(identity, cid, kind, (tries || 0) + 1); }, 50);
       return;
     }
@@ -469,10 +324,6 @@ window.dxScreen = window.dxScreen || (function () {
     const t = videoTrackFor(identity, kind);
     if (t) attachInto(t, c, cid, identity, kind); else c.querySelectorAll('video').forEach(function (e) { e.remove(); });
     if (!t && kind === 'screen') {
-      // Identity check prevents a stale timeout from firing after the user
-      // switches streams.
-      // Screens only: the "sharer's build is too old" advice is wrong for
-      // cameras and would fire on slow camera arrivals.
       setTimeout(function () {
         const current = document.getElementById(cid);
         if (current && current.getAttribute('data-identity') === identity && !videoTrackFor(identity, 'screen')) {
@@ -480,8 +331,6 @@ window.dxScreen = window.dxScreen || (function () {
         }
       }, 10000);
     }
-    // Self-preview must not play sound to avoid echo.
-    // Skip if native side handles audio; otherwise the stream is heard twice.
     if (cid === 'screenshare-viewer' && !nativeStreamAudio) attachAudio(identity);
   }
   function detach(cid) {
@@ -497,9 +346,6 @@ window.dxScreen = window.dxScreen || (function () {
     if (!room) { console.warn('[dxScreen] not connected yet'); return; }
     try { await room.localParticipant.setScreenShareEnabled(true); } catch (e) { console.warn('[dxScreen] share failed', e); }
   }
-  // Run getDisplayMedia inside the user gesture to avoid browser blocking.
-  // Publishing directly via publishTrack avoids the SDK's internal call, which
-  // occurs outside the gesture and fails on the first attempt.
   async function requestAndStartShare(quality) {
     if (window._dxf_share_starting) { console.warn('[dxScreen] already starting, ignoring duplicate call'); return; }
     window._dxf_share_starting = true;
@@ -510,19 +356,14 @@ window.dxScreen = window.dxScreen || (function () {
     }
   }
   async function requestAndStartShareInner(quality) {
-    // Fallback for embedded webviews without mediaDevices.
-    // May still be blocked if not in a user gesture, but better than nothing.
     if (!(navigator && navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia)) {
       console.warn('[dxScreen] navigator.mediaDevices.getDisplayMedia not available; falling back to startShare');
-      // Notify Rust; previously this only warned to a console, making Share
-      // appear to do nothing.
       try {
         window.postMessage(
           { __dxf: 'share-unavailable', secure: !!window.isSecureContext },
           '*'
         );
       } catch (e) {}
-      // Wait briefly for room to exist before calling startShare.
       for (let i = 0; i < 20; i++) { if (room) break; await new Promise(function (r) { setTimeout(r, 100); }); }
       try {
         await startShare();
@@ -533,31 +374,13 @@ window.dxScreen = window.dxScreen || (function () {
       return;
     }
 
-    // Keep the captured stream open; stopping tracks here forces LiveKit to
-    // re-prompt getDisplayMedia outside the gesture, which browsers reject.
-    // Use explicit ideal constraints to avoid pixelated defaults, while
-    // allowing smaller displays to share at native size.
     const wantW = quality.width || 1920;
     const wantH = quality.height || 1080;
     const wantFps = quality.fps || 30;
-    // Audio is requested but never required, as WebKit offers none and
-    // Chromium requires user opt-in.
-    // Drop audio before dropping video constraints; collapsing these steps
-    // previously caused silent loss of resolution presets.
     const wantVideo = { width: { ideal: wantW }, height: { ideal: wantH }, frameRate: { ideal: wantFps } };
-    // systemAudio/windowAudio are top-level getDisplayMedia options, not audio
-    // constraints; nesting them is ignored. windowAudio: 'window' avoids
-    // capturing the local app's output (echo), which 'system' would do.
     const richAudio = { suppressLocalAudioPlayback: false };
-    // quality.audio is an app-level default; the engine's 'Share audio'
-    // checkbox is a separate user decision we cannot make here.
     const wantAudio = quality.audio !== false;
-    // Native mode depends on the user's surface pick (picker not yet open), so
-    // we only set constraints now and resolve the mode later.
     const nativeMode = wantAudio ? (quality.nativeAudio || 'never') : 'never';
-    // Skip engine audio when native is 'always' to avoid double
-    // capture/playback; keep it for 'monitor' since window picks rely on
-    // engine-scoped audio.
     const attempts = (!wantAudio || nativeMode === 'always')
       ? [{ video: wantVideo, audio: false }, { video: true }]
       : [
@@ -577,8 +400,6 @@ window.dxScreen = window.dxScreen || (function () {
         if (i > 0) console.warn('[dxScreen] getDisplayMedia fell back to attempt', i, attempts[i]);
         break;
       } catch (e) {
-        // Distinguish user cancel from constraint failure; treating them alike
-        // caused cancel loops and flickering audio checkboxes.
         if (isUserCancel(e)) {
           console.log('[dxScreen] share cancelled by user');
           abortShare(null);
@@ -603,8 +424,6 @@ window.dxScreen = window.dxScreen || (function () {
       return;
     }
 
-    // publishTrack accepts the raw track without re-invoking getDisplayMedia,
-    // preserving the user-gesture grant.
     const lk = LK();
     const vt = stream.getVideoTracks()[0];
     if (!vt) {
@@ -612,19 +431,11 @@ window.dxScreen = window.dxScreen || (function () {
       abortShare(stream);
       return;
     }
-    // displaySurface is only knowable after the picker closes; this is the
-    // only point where 'monitor' mode can be resolved.
     let surface = '';
     try { surface = (vt.getSettings() || {}).displaySurface || ''; } catch (e) {}
     const useNative = nativeMode === 'always' || (nativeMode === 'monitor' && surface === 'monitor');
-    // Browser fires 'ended' when user stops sharing; wire it so Rust tears
-    // down preview and notifies server immediately.
     vt.addEventListener('ended', function () { notifyShareEnded(); });
-    // contentHint follows the preset to avoid forcing 'detail' behavior on all
-    // shares.
     try { vt.contentHint = quality.hint || 'detail'; } catch (e) {}
-    // Re-assert the resolution on the track itself. Chromium sometimes honours
-    // applyConstraints here even when it ignored them on getDisplayMedia.
     try {
       await vt.applyConstraints({
         width: { ideal: wantW }, height: { ideal: wantH }, frameRate: { ideal: wantFps },
@@ -635,28 +446,14 @@ window.dxScreen = window.dxScreen || (function () {
     try {
       await room.localParticipant.publishTrack(vt, {
         source: lk.Track.Source.ScreenShare,
-        // Explicit bitrate prevents LiveKit's conservative default from
-        // starving full-res capture.
         videoEncoding: { maxBitrate: quality.bitrate || 6000000, maxFramerate: wantFps },
-        // Per-preset degradation preference; fixed 'maintain-resolution'
-        // caused slideshow-like frame drops on busy screens.
         degradationPreference: quality.degradation || 'balanced',
-        // Disable simulcast to save upload bandwidth for the full-resolution
-        // layer.
         simulcast: false,
       });
-      // Publish audio separately so viewers can adjust stream volume
-      // independently of mic. Notify Rust of audio presence to avoid silent
-      // video-only confusion.
       const at = stream.getAudioTracks()[0];
-      // Stop engine audio in native mode to prevent echo (system mix includes
-      // app output); window capture is safe.
       if (useNative && at) {
         try { at.stop(); } catch (e2) {}
       }
-      // Whole-screen capture includes this app's own audio, causing echo for
-      // remote users. Window capture is safe. getDisplayMedia cannot exclude
-      // our process, so we must warn when the engine is in charge.
       if (!useNative && at && surface === 'monitor') {
         try {
           window.postMessage({ __dxf: 'share-echo-risk' }, '*');
@@ -673,14 +470,7 @@ window.dxScreen = window.dxScreen || (function () {
       } else if (!useNative && wantAudio) {
         console.warn('[dxScreen] platform returned no audio track for this share');
       }
-      // `supported` distinguishes system capability from user choice (window
-      // vs monitor). Report start only after success to avoid false 'live'
-      // states during picker. `nativeAudio` is passed because Rust cannot
-      // recompute it from the surface.
       try { window.postMessage({ __dxf: 'share-started', nativeAudio: useNative }, '*'); } catch (e2) {}
-      // Only report engine audio status when the engine was used. Native
-      // capture excludes us at the source, and users who disabled audio don't
-      // need a warning.
       if (!useNative && wantAudio) {
         try {
           window.postMessage(
@@ -690,16 +480,12 @@ window.dxScreen = window.dxScreen || (function () {
         } catch (e2) {}
       }
     } catch (e) {
-      // Fallback to SDK path. May re-prompt or fail without a gesture, but
-      // costs nothing to try.
       console.warn('[dxScreen] direct publishTrack failed, falling back to setScreenShareEnabled', e);
       try { stream.getTracks().forEach(function (t) { t.stop(); }); } catch (e2) {}
       try {
         await startShare();
       } catch (e2) {
         console.warn('[dxScreen] startShare fallback failed', e2);
-        // Both routes failed; notify to prevent UI from claiming an active
-        // share.
         notifyShareEnded();
       }
     }
@@ -708,25 +494,16 @@ window.dxScreen = window.dxScreen || (function () {
     const at = localShareAudio;
     localShareAudio = null;
     if (!at) return;
-    // Unpublish before stopping. Stopping a published track leaves the
-    // publication standing, causing viewers to attach to a dead stream.
     if (room) {
       try { await room.localParticipant.unpublishTrack(at, true); } catch (e) {}
     }
     try { at.stop(); } catch (e) {}
   }
   async function stopShare() {
-    // Stop our track first and unconditionally. It was published manually, so
-    // `setScreenShareEnabled(false)` won't retract it. Stopping it also clears
-    // the OS 'sharing' indicator.
     await stopLocalShareAudio();
     if (!room) return;
     try { await room.localParticipant.setScreenShareEnabled(false); } catch (e) {}
   }
-  // Camera is captured in the webview on both platforms and publishes on the
-  // same connection (identity already has `can_publish`). LiveKit
-  // distinguishes camera/screen by `TrackSource`. Use `Promise.race` for
-  // timeout because SDK calls don't accept `AbortController`.
   function withTimeout(promise, ms, message) {
     return Promise.race([
       promise,
@@ -744,18 +521,11 @@ window.dxScreen = window.dxScreen || (function () {
     const lk = LK();
     return {
       source: lk.Track.Source.Camera,
-      // Not the screen-share preset table: a face should stay fluid and may go
-      // soft, a screen is the reverse.
       videoEncoding: { maxBitrate: o.bitrate || 1200000, maxFramerate: o.fps || 30 },
       degradationPreference: 'maintain-framerate',
-      // On, unlike the screen path. A camera is watched in a small tile far more
-      // often than full size, and the low layer is what keeps a grid affordable.
       simulcast: true,
     };
   }
-  // The local preview is a plain element over the raw stream, NOT a LiveKit
-  // attach: it has to work before the room exists and keep working if
-  // publishing fails, and it never goes near the SFU.
   function attachLocalCamera(cid) {
     const c = document.getElementById(cid || 'camera-self');
     if (!c || !localCameraStream) return;
@@ -763,11 +533,7 @@ window.dxScreen = window.dxScreen || (function () {
     const el = document.createElement('video');
     el.srcObject = localCameraStream;
     el.muted = true; el.autoplay = true; el.playsInline = true;
-    // cover, unlike remote tiles: this window is fixed 16/9, so letterboxing
-    // looks broken in a way a stranger's tile does not.
     el.style.width = '100%'; el.style.height = '100%'; el.style.objectFit = 'cover'; el.style.background = '#000';
-    // Mirrored, and only here: you expect your own reflection, and nobody
-    // expects a mirrored stranger. Remote tiles must not carry this.
     el.style.transform = 'scaleX(-1)';
     c.appendChild(el);
   }
@@ -788,8 +554,6 @@ window.dxScreen = window.dxScreen || (function () {
     if (localCameraTrack) await stopCamera();
     lastCameraOpts = opts;
     const base = { width: { ideal: opts.width || 1280 }, height: { ideal: opts.height || 720 }, frameRate: { ideal: opts.fps || 30 } };
-    // `exact` on the deviceId so a stale saved id fails loudly instead of
-    // silently opening a different camera; the next attempt drops it.
     const attempts = opts.deviceId
       ? [{ video: Object.assign({ deviceId: { exact: opts.deviceId } }, base) }, { video: base }, { video: true }]
       : [{ video: base }, { video: true }];
@@ -804,38 +568,26 @@ window.dxScreen = window.dxScreen || (function () {
     const vt = stream && stream.getVideoTracks()[0];
     if (!vt) { post('camera-error', { detail: 'no video track' }); return; }
     localCameraTrack = vt; localCameraStream = stream;
-    // Preview before room/publish so the picture is up while the connection
-    // settles.
     attachLocalCamera('camera-self');
     vt.addEventListener('ended', function () { notifyCameraEnded(); });
     for (let i = 0; i < 150 && !room; i++) await new Promise(function (r) { setTimeout(r, 100); });
     if (!room) { await stopCamera(); post('camera-error', { detail: 'not connected to the stream room' }); return; }
     try {
-      // Bounded because nothing else is; an unsettled publish leaves the UI
-      // stuck with no error.
       await withTimeout(
         room.localParticipant.publishTrack(vt, cameraPublishOpts(opts)),
         15000,
         'publishing the camera track timed out'
       );
       const s = (function () { try { return vt.getSettings(); } catch (e) { return {}; } })();
-      // Report what actually opened, not what was asked for, so a fallback does
-      // not get persisted as the user's choice.
       post('camera-started', { deviceId: (s && s.deviceId) || '', label: vt.label || '' });
-      // Labels only become readable once a grant exists, and this is the moment
-      // one first does.
       listCameras();
     } catch (e) {
       await stopCamera();
       post('camera-error', { detail: String((e && e.message) || e) });
     }
   }
-  // Also set on `desiredRoom` so the key survives a reconnect, especially if
-  // it arrived after connect.
   async function setE2eeKey(key) {
     e2eeKey = key || null;
-    // Also set on `desiredRoom` so the key survives a reconnect, especially if
-    // it arrived after connect.
     if (desiredRoom) desiredRoom.key = e2eeKey;
     if (!e2eeKey || !e2eeProvider) return;
     try {
@@ -851,8 +603,6 @@ window.dxScreen = window.dxScreen || (function () {
     localCameraTrack = null; localCameraStream = null;
     detachLocalCamera('camera-self');
     if (!vt) return;
-    // Unpublish before stopping, for the same reason stopLocalShareAudio does:
-    // a stopped-but-published track leaves viewers attached to a dead stream.
     if (room) { try { await room.localParticipant.unpublishTrack(vt, true); } catch (e) {} }
     try { vt.stop(); } catch (e) {}
   }
@@ -860,8 +610,6 @@ window.dxScreen = window.dxScreen || (function () {
     if (!(navigator && navigator.mediaDevices && navigator.mediaDevices.enumerateDevices)) { post('camera-devices', { devices: [] }); return; }
     try {
       const devs = await navigator.mediaDevices.enumerateDevices();
-      // Labels are empty until a grant exists; offer the list anyway so the UI
-      // can name them positionally.
       post('camera-devices', {
         devices: devs.filter(function (d) { return d.kind === 'videoinput'; })
                      .map(function (d) { return { id: d.deviceId, label: d.label || '' }; }),
@@ -876,10 +624,7 @@ window.dxScreen = window.dxScreen || (function () {
     desiredRoom = null;
     reconnectAttempt = 0;
     if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
-    // Before `room` is cleared, so the unpublish still has somewhere to go.
     await stopLocalShareAudio();
-    // Leaving voice must put the camera light out. The capture is an OS-level
-    // grant that outlives the room, so dropping the room is not enough.
     await stopCamera();
     const previous = room;
     room = null;
@@ -891,10 +636,6 @@ window.dxScreen = window.dxScreen || (function () {
 })();
 "#;
 
-/// Start/stop sharing — call from a click handler so `getDisplayMedia` runs in
-/// a user gesture.
-/// Screen-share quality presets, in the order the settings menu shows them.
-/// `(id, label, hint)` — the hint is the one-line explanation under the select.
 pub const QUALITY_PRESETS: &[(&str, &str, &str)] = &[
     (
         "smooth",
@@ -918,45 +659,15 @@ pub const QUALITY_PRESETS: &[(&str, &str, &str)] = &[
     ),
 ];
 
-/// Screen content is mostly static text, so resolution matters far more than
-/// framerate for legibility — the "crisp" preset deliberately trades fps for
-/// pixels. Bitrates are well above LiveKit's screen-share defaults because the
-/// default is tuned for slide decks, not code editors.
-/// `(width, height, fps, max_bitrate, content_hint, degradation_preference)`.
-///
-/// The last two are the ones that decide what gives way when the scene gets
-/// busy, and they must follow the preset's promise. Every preset used to get
-/// `detail` + `maintain-resolution`, which means "keep the pixels, drop the
-/// frames" — so "Smooth — best for video and animation" stuttered exactly like
-/// "Crisp — sharpest text" did. The labels were describing intentions the
-/// encoder was never told about.
-///
-/// - `maintain-framerate` scales the picture down and keeps motion fluid.
-/// - `maintain-resolution` keeps every pixel and sacrifices frames.
-/// - `balanced` lets WebRTC give a little of each.
-///
-/// Bitrates are ceilings, not targets: congestion control still limits what a
-/// weak uplink actually sends, so a higher cap only helps connections that can
-/// use it — and headroom is what stops a busy scene having to degrade at all.
 fn quality_preset(id: &str) -> (u32, u32, u32, u32, &'static str, &'static str) {
     match id {
-        // Video and animation: fluid motion is the whole point.
         "smooth" => (1280, 720, 60, 6_000_000, "motion", "maintain-framerate"),
-        // Text: every pixel matters, frames do not.
         "crisp" => (1920, 1080, 15, 6_000_000, "detail", "maintain-resolution"),
-        // Lots of detail, but not at the cost of collapsing to a slideshow.
         "ultra" => (2560, 1440, 30, 14_000_000, "detail", "balanced"),
-        // "balanced" and anything unrecognised (older config, typo).
         _ => (1920, 1080, 30, 9_000_000, "motion", "balanced"),
     }
 }
 
-/// How far native (Rust-side) system-audio capture reaches on this platform,
-/// as the tag the JS controller understands.
-///
-/// Deliberately *not* a decision — only the JS side can make one, because
-/// `MonitorOnly` turns on which surface the user picked and nothing knows that
-/// until the picker closes. See `sysaudio::NativeScope`.
 fn native_audio_mode() -> &'static str {
     match crate::sysaudio::scope() {
         crate::sysaudio::NativeScope::Always => "always",
@@ -965,12 +676,6 @@ fn native_audio_mode() -> &'static str {
     }
 }
 
-/// The capture settings a quality preset means, for the *native* path.
-///
-/// Reads the same preset table as the webview path so "Crisp" is the same
-/// promise on both. Framerate/bitrate carry over directly; the content hint and
-/// degradation preference do not, because native publishing expresses that
-/// through libwebrtc's `is_screencast` flag rather than per-track WebRTC hints.
 pub fn native_settings(quality: &str) -> crate::sysvideo::Settings {
     let (width, height, fps, bitrate, _hint, _degradation) = quality_preset(quality);
     crate::sysvideo::Settings {
@@ -981,36 +686,11 @@ pub fn native_settings(quality: &str) -> crate::sysvideo::Settings {
     }
 }
 
-/// Quote a string into a JavaScript literal, escaping whatever is in it.
-///
-/// Every `&str` that crosses into `document::eval` goes through this, and the
-/// reason is that some of these values are the *server's* to choose:
-/// `livekit_url` and the token arrive on `ScreenToken` as free-form strings,
-/// and an invite code is minted server-side. Hand-building `'{url}'` meant a
-/// single `'` closed the literal and the remainder ran as script — from a host
-/// you connected to by code, which is the product's headline use case, or from
-/// anyone on the path while the gateway is still plaintext.
-///
-/// The rest of the arguments (hex pubkeys, UUIDs, preset-table constants) were
-/// safe because of where they come from rather than because anything checked
-/// them here. They go through this too, so the safety is a property of the sink
-/// and no longer has to be re-derived per call site.
-///
-/// Two call sites do not use this and are not exceptions to it: `start_camera_js`
-/// and `stream_sink_js` take an `Option<&str>` and hand the option itself to
-/// `serde_json::to_string`, because "no device chosen" has to arrive in the JS
-/// as `null` and not as `""` — a distinction a `&str` sink cannot carry. Same
-/// escaping, one type wider.
 pub(crate) fn js_str(s: &str) -> String {
-    // `to_string` on a `str` only fails if serde itself is broken; an empty
-    // literal keeps the surrounding script syntactically valid either way.
     serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into())
 }
 
-/// `quality` and `audio` apply to starting a share; stopping ignores both.
 pub fn share_js(on: bool, quality: &str, audio: bool) -> String {
-    // When starting, call the user-gesture variant that prompts getDisplayMedia
-    // before delegating to the LiveKit flow. When stopping, just stopShare.
     if !on {
         return format!("{SCREEN_JS}\nwindow.dxScreen.stopShare();");
     }
@@ -1023,9 +703,6 @@ pub fn share_js(on: bool, quality: &str, audio: bool) -> String {
     )
 }
 
-/// Point a container at a publisher's video. `kind` is `"screen"` or
-/// `"camera"` — the same participant can be publishing both, so the container
-/// has to say which one it wants.
 pub(crate) fn attach_js(identity: &str, container: &str, kind: &str) -> String {
     let (identity, container, kind) = (js_str(identity), js_str(container), js_str(kind));
     format!("{SCREEN_JS}\nwindow.dxScreen.attach({identity},{container},{kind});")
@@ -1036,23 +713,15 @@ pub(crate) fn detach_js(container: &str) -> String {
     format!("{SCREEN_JS}\nwindow.dxScreen.detach({container});")
 }
 
-/// Set the local playback gain for the screen-share stream we're watching.
-/// `gain` is a linear multiplier (1.0 = as broadcast, 0.0 = muted).
 fn stream_volume_js(gain: f32) -> String {
     format!("{SCREEN_JS}\nwindow.dxScreen.setStreamVolume({gain});")
 }
 
-/// Point the stream's audio at the output device chosen in audio settings,
-/// matched by name. Best-effort — see `applySink` in the JS controller.
 pub fn stream_sink_js(device: Option<&str>) -> String {
-    // Device names come from the OS and can contain quotes or other characters
-    // that would break out of a hand-built JS string literal — let serde_json
-    // do the escaping. `null` when no device is chosen (system default).
     let arg = serde_json::to_string(&device).unwrap_or_else(|_| "null".into());
     format!("{SCREEN_JS}\nwindow.dxScreen.setSink({arg});")
 }
 
-/// Connects/disconnects the JS screen room as the token comes and goes.
 #[component]
 pub fn ScreenShareBridge() -> Element {
     let state = use_app_state();
@@ -1067,16 +736,9 @@ pub fn ScreenShareBridge() -> Element {
             match &t {
                 Some((url, tok)) => {
                     let (url, tok) = (js_str(url), js_str(tok));
-                    // Use `current_key` (not `shared_key`): the latter only
-                    // reads the dev env var, so on the real path (key
-                    // distributed via `mediakey`) the webview would connect
-                    // with `null`.
                     let key = crate::e2ee::current_key()
                         .map(|k| js_str(&k))
                         .unwrap_or_else(|| "null".into());
-                    // Keyed on `enabled`, not key existence: the key usually
-                    // arrives after the room is up, and the JS SDK only
-                    // accepts a provider in the constructor.
                     let encrypt = crate::e2ee::enabled();
                     let _ = document::eval(&format!(
                         "{SCREEN_JS}\nwindow.dxScreen.connect({url},{tok},{key},{encrypt});"
@@ -1090,10 +752,6 @@ pub fn ScreenShareBridge() -> Element {
         }
     });
 
-    // Keyed on room join, not token existence: a failed join or drop would
-    // otherwise leave nobody playing audio (silence with a live-looking
-    // slider). The webview fallback picks up audio on the default device,
-    // which beats silence.
     let native_audio_live = use_memo(move || state.read().screen_audio_joined);
     use_effect(move || {
         let on = native_audio_live();
@@ -1103,14 +761,6 @@ pub fn ScreenShareBridge() -> Element {
         ));
     });
 
-    // Join audio immediately when others share (room connect costs ~1s;
-    // waiting for click causes initial silence). Exclude own share (room skips
-    // own pubs). Keyed on voice session epoch: device changes rebuild
-    // `ActiveVoice`, dropping the screen-audio room; token-only keying would
-    // miss this. Re-issue system audio/video pubs on restart (only for native
-    // capture; Windows window-pick leaves audio to engine). `joined` in key
-    // ensures exactly one retry on drop; no infinite retries (effect runs on
-    // every state change).
     let voice_screen_audio = use_voice_tx();
     #[allow(clippy::type_complexity)]
     let mut last_sent = use_signal(|| {
@@ -1139,9 +789,6 @@ pub fn ScreenShareBridge() -> Element {
         let publish_system = s.screen_sharing && s.screen_native_audio;
         let epoch = s.voice_session_epoch;
         let joined = s.screen_audio_joined;
-        // Only when native path is active and surface chosen. On Windows,
-        // webview holds the video track; publishing natively too would
-        // duplicate the screen under two identities.
         let target = s.screen_share_target;
         let want_video = match (s.screen_sharing && crate::sysvideo::supported(), target) {
             (true, Some(_)) => s.screen_video_token.clone(),
@@ -1150,8 +797,6 @@ pub fn ScreenShareBridge() -> Element {
         drop(s);
         let quality = settings.read().screenshare_quality.clone();
 
-        // The target is in the key so switching surface mid-share re-fires this
-        // exactly once, and the publisher rebuilds against the new one.
         let now = (epoch, want, publish_system, joined, want_video, target);
         if last_sent.peek().as_ref() != Some(&now) {
             voice_screen_audio.send(VoiceCmd::SetScreenAudio {
@@ -1163,8 +808,6 @@ pub fn ScreenShareBridge() -> Element {
             });
             voice_screen_audio.send(VoiceCmd::SetScreenVideo {
                 room: now.4.clone(),
-                // Target is ignored on stop; unwrap_or avoids making the field
-                // optional for a start-only path.
                 target: target.unwrap_or(crate::sysvideo::Target::Display(0)),
                 settings: native_settings(&quality),
             });
@@ -1172,8 +815,6 @@ pub fn ScreenShareBridge() -> Element {
         }
     });
 
-    // Skip webview probe if native backend exists: macOS lacks
-    // navigator.mediaDevices, so probing yields false negatives.
     use_future(move || {
         let mut s = state;
         async move {
@@ -1181,8 +822,6 @@ pub fn ScreenShareBridge() -> Element {
                 s.write().screen_capture_available = true;
                 return;
             }
-            // Use dioxus.send explicitly; relying on script completion value
-            // caused recv to hang, falsely marking capture unavailable.
             let mut eval = document::eval(
                 "dioxus.send(!!(navigator && navigator.mediaDevices                  && navigator.mediaDevices.getDisplayMedia));",
             );
@@ -1196,9 +835,6 @@ pub fn ScreenShareBridge() -> Element {
                             .into(),
                     );
                 }
-                // Fail open. A false negative disables a working feature and
-                // tells the user something untrue; a false positive costs at
-                // most one failed share attempt, which reports its own reason.
                 Err(e) => {
                     eprintln!("[screen] capture probe failed, assuming available: {e:?}");
                     s.write().screen_capture_available = true;
@@ -1207,20 +843,11 @@ pub fn ScreenShareBridge() -> Element {
         }
     });
 
-    // No effect here to re-trigger share on token arrival: click handler
-    // already waits for room, and a second trigger races it, drops quality,
-    // and can reopen the picker.
-
-    // Listen for JS 'screen-share-ended' to unmount preview; without it,
-    // frozen frame remains. Guard against double-wiring on hot reload.
     let gateway_end = gateway.clone();
     use_future(move || {
         let mut state = state;
         let gateway = gateway_end.clone();
         async move {
-            // Sink reassigned per eval, listener registered once (see
-            // features::camera); prevents remount hazard from silencing the
-            // pump after reconnect.
             let bridge_js = r#"
             window.__dxfShareSink = function (m) { try { dioxus.send(m); } catch (err) {} };
             if (!window.__dxfShareEndWired) {
@@ -1238,8 +865,6 @@ pub fn ScreenShareBridge() -> Element {
                 match msg.get("__dxf").and_then(|v| v.as_str()) {
                     Some("share-started") => {
                         let cid = state.read().voice.channel_id;
-                        // nativeAudio is recorded, not acted on, so a voice
-                        // reconnect can re-publish it.
                         {
                             let mut w = state.write();
                             w.screen_sharing = true;
@@ -1289,8 +914,6 @@ pub fn ScreenShareBridge() -> Element {
                                 sharing: false,
                             });
                         }
-                        // Publication stop is owned by the effect above to
-                        // avoid two senders racing over one track.
                     }
                     Some("screen-room-error") => {
                         let detail = msg
@@ -1316,8 +939,6 @@ pub fn ScreenShareBridge() -> Element {
                                     .into(),
                             );
                     }
-                    // Likely a key in flight; often resolves itself, unlike
-                    // setup failure.
                     Some("e2ee-undecryptable") => {
                         let detail = msg
                             .get("detail")
@@ -1326,8 +947,6 @@ pub fn ScreenShareBridge() -> Element {
                         tracing::warn!(detail, "media arrived that we cannot decrypt");
                         state.write().media_undecryptable = true;
                     }
-                    // Loud because the alternative is a silent call that
-                    // connects but carries nothing decodable.
                     Some("e2ee-error") => {
                         let detail = msg
                             .get("detail")
@@ -1339,16 +958,11 @@ pub fn ScreenShareBridge() -> Element {
                              Others will not be able to hear or see you."
                         ));
                     }
-                    // Distinguish platform limit from user choice to avoid
-                    // misleading the sharer.
                     Some("share-audio") => {
                         let published = msg
                             .get("published")
                             .and_then(|v| v.as_bool())
                             .unwrap_or(false);
-                        // Distinguish platform capability from user selection;
-                        // saying "unsupported" when the user just unticked the
-                        // box is wrong.
                         let supported = msg
                             .get("supported")
                             .and_then(|v| v.as_bool())
@@ -1396,18 +1010,6 @@ pub fn ScreenShareBridge() -> Element {
     rsx! { Fragment {} }
 }
 
-/// Picker for the native capture path: choose a screen, an app, or one window.
-///
-/// The webview path never needed this — Chromium's `getDisplayMedia` opens the
-/// OS picker itself. ScreenCaptureKit has no picker, only an enumeration API, so
-/// this is the UI half of what Chromium was providing. (Discord solves the same
-/// problem the same way: Electron's `desktopCapturer` enumerates, and the grid
-/// you see is Discord's own.)
-///
-/// Driven by `AppState.screen_picker`: `None` closed, `Some(Ok(..))` a list,
-/// `Some(Err(..))` the reason there isn't one — usually Screen Recording
-/// permission having been refused, which is worth saying rather than showing an
-/// empty list.
 #[component]
 pub fn ScreenSourcePicker() -> Element {
     let mut state = use_app_state();
@@ -1455,8 +1057,6 @@ pub fn ScreenSourcePicker() -> Element {
                         div { class: "p-4 text-xs text-[var(--text-muted)]", "Looking for screens…" }
                     },
                     Ok(sources) => {
-                        // Partition by `app` presence to match the UI
-                        // headings; preserves backend ordering.
                         let (surfaces, windows): (Vec<_>, Vec<_>) =
                             sources.into_iter().partition(|s| s.app.is_none());
                         rsx! {
@@ -1522,15 +1122,6 @@ pub fn ScreenSourcePicker() -> Element {
     }
 }
 
-/// Commit to sharing `target`.
-///
-/// A free function rather than a closure in the picker because every row needs
-/// its own handler and a closure capturing `GatewayTx` is not `Copy`.
-///
-/// Starting the share is the picker's job, not the button's: the button opens
-/// the picker, and until something is chosen there is nothing to announce. Same
-/// reason the webview path announces only once a track exists — a share
-/// cancelled at the picker never happened.
 fn choose_source(
     mut state: Signal<crate::state::AppState>,
     gateway: crate::state::GatewayTx,
@@ -1549,8 +1140,6 @@ fn choose_source(
         s.screen_native_audio = with_audio;
         s.screen_picker = None;
     }
-    // Only announce on transition into sharing; re-announcing mid-share is
-    // redundant.
     if !already_sharing && let Some(cid) = channel {
         gateway.send(ClientMessage::SetScreenShare {
             channel_id: cid,
@@ -1559,29 +1148,18 @@ fn choose_source(
     }
 }
 
-/// Enumerate shareable surfaces and open the picker.
-///
-/// The query is blocking and can sit behind the Screen Recording prompt for as
-/// long as the user takes, so it runs on a blocking thread rather than stalling
-/// the UI. The picker opens immediately in a loading state so the click feels
-/// answered.
 pub fn open_screen_picker(mut state: Signal<crate::state::AppState>) {
     state.write().screen_picker = Some(Ok(Vec::new()));
     dioxus::prelude::spawn(async move {
         let found = tokio::task::spawn_blocking(crate::sysvideo::sources)
             .await
             .unwrap_or_else(|e| Err(format!("listing screens failed: {e}")));
-        // Only update if the picker is still open; avoid reappearing it if the
-        // user closed it during the query.
         if state.peek().screen_picker.is_some() {
             state.write().screen_picker = Some(found);
         }
     });
 }
 
-/// Small self-preview shown while you're sharing, with a Stop button. Draggable
-/// (grab the header) and resizable (bottom-right grip) so it doesn't have to
-/// pin the top-right corner — same interaction model as the watch window below.
 #[component]
 pub fn ScreenSelfPreview() -> Element {
     let mut state = use_app_state();
@@ -1603,9 +1181,6 @@ pub fn ScreenSelfPreview() -> Element {
         Some(crate::sysvideo::Target::Application(_)) => "Sharing an app",
         None => "Sharing your screen",
     });
-    // Polled rather than pushed: the counter is bumped on the OS capture thread
-    // at up to 60 Hz, and turning each of those into a state write would re-render
-    // the whole workspace per frame. Twice a second is plenty to show "moving".
     let mut frames = use_signal(|| 0_u64);
     use_future(move || async move {
         loop {
@@ -1630,8 +1205,6 @@ pub fn ScreenSelfPreview() -> Element {
     }
 
     rsx! {
-        // Overlay captures mouse events over the video during drag. Same model
-        // as ScreenWatchWindow.
         if drag().is_some() {
             div {
                 class: "fixed inset-0 z-50",
@@ -1662,25 +1235,15 @@ pub fn ScreenSelfPreview() -> Element {
                 span { class: "text-[11px] text-[var(--text)] truncate flex-1", "Sharing your screen" }
                 button {
                     class: "text-[9px] uppercase tracking-wider text-[var(--danger)] hover:text-[var(--accent-strong)] font-semibold",
-                    // Use mousedown (not click) to stop sharing before the
-                    // header's drag handler fires; stop_propagation is
-                    // unreliable in wry/WebView2, and mousedown ensures
-                    // teardown before drag interaction starts.
                     onmousedown: move |e| {
                         e.stop_propagation();
                         let cid = state.read().voice.channel_id;
                         {
                             let mut w = state.write();
                             w.screen_sharing = false;
-                            // Clear target to force picker on next share
-                            // (instead of resuming last one); also stops
-                            // capture since the publishing effect keys on
-                            // this.
                             w.screen_share_target = None;
                             w.screen_native_audio = false;
                         }
-                        // Only webview path has a JS track to stop; native
-                        // path is a no-op.
                         if !crate::sysvideo::supported() {
                             let _ = document::eval(&share_js(false, "", true));
                         }
@@ -1691,9 +1254,6 @@ pub fn ScreenSelfPreview() -> Element {
                     "Stop"
                 }
             }
-            // Native macOS publisher is `{pubkey}#video`, distinct from this
-            // webview's `{pubkey}`. Subscribing like a remote viewer shows
-            // what crossed the wire, not just the local source.
             div {
                 id: "screenshare-self",
                 class: "relative flex-1 min-h-0 bg-black flex items-center justify-center text-[var(--text-dim)] text-[10px]",
@@ -1723,14 +1283,11 @@ pub fn ScreenSelfPreview() -> Element {
 }
 
 #[derive(Clone, Copy, PartialEq)]
-/// Drag state for the floating windows. `pub(crate)` so `features::camera`'s
-/// two windows reuse it rather than declaring a third identical copy.
 pub(crate) enum Drag {
     Move { dx: f64, dy: f64 },
     Resize { px: f64, py: f64, w0: f64, h0: f64 },
 }
 
-/// Large, draggable + resizable window for watching someone else's screen.
 #[component]
 pub fn ScreenWatchWindow() -> Element {
     let mut state = use_app_state();
@@ -1742,11 +1299,6 @@ pub fn ScreenWatchWindow() -> Element {
         if v != *last.peek() {
             match &v {
                 Some(pk) => {
-                    // Set volume before wiring the stream to avoid a moment of
-                    // full-volume blast.
-                    // Read deafen here because the effect below won't re-run
-                    // when switching between sharers at the same default
-                    // level.
                     let s = state.read();
                     let gain = if s.voice.deafened {
                         0.0
@@ -1762,8 +1314,6 @@ pub fn ScreenWatchWindow() -> Element {
                     let _ = document::eval(&js);
                 }
                 None => {
-                    // If audio still plays after this detach, the webview
-                    // element is not the source.
                     crate::dlog!("watch detach (viewer closed)");
                     let _ = document::eval(&detach_js("screenshare-viewer"));
                 }
@@ -1778,9 +1328,6 @@ pub fn ScreenWatchWindow() -> Element {
         (s.stream_volumes.clone(), s.stream_muted.clone())
     });
     let voice_for_stream = use_voice_tx();
-    // Guard against re-sending identical gains: this effect re-runs on every
-    // state mutation (including 150ms mic ticks), and each send contends for
-    // the cpal output callback's mutex, causing audio degradation.
     let mut last_gains = use_signal(Vec::<(String, f32)>::new);
     use_effect(move || {
         let watched = watching();
@@ -1804,7 +1351,6 @@ pub fn ScreenWatchWindow() -> Element {
             })
             .collect();
         drop(s);
-        // Sorted so a reordering of the underlying map can't read as a change.
         desired.sort_by(|a, b| a.0.cmp(&b.0));
         if *last_gains.peek() == desired {
             return;
@@ -1831,11 +1377,6 @@ pub fn ScreenWatchWindow() -> Element {
         let _ = document::eval(&stream_sink_js(output_device().as_deref()));
     });
 
-    // Deafen must reach the webview: when native audio join is inactive,
-    // stream audio plays via HTMLMediaElement, bypassing the mixer gate.
-    // This handles toggling deafen while watching. Changing *who* you watch is
-    // handled by the attach effect (which re-sends volume), avoiding `Memo`
-    // wakeups and `last_gains` churn.
     let deafened = use_memo(move || state.read().voice.deafened);
     let watched_gain = use_memo(move || {
         let s = state.read();
@@ -1860,15 +1401,8 @@ pub fn ScreenWatchWindow() -> Element {
     };
     let name = state.read().display_name(&pk);
 
-    // Stream audio controls. Deliberately separate from the participant's voice
-    // volume in the channel roster: someone's game audio and their microphone
-    // are two different things to want quieter. Both are listener-side only.
     let stream_volume = state.read().stream_volumes.get(&pk).copied().unwrap_or(100);
     let stream_muted = state.read().stream_muted.contains(&pk);
-    // Hide controls for video-only shares to avoid a misleading slider over
-    // silence.
-    // `has_audio` is reported by the side playing the audio (usually the voice
-    // service).
     let has_audio = state.read().stream_has_audio.contains(&pk);
     let pk_vol = pk.clone();
     let pk_mute = pk.clone();
@@ -1944,8 +1478,6 @@ pub fn ScreenWatchWindow() -> Element {
                     input {
                         r#type: "range",
                         min: "0",
-                        // 100 not 200: without Web Audio the gain is the media
-                        // element's `volume`, which the spec caps at 1.0.
                         max: "100",
                         value: "{stream_volume}",
                         disabled: stream_muted || !has_audio,
@@ -1988,16 +1520,8 @@ pub fn ScreenWatchWindow() -> Element {
 mod js_escaping_tests {
     use super::{attach_js, js_str, share_js};
 
-    /// The shape that made this necessary: `livekit_url` arrives from the
-    /// gateway as a free-form string and used to be pasted into `'{url}'`. A
-    /// single quote closed the literal and everything after it ran as script —
-    /// from a host you joined by code, or from anyone on the path while the
-    /// gateway is plaintext.
     #[test]
     fn a_quote_in_a_server_string_cannot_close_the_literal() {
-        // JSON does not escape `'`, so apostrophes are safe data inside
-        // double-quoted literals. The invariant is that the value remains a
-        // single closed literal regardless of quote characters in the input.
         for hostile in [
             "ws://x');alert(1);//",    // breaks the old single-quoted form
             "ws://x\");alert(1);//",   // and the double-quoted one
@@ -2013,7 +1537,7 @@ mod js_escaping_tests {
             let mut chars = inner.chars().peekable();
             while let Some(c) = chars.next() {
                 if c == '\\' {
-                    chars.next(); // consume whatever it escapes
+                    chars.next();
                 } else {
                     assert_ne!(c, '"', "a bare quote escaped the literal: {quoted}");
                 }
@@ -2023,8 +1547,6 @@ mod js_escaping_tests {
         }
     }
 
-    /// Round-trips as *data*, which is the other half of the requirement: the
-    /// escaping must not corrupt legitimate values.
     #[test]
     fn escaping_preserves_the_value() {
         for raw in [
@@ -2042,8 +1564,6 @@ mod js_escaping_tests {
         }
     }
 
-    /// The call sites, not just the helper — a future edit could reintroduce a
-    /// hand-built literal at either one.
     #[test]
     fn the_call_sites_emit_quoted_arguments() {
         let js = attach_js("pk#video", "screen-tile", "screen");
