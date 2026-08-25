@@ -52,6 +52,7 @@ another. Deferred work goes in `docs/OPEN.md`, never only in a commit message.
 | 11 | Native share publications are owned by `ScreenShareBridge`'s effect, keyed on voice epoch + target — not by the button. Anything ending a share must clear `screen_share_target`. |
 | 12 | Identity is a BIP-340 keypair; your key is your account. `bot` and `client_version` in `Identify` are self-declared and unauthenticated by design. |
 | 13 | Tailwind is dx's, not npm's: it finds `client/tailwind.css` at the crate root, installs a standalone CLI, and writes `client/assets/tailwind.css` — which is committed because a plain `cargo build` has no dx to generate it. |
+| 14 | CI lints with `-D warnings`: one warning is a red build. It lints in two groups — `dioxusfun`+`dioxus-grid-layout`, and `protocol`+`server`+`bot`+`rendezvous` — so `-p dioxusfun` alone misses half the tree. |
 
 ## Elsewhere
 
