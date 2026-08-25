@@ -86,7 +86,42 @@ fn TopBar(
     on_sign_out: EventHandler<()>,
 ) -> Element {
     let state = use_app_state();
-    let relays = state.read().nostr_relays_up.len();
+    let settings = use_context::<Signal<crate::settings::ClientSettings>>();
+    let configured: Vec<String> = {
+        let saved = settings.read();
+        if saved.dm_relays.is_empty() {
+            crate::nostr::relay::DEFAULT_RELAYS
+                .iter()
+                .map(|s| s.to_string())
+                .collect()
+        } else {
+            saved.dm_relays.clone()
+        }
+    };
+    let up = state.read().nostr_relays_up.clone();
+    let relays = up.len();
+    let total = configured.len();
+    // The count alone hid the interesting half: three of four is one relay
+    // down, and which one is the part `nostr_relays_up` keeps a set for.
+    let relay_detail = {
+        let mut lines: Vec<String> = configured
+            .iter()
+            .map(|r| {
+                let host = r.trim_start_matches("wss://").trim_start_matches("ws://");
+                if up.contains(r) {
+                    format!("· {host} — connected")
+                } else {
+                    format!("· {host} — not connected")
+                }
+            })
+            .collect();
+        lines.insert(
+            0,
+            "Direct messages travel over these Nostr relays. One is enough to send and receive."
+                .to_string(),
+        );
+        lines.join("\n")
+    };
     let mut open = use_signal(|| false);
     let npub = identity.npub();
     let short = format!("{}…{}", &npub[..9.min(npub.len())], &npub[npub.len() - 3..]);
@@ -100,12 +135,15 @@ fn TopBar(
                 span { class: "dxf-display dxf-wordmark text-base font-bold tracking-tight", "Discordia" }
                 span {
                     class: "px-2 py-0.5 rounded-full border text-[10px] font-mono",
-                    style: if relays > 0 {
-                        "color: var(--up); border-color: color-mix(in srgb, var(--up) 40%, transparent);"
-                    } else {
+                    style: if relays == 0 {
+                        "color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, transparent);"
+                    } else if relays < total {
                         "color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, transparent);"
+                    } else {
+                        "color: var(--up); border-color: color-mix(in srgb, var(--up) 40%, transparent);"
                     },
-                    if relays == 1 { "1 relay" } else { "{relays} relays" }
+                    title: "{relay_detail}",
+                    if relays == 0 { "no relays" } else { "{relays}/{total} relays" }
                 }
                 div { class: "flex-1" }
                 div { class: "dxf-no-drag flex items-center gap-2",
