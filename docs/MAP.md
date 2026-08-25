@@ -2,28 +2,36 @@
 
 Where things are, so a reader greps once instead of three times. `CLAUDE.md`
 carries what every session needs — the rules and the invariants; this carries
-what only some do: where to open, what moves together, how the parts connect. Line counts are the reason it exists: six files hold a third
-of the tree, and reading one whole to find one arm is the usual waste.
+what only some do: where to open, what moves together, how the parts connect. It exists because a handful of files hold most of the tree,
+and reading one whole to find one arm is the usual waste.
+
+Symbols, never line numbers: a symbol can be grepped and a number cannot, and
+a number is wrong as soon as two branches disagree — which is how the first
+version of this file shipped three of them stale.
 
 ## Read whole vs grep
 
 | Size | Files | How |
 |---|---|---|
-| < 300 lines | most of `client/src/nostr/*`, `client/src/{identity,session,settings,version,quic,portmap}.rs`, `protocol/src/rendezvous.rs` | read whole |
-| 300–800 | `client/src/{state,app,net}.rs`, `client/src/features/{home,connect,guilds,workspace,chat}.rs`, `server/src/{store,http,auth}.rs` | grep to a symbol, then read the block |
-| > 900 | `client/src/features/{voice,channels,screenshare}.rs`, `server/src/state/mod.rs`, `server/src/gateway/connection.rs`, `protocol/src/lib.rs` | **never read whole** — grep the variant or `fn` name |
+| < 300 | most of `client/src/nostr/*`, `client/src/{identity,session,settings,version,quic,portmap}.rs`, `protocol/src/rendezvous.rs` | read whole |
+| 300–800 | `client/src/{state,app}.rs`, `client/src/features/{home,connect,guilds,workspace}.rs`, `server/src/{http,auth}.rs` | grep to a symbol, then read the block |
+| > 900 | `client/src/features/{voice,channels,screenshare,chat}.rs`, `client/src/{net,update}.rs`, `server/src/{state/mod,gateway/connection,store}.rs`, `protocol/src/lib.rs` | **never read whole** — grep the variant or `fn` name |
+
+Bands, not a list of sizes: a number goes stale on the next commit, a band
+survives. Re-derive with `wc -l` if a file feels miscategorised — eleven are
+over 800 today.
 
 ## Entry points
 
 | To find | Open | At |
 |---|---|---|
-| What a `ServerMessage` does to the client | `client/src/net.rs` | `fn apply` (~503) — one arm per variant, exhaustive |
-| What the server does with a `ClientMessage` | `server/src/gateway/connection.rs` | `handle_connection` (15); 53 `ClientMessage::` arms follow |
-| Every wire type | `protocol/src/lib.rs` | 74 variants; grep the name, the file is 950 lines |
+| What a `ServerMessage` does to the client | `client/src/net.rs` | `fn apply` — one arm per variant, exhaustive |
+| What the server does with a `ClientMessage` | `server/src/gateway/connection.rs` | `handle_connection`, then ~50 `ClientMessage::` arms |
+| Every wire type | `protocol/src/lib.rs` | grep the variant name; ~70 of them |
 | Server state mutation + permissions | `server/src/state/mod.rs` | methods on `AppState`; all async, all write through `persist(…)` |
 | Client state + advisory `can()` | `client/src/state.rs` | `AppState`, `use_app_state`, `use_gateway` |
-| DMs end to end | `client/src/nostr/service.rs` | `spawn_nostr` (84); `conversation_id` (64) is the Uuid derivation |
-| Voice, capture, mixing | `client/src/features/voice.rs` | 2.7k lines — grep `ScreenAudioRoom`, `ScreenVideoRoom`, `forward_mic` |
+| DMs end to end | `client/src/nostr/service.rs` | `spawn_nostr`; `conversation_id` is the Uuid derivation |
+| Voice, capture, mixing | `client/src/features/voice.rs` | the largest file in the tree — grep `ScreenAudioRoom`, `ScreenVideoRoom`, `forward_mic` |
 | The first screen | `client/src/features/home.rs` | `HomeView`; the connect form is `connect::ConnectForm` |
 
 ## Change recipes
