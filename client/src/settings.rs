@@ -21,6 +21,12 @@ pub struct ClientSettings {
     #[serde(default)]
     pub dm_relays: Vec<String>,
 
+    /// Peer pubkey → the second a conversation was last cleared. A watermark,
+    /// not a tombstone: relays keep the events, so deleting can only mean
+    /// "hide everything up to here", and a newer message reopens the chat.
+    #[serde(default)]
+    pub dm_cleared_at: Vec<(String, i64)>,
+
     #[serde(default)]
     pub selected_input_device: Option<String>,
     #[serde(default)]
@@ -114,6 +120,7 @@ impl Default for ClientSettings {
             blossom_server: default_blossom_server(),
             rendezvous_servers: default_rendezvous_servers(),
             dm_relays: Vec::new(),
+            dm_cleared_at: Vec::new(),
             selected_input_device: None,
             selected_output_device: None,
             mic_sensitivity: default_mic_sensitivity(),
@@ -156,6 +163,15 @@ impl ClientSettings {
         self.rendezvous_servers.retain(|s| s != url);
         if self.rendezvous_servers.is_empty() {
             self.rendezvous_servers.push(default_rendezvous_url());
+        }
+    }
+
+    /// Clearing twice must keep the later mark, or the second delete would
+    /// bring back everything the first one hid.
+    pub fn clear_dm(&mut self, peer: &str, at: i64) {
+        match self.dm_cleared_at.iter_mut().find(|(p, _)| p == peer) {
+            Some(entry) => entry.1 = entry.1.max(at),
+            None => self.dm_cleared_at.push((peer.to_string(), at)),
         }
     }
 }

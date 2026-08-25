@@ -181,6 +181,9 @@ pub struct AppState {
     pub selected_channel: Option<Id>,
     pub dms: Vec<DmInfo>,
     pub dm_unread: HashMap<Id, u32>,
+    /// Seeded from `ClientSettings::dm_cleared_at`; see it for why a delete is
+    /// a watermark. Read on every insert, so replayed history stays hidden.
+    pub dm_cleared_at: HashMap<String, i64>,
     pub nostr_event_ids: HashMap<Id, String>,
     pub contacts: crate::nostr::nip02::ContactList,
     pub nostr_relays_up: std::collections::HashSet<String>,
@@ -271,6 +274,7 @@ impl AppState {
             selected_channel: None,
             dms: Vec::new(),
             dm_unread: HashMap::new(),
+            dm_cleared_at: HashMap::new(),
             nostr_event_ids: HashMap::new(),
             contacts: Default::default(),
             nostr_relays_up: std::collections::HashSet::new(),
@@ -546,6 +550,22 @@ impl AppState {
         self.dm_unread.values().copied().sum()
     }
 
+    /// Forgets a conversation here. The relays and the other person keep their
+    /// copies, so this drops what is below the watermark and nothing more.
+    pub fn clear_dm(&mut self, peer: &str, at: i64) {
+        let cid = crate::nostr::service::conversation_id(peer);
+        self.dm_cleared_at
+            .entry(peer.to_string())
+            .and_modify(|t| *t = (*t).max(at))
+            .or_insert(at);
+        self.dms.retain(|d| d.channel_id != cid);
+        self.messages.remove(&cid);
+        self.dm_unread.remove(&cid);
+        if self.selected_channel == Some(cid) {
+            self.selected_channel = None;
+        }
+    }
+
     pub fn members_of(&self, guild_id: Id) -> Vec<&Member> {
         let mut v: Vec<&Member> = self
             .members
@@ -600,6 +620,37 @@ pub fn use_gateway() -> GatewayTx {
 mod tests {
     use super::*;
     use crate::protocol::{Member, Profile, User};
+
+    /// The row must go and the mark must stay: without the mark, the relays
+    /// replay the same conversation back on the next launch.
+    #[test]
+    fn clearing_a_dm_drops_the_row_and_leaves_a_watermark() {
+        let mut s = AppState::empty();
+        let peer = "abcd";
+        let cid = crate::nostr::service::conversation_id(peer);
+        s.dms.push(DmInfo {
+            channel_id: cid,
+            other_pubkey: peer.to_string(),
+        });
+        s.dm_unread.insert(cid, 3);
+        s.selected_channel = Some(cid);
+
+        s.clear_dm(peer, 100);
+
+        assert!(s.dms.is_empty());
+        assert!(s.dm_unread.is_empty());
+        assert_eq!(s.selected_channel, None);
+        assert_eq!(s.dm_cleared_at.get(peer), Some(&100));
+    }
+
+    /// Clearing again after new messages must not un-hide the older ones.
+    #[test]
+    fn a_second_clear_keeps_the_later_mark() {
+        let mut s = AppState::empty();
+        s.clear_dm("abcd", 200);
+        s.clear_dm("abcd", 100);
+        assert_eq!(s.dm_cleared_at.get("abcd"), Some(&200));
+    }
 
     fn user(pk: &str) -> User {
         User {

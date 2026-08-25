@@ -170,7 +170,11 @@ fn main() {
 
     let window = WindowBuilder::new()
         .with_title("Discordia")
-        .with_inner_size(LogicalSize::new(1280.0, 800.0))
+        .with_inner_size(LogicalSize::new(1440.0, 900.0))
+        // The binding case is the social drawer open: it floors at 600 and the
+        // connect form stops being readable under ~420. Anything narrower and
+        // the form starts wrapping its own controls.
+        .with_min_inner_size(LogicalSize::new(1024.0, 600.0))
         .with_always_on_top(false)
         .with_window_icon(load_window_icon());
     let window = mac_window(window);

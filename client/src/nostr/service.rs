@@ -388,6 +388,16 @@ fn insert_message(msg: &nip17::ChatMessage, our_pubkey: &str, state: &mut Signal
     let mid = message_id(&msg.id);
     let mut s = state.write();
 
+    // Relays replay the whole history on every launch, so a cleared
+    // conversation would walk back in. Anything newer than the mark is not
+    // what was deleted, and reopens the chat.
+    if s.dm_cleared_at
+        .get(&msg.peer)
+        .is_some_and(|at| msg.created_at <= *at)
+    {
+        return;
+    }
+
     if !s.dms.iter().any(|d| d.channel_id == cid) {
         s.dms.push(DmInfo {
             channel_id: cid,
