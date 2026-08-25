@@ -201,6 +201,7 @@ fn TalkHalf() -> Element {
         .map(|dm| {
             let last = snapshot.dm_last_message(dm.channel_id);
             Row {
+                name: snapshot.display_name(&dm.other_pubkey),
                 preview: last.map(|m| {
                     let body = if m.content.trim().is_empty() && m.image.is_some() {
                         "📎 image".to_string()
@@ -225,10 +226,7 @@ fn TalkHalf() -> Element {
         .iter()
         .filter(|c| c.pubkey != self_pk)
         .map(|c| {
-            let n = c.petname.clone().unwrap_or_else(|| {
-                let k = &c.pubkey;
-                format!("npub…{}", &k[k.len().saturating_sub(6)..])
-            });
+            let n = snapshot.display_name(&c.pubkey);
             (c.pubkey.clone(), n)
         })
         .collect();
@@ -321,7 +319,7 @@ fn TalkHalf() -> Element {
                             } else {
                                 "border-transparent hover:bg-white/[0.03]"
                             };
-                            let uname = row.info.other.username.clone();
+                            let uname = row.name.clone();
                             rsx! {
                                 button {
                                     key: "{cid}",
@@ -334,7 +332,7 @@ fn TalkHalf() -> Element {
                                     },
                                     span { class: "relative shrink-0",
                                         crate::features::profiles::Avatar {
-                                            pubkey: row.info.other.pubkey.clone(),
+                                            pubkey: row.info.other_pubkey.clone(),
                                             name: uname.clone(),
                                             size: "w-7 h-7",
                                             text: "text-[10px]",
@@ -417,6 +415,9 @@ fn Chip(label: String, on: bool, onclick: EventHandler<()>) -> Element {
 #[derive(Clone, PartialEq)]
 struct Row {
     info: DmInfo,
+    /// Resolved at build time from `display_name`, never stored on `DmInfo`:
+    /// every source of a name arrives after the row is first drawn.
+    name: String,
     /// Prefixed with "Tú:" when ours — how you tell "they replied" from "I
     /// said the last thing" without opening it.
     preview: Option<String>,
@@ -431,25 +432,23 @@ impl Row {
         if needle.is_empty() {
             return true;
         }
-        self.info.other.username.to_lowercase().contains(needle)
-            || self.info.other.pubkey.to_lowercase().contains(needle)
+        self.name.to_lowercase().contains(needle)
+            || self.info.other_pubkey.to_lowercase().contains(needle)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::{Id, User};
+    use crate::protocol::Id;
 
     fn row(name: &str, pubkey: &str) -> Row {
         Row {
             info: DmInfo {
                 channel_id: Id::nil(),
-                other: User {
-                    pubkey: pubkey.into(),
-                    username: name.into(),
-                },
+                other_pubkey: pubkey.into(),
             },
+            name: name.into(),
             preview: None,
             when: None,
             unread: 0,
