@@ -53,6 +53,15 @@ cargo fmt --all
 First run is slow: `server/` fetches or builds `livekit-server` once (macOS
 builds from source, needs `go`). `LIVEKIT_BUNDLE_SKIP=1` opts out.
 
+Packaging the macOS app needs a signing identity, or macOS treats every build
+as a new app and re-asks for the screen, mic and camera grants. It is
+per-developer, so it is passed in rather than committed to `Dioxus.toml`:
+
+```bash
+DISCORDIA_SIGNING_IDENTITY="Apple Development: You (TEAMID)" ./bundle-macos.sh
+security find-identity -v -p codesigning   # lists candidates
+```
+
 ## Verifying a download
 
 Every artifact ships a `.minisig` signed by CI, against
