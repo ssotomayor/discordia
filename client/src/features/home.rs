@@ -206,7 +206,7 @@ fn TalkHalf() -> Element {
     rsx! {
         div { class: "w-[195px] shrink-0 border-r border-[var(--border)] flex flex-col min-h-0",
             div { class: "px-3 pt-4 pb-2 space-y-2 shrink-0",
-                h2 { class: "dxf-display text-[15px] font-semibold text-[var(--text)]", "Talk" }
+                h2 { class: "dxf-display text-[15px] font-semibold text-[var(--text)]", "Messages" }
                 input {
                     class: "w-full bg-transparent border border-[var(--border)] focus:border-[var(--accent)] rounded-md px-2.5 py-1.5 text-[11px] text-[var(--text)] outline-none transition-colors",
                     r#type: "text",
@@ -332,10 +332,25 @@ fn TalkHalf() -> Element {
                 crate::features::chat::ChatView {}
             } else {
                 div { class: "flex-1 flex items-center justify-center p-8",
-                    div { class: "max-w-xs text-center space-y-2",
-                        div { class: "text-sm text-[var(--text)]", "Nothing open" }
-                        div { class: "text-[11px] text-[var(--text-muted)] leading-relaxed",
-                            "Direct messages are Nostr events signed by your key: they work with no server at all, and follow you wherever you connect."
+                    div { class: "max-w-sm text-center space-y-3",
+                        crate::app::DiscordiaLogo { class: "w-10 h-10 mx-auto opacity-40" }
+                        if rows.is_empty() {
+                            div { class: "text-[15px] text-[var(--text)]",
+                                "Your messages, before any server"
+                            }
+                            div { class: "text-xs text-[var(--text-muted)] leading-relaxed",
+                                "They are signed by your key and carried by relays, so they belong to you
+                                 rather than to whoever you are connected to. Paste someone's npub on the
+                                 left to start one."
+                            }
+                        } else {
+                            div { class: "text-[15px] text-[var(--text)]",
+                                "Pick a conversation"
+                            }
+                            div { class: "text-xs text-[var(--text-muted)] leading-relaxed",
+                                "Yours are on the left. They travel with your key, so they will still be
+                                 here whichever server you go to next."
+                            }
                         }
                     }
                 }

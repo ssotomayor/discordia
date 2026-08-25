@@ -166,6 +166,16 @@ pub fn ConnectForm(
                 // Labels specify "server" to distinguish from "community"
                 // (which is `CreateGuild` and requires an existing
                 // connection). Bare "Join"/"Create" caused user confusion.
+                div { class: "space-y-1.5",
+                    RendezvousPicker {
+                        selected: rendezvous_url(),
+                        on_select: move |u: String| rendezvous_url.set(u),
+                    }
+                    div { class: "text-[10px] text-[var(--text-dim)] leading-relaxed",
+                        "Codes are looked up here, the public list comes from here, and a server of your own is published and named here."
+                    }
+                }
+
                 div { class: "flex gap-1 text-xs",
                     TabButton { active: mode() == Mode::Join, label: "Join a server", onclick: move |_| mode.set(Mode::Join) }
                     TabButton { active: mode() == Mode::Create, label: "Create a server", onclick: move |_| mode.set(Mode::Create) }
@@ -211,18 +221,6 @@ pub fn ConnectForm(
                                 rendezvous_url: rendezvous_url(),
                             }
 
-                            // One address serves the codes, the list and publishing
-                            // your own, so it belongs under the rows it produced.
-                            div { class: "space-y-1.5",
-                                RendezvousPicker {
-                                    selected: rendezvous_url(),
-                                    on_select: move |u: String| rendezvous_url.set(u),
-                                }
-                                div { class: "text-[10px] text-[var(--text-dim)] leading-relaxed",
-                                    "Codes are looked up here, the public list comes from here, and a server of your own is published and named here."
-                                }
-                            }
-
                             // Folded because gateway address entry is rare and
                             // ignores the directory above. Must start empty:
                             // an open stale default looks filled, while a
@@ -248,16 +246,6 @@ pub fn ConnectForm(
                         }
                     },
                     Mode::Create => rsx! {
-                        div { class: "space-y-3",
-                        div { class: "space-y-1.5",
-                            RendezvousPicker {
-                                selected: rendezvous_url(),
-                                on_select: move |u: String| rendezvous_url.set(u),
-                            }
-                            div { class: "text-[10px] text-[var(--text-dim)] leading-relaxed",
-                                "Your server is published and named here."
-                            }
-                        }
                         div { class: "border border-[var(--border)] rounded p-3 text-xs space-y-3",
                             p { class: "text-[var(--text-muted)]",
                                 "Your machine runs the server and keeps its history. Voice runs here too, unless the rendezvous above supplies its own."
@@ -320,7 +308,6 @@ pub fn ConnectForm(
                                     }
                                 }
                             }
-                        }
                         }
                     },
                 }
