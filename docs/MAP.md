@@ -1,9 +1,9 @@
 # Map
 
 Where things are, so a reader greps once instead of three times. `CLAUDE.md`
-says what the parts *do* and which invariants bind them; this says where to
-open and in what order. Line counts are the reason it exists: six files hold a
-third of the tree, and reading one whole to find one arm is the usual waste.
+carries what every session needs — the rules and the invariants; this carries
+what only some do: where to open, what moves together, how the parts connect. Line counts are the reason it exists: six files hold a third
+of the tree, and reading one whole to find one arm is the usual waste.
 
 ## Read whole vs grep
 
@@ -46,8 +46,49 @@ repeated here.
 |---|---|---|
 | Wire, end to end | `server/tests/*.rs` | spawn a real gateway, drive it through the bot SDK; copy a helper block |
 | Partial failure | `server/tests/voice.rs` | `ScriptedMinter` answers per request — the delegation seam doubles as a fault injector |
-| Platform paths | `client/tests/live_sfu.rs`, `#[ignore]`d unit tests | `cargo test -p dioxusfun -- --ignored`; need an SFU, an audio device or a screen grant |
-| Everything else | beside the code | `cargo test --workspace` stays headless and green |
+| Platform paths | `client/tests/live_sfu.rs`, `#[ignore]`d unit tests | need an SFU, an audio device or a screen grant — hence ignored, not optional |
+| Everything else | beside the code | the suite stays headless and green |
+
+## Architecture
+
+```mermaid
+flowchart LR
+  subgraph C["client/ — dioxusfun"]
+    UI["features/*.rs"]
+    NET["net.rs — WS loop<br/>apply / send"]
+    ST["state.rs — AppState<br/>+ advisory can()"]
+    NOSTR["nostr/ — DMs<br/>NIP-17/44/59 on relays"]
+    V["features/voice.rs<br/>native LiveKit + cpal mixer"]
+    CAP["sysaudio/ · sysvideo/ · rawmic/<br/>native capture"]
+    JS["screenshare.rs · camera.rs<br/>webview LiveKit JS"]
+    HOST["host.rs · portmap.rs · quic.rs"]
+    UI-->NET-->ST
+    UI-->NOSTR
+    CAP-->V
+    V-.->JS
+  end
+  subgraph S["server/ — dioxusfun-server"]
+    GW["gateway/connection.rs<br/>one task per socket"]
+    AS["state/mod.rs — AppState<br/>DashMaps, authoritative"]
+    DB[("store.rs — SQLite<br/>write-through")]
+    MED["media.rs — blobs"]
+    LK["livekit.rs — tokens"]
+    GW-->AS-->DB
+    GW-->MED
+    GW-->LK
+  end
+  SFU["LiveKit SFU<br/>voice-{ch} · screen-{ch}"]
+  RZ["rendezvous/<br/>/control · /join · /proxy · /discover"]
+  RELAYS[("Nostr relays")]
+  BOT["bot-sdk"]
+  NET<-->|"WS /gateway or QUIC<br/>Schnorr Identify"|GW
+  BOT<-->|filtered stream|GW
+  V<-->SFU
+  JS<-->SFU
+  LK-.mint.->SFU
+  HOST<-->RZ
+  NOSTR<-->RELAYS
+```
 
 ## Not in this repo
 

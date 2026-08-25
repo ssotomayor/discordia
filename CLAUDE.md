@@ -31,47 +31,6 @@ another. Deferred work goes in `docs/OPEN.md`, never only in a commit message.
 | `bot-sdk/` | `dioxusfun-bot` | Bot client library; integration tests drive the server through it. |
 | `grid-layout/` | `dioxus-grid-layout` | Draggable/resizable grid widget. Self-contained. |
 
-## Architecture
-
-```mermaid
-flowchart LR
-  subgraph C["client/ — dioxusfun"]
-    UI["features/*.rs"]
-    NET["net.rs — WS loop<br/>apply / send"]
-    ST["state.rs — AppState<br/>+ advisory can()"]
-    NOSTR["nostr/ — DMs<br/>NIP-17/44/59 on relays"]
-    V["features/voice.rs<br/>native LiveKit + cpal mixer"]
-    CAP["sysaudio/ · sysvideo/ · rawmic/<br/>native capture"]
-    JS["screenshare.rs · camera.rs<br/>webview LiveKit JS"]
-    HOST["host.rs · portmap.rs · quic.rs"]
-    UI-->NET-->ST
-    UI-->NOSTR
-    CAP-->V
-    V-.->JS
-  end
-  subgraph S["server/ — dioxusfun-server"]
-    GW["gateway/connection.rs<br/>one task per socket"]
-    AS["state/mod.rs — AppState<br/>DashMaps, authoritative"]
-    DB[("store.rs — SQLite<br/>write-through")]
-    MED["media.rs — blobs"]
-    LK["livekit.rs — tokens"]
-    GW-->AS-->DB
-    GW-->MED
-    GW-->LK
-  end
-  SFU["LiveKit SFU<br/>voice-{ch} · screen-{ch}"]
-  RZ["rendezvous/<br/>/control · /join · /proxy · /discover"]
-  RELAYS[("Nostr relays")]
-  BOT["bot-sdk"]
-  NET<-->|"WS /gateway or QUIC<br/>Schnorr Identify"|GW
-  BOT<-->|filtered stream|GW
-  V<-->SFU
-  JS<-->SFU
-  LK-.mint.->SFU
-  HOST<-->RZ
-  NOSTR<-->RELAYS
-```
-
 ## Traps
 
 | # | Invariant |
@@ -90,31 +49,11 @@ flowchart LR
 | 12 | Identity is a BIP-340 keypair; your key is your account. `bot` and `client_version` in `Identify` are self-declared and unauthenticated by design. |
 | 13 | Tailwind is dx's, not npm's: it finds `client/tailwind.css` at the crate root, installs a standalone CLI, and writes `client/assets/tailwind.css` — which is committed because a plain `cargo build` has no dx to generate it. |
 
-## Build, run, test
+## Elsewhere
 
-```sh
-cargo build --workspace
-cargo test --workspace          # must stay green and headless
-cargo test -p dioxusfun -- --ignored   # platform paths: live SFU, audio device, screen grant
-cargo clippy --workspace --all-targets -- -D warnings
-cargo fmt --all
-
-cargo run -p dioxusfun-server            # DIOXUSFUN_{ADDR,DATA_DIR,OPERATORS}
-cargo run -p dioxusfun-rendezvous        # DIOXUSFUN_RENDEZVOUS_{ADDR,DATA_DIR}
-dx serve --package dioxusfun             # dx also runs the Tailwind watcher
-cargo run -p dioxusfun                   # no watcher: new classes need one dx build
-
-DISCORDIA_SIGNING_IDENTITY="Apple Development: You (TEAMID)" ./bundle-macos.sh
-```
-
-First `cargo test` is slow: `server/` fetches or builds `livekit-server` once
-(macOS builds from source, needs `go`). A failure stops the build on purpose —
-`LIVEKIT_BUNDLE_SKIP=1` opts out.
-
-Integration tests spawn a real gateway and drive it through the bot SDK; copy an
-existing helper block in `server/tests/`. `server/tests/voice.rs::ScriptedMinter`
-is the one to copy when a test needs a partial failure.
-
-See `docs/MAP.md` for where things are and what to touch together,
-`docs/OPS.md` for hosting and networking, `docs/OPEN.md` for what is deferred,
-`README.md` for contributing.
+| For | Read |
+|---|---|
+| Where a thing lives, what to touch with it, which files not to read whole | `docs/MAP.md` |
+| Running, hosting, env vars, reachability | `docs/OPS.md` |
+| Deferred work — the only tracker | `docs/OPEN.md` |
+| Build and test commands, contributing | `README.md` |
