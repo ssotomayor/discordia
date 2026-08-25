@@ -99,15 +99,15 @@ const BASE_CSS: &str = "
 /* Variable *names* are the styling interface, so new palette entries are added
    rather than renamed; `theme_vars()` overrides these inline on the app root. */
 :root {
-  --bg: #0e0b08; --bg2: #171017;
-  --panel-solid: #17110c; --panel: #17110c; --panel2: #1e160f;
-  --edge: rgba(255,158,61,.15); --edge-strong: rgba(255,158,61,.42);
-  --border: rgba(255,158,61,.15); --border-strong: rgba(255,158,61,.42);
-  --text: #f4ece2; --text-muted: #a8988a; --text-dim: #6c5f53;
-  --accent: #ff9e3d; --accent-soft: rgba(255,158,61,.13); --accent-strong: #ffb26b;
-  --up: #5fe0a8; --success: #5fe0a8;
+  --bg: #121110; --bg2: #1e1b17;
+  --panel-solid: #17150f; --panel: #17150f; --panel2: #1b1813;
+  --edge: #262219; --edge-strong: #322c24;
+  --border: #2a2621; --border-strong: #3a342b;
+  --text: #f2ece3; --text-muted: #9a9287; --text-dim: #857d72;
+  --accent: #e8933a; --accent-soft: rgba(232,147,58,.16); --accent-strong: #f5ab5c;
+  --up: #6dbf6a; --success: #6dbf6a;
   --violet: #b98cff; --amber: #ffc46b; --warn: #ffc46b;
-  --danger: #f2777a;
+  --danger: #e8776a;
   --ease: cubic-bezier(0.4, 0.0, 0.2, 1);
 }
 html, body, #main { height: 100%; margin: 0; }
@@ -122,25 +122,31 @@ body {
 .dxf-display { font-family: 'Bricolage Grotesque', 'Space Grotesk', sans-serif; letter-spacing: -0.015em; }
 code, kbd, .dxf-mono, .font-mono { font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; }
 * { box-sizing: border-box; }
-::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--accent) 20%, transparent); border-radius: 4px; transition: background 0.2s var(--ease); }
+::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 8px; transition: background 0.2s var(--ease); }
 ::-webkit-scrollbar-thumb:hover { background: color-mix(in srgb, var(--accent) 38%, transparent); }
 button { cursor: pointer; }
 button:disabled { cursor: not-allowed; }
 input::placeholder { color: var(--text-dim); }
 
 .dxf-cta {
-  background-image: linear-gradient(100deg, #8fb0ff, var(--accent));
-  color: #0e0b08; font-weight: 600; border: none;
-  box-shadow: 0 0 24px -6px color-mix(in srgb, var(--accent) 55%, transparent);
+  background-image: linear-gradient(100deg, var(--accent-strong), var(--accent));
+  color: #1a1206; font-weight: 700; border: 1px solid transparent;
 }
-.dxf-cta:hover { filter: brightness(1.06); }
-.dxf-wordmark {
-  background-image: linear-gradient(105deg, #f4ece2 0%, #e9d9c2 30%, #8fb0ff 62%, var(--accent) 100%);
-  -webkit-background-clip: text; background-clip: text;
-  -webkit-text-fill-color: transparent; color: transparent;
+.dxf-cta:hover:not(:disabled) { filter: brightness(1.06); }
+/* Not `opacity`: a faded gradient still reads as the live button. Off gets its
+   own surface, so the eye stops offering it. */
+.dxf-cta:disabled {
+  background-image: none; background-color: var(--panel2);
+  border-color: var(--border); color: var(--text-dim); font-weight: 600;
 }
+.dxf-wordmark { color: var(--text); }
+
+.dxf-fold > summary { list-style: none; }
+.dxf-fold > summary::-webkit-details-marker { display: none; }
+.dxf-fold > summary::before { content: '▸'; margin-right: 7px; }
+.dxf-fold[open] > summary::before { content: '▾'; }
 
 .app-bg-pattern { position: fixed; inset: 0; z-index: 0; pointer-events: none; }
 .app-bg-grid {
@@ -315,13 +321,13 @@ pub const THEMES: &[ThemeDef] = &[
     ThemeDef {
         id: "ember",
         label: "Ember",
-        swatch: "#ff9e3d",
-        vars: "--bg:#0e0b08; --bg2:#171017; --panel-solid:#17110c; --panel:#17110c; --panel2:#1e160f; \
-               --edge:rgba(255,158,61,.15); --edge-strong:rgba(255,158,61,.42); \
-               --border:rgba(255,158,61,.15); --border-strong:rgba(255,158,61,.42); \
-               --text:#f4ece2; --text-muted:#a8988a; --text-dim:#6c5f53; \
-               --accent:#ff9e3d; --accent-soft:rgba(255,158,61,.13); --accent-strong:#ffb26b; \
-               --up:#5fe0a8; --success:#5fe0a8; --violet:#b98cff; --amber:#ffc46b; --warn:#ffc46b; --danger:#f2777a;",
+        swatch: "#e8933a",
+        vars: "--bg:#121110; --bg2:#1e1b17; --panel-solid:#17150f; --panel:#17150f; --panel2:#1b1813; \
+               --edge:#262219; --edge-strong:#322c24; \
+               --border:#2a2621; --border-strong:#3a342b; \
+               --text:#f2ece3; --text-muted:#9a9287; --text-dim:#857d72; \
+               --accent:#e8933a; --accent-soft:rgba(232,147,58,.16); --accent-strong:#f5ab5c; \
+               --up:#6dbf6a; --success:#6dbf6a; --violet:#b98cff; --amber:#ffc46b; --warn:#ffc46b; --danger:#e8776a;",
     },
     ThemeDef {
         id: "midnight",

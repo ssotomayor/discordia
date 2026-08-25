@@ -96,6 +96,10 @@ Closed and retired entries are not kept; `git log docs/` has them.
 
 **Nostr / DMs**
 - 70 · A DM goes to the relays *we* chose, not the ones the recipient reads.
+- 78 · Deleting a conversation only exists in the home DM column; the
+  in-session list in `features/channels.rs` reads the same `dms` and cannot.
+- 79 · A delete is a local watermark — the events stay on the relays and on the
+  other person's machine, and no NIP-09 request is sent.
 
 **Design adoption**
 - 2 · Deferred decorative elements from the comps (day streak, "Send a tip").

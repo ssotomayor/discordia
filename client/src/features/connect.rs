@@ -34,9 +34,9 @@ fn join_by(server_url: &str, code: &str, rendezvous_url: &str) -> JoinBy {
     }
 }
 
-const INPUT: &str = "w-full bg-transparent border border-[var(--border)] rounded px-3 py-2 text-sm text-[var(--text)] focus:outline-none focus:border-[var(--accent)] transition-colors";
-const INPUT_SM: &str = "w-full bg-transparent border border-[var(--border)] rounded px-2 py-1 text-xs text-[var(--text)] focus:outline-none focus:border-[var(--accent)] transition-colors";
-const LABEL: &str = "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]";
+const INPUT: &str = "w-full bg-[var(--panel2)] border border-[var(--edge-strong)] rounded-[11px] px-4 py-3.5 text-[14.5px] text-[var(--text)] focus:outline-none focus:border-[var(--accent)] transition-colors";
+const INPUT_SM: &str = "w-full bg-[var(--panel2)] border border-[var(--edge-strong)] rounded-[10px] px-3 py-2 text-[12.5px] text-[var(--text)] focus:outline-none focus:border-[var(--accent)] transition-colors";
+const LABEL: &str = "text-[11px] uppercase tracking-[0.09em] text-[var(--text-dim)]";
 
 /// Everything about arriving at a server. A panel now, not a screen: the hero
 /// and the identity card moved to `features::home`, which mounts this.
@@ -120,14 +120,19 @@ pub fn ConnectForm(
         Mode::Create => false,
         Mode::Join => join_by(&server_url(), &code(), &rendezvous_url()) == JoinBy::Nothing,
     };
+    // Going grey says "not yet" without saying why; this names both ways in.
+    let hint = match last_session.as_ref() {
+        Some(s) => format!("Enter a code above, or reconnect to {}.", session::label(s)),
+        None => "Enter a code above to connect.".to_string(),
+    };
 
     rsx! {
         div { class: "h-full w-full flex flex-col min-w-0",
             div { class: "flex-1 flex flex-col overflow-hidden min-w-0",
                 form {
-                    class: "flex-1 overflow-auto px-5 py-5 flex flex-col items-stretch dxf-no-drag",
+                    class: "flex-1 overflow-auto px-7 pt-4 pb-5 flex flex-col items-stretch dxf-no-drag",
                     onsubmit: submit,
-                    div { class: "w-full space-y-4 flex flex-col",
+                    div { class: "w-full flex-1 space-y-4 flex flex-col",
 
                 if let Some(saved) = last_session.clone() {
                     {
@@ -136,7 +141,7 @@ pub fn ConnectForm(
                         rsx! {
                             button {
                                 r#type: "button",
-                                class: "panel-hover w-full flex items-center gap-2 border border-[var(--border)] hover:border-[var(--accent)] rounded p-2 text-xs text-left group",
+                                class: "panel-hover w-full flex items-center justify-between gap-4 px-4 py-3.5 rounded-xl bg-[var(--panel2)] border border-[var(--border)] hover:border-[var(--accent)] text-left group",
                                 onclick: move |_| {
                                     let params = SessionParams {
                                         mode: saved.mode.clone(),
@@ -145,53 +150,61 @@ pub fn ConnectForm(
                                     };
                                     on_connect_for_reconnect.call(params);
                                 },
-                                div { class: "flex-1 min-w-0",
-                                    div { class: "text-[10px] uppercase tracking-wider text-[var(--text-muted)]",
-                                        "Last session"
+                                div { class: "flex items-center gap-3 min-w-0",
+                                    div {
+                                        class: "w-[34px] h-[34px] shrink-0 rounded-[9px] flex items-center justify-center",
+                                        style: "background: color-mix(in srgb, var(--accent) 8%, var(--bg));",
+                                        span { class: "w-2 h-2 rounded-full bg-[var(--up)]" }
                                     }
-                                    div { class: "text-[var(--text)] truncate group-hover:text-[var(--accent)] transition-colors",
-                                        "{session::label(&saved)}"
+                                    div { class: "min-w-0",
+                                        // Without this the label's min-content
+                                        // width holds the row open and the
+                                        // Reconnect pill lands on the name.
+                                        div { class: "{LABEL} truncate", "Last session" }
+                                        div { class: "mt-0.5 text-[15px] font-semibold text-[var(--text)] truncate",
+                                            "{session::label(&saved)}"
+                                        }
                                     }
                                 }
-                                span { class: "text-[10px] text-[var(--accent)] uppercase tracking-wider font-medium",
-                                    "reconnect →"
+                                span {
+                                    class: "shrink-0 px-4 py-2.5 rounded-[9px] border text-[13px] font-semibold text-[var(--accent-strong)] group-hover:text-[var(--text)] transition-colors",
+                                    style: "background: color-mix(in srgb, var(--accent) 14%, transparent); border-color: color-mix(in srgb, var(--accent) 35%, transparent);",
+                                    "Reconnect →"
                                 }
                             }
                         }
                     }
                 }
 
-                div { class: "h-px bg-[var(--border)]" }
-
                 // Labels specify "server" to distinguish from "community"
                 // (which is `CreateGuild` and requires an existing
                 // connection). Bare "Join"/"Create" caused user confusion.
-                div { class: "space-y-1.5",
+                div { class: "space-y-2",
                     RendezvousPicker {
                         selected: rendezvous_url(),
                         on_select: move |u: String| rendezvous_url.set(u),
                     }
-                    div { class: "text-[10px] text-[var(--text-dim)] leading-relaxed",
+                    div { class: "text-xs text-[var(--text-dim)] leading-relaxed text-pretty",
                         "Codes are looked up here, the public list comes from here, and a server of your own is published and named here."
                     }
                 }
 
-                div { class: "flex gap-1 text-xs",
+                div { class: "flex gap-1 p-1 rounded-[11px] bg-[var(--panel2)] border border-[var(--edge)]",
                     TabButton { active: mode() == Mode::Join, label: "Join a server", onclick: move |_| mode.set(Mode::Join) }
                     TabButton { active: mode() == Mode::Create, label: "Create a server", onclick: move |_| mode.set(Mode::Create) }
                 }
 
                 if let Some(err) = error {
-                    div { class: "text-xs text-[var(--danger)] border border-[var(--border)] rounded px-3 py-2",
+                    div { class: "text-[12.5px] text-[var(--danger)] border border-[var(--border)] rounded-[11px] px-4 py-3",
                         "{err}"
                     }
                 }
 
-                div { class: "fade-in flex-1",
+                div { class: "fade-in",
                 match mode() {
                     Mode::Join => rsx! {
-                        div { class: "space-y-3",
-                            div { class: "space-y-1",
+                        div { class: "space-y-4",
+                            div { class: "space-y-2",
                                 label { class: LABEL, "Code" }
                                 input {
                                     class: "{INPUT} lowercase",
@@ -225,11 +238,11 @@ pub fn ConnectForm(
                             // ignores the directory above. Must start empty:
                             // an open stale default looks filled, while a
                             // closed one silently dictates connections.
-                            details {
-                                summary { class: "cursor-pointer text-[10px] uppercase tracking-wider text-[var(--text-muted)] hover:text-[var(--text)] transition-colors",
+                            details { class: "dxf-fold",
+                                summary { class: "inline-flex items-center cursor-pointer text-xs uppercase tracking-[0.06em] text-[var(--text-muted)] hover:text-[var(--text)] transition-colors",
                                     "Other ways to connect"
                                 }
-                                div { class: "space-y-1 mt-2",
+                                div { class: "space-y-2 mt-2.5 px-4 py-3.5 rounded-[11px] bg-[var(--panel)] border border-[var(--edge)]",
                                     label { class: LABEL, "Server address" }
                                     input {
                                         class: INPUT_SM,
@@ -238,7 +251,7 @@ pub fn ConnectForm(
                                         value: "{server_url}",
                                         oninput: move |e| server_url.set(e.value()),
                                     }
-                                    div { class: "text-[10px] text-[var(--text-dim)] leading-relaxed",
+                                    div { class: "text-xs text-[var(--text-dim)] leading-relaxed text-pretty",
                                         "Connects straight to a gateway, ignoring the code and the directory. Leave it empty to use the code above."
                                     }
                                 }
@@ -246,7 +259,7 @@ pub fn ConnectForm(
                         }
                     },
                     Mode::Create => rsx! {
-                        div { class: "border border-[var(--border)] rounded p-3 text-xs space-y-3",
+                        div { class: "rounded-[11px] bg-[var(--panel)] border border-[var(--edge)] px-4 py-3.5 text-[12.5px] space-y-3.5",
                             p { class: "text-[var(--text-muted)]",
                                 "Your machine runs the server and keeps its history. Voice runs here too, unless the rendezvous above supplies its own."
                             }
@@ -313,14 +326,19 @@ pub fn ConnectForm(
                 }
                 }
 
-                button {
-                    class: "dxf-cta w-full py-2.5 rounded-xl transition-all disabled:opacity-30 disabled:cursor-not-allowed text-sm",
-                    r#type: "submit",
-                    disabled,
-                    {match mode() {
-                        Mode::Join => "Connect  →",
-                        Mode::Create => "Launch  →",
-                    }}
+                div { class: "mt-auto pt-2",
+                    button {
+                        class: "dxf-cta w-full py-3.5 rounded-xl transition-all disabled:cursor-not-allowed text-[15px]",
+                        r#type: "submit",
+                        disabled,
+                        {match mode() {
+                            Mode::Join => "Connect  →",
+                            Mode::Create => "Launch  →",
+                        }}
+                    }
+                    if disabled {
+                        div { class: "mt-2 text-center text-xs text-[var(--text-dim)]", "{hint}" }
+                    }
                 }
                     }
                 }
@@ -347,18 +365,18 @@ pub fn RendezvousPicker(selected: String, on_select: EventHandler<String>) -> El
     };
 
     rsx! {
-        div { class: "space-y-1.5",
-            div { class: "flex items-center gap-2",
+        div { class: "space-y-2",
+            div { class: "flex items-baseline gap-2",
                 span { class: "{LABEL} flex-1", "Rendezvous server" }
                 button {
                     r#type: "button",
-                    class: "text-[10px] uppercase tracking-wider text-[var(--accent)] hover:text-[var(--accent-strong)] transition-colors",
+                    class: "text-[12.5px] font-medium text-[var(--accent)] hover:text-[var(--accent-strong)] transition-colors",
                     onclick: move |_| adding.set(!adding()),
-                    if adding() { "cancel" } else { "+ add" }
+                    if adding() { "Cancel" } else { "+ Add" }
                 }
             }
             if adding() {
-                div { class: "flex gap-1",
+                div { class: "flex gap-1.5",
                     input {
                         class: "{INPUT_SM} font-mono",
                         r#type: "text",
@@ -377,33 +395,40 @@ pub fn RendezvousPicker(selected: String, on_select: EventHandler<String>) -> El
                     }
                     button {
                         r#type: "button",
-                        class: "px-2 rounded text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors",
+                        class: "px-3 rounded-[10px] text-[12.5px] font-medium text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors",
                         onclick: move |_| {
                             let v = draft().trim().to_string();
                             if !v.is_empty() { commit(v); }
                         },
-                        "save"
+                        "Save"
                     }
                 }
             }
-            div { class: "flex items-center gap-1",
-                select {
-                    class: "flex-1 min-w-0 rounded border border-[var(--border)] px-2 py-1 font-mono text-[11px] focus:outline-none focus:border-[var(--accent)] transition-colors",
-                    style: "color: var(--text); background: var(--panel-solid);",
-                    onchange: move |e| on_select.call(e.value()),
-                    for url in servers.iter().cloned() {
-                        option {
-                            key: "{url}",
-                            value: "{url}",
-                            selected: url == selected,
-                            style: "color: var(--text); background: var(--panel-solid);",
-                            "{url}"
+            div { class: "flex items-center gap-2",
+                div { class: "flex-1 min-w-0 relative",
+                    select {
+                        // The native arrow is the one part of a select that no
+                        // stylesheet reaches, so it is replaced rather than styled.
+                        class: "w-full appearance-none rounded-[10px] border border-[var(--edge-strong)] pl-3.5 pr-9 py-2.5 font-mono text-[12.5px] focus:outline-none focus:border-[var(--accent)] transition-colors",
+                        style: "color: var(--text); background: var(--panel2);",
+                        onchange: move |e| on_select.call(e.value()),
+                        for url in servers.iter().cloned() {
+                            option {
+                                key: "{url}",
+                                value: "{url}",
+                                selected: url == selected,
+                                style: "color: var(--text); background: var(--panel-solid);",
+                                "{url}"
+                            }
                         }
+                    }
+                    span { class: "absolute right-3.5 top-1/2 -translate-y-1/2 text-[10px] text-[var(--text-dim)] pointer-events-none",
+                        "▼"
                     }
                 }
                 button {
                     r#type: "button",
-                    class: "px-1.5 text-[var(--text-dim)] hover:text-[var(--danger)] text-xs transition-colors",
+                    class: "w-[38px] h-10 shrink-0 rounded-[10px] border border-[var(--border)] flex items-center justify-center text-xs text-[var(--text-dim)] hover:text-[var(--danger)] hover:border-[var(--danger)] transition-colors",
                     title: "Forget this server",
                     onclick: move |_| {
                         let mut next = settings.read().clone();
@@ -422,14 +447,14 @@ pub fn RendezvousPicker(selected: String, on_select: EventHandler<String>) -> El
 #[component]
 fn TabButton(active: bool, label: &'static str, onclick: EventHandler<()>) -> Element {
     let cls = if active {
-        "text-[var(--accent)] border-[var(--accent)]"
+        "bg-[var(--accent-soft)] text-[var(--accent-strong)]"
     } else {
-        "text-[var(--text-muted)] border-transparent hover:text-[var(--text)]"
+        "text-[var(--text-dim)] hover:text-[var(--text-muted)]"
     };
     rsx! {
         button {
             r#type: "button",
-            class: "flex-1 px-2 py-1.5 border-b font-medium transition-colors {cls}",
+            class: "flex-1 min-w-0 px-2 py-2.5 rounded-lg text-[13.5px] font-semibold whitespace-nowrap truncate transition-colors {cls}",
             onclick: move |_| onclick.call(()),
             "{label}"
         }
@@ -602,11 +627,11 @@ fn BrowseTab(
 
     rsx! {
         div { class: "space-y-2",
-            div { class: "flex items-center gap-2",
+            div { class: "flex items-baseline gap-2",
                 span { class: "{LABEL} flex-1", "Public servers" }
                 button {
                     r#type: "button",
-                    class: "text-[10px] text-[var(--accent)] hover:text-[var(--accent-strong)] transition-colors",
+                    class: "text-[12.5px] font-medium text-[var(--accent)] hover:text-[var(--accent-strong)] transition-colors",
                     onclick: move |_| refresh_tick.set(refresh_tick() + 1),
                     "\u{21bb} Refresh"
                 }
@@ -615,20 +640,22 @@ fn BrowseTab(
             div { class: "max-h-64 overflow-y-auto space-y-1.5 pr-0.5",
                 match &*entries.read_unchecked() {
                     None => rsx! {
-                        div { class: "text-xs text-[var(--text-dim)] px-3 py-4 text-center border border-[var(--border)] rounded", "Loading\u{2026}" }
+                        div { class: "text-[12.5px] text-[var(--text-dim)] px-6 py-5 text-center border border-[var(--edge-strong)] rounded-xl", "Loading\u{2026}" }
                     },
                     Some(Err(e)) => rsx! {
-                        div { class: "text-xs px-3 py-4 space-y-1 border border-[var(--border)] rounded",
-                            div { class: "text-[var(--danger)]", "Couldn't reach the server directory." }
-                            div { class: "text-[var(--text-dim)]",
+                        div { class: "text-[12.5px] px-6 py-5 space-y-1.5 border border-[var(--edge-strong)] rounded-xl",
+                            div { class: "font-semibold text-[var(--danger)]", "Couldn't reach the server directory." }
+                            div { class: "text-[var(--text-dim)] leading-relaxed text-pretty",
                                 "A code from a friend still works, or create your own server. ({e})"
                             }
                         }
                     },
                     Some(Ok(list)) if list.is_empty() => rsx! {
-                        div { class: "text-xs text-[var(--text-dim)] px-3 py-4 text-center border border-dashed border-[var(--border)] rounded",
-                            "Nobody has listed a public server on this directory yet. A code from \
-                             a friend works without one, or make your own from the Create tab."
+                        div { class: "px-6 py-5 text-center bg-[var(--panel)] border border-dashed border-[var(--edge-strong)] rounded-xl",
+                            div { class: "text-sm font-semibold text-[var(--text-muted)]", "Nothing listed here yet" }
+                            div { class: "mt-1.5 mx-auto max-w-[380px] text-[12.5px] text-[var(--text-dim)] leading-relaxed text-pretty",
+                                "A code from a friend works without one \u{2014} or make your own from the Create tab."
+                            }
                         }
                     },
                     Some(Ok(list)) => rsx! {

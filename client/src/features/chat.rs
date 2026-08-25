@@ -216,11 +216,13 @@ pub fn ChatView() -> Element {
             }
 
             header { class: "h-11 px-3 flex items-center gap-3 border-b border-[var(--border)] shrink-0",
-                span { class: "text-[var(--text-dim)] font-medium", if is_dm { "@" } else { "#" } }
-                span { class: "text-sm text-[var(--accent)] font-medium", "{header_name}" }
+                span { class: "shrink-0 text-[var(--text-dim)] font-medium", if is_dm { "@" } else { "#" } }
+                // The name yields first: a wrapped badge costs a line, a
+                // wrapped key costs nothing you could not read from the list.
+                span { class: "min-w-0 truncate text-sm text-[var(--accent)] font-medium", "{header_name}" }
                 if is_dm {
                     span {
-                        class: "text-[10px] px-1.5 py-0.5 rounded border border-[var(--border)] text-[var(--text-dim)]",
+                        class: "shrink-0 whitespace-nowrap text-[10px] px-1.5 py-0.5 rounded border border-[var(--border)] text-[var(--text-dim)]",
                         title: "End-to-end encrypted and sent over Nostr relays, not through this server. The relays cannot read it and cannot see who sent it. Your conversation follows your key to any server.",
                         "🔒 private · relays"
                     }
@@ -939,7 +941,9 @@ fn Composer(channel_id: Id, composer_label: String, drag_over: Signal<bool>) -> 
                     }
 
                     input {
-                        class: "flex-1 bg-transparent py-2 text-sm text-[var(--text)] focus:outline-none",
+                        // `min-w-0`: an input's intrinsic width is not zero, so
+                        // without it a narrow composer pushes Send off the row.
+                        class: "flex-1 min-w-0 bg-transparent py-2 text-sm text-[var(--text)] focus:outline-none",
                         r#type: "text",
                         placeholder: "Message {composer_label}",
                         value: "{draft}",
@@ -955,7 +959,7 @@ fn Composer(channel_id: Id, composer_label: String, drag_over: Signal<bool>) -> 
                     }
 
                     button {
-                        class: "dxf-cta text-xs font-semibold uppercase tracking-wider px-4 py-1.5 rounded-lg disabled:opacity-30 transition-all",
+                        class: "dxf-cta shrink-0 text-xs font-semibold uppercase tracking-wider px-4 py-1.5 rounded-lg disabled:opacity-30 transition-all",
                         r#type: "submit",
                         disabled: draft().trim().is_empty() && pending_image().is_none(),
                         "Send"
