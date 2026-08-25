@@ -115,5 +115,6 @@ Integration tests spawn a real gateway and drive it through the bot SDK; copy an
 existing helper block in `server/tests/`. `server/tests/voice.rs::ScriptedMinter`
 is the one to copy when a test needs a partial failure.
 
-See `docs/OPS.md` for hosting and networking, `docs/OPEN.md` for what is
-deferred, `README.md` for contributing.
+See `docs/MAP.md` for where things are and what to touch together,
+`docs/OPS.md` for hosting and networking, `docs/OPEN.md` for what is deferred,
+`README.md` for contributing.
