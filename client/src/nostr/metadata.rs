@@ -113,9 +113,41 @@ pub fn name_from(event: &Event) -> Option<String> {
         .find_map(sanitize)
 }
 
+/// Our own kind 0, so other clients can read the name we read from them.
+///
+/// Sanitised on the way out as well as in: the name comes from a local field a
+/// person typed, and publishing a control character would put it in everyone
+/// else's layout rather than only our own.
+pub fn own_metadata_event(secret: &secp256k1::SecretKey, name: &str, now: i64) -> Event {
+    let clean = sanitize(name).unwrap_or_default();
+    let content = serde_json::json!({ "name": clean, "display_name": clean }).to_string();
+    super::event::sign_with(secret, now, KIND_METADATA, vec![], content)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The loop has to close: what we publish must be what `name_from` reads,
+    /// or two Discordia clients each read the other as a truncated key.
+    #[test]
+    fn what_we_publish_is_what_we_read() {
+        let secret = secp256k1::SecretKey::from_slice(&[7; 32]).expect("valid key");
+        let e = own_metadata_event(&secret, "Malvina", 1_700_000_000);
+        assert_eq!(name_from(&e).as_deref(), Some("Malvina"));
+    }
+
+    /// A name typed locally is still a string reaching somebody else's layout.
+    #[test]
+    fn a_published_name_is_sanitised_too() {
+        let secret = secp256k1::SecretKey::from_slice(&[7; 32]).expect("valid key");
+        let e = own_metadata_event(&secret, "bad\u{202e}name", 1_700_000_000);
+        let read = name_from(&e).expect("a name");
+        assert!(
+            !read.contains('\u{202e}'),
+            "bidi override survived: {read:?}"
+        );
+    }
 
     fn metadata(content: &str) -> Event {
         let secret = secp256k1::SecretKey::from_slice(&[9; 32]).expect("valid key");
