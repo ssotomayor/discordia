@@ -184,7 +184,10 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
                             // relay may answer another filter with one, and a
                             // name we did not ask for costs a map entry.
                             if let Some(name) = metadata::name_from(&event) {
-                                state.write().nostr_names.insert(event.pubkey.clone(), name);
+                                // Never a plain insert: see `note_name`. A
+                                // rename that lands before a slow relay's copy
+                                // of the old one would otherwise be undone.
+                                state.write().note_name(&event.pubkey, name, event.created_at);
                             }
                         }
                         nip59::KIND_GIFT_WRAP => {
