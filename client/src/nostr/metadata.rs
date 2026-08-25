@@ -83,12 +83,17 @@ pub fn sanitize(raw: &str) -> Option<String> {
         if c.is_control() {
             continue;
         }
+        // The cap is checked against what this character *would* cost — the
+        // separator included — or a cut landing on a held space would flush it
+        // and then break, ending the name in the whitespace this function
+        // exists to remove.
+        let cost = 1 + usize::from(pending_space);
+        if out.chars().count() + cost > MAX_NAME_CHARS {
+            break;
+        }
         if pending_space {
             out.push(' ');
             pending_space = false;
-        }
-        if out.chars().count() >= MAX_NAME_CHARS {
-            break;
         }
         out.push(c);
     }
@@ -127,6 +132,26 @@ pub fn own_metadata_event(secret: &secp256k1::SecretKey, name: &str, now: i64) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A cut landing exactly on a collapsed space used to flush the space and
+    /// then stop, returning a name ending in the whitespace this function is
+    /// for. Found in review of #107; the other whitespace tests all cut
+    /// somewhere else.
+    #[test]
+    fn a_name_cut_at_a_space_does_not_end_in_one() {
+        let out = sanitize(&("a".repeat(MAX_NAME_CHARS - 1) + " b")).expect("a name");
+        assert_eq!(out, "a".repeat(MAX_NAME_CHARS - 1));
+        assert!(!out.ends_with(' '));
+        assert!(out.chars().count() <= MAX_NAME_CHARS);
+    }
+
+    /// The cap still admits a separator when there is room for what follows.
+    #[test]
+    fn a_space_that_fits_is_kept() {
+        let out = sanitize(&("a".repeat(MAX_NAME_CHARS - 2) + " b")).expect("a name");
+        assert_eq!(out, format!("{} b", "a".repeat(MAX_NAME_CHARS - 2)));
+        assert_eq!(out.chars().count(), MAX_NAME_CHARS);
+    }
 
     /// The loop has to close: what we publish must be what `name_from` reads,
     /// or two Discordia clients each read the other as a truncated key.
