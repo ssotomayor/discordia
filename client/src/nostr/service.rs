@@ -112,6 +112,13 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
         );
 
         pool.publish(nip17::dm_relay_list(&secret, &relays, now()));
+        // Reading kind 0 is half a loop: between two Discordia clients neither
+        // had ever published one, so both read the other as a truncated key.
+        pool.publish(metadata::own_metadata_event(
+            &secret,
+            &identity.display_name,
+            now(),
+        ));
 
         // Offline nothing else ever sets this, and your own messages then read
         // as your own truncated key. The gateway's `Ready` overwrites it with
