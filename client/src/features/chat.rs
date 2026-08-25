@@ -137,9 +137,18 @@ pub fn ChatView() -> Element {
     let dm = selected_channel.and_then(|cid| snapshot.dm_of(cid).cloned());
     let channel_meta =
         selected_channel.and_then(|cid| snapshot.channels.iter().find(|c| c.id == cid).cloned());
-    let messages: Vec<Message> = selected_channel
+    let mut messages: Vec<Message> = selected_channel
         .and_then(|cid| snapshot.messages.get(&cid).cloned())
         .unwrap_or_default();
+    // A DM author's stored username is a placeholder — the Nostr side has no
+    // name to store — so it is resolved here. Guild rows keep the server's
+    // copy: it is authoritative, and a member who left should keep the name
+    // they posted under.
+    if dm.is_some() {
+        for m in &mut messages {
+            m.author.username = snapshot.display_name(&m.author.pubkey);
+        }
+    }
     let typers = selected_channel
         .map(|cid| snapshot.typers_in(cid))
         .unwrap_or_default();
