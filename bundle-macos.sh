@@ -11,12 +11,6 @@ fi
 # only, leaving no CodeResources seal, and the identity is per-developer.
 identity="${DISCORDIA_SIGNING_IDENTITY:-}"
 
-if command -v npx >/dev/null 2>&1; then
-  (cd client && npx @tailwindcss/cli -i assets/tailwind.css -o assets/tailwind.out.css --minify)
-else
-  echo "warn: npx not found — using committed tailwind.out.css" >&2
-fi
-
 if [[ -n "$identity" ]]; then
   if command -v xmllint >/dev/null 2>&1; then
     xmllint --noout client/Entitlements.plist || {
