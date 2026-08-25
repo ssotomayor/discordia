@@ -187,8 +187,11 @@ pub struct AppState {
     pub nostr_event_ids: HashMap<Id, String>,
     pub contacts: crate::nostr::nip02::ContactList,
     pub nostr_relays_up: std::collections::HashSet<String>,
-    /// Names peers published for themselves (kind 0), by pubkey.
-    pub nostr_names: HashMap<String, String>,
+    /// Names peers published for themselves (kind 0), by pubkey, each with the
+    /// `created_at` it came with. Kept because kind 0 is replaceable and the
+    /// pool dedupes by event id: a rename is a new id, so the old copy still
+    /// arrives, and last-writer-wins would show whichever relay was slower.
+    pub nostr_names: HashMap<String, (String, i64)>,
     pub dm_mode: bool,
     pub catalog: Vec<GuildSummary>,
     pub catalog_total: u32,
@@ -520,7 +523,7 @@ impl AppState {
         if let Some(pet) = self.contacts.petname(pubkey) {
             return pet.to_string();
         }
-        if let Some(published) = self.nostr_names.get(pubkey) {
+        if let Some((published, _)) = self.nostr_names.get(pubkey) {
             return published.clone();
         }
         crate::identity::truncate_pubkey(pubkey)
@@ -548,6 +551,21 @@ impl AppState {
 
     pub fn dm_unread_total(&self) -> u32 {
         self.dm_unread.values().copied().sum()
+    }
+
+    /// Records a name a peer published for themselves, keeping the newest.
+    ///
+    /// Ties keep what is already there: two relays serving the same event is
+    /// the ordinary case, and re-inserting it would churn the signal for
+    /// nothing. Returns whether the map changed.
+    pub fn note_name(&mut self, pubkey: &str, name: String, at: i64) -> bool {
+        match self.nostr_names.get(pubkey) {
+            Some((_, seen)) if *seen >= at => false,
+            _ => {
+                self.nostr_names.insert(pubkey.to_string(), (name, at));
+                true
+            }
+        }
     }
 
     /// Forgets a conversation here. The relays and the other person keep their
@@ -620,6 +638,33 @@ pub fn use_gateway() -> GatewayTx {
 mod tests {
     use super::*;
     use crate::protocol::{Member, Profile, User};
+
+    /// The defect this replaced: relays are asked in parallel and deduped by
+    /// event id, so a rename and the old copy both arrive, in any order.
+    #[test]
+    fn a_stale_kind_0_cannot_undo_a_rename() {
+        let mut s = AppState::empty();
+        assert!(s.note_name("abcd", "Bob".into(), 200));
+        assert!(!s.note_name("abcd", "Alice".into(), 100));
+        assert_eq!(s.display_name("abcd"), "Bob");
+    }
+
+    /// The rename itself must land whichever way round the two arrive.
+    #[test]
+    fn a_newer_kind_0_replaces_the_name() {
+        let mut s = AppState::empty();
+        assert!(s.note_name("abcd", "Alice".into(), 100));
+        assert!(s.note_name("abcd", "Bob".into(), 200));
+        assert_eq!(s.display_name("abcd"), "Bob");
+    }
+
+    /// Two relays serving the same event is the ordinary case, not a change.
+    #[test]
+    fn the_same_event_twice_changes_nothing() {
+        let mut s = AppState::empty();
+        assert!(s.note_name("abcd", "Alice".into(), 100));
+        assert!(!s.note_name("abcd", "Alice".into(), 100));
+    }
 
     /// The row must go and the mark must stay: without the mark, the relays
     /// replay the same conversation back on the next launch.
