@@ -19,6 +19,10 @@ decentralisation.
 lives, what changes with it, and which files must not be read whole. Cheaper
 than the search it replaces, and it says which of them cost 20k tokens to open.
 
+**Before merging, re-read the docs against what changed.** A path, a symbol, a
+file size band or a trap number in `docs/MAP.md` is a claim about the tree, and
+moving code is what makes one false.
+
 **Docs — terse.** Prefer a table or a mermaid chart to prose. No file restates
 another. Deferred work goes in `docs/OPEN.md`, never only in a commit message.
 
