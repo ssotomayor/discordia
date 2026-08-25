@@ -147,14 +147,14 @@ pub fn ChatView() -> Element {
         Some(cid) if !composer_locked(&snapshot, cid) => "dxf-chat-drop",
         _ => "dxf-chat-none",
     };
+    let dm_name = dm
+        .as_ref()
+        .map(|d| snapshot.display_name(&d.other_pubkey))
+        .unwrap_or_default();
     drop(snapshot);
 
     let (is_dm, header_name, composer_label) = match &dm {
-        Some(d) => (
-            true,
-            d.other.username.clone(),
-            format!("@{}", d.other.username),
-        ),
+        Some(_) => (true, dm_name.clone(), format!("@{dm_name}")),
         None => {
             let name = channel_meta
                 .as_ref()
@@ -762,7 +762,7 @@ fn Composer(channel_id: Id, composer_label: String, drag_over: Signal<bool>) -> 
         let dm_peer = state
             .read()
             .dm_of(channel_id)
-            .map(|d| d.other.pubkey.clone());
+            .map(|d| d.other_pubkey.clone());
         if let Some(peer) = dm_peer {
             if image.is_some() {
                 state.write().error_toast =

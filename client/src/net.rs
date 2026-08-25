@@ -586,7 +586,7 @@ fn apply(
             if is_dm && s.dm_of(cid).is_none() {
                 s.dms.push(crate::state::DmInfo {
                     channel_id: cid,
-                    other: m.author.clone(),
+                    other_pubkey: m.author.pubkey.clone(),
                 });
             }
             let author_is_self = s
