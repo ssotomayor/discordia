@@ -5,21 +5,33 @@ carries what every session needs — the rules and the invariants; this carries
 what only some do: where to open, what moves together, how the parts connect. It exists because a handful of files hold most of the tree,
 and reading one whole to find one arm is the usual waste.
 
-Symbols, never line numbers: a symbol can be grepped and a number cannot, and
-a number is wrong as soon as two branches disagree — which is how the first
-version of this file shipped three of them stale.
+Symbols, never line numbers, and no hand-kept list that a commit can falsify:
+a symbol can be grepped and a number cannot, and this file shipped three stale
+numbers and seven miscategorised files before that rule was learned.
 
-## Read whole vs grep
+## Do not read these whole
 
-| Size | Files | How |
-|---|---|---|
-| < 300 | most of `client/src/nostr/*`, `client/src/{identity,session,settings,version,quic,portmap}.rs`, `protocol/src/rendezvous.rs` | read whole |
-| 300–800 | `client/src/{state,app}.rs`, `client/src/features/{home,connect,guilds,workspace}.rs`, `server/src/{http,auth}.rs` | grep to a symbol, then read the block |
-| > 900 | `client/src/features/{voice,channels,screenshare,chat}.rs`, `client/src/{net,update}.rs`, `server/src/{state/mod,gateway/connection,store}.rs`, `protocol/src/lib.rs` | **never read whole** — grep the variant or `fn` name |
+10 files hold most of the tree. Opening one to find a single arm costs more
+than every other document here put together, so grep the variant or the `fn`
+name instead.
 
-Bands, not a list of sizes: a number goes stale on the next commit, a band
-survives. Re-derive with `wc -l` if a file feels miscategorised — eleven are
-over 800 today.
+| File | Lines |
+|---|---|
+| `client/src/features/voice.rs` | 2726 |
+| `server/src/state/mod.rs` | 2331 |
+| `server/src/gateway/connection.rs` | 1938 |
+| `client/src/features/channels.rs` | 1910 |
+| `client/src/features/screenshare.rs` | 1582 |
+| `client/src/net.rs` | 1145 |
+| `client/src/features/chat.rs` | 958 |
+| `protocol/src/lib.rs` | 952 |
+| `server/src/store.rs` | 942 |
+| `client/src/update.rs` | 905 |
+
+Everything else is small enough that `wc -l` answers faster than a list here
+could stay true. There used to be rows for "under 300" and "300 to 800": they
+were wrong about seven files across three review rounds, and being wrong in
+that direction says a file is safe to open when it is not.
 
 ## Entry points
 
