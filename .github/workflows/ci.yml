@@ -109,26 +109,6 @@ jobs:
       - name: Clippy (client, macOS-only code)
         run: cargo clippy -p dioxusfun --all-targets -- -D warnings
 
-  tailwind:
-    name: tailwind css is current
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-          cache-dependency-path: client/package-lock.json
-
-      - name: Install Node deps
-        run: cd client && npm ci
-
-      - name: Regenerate Tailwind CSS
-        run: cd client && npx @tailwindcss/cli -i assets/tailwind.css -o assets/tailwind.out.css --minify
-
-      - name: Committed CSS matches source
-        run: git diff --exit-code client/assets/tailwind.out.css
-
   prerelease-linux:
     name: pre-release · server+client (linux · x86_64)
     if: github.event_name == 'push'

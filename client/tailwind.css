@@ -1,0 +1,8 @@
+@import "tailwindcss" source(none);
+@source "./src/**/*.rs";
+/* The @import must stay on line 1 or the build emits an empty stylesheet, and
+   no apostrophes anywhere: the v4 CLI reads one as a string and dies. */
+/* Prose here conjures classes: candidates are extracted by pattern, not
+   parsed, so naming a utility in a comment puts it in the build. */
+/* At the crate root because that is where dx looks; its output lands in
+   assets/tailwind.css, which is where the input used to live. */

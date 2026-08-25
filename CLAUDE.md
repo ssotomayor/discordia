@@ -88,6 +88,7 @@ flowchart LR
 | 10 | One user joins `screen-{ch}` under up to 3 identities (LiveKit allows one connection each): bare = webview (renders all, captures screen on Windows, publishes camera everywhere), `#audio` = native subscriber, `#video` = native macOS screen publisher. Watchers resolve the suffix in `attach`/`reattach` only. |
 | 11 | Native share publications are owned by `ScreenShareBridge`'s effect, keyed on voice epoch + target — not by the button. Anything ending a share must clear `screen_share_target`. |
 | 12 | Identity is a BIP-340 keypair; your key is your account. `bot` and `client_version` in `Identify` are self-declared and unauthenticated by design. |
+| 13 | Tailwind is dx's, not npm's: it finds `client/tailwind.css` at the crate root, installs a standalone CLI, and writes `client/assets/tailwind.css` — which is committed because a plain `cargo build` has no dx to generate it. |
 
 ## Build, run, test
 
@@ -100,7 +101,8 @@ cargo fmt --all
 
 cargo run -p dioxusfun-server            # DIOXUSFUN_{ADDR,DATA_DIR,OPERATORS}
 cargo run -p dioxusfun-rendezvous        # DIOXUSFUN_RENDEZVOUS_{ADDR,DATA_DIR}
-dx serve --package dioxusfun             # or cargo run -p dioxusfun
+dx serve --package dioxusfun             # dx also runs the Tailwind watcher
+cargo run -p dioxusfun                   # no watcher: new classes need one dx build
 
 DISCORDIA_SIGNING_IDENTITY="Apple Development: You (TEAMID)" ./bundle-macos.sh
 ```
