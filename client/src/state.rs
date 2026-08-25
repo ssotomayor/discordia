@@ -163,7 +163,7 @@ pub struct CameraDevice {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DmInfo {
     pub channel_id: Id,
-    pub other: User,
+    pub other_pubkey: String,
 }
 
 #[derive(Clone)]
@@ -184,6 +184,8 @@ pub struct AppState {
     pub nostr_event_ids: HashMap<Id, String>,
     pub contacts: crate::nostr::nip02::ContactList,
     pub nostr_relays_up: std::collections::HashSet<String>,
+    /// Names peers published for themselves (kind 0), by pubkey.
+    pub nostr_names: HashMap<String, String>,
     pub dm_mode: bool,
     pub catalog: Vec<GuildSummary>,
     pub catalog_total: u32,
@@ -272,6 +274,7 @@ impl AppState {
             nostr_event_ids: HashMap::new(),
             contacts: Default::default(),
             nostr_relays_up: std::collections::HashSet::new(),
+            nostr_names: HashMap::new(),
             dm_mode: false,
             catalog: Vec::new(),
             catalog_total: 0,
@@ -504,6 +507,21 @@ impl AppState {
             .map(|c| c.id)
     }
 
+    /// A roster name is one on a server you share, a petname is one you typed,
+    /// and kind 0 is the peer's own — in that order of who stands behind it.
+    pub fn display_name(&self, pubkey: &str) -> String {
+        if let Some(u) = self.user_of(pubkey) {
+            return u.username.clone();
+        }
+        if let Some(pet) = self.contacts.petname(pubkey) {
+            return pet.to_string();
+        }
+        if let Some(published) = self.nostr_names.get(pubkey) {
+            return published.clone();
+        }
+        crate::identity::truncate_pubkey(pubkey)
+    }
+
     pub fn dm_of(&self, channel_id: Id) -> Option<&DmInfo> {
         self.dms.iter().find(|d| d.channel_id == channel_id)
     }
@@ -558,12 +576,6 @@ impl AppState {
             .iter()
             .find(|m| m.user.pubkey == pubkey)
             .map(|m| &m.user)
-    }
-
-    pub fn display_name(&self, pubkey: &str) -> String {
-        self.user_of(pubkey)
-            .map(|u| u.username.clone())
-            .unwrap_or_else(|| crate::identity::truncate_pubkey(pubkey))
     }
 }
 

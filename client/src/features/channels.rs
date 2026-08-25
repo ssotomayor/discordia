@@ -98,6 +98,17 @@ pub fn ChannelsColumn() -> Element {
     let snapshot = state.read();
     let dm_mode = snapshot.dm_mode;
     let dms: Vec<DmInfo> = snapshot.dms.clone();
+    // Resolved here, not stored: a DM row is drawn before any source of a name
+    // has arrived.
+    let dm_names: std::collections::HashMap<String, String> = dms
+        .iter()
+        .map(|d| {
+            (
+                d.other_pubkey.clone(),
+                snapshot.display_name(&d.other_pubkey),
+            )
+        })
+        .collect();
     let selected_guild = snapshot.selected_guild;
     let selected_channel = snapshot.selected_channel;
     let guild =
@@ -208,15 +219,15 @@ pub fn ChannelsColumn() -> Element {
                                 "text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-white/[0.03]"
                             };
                             let g2 = gateway.clone();
-                            let uname = dm.other.username.clone();
-                            let disc = discriminator(&dm.other.pubkey);
+                            let uname = dm_names.get(&dm.other_pubkey).cloned().unwrap_or_default();
+                            let disc = discriminator(&dm.other_pubkey);
                             rsx! {
                                 button {
                                     key: "{cid}",
                                     class: "w-full flex items-center gap-2 px-2 py-1 rounded text-left text-sm transition-colors {cls}",
                                     onclick: move |_| select_dm(&mut state, &g2, cid),
                                     crate::features::profiles::Avatar {
-                                        pubkey: dm.other.pubkey.clone(),
+                                        pubkey: dm.other_pubkey.clone(),
                                         name: uname.clone(),
                                         size: "w-6 h-6",
                                         text: "text-[10px]",
