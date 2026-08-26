@@ -20,10 +20,10 @@ name instead.
 | `client/src/features/voice.rs` | 2726 |
 | `server/src/state/mod.rs` | 2331 |
 | `server/src/gateway/connection.rs` | 1938 |
-| `client/src/features/channels.rs` | 1910 |
+| `client/src/features/channels.rs` | 1921 |
 | `client/src/features/screenshare.rs` | 1582 |
 | `client/src/net.rs` | 1145 |
-| `client/src/features/chat.rs` | 958 |
+| `client/src/features/chat.rs` | 971 |
 | `protocol/src/lib.rs` | 952 |
 | `server/src/store.rs` | 942 |
 | `client/src/update.rs` | 905 |
