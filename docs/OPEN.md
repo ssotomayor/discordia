@@ -112,3 +112,7 @@ Closed and retired entries are not kept; `git log docs/` has them.
 - 57 · Every Windows activation leaks its 12-byte blob, deliberately.
 - 59 · The Windows blob's lifetime rule is an observation, not a contract.
 - 65 · The transmit gate judges the denoised hop, so its operating point moves with the denoiser.
+- 80 · A DM delete compares our clock to the sender's `created_at`. Two clocks
+  apart by N seconds hide a genuinely new message for N. Per-relay "finished
+  replaying" would date it locally instead, but `RelayEvent::Event` withholds
+  the relay on purpose — the pool dedupes by id, so first-to-arrive is a race.

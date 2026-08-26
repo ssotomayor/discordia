@@ -353,7 +353,7 @@ fn send_message(
                 created_at: ts,
                 reply_to,
             };
-            insert_message(&msg, our_pubkey, state);
+            insert_message(&msg, our_pubkey, state, Source::Ours);
         }
         Err(e) => {
             // Refused rather than sent in the clear — there is no cleartext
@@ -378,7 +378,28 @@ fn receive(
     let Ok(msg) = nip17::open_chat(secret, our_pubkey, gift) else {
         return;
     };
-    insert_message(&msg, our_pubkey, state);
+    insert_message(&msg, our_pubkey, state, Source::Relay);
+}
+
+/// Where a message came from. Only a relay can be replaying deleted history;
+/// what we just typed here is new by construction.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Source {
+    Ours,
+    Relay,
+}
+
+/// Whether a delete still hides this message.
+///
+/// Relays replay the whole history on every launch, so a cleared conversation
+/// would walk back in without this. Strictly below the mark, and never for our
+/// own send: both are the same second of a delete, and dropping a message
+/// someone actually sent is worse than a stale one reappearing once.
+fn hidden_by_delete(s: &AppState, msg: &nip17::ChatMessage, source: Source) -> bool {
+    source == Source::Relay
+        && s.dm_cleared_at
+            .get(&msg.peer)
+            .is_some_and(|at| msg.created_at < *at)
 }
 
 /// Put a message into the conversation it belongs to, in time order.
@@ -386,18 +407,17 @@ fn receive(
 /// Relays replay stored events in whatever order they like and the same message
 /// arrives from several of them, so this both deduplicates and sorts rather
 /// than appending.
-fn insert_message(msg: &nip17::ChatMessage, our_pubkey: &str, state: &mut Signal<AppState>) {
+fn insert_message(
+    msg: &nip17::ChatMessage,
+    our_pubkey: &str,
+    state: &mut Signal<AppState>,
+    source: Source,
+) {
     let cid = conversation_id(&msg.peer);
     let mid = message_id(&msg.id);
     let mut s = state.write();
 
-    // Relays replay the whole history on every launch, so a cleared
-    // conversation would walk back in. Anything newer than the mark is not
-    // what was deleted, and reopens the chat.
-    if s.dm_cleared_at
-        .get(&msg.peer)
-        .is_some_and(|at| msg.created_at <= *at)
-    {
+    if hidden_by_delete(&s, msg, source) {
         return;
     }
 
@@ -539,5 +559,54 @@ mod tests {
     fn our_own_name_is_always_asked_for() {
         let me = key('a');
         assert_eq!(names_wanted(&AppState::empty(), &me), vec![me]);
+    }
+
+    fn chat(peer: &str, created_at: i64) -> nip17::ChatMessage {
+        nip17::ChatMessage {
+            id: "beef".into(),
+            author: key('a'),
+            peer: peer.to_string(),
+            content: "hi".into(),
+            created_at,
+            reply_to: None,
+        }
+    }
+
+    /// What a delete is for: the relays still hold the events and hand them
+    /// back on the next launch.
+    #[test]
+    fn replayed_history_stays_deleted() {
+        let peer = key('b');
+        let mut s = AppState::empty();
+        s.clear_dm(&peer, 100);
+
+        assert!(hidden_by_delete(&s, &chat(&peer, 99), Source::Relay));
+        assert!(!hidden_by_delete(&s, &chat(&peer, 101), Source::Relay));
+    }
+
+    /// Delete, then write to the same person inside that second. Both stamps
+    /// come from `now()`, so they are equal — and the message we just sent to
+    /// the relays has to appear here too.
+    #[test]
+    fn writing_again_reopens_the_conversation() {
+        let peer = key('b');
+        let mut s = AppState::empty();
+        s.clear_dm(&peer, 100);
+
+        assert!(!hidden_by_delete(&s, &chat(&peer, 100), Source::Ours));
+        // And once it comes back from a relay on the next launch, still ours.
+        assert!(!hidden_by_delete(&s, &chat(&peer, 100), Source::Relay));
+    }
+
+    /// The mark is our clock; `created_at` is the sender's. Nothing keeps the
+    /// two in step, so the mark may only ever hide, never a whole conversation.
+    #[test]
+    fn a_delete_never_reaches_another_peer() {
+        let cleared = key('b');
+        let other = key('c');
+        let mut s = AppState::empty();
+        s.clear_dm(&cleared, 100);
+
+        assert!(!hidden_by_delete(&s, &chat(&other, 1), Source::Relay));
     }
 }
