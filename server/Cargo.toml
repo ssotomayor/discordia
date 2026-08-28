@@ -8,7 +8,7 @@ build = "build.rs"
 ureq = { version = "2", default-features = false, features = ["tls"] }
 flate2 = "1"
 tar = "0.4"
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "8", default-features = false, features = ["deflate"] }
 sha2 = "0.10"
 
 [dev-dependencies]
