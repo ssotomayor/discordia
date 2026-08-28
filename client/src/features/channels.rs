@@ -98,6 +98,20 @@ pub fn ChannelsColumn() -> Element {
     let snapshot = state.read();
     let dm_mode = snapshot.dm_mode;
     let dms: Vec<DmInfo> = snapshot.dms.clone();
+    // The effective state, not the channel's own flag: a guild muted as a whole
+    // is silent, and a row that did not say so would be lying about what the
+    // person will hear.
+    let muted_dms: std::collections::HashSet<Id> = dms
+        .iter()
+        .filter(|d| snapshot.channel_muted(d.channel_id))
+        .map(|d| d.channel_id)
+        .collect();
+    let muted_channels: std::collections::HashSet<Id> = snapshot
+        .channels
+        .iter()
+        .filter(|c| snapshot.is_muted(c.id))
+        .map(|c| c.id)
+        .collect();
     // Resolved here, not stored: a DM row is drawn before any source of a name
     // has arrived.
     let dm_names: std::collections::HashMap<String, String> = dms
@@ -153,6 +167,8 @@ pub fn ChannelsColumn() -> Element {
         .collect();
 
     let mut chan_menu = use_signal::<Option<ChanMenu>>(|| None);
+    let settings = use_context::<Signal<crate::settings::ClientSettings>>();
+    let mut dm_confirming = use_signal::<Option<Id>>(|| None);
     let mut show_create = use_signal(|| false);
     let mut dragging = use_signal::<Option<Id>>(|| None);
 
@@ -221,20 +237,62 @@ pub fn ChannelsColumn() -> Element {
                             let g2 = gateway.clone();
                             let uname = dm_names.get(&dm.other_pubkey).cloned().unwrap_or_default();
                             let disc = discriminator(&dm.other_pubkey);
+                            let peer = dm.other_pubkey.clone();
+                            let muted = muted_dms.contains(&cid);
+                            let asking = dm_confirming() == Some(cid);
+                            let del_cls = if asking {
+                                "px-1.5 h-4 rounded-full border border-[var(--danger)] text-[9px] font-bold uppercase tracking-wide text-[var(--danger)] flex items-center"
+                            } else {
+                                "w-4 h-4 rounded-full hidden group-hover:flex items-center justify-center text-[10px] text-[var(--text-dim)] hover:text-[var(--danger)]"
+                            };
                             rsx! {
-                                button {
+                                div {
                                     key: "{cid}",
-                                    class: "w-full flex items-center gap-2 px-2 py-1 rounded text-left text-sm transition-colors {cls}",
-                                    onclick: move |_| select_dm(&mut state, &g2, cid),
-                                    crate::features::profiles::Avatar {
-                                        pubkey: dm.other_pubkey.clone(),
-                                        name: uname.clone(),
-                                        size: "w-6 h-6",
-                                        text: "text-[10px]",
+                                    class: "group w-full flex items-center gap-2 px-2 py-1 rounded text-sm transition-colors {cls}",
+                                    button {
+                                        class: "flex-1 min-w-0 flex items-center gap-2 text-left",
+                                        onclick: move |_| {
+                                            dm_confirming.set(None);
+                                            select_dm(&mut state, &g2, cid);
+                                        },
+                                        crate::features::profiles::Avatar {
+                                            pubkey: dm.other_pubkey.clone(),
+                                            name: uname.clone(),
+                                            size: "w-6 h-6",
+                                            text: "text-[10px]",
+                                        }
+                                        span { class: "truncate flex-1",
+                                            "{uname}"
+                                            span { class: "text-[var(--text-dim)] font-mono text-[10px] ml-0.5", "#{disc}" }
+                                        }
                                     }
-                                    span { class: "truncate flex-1",
-                                        "{uname}"
-                                        span { class: "text-[var(--text-dim)] font-mono text-[10px] ml-0.5", "#{disc}" }
+                                    if muted && !asking {
+                                        span {
+                                            class: "shrink-0 text-[9px] text-[var(--text-dim)] group-hover:hidden",
+                                            title: "Muted",
+                                            "🔕"
+                                        }
+                                    }
+                                    if !asking {
+                                        button {
+                                            class: "shrink-0 w-4 h-4 rounded-full hidden group-hover:flex items-center justify-center text-[10px] text-[var(--text-dim)] hover:text-[var(--text)] transition-colors",
+                                            title: if muted { "Unmute this conversation" } else { "Mute this conversation" },
+                                            onclick: move |_| crate::state::set_dm_muted(state, settings, cid, !muted),
+                                            if muted { "🔔" } else { "🔕" }
+                                        }
+                                    }
+                                    button {
+                                        class: "shrink-0 justify-center transition-colors {del_cls}",
+                                        title: "Delete this conversation on this machine. The relays keep their copy, and a new message reopens it.",
+                                        onclick: move |_| {
+                                            if !asking {
+                                                dm_confirming.set(Some(cid));
+                                                return;
+                                            }
+                                            crate::state::forget_dm(state, settings, &peer);
+                                            dm_confirming.set(None);
+                                        },
+                                        if asking { "Del?" } else { "✕" }
                                     }
                                 }
                             }
@@ -293,6 +351,9 @@ pub fn ChannelsColumn() -> Element {
                                         },
                                         span { class: "text-[var(--text-dim)]", draggable: false, "#" }
                                         span { class: "truncate flex-1", draggable: false, "{ch.name}" }
+                                        if muted_channels.contains(&ch.id) {
+                                            span { class: "text-[10px] text-[var(--text-dim)]", title: "Muted", "🔕" }
+                                        }
                                         if ch.read_only {
                                             span { class: "text-[10px] text-[var(--text-dim)]", title: "Read-only", "🔒" }
                                         }
@@ -341,7 +402,13 @@ pub fn ChannelsColumn() -> Element {
                                             }
                                         },
                                         ondragend: move |_| dragging.set(None),
+                                        // Muting is the only item a plain member gets and it means
+                                        // nothing on a voice channel, so without this the menu
+                                        // opens empty for them.
                                         oncontextmenu: move |e: MouseEvent| {
+                                            if !can_manage_channels {
+                                                return;
+                                            }
                                             e.prevent_default();
                                             let c = e.client_coordinates();
                                             chan_menu.set(Some(ChanMenu {
@@ -487,7 +554,8 @@ fn ChannelMenuPopover(
                         let gw_ro = gateway.clone();
                         let ch_ro = ch.clone();
                         rsx! {
-                            {
+                            if matches!(ch.kind, ChannelKind::Text) {
+                                {
                                 let cid = ch.id;
                                 let muted = state.read().channel_muted(cid);
                                 rsx! {
@@ -504,6 +572,7 @@ fn ChannelMenuPopover(
                                         },
                                         if muted { "Unmute channel" } else { "Mute channel" }
                                     }
+                                }
                                 }
                             }
                             if can_manage {
