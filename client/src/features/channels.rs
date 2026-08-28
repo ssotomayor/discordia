@@ -282,16 +282,14 @@ pub fn ChannelsColumn() -> Element {
                                         ondragend: move |_| dragging.set(None),
                                         onclick: move |_| select_text_channel(&mut state, &g2, cid),
                                         oncontextmenu: move |e: MouseEvent| {
-                                            if can_manage_channels {
-                                                e.prevent_default();
-                                                let c = e.client_coordinates();
-                                                chan_menu.set(Some(ChanMenu {
-                                                    channel: ctx_ch.clone(),
-                                                    x: c.x,
-                                                    y: c.y,
-                                                    mode: ChanMenuMode::Menu,
-                                                }));
-                                            }
+                                            e.prevent_default();
+                                            let c = e.client_coordinates();
+                                            chan_menu.set(Some(ChanMenu {
+                                                channel: ctx_ch.clone(),
+                                                x: c.x,
+                                                y: c.y,
+                                                mode: ChanMenuMode::Menu,
+                                            }));
                                         },
                                         span { class: "text-[var(--text-dim)]", draggable: false, "#" }
                                         span { class: "truncate flex-1", draggable: false, "{ch.name}" }
@@ -344,16 +342,14 @@ pub fn ChannelsColumn() -> Element {
                                         },
                                         ondragend: move |_| dragging.set(None),
                                         oncontextmenu: move |e: MouseEvent| {
-                                            if can_manage_channels {
-                                                e.prevent_default();
-                                                let c = e.client_coordinates();
-                                                chan_menu.set(Some(ChanMenu {
-                                                    channel: ctx_ch.clone(),
-                                                    x: c.x,
-                                                    y: c.y,
-                                                    mode: ChanMenuMode::Menu,
-                                                }));
-                                            }
+                                            e.prevent_default();
+                                            let c = e.client_coordinates();
+                                            chan_menu.set(Some(ChanMenu {
+                                                channel: ctx_ch.clone(),
+                                                x: c.x,
+                                                y: c.y,
+                                                mode: ChanMenuMode::Menu,
+                                            }));
                                         },
                                         VoiceChannelRow {
                                             channel: ch.clone(),
@@ -383,6 +379,7 @@ pub fn ChannelsColumn() -> Element {
             if let Some(m) = chan_menu() {
                 ChannelMenuPopover {
                     menu: m,
+                    can_manage: can_manage_channels,
                     guild_order: guild_order.clone(),
                     on_close: move |_| chan_menu.set(None),
                     on_mode: move |mode: ChanMenuMode| {
@@ -454,11 +451,14 @@ fn CreateChannelForm(guild_id: Id, on_done: EventHandler<()>) -> Element {
 #[component]
 fn ChannelMenuPopover(
     menu: ChanMenu,
+    can_manage: bool,
     guild_order: Vec<Channel>,
     on_close: EventHandler<()>,
     on_mode: EventHandler<ChanMenuMode>,
 ) -> Element {
     let gateway = use_gateway();
+    let mut state = use_app_state();
+    let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let ch = menu.channel.clone();
     let siblings: Vec<Channel> = guild_order
         .iter()
@@ -487,66 +487,87 @@ fn ChannelMenuPopover(
                         let gw_ro = gateway.clone();
                         let ch_ro = ch.clone();
                         rsx! {
-                            button {
-                                class: "w-full text-left px-3 py-1.5 rounded text-[var(--text)] hover:bg-white/[0.04] transition-colors",
-                                onclick: move |_| on_mode.call(ChanMenuMode::Edit),
-                                "Edit name & topic"
-                            }
-                            if let Some(above) = move_up {
-                                {
-                                    let gw = gateway.clone();
-                                    let order = guild_order.clone();
-                                    let id = ch.id;
-                                    rsx! {
-                                        button {
-                                            class: "w-full text-left px-3 py-1.5 rounded text-[var(--text)] hover:bg-white/[0.04] transition-colors",
-                                            onclick: move |_| {
-                                                send_reorder(&gw, &order, id, above);
-                                                on_close.call(());
-                                            },
-                                            "Move up"
-                                        }
+                            {
+                                let cid = ch.id;
+                                let muted = state.read().channel_muted(cid);
+                                rsx! {
+                                    button {
+                                        class: "w-full text-left px-3 py-1.5 rounded text-[var(--text)] hover:bg-white/[0.04] transition-colors",
+                                        onclick: move |_| {
+                                            let now = !muted;
+                                            state.write().set_channel_muted(cid, now);
+                                            let mut next = settings.read().clone();
+                                            next.set_muted_channel(cid, now);
+                                            settings.set(next.clone());
+                                            crate::settings::save(&next);
+                                            on_close.call(());
+                                        },
+                                        if muted { "Unmute channel" } else { "Mute channel" }
                                     }
                                 }
                             }
-                            if let Some(below) = move_down {
-                                {
-                                    let gw = gateway.clone();
-                                    let order = guild_order.clone();
-                                    let id = ch.id;
-                                    rsx! {
-                                        button {
-                                            class: "w-full text-left px-3 py-1.5 rounded text-[var(--text)] hover:bg-white/[0.04] transition-colors",
-                                            onclick: move |_| {
-                                                send_reorder(&gw, &order, id, below);
-                                                on_close.call(());
-                                            },
-                                            "Move down"
-                                        }
-                                    }
-                                }
-                            }
-                            if matches!(ch.kind, ChannelKind::Text) {
+                            if can_manage {
                                 button {
                                     class: "w-full text-left px-3 py-1.5 rounded text-[var(--text)] hover:bg-white/[0.04] transition-colors",
-                                    onclick: move |_| {
-                                        gw_ro.send(ClientMessage::UpdateChannel {
-                                            channel_id: ch_ro.id,
-                                            name: ch_ro.name.clone(),
-                                            topic: ch_ro.topic.clone(),
-                                            read_only: !ch_ro.read_only,
-                                            position: ch_ro.position,
-                                            slowmode_secs: ch_ro.slowmode_secs,
-                                        });
-                                        on_close.call(());
-                                    },
-                                    if ch.read_only { "🔓 Make writable" } else { "🔒 Make read-only" }
+                                    onclick: move |_| on_mode.call(ChanMenuMode::Edit),
+                                    "Edit name & topic"
                                 }
-                            }
-                            button {
-                                class: "w-full text-left px-3 py-1.5 rounded text-[var(--danger)] hover:bg-[var(--danger)]/10 transition-colors",
-                                onclick: move |_| on_mode.call(ChanMenuMode::ConfirmDelete),
-                                "Delete channel"
+                                if let Some(above) = move_up {
+                                    {
+                                        let gw = gateway.clone();
+                                        let order = guild_order.clone();
+                                        let id = ch.id;
+                                        rsx! {
+                                            button {
+                                                class: "w-full text-left px-3 py-1.5 rounded text-[var(--text)] hover:bg-white/[0.04] transition-colors",
+                                                onclick: move |_| {
+                                                    send_reorder(&gw, &order, id, above);
+                                                    on_close.call(());
+                                                },
+                                                "Move up"
+                                            }
+                                        }
+                                    }
+                                }
+                                if let Some(below) = move_down {
+                                    {
+                                        let gw = gateway.clone();
+                                        let order = guild_order.clone();
+                                        let id = ch.id;
+                                        rsx! {
+                                            button {
+                                                class: "w-full text-left px-3 py-1.5 rounded text-[var(--text)] hover:bg-white/[0.04] transition-colors",
+                                                onclick: move |_| {
+                                                    send_reorder(&gw, &order, id, below);
+                                                    on_close.call(());
+                                                },
+                                                "Move down"
+                                            }
+                                        }
+                                    }
+                                }
+                                if matches!(ch.kind, ChannelKind::Text) {
+                                    button {
+                                        class: "w-full text-left px-3 py-1.5 rounded text-[var(--text)] hover:bg-white/[0.04] transition-colors",
+                                        onclick: move |_| {
+                                            gw_ro.send(ClientMessage::UpdateChannel {
+                                                channel_id: ch_ro.id,
+                                                name: ch_ro.name.clone(),
+                                                topic: ch_ro.topic.clone(),
+                                                read_only: !ch_ro.read_only,
+                                                position: ch_ro.position,
+                                                slowmode_secs: ch_ro.slowmode_secs,
+                                            });
+                                            on_close.call(());
+                                        },
+                                        if ch.read_only { "🔓 Make writable" } else { "🔒 Make read-only" }
+                                    }
+                                }
+                                button {
+                                    class: "w-full text-left px-3 py-1.5 rounded text-[var(--danger)] hover:bg-[var(--danger)]/10 transition-colors",
+                                    onclick: move |_| on_mode.call(ChanMenuMode::ConfirmDelete),
+                                    "Delete channel"
+                                }
                             }
                         }
                     },

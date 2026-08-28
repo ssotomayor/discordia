@@ -595,16 +595,6 @@ fn apply(
                 .map(|u| u.pubkey == m.author.pubkey)
                 .unwrap_or(false);
             let viewing = s.selected_channel == Some(cid) && (is_dm == s.dm_mode);
-            let mentioned = s
-                .self_user
-                .as_ref()
-                .map(|u| {
-                    m.content.contains(&format!("@{}", u.username))
-                        || m.reply_to
-                            .as_ref()
-                            .is_some_and(|r| r.author_pubkey == u.pubkey)
-                })
-                .unwrap_or(false);
             if let Some(set) = s.typing.get_mut(&cid) {
                 set.remove(&m.author.pubkey);
             }
@@ -612,7 +602,7 @@ fn apply(
             if is_dm && !author_is_self && !viewing {
                 *s.dm_unread.entry(cid).or_insert(0) += 1;
             }
-            if !author_is_self && ((is_dm && !viewing) || mentioned) {
+            if s.should_ring(cid, author_is_self, viewing) {
                 s.notify_tick = s.notify_tick.wrapping_add(1);
             }
         }

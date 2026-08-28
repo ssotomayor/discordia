@@ -50,6 +50,7 @@ pub fn GuildsSidebar() -> Element {
     drop(snapshot);
 
     let mut menu = use_signal::<Option<GuildMenu>>(|| None);
+    let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let mut show_browse = use_signal(|| false);
 
     rsx! {
@@ -222,6 +223,24 @@ pub fn GuildsSidebar() -> Element {
                                                     menu.set(None);
                                                 },
                                                 "Integrations"
+                                            }
+                                        }
+                                        {
+                                            let muted = state.read().guild_muted(gid);
+                                            rsx! {
+                                                button {
+                                                    class: "w-full text-left px-3 py-1.5 rounded text-[var(--text)] hover:bg-white/[0.04] transition-colors",
+                                                    onclick: move |_| {
+                                                        let now = !muted;
+                                                        state.write().set_guild_muted(gid, now);
+                                                        let mut next = settings.read().clone();
+                                                        next.set_muted_guild(gid, now);
+                                                        settings.set(next.clone());
+                                                        crate::settings::save(&next);
+                                                        menu.set(None);
+                                                    },
+                                                    if muted { "Unmute server" } else { "Mute server" }
+                                                }
                                             }
                                         }
                                         if can_roles {

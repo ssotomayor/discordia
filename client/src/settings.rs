@@ -33,6 +33,13 @@ pub struct ClientSettings {
     #[serde(default)]
     pub dm_read_at: Vec<(String, i64)>,
 
+    /// Channels and whole guilds that should never ring. Personal and local:
+    /// nothing about muting is sent to the server or seen by anyone else.
+    #[serde(default)]
+    pub muted_channels: Vec<crate::protocol::Id>,
+    #[serde(default)]
+    pub muted_guilds: Vec<crate::protocol::Id>,
+
     #[serde(default)]
     pub selected_input_device: Option<String>,
     #[serde(default)]
@@ -128,6 +135,8 @@ impl Default for ClientSettings {
             dm_relays: Vec::new(),
             dm_cleared_at: Vec::new(),
             dm_read_at: Vec::new(),
+            muted_channels: Vec::new(),
+            muted_guilds: Vec::new(),
             selected_input_device: None,
             selected_output_device: None,
             mic_sensitivity: default_mic_sensitivity(),
@@ -182,6 +191,14 @@ impl ClientSettings {
         }
     }
 
+    pub fn set_muted_channel(&mut self, channel_id: crate::protocol::Id, muted: bool) {
+        set_membership(&mut self.muted_channels, channel_id, muted);
+    }
+
+    pub fn set_muted_guild(&mut self, guild_id: crate::protocol::Id, muted: bool) {
+        set_membership(&mut self.muted_guilds, guild_id, muted);
+    }
+
     /// Moves a read watermark forward. Returns whether anything changed, so the
     /// caller can skip a file write for the marks it already holds.
     pub fn mark_dm_read(&mut self, peer: &str, at: i64) -> bool {
@@ -196,6 +213,16 @@ impl ClientSettings {
                 true
             }
         }
+    }
+}
+
+fn set_membership(list: &mut Vec<crate::protocol::Id>, id: crate::protocol::Id, present: bool) {
+    match (present, list.iter().position(|x| *x == id)) {
+        (true, None) => list.push(id),
+        (false, Some(at)) => {
+            list.remove(at);
+        }
+        _ => {}
     }
 }
 
