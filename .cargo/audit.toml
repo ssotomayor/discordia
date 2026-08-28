@@ -1,0 +1,14 @@
+# Ignored with a reason on each, never to quiet the tool. An entry without a
+# reason is a bug; drop the ignore and fix the dependency instead.
+[advisories]
+ignore = [
+    # rsa, reached through jsonwebtoken <- livekit-api. The Marvin sidechannel
+    # is in RSA private-key operations; LiveKit access tokens are HS256, so no
+    # RSA operation ever runs. There is no fixed release to move to.
+    "RUSTSEC-2023-0071",
+    # tract-nnef. The overflow is in the NNEF model parser, and the only model
+    # this app parses is the one compiled into the binary. The version is
+    # pinned deliberately: DeepFilterNet's model does not load on a newer tract
+    # (see client/Cargo.toml).
+    "RUSTSEC-2026-0217",
+]
