@@ -59,6 +59,10 @@ Closed and retired entries are not kept; `git log docs/` has them.
 - 74 · Retention can stop deleting without anything noticing.
 - 75 · The Nostr DM service loop and `net.rs` are largely unguarded.
 - 76 · Input validation has no tests.
+- 87 · The silent Windows update is not tested end to end. The pieces are —
+  moving the running program aside, the rollback rule, where the cast-off is
+  swept from — but nothing exercises `/S` against a real NSIS install, which
+  needs a Windows box with Discordia installed and two published releases.
 - 85 · The identify handshake timeout has no test. It is 30 seconds, and a test
   that waits one out does not belong in a suite that has to stay fast; testing
   it needs the timeout to be injectable, which is config surface for a
