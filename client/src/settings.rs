@@ -27,6 +27,12 @@ pub struct ClientSettings {
     #[serde(default)]
     pub dm_cleared_at: Vec<(String, i64)>,
 
+    /// Peer pubkey → the second of the newest message already read. Persisted
+    /// because `AppState::dm_unread` is rebuilt from the relay replay on every
+    /// launch, so a read that only lives in memory is undone by the next one.
+    #[serde(default)]
+    pub dm_read_at: Vec<(String, i64)>,
+
     #[serde(default)]
     pub selected_input_device: Option<String>,
     #[serde(default)]
@@ -121,6 +127,7 @@ impl Default for ClientSettings {
             rendezvous_servers: default_rendezvous_servers(),
             dm_relays: Vec::new(),
             dm_cleared_at: Vec::new(),
+            dm_read_at: Vec::new(),
             selected_input_device: None,
             selected_output_device: None,
             mic_sensitivity: default_mic_sensitivity(),
@@ -172,6 +179,22 @@ impl ClientSettings {
         match self.dm_cleared_at.iter_mut().find(|(p, _)| p == peer) {
             Some(entry) => entry.1 = entry.1.max(at),
             None => self.dm_cleared_at.push((peer.to_string(), at)),
+        }
+    }
+
+    /// Moves a read watermark forward. Returns whether anything changed, so the
+    /// caller can skip a file write for the marks it already holds.
+    pub fn mark_dm_read(&mut self, peer: &str, at: i64) -> bool {
+        match self.dm_read_at.iter_mut().find(|(p, _)| p == peer) {
+            Some(entry) if entry.1 >= at => false,
+            Some(entry) => {
+                entry.1 = at;
+                true
+            }
+            None => {
+                self.dm_read_at.push((peer.to_string(), at));
+                true
+            }
         }
     }
 }
