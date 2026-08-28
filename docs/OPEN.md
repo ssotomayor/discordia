@@ -93,8 +93,16 @@ Closed and retired entries are not kept; `git log docs/` has them.
 - 60 · "Bypass system audio processing" reports that raw mode was *asked for*, not achieved.
 - 61 · The raw path is Windows-only; Linux is unanswered.
 - 62 · The 30-vs-12 dB DeepFilterNet ceiling numbers cannot be re-run.
-- 63 · The default mic sensitivity cuts ordinary speech.
-- 64 · libwebrtc's noise suppressor may not run at all.
+- 63 · The default mic sensitivity cuts ordinary speech. The bar now judges
+  AGC-normalised audio instead of the raw mic, so the number needs re-measuring
+  rather than re-applying.
+- 64 · The APM never runs. `AudioSourceOptions` on a pushed `NativeAudioSource`
+  is stored and never read again (`webrtc-sys/src/audio_track.cpp`), so AEC, NS
+  and AGC are requests nothing honours — and `set_apm` reads back what it just
+  stored, so its log confirms a success that did not happen. AGC is
+  `client/src/agc.rs` now and NS is DeepFilterNet; echo cancellation is 82.
+- 82 · No echo cancellation anywhere, on any platform. Speakers into an open mic
+  feed back, and the only defences are a headset and the transmit gate.
 - 66 · Call audio degrades during a screen share and nothing explains it.
 - 68 · Two app instances self-hosting on one machine fight over the SFU.
 - 69 · Per-user volumes are session-scoped.
