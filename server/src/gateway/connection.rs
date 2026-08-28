@@ -44,6 +44,17 @@ pub async fn handle_connection(
         tokio::select! {
             incoming = ws_rx.next() => {
                 let Some(Ok(msg)) = incoming else { break };
+
+                // Ahead of the parse and of the frame kinds that skip it: a
+                // peer that never sends valid JSON is still spending our time,
+                // and counting only what parses leaves the flood uncounted.
+                if !flood.allow() {
+                    let _ = send(&mut ws_tx, &ServerMessage::Error {
+                        message: RATE_LIMITED.into(),
+                    }).await;
+                    break;
+                }
+
                 let text = match msg {
                     WsMessage::Text(t) => t,
                     WsMessage::Close(_) => break,
@@ -56,13 +67,6 @@ pub async fn handle_connection(
                     }).await;
                     continue;
                 };
-
-                if !flood.allow() {
-                    let _ = send(&mut ws_tx, &ServerMessage::Error {
-                        message: RATE_LIMITED.into(),
-                    }).await;
-                    break;
-                }
 
                 if is_bot
                     && !matches!(
