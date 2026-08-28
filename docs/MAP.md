@@ -22,9 +22,9 @@ name instead.
 | `server/src/gateway/connection.rs` | 1989 |
 | `client/src/features/channels.rs` | 1942 |
 | `client/src/features/screenshare.rs` | 1582 |
+| `client/src/update.rs` | 1147 |
 | `client/src/state.rs` | 1145 |
 | `client/src/net.rs` | 1135 |
-| `client/src/update.rs` | 1046 |
 | `client/src/features/chat.rs` | 971 |
 | `protocol/src/lib.rs` | 952 |
 | `server/src/store.rs` | 942 |

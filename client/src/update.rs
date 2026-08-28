@@ -78,6 +78,7 @@ pub async fn fetch_verified(
     asset: &str,
     asset_url: &str,
     signature_url: &str,
+    mut on_progress: impl FnMut(u64, Option<u64>),
 ) -> Result<std::path::PathBuf, String> {
     let client = reqwest::Client::new();
     let sig = client
@@ -88,14 +89,25 @@ pub async fn fetch_verified(
         .text()
         .await
         .map_err(|e| format!("could not read the signature: {e}"))?;
-    let body = client
+    let mut resp = client
         .get(asset_url)
         .send()
         .await
-        .map_err(|e| format!("could not download the update: {e}"))?
-        .bytes()
+        .map_err(|e| format!("could not download the update: {e}"))?;
+
+    // Streamed rather than `.bytes()` so the dialog has a number to draw. A
+    // truncated body needs no length check: the signature will not match.
+    let total = resp.content_length();
+    let mut body: Vec<u8> = Vec::with_capacity(total.unwrap_or(0).min(1 << 28) as usize);
+    on_progress(0, total);
+    while let Some(chunk) = resp
+        .chunk()
         .await
-        .map_err(|e| format!("the download was cut short: {e}"))?;
+        .map_err(|e| format!("the download was cut short: {e}"))?
+    {
+        body.extend_from_slice(&chunk);
+        on_progress(body.len() as u64, total);
+    }
 
     verify(&body, &sig).map_err(|e| e.to_string())?;
 
@@ -446,13 +458,22 @@ enum Phase {
 #[component]
 pub fn UpdateNotice(update: crate::version::Update) -> Element {
     let mut phase = use_signal(|| Phase::Offered);
+    let mut progress = use_signal(|| (0u64, None::<u64>));
 
     let install = update.download.clone();
     let start = move |_| {
         let Some(d) = install.clone() else { return };
+        progress.set((0, None));
         phase.set(Phase::Working);
         spawn(async move {
-            match fetch_verified(&d.asset, &d.asset_url, &d.signature_url).await {
+            let mut painted = 0u64;
+            let tick = move |got: u64, total: Option<u64>| {
+                if should_paint(got, painted, total) {
+                    painted = got;
+                    progress.set((got, total));
+                }
+            };
+            match fetch_verified(&d.asset, &d.asset_url, &d.signature_url, tick).await {
                 Err(e) => phase.set(Phase::Failed(e)),
                 Ok(staged) => {
                     let plan = plan_install(staged);
@@ -481,14 +502,51 @@ pub fn UpdateNotice(update: crate::version::Update) -> Element {
     };
 
     let tag = update.tag.clone();
-    let page = update.url.clone();
+    let offer_page = update.url.clone();
+    let failed_page = update.url.clone();
+    let has_download = update.download.is_some();
+
+    let current = phase();
+    let (got, total) = progress();
+    let step = match &current {
+        Phase::Applying => "Installing — the installer runs on its own.",
+        Phase::Closing => "Closing so the installer can finish.",
+        Phase::Restart => "Installed — restarting Discordia.",
+        Phase::HandedOff => "Verified — finish in the installer window.",
+        _ => "Downloading and checking the signature…",
+    };
+    let warn = matches!(current, Phase::Working | Phase::Applying | Phase::Closing);
+    // Only the download has a real denominator: the installer is silent, so
+    // past it the bar can say "alive", never "how much longer".
+    let pct = match total {
+        Some(t) if t > 0 && matches!(current, Phase::Working) => Some(got.min(t) * 100 / t),
+        _ => None,
+    };
+    let (bar_class, bar_style) = match pct {
+        Some(p) => (
+            "h-full rounded-full",
+            format!("width: {p}%; background: var(--accent);"),
+        ),
+        None => (
+            "dxf-bar-slide h-full rounded-full",
+            "width: 28%; background: var(--accent);".to_string(),
+        ),
+    };
+    let caption = match (&current, total) {
+        (Phase::Working, Some(t)) => format!("{} of {}", mib(got), mib(t)),
+        (Phase::Working, None) => format!("{} downloaded", mib(got)),
+        _ if got > 0 => format!("Signature verified · {}", mib(got)),
+        _ => String::new(),
+    };
+    let pct_label = pct.map(|p| format!("{p}%")).unwrap_or_default();
+
     rsx! {
-        match phase() {
-            Phase::Offered if update.download.is_none() => rsx! {
+        match current {
+            Phase::Offered if !has_download => rsx! {
                 button {
                     class: "text-[10px] text-[var(--accent)] underline",
                     title: "Opens the release page in your browser",
-                    onclick: move |_| crate::app::open_external(&page),
+                    onclick: move |_| crate::app::open_external(&offer_page),
                     "{tag} available"
                 }
             },
@@ -500,30 +558,79 @@ pub fn UpdateNotice(update: crate::version::Update) -> Element {
                     "update to {tag}"
                 }
             },
-            Phase::Working => rsx! {
-                span { class: "text-[10px] text-[var(--text-muted)]", "downloading {tag}…" }
-            },
-            Phase::Applying => rsx! {
-                span { class: "text-[10px] text-[var(--accent)]", "applying {tag} — do not close" }
-            },
-            Phase::Closing => rsx! {
-                span { class: "text-[10px] text-[var(--up)]", "closing so the installer can finish" }
-            },
-            Phase::Restart => rsx! {
-                span { class: "text-[10px] text-[var(--up)]", "{tag} installed — restarting" }
-            },
-            Phase::HandedOff => rsx! {
-                span { class: "text-[10px] text-[var(--up)]", "verified — finish in the installer" }
-            },
             Phase::Failed(e) => rsx! {
-                span {
-                    class: "text-[10px] text-[var(--danger)] max-w-[320px] truncate",
-                    title: "{e}",
-                    "update failed — {e}"
+                div { class: "dxf-backdrop-in fixed inset-0 z-50 flex items-center justify-center bg-black/70",
+                    div {
+                        class: "dxf-modal-in w-[22rem] bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl overflow-hidden",
+                        div {
+                            class: "px-4 py-3 border-b border-[var(--border)] text-sm font-medium text-[var(--danger)]",
+                            "Update failed"
+                        }
+                        div { class: "p-4",
+                            div { class: "text-xs leading-relaxed text-[var(--text-muted)]", "{e}" }
+                            div { class: "mt-4 flex items-center justify-end gap-2",
+                                button {
+                                    class: "text-xs px-3 py-1.5 rounded-md border border-[var(--border-strong)] text-[var(--text)]",
+                                    onclick: move |_| crate::app::open_external(&failed_page),
+                                    "Open release page"
+                                }
+                                button {
+                                    class: "text-xs px-3 py-1.5 rounded-md border border-[var(--accent)] text-[var(--accent)]",
+                                    onclick: move |_| phase.set(Phase::Offered),
+                                    "Close"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            // No dismiss on purpose: closing the window mid-swap is the one
+            // thing this dialog exists to prevent.
+            _ => rsx! {
+                div { class: "dxf-backdrop-in fixed inset-0 z-50 flex items-center justify-center bg-black/70",
+                    div {
+                        class: "dxf-modal-in w-[22rem] bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl overflow-hidden",
+                        div {
+                            class: "px-4 py-3 border-b border-[var(--border)] text-sm font-medium text-[var(--accent)]",
+                            "Updating to {tag}"
+                        }
+                        div { class: "p-4",
+                            div { class: "text-xs text-[var(--text)]", "{step}" }
+                            div {
+                                class: "mt-2.5 h-1.5 rounded-full overflow-hidden",
+                                style: "background: var(--bg2);",
+                                div { class: "{bar_class}", style: "{bar_style}" }
+                            }
+                            div {
+                                class: "mt-2 flex items-center justify-between text-[10px] text-[var(--text-dim)]",
+                                span { "{caption}" }
+                                span { "{pct_label}" }
+                            }
+                            if warn {
+                                div {
+                                    class: "mt-3 rounded-md px-2.5 py-2 text-[10px] leading-relaxed text-[var(--warn)]",
+                                    style: "background: var(--accent-soft);",
+                                    "Do not close Discordia. It will restart itself when the update is done."
+                                }
+                            }
+                        }
+                    }
                 }
             },
         }
     }
+}
+
+fn mib(bytes: u64) -> String {
+    format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+}
+
+const PAINT_STEP: u64 = 256 * 1024;
+
+/// A chunk lands every few KB and repainting on each one costs more than the
+/// socket does. The last one always paints, or the bar stops short of full.
+fn should_paint(got: u64, painted: u64, total: Option<u64>) -> bool {
+    got == 0 || got.saturating_sub(painted) >= PAINT_STEP || Some(got) == total
 }
 
 #[cfg(test)]
@@ -547,6 +654,36 @@ mod tests {
     fn the_comment_line_is_not_part_of_the_key() {
         assert!(!trim_key(PUBLIC_KEY).contains("untrusted comment"));
         assert!(trim_key(PUBLIC_KEY).starts_with("RW"));
+    }
+
+    #[test]
+    fn the_bar_paints_the_ends_and_skips_the_dribble() {
+        assert!(should_paint(0, 0, Some(9_000)), "the start must paint");
+        assert!(
+            !should_paint(4_096, 0, Some(9_000_000)),
+            "a 4K chunk must not"
+        );
+        assert!(should_paint(PAINT_STEP, 0, Some(9_000_000)));
+        assert!(
+            should_paint(9_000_001, 9_000_000, Some(9_000_001)),
+            "the last chunk must paint however small, or the bar stops short"
+        );
+    }
+
+    #[test]
+    fn a_download_of_unknown_length_still_advances() {
+        let mut painted = 0u64;
+        let mut painted_count = 0;
+        for got in (0..=(4 * PAINT_STEP)).step_by(64 * 1024) {
+            if should_paint(got, painted, None) {
+                painted = got;
+                painted_count += 1;
+            }
+        }
+        assert_eq!(
+            painted_count, 5,
+            "one paint at the start, then one per step"
+        );
     }
 
     #[test]
