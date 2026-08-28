@@ -297,7 +297,7 @@ fn TopBar(
 #[component]
 fn SocialPanel(on_close: EventHandler<()>) -> Element {
     let mut state = use_app_state();
-    let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
+    let settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let nostr = use_context::<crate::nostr::service::NostrTx>();
     let mut filter = use_signal(String::new);
     let mut showing_friends = use_signal(|| false);
@@ -332,6 +332,7 @@ fn SocialPanel(on_close: EventHandler<()>) -> Element {
                 }),
                 when: last.map(|m| m.created_at.format("%H:%M").to_string()),
                 unread: snapshot.dm_unread.get(&dm.channel_id).copied().unwrap_or(0),
+                muted: snapshot.channel_muted(dm.channel_id),
                 info: dm,
             }
         })
@@ -490,6 +491,13 @@ fn SocialPanel(on_close: EventHandler<()>) -> Element {
                                     span { class: "flex-1 min-w-0",
                                         span { class: "flex items-baseline gap-2",
                                             span { class: "truncate text-[12.5px] font-medium text-[var(--text)]", "{uname}" }
+                                            if row.muted {
+                                                span {
+                                                    class: "shrink-0 text-[10px] text-[var(--text-dim)]",
+                                                    title: "Muted",
+                                                    "🔕"
+                                                }
+                                            }
                                             span { class: "flex-1" }
                                             if let Some(w) = row.when.clone() {
                                                 span { class: "shrink-0 text-[11px] text-[var(--text-dim)]", "{w}" }
@@ -505,6 +513,16 @@ fn SocialPanel(on_close: EventHandler<()>) -> Element {
                                         "{row.unread}"
                                     }
                                 }
+                                if !asking {
+                                    button {
+                                        class: "shrink-0 w-5 h-5 rounded-full hidden group-hover:flex items-center justify-center text-[11px] text-[var(--text-dim)] hover:text-[var(--text)] transition-colors",
+                                        title: if row.muted { "Unmute this conversation" } else { "Mute this conversation" },
+                                        onclick: move |_| {
+                                            crate::state::set_dm_muted(state, settings, cid, !row.muted);
+                                        },
+                                        if row.muted { "🔔" } else { "🔕" }
+                                    }
+                                }
                                 button {
                                     class: "shrink-0 items-center justify-center transition-colors {del_cls}",
                                     title: "Delete this conversation on this machine. The relays keep their copy, and a new message reopens it.",
@@ -513,12 +531,7 @@ fn SocialPanel(on_close: EventHandler<()>) -> Element {
                                             confirming.set(Some(cid));
                                             return;
                                         }
-                                        let at = chrono::Utc::now().timestamp();
-                                        state.write().clear_dm(&peer, at);
-                                        let mut next = settings.read().clone();
-                                        next.clear_dm(&peer, at);
-                                        settings.set(next.clone());
-                                        crate::settings::save(&next);
+                                        crate::state::forget_dm(state, settings, &peer);
                                         confirming.set(None);
                                     },
                                     if asking { "Delete?" } else { "✕" }
@@ -611,6 +624,7 @@ struct Row {
     preview: Option<String>,
     when: Option<String>,
     unread: u32,
+    muted: bool,
 }
 
 impl Row {
@@ -640,6 +654,7 @@ mod tests {
             preview: None,
             when: None,
             unread: 0,
+            muted: false,
         }
     }
 

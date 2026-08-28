@@ -579,6 +579,33 @@ impl AppState {
             .is_some_and(|c| self.muted_guilds.contains(&c.guild_id))
     }
 
+    /// Puts one message in its conversation in time order, and says whether it
+    /// was new. Arriving twice is ordinary here, not exceptional: relays replay
+    /// their whole history and a fetched page overlaps what was delivered live.
+    pub fn insert_message(&mut self, channel_id: Id, message: Message) -> bool {
+        let held = self.messages.entry(channel_id).or_default();
+        if held.iter().any(|m| m.id == message.id) {
+            return false;
+        }
+        held.push(message);
+        held.sort_by_key(|m| m.created_at);
+        true
+    }
+
+    /// Merges a fetched page into what is already held.
+    pub fn merge_history(&mut self, channel_id: Id, page: Vec<Message>) {
+        let held = self.messages.entry(channel_id).or_default();
+        let mut seen: HashSet<Id> = held.iter().map(|m| m.id).collect();
+        for m in page {
+            // Recorded as we go rather than sampled once: a page that repeats
+            // an id would otherwise be believed twice.
+            if seen.insert(m.id) {
+                held.push(m);
+            }
+        }
+        held.sort_by_key(|m| m.created_at);
+    }
+
     /// Only this channel's own flag, for the menu that toggles it: `is_muted`
     /// also answers yes when the whole guild is muted, and a menu reading that
     /// would offer to unmute something it cannot.
@@ -737,6 +764,36 @@ pub fn use_app_state() -> Signal<AppState> {
     use_context::<Signal<AppState>>()
 }
 
+/// Both halves or neither: the map is what the screen reads and the file is
+/// what survives a restart, and a conversation forgotten in only one of them
+/// walks back in when the relays replay.
+pub fn forget_dm(
+    mut state: Signal<AppState>,
+    mut settings: Signal<crate::settings::ClientSettings>,
+    peer: &str,
+) {
+    let at = chrono::Utc::now().timestamp();
+    state.write().clear_dm(peer, at);
+    let mut next = settings.peek().clone();
+    next.clear_dm(peer, at);
+    settings.set(next.clone());
+    crate::settings::save(&next);
+}
+
+/// Same two halves, for the same reason.
+pub fn set_dm_muted(
+    mut state: Signal<AppState>,
+    mut settings: Signal<crate::settings::ClientSettings>,
+    channel_id: Id,
+    muted: bool,
+) {
+    state.write().set_channel_muted(channel_id, muted);
+    let mut next = settings.peek().clone();
+    next.set_muted_channel(channel_id, muted);
+    settings.set(next.clone());
+    crate::settings::save(&next);
+}
+
 /// Mirrors the read watermarks into the settings file as they move.
 ///
 /// A hook rather than a line at each read site: the counter is cleared from four
@@ -837,6 +894,74 @@ mod tests {
         s.clear_dm("abcd", 200);
         s.clear_dm("abcd", 100);
         assert_eq!(s.dm_cleared_at.get("abcd"), Some(&200));
+    }
+
+    fn at(id: Id, channel_id: Id, secs: i64) -> Message {
+        Message {
+            id,
+            channel_id,
+            author: user("abcd"),
+            content: format!("t{secs}"),
+            image: None,
+            reactions: Vec::new(),
+            reply_to: None,
+            created_at: chrono::DateTime::from_timestamp(secs, 0).unwrap(),
+        }
+    }
+
+    /// A relay replays and a fetch overlaps what was already delivered live, so
+    /// the same message arriving twice is the ordinary case.
+    #[test]
+    fn a_message_that_arrives_twice_is_kept_once() {
+        let mut s = AppState::empty();
+        let cid = Id::new_v4();
+        let id = Id::new_v4();
+
+        assert!(s.insert_message(cid, at(id, cid, 100)));
+        assert!(!s.insert_message(cid, at(id, cid, 100)));
+        assert_eq!(s.messages[&cid].len(), 1);
+    }
+
+    /// Out of order is normal: relays answer in whatever order they like.
+    #[test]
+    fn messages_are_held_in_time_order_however_they_arrive() {
+        let mut s = AppState::empty();
+        let cid = Id::new_v4();
+        for secs in [300, 100, 200] {
+            s.insert_message(cid, at(Id::new_v4(), cid, secs));
+        }
+        let order: Vec<i64> = s.messages[&cid]
+            .iter()
+            .map(|m| m.created_at.timestamp())
+            .collect();
+        assert_eq!(order, vec![100, 200, 300]);
+    }
+
+    /// The page and the memory overlap by design — the fetch re-reads what a
+    /// live message already delivered.
+    #[test]
+    fn a_page_does_not_duplicate_what_is_already_held() {
+        let mut s = AppState::empty();
+        let cid = Id::new_v4();
+        let shared = Id::new_v4();
+        s.insert_message(cid, at(shared, cid, 200));
+
+        s.merge_history(cid, vec![at(shared, cid, 200), at(Id::new_v4(), cid, 100)]);
+
+        assert_eq!(s.messages[&cid].len(), 2);
+    }
+
+    /// And the page can repeat itself. Sampling the ids once before the loop
+    /// believed such a page twice.
+    #[test]
+    fn a_page_that_repeats_an_id_is_believed_once() {
+        let mut s = AppState::empty();
+        let cid = Id::new_v4();
+        let twice = Id::new_v4();
+
+        s.merge_history(cid, vec![at(twice, cid, 100), at(twice, cid, 100)]);
+
+        assert_eq!(s.messages[&cid].len(), 1);
     }
 
     fn text_channel(s: &mut AppState, guild_id: Id) -> Id {
