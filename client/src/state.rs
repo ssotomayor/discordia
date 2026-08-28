@@ -187,6 +187,11 @@ pub struct AppState {
     /// Seeded from `ClientSettings::dm_read_at`. Read on every insert, so the
     /// history the relays replay at launch does not raise an alert twice.
     pub dm_read_at: HashMap<String, i64>,
+    /// Seeded from `ClientSettings`. Local and personal: muting is never sent
+    /// anywhere, and a muted channel is silent for its mentions too — otherwise
+    /// the word would mean two things.
+    pub muted_channels: HashSet<Id>,
+    pub muted_guilds: HashSet<Id>,
     pub nostr_event_ids: HashMap<Id, String>,
     pub contacts: crate::nostr::nip02::ContactList,
     pub nostr_relays_up: std::collections::HashSet<String>,
@@ -286,6 +291,8 @@ impl AppState {
             dm_unread: HashMap::new(),
             dm_cleared_at: HashMap::new(),
             dm_read_at: HashMap::new(),
+            muted_channels: HashSet::new(),
+            muted_guilds: HashSet::new(),
             nostr_event_ids: HashMap::new(),
             contacts: Default::default(),
             nostr_relays_up: std::collections::HashSet::new(),
@@ -562,6 +569,51 @@ impl AppState {
         self.dm_unread.values().copied().sum()
     }
 
+    pub fn is_muted(&self, channel_id: Id) -> bool {
+        if self.muted_channels.contains(&channel_id) {
+            return true;
+        }
+        self.channels
+            .iter()
+            .find(|c| c.id == channel_id)
+            .is_some_and(|c| self.muted_guilds.contains(&c.guild_id))
+    }
+
+    /// Only this channel's own flag, for the menu that toggles it: `is_muted`
+    /// also answers yes when the whole guild is muted, and a menu reading that
+    /// would offer to unmute something it cannot.
+    pub fn channel_muted(&self, channel_id: Id) -> bool {
+        self.muted_channels.contains(&channel_id)
+    }
+
+    pub fn set_channel_muted(&mut self, channel_id: Id, muted: bool) {
+        if muted {
+            self.muted_channels.insert(channel_id);
+        } else {
+            self.muted_channels.remove(&channel_id);
+        }
+    }
+
+    pub fn guild_muted(&self, guild_id: Id) -> bool {
+        self.muted_guilds.contains(&guild_id)
+    }
+
+    pub fn set_guild_muted(&mut self, guild_id: Id, muted: bool) {
+        if muted {
+            self.muted_guilds.insert(guild_id);
+        } else {
+            self.muted_guilds.remove(&guild_id);
+        }
+    }
+
+    /// Whether an arriving message should make a sound.
+    ///
+    /// One rule for both arrival paths, because the gateway and the relays each
+    /// used to decide for themselves and only one of them ever decided yes.
+    pub fn should_ring(&self, channel_id: Id, author_is_self: bool, viewing: bool) -> bool {
+        !author_is_self && !viewing && !self.is_muted(channel_id)
+    }
+
     /// Records an arriving DM against the read watermark: counted when it is
     /// not on screen, and covered by the mark when it is.
     ///
@@ -569,11 +621,19 @@ impl AppState {
     /// history on every launch and `dm_unread` is rebuilt from it, so a message
     /// only ever read live would come back as unread on the next one.
     pub fn note_dm_arrival(&mut self, channel_id: Id, peer: &str, at: i64) {
-        if self.dm_pane_open && self.selected_channel == Some(channel_id) && self.dm_mode {
+        let viewing =
+            self.dm_pane_open && self.selected_channel == Some(channel_id) && self.dm_mode;
+        if viewing {
             let mark = self.dm_read_at.entry(peer.to_string()).or_insert(at);
             *mark = (*mark).max(at);
         } else if self.dm_read_at.get(peer).is_none_or(|mark| at > *mark) {
             *self.dm_unread.entry(channel_id).or_insert(0) += 1;
+            // Tied to the counter and not merely to `viewing`: the relays replay
+            // the whole history on every launch, and ringing for that would be a
+            // burst of sound for messages read days ago.
+            if self.should_ring(channel_id, false, viewing) {
+                self.notify_tick = self.notify_tick.wrapping_add(1);
+            }
         }
     }
 
@@ -777,6 +837,86 @@ mod tests {
         s.clear_dm("abcd", 200);
         s.clear_dm("abcd", 100);
         assert_eq!(s.dm_cleared_at.get("abcd"), Some(&200));
+    }
+
+    fn text_channel(s: &mut AppState, guild_id: Id) -> Id {
+        let id = Id::new_v4();
+        s.channels.push(Channel {
+            id,
+            guild_id,
+            name: "general".into(),
+            kind: crate::protocol::ChannelKind::Text,
+            topic: None,
+            read_only: false,
+            slowmode_secs: 0,
+            position: 0,
+        });
+        id
+    }
+
+    /// The whole complaint: an ordinary message used to ring only if it named
+    /// you, so a channel nobody mentioned you in was silent.
+    #[test]
+    fn a_message_in_a_channel_you_are_not_reading_rings() {
+        let mut s = AppState::empty();
+        let cid = text_channel(&mut s, Id::new_v4());
+        assert!(s.should_ring(cid, false, false));
+        assert!(!s.should_ring(cid, false, true), "you are looking at it");
+        assert!(!s.should_ring(cid, true, false), "you wrote it");
+    }
+
+    /// Muting means one thing, so it silences everything in that channel. A
+    /// mention that still rang would make the word mean two.
+    #[test]
+    fn muting_a_channel_silences_it() {
+        let mut s = AppState::empty();
+        let cid = text_channel(&mut s, Id::new_v4());
+        s.set_channel_muted(cid, true);
+        assert!(!s.should_ring(cid, false, false));
+
+        s.set_channel_muted(cid, false);
+        assert!(s.should_ring(cid, false, false));
+    }
+
+    /// And muting the guild reaches every channel in it, including ones that
+    /// arrive after the mute.
+    #[test]
+    fn muting_a_guild_silences_the_channels_under_it() {
+        let mut s = AppState::empty();
+        let guild = Id::new_v4();
+        let cid = text_channel(&mut s, guild);
+        s.set_guild_muted(guild, true);
+        assert!(!s.should_ring(cid, false, false));
+
+        let later = text_channel(&mut s, guild);
+        assert!(!s.should_ring(later, false, false));
+        assert!(
+            !s.channel_muted(cid),
+            "the channel's own flag is untouched, or the menu would offer to              unmute something it cannot"
+        );
+
+        let elsewhere = text_channel(&mut s, Id::new_v4());
+        assert!(s.should_ring(elsewhere, false, false));
+    }
+
+    /// Relays replay the whole history at every launch. Ringing for that would
+    /// be a burst of sound for messages read days ago, so the sound is tied to
+    /// the unread counter rather than to `viewing` alone.
+    #[test]
+    fn a_replayed_dm_neither_counts_nor_rings() {
+        let mut s = AppState::empty();
+        let peer = "abcd";
+        let cid = dm_with(&mut s, peer, &[100]);
+
+        s.note_dm_arrival(cid, peer, 100);
+        assert_eq!(s.dm_unread.get(&cid), Some(&1));
+        assert_eq!(s.notify_tick, 1);
+
+        s.mark_dm_read(cid);
+        let after_reading = s.notify_tick;
+        s.note_dm_arrival(cid, peer, 100);
+        assert!(s.dm_unread.is_empty());
+        assert_eq!(s.notify_tick, after_reading, "the replay rang again");
     }
 
     fn dm_with(s: &mut AppState, peer: &str, ats: &[i64]) -> Id {

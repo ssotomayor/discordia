@@ -23,6 +23,8 @@ pub fn HomeView(
         let mut s = AppState::empty();
         s.dm_cleared_at = settings.read().dm_cleared_at.iter().cloned().collect();
         s.dm_read_at = settings.read().dm_read_at.iter().cloned().collect();
+        s.muted_channels = settings.read().muted_channels.iter().copied().collect();
+        s.muted_guilds = settings.read().muted_guilds.iter().copied().collect();
         s
     });
     crate::state::use_dm_read_persistence(state);
@@ -77,6 +79,7 @@ pub fn HomeView(
 
     rsx! {
         div { class: "h-full w-full flex flex-col bg-[var(--bg)] {mac_top_pad}",
+            crate::features::sounds::MessageSounds {}
             crate::features::chat::ImageViewer {}
             crate::features::profiles::ProfileCard {}
             TopBar { identity: identity.clone(), social, on_rename, on_sign_out }

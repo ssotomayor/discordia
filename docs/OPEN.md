@@ -87,6 +87,12 @@ Closed and retired entries are not kept; `git log docs/` has them.
 - 39 · Nothing on this wire can tell an old client from a new one.
 
 **Client UX**
+- 88 · A muted channel looks exactly like a loud one. Muting is only reachable
+  from the context menu and leaves no mark in the list, so the only way to know
+  is to open the menu and read which way the item points.
+- 89 · A DM conversation cannot be muted. The rule reads the same set the
+  channels use, so the state is already there; what is missing is somewhere to
+  toggle it from in the DM list.
 - 36 · The Windows client is a console application, so every release ships a `cmd` window.
 - 77 · The macOS `.app` keeps only half of what 36 gave Windows.
 - 37 · The fade-in never re-triggers on the connect and identity-setup panels.
