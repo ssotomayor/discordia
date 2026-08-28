@@ -49,12 +49,11 @@ fn bad_identify() -> String {
 /// Reads until the socket goes away, and says whether it did. Anything the
 /// server chooses to say on the way out is fine; being able to keep asking
 /// forever is not.
-async fn closed_within(
-    ws: &mut tokio_tungstenite::WebSocketStream<
-        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-    >,
-    budget: Duration,
-) -> bool {
+async fn closed_within<S>(ws: &mut S, budget: Duration) -> bool
+where
+    S: futures_util::Stream<Item = Result<WsMessage, tokio_tungstenite::tungstenite::Error>>
+        + Unpin,
+{
     let deadline = tokio::time::Instant::now() + budget;
     loop {
         match tokio::time::timeout_at(deadline, ws.next()).await {
@@ -84,6 +83,37 @@ async fn a_run_of_bad_signatures_ends_the_connection() {
     assert!(
         closed_within(&mut ws, Duration::from_secs(5)).await,
         "the gateway kept verifying signatures for an unauthenticated peer"
+    );
+}
+
+/// Garbage never reaches the parser, so a bar that counts parsed messages does
+/// not count this at all — which is the one case the bar exists for.
+///
+/// Split, because the server answers every frame: sending without draining
+/// fills both directions and the two ends wait on each other instead.
+#[tokio::test]
+async fn a_flood_of_frames_that_do_not_parse_still_ends_the_connection() {
+    let (url, _h) = spawn_gateway().await;
+    let (ws, _) = tokio_tungstenite::connect_async(&url)
+        .await
+        .expect("connect");
+    let (mut tx, mut rx) = ws.split();
+
+    tokio::spawn(async move {
+        for _ in 0..500 {
+            if tx
+                .send(WsMessage::Text("not json at all".into()))
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
+    });
+
+    assert!(
+        closed_within(&mut rx, Duration::from_secs(5)).await,
+        "the gateway answered garbage forever"
     );
 }
 
