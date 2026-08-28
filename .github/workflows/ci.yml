@@ -45,6 +45,21 @@ jobs:
       - name: Tests (protocol + server + bot SDK + rendezvous)
         run: cargo test -p dioxusfun-protocol -p dioxusfun-server -p dioxusfun-bot -p dioxusfun-rendezvous
 
+  audit:
+    name: dependency advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      # Reads .cargo/audit.toml, where every ignore carries the reason it is
+      # ignored. Unmaintained and yanked crates are warnings and do not fail.
+      - name: cargo audit
+        run: cargo audit
+
   desktop-build:
     name: client compiles (linux)
     runs-on: ubuntu-latest
