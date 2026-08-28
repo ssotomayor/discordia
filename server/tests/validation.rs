@@ -1,0 +1,218 @@
+//! The limits the gateway puts on what a client may send. They are one-line
+//! conditions in the middle of long match arms, which is exactly the shape that
+//! gets edited past without anyone noticing the guard went with it.
+//!
+//! Usernames are canonicalised in `protocol` and tested beside the function.
+
+use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use dioxusfun_bot::{Bot, BotIdentity};
+use dioxusfun_server::livekit::LiveKitConfig;
+use dioxusfun_server::protocol::{ChannelKind, ClientMessage, Id, Message, ServerMessage, User};
+use dioxusfun_server::state::MAX_IMAGE_LEN;
+use dioxusfun_server::store::Store;
+
+async fn next_timeout(session: &mut Bot) -> ServerMessage {
+    tokio::time::timeout(Duration::from_secs(5), session.next_event())
+        .await
+        .expect("timed out waiting for a gateway event")
+        .expect("connection closed unexpectedly")
+}
+
+fn temp_data_dir() -> PathBuf {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    std::env::temp_dir().join(format!(
+        "dioxusfun-validation-{}-{}-{n}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ))
+}
+
+async fn spawn_on(dir: &Path) -> (String, dioxusfun_server::ServerHandle) {
+    let preferred: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let cfg = dioxusfun_server::ServerConfig {
+        livekit: LiveKitConfig::from_env(),
+        operators: Default::default(),
+        data_dir: dir.to_path_buf(),
+    };
+    let handle = dioxusfun_server::spawn(preferred, 100, cfg)
+        .await
+        .expect("spawn");
+    (format!("ws://{}", handle.addr), handle)
+}
+
+async fn spawn_gateway() -> (String, dioxusfun_server::ServerHandle) {
+    spawn_on(&temp_data_dir()).await
+}
+
+async fn ready(url: &str, identity: &BotIdentity, name: &str) -> Bot {
+    let mut bot = Bot::connect_as_user(url, identity, name).await.unwrap();
+    loop {
+        if matches!(next_timeout(&mut bot).await, ServerMessage::Ready { .. }) {
+            return bot;
+        }
+    }
+}
+
+async fn owner_with_channel(url: &str, identity: &BotIdentity) -> (Bot, Id) {
+    let mut bot = ready(url, identity, "Owner").await;
+    bot.send(&ClientMessage::CreateGuild {
+        name: "Checks".into(),
+        template: None,
+    })
+    .await
+    .unwrap();
+    let channel = loop {
+        if let ServerMessage::GuildJoined { channels, .. } = next_timeout(&mut bot).await {
+            break channels
+                .iter()
+                .find(|c| c.kind == ChannelKind::Text)
+                .expect("a text channel")
+                .id;
+        }
+    };
+    (bot, channel)
+}
+
+const TINY_PNG: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+/// Sends an image and says what came back: the message, or the refusal.
+async fn send_image(bot: &mut Bot, channel_id: Id, image: &str) -> Result<(), String> {
+    bot.send(&ClientMessage::SendMessage {
+        channel_id,
+        content: "look".into(),
+        image: Some(image.to_string()),
+        reply_to: None,
+    })
+    .await
+    .unwrap();
+    loop {
+        match next_timeout(bot).await {
+            ServerMessage::MessageCreate(_) => return Ok(()),
+            ServerMessage::Error { message } => return Err(message),
+            _ => continue,
+        }
+    }
+}
+
+/// Anything that is not a data URL is a fetch the server would be talked into
+/// making, and the sentinel written to disk is derived from what arrives here.
+#[tokio::test]
+async fn an_image_that_is_not_a_data_url_is_refused() {
+    let (url, _h) = spawn_gateway().await;
+    let (mut owner, channel) = owner_with_channel(&url, &BotIdentity::generate()).await;
+
+    for bogus in [
+        "https://example.invalid/cat.png",
+        "file:///etc/passwd",
+        "javascript:alert(1)",
+        "data:text/html;base64,PHNjcmlwdD4=",
+        "",
+    ] {
+        let refused = send_image(&mut owner, channel, bogus)
+            .await
+            .expect_err(&format!("accepted {bogus:?}"));
+        assert!(
+            refused.contains("data:image"),
+            "refused {bogus:?} for the wrong reason: {refused}"
+        );
+    }
+
+    send_image(&mut owner, channel, TINY_PNG)
+        .await
+        .expect("a real data URL still goes through");
+}
+
+/// The cap is on the encoded string, and it is checked before anything decodes
+/// or writes, so this is the only thing between a socket and the disk.
+#[tokio::test]
+async fn an_image_over_the_size_limit_is_refused() {
+    let (url, _h) = spawn_gateway().await;
+    let (mut owner, channel) = owner_with_channel(&url, &BotIdentity::generate()).await;
+
+    let huge = format!("data:image/png;base64,{}", "A".repeat(MAX_IMAGE_LEN));
+    assert!(huge.len() > MAX_IMAGE_LEN, "precondition");
+    let refused = send_image(&mut owner, channel, &huge)
+        .await
+        .expect_err("an oversize image was accepted");
+    assert!(
+        refused.contains("size limit"),
+        "refused for the wrong reason: {refused}"
+    );
+}
+
+/// History is paged and the page size arrives from the client. Unclamped it is
+/// a way to ask one socket to pull a whole channel out of SQLite.
+///
+/// The messages go in through the store rather than the gateway: filling a
+/// channel past the clamp would take 200 sends, and the write limiter is thirty
+/// every ten seconds. A test that only sends a dozen cannot fail whether the
+/// clamp is there or not, which is worse than not testing it.
+#[tokio::test]
+async fn a_history_page_is_clamped_however_much_is_asked_for() {
+    let dir = temp_data_dir();
+    let identity = BotIdentity::generate();
+
+    let channel = {
+        let (url, handle) = spawn_on(&dir).await;
+        let (_owner, channel) = owner_with_channel(&url, &identity).await;
+        handle.abort();
+        channel
+    };
+
+    {
+        let store = Store::open(&dir.join("discordia.db")).await.expect("store");
+        for i in 0..250 {
+            store
+                .insert_message(&Message {
+                    id: Id::new_v4(),
+                    channel_id: channel,
+                    author: User {
+                        pubkey: identity.pubkey().to_string(),
+                        username: "Owner".into(),
+                    },
+                    content: format!("message {i}"),
+                    image: None,
+                    reactions: Vec::new(),
+                    reply_to: None,
+                    created_at: chrono::DateTime::from_timestamp_millis(
+                        1_700_000_000_000 + i as i64,
+                    )
+                    .expect("a real timestamp"),
+                })
+                .await
+                .expect("insert");
+        }
+    }
+
+    let (url, _h) = spawn_on(&dir).await;
+    let mut owner = ready(&url, &identity, "Owner").await;
+    owner
+        .send(&ClientMessage::FetchMessages {
+            channel_id: channel,
+            limit: u32::MAX,
+            before_ms: None,
+        })
+        .await
+        .unwrap();
+    let page = loop {
+        if let ServerMessage::MessageHistory { messages, .. } = next_timeout(&mut owner).await {
+            break messages;
+        }
+    };
+    assert!(
+        page.len() <= 200,
+        "a page of {} came back for a limit of u32::MAX",
+        page.len()
+    );
+    assert!(
+        page.len() > 12,
+        "precondition: the channel is past the clamp"
+    );
+}
