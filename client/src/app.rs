@@ -242,6 +242,11 @@ button:active:not(:disabled) { transform: scale(0.985); }
 @keyframes dxf-pop-in { from { opacity: 0; transform: scale(0.96); } to { opacity: 1; transform: scale(1); } }
 .dxf-pop-in { animation: dxf-pop-in 0.12s var(--ease) both; }
 
+/* The update bar with no denominator: a silent installer reports nothing, so
+   this says the process is alive, not how far along it is. */
+@keyframes dxf-bar-slide { from { transform: translateX(-100%); } to { transform: translateX(400%); } }
+.dxf-bar-slide { animation: dxf-bar-slide 1.1s cubic-bezier(0.4, 0, 0.2, 1) infinite; }
+
 /* The dot sets `color` to its status colour so the currentColor ring matches. */
 @keyframes dxf-dot-pulse {
   0%   { box-shadow: 0 0 0 0 currentColor; }
