@@ -429,32 +429,33 @@ fn insert_message(
     }
     s.nostr_event_ids.insert(mid, msg.id.clone());
 
-    let entry = s.messages.entry(cid).or_default();
-    if entry.iter().any(|m| m.id == mid) {
+    let fresh = s.insert_message(
+        cid,
+        Message {
+            id: mid,
+            channel_id: cid,
+            author: User {
+                pubkey: msg.author.clone(),
+                // The key, deliberately — not a name looked up now. Nostr carries
+                // no username, so any name here would be borrowed from the gateway
+                // roster or the contact list, and both of those arrive later than
+                // this and can go away again. `features::chat` resolves the name
+                // for DM authors at render; storing one froze whichever answer was
+                // true when the wrap was opened, which is why a friend read as a
+                // key until the next message re-derived it.
+                username: crate::identity::truncate_pubkey(&msg.author),
+            },
+            content: msg.content.clone(),
+            image: None,
+            reactions: Vec::new(),
+            reply_to: None,
+            created_at: chrono::DateTime::from_timestamp(msg.created_at, 0)
+                .unwrap_or_else(chrono::Utc::now),
+        },
+    );
+    if !fresh {
         return;
     }
-    entry.push(Message {
-        id: mid,
-        channel_id: cid,
-        author: User {
-            pubkey: msg.author.clone(),
-            // The key, deliberately — not a name looked up now. Nostr carries
-            // no username, so any name here would be borrowed from the gateway
-            // roster or the contact list, and both of those arrive later than
-            // this and can go away again. `features::chat` resolves the name
-            // for DM authors at render; storing one froze whichever answer was
-            // true when the wrap was opened, which is why a friend read as a
-            // key until the next message re-derived it.
-            username: crate::identity::truncate_pubkey(&msg.author),
-        },
-        content: msg.content.clone(),
-        image: None,
-        reactions: Vec::new(),
-        reply_to: None,
-        created_at: chrono::DateTime::from_timestamp(msg.created_at, 0)
-            .unwrap_or_else(chrono::Utc::now),
-    });
-    entry.sort_by_key(|m| m.created_at);
 
     if msg.author != our_pubkey {
         s.note_dm_arrival(cid, &msg.peer, msg.created_at);

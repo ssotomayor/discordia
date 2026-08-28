@@ -571,14 +571,7 @@ fn apply(
             channel_id,
             messages,
         } => {
-            let combined = s.messages.entry(channel_id).or_default();
-            let existing: std::collections::HashSet<_> = combined.iter().map(|m| m.id).collect();
-            for m in messages {
-                if !existing.contains(&m.id) {
-                    combined.push(m);
-                }
-            }
-            combined.sort_by_key(|a| a.created_at);
+            s.merge_history(channel_id, messages);
         }
         ServerMessage::MessageCreate(m) => {
             let cid = m.channel_id;

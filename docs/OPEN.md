@@ -54,10 +54,16 @@ Closed and retired entries are not kept; `git log docs/` has them.
   cwd, so setting it breaks `dx` run from the repo root.
 
 **Tests with no coverage** (from the mutation run)
-- 72 · The raid detector has no test at all.
-- 74 · Retention can stop deleting without anything noticing.
-- 75 · The Nostr DM service loop and `net.rs` are largely unguarded.
-- 76 · Input validation has no tests.
+- 75 · The Nostr DM service loop and `net.rs` are still mostly unguarded. What
+  is covered is the part that was lifted onto `AppState` — the arrival, read and
+  ring rules, and now the message merge — because `apply` and `insert_message`
+  both take a `Signal` and testing them needs a Dioxus runtime. Every other arm
+  is untested, and the way to cover one is to lift its decision the same way.
+- 76 · Input validation is half tested. Usernames, the image checks and the
+  history page cap have tests; the emoji payload cap, the role and emoji
+  per-guild limits and the catalog page cap do not. The catalog cap needs more
+  than 500 guilds to observe, which is why the test that pretended to cover it
+  was deleted rather than kept.
 - 87 · The silent Windows update is not tested end to end. The pieces are —
   moving the running program aside, the rollback rule, where the cast-off is
   swept from — but nothing exercises `/S` against a real NSIS install, which
@@ -86,12 +92,6 @@ Closed and retired entries are not kept; `git log docs/` has them.
 - 39 · Nothing on this wire can tell an old client from a new one.
 
 **Client UX**
-- 88 · A muted channel looks exactly like a loud one. Muting is only reachable
-  from the context menu and leaves no mark in the list, so the only way to know
-  is to open the menu and read which way the item points.
-- 89 · A DM conversation cannot be muted. The rule reads the same set the
-  channels use, so the state is already there; what is missing is somewhere to
-  toggle it from in the DM list.
 - 36 · The Windows client is a console application, so every release ships a `cmd` window.
 - 77 · The macOS `.app` keeps only half of what 36 gave Windows.
 - 37 · The fade-in never re-triggers on the connect and identity-setup panels.
@@ -134,8 +134,6 @@ Closed and retired entries are not kept; `git log docs/` has them.
 
 **Nostr / DMs**
 - 70 · A DM goes to the relays *we* chose, not the ones the recipient reads.
-- 78 · Deleting a conversation only exists in the home DM column; the
-  in-session list in `features/channels.rs` reads the same `dms` and cannot.
 - 79 · A delete is a local watermark — the events stay on the relays and on the
   other person's machine, and no NIP-09 request is sent.
 
