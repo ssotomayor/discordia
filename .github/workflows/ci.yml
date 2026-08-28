@@ -124,6 +124,14 @@ jobs:
       - name: Clippy (client, macOS-only code)
         run: cargo clippy -p dioxusfun --all-targets -- -D warnings
 
+      # The other half of the platform: `devlog` and the console handling in
+      # `main.rs` change shape with `debug_assertions`, so one profile lints a
+      # different tree than the other. Windows has run both since it had them.
+      - name: Clippy (client, macOS-only code, debug-assertions off)
+        env:
+          RUSTFLAGS: "-C debug-assertions=off"
+        run: cargo clippy -p dioxusfun --all-targets -- -D warnings
+
   prerelease-linux:
     name: pre-release · server+client (linux · x86_64)
     if: github.event_name == 'push'

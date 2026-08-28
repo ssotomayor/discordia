@@ -41,7 +41,6 @@ Closed and retired entries are not kept; `git log docs/` has them.
   latency charged to everyone who joins honestly.
 
 **Repo & CI**
-- 7 · macOS clippy gates one profile of two.
 - 8 · The Windows portable and setup ship the wrong icon.
 - 9 · Windows SmartScreen blocks the download as an unknown publisher.
 - 10 · The macOS build is not notarised.
