@@ -275,11 +275,12 @@ pub fn sweep_outgoing() {
     });
 }
 
+/// Beside the running program, whichever way it was installed: both the
+/// portable swap and the Windows installer leave their cast-off here.
 fn outgoing_path() -> Option<std::path::PathBuf> {
-    let dir = portable_dir()?;
     let exe = std::env::current_exe().ok()?;
     let name = exe.file_name()?.to_str()?;
-    Some(dir.join(format!("{name}{OUTGOING}")))
+    Some(exe.with_file_name(format!("{name}{OUTGOING}")))
 }
 
 pub fn swap(staged: &std::path::Path, target: &std::path::Path) -> Result<(), String> {
@@ -295,13 +296,24 @@ pub fn swap(staged: &std::path::Path, target: &std::path::Path) -> Result<(), St
     std::fs::rename(staged, target).map_err(|e| format!("could not install the update: {e}"))
 }
 
-pub fn perform(install: &Install) -> Result<(), String> {
+/// What the caller has to do next, which is not the same in every case.
+pub enum Applied {
+    /// The new build is on disk and already starting; quit.
+    Restarted,
+    /// A visible installer has the job and needs this process gone to overwrite
+    /// its files; quit.
+    HandedOff,
+    /// Opened for someone to finish by hand; stay.
+    Opened,
+}
+
+pub fn perform(install: &Install) -> Result<Applied, String> {
     match install {
         Install::ReplaceAppImage { target, staged } => {
             swap(staged, target)?;
             std::process::Command::new(target)
                 .spawn()
-                .map(|_| ())
+                .map(|_| Applied::Restarted)
                 .map_err(|e| format!("installed, but could not restart: {e}"))
         }
         Install::ReplacePortable { dir, zip } => {
@@ -314,10 +326,89 @@ pub fn perform(install: &Install) -> Result<(), String> {
             std::process::Command::new(dir.join(&exe))
                 .current_dir(dir)
                 .spawn()
-                .map(|_| ())
+                .map(|_| Applied::Restarted)
                 .map_err(|e| format!("installed, but could not restart: {e}"))
         }
-        Install::RunInstaller(path) | Install::Open(path) => open_installer(path),
+        Install::RunInstaller(path) => run_installer(path),
+        Install::Open(path) => open_installer(path).map(|()| Applied::Opened),
+    }
+}
+
+/// Applies a Windows setup without showing it.
+///
+/// The generated NSIS script is a first-run installer — it names its section
+/// "Install", asks for a directory and knows nothing about an existing copy —
+/// so showing it is what made an update look like a reinstall. `/S` is NSIS's
+/// own silent switch, and the bundle installs per user, so nothing prompts.
+///
+/// Falls back to the visible installer rather than leaving someone stuck: the
+/// wizard is worse, but it is not nothing.
+#[cfg(target_os = "windows")]
+fn run_installer(path: &std::path::Path) -> Result<Applied, String> {
+    use std::os::windows::process::CommandExt;
+
+    let exe =
+        std::env::current_exe().map_err(|e| format!("could not find the running program: {e}"))?;
+    let dir = exe
+        .parent()
+        .ok_or("the running program has no directory")?
+        .to_path_buf();
+
+    let aside = move_aside(&exe)?;
+    let mut cmd = std::process::Command::new(path);
+    cmd.arg("/S");
+    // NSIS wants `/D` last, unquoted, and taking the rest of the line as-is —
+    // `arg` would quote a path with spaces and the switch would be read wrong.
+    cmd.raw_arg(format!("/D={}", dir.display()));
+
+    match cmd.status() {
+        Ok(status) if status.success() => {
+            let _ = std::fs::remove_file(path);
+            std::process::Command::new(&exe)
+                .current_dir(&dir)
+                .spawn()
+                .map(|_| Applied::Restarted)
+                .map_err(|e| format!("installed, but could not restart: {e}"))
+        }
+        other => {
+            restore_aside(&exe, &aside);
+            let why = match other {
+                Ok(status) => format!("the installer stopped with {status}"),
+                Err(e) => format!("the installer would not start: {e}"),
+            };
+            eprintln!("[update] silent install failed: {why}; showing the installer");
+            open_installer(path).map(|()| Applied::HandedOff)
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn run_installer(path: &std::path::Path) -> Result<Applied, String> {
+    open_installer(path).map(|()| Applied::HandedOff)
+}
+
+/// Frees the running program's own name. Windows refuses to overwrite a running
+/// executable but is happy to rename one, and the installer needs the name, not
+/// the file.
+#[cfg(target_os = "windows")]
+fn move_aside(exe: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    let name = exe
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or("the running program has no name")?;
+    let aside = exe.with_file_name(format!("{name}{OUTGOING}"));
+    let _ = std::fs::remove_file(&aside);
+    std::fs::rename(exe, &aside)
+        .map_err(|e| format!("could not move the running program aside: {e}"))?;
+    Ok(aside)
+}
+
+/// Only if nothing has taken the name in the meantime: a setup that wrote the
+/// new binary and then failed has left something newer than what we moved.
+#[cfg(target_os = "windows")]
+fn restore_aside(exe: &std::path::Path, aside: &std::path::Path) {
+    if !exe.exists() {
+        let _ = std::fs::rename(aside, exe);
     }
 }
 
@@ -345,6 +436,7 @@ fn open_installer(path: &std::path::Path) -> Result<(), String> {
 enum Phase {
     Offered,
     Working,
+    Applying,
     Restart,
     Closing,
     HandedOff,
@@ -364,21 +456,24 @@ pub fn UpdateNotice(update: crate::version::Update) -> Element {
                 Err(e) => phase.set(Phase::Failed(e)),
                 Ok(staged) => {
                     let plan = plan_install(staged);
-                    let leaves = !matches!(plan, Install::Open(_));
-                    let after = match plan {
-                        Install::ReplaceAppImage { .. } | Install::ReplacePortable { .. } => {
-                            Phase::Restart
-                        }
-                        _ => Phase::Closing,
-                    };
-                    match perform(&plan) {
-                        Err(e) => phase.set(Phase::Failed(e)),
-                        Ok(()) if leaves => {
-                            phase.set(after);
+                    // Said before the work starts, and on a blocking thread so
+                    // it is actually painted: a silent installer shows nothing
+                    // of its own, so this is the only sign anything is
+                    // happening.
+                    phase.set(Phase::Applying);
+                    let done = tokio::task::spawn_blocking(move || perform(&plan)).await;
+                    match done {
+                        Err(e) => phase.set(Phase::Failed(format!("the update thread died: {e}"))),
+                        Ok(Err(e)) => phase.set(Phase::Failed(e)),
+                        Ok(Ok(Applied::Opened)) => phase.set(Phase::HandedOff),
+                        Ok(Ok(outcome)) => {
+                            phase.set(match outcome {
+                                Applied::Restarted => Phase::Restart,
+                                _ => Phase::Closing,
+                            });
                             tokio::time::sleep(Duration::from_millis(900)).await;
                             std::process::exit(0);
                         }
-                        Ok(()) => phase.set(Phase::HandedOff),
                     }
                 }
             }
@@ -407,6 +502,9 @@ pub fn UpdateNotice(update: crate::version::Update) -> Element {
             },
             Phase::Working => rsx! {
                 span { class: "text-[10px] text-[var(--text-muted)]", "downloading {tag}…" }
+            },
+            Phase::Applying => rsx! {
+                span { class: "text-[10px] text-[var(--accent)]", "applying {tag} — do not close" }
             },
             Phase::Closing => rsx! {
                 span { class: "text-[10px] text-[var(--up)]", "closing so the installer can finish" }
@@ -540,11 +638,6 @@ mod tests {
     }
 
     #[test]
-    fn nothing_parked_means_nothing_to_sweep() {
-        assert!(outgoing_path().is_none());
-    }
-
-    #[test]
     #[cfg(windows)]
     fn a_file_still_held_open_is_swept_once_it_is_released() {
         use std::os::windows::fs::OpenOptionsExt;
@@ -606,6 +699,54 @@ mod tests {
         }
         w.finish().unwrap();
         path
+    }
+
+    /// It used to need a `PORTABLE` marker to answer at all, so an installed
+    /// build never swept the copy its own update left behind.
+    #[test]
+    fn the_cast_off_is_looked_for_beside_the_running_program() {
+        let exe = std::env::current_exe().expect("a running test has a path");
+        let path = outgoing_path().expect("an installed build has one too");
+        assert_eq!(path.parent(), exe.parent());
+        assert_eq!(
+            path.file_name().unwrap().to_str().unwrap(),
+            format!("{}{OUTGOING}", exe.file_name().unwrap().to_str().unwrap())
+        );
+    }
+
+    /// The installer cannot write over a running program but the name can be
+    /// freed, which is the whole reason a silent update works at all.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn moving_aside_frees_the_name_and_restoring_gives_it_back() {
+        let dir = scratch("aside");
+        let exe = dir.join("Discordia.exe");
+        std::fs::write(&exe, b"running").unwrap();
+
+        let aside = move_aside(&exe).expect("rename");
+        assert!(!exe.exists(), "the name was not freed");
+        assert_eq!(std::fs::read(&aside).unwrap(), b"running");
+
+        restore_aside(&exe, &aside);
+        assert_eq!(std::fs::read(&exe).unwrap(), b"running");
+        assert!(!aside.exists());
+    }
+
+    /// A setup that wrote the new binary and then failed leaves something newer
+    /// than what we moved, and rolling back over it would undo the update.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn restoring_never_clobbers_a_binary_that_took_the_name() {
+        let dir = scratch("aside-taken");
+        let exe = dir.join("Discordia.exe");
+        std::fs::write(&exe, b"old").unwrap();
+
+        let aside = move_aside(&exe).expect("rename");
+        std::fs::write(&exe, b"new").unwrap();
+        restore_aside(&exe, &aside);
+
+        assert_eq!(std::fs::read(&exe).unwrap(), b"new");
+        assert!(aside.exists(), "the old copy is the sweeper's to remove");
     }
 
     fn scratch(tag: &str) -> std::path::PathBuf {

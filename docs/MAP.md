@@ -27,7 +27,7 @@ name instead.
 | `client/src/features/chat.rs` | 971 |
 | `protocol/src/lib.rs` | 952 |
 | `server/src/store.rs` | 942 |
-| `client/src/update.rs` | 905 |
+| `client/src/update.rs` | 1046 |
 
 Everything else is small enough that `wc -l` answers faster than a list here
 could stay true. There used to be rows for "under 300" and "300 to 800": they
