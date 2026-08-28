@@ -17,17 +17,17 @@ name instead.
 
 | File | Lines |
 |---|---|
-| `client/src/features/voice.rs` | 2754 |
+| `client/src/features/voice.rs` | 2782 |
 | `server/src/state/mod.rs` | 2331 |
-| `server/src/gateway/connection.rs` | 1938 |
-| `client/src/features/channels.rs` | 1921 |
+| `server/src/gateway/connection.rs` | 1989 |
+| `client/src/features/channels.rs` | 1942 |
 | `client/src/features/screenshare.rs` | 1582 |
-| `client/src/net.rs` | 1145 |
-| `client/src/state.rs` | 1005 |
+| `client/src/state.rs` | 1145 |
+| `client/src/net.rs` | 1135 |
+| `client/src/update.rs` | 1046 |
 | `client/src/features/chat.rs` | 971 |
 | `protocol/src/lib.rs` | 952 |
 | `server/src/store.rs` | 942 |
-| `client/src/update.rs` | 1046 |
 
 Everything else is small enough that `wc -l` answers faster than a list here
 could stay true. There used to be rows for "under 300" and "300 to 800": they
