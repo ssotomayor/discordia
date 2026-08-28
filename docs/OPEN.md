@@ -27,6 +27,18 @@ Closed and retired entries are not kept; `git log docs/` has them.
 - 6 · The gateway is plaintext and `wss://` looks supported without being.
 - 32 · A relay older than `can_publish` grants publish, and nothing on the wire detects it.
 - 73 · The rendezvous challenge nonce is not asserted to be fresh.
+- 83 · Nothing checks `Origin` on the WebSocket upgrade, and the CORS layer
+  allows any. WebSockets are not subject to CORS, so any page a user visits can
+  open a socket to their own `127.0.0.1` server or to one on the LAN. It cannot
+  authenticate — the Schnorr goes over a per-connection nonce — but everything
+  reachable before `Identify` is reachable from a web page.
+- 84 · The join proof of work is precomputable. `pow_challenge` is
+  `"{guild_id}:{pubkey}"`, with no server secret and no expiry, so the work can
+  be done offline before ever contacting the server and the answer never stops
+  being valid — a ban and a rejoin on the same key reuse it. At 16 bits it is
+  ~65k hashes, single-digit milliseconds, so a thousand identities cost under a
+  minute. Fixing it means a server secret with a window and more bits, which is
+  latency charged to everyone who joins honestly.
 
 **Repo & CI**
 - 7 · macOS clippy gates one profile of two.
@@ -47,6 +59,10 @@ Closed and retired entries are not kept; `git log docs/` has them.
 - 74 · Retention can stop deleting without anything noticing.
 - 75 · The Nostr DM service loop and `net.rs` are largely unguarded.
 - 76 · Input validation has no tests.
+- 85 · The identify handshake timeout has no test. It is 30 seconds, and a test
+  that waits one out does not belong in a suite that has to stay fast; testing
+  it needs the timeout to be injectable, which is config surface for a
+  test-only knob.
 
 **Server / guild controls**
 - 14 · Roster paging.

@@ -35,7 +35,10 @@ pub async fn handle_connection(
 
     let mut user: Option<User> = None;
     let mut is_bot = false;
-    let mut limiter = RateLimiter::new();
+    let mut limiter = RateLimiter::new(WRITE_LIMIT, RATE_WINDOW);
+    let mut flood = RateLimiter::new(FLOOD_LIMIT, RATE_WINDOW);
+    let mut failed_identifies = 0u32;
+    let identify_by = tokio::time::Instant::now() + IDENTIFY_TIMEOUT;
 
     loop {
         tokio::select! {
@@ -53,6 +56,13 @@ pub async fn handle_connection(
                     }).await;
                     continue;
                 };
+
+                if !flood.allow() {
+                    let _ = send(&mut ws_tx, &ServerMessage::Error {
+                        message: RATE_LIMITED.into(),
+                    }).await;
+                    break;
+                }
 
                 if is_bot
                     && !matches!(
@@ -87,6 +97,10 @@ pub async fn handle_connection(
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: format!("identify rejected: {e}"),
                             }).await;
+                            failed_identifies += 1;
+                            if failed_identifies >= MAX_IDENTIFY_ATTEMPTS {
+                                break;
+                            }
                             continue;
                         }
                         let new_user = User { pubkey: pubkey.clone(), username };
@@ -1371,6 +1385,13 @@ pub async fn handle_connection(
                 }
             }
 
+            _ = tokio::time::sleep_until(identify_by), if user.is_none() => {
+                let _ = send(&mut ws_tx, &ServerMessage::Error {
+                    message: "identify timed out".into(),
+                }).await;
+                break;
+            }
+
             outbound = outbound_rx.recv() => {
                 let Some(msg) = outbound else { break };
                 let out = if is_bot {
@@ -1438,6 +1459,29 @@ where
 }
 
 pub const RATE_LIMITED: &str = "rate limited: slow down";
+
+const RATE_WINDOW: Duration = Duration::from_secs(10);
+/// Writes that cost the room something: a message, a join.
+const WRITE_LIMIT: usize = 30;
+/// Every frame, writes included. A client at rest sends far less — typing is
+/// throttled to one every two seconds — so this only ever catches a flood.
+const FLOOD_LIMIT: usize = 300;
+/// A real client identifies as soon as it reads the Hello. Anything still
+/// silent after this is holding a socket for its own reasons.
+const IDENTIFY_TIMEOUT: Duration = Duration::from_secs(30);
+/// Each attempt is a Schnorr verification, so an unbounded retry is CPU we hand
+/// to anyone who can open a socket.
+const MAX_IDENTIFY_ATTEMPTS: u32 = 5;
+/// Over `MAX_IMAGE_LEN` so a legal upload always fits, and far under the 64 MiB
+/// tungstenite would otherwise buffer per connection.
+pub const MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;
+
+/// The socket enforces the cap and the handler enforces the image size, so a
+/// cap under it would kill the connection before anything could explain why.
+const _: () = assert!(MAX_FRAME_BYTES > crate::state::MAX_IMAGE_LEN);
+/// Under the write bar the write limiter would be dead code, and every burst
+/// would close the socket instead of slowing it.
+const _: () = assert!(FLOOD_LIMIT > WRITE_LIMIT);
 
 #[derive(Clone, Copy)]
 enum OptionalScreen {
@@ -1803,28 +1847,29 @@ fn check_join_gate(
 
 struct RateLimiter {
     hits: VecDeque<Instant>,
+    limit: usize,
+    window: Duration,
 }
 
 impl RateLimiter {
-    const WINDOW: Duration = Duration::from_secs(10);
-    const LIMIT: usize = 30;
-
-    fn new() -> Self {
+    fn new(limit: usize, window: Duration) -> Self {
         Self {
             hits: VecDeque::new(),
+            limit,
+            window,
         }
     }
 
     fn allow(&mut self) -> bool {
         let now = Instant::now();
         while let Some(front) = self.hits.front() {
-            if now.duration_since(*front) > Self::WINDOW {
+            if now.duration_since(*front) > self.window {
                 self.hits.pop_front();
             } else {
                 break;
             }
         }
-        if self.hits.len() >= Self::LIMIT {
+        if self.hits.len() >= self.limit {
             return false;
         }
         self.hits.push_back(now);
@@ -1834,13 +1879,15 @@ impl RateLimiter {
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_CLIENT_VERSION_BYTES, RateLimiter, sanitize_client_version};
+    use super::{
+        MAX_CLIENT_VERSION_BYTES, RATE_WINDOW, RateLimiter, WRITE_LIMIT, sanitize_client_version,
+    };
     use std::time::{Duration, Instant};
 
     #[test]
     fn a_full_window_is_admitted_and_the_next_hit_is_not() {
-        let mut limiter = RateLimiter::new();
-        for i in 0..RateLimiter::LIMIT {
+        let mut limiter = RateLimiter::new(WRITE_LIMIT, RATE_WINDOW);
+        for i in 0..WRITE_LIMIT {
             assert!(limiter.allow(), "hit {i} is inside the window");
         }
         assert!(
@@ -1851,9 +1898,9 @@ mod tests {
 
     #[test]
     fn a_hit_older_than_the_window_stops_counting() {
-        let mut limiter = RateLimiter::new();
-        let expired = Instant::now() - RateLimiter::WINDOW - Duration::from_secs(1);
-        for _ in 0..RateLimiter::LIMIT {
+        let mut limiter = RateLimiter::new(WRITE_LIMIT, RATE_WINDOW);
+        let expired = Instant::now() - RATE_WINDOW - Duration::from_secs(1);
+        for _ in 0..WRITE_LIMIT {
             limiter.hits.push_back(expired);
         }
         assert!(

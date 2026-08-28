@@ -76,5 +76,7 @@ async fn gateway_upgrade(
         .and_then(|v| v.to_str().ok())
         .map(String::from);
     tracing::info!(?client_host, "gateway upgrade requested");
-    ws.on_upgrade(move |socket| gateway::handle_connection(socket, ctx, client_host))
+    ws.max_message_size(gateway::MAX_FRAME_BYTES)
+        .max_frame_size(gateway::MAX_FRAME_BYTES)
+        .on_upgrade(move |socket| gateway::handle_connection(socket, ctx, client_host))
 }
