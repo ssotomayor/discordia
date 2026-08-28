@@ -56,6 +56,8 @@ const GATE_RAMP_SAMPLES: usize = 120;
 
 const ROOM_CLOSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
+/// Inert, and kept anyway: a pushed `NativeAudioSource` never reaches the APM,
+/// so asking for AEC/NS/AGC here changes nothing. `docs/OPEN.md` 64.
 fn apm_options(deepfilter_on: bool, agc: bool) -> AudioSourceOptions {
     AudioSourceOptions {
         echo_cancellation: true,
@@ -1297,6 +1299,7 @@ fn denoise_gate_loop(
     stats: Arc<GateStats>,
 ) {
     let mut denoiser: Option<crate::denoise::Denoiser> = None;
+    let mut agc = crate::agc::Agc::new();
     let mut applied_atten_lim = 0u32;
     let mut gate = GateState::default();
     let mut gated = 0u64;
@@ -1361,7 +1364,15 @@ fn denoise_gate_loop(
             stats.atten_lim_applied.store(0, Ordering::Relaxed);
         }
 
-        let peak = if denoised {
+        let boosted = if controls.agc.load(Ordering::Relaxed) {
+            agc.process(&mut samples);
+            true
+        } else {
+            agc.reset();
+            false
+        };
+
+        let peak = if denoised || boosted {
             peak_fixed(&samples)
         } else {
             peak_pre
@@ -2249,6 +2260,13 @@ fn refresh_gains(
     }
 }
 
+/// A lone speaker must come out exactly as sent: the old per-track curve cost
+/// every listener up to 1.4 dB, and the f32 path could hand the device 2.0.
+#[inline]
+fn mix(acc: f32) -> f32 {
+    acc.clamp(-1.0, 1.0)
+}
+
 #[inline]
 fn pop_drift_compensated(
     buf: &mut std::collections::VecDeque<f32>,
@@ -2354,13 +2372,9 @@ impl PlaybackMixer {
                                     overrun_threshold,
                                     underrun_threshold,
                                 );
-                            acc += s * (1.0 - 0.15 * s.abs().min(1.0));
+                            acc += s;
                         }
-                        let sample = if acc.abs() > 1.0 {
-                            acc.signum() * (2.0 - 1.0 / acc.abs())
-                        } else {
-                            acc
-                        };
+                        let sample = mix(acc);
                         if sample != 0.0 {
                             pulled += 1;
                         }
@@ -2394,13 +2408,9 @@ impl PlaybackMixer {
                                     overrun_threshold,
                                     underrun_threshold,
                                 );
-                            acc += s * (1.0 - 0.15 * s.abs().min(1.0));
+                            acc += s;
                         }
-                        let sample = if acc.abs() > 1.0 {
-                            acc.signum() * (2.0 - 1.0 / acc.abs())
-                        } else {
-                            acc
-                        };
+                        let sample = mix(acc);
                         let s16 = dither_to_i16(sample, &mut dither_rng);
                         for s in frame.iter_mut() {
                             *s = s16;
@@ -2534,6 +2544,52 @@ async fn consume_remote_track(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One person talking has to arrive at the level they were sent at. The
+    /// per-track curve this replaced took up to 1.4 dB off that case for a sum
+    /// that only ever happens when several people talk at once.
+    #[test]
+    fn a_lone_speaker_is_not_quietened() {
+        for s in [0.0, 0.1, 0.5, 0.9, 1.0, -0.7] {
+            assert_eq!(mix(s), s);
+        }
+    }
+
+    /// The f32 output stream writes what it is handed, so a sum that leaves
+    /// full scale reaches the device as clipping it never asked for.
+    #[test]
+    fn a_sum_never_leaves_full_scale() {
+        assert_eq!(mix(1.8), 1.0);
+        assert_eq!(mix(-2.4), -1.0);
+    }
+
+    /// The two halves have to agree: the AGC runs before the gate, so a mic too
+    /// quiet to clear the default bar on its own clears it once normalised.
+    /// That is the reported difference against other clients, end to end.
+    #[test]
+    fn a_quiet_mic_reaches_the_gate_loud_enough_to_open_it() {
+        let quiet = 0.02_f32;
+        let default_bar = 50; // `settings::default_mic_sensitivity`
+        assert!(
+            peak_fixed(&[quiet]) < default_bar,
+            "precondition: raw, this mic is under the bar and gets dropped"
+        );
+
+        let mut agc = crate::agc::Agc::new();
+        let mut gate = GateState::default();
+        let mut action = GateAction::Drop;
+        for _ in 0..600 {
+            let mut hop: Vec<f32> = (0..crate::denoise::HOP)
+                .map(|i| if i % 2 == 0 { quiet } else { -quiet })
+                .collect();
+            agc.process(&mut hop);
+            action = gate.step(peak_fixed(&hop), default_bar);
+        }
+        assert!(
+            matches!(action, GateAction::Pass),
+            "still {action:?} after the AGC settled"
+        );
+    }
 
     #[test]
     fn the_gate_holds_below_the_level_it_opened_at() {
