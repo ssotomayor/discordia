@@ -1,7 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- NSMicrophoneUsageDescription is load-bearing: macOS denies the mic to a
-     bundled app without it, silently. `dx serve` does not reproduce it. -->
+<!-- Load-bearing twice over: macOS denies the mic without
+     NSMicrophoneUsageDescription, and WKWebView refuses every cleartext load
+     without NSAppTransportSecurity — which is the whole SFU when self-hosting.
+     `build.rs` links this into the binary so an unbundled run has it too. -->
 <plist version="1.0">
 <dict>
 	<key>CFBundleDevelopmentRegion</key>

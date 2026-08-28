@@ -10,6 +10,28 @@ fn main() {
         .unwrap_or_else(dev_version);
 
     println!("cargo::rustc-env=DISCORDIA_VERSION={version}");
+
+    embed_info_plist();
+}
+
+/// macOS reads ATS and the TCC usage strings from the app's `Info.plist`, and a
+/// bare `cargo run` has no bundle to carry one: ATS then stays at its default
+/// and the webview cannot open the self-hosted `ws://` SFU at all. Linking the
+/// file into the binary gives the unbundled build the same keys; a `.app` reads
+/// its own copy and ignores this section.
+fn embed_info_plist() {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {
+        return;
+    }
+    let Ok(dir) = std::env::var("CARGO_MANIFEST_DIR") else {
+        return;
+    };
+    let plist = std::path::Path::new(&dir).join("Info.plist");
+    println!("cargo::rerun-if-changed={}", plist.display());
+    println!(
+        "cargo::rustc-link-arg-bins=-Wl,-sectcreate,__TEXT,__info_plist,{}",
+        plist.display()
+    );
 }
 
 fn dev_version() -> String {

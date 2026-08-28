@@ -53,6 +53,10 @@ cargo fmt --all
 First run is slow: `server/` fetches or builds `livekit-server` once (macOS
 builds from source, needs `go`). `LIVEKIT_BUNDLE_SKIP=1` opts out.
 
+On macOS `dx serve` cannot relax App Transport Security for the webview, so
+screen share and camera reach no self-hosted SFU under it; `cargo run` and the
+bundle both carry the `Info.plist` that does.
+
 Packaging the macOS app needs a signing identity, or macOS treats every build
 as a new app and re-asks for the screen, mic and camera grants. It is
 per-developer, so it is passed in rather than committed to `Dioxus.toml`:

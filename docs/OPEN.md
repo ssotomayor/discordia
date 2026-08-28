@@ -36,6 +36,11 @@ Closed and retired entries are not kept; `git log docs/` has them.
 - 11 · `Discordia.html` should be named and moved, not deleted.
 - 12 · The `.icns` is downscaled from the PNG, not rasterised from the SVG.
 - 71 · Nothing checks that a test would fail if the code it guards broke.
+- 81 · `dx serve` on macOS writes its own `Info.plist` and ignores
+  `[bundle.macos] info_plist_path`, so the webview keeps ATS at its default and
+  cannot reach a cleartext SFU. `cargo run` is covered by `build.rs`; the CLI's
+  only override, `[application] macos_info_plist`, resolves against the shell's
+  cwd, so setting it breaks `dx` run from the repo root.
 
 **Tests with no coverage** (from the mutation run)
 - 72 · The raid detector has no test at all.
