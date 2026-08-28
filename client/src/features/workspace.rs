@@ -73,6 +73,7 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
             w.selected_input_device = saved.selected_input_device.clone();
             w.selected_output_device = saved.selected_output_device.clone();
             w.dm_cleared_at = saved.dm_cleared_at.iter().cloned().collect();
+            w.dm_read_at = saved.dm_read_at.iter().cloned().collect();
         }
         // Audio prefs must be restored before this: the service seeds its live
         // controls from AppState on the first poll.
@@ -99,6 +100,7 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
     provide_context(crate::features::voice::VoiceTx(voice_tx.clone()));
     provide_context(state);
     provide_context(params.identity.clone());
+    crate::state::use_dm_read_persistence(state);
 
     let mut layout = use_layout_store(|| {
         let saved = settings.read();

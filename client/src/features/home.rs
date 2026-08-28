@@ -22,8 +22,10 @@ pub fn HomeView(
     let state = use_signal(|| {
         let mut s = AppState::empty();
         s.dm_cleared_at = settings.read().dm_cleared_at.iter().cloned().collect();
+        s.dm_read_at = settings.read().dm_read_at.iter().cloned().collect();
         s
     });
+    crate::state::use_dm_read_persistence(state);
 
     let nostr_tx = use_hook(|| {
         let relays = {
@@ -51,6 +53,10 @@ pub fn HomeView(
     }));
 
     let mut social = use_signal(|| false);
+    use_effect(move || {
+        let mut app = state;
+        app.write().dm_pane_open = social();
+    });
 
     let mac_top_pad = if cfg!(target_os = "macos") {
         "pt-5"
@@ -468,7 +474,7 @@ fn SocialPanel(on_close: EventHandler<()>) -> Element {
                                         let mut s = state.write();
                                         s.dm_mode = true;
                                         s.selected_channel = Some(cid);
-                                        s.dm_unread.remove(&cid);
+                                        s.mark_dm_read(cid);
                                     },
                                     span { class: "relative shrink-0",
                                         crate::features::profiles::Avatar {

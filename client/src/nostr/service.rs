@@ -319,7 +319,7 @@ fn open_conversation(peer: &str, state: &mut Signal<AppState>) {
     }
     s.dm_mode = true;
     s.selected_channel = Some(cid);
-    s.dm_unread.remove(&cid);
+    s.mark_dm_read(cid);
 }
 
 /// Build, wrap and publish a message; show it immediately.
@@ -456,9 +456,8 @@ fn insert_message(
     });
     entry.sort_by_key(|m| m.created_at);
 
-    let viewing = s.selected_channel == Some(cid) && s.dm_mode;
-    if msg.author != our_pubkey && !viewing {
-        *s.dm_unread.entry(cid).or_insert(0) += 1;
+    if msg.author != our_pubkey {
+        s.note_dm_arrival(cid, &msg.peer, msg.created_at);
     }
 }
 

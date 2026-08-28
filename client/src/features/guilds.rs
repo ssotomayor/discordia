@@ -76,7 +76,7 @@ pub fn GuildsSidebar() -> Element {
                             let first = s.dms.first().map(|d| d.channel_id);
                             s.selected_channel = first;
                             if let Some(cid) = first {
-                                s.dm_unread.remove(&cid);
+                                s.mark_dm_read(cid);
                             }
                         }
                     },

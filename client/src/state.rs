@@ -184,6 +184,9 @@ pub struct AppState {
     /// Seeded from `ClientSettings::dm_cleared_at`; see it for why a delete is
     /// a watermark. Read on every insert, so replayed history stays hidden.
     pub dm_cleared_at: HashMap<String, i64>,
+    /// Seeded from `ClientSettings::dm_read_at`. Read on every insert, so the
+    /// history the relays replay at launch does not raise an alert twice.
+    pub dm_read_at: HashMap<String, i64>,
     pub nostr_event_ids: HashMap<Id, String>,
     pub contacts: crate::nostr::nip02::ContactList,
     pub nostr_relays_up: std::collections::HashSet<String>,
@@ -193,6 +196,10 @@ pub struct AppState {
     /// arrives, and last-writer-wins would show whichever relay was slower.
     pub nostr_names: HashMap<String, (String, i64)>,
     pub dm_mode: bool,
+    /// Whether the surface holding the selected conversation is on screen. The
+    /// home drawer closes over a DM that stays selected, and a message arriving
+    /// behind it is unread however selected it is.
+    pub dm_pane_open: bool,
     pub catalog: Vec<GuildSummary>,
     pub catalog_total: u32,
     pub profiles: HashMap<String, Profile>,
@@ -278,11 +285,13 @@ impl AppState {
             dms: Vec::new(),
             dm_unread: HashMap::new(),
             dm_cleared_at: HashMap::new(),
+            dm_read_at: HashMap::new(),
             nostr_event_ids: HashMap::new(),
             contacts: Default::default(),
             nostr_relays_up: std::collections::HashSet::new(),
             nostr_names: HashMap::new(),
             dm_mode: false,
+            dm_pane_open: true,
             catalog: Vec::new(),
             catalog_total: 0,
             profiles: HashMap::new(),
@@ -553,6 +562,44 @@ impl AppState {
         self.dm_unread.values().copied().sum()
     }
 
+    /// Records an arriving DM against the read watermark: counted when it is
+    /// not on screen, and covered by the mark when it is.
+    ///
+    /// The mark has to move while you watch, too. Relays replay the whole
+    /// history on every launch and `dm_unread` is rebuilt from it, so a message
+    /// only ever read live would come back as unread on the next one.
+    pub fn note_dm_arrival(&mut self, channel_id: Id, peer: &str, at: i64) {
+        if self.dm_pane_open && self.selected_channel == Some(channel_id) && self.dm_mode {
+            let mark = self.dm_read_at.entry(peer.to_string()).or_insert(at);
+            *mark = (*mark).max(at);
+        } else if self.dm_read_at.get(peer).is_none_or(|mark| at > *mark) {
+            *self.dm_unread.entry(channel_id).or_insert(0) += 1;
+        }
+    }
+
+    /// Marks a conversation read up to the newest message it holds.
+    ///
+    /// Dropping the counter alone is not enough — it is rebuilt from the replay
+    /// on the next launch — so this leaves the watermark `note_dm_arrival`
+    /// reads.
+    pub fn mark_dm_read(&mut self, channel_id: Id) {
+        self.dm_unread.remove(&channel_id);
+        let Some(peer) = self.dm_of(channel_id).map(|d| d.other_pubkey.clone()) else {
+            return;
+        };
+        let newest = self
+            .messages
+            .get(&channel_id)
+            .into_iter()
+            .flatten()
+            .map(|m| m.created_at.timestamp())
+            .max();
+        if let Some(at) = newest {
+            let mark = self.dm_read_at.entry(peer).or_insert(at);
+            *mark = (*mark).max(at);
+        }
+    }
+
     /// Records a name a peer published for themselves, keeping the newest.
     ///
     /// Ties keep what is already there: two relays serving the same event is
@@ -630,6 +677,41 @@ pub fn use_app_state() -> Signal<AppState> {
     use_context::<Signal<AppState>>()
 }
 
+/// Mirrors the read watermarks into the settings file as they move.
+///
+/// A hook rather than a line at each read site: the counter is cleared from four
+/// places and `HomeView` and `WorkspaceView` each build their own `AppState`, so
+/// one writer is what keeps the file from drifting from the map.
+pub fn use_dm_read_persistence(state: Signal<AppState>) {
+    let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
+    let marks = use_memo(move || {
+        let mut v: Vec<(String, i64)> = state
+            .read()
+            .dm_read_at
+            .iter()
+            .map(|(peer, at)| (peer.clone(), *at))
+            .collect();
+        v.sort();
+        v
+    });
+    use_effect(move || {
+        let marks = marks();
+        if marks.is_empty() {
+            return;
+        }
+        // `peek`, not `read`: writing back what this effect subscribes to is a
+        // loop.
+        let mut next = settings.peek().clone();
+        let changed = marks
+            .into_iter()
+            .fold(false, |acc, (peer, at)| next.mark_dm_read(&peer, at) || acc);
+        if changed {
+            settings.set(next.clone());
+            crate::settings::save(&next);
+        }
+    });
+}
+
 pub fn use_gateway() -> GatewayTx {
     use_context::<GatewayTx>()
 }
@@ -695,6 +777,97 @@ mod tests {
         s.clear_dm("abcd", 200);
         s.clear_dm("abcd", 100);
         assert_eq!(s.dm_cleared_at.get("abcd"), Some(&200));
+    }
+
+    fn dm_with(s: &mut AppState, peer: &str, ats: &[i64]) -> Id {
+        let cid = crate::nostr::service::conversation_id(peer);
+        if !s.dms.iter().any(|d| d.channel_id == cid) {
+            s.dms.push(DmInfo {
+                channel_id: cid,
+                other_pubkey: peer.to_string(),
+            });
+        }
+        let entry = s.messages.entry(cid).or_default();
+        for at in ats {
+            entry.push(Message {
+                id: Id::new_v4(),
+                channel_id: cid,
+                author: user(peer),
+                content: "hi".into(),
+                image: None,
+                reactions: Vec::new(),
+                reply_to: None,
+                created_at: chrono::DateTime::from_timestamp(*at, 0).unwrap(),
+            });
+        }
+        cid
+    }
+
+    /// The bug this whole watermark exists for: relays replay the history on
+    /// every launch, so without a persisted mark the same messages raise the
+    /// same alert again and reading never sticks.
+    #[test]
+    fn a_replayed_history_does_not_raise_the_alert_twice() {
+        let mut s = AppState::empty();
+        let peer = "abcd";
+        let cid = dm_with(&mut s, peer, &[100, 200]);
+        s.note_dm_arrival(cid, peer, 100);
+        s.note_dm_arrival(cid, peer, 200);
+        assert_eq!(s.dm_unread.get(&cid), Some(&2));
+
+        s.mark_dm_read(cid);
+        assert!(s.dm_unread.is_empty());
+
+        s.note_dm_arrival(cid, peer, 100);
+        s.note_dm_arrival(cid, peer, 200);
+        assert!(s.dm_unread.is_empty());
+        assert_eq!(s.dm_read_at.get(peer), Some(&200));
+    }
+
+    /// A message read live has to leave the mark too, or the next launch counts
+    /// it as never seen.
+    #[test]
+    fn watching_a_conversation_moves_the_mark() {
+        let mut s = AppState::empty();
+        let peer = "abcd";
+        let cid = dm_with(&mut s, peer, &[]);
+        s.dm_mode = true;
+        s.selected_channel = Some(cid);
+
+        s.note_dm_arrival(cid, peer, 300);
+
+        assert!(s.dm_unread.is_empty());
+        assert_eq!(s.dm_read_at.get(peer), Some(&300));
+    }
+
+    /// Selected is not the same as on screen: the home drawer closes over the
+    /// conversation, and a message arriving behind it was never read.
+    #[test]
+    fn a_closed_drawer_is_not_watching() {
+        let mut s = AppState::empty();
+        let peer = "abcd";
+        let cid = dm_with(&mut s, peer, &[]);
+        s.dm_mode = true;
+        s.selected_channel = Some(cid);
+        s.dm_pane_open = false;
+
+        s.note_dm_arrival(cid, peer, 300);
+
+        assert_eq!(s.dm_unread.get(&cid), Some(&1));
+        assert!(s.dm_read_at.is_empty());
+    }
+
+    /// The mark must not swallow what came after it.
+    #[test]
+    fn a_message_newer_than_the_mark_still_counts() {
+        let mut s = AppState::empty();
+        let peer = "abcd";
+        let cid = dm_with(&mut s, peer, &[100]);
+        s.mark_dm_read(cid);
+
+        s.note_dm_arrival(cid, peer, 400);
+
+        assert_eq!(s.dm_unread.get(&cid), Some(&1));
     }
 
     fn user(pk: &str) -> User {

@@ -11,7 +11,7 @@ numbers and seven miscategorised files before that rule was learned.
 
 ## Do not read these whole
 
-10 files hold most of the tree. Opening one to find a single arm costs more
+11 files hold most of the tree. Opening one to find a single arm costs more
 than every other document here put together, so grep the variant or the `fn`
 name instead.
 
@@ -23,6 +23,7 @@ name instead.
 | `client/src/features/channels.rs` | 1921 |
 | `client/src/features/screenshare.rs` | 1582 |
 | `client/src/net.rs` | 1145 |
+| `client/src/state.rs` | 1005 |
 | `client/src/features/chat.rs` | 971 |
 | `protocol/src/lib.rs` | 952 |
 | `server/src/store.rs` | 942 |
