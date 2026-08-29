@@ -215,11 +215,11 @@ pub fn ChatView() -> Element {
                 }
             }
 
-            header { class: "h-11 px-3 flex items-center gap-3 border-b border-[var(--border)] shrink-0",
-                span { class: "shrink-0 text-[var(--text-dim)] font-medium", if is_dm { "@" } else { "#" } }
+            header { class: "h-12 px-3.5 flex items-center gap-3 border-b border-[var(--border)] shrink-0",
+                span { class: "shrink-0 font-mono text-base text-[var(--text-dim)]", if is_dm { "@" } else { "#" } }
                 // The name yields first: a wrapped badge costs a line, a
                 // wrapped key costs nothing you could not read from the list.
-                span { class: "min-w-0 truncate text-sm text-[var(--accent)] font-medium", "{header_name}" }
+                span { class: "dxf-display min-w-0 truncate text-[16px] font-bold tracking-tight text-[var(--text)]", "{header_name}" }
                 if is_dm {
                     span {
                         class: "shrink-0 whitespace-nowrap text-[10px] px-1.5 py-0.5 rounded border border-[var(--border)] text-[var(--text-dim)]",
@@ -228,8 +228,10 @@ pub fn ChatView() -> Element {
                     }
                 }
                 if let Some(topic) = channel_topic {
-                    span { class: "text-[var(--text-dim)]", "·" }
-                    span { class: "text-xs text-[var(--text-muted)] truncate", "{topic}" }
+                    span {
+                        class: "min-w-0 truncate pl-3 text-[12.5px] text-[var(--text-dim)] border-l border-[var(--border-strong)]",
+                        "{topic}"
+                    }
                 }
             }
 
@@ -267,8 +269,25 @@ pub fn ChatView() -> Element {
                         }
                         for (i, msg) in messages.iter().enumerate() {
                             {
-                                let grouped = i > 0 && groups_with(&messages[i - 1], msg);
-                                rsx! { MessageRow { key: "{msg.id}", message: msg.clone(), grouped } }
+                                let new_day = i == 0 || day_of(&messages[i - 1]) != day_of(msg);
+                                // A day break ends a group: the header carries the
+                                // date the bare timestamp cannot.
+                                let grouped = !new_day && i > 0 && groups_with(&messages[i - 1], msg);
+                                let day = new_day.then(|| day_label(day_of(msg)));
+                                rsx! {
+                                    Fragment { key: "{msg.id}",
+                                        if let Some(day) = day {
+                                            div {
+                                                class: "flex items-center gap-3",
+                                                style: "margin: 0.85rem 0 0.6rem;",
+                                                div { class: "flex-1", style: "height:1px; background: var(--border);" }
+                                                span { class: "text-[10px] uppercase tracking-wider text-[var(--text-dim)]", "{day}" }
+                                                div { class: "flex-1", style: "height:1px; background: var(--border);" }
+                                            }
+                                        }
+                                        MessageRow { message: msg.clone(), grouped }
+                                    }
+                                }
                             }
                         }
                     }
@@ -307,6 +326,33 @@ fn groups_with(prev: &Message, cur: &Message) -> bool {
         && (cur.created_at - prev.created_at).num_seconds().abs() < GROUP_WINDOW_SECS
 }
 
+/// Local, not UTC: a divider that says "Today" against a clock nobody is
+/// reading puts the evening's messages under tomorrow.
+fn day_of(m: &Message) -> chrono::NaiveDate {
+    m.created_at.with_timezone(&chrono::Local).date_naive()
+}
+
+fn day_label(day: chrono::NaiveDate) -> String {
+    let today = chrono::Local::now().date_naive();
+    if day == today {
+        "Today".to_string()
+    } else if Some(day) == today.pred_opt() {
+        "Yesterday".to_string()
+    } else {
+        day.format("%a, %b %-d, %Y").to_string()
+    }
+}
+
+/// A bare `@word` is already painted for everyone; this is the narrower
+/// question of whether the word names *you*.
+fn mentions_user(content: &str, username: &str) -> bool {
+    content.split_whitespace().any(|w| {
+        w.strip_prefix('@')
+            .map(|rest| rest.trim_end_matches(|c: char| c.is_ascii_punctuation()))
+            .is_some_and(|name| name.eq_ignore_ascii_case(username))
+    })
+}
+
 fn typing_label(typers: &[String]) -> Option<String> {
     match typers.len() {
         0 => None,
@@ -324,7 +370,21 @@ fn MessageRow(message: Message, grouped: bool) -> Element {
     let mut confirm_delete = use_signal(|| false);
 
     let self_pubkey = state.read().self_user.as_ref().map(|u| u.pubkey.clone());
-    let timestamp = message.created_at.format("%H:%M").to_string();
+    let mentions_me = state
+        .read()
+        .self_user
+        .as_ref()
+        .is_some_and(|u| mentions_user(&message.content, &u.username));
+    let mention_style = if mentions_me {
+        "background: color-mix(in srgb, var(--accent) 6%, transparent); box-shadow: inset 2px 0 0 var(--accent);"
+    } else {
+        ""
+    };
+    let timestamp = message
+        .created_at
+        .with_timezone(&chrono::Local)
+        .format("%H:%M")
+        .to_string();
     let has_text = !message.content.is_empty();
     let author_pubkey = message.author.pubkey.clone();
     let channel_id = message.channel_id;
@@ -376,7 +436,7 @@ fn MessageRow(message: Message, grouped: bool) -> Element {
     rsx! {
         if let Some(q) = quoted {
             div { class: "flex gap-3 -mx-4 px-4 pt-1",
-                div { class: "w-8 shrink-0" }
+                div { class: "w-9 shrink-0" }
                 div { class: "min-w-0 flex items-center gap-1.5 text-[11px] text-[var(--text-dim)]",
                     span { class: "shrink-0 opacity-60", "↩" }
                     span { class: "shrink-0 font-medium text-[var(--text-muted)]",
@@ -386,10 +446,12 @@ fn MessageRow(message: Message, grouped: bool) -> Element {
                 }
             }
         }
-        div { class: "group relative flex gap-3 -mx-4 px-4 py-0.5 hover:bg-white/[0.02] dxf-msg-in",
+        div {
+            class: "group relative flex gap-3 -mx-4 px-4 py-0.5 hover:bg-white/[0.02] dxf-msg-in",
+            style: "{mention_style}",
 
             if grouped {
-                div { class: "w-8 shrink-0 text-[9px] text-[var(--text-dim)] text-right pt-1 opacity-0 group-hover:opacity-100 transition-opacity",
+                div { class: "w-9 shrink-0 font-mono text-[9.5px] text-[var(--text-dim)] text-right pt-1.5 opacity-0 group-hover:opacity-100 transition-opacity",
                     "{timestamp}"
                 }
             } else {
@@ -399,7 +461,7 @@ fn MessageRow(message: Message, grouped: bool) -> Element {
                     crate::features::profiles::Avatar {
                         pubkey: message.author.pubkey.clone(),
                         name: message.author.username.clone(),
-                        size: "w-8 h-8",
+                        size: "w-9 h-9",
                     }
                 }
             }
@@ -902,10 +964,10 @@ fn Composer(channel_id: Id, composer_label: String, drag_over: Signal<bool>) -> 
 
             form {
                 onsubmit: move |e| { e.prevent_default(); submit(); },
-                div { class: "border border-[var(--border)] rounded flex items-center px-2 gap-1 focus-within:border-[var(--accent)] transition-colors",
+                div { class: "h-12 border border-[var(--border-strong)] rounded-xl bg-[var(--panel)] flex items-center pl-2 pr-2.5 gap-2 focus-within:border-[var(--accent)] transition-colors",
 
                     label {
-                        class: "px-1.5 text-lg leading-none text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors cursor-pointer select-none",
+                        class: "w-8 h-8 shrink-0 flex items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--panel2)] text-lg leading-none text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors cursor-pointer select-none",
                         title: "Attach an image",
                         "+"
                         input {
@@ -943,7 +1005,7 @@ fn Composer(channel_id: Id, composer_label: String, drag_over: Signal<bool>) -> 
                     input {
                         // `min-w-0`: an input's intrinsic width is not zero, so
                         // without it a narrow composer pushes Send off the row.
-                        class: "flex-1 min-w-0 bg-transparent py-2 text-sm text-[var(--text)] focus:outline-none",
+                        class: "flex-1 min-w-0 bg-transparent py-2 text-[14px] text-[var(--text)] focus:outline-none",
                         r#type: "text",
                         placeholder: "Message {composer_label}",
                         value: "{draft}",
@@ -958,12 +1020,19 @@ fn Composer(channel_id: Id, composer_label: String, drag_over: Signal<bool>) -> 
                         "🙂"
                     }
 
-                    button {
-                        class: "dxf-cta shrink-0 text-xs font-semibold uppercase tracking-wider px-4 py-1.5 rounded-lg disabled:opacity-30 transition-all",
-                        r#type: "submit",
-                        disabled: draft().trim().is_empty() && pending_image().is_none(),
-                        "Send"
+                    // Enter already sends; the button is for the pointer, and a
+                    // permanently greyed one is a control that never does anything.
+                    if !draft().trim().is_empty() || pending_image().is_some() {
+                        button {
+                            class: "dxf-cta shrink-0 text-xs font-semibold uppercase tracking-wider px-4 py-1.5 rounded-lg transition-all",
+                            r#type: "submit",
+                            "Send"
+                        }
                     }
+                }
+                div { class: "flex gap-3.5 pt-1.5 px-1 font-mono text-[10px] text-[var(--text-dim)]",
+                    span { "Enter send" }
+                    span { "Shift+Enter new line" }
                 }
             }
         }

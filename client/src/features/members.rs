@@ -61,8 +61,29 @@ pub fn MembersPanel() -> Element {
     let can_moderate = can_kick || can_ban || can_roles;
     let mut menu = use_signal::<Option<MemberMenu>>(|| None);
 
+    // In voice is its own group, so a voice state only reaches the rows that
+    // can act on one: elsewhere a mute icon would describe a mic nobody hears.
+    let in_voice: std::collections::HashSet<&str> = voice_states
+        .iter()
+        .filter(|v| v.channel_id.is_some())
+        .map(|v| v.user_pubkey.as_str())
+        .collect();
+    let voice_members: Vec<Member> = members
+        .iter()
+        .filter(|m| in_voice.contains(m.user.pubkey.as_str()))
+        .cloned()
+        .collect();
+    let online_members: Vec<Member> = members
+        .iter()
+        .filter(|m| m.online && !in_voice.contains(m.user.pubkey.as_str()))
+        .cloned()
+        .collect();
+    let offline_members: Vec<Member> = members
+        .iter()
+        .filter(|m| !m.online && !in_voice.contains(m.user.pubkey.as_str()))
+        .cloned()
+        .collect();
     let online_count = members.iter().filter(|m| m.online).count();
-    let offline_count = members.len() - online_count;
 
     let on_context = {
         let owner_pk = owner_pk.clone();
@@ -87,29 +108,38 @@ pub fn MembersPanel() -> Element {
     };
 
     rsx! {
-        aside { class: "panel-hover w-full h-full bg-[var(--panel)] border border-[var(--border)] rounded-lg flex flex-col overflow-hidden",
-            div { class: "h-11 px-3 flex items-center border-b border-[var(--border)]",
-                h2 { class: "text-sm text-[var(--accent)] truncate font-medium", "Members" }
-                span { class: "ml-auto text-[10px] text-[var(--text-dim)] uppercase tracking-wider",
-                    "{online_count} online"
+        aside { class: "panel-hover w-full h-full bg-[var(--panel)] border border-[var(--border)] rounded-xl flex flex-col overflow-hidden",
+            div { class: "h-12 px-3.5 flex items-center border-b border-[var(--border)]",
+                h2 { class: "dxf-display text-[15px] font-bold tracking-tight text-[var(--text)] truncate", "Members" }
+                span { class: "ml-auto font-mono text-[11px] text-[var(--text-dim)]",
+                    "{online_count}"
                 }
             }
             NoDrag {
                 div { class: "flex-1 overflow-y-auto py-3 space-y-3",
-                    if online_count > 0 {
+                    if !voice_members.is_empty() {
                         Section {
-                            label: format!("Online — {online_count}"),
-                            members: members.iter().filter(|m| m.online).cloned().collect::<Vec<_>>(),
+                            label: format!("In voice — {}", voice_members.len()),
+                            members: voice_members.clone(),
                             voice_states: voice_states.clone(),
                             on_context: on_context.clone(),
                         }
                     }
-                    if offline_count > 0 {
+                    if !online_members.is_empty() {
                         Section {
-                            label: format!("Offline — {offline_count}"),
-                            members: members.iter().filter(|m| !m.online).cloned().collect::<Vec<_>>(),
+                            label: format!("Online — {}", online_members.len()),
+                            members: online_members.clone(),
                             voice_states: Vec::new(),
                             on_context: on_context.clone(),
+                        }
+                    }
+                    if !offline_members.is_empty() {
+                        Section {
+                            label: format!("Offline — {}", offline_members.len()),
+                            members: offline_members.clone(),
+                            voice_states: Vec::new(),
+                            on_context: on_context.clone(),
+                            collapsible: true,
                         }
                     }
                     if members.is_empty() {
@@ -267,24 +297,39 @@ fn Section(
     members: Vec<Member>,
     voice_states: Vec<VoiceState>,
     on_context: EventHandler<(Member, f64, f64)>,
+    #[props(default)] collapsible: bool,
 ) -> Element {
+    let mut open = use_signal(|| false);
+    let show = !collapsible || open();
+
     rsx! {
         div {
-            div { class: "px-3 mb-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]",
-                "{label}"
+            if collapsible {
+                button {
+                    class: "w-full px-3 pt-2 pb-1.5 flex items-center gap-1.5 text-left font-mono text-[9px] uppercase tracking-[0.18em] text-[var(--text-dim)] hover:text-[var(--text)] transition-colors",
+                    onclick: move |_| open.toggle(),
+                    span { class: "text-[8px]", if open() { "▾" } else { "▸" } }
+                    "{label}"
+                }
+            } else {
+                div { class: "px-3 pt-2 pb-1.5 font-mono text-[9px] uppercase tracking-[0.18em] text-[var(--text-dim)]",
+                    "{label}"
+                }
             }
-            for m in members.iter() {
-                {
-                    let vs = voice_states
-                        .iter()
-                        .find(|v| v.user_pubkey == m.user.pubkey)
-                        .cloned();
-                    rsx! {
-                        MemberRow {
-                            key: "{m.user.pubkey}",
-                            member: m.clone(),
-                            voice: vs,
-                            on_context,
+            if show {
+                for m in members.iter() {
+                    {
+                        let vs = voice_states
+                            .iter()
+                            .find(|v| v.user_pubkey == m.user.pubkey)
+                            .cloned();
+                        rsx! {
+                            MemberRow {
+                                key: "{m.user.pubkey}",
+                                member: m.clone(),
+                                voice: vs,
+                                on_context,
+                            }
                         }
                     }
                 }
@@ -341,7 +386,7 @@ fn MemberRow(
     let ctx_member = member.clone();
     rsx! {
         div {
-            class: "flex items-center gap-2.5 px-3 py-1.5 rounded-lg hover:bg-white/[0.03] cursor-pointer",
+            class: "flex items-center gap-2.5 h-9 px-2.5 mx-1 rounded-lg hover:bg-[var(--panel2)] cursor-pointer",
             title: if is_self { "Click to view your profile" } else { "Click to view profile" },
             onclick: move |_| state.write().profile_card = Some(card_pubkey.clone()),
             oncontextmenu: move |e: MouseEvent| {
@@ -382,7 +427,11 @@ fn MemberRow(
             if let Some(vs) = voice {
                 VoiceBadges { vs: vs }
             }
-            span { class: "text-[10px] font-semibold text-[var(--text-dim)] shrink-0", "Lv{level}" }
+            // Lv1 is where everyone starts, so on most rows the badge repeats a
+            // value that separates nobody from nobody.
+            if level > 1 {
+                span { class: "text-[10px] font-semibold text-[var(--text-dim)] shrink-0", "Lv{level}" }
+            }
         }
     }
 }
@@ -390,14 +439,19 @@ fn MemberRow(
 #[component]
 fn VoiceBadges(vs: VoiceState) -> Element {
     rsx! {
-        div { class: "flex items-center gap-1 text-[10px] uppercase tracking-wider",
-            if vs.channel_id.is_some() {
-                span { class: "text-[var(--accent)]", title: "In voice", "v" }
-            }
+        div { class: "flex items-center gap-1 shrink-0 text-[var(--text-dim)]",
             if vs.deafened {
-                span { class: "text-[var(--text-dim)]", title: "Deafened", "d" }
+                span {
+                    class: "block w-3 h-3",
+                    title: "Deafened",
+                    dangerous_inner_html: crate::features::icons::HEADPHONES_OFF,
+                }
             } else if vs.muted {
-                span { class: "text-[var(--text-dim)]", title: "Muted", "m" }
+                span {
+                    class: "block w-3 h-3",
+                    title: "Muted",
+                    dangerous_inner_html: crate::features::icons::MIC_OFF,
+                }
             }
         }
     }
