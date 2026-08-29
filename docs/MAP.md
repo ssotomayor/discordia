@@ -20,12 +20,12 @@ name instead.
 | `client/src/features/voice.rs` | 2782 |
 | `server/src/state/mod.rs` | 2331 |
 | `server/src/gateway/connection.rs` | 1989 |
-| `client/src/features/channels.rs` | 2011 |
+| `client/src/features/channels.rs` | 2171 |
 | `client/src/features/screenshare.rs` | 1582 |
 | `client/src/update.rs` | 1147 |
-| `client/src/state.rs` | 1270 |
+| `client/src/state.rs` | 1274 |
 | `client/src/net.rs` | 1128 |
-| `client/src/features/chat.rs` | 971 |
+| `client/src/features/chat.rs` | 1040 |
 | `protocol/src/lib.rs` | 952 |
 | `server/src/store.rs` | 942 |
 
@@ -46,6 +46,7 @@ that direction says a file is safe to open when it is not.
 | DMs end to end | `client/src/nostr/service.rs` | `spawn_nostr`; `conversation_id` is the Uuid derivation |
 | Voice, capture, mixing | `client/src/features/voice.rs` | the largest file in the tree — grep `ScreenAudioRoom`, `ScreenVideoRoom`, `forward_mic` |
 | The first screen | `client/src/features/home.rs` | `HomeView`; the connect form is `connect::ConnectForm` |
+| The settings dialog | `client/src/features/channels.rs` | `SETTINGS_TABS` + `SettingsTab` inside `UserPanel`. The cog that opens it is in the title bar (`workspace.rs`); only `AppState::audio_settings` connects them |
 
 ## Change recipes
 

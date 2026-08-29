@@ -140,6 +140,11 @@ Closed and retired entries are not kept; `git log docs/` has them.
 **Design adoption**
 - 2 · Deferred decorative elements from the comps (day streak, "Send a tip").
 - 3 · The palette icon is not where the comp puts it.
+- 88 · A guild tile has no unread dot: `AppState` counts unread for DMs only
+  (`dm_unread`), so there is nothing per guild or per channel to draw from. The
+  rail is ready for it — the tile is already a positioned box.
+- 89 · A message attachment cannot show its filename or dimensions. Images
+  become `media:<sha256>.<ext>` sentinels (trap 3), which carry neither.
 
 ## Accepted trade-offs — recorded, not tracked
 
