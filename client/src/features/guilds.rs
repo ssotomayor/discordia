@@ -5,7 +5,7 @@ use crate::protocol::{ClientMessage, GuildSummary, Id, Permission};
 use crate::state::{use_app_state, use_gateway};
 
 const HEADER: &str =
-    "h-11 px-2 flex items-center justify-center border-b border-[var(--border)] shrink-0";
+    "h-7 px-2 flex items-center justify-center border-b border-[var(--border)] shrink-0";
 
 #[derive(Clone, PartialEq)]
 struct GuildMenu {
@@ -54,15 +54,18 @@ pub fn GuildsSidebar() -> Element {
     let mut show_browse = use_signal(|| false);
 
     rsx! {
-        nav { class: "panel-hover w-full h-full bg-[var(--panel)] border border-[var(--border)] rounded-lg flex flex-col overflow-hidden",
+        nav { class: "panel-hover w-full h-full bg-[var(--panel)] border border-[var(--border)] rounded-xl flex flex-col overflow-hidden",
+            // A word here labels a column of pictures that need no label, but the
+            // strip is the panel's drag handle, so it stays as a grip.
             div { class: HEADER,
-                span { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]",
-                    "Guilds"
+                span {
+                    class: "block w-4 h-1",
+                    style: "background-image: radial-gradient(var(--border-strong) 1px, transparent 1px); background-size: 4px 4px;",
                 }
             }
 
             NoDrag {
-            div { class: "flex-1 overflow-y-auto flex flex-col items-center py-3 gap-2",
+            div { class: "flex-1 overflow-y-auto flex flex-col items-center py-3 gap-2.5",
                 DmHomeButton {
                     active: dm_mode,
                     count: dm_unread,
@@ -136,7 +139,7 @@ pub fn GuildsSidebar() -> Element {
                 CreateGuild {}
 
                 button {
-                    class: "relative w-10 h-10 rounded-md border border-dashed border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] flex items-center justify-center text-base leading-none transition-colors",
+                    class: "relative w-11 h-11 rounded-2xl border border-dashed border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] flex items-center justify-center text-base leading-none transition-colors",
                     title: "Browse guilds to join",
                     onclick: {
                         let gateway = gateway.clone();
@@ -469,7 +472,7 @@ fn DmHomeButton(active: bool, count: usize, onclick: EventHandler<()>) -> Elemen
     };
     rsx! {
         button {
-            class: "relative w-10 h-10 rounded-md border flex items-center justify-center text-xs font-semibold tracking-wide transition-colors {cls}",
+            class: "relative w-11 h-11 rounded-2xl border flex items-center justify-center text-xs font-semibold tracking-wide transition-colors {cls}",
             title: "Direct messages",
             onclick: move |_| onclick.call(()),
             "DM"
@@ -503,7 +506,7 @@ fn CreateGuild() -> Element {
     if !open() {
         return rsx! {
             button {
-                class: "w-10 h-10 rounded-md border border-dashed border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] flex items-center justify-center text-lg leading-none transition-colors",
+                class: "w-11 h-11 rounded-2xl border border-dashed border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] flex items-center justify-center text-lg leading-none transition-colors",
                 title: "Create a guild",
                 onclick: move |_| open.set(true),
                 "+"
@@ -562,15 +565,30 @@ fn GuildIcon(
     on_menu: EventHandler<(Id, f64, f64)>,
 ) -> Element {
     let cls = if selected {
-        "border-[var(--accent)] text-[var(--accent)]"
+        "border-[var(--accent)]"
     } else {
-        "border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--text)] hover:border-[var(--border-strong)]"
+        "border-[var(--border)] hover:border-[var(--border-strong)]"
+    };
+    // Derived from the id, not the name: a rename should not repaint the tile
+    // someone has learned to find by colour.
+    let tint = crate::identity::signature_accent(&id.to_string());
+    let tile = if image.is_some() {
+        String::new()
+    } else {
+        format!("color: {tint}; background: color-mix(in srgb, {tint} 16%, transparent);")
     };
 
     rsx! {
         div { class: "relative group",
+            if selected {
+                span {
+                    class: "absolute",
+                    style: "left:-8px; top:50%; transform:translateY(-50%); width:3px; height:22px; border-radius:0 3px 3px 0; background: var(--accent);",
+                }
+            }
             button {
-                class: "w-10 h-10 rounded-md border flex items-center justify-center text-xs font-medium transition-colors overflow-hidden {cls}",
+                class: "w-11 h-11 rounded-2xl border flex items-center justify-center text-xs font-medium transition-colors overflow-hidden {cls}",
+                style: "{tile}",
                 title: if is_mine {
                     "{name} — yours, click the cog for settings"
                 } else if has_menu {

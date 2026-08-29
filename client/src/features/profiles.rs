@@ -313,7 +313,10 @@ pub fn ProfileCard() -> Element {
 }
 
 #[component]
-pub fn ProfileEditor() -> Element {
+/// The trigger is whatever the caller puts inside: the account row is the one
+/// place your own name, face and key are already on screen, so it opens itself
+/// rather than growing an icon beside it.
+pub fn ProfileEditor(class: String, children: Element) -> Element {
     let state = use_app_state();
     let gateway = use_gateway();
     let identity = use_context::<crate::identity::Identity>();
@@ -403,10 +406,10 @@ pub fn ProfileEditor() -> Element {
 
     rsx! {
         button {
-            class: "w-7 h-7 flex items-center justify-center rounded text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors",
+            class: "{class}",
             title: "Edit your profile",
             onclick: move |_| { load_current(); err.set(None); open.set(true); },
-            dangerous_inner_html: crate::features::icons::USER,
+            {children}
         }
 
         if let Some(src) = editing_avatar() {
