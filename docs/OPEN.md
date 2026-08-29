@@ -145,6 +145,11 @@ Closed and retired entries are not kept; `git log docs/` has them.
   rail is ready for it — the tile is already a positioned box.
 - 89 · A message attachment cannot show its filename or dimensions. Images
   become `media:<sha256>.<ext>` sentinels (trap 3), which carry neither.
+- 90 · No multi-line composing. `MessageContent` splits on `\n` and renders
+  the breaks, so multi-line messages display, but the draft is a single-line
+  `input` in a `form` — Enter submits implicitly and Shift does not change
+  that. Needs a `textarea` plus an `onkeydown` that sends on bare Enter, and
+  an auto-grow, or the box scrolls one row at a time.
 
 ## Accepted trade-offs — recorded, not tracked
 
