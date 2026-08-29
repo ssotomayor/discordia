@@ -1031,8 +1031,9 @@ fn Composer(channel_id: Id, composer_label: String, drag_over: Signal<bool>) -> 
                     }
                 }
                 div { class: "flex gap-3.5 pt-1.5 px-1 font-mono text-[10px] text-[var(--text-dim)]",
+                    // Only what the composer can actually do: the draft is a
+                    // single-line input, so Shift+Enter submits like Enter.
                     span { "Enter send" }
-                    span { "Shift+Enter new line" }
                 }
             }
         }
