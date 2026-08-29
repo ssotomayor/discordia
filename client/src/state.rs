@@ -211,6 +211,9 @@ pub struct AppState {
     pub profile_card: Option<String>,
     pub image_viewer: Option<String>,
     pub guild_dialog: Option<GuildDialog>,
+    /// Opened from the title bar, rendered by the voice panel that owns the
+    /// device signals — the flag is the only thing the two need to share.
+    pub audio_settings: bool,
     pub typing: HashMap<Id, HashMap<String, (String, std::time::Instant)>>,
     pub notify_tick: u64,
     pub screen_token: Option<(String, String)>,
@@ -305,6 +308,7 @@ impl AppState {
             profile_card: None,
             image_viewer: None,
             guild_dialog: None,
+            audio_settings: false,
             typing: HashMap::new(),
             notify_tick: 0,
             screen_token: None,

@@ -207,15 +207,34 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
                     span { class: "dxf-display dxf-wordmark text-lg font-bold tracking-tight", "Discordia" }
                 }
                 HostBanner {}
-                TransportBadge {}
-                EncryptionBadge {}
-                div { class: "dxf-no-drag shrink-0 flex items-center",
+                // One chip: what the connection is, and the button that ends it.
+                // Named, so it is never read as the voice hang-up downstairs.
+                div {
+                    class: "dxf-no-drag shrink-0 flex items-center rounded-md border border-[var(--border)] bg-[var(--panel2)] overflow-hidden",
                     onmousedown: move |e| e.stop_propagation(),
+                    TransportBadge {}
+                    EncryptionBadge {}
                     button {
-                        class: "w-8 h-8 flex items-center justify-center rounded-md border border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--danger)] hover:border-[var(--danger)] transition-colors",
-                        title: "Disconnect",
+                        class: "h-8 px-2 flex items-center gap-1.5 border-l border-[var(--border)] text-[10px] uppercase tracking-wider text-[var(--text-muted)] hover:text-[var(--danger)] transition-colors",
+                        title: "Disconnect from this server",
                         onclick: move |_| on_disconnect.call(String::new()),
-                        dangerous_inner_html: UNPLUG_ICON_SVG,
+                        span { class: "block w-4 h-4", dangerous_inner_html: UNPLUG_ICON_SVG }
+                        "Disconnect"
+                    }
+                }
+                // Settings and appearance sit in the corner of the window, not
+                // beside your name: they are about the app, not about you.
+                div { class: "dxf-no-drag ml-auto shrink-0 flex items-center gap-1.5",
+                    onmousedown: move |e| e.stop_propagation(),
+                    crate::features::appearance::AppearanceButton {}
+                    button {
+                        class: "w-8 h-8 flex items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--panel2)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors",
+                        title: "Settings",
+                        onclick: move |_| {
+                            let open = !state.read().audio_settings;
+                            state.clone().write().audio_settings = open;
+                        },
+                        span { class: "block w-4 h-4", dangerous_inner_html: crate::features::icons::GEAR }
                     }
                 }
             }
@@ -233,7 +252,9 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
                         ChannelsColumn {}
                     }
                     GridItem { id: "chat", x: 3, y: 0, w: 7, h: GRID_ROWS, min_w: 3, min_h: 10,
-                        div { class: "panel-hover w-full h-full flex flex-col bg-[var(--panel)] border border-[var(--border)] rounded-lg overflow-hidden",
+                        // The log is the darkest surface in the window: the
+                        // panels around it read as chrome only if they sit above it.
+                        div { class: "panel-hover w-full h-full flex flex-col bg-[var(--bg)] border border-[var(--border)] rounded-xl overflow-hidden",
                             if status == ConnectionStatus::Connecting {
                                 div { class: "flex-1 flex items-center justify-center text-[var(--text-muted)] text-sm",
                                     "Connecting…"
@@ -481,6 +502,7 @@ fn HostBanner() -> Element {
     };
     drop(snapshot);
 
+    let mut copied = use_signal(|| false);
     let lan_text = info.lan_url.clone();
     let shortcode = info.shortcode.clone();
     let publish_error = info.publish_error.clone();
@@ -496,20 +518,37 @@ fn HostBanner() -> Element {
     };
 
     rsx! {
-        div { class: "panel-hover flex-1 min-w-0 px-3 py-2 bg-[var(--panel)] border border-[var(--border)] rounded-lg flex items-center gap-3 text-xs flex-wrap",
-            span { class: "text-[var(--accent)] font-medium tracking-wide", "Self-hosting" }
+        div { class: "dxf-no-drag shrink-0 h-8 pl-2.5 pr-1 bg-[var(--panel2)] border border-[var(--border)] rounded-lg flex items-center gap-2 text-xs",
+            onmousedown: move |e| e.stop_propagation(),
+            span {
+                class: "w-2 h-2 rounded-full shrink-0",
+                style: "background: var(--success);",
+                title: "Hosting from this machine",
+            }
+            span { class: "text-[11.5px] text-[var(--text-dim)]", "self-hosted" }
+            // The code is what you hand a friend, so it is the one thing here
+            // sized to be read and copied rather than skimmed.
             if let Some(code) = shortcode {
-                span { class: "text-[var(--text-dim)]", "·" }
-                span { class: "text-[var(--text-muted)]", "Code:" }
-                code { class: "text-[var(--text)] select-all font-medium",
-                    onmousedown: move |e| e.stop_propagation(),
-                    "{code}"
+                code { class: "font-mono text-[12px] text-[var(--text)] select-all", "{code}" }
+                button {
+                    class: "w-6 h-6 shrink-0 flex items-center justify-center rounded text-[var(--text-dim)] hover:text-[var(--accent)] transition-colors",
+                    title: if copied() { "Copied" } else { "Copy the invite code" },
+                    onclick: move |_| {
+                        let js = crate::features::screenshare::js_str(&code);
+                        let _ = document::eval(&format!(
+                            "navigator.clipboard && navigator.clipboard.writeText({js});"
+                        ));
+                        copied.set(true);
+                    },
+                    span {
+                        class: "block w-3.5 h-3.5",
+                        dangerous_inner_html: crate::features::icons::COPY,
+                    }
                 }
             }
-            span { class: "text-[var(--text-dim)]", "·" }
-            span { class: "text-[var(--text-muted)]", "LAN:" }
-            code { class: "text-[var(--text)] select-all",
-                onmousedown: move |e| e.stop_propagation(),
+            span {
+                class: "pl-2 font-mono text-[10.5px] text-[var(--text-dim)] truncate max-w-52 border-l border-[var(--border)]",
+                title: "The address friends on this network can use",
                 "{lan_text}"
             }
             if let Some(err) = publish_error {

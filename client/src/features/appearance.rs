@@ -55,25 +55,27 @@ pub fn AppearanceButton() -> Element {
     rsx! {
         div {
             button {
-                class: "w-7 h-7 flex items-center justify-center rounded text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors",
-                title: "Appearance",
+                class: "w-8 h-8 flex items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--panel2)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors",
+                title: "Theme, accent and background",
                 onclick: move |e| {
                     let c = e.client_coordinates();
                     at.set((c.x, c.y));
                     err.set(None);
                     open.set(true);
                 },
-                dangerous_inner_html: crate::features::icons::SLIDERS,
+                span { class: "block w-4 h-4", dangerous_inner_html: crate::features::icons::PALETTE }
             }
 
             if open() {
                 div {
-                    class: "fixed inset-0 z-40",
+                    class: "fixed inset-0 z-[55]",
                     onclick: move |_| open.set(false),
                 }
                 div {
-                    class: "dxf-pop-in fixed z-50 w-80 bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl p-4",
-                    style: "left: min(max({at_x}px - 14px, 8px), calc(100vw - 328px)); bottom: calc(100vh - {at_y}px + 14px); max-height: calc({at_y}px - 24px); overflow-y: auto;",
+                    class: "dxf-pop-in fixed z-[60] w-80 bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl p-4",
+                    // Drops from the button, which now lives in the title bar:
+                    // anchored upward it opened off the top of the screen.
+                    style: "left: min(max({at_x}px - 280px, 8px), calc(100vw - 328px)); top: calc({at_y}px + 18px); max-height: calc(100vh - {at_y}px - 32px); overflow-y: auto;",
                     onclick: move |e| e.stop_propagation(),
                     h3 { class: "text-sm font-medium text-[var(--accent)] mb-3", "Appearance" }
 

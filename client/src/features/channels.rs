@@ -84,10 +84,10 @@ enum AudioDrag {
     Move { dx: f64, dy: f64 },
 }
 
-const PANEL: &str = "panel-hover w-full h-full bg-[var(--panel)] border border-[var(--border)] rounded-lg flex flex-col overflow-hidden";
-const HEADER: &str = "h-11 px-3 flex items-center border-b border-[var(--border)]";
+const PANEL: &str = "panel-hover w-full h-full bg-[var(--panel)] border border-[var(--border)] rounded-xl flex flex-col overflow-hidden";
+const HEADER: &str = "h-12 px-3.5 flex items-center gap-2 border-b border-[var(--border)]";
 const SECTION_LABEL: &str =
-    "px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]";
+    "px-2 pt-3 pb-1.5 font-mono text-[9px] uppercase tracking-[0.18em] text-[var(--text-dim)]";
 
 #[component]
 pub fn ChannelsColumn() -> Element {
@@ -190,7 +190,7 @@ pub fn ChannelsColumn() -> Element {
                 }
             }
             div { class: HEADER,
-                h2 { class: "text-sm text-[var(--accent)] truncate font-medium flex-1",
+                h2 { class: "dxf-display text-[16px] font-bold tracking-tight text-[var(--text)] truncate flex-1",
                     if dm_mode {
                         "Direct Messages"
                     } else {
@@ -303,16 +303,16 @@ pub fn ChannelsColumn() -> Element {
             div { class: "flex-1 overflow-y-auto px-2 py-3 space-y-3",
                 if !text_channels.is_empty() {
                     div {
-                        div { class: SECTION_LABEL, "Text channels" }
+                        div { class: SECTION_LABEL, "Text" }
                         for channel in text_channels.iter() {
                             {
                                 let ch = (*channel).clone();
                                 let cid = ch.id;
                                 let active = selected_channel == Some(cid);
                                 let cls = if active {
-                                    "text-[var(--accent)] bg-[var(--accent-soft)]"
+                                    "text-[var(--text)] font-medium bg-[var(--panel2)]"
                                 } else {
-                                    "text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-white/[0.03]"
+                                    "text-[var(--text-dim)] hover:text-[var(--text-muted)] hover:bg-white/[0.03]"
                                 };
                                 let g2 = gateway.clone();
                                 let ctx_ch = ch.clone();
@@ -321,7 +321,7 @@ pub fn ChannelsColumn() -> Element {
                                 rsx! {
                                     button {
                                         key: "{cid}",
-                                        class: "w-full flex items-center gap-1.5 px-2 py-1 rounded text-left text-sm transition-colors {cls}",
+                                        class: "relative w-full h-8 flex items-center gap-2 px-2.5 rounded-lg text-left text-[13.5px] transition-colors {cls}",
                                         draggable: can_manage_channels,
                                         ondragstart: move |_| dragging.set(Some(cid)),
                                         ondragover: move |e: Event<DragData>| {
@@ -349,7 +349,13 @@ pub fn ChannelsColumn() -> Element {
                                                 mode: ChanMenuMode::Menu,
                                             }));
                                         },
-                                        span { class: "text-[var(--text-dim)]", draggable: false, "#" }
+                                        if active {
+                                            span {
+                                                class: "absolute",
+                                                style: "left:-8px; top:50%; transform:translateY(-50%); width:3px; height:18px; border-radius:0 3px 3px 0; background: var(--accent);",
+                                            }
+                                        }
+                                        span { class: "font-mono text-[13px] opacity-70", draggable: false, "#" }
                                         span { class: "truncate flex-1", draggable: false, "{ch.name}" }
                                         if muted_channels.contains(&ch.id) {
                                             span { class: "text-[10px] text-[var(--text-dim)]", title: "Muted", "🔕" }
@@ -366,7 +372,7 @@ pub fn ChannelsColumn() -> Element {
 
                 if !voice_channels.is_empty() {
                     div {
-                        div { class: SECTION_LABEL, "Voice channels" }
+                        div { class: SECTION_LABEL, "Voice" }
                         for channel in voice_channels.iter() {
                             {
                                 let ch = (*channel).clone();
@@ -722,10 +728,17 @@ fn VoiceChannelRow(
     on_join: EventHandler<()>,
     on_leave: EventHandler<()>,
 ) -> Element {
+    // Green, not accent: amber already means "the channel you are reading", and
+    // being connected here is true at the same time as that, not instead of it.
     let row_cls = if connected {
-        "text-[var(--accent)] bg-[var(--accent-soft)]"
+        "text-[var(--up)]"
     } else {
         "text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-white/[0.03]"
+    };
+    let row_style = if connected {
+        "background: color-mix(in srgb, var(--up) 12%, transparent);"
+    } else {
+        ""
     };
     let state = use_app_state();
     let users_by_id = state.read();
@@ -734,14 +747,19 @@ fn VoiceChannelRow(
     rsx! {
         div { class: "rounded",
             button {
-                class: "w-full flex items-center gap-1.5 px-2 py-1 rounded text-left text-sm transition-colors {row_cls}",
+                class: "relative w-full h-8 flex items-center gap-2 px-2.5 rounded-lg text-left text-[13.5px] transition-colors {row_cls}",
+                style: "{row_style}",
                 onclick: move |_| {
                     if connected { on_leave.call(()) } else { on_join.call(()) }
                 },
-                span { class: "text-[var(--text-dim)] text-xs", draggable: false, "♪" }
+                span {
+                    class: "block w-4 h-4 shrink-0 text-[var(--text-dim)]",
+                    draggable: false,
+                    dangerous_inner_html: crate::features::icons::SPEAKER,
+                }
                 span { class: "truncate flex-1", draggable: false, "{channel.name}" }
                 if connected {
-                    span { class: "text-[9px] text-[var(--accent)] font-semibold uppercase tracking-wider", "live" }
+                    span { class: "text-[9px] text-[var(--up)] font-semibold uppercase tracking-wider", "live" }
                 }
             }
             if !occupants.is_empty() {
@@ -1046,6 +1064,43 @@ fn VoiceOccupant(
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SettingsTab {
+    Audio,
+    Mic,
+    Video,
+    Diagnostics,
+}
+
+/// The empty group label means "same group as the row above" — the heading is
+/// drawn by the first tab that opens one.
+const SETTINGS_TABS: &[(&str, SettingsTab, &str, &str)] = &[
+    (
+        "Voice",
+        SettingsTab::Audio,
+        "Audio",
+        crate::features::icons::SPEAKER,
+    ),
+    (
+        "",
+        SettingsTab::Mic,
+        "Microphone",
+        crate::features::icons::MIC,
+    ),
+    (
+        "Picture",
+        SettingsTab::Video,
+        "Video and screen",
+        crate::features::icons::CAMERA,
+    ),
+    (
+        "Status",
+        SettingsTab::Diagnostics,
+        "Diagnostics",
+        crate::features::icons::ACTIVITY,
+    ),
+];
+
 #[component]
 fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<String>) -> Element {
     let gateway = use_gateway();
@@ -1076,6 +1131,38 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
         (lvl, (into as f64 / span.max(1) as f64 * 100.0) as u32)
     };
 
+    let self_npub = use_context::<crate::identity::Identity>().npub();
+    let self_npub_short = match self_npub.char_indices().nth(10).map(|(i, _)| i) {
+        Some(cut) if self_npub.len() > 18 => {
+            format!(
+                "{}…{}",
+                &self_npub[..cut],
+                &self_npub[self_npub.len() - 4..]
+            )
+        }
+        _ => self_npub.clone(),
+    };
+
+    let voice_channel_id = self_voice.channel_id;
+    let (voice_where, voice_sub) = {
+        let s = state.read();
+        let ch = voice_channel_id.and_then(|cid| s.channels.iter().find(|c| c.id == cid));
+        let where_name = ch.map(|c| c.name.clone()).unwrap_or_else(|| "voice".into());
+        let guild = ch
+            .and_then(|c| s.guilds.iter().find(|g| g.id == c.guild_id))
+            .map(|g| g.name.clone())
+            .unwrap_or_default();
+        let n = voice_channel_id
+            .map(|cid| {
+                s.voice_states
+                    .iter()
+                    .filter(|v| v.channel_id == Some(cid))
+                    .count()
+            })
+            .unwrap_or(0);
+        (where_name, format!("{guild} · {n} connected"))
+    };
+
     let show_banner = !matches!(self_voice.phase, VoicePhase::Idle);
     let (dot_color, phase_text) = match self_voice.phase {
         VoicePhase::Idle => ("var(--text-dim)", "voice idle"),
@@ -1097,9 +1184,21 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
     let g_for_share = gateway.clone();
     let voice_channel = self_voice.channel_id;
 
-    let mut show_audio_settings = use_signal(|| false);
+    // The trigger lives in the title bar; this panel only owns the device
+    // signals the popover needs, so the flag travels through AppState.
+    let show_audio_settings = use_memo(move || state.read().audio_settings);
+    {
+        let v_audio = voice.clone();
+        use_effect(move || {
+            if show_audio_settings() {
+                v_audio.send(crate::features::voice::VoiceCmd::ListDevices);
+                let _ = document::eval(&crate::features::camera::list_cameras_js());
+            }
+        });
+    }
     let mut show_stats = use_signal(|| false);
-    let mut audio_x = use_signal(|| 880.0_f64);
+    let mut settings_tab = use_signal(|| SettingsTab::Audio);
+    let mut audio_x = use_signal(|| 300.0_f64);
     let mut audio_y = use_signal(|| 48.0_f64);
     let mut audio_drag = use_signal(|| None::<AudioDrag>);
 
@@ -1121,7 +1220,6 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
     let voice_bitrate_kbps = state.read().voice_bitrate_kbps;
     let gate_open = self_voice.speaking;
 
-    let v_for_audio_button = voice.clone();
     let v_for_input_change = voice.clone();
     let v_for_output_change = voice.clone();
     let v_for_sensitivity = voice.clone();
@@ -1152,19 +1250,67 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
     rsx! {
         div { class: "border-t border-[var(--border)]",
             if show_banner {
-                div { class: "px-3 py-2 border-b border-[var(--border)]",
+                div { class: "px-3 pt-2.5 pb-2 border-b border-[var(--border)]",
                     div { class: "flex items-center gap-2",
                         span {
-                            class: "w-2.5 h-2.5 rounded-full shrink-0",
+                            class: "w-2 h-2 rounded-full shrink-0",
                             style: "background:{dot_color};",
                             title: "{phase_text}",
                         }
-                        div { class: "flex-1" }
+                        span {
+                            class: "text-[12.5px] font-semibold truncate",
+                            style: "color:{dot_color};",
+                            "{voice_where}"
+                        }
+                        span { class: "ml-auto shrink-0 font-mono text-[10.5px] text-[var(--text-dim)]",
+                            "{voice_bitrate_kbps} kbps"
+                        }
+                    }
+                    div { class: "mt-px text-[11px] text-[var(--text-dim)] truncate", "{voice_sub}" }
+                }
+            }
+            // Always present, so you can arrive already muted; the share and
+            // camera chips join it only once there is a call to point them at.
+            div { class: "px-3 py-2 flex items-center gap-1.5",
+                    button {
+                        class: if muted {
+                            "flex-1 h-9 flex items-center justify-center rounded-lg border transition-colors border-[var(--danger)] text-[var(--danger)]"
+                        } else {
+                            "flex-1 h-9 flex items-center justify-center rounded-lg border transition-colors border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--text)] hover:border-[var(--border-strong)]"
+                        },
+                        title: mute_label,
+                        onclick: move |_| {
+                            let new_muted = !muted;
+                            g_for_mute.send(ClientMessage::SetVoiceMute { muted: new_muted, deafened });
+                            v_for_mute.send(VoiceCmd::SetMute { muted: new_muted });
+                        },
+                        dangerous_inner_html: if muted { crate::features::icons::MIC_OFF } else { crate::features::icons::MIC },
+                    }
+                    button {
+                        class: if deafened {
+                            "flex-1 h-9 flex items-center justify-center rounded-lg border transition-colors border-[var(--danger)] text-[var(--danger)]"
+                        } else {
+                            "flex-1 h-9 flex items-center justify-center rounded-lg border transition-colors border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--text)] hover:border-[var(--border-strong)]"
+                        },
+                        title: if deafened { "undeafen" } else { "deafen" },
+                        onclick: move |_| {
+                            let (next_muted, next_deafened) = state.write().voice.toggle_deafen();
+                            g_for_deafen.send(ClientMessage::SetVoiceMute { muted: next_muted, deafened: next_deafened });
+                            v_for_deafen.send(VoiceCmd::SetDeafen { deafened: next_deafened });
+                            v_for_deafen.send(VoiceCmd::SetMute { muted: next_muted });
+                        },
+                        dangerous_inner_html: if deafened {
+                            crate::features::icons::HEADPHONES_OFF
+                        } else {
+                            crate::features::icons::HEADPHONES
+                        },
+                    }
+                    if show_banner {
                         button {
                             class: if camera_on {
-                                "w-7 h-7 flex items-center justify-center rounded text-[var(--accent)] transition-colors"
+                                "flex-1 h-9 flex items-center justify-center rounded-lg border transition-colors border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)]"
                             } else {
-                                "w-7 h-7 flex items-center justify-center rounded text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors"
+                                "flex-1 h-9 flex items-center justify-center rounded-lg border transition-colors border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--text)] hover:border-[var(--border-strong)]"
                             },
                             disabled: !camera_capture_available,
                             title: if !camera_capture_available {
@@ -1183,9 +1329,9 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                         }
                         button {
                             class: if sharing {
-                                "w-7 h-7 flex items-center justify-center rounded text-[var(--accent)] transition-colors"
+                                "flex-1 h-9 flex items-center justify-center rounded-lg border transition-colors border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)]"
                             } else {
-                                "w-7 h-7 flex items-center justify-center rounded text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors"
+                                "flex-1 h-9 flex items-center justify-center rounded-lg border transition-colors border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--text)] hover:border-[var(--border-strong)]"
                             },
                             title: if !screen_capture_available {
                                 "Screen capture isn't available in this webview — pressing this will explain why."
@@ -1223,78 +1369,75 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                             dangerous_inner_html: crate::features::icons::SCREEN,
                         }
                         button {
-                            class: "w-7 h-7 flex items-center justify-center rounded text-[var(--danger)] hover:text-[var(--accent-strong)] transition-colors",
+                            class: "shrink-0 h-9 px-3 flex items-center gap-1.5 rounded-lg border text-[11.5px] font-semibold text-[var(--danger)] transition-colors",
+                            style: "background: color-mix(in srgb, var(--danger) 10%, transparent); border-color: color-mix(in srgb, var(--danger) 35%, transparent);",
                             title: "Leave voice",
                             onclick: move |_| {
                                 g_for_hang.send(ClientMessage::LeaveVoice);
                                 v_for_hang.send(VoiceCmd::Disconnect);
                             },
-                            dangerous_inner_html: crate::features::icons::PHONE_OFF,
+                            span { class: "block w-4 h-4", dangerous_inner_html: crate::features::icons::PHONE_OFF }
+                            "Leave"
                         }
                     }
-                    if let Some(err) = voice_error {
-                        div { class: "text-[10px] text-[var(--danger)] mt-1 break-all",
-                            "{err}"
-                        }
-                    }
+            }
+            if let Some(err) = voice_error {
+                div { class: "px-3 pb-2 text-[10px] text-[var(--danger)] break-all",
+                    "{err}"
                 }
             }
-            div { class: "h-12 px-3 flex items-center gap-2",
-                crate::features::profiles::Avatar {
-                    pubkey: self_pubkey.clone().unwrap_or_default(),
-                    name: name.clone(),
-                    size: "w-7 h-7",
-                }
-                div { class: "flex-1 min-w-0",
-                    div { class: "flex items-center gap-1.5",
-                        span { class: "text-sm text-[var(--text)] truncate", "{name}" }
-                        span { class: "text-[9px] font-semibold text-[var(--text-dim)] shrink-0", "Lv {level}" }
+            div { class: "h-14 px-2 flex items-center gap-1 border-t border-[var(--border)]",
+                crate::features::profiles::ProfileEditor {
+                    class: "flex-1 min-w-0 h-11 px-1.5 flex items-center gap-2.5 rounded-lg text-left hover:bg-[var(--panel2)] transition-colors",
+                    crate::features::profiles::Avatar {
+                        pubkey: self_pubkey.clone().unwrap_or_default(),
+                        name: name.clone(),
+                        size: "w-8 h-8",
                     }
-                    div { class: "mt-0.5 h-1 rounded-full overflow-hidden", style: "background: var(--bg2);",
-                        div {
-                            class: "h-full rounded-full",
-                            style: "width: {xp_pct}%; background: linear-gradient(90deg, #8fb0ff, var(--accent));",
+                    div { class: "flex-1 min-w-0",
+                        div { class: "flex items-center gap-1.5",
+                            span { class: "text-[12.5px] font-medium text-[var(--text)] truncate", "{name}" }
+                            span { class: "text-[9px] font-semibold text-[var(--text-dim)] shrink-0", "Lv {level}" }
+                        }
+                        // The key under the name: this is the account, and the
+                        // account is the key (trap 12).
+                        span { class: "block font-mono text-[10px] text-[var(--text-dim)] truncate",
+                            title: "{self_npub}",
+                            "{self_npub_short}"
+                        }
+                        div { class: "mt-1 h-0.5 rounded-full overflow-hidden", style: "background: var(--bg2);",
+                            div {
+                                class: "h-full rounded-full",
+                                style: "width: {xp_pct}%; background: linear-gradient(90deg, #8fb0ff, var(--accent));",
+                            }
                         }
                     }
                 }
-                crate::features::profiles::ProfileEditor {}
-                crate::features::appearance::AppearanceButton {}
-
-                button {
-                    class: "w-7 h-7 flex items-center justify-center rounded text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors",
-                    title: "Settings",
-                    onclick: move |_| {
-                        let now = !show_audio_settings();
-                        show_audio_settings.set(now);
-                        if now {
-                            let v = v_for_audio_button.clone();
-                            v.send(crate::features::voice::VoiceCmd::ListDevices);
-                            let _ = document::eval(&crate::features::camera::list_cameras_js());
-                        }
-                    },
-                    dangerous_inner_html: crate::features::icons::GEAR,
-                }
-
                 if show_audio_settings() {
                     div {
-                        class: "fixed inset-0 z-30",
-                        onclick: move |_| show_audio_settings.set(false),
+                        class: "fixed inset-0 z-[55]",
+                        onclick: move |_| state.write().audio_settings = false,
                     }
+                    // Above the panel, not below it: the cursor is over the
+                    // header for the whole drag, so anything under the panel
+                    // never sees a mousemove.
                     if audio_drag().is_some() {
                         div {
-                            class: "fixed inset-0 z-50",
+                            class: "fixed inset-0 z-[61]",
                             onmousemove: move |e| {
                                 let c = e.client_coordinates();
                                 if let Some(AudioDrag::Move { dx, dy }) = audio_drag() {
-                                    audio_x.set(c.x - dx);
-                                    audio_y.set(c.y - dy);
+                                    audio_x.set((c.x - dx).max(8.0));
+                                    audio_y.set((c.y - dy).max(8.0));
                                 }
                             },
                             onmouseup: move |_| audio_drag.set(None),
                         }
                     }
                     div {
-                        class: "fixed z-40 flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-lg overflow-hidden w-96",
+                        class: "fixed z-[60] flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-lg overflow-hidden w-[780px]",
+                        // No clamp on `left`: clamping the pixel while the signal
+                        // kept climbing left the window deaf to the way back.
                         style: "left: {audio_x}px; top: {audio_y}px; max-height: calc(100vh - {audio_y}px - 12px);",
                         onclick: move |e| e.stop_propagation(),
 
@@ -1308,21 +1451,50 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                             button {
                                 class: "text-[var(--text-dim)] hover:text-[var(--text)] text-base leading-none",
                                 onmousedown: move |e| e.stop_propagation(),
-                                onclick: move |_| show_audio_settings.set(false),
+                                onclick: move |_| state.write().audio_settings = false,
                                 "✕"
                             }
                         }
 
-                        div { class: "p-2 flex-1 overflow-y-auto",
-                            if reconnecting {
-                                div { class: "mb-2 flex items-center text-[12px] text-[var(--text-muted)]",
-                                    span { class: "dx-spinner" }
-                                    span { "Reconnecting audio…" }
+                        div { class: "flex-1 flex min-h-0",
+                            div { class: "w-48 shrink-0 border-r border-[var(--border)] bg-[var(--panel2)] p-2 flex flex-col gap-0.5 overflow-y-auto",
+                                for (group, t, label, icon) in SETTINGS_TABS.iter().copied() {
+                                    {
+                                        let selected = settings_tab() == t;
+                                        let cls = if selected {
+                                            "relative w-full h-9 px-2.5 flex items-center gap-2 rounded-lg text-left text-[13px] font-medium bg-[var(--panel-solid)] text-[var(--text)]"
+                                        } else {
+                                            "relative w-full h-9 px-2.5 flex items-center gap-2 rounded-lg text-left text-[13px] text-[var(--text-dim)] hover:text-[var(--text-muted)] hover:bg-white/[0.03] transition-colors"
+                                        };
+                                        rsx! {
+                                            Fragment { key: "{label}",
+                                                if !group.is_empty() {
+                                                    div { class: "px-2 pt-3 pb-1.5 font-mono text-[9px] uppercase tracking-[0.18em] text-[var(--text-dim)]",
+                                                        "{group}"
+                                                    }
+                                                }
+                                                button {
+                                                    class: "{cls}",
+                                                    onclick: move |_| settings_tab.set(t),
+                                                    if selected {
+                                                        span {
+                                                            class: "absolute",
+                                                            style: "left:-8px; top:50%; transform:translateY(-50%); width:3px; height:18px; border-radius:0 3px 3px 0; background: var(--accent);",
+                                                        }
+                                                    }
+                                                    span { class: "block w-4 h-4 shrink-0", dangerous_inner_html: icon }
+                                                    "{label}"
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
-
-                            div { class: "mt-3 mb-1.5 pb-1 border-b border-[var(--border)]",
-                                span { class: "text-[10px] font-semibold uppercase tracking-wide text-[var(--text)]", "Audio" }
+                            div { class: "flex-1 min-w-0 overflow-y-auto p-4",
+                            if settings_tab() == SettingsTab::Audio {
+                            h3 { class: "dxf-display text-[17px] font-bold tracking-tight text-[var(--text)]", "Audio" }
+                            p { class: "mt-0.5 mb-4 text-[12.5px] text-[var(--text-dim)]",
+                                "Where sound comes out, and how loud the cues are."
                             }
                             div { class: "mb-2",
                                 span { class: "text-[11px] text-[var(--text-muted)]", "Output" }
@@ -1374,8 +1546,11 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                     span { class: "text-[10px] text-[var(--text-dim)] w-8 text-right", "{settings.read().sfx_volume}%" }
                                 }
                             }
-                            div { class: "mt-3 mb-1.5 pb-1 border-b border-[var(--border)]",
-                                span { class: "text-[10px] font-semibold uppercase tracking-wide text-[var(--text)]", "Microphone" }
+                            }
+                            if settings_tab() == SettingsTab::Mic {
+                            h3 { class: "dxf-display text-[17px] font-bold tracking-tight text-[var(--text)]", "Microphone" }
+                            p { class: "mt-0.5 mb-4 text-[12.5px] text-[var(--text-dim)]",
+                                "What others hear, when the gate opens, and what is processed before it leaves."
                             }
                             div { class: "mb-2",
                                 span { class: "text-[11px] text-[var(--text-muted)]", "Input" }
@@ -1607,8 +1782,16 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                     }
                                 }
                             }
-                            div { class: "mt-3 mb-1.5 pb-1 border-b border-[var(--border)]",
-                                span { class: "text-[10px] font-semibold uppercase tracking-wide text-[var(--text)]", "Transmission" }
+                            div { class: "h-px bg-[var(--border)] my-4" }
+                            p { class: "mb-3 font-mono text-[9px] uppercase tracking-[0.18em] text-[var(--text-dim)]",
+                                "Transmission"
+                            }
+                            if reconnecting {
+                                div { class: "mb-3 flex items-center gap-2 px-2.5 py-2 rounded-lg border text-[12px] text-[var(--warn)]",
+                                    style: "background: color-mix(in srgb, var(--warn) 8%, transparent); border-color: color-mix(in srgb, var(--warn) 35%, transparent);",
+                                    span { class: "dx-spinner" }
+                                    span { "Reconnecting audio…" }
+                                }
                             }
                             div { class: "mb-2",
                                 span { class: "text-[11px] text-[var(--text-muted)]", "Voice quality" }
@@ -1635,8 +1818,11 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                     }
                                 }
                             }
-                            div { class: "mt-3 mb-1.5 pb-1 border-b border-[var(--border)]",
-                                span { class: "text-[10px] font-semibold uppercase tracking-wide text-[var(--text)]", "Video" }
+                            }
+                            if settings_tab() == SettingsTab::Video {
+                            h3 { class: "dxf-display text-[17px] font-bold tracking-tight text-[var(--text)]", "Video and screen" }
+                            p { class: "mt-0.5 mb-4 text-[12.5px] text-[var(--text-dim)]",
+                                "Your camera, and the shape of what you share."
                             }
                             div { class: "mb-2",
                                 span { class: "text-[11px] text-[var(--text-muted)]", "Camera" }
@@ -1714,6 +1900,12 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                     span { class: "text-[11px] text-[var(--text-muted)] flex-1", "Share computer sound" }
                                 }
                             }
+                            }
+                            if settings_tab() == SettingsTab::Diagnostics {
+                            h3 { class: "dxf-display text-[17px] font-bold tracking-tight text-[var(--text)]", "Diagnostics" }
+                            p { class: "mt-0.5 mb-4 text-[12.5px] text-[var(--text-dim)]",
+                                "The only thing here that configures nothing: it measures."
+                            }
                             div { class: "mb-1",
                                 label { class: "flex items-center gap-2 cursor-pointer select-none",
                                     input {
@@ -1728,44 +1920,12 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                     ConnectionStats {}
                                 }
                             }
+                            }
+                            }
                         }
                     }
                 }
 
-                button {
-                    class: if muted {
-                        "w-7 h-7 flex items-center justify-center rounded text-[var(--danger)] hover:text-[var(--accent-strong)] transition-colors"
-                    } else {
-                        "w-7 h-7 flex items-center justify-center rounded text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors"
-                    },
-                    title: mute_label,
-                    onclick: move |_| {
-                        let new_muted = !muted;
-                        g_for_mute.send(ClientMessage::SetVoiceMute { muted: new_muted, deafened });
-                        v_for_mute.send(VoiceCmd::SetMute { muted: new_muted });
-                    },
-                    dangerous_inner_html: if muted { crate::features::icons::MIC_OFF } else { crate::features::icons::MIC },
-                }
-
-                button {
-                    class: if deafened {
-                        "w-7 h-7 flex items-center justify-center rounded text-[var(--danger)] hover:text-[var(--accent-strong)] transition-colors"
-                    } else {
-                        "w-7 h-7 flex items-center justify-center rounded text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors"
-                    },
-                    title: if deafened { "undeafen" } else { "deafen" },
-                    onclick: move |_| {
-                        let (next_muted, next_deafened) = state.write().voice.toggle_deafen();
-                        g_for_deafen.send(ClientMessage::SetVoiceMute { muted: next_muted, deafened: next_deafened });
-                        v_for_deafen.send(VoiceCmd::SetDeafen { deafened: next_deafened });
-                        v_for_deafen.send(VoiceCmd::SetMute { muted: next_muted });
-                    },
-                    dangerous_inner_html: if deafened {
-                        crate::features::icons::HEADPHONES_OFF
-                    } else {
-                        crate::features::icons::HEADPHONES
-                    },
-                }
             }
         }
     }
