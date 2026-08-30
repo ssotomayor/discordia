@@ -772,13 +772,14 @@ fn apply(
         ServerMessage::JoinChallenge {
             guild_id,
             gate,
+            rules,
             pow_challenge,
             pow_difficulty,
             invite_code,
-            ..
         } => {
             use crate::protocol::JoinGate;
             let tx = tx.clone();
+            let pending_code = invite_code.clone();
             let resend = move |accept: bool, pow_nonce: Option<String>| {
                 let msg = match &invite_code {
                     Some(code) => ClientMessage::JoinByInvite {
@@ -796,7 +797,18 @@ fn apply(
             };
             match gate {
                 JoinGate::Open => resend(false, None),
-                JoinGate::Rules => resend(true, None),
+                JoinGate::Rules => {
+                    s.rules_prompt = Some(crate::state::RulesPrompt {
+                        guild_id,
+                        guild_name: s
+                            .catalog
+                            .iter()
+                            .find(|g| g.id == guild_id)
+                            .map(|g| g.name.clone()),
+                        rules: rules.unwrap_or_default(),
+                        invite_code: pending_code,
+                    });
+                }
                 JoinGate::Pow => {
                     if let (Some(challenge), Some(bits)) = (pow_challenge, pow_difficulty) {
                         spawn(async move {

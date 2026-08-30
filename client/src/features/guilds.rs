@@ -707,3 +707,69 @@ fn initials(name: &str) -> String {
         .collect::<String>()
         .to_uppercase()
 }
+
+/// The server re-challenges on `accept: false`, so declining sends nothing and
+/// only drops the prompt — answering would loop.
+#[component]
+pub fn RulesPromptDialog() -> Element {
+    let mut state = use_app_state();
+    let gateway = use_gateway();
+    let prompt = use_memo(move || state.read().rules_prompt.clone());
+
+    let Some(p) = prompt() else {
+        return rsx! { Fragment {} };
+    };
+
+    let title = match &p.guild_name {
+        Some(name) => format!("Rules for {name}"),
+        None => "Rules for this server".to_string(),
+    };
+    let has_rules = !p.rules.trim().is_empty();
+
+    let accept = move |_| {
+        let Some(p) = state.read().rules_prompt.clone() else {
+            return;
+        };
+        gateway.send(p.accept());
+        state.write().rules_prompt = None;
+    };
+    let decline = move |_| state.write().rules_prompt = None;
+
+    rsx! {
+        div {
+            class: "dxf-backdrop-in fixed inset-0 z-50 flex items-center justify-center bg-black/50",
+            onclick: decline,
+            div {
+                class: "dxf-modal-in w-[26rem] max-h-[80vh] flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl overflow-hidden",
+                onclick: move |e| e.stop_propagation(),
+                div { class: "px-4 py-3 border-b border-[var(--border)]",
+                    h3 { class: "text-sm font-medium text-[var(--accent)]", "{title}" }
+                }
+                div { class: "flex-1 overflow-y-auto px-4 py-3",
+                    if has_rules {
+                        div {
+                            class: "text-sm text-[var(--text-muted)] whitespace-pre-wrap break-words",
+                            "{p.rules}"
+                        }
+                    } else {
+                        div { class: "text-sm text-[var(--text-dim)] italic",
+                            "This server asks you to accept its rules, but the owner has not written any."
+                        }
+                    }
+                }
+                div { class: "px-4 py-3 border-t border-[var(--border)] flex items-center justify-end gap-2",
+                    button {
+                        class: "px-3 py-1 rounded text-[11px] text-[var(--text-muted)] hover:text-[var(--text)] transition-colors",
+                        onclick: decline,
+                        "Cancel"
+                    }
+                    button {
+                        class: "px-3 py-1 rounded text-[11px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors",
+                        onclick: accept,
+                        "Accept and join"
+                    }
+                }
+            }
+        }
+    }
+}

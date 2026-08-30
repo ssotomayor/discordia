@@ -88,10 +88,9 @@ Closed and retired entries are not kept; `git log docs/` has them.
 - 18 · Operator UX polish: no visual distinction for a system-guild operator.
 - 22 · Nobody has performed the channel-reorder *drag*; only the menu path.
 - 23 · `MentionEveryone` permission, cut from v1.
-- 96 · The `JoinGate::Rules` gate is decorative on this client. `net.rs`
-  destructures `rules` away with `..` and answers `resend(true, None)` at once,
-  so the text an owner wrote is never shown and "accept" is sent for a person
-  who was never asked. Needs a dialog with a decline path.
+- 97 · The rules prompt names the guild only when the catalog already holds it,
+  which an invite-code join does not. `JoinChallenge` carries no name, and
+  adding one is a protocol change for a line of dialog copy.
 
 **Bots & activities**
 - 25 · Privileged intents have a confirm step, not a verification flow.
