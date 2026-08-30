@@ -292,13 +292,13 @@ pub async fn handle_connection(
                             }).await;
                             continue;
                         };
-                        let name = name.trim().to_string();
-                        if name.is_empty() || name.chars().count() > 64 {
-                            let _ = send(&mut ws_tx, &ServerMessage::Error {
-                                message: "guild name must be 1..=64 chars".into(),
-                            }).await;
-                            continue;
-                        }
+                        let name = match crate::protocol::sanitize_name("guild", &name, 64) {
+                            Ok(name) => name,
+                            Err(message) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await;
+                                continue;
+                            }
+                        };
                         let (guild, channels, member, roles) =
                             ctx.state.create_guild(&name, template.as_deref(), &creator).await;
                         tracing::info!(guild = ?guild.name, by = ?creator.username, "guild created");
@@ -1617,7 +1617,11 @@ const MAX_CLIENT_VERSION_BYTES: usize = 64;
 
 fn sanitize_client_version(raw: &str) -> String {
     let mut out = String::with_capacity(MAX_CLIENT_VERSION_BYTES);
-    for c in raw.trim().chars().filter(|c| !breaks_a_line(*c)) {
+    for c in raw
+        .trim()
+        .chars()
+        .filter(|c| !crate::protocol::unsafe_to_display(*c))
+    {
         if out.len() + c.len_utf8() > MAX_CLIENT_VERSION_BYTES {
             break;
         }
@@ -1626,12 +1630,6 @@ fn sanitize_client_version(raw: &str) -> String {
     out.truncate(out.trim_end().len());
     out.drain(..out.len() - out.trim_start().len());
     out
-}
-
-/// `char::is_control()` alone misses U+2028/2029, which a log line treats as
-/// breaks — an attacker-chosen string must not write a second line.
-fn breaks_a_line(c: char) -> bool {
-    c.is_control() || c == '\u{2028}' || c == '\u{2029}'
 }
 
 /// A DM or any channel with no guild grants a bot nothing: installs are

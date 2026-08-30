@@ -26,8 +26,33 @@ pub fn canonical_username(raw: &str) -> String {
     }
 }
 
+/// Filtering before the cap, not after: otherwise a run of control characters
+/// spends the whole budget and every name canonicalizes to `anonymous`.
 pub fn truncate_username(raw: &str) -> String {
-    raw.chars().take(MAX_USERNAME_LEN).collect()
+    raw.chars()
+        .filter(|c| !unsafe_to_display(*c))
+        .take(MAX_USERNAME_LEN)
+        .collect()
+}
+
+/// U+2028/2029 are not `is_control` but a log line treats them as breaks; the
+/// bidi overrides reorder the text around them, and natural RTL needs none.
+pub fn unsafe_to_display(c: char) -> bool {
+    c.is_control()
+        || c == '\u{2028}'
+        || c == '\u{2029}'
+        || matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+}
+
+/// `kind` only names the thing in the error, so the three callers keep the
+/// wording they had.
+pub fn sanitize_name(kind: &str, raw: &str, max_chars: usize) -> Result<String, String> {
+    let filtered: String = raw.chars().filter(|c| !unsafe_to_display(*c)).collect();
+    let name = filtered.trim();
+    if name.is_empty() || name.chars().count() > max_chars {
+        return Err(format!("{kind} name must be 1..={max_chars} chars"));
+    }
+    Ok(name.to_string())
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -178,7 +203,7 @@ mod level_tests {
 
 #[cfg(test)]
 mod username_tests {
-    use super::{MAX_USERNAME_LEN, canonical_username, truncate_username};
+    use super::{MAX_USERNAME_LEN, canonical_username, truncate_username, unsafe_to_display};
 
     #[test]
     fn canonicalising_is_idempotent() {
@@ -202,13 +227,82 @@ mod username_tests {
 
     #[test]
     fn canonical_output_is_always_wire_legal() {
-        for raw in ["", "   ", "alice", &"a".repeat(99), &"🙂".repeat(99)] {
+        for raw in [
+            "",
+            "   ",
+            "alice",
+            &"a".repeat(99),
+            &"🙂".repeat(99),
+            "a\u{0}\u{2028}b",
+            "a\u{202E}b\u{2069}c",
+        ] {
             let out = canonical_username(raw);
             assert!(!out.is_empty(), "never empty (would be unnamed on screen)");
             assert_eq!(out.trim(), out, "no surrounding whitespace survives");
             assert!(
                 out.chars().count() <= MAX_USERNAME_LEN,
                 "counted in chars, not bytes — {out:?}"
+            );
+            assert!(
+                !out.chars().any(unsafe_to_display),
+                "a break or a reordering survived: {out:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_name_cannot_forge_a_log_line() {
+        let forged = "alice\nINFO identified user=admin pubkey=deadbeef";
+        let clean = canonical_username(forged);
+        assert!(!clean.contains('\n'), "newline survived: {clean:?}");
+        assert!(!clean.contains('\r'));
+        assert!(!clean.contains('\u{0}'));
+        assert!(clean.starts_with("alice"));
+
+        for sep in ['\u{2028}', '\u{2029}'] {
+            let forged = format!("alice{sep}INFO identified user=admin");
+            let clean = canonical_username(&forged);
+            assert!(
+                !clean.contains(sep),
+                "U+{:04X} survived: {clean:?}",
+                sep as u32
+            );
+        }
+    }
+
+    #[test]
+    fn control_characters_do_not_consume_the_cap() {
+        let padded = format!("{}alice", "\u{0}".repeat(MAX_USERNAME_LEN * 2));
+        assert_eq!(canonical_username(&padded), "alice");
+
+        let interior = format!("al{}ice", "\u{7}".repeat(MAX_USERNAME_LEN * 2));
+        assert_eq!(canonical_username(&interior), "alice");
+    }
+
+    #[test]
+    fn filtering_does_not_leave_exposed_padding() {
+        assert_eq!(canonical_username("\u{0} alice \u{0}"), "alice");
+    }
+
+    #[test]
+    fn a_name_cannot_reorder_the_text_around_it() {
+        for c in ['\u{202A}', '\u{202B}', '\u{202C}', '\u{202D}', '\u{202E}'] {
+            let out = canonical_username(&format!("alice{c}bob"));
+            assert_eq!(out, "alicebob", "U+{:04X} survived", c as u32);
+        }
+        for c in ['\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}'] {
+            let out = canonical_username(&format!("alice{c}bob"));
+            assert_eq!(out, "alicebob", "U+{:04X} survived", c as u32);
+        }
+    }
+
+    #[test]
+    fn right_to_left_names_are_left_alone() {
+        for raw in ["مرحبا", "שלום", "Ali ali", "علي"] {
+            assert_eq!(
+                canonical_username(raw),
+                raw,
+                "natural RTL needs no override and must survive whole"
             );
         }
     }
@@ -249,6 +343,67 @@ mod username_tests {
             let typed = truncate_username(raw);
             assert_eq!(canonical_username(&typed), typed.trim());
         }
+    }
+}
+
+#[cfg(test)]
+mod name_tests {
+    use super::sanitize_name;
+
+    #[test]
+    fn the_three_callers_keep_their_wording() {
+        assert_eq!(
+            sanitize_name("guild", "", 64).unwrap_err(),
+            "guild name must be 1..=64 chars"
+        );
+        assert_eq!(
+            sanitize_name("channel", "", 64).unwrap_err(),
+            "channel name must be 1..=64 chars"
+        );
+        assert_eq!(
+            sanitize_name("role", "", 32).unwrap_err(),
+            "role name must be 1..=32 chars"
+        );
+    }
+
+    /// Naming the character rather than asking `unsafe_to_display` again: an
+    /// assertion built from the predicate under test cannot fail with it.
+    #[test]
+    fn a_name_cannot_forge_a_log_line_or_reorder_one() {
+        for bad in [
+            '\n', '\r', '\u{0}', '\u{2028}', '\u{2029}', '\u{202A}', '\u{202B}', '\u{202C}',
+            '\u{202D}', '\u{202E}', '\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}',
+        ] {
+            let raw = format!("gen{bad}eral");
+            let out = sanitize_name("channel", &raw, 64).unwrap();
+            assert_eq!(out, "general", "U+{:04X} survived", bad as u32);
+        }
+    }
+
+    #[test]
+    fn stripping_can_empty_a_name_and_that_is_a_rejection() {
+        assert!(sanitize_name("channel", "\u{202E}\u{0}\n", 64).is_err());
+    }
+
+    #[test]
+    fn filtering_happens_before_the_cap_is_judged() {
+        let padded = format!("{}general", "\u{0}".repeat(200));
+        assert_eq!(sanitize_name("channel", &padded, 64).unwrap(), "general");
+    }
+
+    #[test]
+    fn an_ordinary_name_is_only_trimmed() {
+        assert_eq!(
+            sanitize_name("channel", "  general  ", 64).unwrap(),
+            "general"
+        );
+        assert_eq!(sanitize_name("role", "مشرف", 32).unwrap(), "مشرف");
+    }
+
+    #[test]
+    fn the_cap_still_counts_characters() {
+        assert!(sanitize_name("role", &"🙂".repeat(32), 32).is_ok());
+        assert!(sanitize_name("role", &"🙂".repeat(33), 32).is_err());
     }
 }
 

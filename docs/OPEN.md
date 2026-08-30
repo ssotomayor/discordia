@@ -23,7 +23,6 @@ Closed and retired entries are not kept; `git log docs/` has them.
 - 1 · No `LICENSE` file — defaults to all rights reserved, contradicting the README.
 
 **Security**
-- 5 · A username may contain control characters and nothing strips them.
 - 6 · The gateway is plaintext and `wss://` looks supported without being.
 - 32 · A relay older than `can_publish` grants publish, and nothing on the wire detects it.
 - 73 · The rendezvous challenge nonce is not asserted to be fresh.
@@ -39,6 +38,11 @@ Closed and retired entries are not kept; `git log docs/` has them.
   ~65k hashes, single-digit milliseconds, so a thousand identities cost under a
   minute. Fixing it means a server secret with a window and more bits, which is
   latency charged to everyone who joins honestly.
+- 93 · The free-text fields take no filter now that the names do. `bio` and
+  `custom_status` get a character cap and nothing else, `status` and the join
+  `rules` get neither, and `rules` reaches `set_join_gate` unbounded. They are
+  displayed rather than logged, so a break costs less than in a name, but the
+  bidi overrides reorder a profile card the same way they reorder a roster.
 
 **Repo & CI**
 - 8 · The Windows portable and setup ship the wrong icon.
