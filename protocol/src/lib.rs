@@ -58,19 +58,24 @@ pub fn sanitize_name(kind: &str, raw: &str, max_chars: usize) -> Result<String, 
 /// Free text truncates where a name would be rejected: these fields are
 /// optional and nobody is waiting on an error to fix them.
 pub fn sanitize_line(raw: &str, max_chars: usize) -> String {
-    raw.chars()
-        .filter(|c| !unsafe_to_display(*c))
-        .take(max_chars)
-        .collect::<String>()
-        .trim()
-        .to_string()
+    cap(raw.chars().filter(|c| !unsafe_to_display(*c)), max_chars)
 }
 
 /// A bio, a description and a set of rules are written in a `textarea`, so the
 /// newline is the one control character they are allowed to keep.
 pub fn sanitize_paragraph(raw: &str, max_chars: usize) -> String {
-    raw.chars()
-        .filter(|c| *c == '\n' || !unsafe_to_display(*c))
+    cap(
+        raw.chars().filter(|c| *c == '\n' || !unsafe_to_display(*c)),
+        max_chars,
+    )
+}
+
+/// Trimmed before the cap and not only after, or a leading blank line long
+/// enough spends the budget the real text needed and the field comes back empty.
+fn cap(kept: impl Iterator<Item = char>, max_chars: usize) -> String {
+    kept.collect::<String>()
+        .trim()
+        .chars()
         .take(max_chars)
         .collect::<String>()
         .trim()
@@ -472,6 +477,26 @@ mod free_text_tests {
             sanitize_paragraph(&"a".repeat(500), 280).chars().count(),
             280
         );
+    }
+
+    /// Reported on the PR: `set_guild_profile` trimmed before it capped, so a
+    /// description behind a long blank run survived. Capping first dropped it.
+    #[test]
+    fn a_leading_blank_run_does_not_eat_the_budget() {
+        let padded = format!("{}Real text", " ".repeat(300));
+        assert_eq!(sanitize_paragraph(&padded, 280), "Real text");
+        assert_eq!(sanitize_line(&padded, 80), "Real text");
+
+        let blank_lines = format!("{}Real text", "\n".repeat(300));
+        assert_eq!(sanitize_paragraph(&blank_lines, 280), "Real text");
+    }
+
+    /// The trailing trim is not redundant with the leading one: the cap can cut
+    /// mid-whitespace and leave the tail exposed.
+    #[test]
+    fn the_cap_does_not_leave_a_trailing_space() {
+        let out = sanitize_line(&format!("{} b", "a".repeat(279)), 280);
+        assert_eq!(out, "a".repeat(279));
     }
 
     #[test]

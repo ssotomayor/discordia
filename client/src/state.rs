@@ -146,6 +146,36 @@ pub enum GuildDialog {
     Integrations(Id),
     Roles(Id),
 }
+/// The guild is not in `guilds` yet — we have not joined — so the name is
+/// looked up in the catalog and may be absent on an invite-code join.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RulesPrompt {
+    pub guild_id: Id,
+    pub guild_name: Option<String>,
+    pub rules: String,
+    pub invite_code: Option<String>,
+}
+
+impl RulesPrompt {
+    /// A challenge raised by an invite has to be answered through the invite:
+    /// the code is what the server matched, and a private guild refuses the
+    /// plain join.
+    pub fn accept(&self) -> ClientMessage {
+        match &self.invite_code {
+            Some(code) => ClientMessage::JoinByInvite {
+                code: code.clone(),
+                accept: true,
+                pow_nonce: None,
+            },
+            None => ClientMessage::JoinGuild {
+                guild_id: self.guild_id,
+                accept: true,
+                pow_nonce: None,
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReplyDraft {
     pub message_id: Id,
@@ -211,6 +241,7 @@ pub struct AppState {
     pub profile_card: Option<String>,
     pub image_viewer: Option<String>,
     pub guild_dialog: Option<GuildDialog>,
+    pub rules_prompt: Option<RulesPrompt>,
     /// Opened from the title bar, rendered by the voice panel that owns the
     /// device signals — the flag is the only thing the two need to share.
     pub audio_settings: bool,
@@ -308,6 +339,7 @@ impl AppState {
             profile_card: None,
             image_viewer: None,
             guild_dialog: None,
+            rules_prompt: None,
             audio_settings: false,
             typing: HashMap::new(),
             notify_tick: 0,
@@ -841,6 +873,48 @@ pub fn use_gateway() -> GatewayTx {
 mod tests {
     use super::*;
     use crate::protocol::{Member, Profile, User};
+
+    fn prompt(invite_code: Option<&str>) -> RulesPrompt {
+        RulesPrompt {
+            guild_id: Id::new_v4(),
+            guild_name: None,
+            rules: "be nice".into(),
+            invite_code: invite_code.map(str::to_string),
+        }
+    }
+
+    /// A challenge raised by an invite must be answered through the invite: a
+    /// private guild refuses the plain join, so answering with `JoinGuild`
+    /// would bounce the person straight back out.
+    #[test]
+    fn an_invite_challenge_is_accepted_through_the_invite() {
+        match prompt(Some("purple-fox-42")).accept() {
+            ClientMessage::JoinByInvite {
+                code,
+                accept,
+                pow_nonce,
+            } => {
+                assert_eq!(code, "purple-fox-42");
+                assert!(accept, "the whole point is that the person accepted");
+                assert!(pow_nonce.is_none(), "a rules gate carries no work");
+            }
+            other => panic!("answered an invite with {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_catalog_challenge_is_accepted_by_guild_id() {
+        let p = prompt(None);
+        match p.accept() {
+            ClientMessage::JoinGuild {
+                guild_id, accept, ..
+            } => {
+                assert_eq!(guild_id, p.guild_id);
+                assert!(accept);
+            }
+            other => panic!("answered a catalog join with {other:?}"),
+        }
+    }
 
     /// The defect this replaced: relays are asked in parallel and deduped by
     /// event id, so a rename and the old copy both arrive, in any order.

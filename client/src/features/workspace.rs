@@ -199,6 +199,7 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
             crate::features::profiles::ProfileCard {}
             crate::features::chat::ImageViewer {}
             GuildDialogHost {}
+            crate::features::guilds::RulesPromptDialog {}
 
             div { class: "dxf-drag-region flex items-center gap-2 {mac_titlebar_clear}",
                 onmousedown: move |_| crate::app::start_window_drag(),

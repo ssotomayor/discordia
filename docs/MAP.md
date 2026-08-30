@@ -23,10 +23,10 @@ name instead.
 | `client/src/features/channels.rs` | 2171 |
 | `client/src/features/screenshare.rs` | 1582 |
 | `client/src/update.rs` | 1147 |
-| `client/src/state.rs` | 1274 |
-| `client/src/net.rs` | 1128 |
+| `client/src/state.rs` | 1348 |
+| `client/src/net.rs` | 1140 |
 | `client/src/features/chat.rs` | 1040 |
-| `protocol/src/lib.rs` | 1198 |
+| `protocol/src/lib.rs` | 1223 |
 | `server/src/store.rs` | 942 |
 
 Everything else is small enough that `wc -l` answers faster than a list here
