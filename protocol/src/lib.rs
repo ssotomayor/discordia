@@ -55,6 +55,28 @@ pub fn sanitize_name(kind: &str, raw: &str, max_chars: usize) -> Result<String, 
     Ok(name.to_string())
 }
 
+/// Free text truncates where a name would be rejected: these fields are
+/// optional and nobody is waiting on an error to fix them.
+pub fn sanitize_line(raw: &str, max_chars: usize) -> String {
+    raw.chars()
+        .filter(|c| !unsafe_to_display(*c))
+        .take(max_chars)
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+/// A bio, a description and a set of rules are written in a `textarea`, so the
+/// newline is the one control character they are allowed to keep.
+pub fn sanitize_paragraph(raw: &str, max_chars: usize) -> String {
+    raw.chars()
+        .filter(|c| *c == '\n' || !unsafe_to_display(*c))
+        .take(max_chars)
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum GuildVisibility {
@@ -404,6 +426,75 @@ mod name_tests {
     fn the_cap_still_counts_characters() {
         assert!(sanitize_name("role", &"🙂".repeat(32), 32).is_ok());
         assert!(sanitize_name("role", &"🙂".repeat(33), 32).is_err());
+    }
+}
+
+#[cfg(test)]
+mod free_text_tests {
+    use super::{sanitize_line, sanitize_paragraph};
+
+    /// The whole point of the split: a bio written in a `textarea` keeps the
+    /// breaks the person typed, and a one-line field keeps none.
+    #[test]
+    fn a_paragraph_keeps_its_newlines_and_a_line_does_not() {
+        assert_eq!(
+            sanitize_paragraph("first\nsecond\nthird", 280),
+            "first\nsecond\nthird"
+        );
+        assert_eq!(sanitize_line("first\nsecond", 80), "firstsecond");
+    }
+
+    #[test]
+    fn a_paragraph_keeps_nothing_else_that_moves_the_cursor() {
+        for bad in [
+            '\r', '\u{0}', '\u{7}', '\u{2028}', '\u{2029}', '\u{202A}', '\u{202E}', '\u{2066}',
+            '\u{2069}',
+        ] {
+            let out = sanitize_paragraph(&format!("ab{bad}cd"), 280);
+            assert_eq!(out, "abcd", "U+{:04X} survived a paragraph", bad as u32);
+        }
+    }
+
+    #[test]
+    fn a_line_keeps_nothing_that_moves_the_cursor() {
+        for bad in ['\n', '\r', '\u{0}', '\u{2028}', '\u{202E}', '\u{2069}'] {
+            let out = sanitize_line(&format!("ab{bad}cd"), 80);
+            assert_eq!(out, "abcd", "U+{:04X} survived a line", bad as u32);
+        }
+    }
+
+    /// Free text truncates where a name is rejected — these are optional and
+    /// nobody is waiting on an error.
+    #[test]
+    fn over_long_free_text_is_cut_not_refused() {
+        assert_eq!(sanitize_line(&"a".repeat(500), 80).chars().count(), 80);
+        assert_eq!(
+            sanitize_paragraph(&"a".repeat(500), 280).chars().count(),
+            280
+        );
+    }
+
+    #[test]
+    fn windows_line_endings_do_not_leave_a_stray_carriage_return() {
+        assert_eq!(sanitize_paragraph("one\r\ntwo", 280), "one\ntwo");
+    }
+
+    #[test]
+    fn surrounding_whitespace_goes_but_the_inside_is_left_alone() {
+        assert_eq!(sanitize_paragraph("  a\n\n  b  ", 280), "a\n\n  b");
+        assert_eq!(sanitize_line("  hello  ", 80), "hello");
+    }
+
+    #[test]
+    fn text_that_was_only_junk_comes_back_empty() {
+        assert_eq!(sanitize_line("\u{202E}\u{0}\n", 80), "");
+        assert_eq!(sanitize_paragraph("\u{202E}\u{0}\r", 280), "");
+    }
+
+    #[test]
+    fn right_to_left_text_is_left_alone() {
+        assert_eq!(sanitize_paragraph("مرحبا\nبالعالم", 280), "مرحبا\nبالعالم");
+        assert_eq!(sanitize_line("שלום", 80), "שלום");
     }
 }
 

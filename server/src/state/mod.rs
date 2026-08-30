@@ -1352,8 +1352,8 @@ impl AppState {
             name,
             kind,
             topic: topic
-                .filter(|t| !t.trim().is_empty())
-                .map(|t| t.chars().take(120).collect()),
+                .map(|t| crate::protocol::sanitize_line(&t, 120))
+                .filter(|t| !t.is_empty()),
             read_only: false,
             slowmode_secs: 0,
             position: next_pos,
@@ -1419,8 +1419,8 @@ impl AppState {
                 .ok_or_else(|| "unknown channel".to_string())?;
             channel.name = name;
             channel.topic = topic
-                .filter(|t| !t.trim().is_empty())
-                .map(|t| t.chars().take(120).collect());
+                .map(|t| crate::protocol::sanitize_line(&t, 120))
+                .filter(|t| !t.is_empty());
             channel.read_only =
                 read_only && matches!(channel.kind, crate::protocol::ChannelKind::Text);
             channel.slowmode_secs = slowmode_secs.min(21_600);
@@ -1546,7 +1546,7 @@ impl AppState {
             ));
         }
         let description = description
-            .map(|d| d.trim().chars().take(280).collect::<String>())
+            .map(|d| crate::protocol::sanitize_paragraph(&d, 280))
             .filter(|d| !d.is_empty());
         let updated = {
             let mut guild = self
@@ -1608,7 +1608,7 @@ impl AppState {
                 .get_mut(&guild_id)
                 .ok_or_else(|| "unknown guild".to_string())?;
             guild.join_gate = gate;
-            guild.rules = rules.map(|r| r.chars().take(4000).collect());
+            guild.rules = rules.map(|r| crate::protocol::sanitize_paragraph(&r, 4000));
             guild.clone()
         };
         persist(self.store.upsert_guild(&updated).await, "join gate");

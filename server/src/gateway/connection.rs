@@ -446,8 +446,10 @@ pub async fn handle_connection(
                             }).await;
                             continue;
                         }
-                        let bio = bio.map(|b| b.chars().take(280).collect::<String>());
-                        let custom_status = custom_status.map(|c| c.chars().take(80).collect::<String>());
+                        let bio = bio.map(|b| crate::protocol::sanitize_paragraph(&b, 280));
+                        let custom_status =
+                            custom_status.map(|c| crate::protocol::sanitize_line(&c, 80));
+                        let status = status.map(|s| crate::protocol::sanitize_line(&s, 32));
                         let profile = ctx.state.set_profile(
                             &u.pubkey, avatar, banner, bio, status, custom_status,
                         ).await;

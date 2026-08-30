@@ -38,11 +38,9 @@ Closed and retired entries are not kept; `git log docs/` has them.
   ~65k hashes, single-digit milliseconds, so a thousand identities cost under a
   minute. Fixing it means a server secret with a window and more bits, which is
   latency charged to everyone who joins honestly.
-- 93 · The free-text fields take no filter now that the names do. `bio` and
-  `custom_status` get a character cap and nothing else, `status` and the join
-  `rules` get neither, and `rules` reaches `set_join_gate` unbounded. They are
-  displayed rather than logged, so a break costs less than in a name, but the
-  bidi overrides reorder a profile card the same way they reorder a roster.
+- 94 · `status` is chosen from three buttons and the server takes any string.
+  It is filtered and capped now, but the closed set is not enforced, so a
+  client can set a presence nothing knows how to draw.
 
 **Repo & CI**
 - 8 · The Windows portable and setup ship the wrong icon.

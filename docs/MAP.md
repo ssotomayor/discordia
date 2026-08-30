@@ -19,14 +19,14 @@ name instead.
 |---|---|
 | `client/src/features/voice.rs` | 2782 |
 | `server/src/state/mod.rs` | 2324 |
-| `server/src/gateway/connection.rs` | 1987 |
+| `server/src/gateway/connection.rs` | 1989 |
 | `client/src/features/channels.rs` | 2171 |
 | `client/src/features/screenshare.rs` | 1582 |
 | `client/src/update.rs` | 1147 |
 | `client/src/state.rs` | 1274 |
 | `client/src/net.rs` | 1128 |
 | `client/src/features/chat.rs` | 1040 |
-| `protocol/src/lib.rs` | 1107 |
+| `protocol/src/lib.rs` | 1198 |
 | `server/src/store.rs` | 942 |
 
 Everything else is small enough that `wc -l` answers faster than a list here
