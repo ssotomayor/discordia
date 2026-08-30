@@ -693,12 +693,9 @@ impl AppState {
         name: &str,
         color: Option<String>,
     ) -> Result<(String, Option<String>), String> {
-        let name = name.trim();
-        if name.is_empty() || name.chars().count() > 32 {
-            return Err("role name must be 1..=32 chars".into());
-        }
+        let name = crate::protocol::sanitize_name("role", name, 32)?;
         let color = color.filter(|c| is_hex_color(c));
-        Ok((name.to_string(), color))
+        Ok((name, color))
     }
 
     pub async fn create_role(
@@ -2275,11 +2272,7 @@ impl GuildTemplate {
 }
 
 fn sanitize_channel_name(raw: &str) -> Result<String, String> {
-    let name = raw.trim();
-    if name.is_empty() || name.chars().count() > 64 {
-        return Err("channel name must be 1..=64 chars".into());
-    }
-    Ok(name.to_string())
+    crate::protocol::sanitize_name("channel", raw, 64)
 }
 
 pub(crate) fn random_invite_code() -> String {
