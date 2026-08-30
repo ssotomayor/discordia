@@ -216,3 +216,96 @@ async fn a_history_page_is_clamped_however_much_is_asked_for() {
         "precondition: the channel is past the clamp"
     );
 }
+
+/// The unit tests pin `protocol`'s filters; this one pins that the gateway
+/// actually calls them, which is the half a refactor drops.
+#[tokio::test]
+async fn names_and_free_text_come_back_clean_over_the_wire() {
+    let (url, _h) = spawn_gateway().await;
+    let mut owner = ready(&url, &BotIdentity::generate(), "Owner").await;
+
+    owner
+        .send(&ClientMessage::CreateGuild {
+            name: "Ac\u{202E}me\nINFO forged".into(),
+            template: None,
+        })
+        .await
+        .unwrap();
+    let guild_id = loop {
+        if let ServerMessage::GuildJoined { guild, .. } = next_timeout(&mut owner).await {
+            assert_eq!(
+                guild.name, "AcmeINFO forged",
+                "the guild name reached storage unfiltered"
+            );
+            break guild.id;
+        }
+    };
+
+    owner
+        .send(&ClientMessage::CreateChannel {
+            guild_id,
+            name: "gen\u{0}eral".into(),
+            kind: ChannelKind::Text,
+            topic: Some("what\u{2069}ever".into()),
+        })
+        .await
+        .unwrap();
+    loop {
+        if let ServerMessage::ChannelCreate(channel) = next_timeout(&mut owner).await {
+            assert_eq!(channel.name, "general");
+            assert_eq!(channel.topic.as_deref(), Some("whatever"));
+            break;
+        }
+    }
+
+    owner
+        .send(&ClientMessage::SetProfile {
+            avatar: None,
+            banner: None,
+            bio: Some("line one\r\nli\u{202E}ne two".into()),
+            status: Some("onl\nine".into()),
+            custom_status: Some("busy\u{2028}now".into()),
+        })
+        .await
+        .unwrap();
+    loop {
+        if let ServerMessage::ProfileUpdate(profile) = next_timeout(&mut owner).await {
+            assert_eq!(
+                profile.bio.as_deref(),
+                Some("line one\nline two"),
+                "a bio keeps the break the person typed and loses the rest"
+            );
+            assert_eq!(profile.status.as_deref(), Some("online"));
+            assert_eq!(profile.custom_status.as_deref(), Some("busynow"));
+            break;
+        }
+    }
+}
+
+/// A name that is nothing but junk is empty once filtered, and an empty name
+/// is a rejection rather than a guild called "".
+#[tokio::test]
+async fn a_name_of_pure_junk_is_refused_not_stored_blank() {
+    let (url, _h) = spawn_gateway().await;
+    let mut owner = ready(&url, &BotIdentity::generate(), "Owner").await;
+
+    owner
+        .send(&ClientMessage::CreateGuild {
+            name: "\u{202E}\u{0}\n".into(),
+            template: None,
+        })
+        .await
+        .unwrap();
+    loop {
+        match next_timeout(&mut owner).await {
+            ServerMessage::Error { message } => {
+                assert!(message.contains("guild name"), "wrong refusal: {message}");
+                break;
+            }
+            ServerMessage::GuildJoined { guild, .. } => {
+                panic!("stored a guild named {:?}", guild.name)
+            }
+            _ => continue,
+        }
+    }
+}

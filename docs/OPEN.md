@@ -41,6 +41,12 @@ Closed and retired entries are not kept; `git log docs/` has them.
 - 94 · `status` is chosen from three buttons and the server takes any string.
   It is filtered and capped now, but the closed set is not enforced, so a
   client can set a presence nothing knows how to draw.
+- 95 · The name and free-text filters are on the write path only. Both ingest
+  paths skip them: `archive.rs` `import_guild` clones the archive's guild,
+  roles, channels and members straight into the store, and `load_or_seed`
+  inserts every row as it was written. So a hostile archive — the very thing
+  cross-instance migration (34) is for — lands unfiltered, and anything stored
+  before this filter existed stays that way.
 
 **Repo & CI**
 - 8 · The Windows portable and setup ship the wrong icon.
@@ -82,6 +88,10 @@ Closed and retired entries are not kept; `git log docs/` has them.
 - 18 · Operator UX polish: no visual distinction for a system-guild operator.
 - 22 · Nobody has performed the channel-reorder *drag*; only the menu path.
 - 23 · `MentionEveryone` permission, cut from v1.
+- 96 · The `JoinGate::Rules` gate is decorative on this client. `net.rs`
+  destructures `rules` away with `..` and answers `resend(true, None)` at once,
+  so the text an owner wrote is never shown and "accept" is sent for a person
+  who was never asked. Needs a dialog with a decline path.
 
 **Bots & activities**
 - 25 · Privileged intents have a confirm step, not a verification flow.
