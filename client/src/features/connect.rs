@@ -475,7 +475,7 @@ pub fn IdentityCard(
         .to_ascii_uppercase()
         .to_string();
     let tag = crate::identity::discriminator(&identity.pubkey).to_string();
-    let file_path = Identity::file_path_display();
+    let file_path = identity.file_path_display();
 
     let mut editing = use_signal(|| false);
     let mut draft = use_signal(|| identity.display_name.clone());
@@ -555,7 +555,7 @@ pub fn IdentityCard(
                     r#type: "button",
                     class: "text-[10px] text-[var(--text-muted)] hover:text-[var(--danger)] uppercase tracking-wider border border-[var(--edge)] rounded-md px-2.5 py-1 transition-colors",
                     onclick: move |_| on_sign_out.call(()),
-                    title: "Wipe local identity",
+                    title: "Sign out. The key stays on this machine — the setup screen lists it again.",
                     "sign out"
                 }
             }

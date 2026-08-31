@@ -47,6 +47,7 @@ that direction says a file is safe to open when it is not.
 | Voice, capture, mixing | `client/src/features/voice.rs` | the largest file in the tree — grep `ScreenAudioRoom`, `ScreenVideoRoom`, `forward_mic` |
 | The first screen | `client/src/features/home.rs` | `HomeView`; the connect form is `connect::ConnectForm` |
 | The settings dialog | `client/src/features/channels.rs` | `SETTINGS_TABS` + `SettingsTab` inside `UserPanel`. The cog that opens it is in the title bar (`workspace.rs`); only `AppState::audio_settings` connects them |
+| Keys on this machine | `client/src/identity.rs` | `detected` / `sign_in` / `forget`; one file per key under `config_dir()/identities/`, `identity.json` names the active one |
 
 ## Change recipes
 

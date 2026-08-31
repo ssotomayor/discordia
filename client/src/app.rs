@@ -512,7 +512,7 @@ pub fn App() -> Element {
                             }
                         },
                         on_sign_out: move |_| {
-                            let _ = Identity::delete_file();
+                            let _ = crate::identity::sign_out();
                             let _ = session::clear();
                             session.set(None);
                             identity.set(None);

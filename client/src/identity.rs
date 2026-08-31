@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use bech32::{Bech32, Hrp};
 use bip39::{Language, Mnemonic};
@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256, Sha512};
 
 const FILE_VERSION: u32 = 1;
+const ACTIVE_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IdentitySource {
@@ -173,8 +174,7 @@ impl Identity {
     }
 
     pub fn npub(&self) -> String {
-        let bytes = hex::decode(&self.pubkey).unwrap_or_default();
-        to_bech32("npub", &bytes)
+        npub_of(&self.pubkey)
     }
 
     #[allow(dead_code)]
@@ -182,78 +182,223 @@ impl Identity {
         to_bech32("nsec", &self.secret.secret_bytes())
     }
 
+    /// Writes the key under its own pubkey and points `identity.json` at it,
+    /// so signing in again is a choice rather than a re-import.
     pub fn save(&self) -> Result<(), String> {
-        let path = identity_path();
-        let parent = path
-            .parent()
-            .ok_or_else(|| "identity path has no parent".to_string())?;
-        std::fs::create_dir_all(parent).map_err(|e| format!("create config dir: {e}"))?;
-        let mut stored = Stored {
+        let dir = identities_dir();
+        std::fs::create_dir_all(&dir).map_err(|e| format!("create identities dir: {e}"))?;
+        let stored = Stored {
             version: FILE_VERSION,
             display_name: self.display_name.clone(),
             pubkey: self.pubkey.clone(),
-            seed_phrase: None,
-            nsec: None,
+            seed_phrase: match &self.source {
+                IdentitySource::Phrase(p) => Some(p.clone()),
+                IdentitySource::Nsec(_) => None,
+            },
+            nsec: match &self.source {
+                IdentitySource::Nsec(k) => Some(k.clone()),
+                IdentitySource::Phrase(_) => None,
+            },
         };
-        match &self.source {
-            IdentitySource::Phrase(p) => stored.seed_phrase = Some(p.clone()),
-            IdentitySource::Nsec(k) => stored.nsec = Some(k.clone()),
-        }
         let content = serde_json::to_string_pretty(&stored)
             .map_err(|e| format!("serialize identity: {e}"))?;
-        std::fs::write(&path, content).map_err(|e| format!("write identity: {e}"))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            if let Ok(meta) = std::fs::metadata(&path) {
-                let mut perms = meta.permissions();
-                perms.set_mode(0o600);
-                let _ = std::fs::set_permissions(&path, perms);
-            }
-        }
-        Ok(())
+        write_private(&self.key_path(), &content)?;
+        set_active(&self.pubkey)
     }
 
     pub fn load() -> Result<Option<Self>, String> {
-        let path = identity_path();
+        let path = active_path();
         if !path.exists() {
             return Ok(None);
         }
         let content = std::fs::read_to_string(&path).map_err(|e| format!("read identity: {e}"))?;
+        // Before the folder existed the key itself lived here. Moving it out
+        // on the first read is what keeps the pointer free of secrets.
+        if let Ok(stored) = serde_json::from_str::<Stored>(&content) {
+            let identity = Self::from_stored(stored)?;
+            identity.save()?;
+            return Ok(Some(identity));
+        }
+        let active: Active =
+            serde_json::from_str(&content).map_err(|e| format!("parse identity: {e}"))?;
+        if active.version != ACTIVE_VERSION {
+            return Err(format!(
+                "unknown identity file version {}; expected {}",
+                active.version, ACTIVE_VERSION
+            ));
+        }
+        match detected().into_iter().find(|f| f.pubkey == active.active) {
+            Some(found) => Self::from_file(&found.path).map(Some),
+            // The key it named is gone, so the pointer is a dead end, not an
+            // error to stop the app with.
+            None => {
+                let _ = std::fs::remove_file(&path);
+                Ok(None)
+            }
+        }
+    }
+
+    /// Loads one of the keys `detected` found and makes it the active one,
+    /// copying it into the folder if it was sitting loose beside it.
+    pub fn sign_in(pubkey: &str) -> Result<Self, String> {
+        let found = detected()
+            .into_iter()
+            .find(|f| f.pubkey == pubkey)
+            .ok_or_else(|| "that identity is no longer on this machine".to_string())?;
+        let identity = Self::from_file(&found.path)?;
+        identity.save()?;
+        Ok(identity)
+    }
+
+    fn from_file(path: &Path) -> Result<Self, String> {
+        let content = std::fs::read_to_string(path).map_err(|e| format!("read identity: {e}"))?;
         let stored: Stored =
             serde_json::from_str(&content).map_err(|e| format!("parse identity: {e}"))?;
+        Self::from_stored(stored)
+    }
+
+    fn from_stored(stored: Stored) -> Result<Self, String> {
         if stored.version != FILE_VERSION {
             return Err(format!(
                 "unknown identity file version {}; expected {}",
                 stored.version, FILE_VERSION
             ));
         }
-        let identity = if let Some(phrase) = stored.seed_phrase {
-            Self::restore_from_phrase(&phrase, stored.display_name)?
+        if let Some(phrase) = stored.seed_phrase {
+            Self::restore_from_phrase(&phrase, stored.display_name)
         } else if let Some(nsec) = stored.nsec {
-            Self::restore_from_private_key(&nsec, stored.display_name)?
+            Self::restore_from_private_key(&nsec, stored.display_name)
         } else {
-            return Err("identity file has neither seed_phrase nor nsec".into());
-        };
-        Ok(Some(identity))
-    }
-
-    pub fn file_path_display() -> String {
-        identity_path().display().to_string()
-    }
-
-    pub fn delete_file() -> Result<(), String> {
-        let path = identity_path();
-        if path.exists() {
-            std::fs::remove_file(&path).map_err(|e| format!("remove identity: {e}"))?;
+            Err("identity file has neither seed_phrase nor nsec".into())
         }
-        Ok(())
+    }
+
+    fn key_path(&self) -> PathBuf {
+        identities_dir().join(format!("{}.json", self.pubkey))
+    }
+
+    pub fn file_path_display(&self) -> String {
+        self.key_path().display().to_string()
     }
 
     pub fn set_display_name(&mut self, name: impl Into<String>) -> Result<(), String> {
         self.display_name = name.into();
         self.save()
     }
+}
+
+/// Every key this machine can sign in with, newest name order, deduplicated by
+/// pubkey — the folder wins over a copy left loose in the config directory.
+pub fn detected() -> Vec<FoundIdentity> {
+    let mut found = Vec::new();
+    collect_from(&identities_dir(), &mut found);
+    collect_from(&config_dir(), &mut found);
+    found.sort_by(|a, b| {
+        a.display_name
+            .to_lowercase()
+            .cmp(&b.display_name.to_lowercase())
+            .then_with(|| a.pubkey.cmp(&b.pubkey))
+    });
+    found
+}
+
+/// Signing out leaves the key; this is the one that takes it away.
+pub fn forget(pubkey: &str) -> Result<(), String> {
+    for found in detected().into_iter().filter(|f| f.pubkey == pubkey) {
+        std::fs::remove_file(&found.path).map_err(|e| format!("remove identity: {e}"))?;
+    }
+    if active_pubkey().as_deref() == Some(pubkey) {
+        sign_out()?;
+    }
+    Ok(())
+}
+
+/// Drops the pointer, not the key — the machine forgets who you were, and the
+/// setup screen lists you again.
+pub fn sign_out() -> Result<(), String> {
+    let path = active_path();
+    if path.exists() {
+        std::fs::remove_file(&path).map_err(|e| format!("remove identity: {e}"))?;
+    }
+    Ok(())
+}
+
+/// One key on disk without its secret: enough to draw a row, and to ask for
+/// the rest by pubkey when somebody picks it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FoundIdentity {
+    pub pubkey: String,
+    pub display_name: String,
+    pub path: PathBuf,
+}
+
+fn collect_from(dir: &Path, out: &mut Vec<FoundIdentity>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let Ok(content) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(stored) = serde_json::from_str::<Stored>(&content) else {
+            continue;
+        };
+        // Without a secret it is some other file that happens to carry a name
+        // and a key — a profile, half a backup, the pointer's own successor.
+        if stored.version != FILE_VERSION
+            || (stored.seed_phrase.is_none() && stored.nsec.is_none())
+            || stored.pubkey.len() != 64
+            || out
+                .iter()
+                .any(|f: &FoundIdentity| f.pubkey == stored.pubkey)
+        {
+            continue;
+        }
+        out.push(FoundIdentity {
+            pubkey: stored.pubkey,
+            display_name: stored.display_name,
+            path,
+        });
+    }
+}
+
+fn active_pubkey() -> Option<String> {
+    let content = std::fs::read_to_string(active_path()).ok()?;
+    serde_json::from_str::<Active>(&content)
+        .ok()
+        .map(|a| a.active)
+}
+
+fn set_active(pubkey: &str) -> Result<(), String> {
+    let active = Active {
+        version: ACTIVE_VERSION,
+        active: pubkey.to_string(),
+    };
+    let content =
+        serde_json::to_string_pretty(&active).map_err(|e| format!("serialize identity: {e}"))?;
+    write_private(&active_path(), &content)
+}
+
+fn write_private(path: &Path, content: &str) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| "identity path has no parent".to_string())?;
+    std::fs::create_dir_all(parent).map_err(|e| format!("create config dir: {e}"))?;
+    std::fs::write(path, content).map_err(|e| format!("write identity: {e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = std::fs::metadata(path) {
+            let mut perms = meta.permissions();
+            perms.set_mode(0o600);
+            let _ = std::fs::set_permissions(path, perms);
+        }
+    }
+    Ok(())
 }
 
 #[derive(Serialize, Deserialize)]
@@ -267,12 +412,37 @@ struct Stored {
     nsec: Option<String>,
 }
 
+/// Which of the folder's keys is signed in. A separate shape from `Stored` so
+/// a v1 file is told apart by parsing, not by trusting its version field.
+#[derive(Serialize, Deserialize)]
+struct Active {
+    version: u32,
+    active: String,
+}
+
+pub fn npub_of(pubkey: &str) -> String {
+    let bytes = hex::decode(pubkey).unwrap_or_default();
+    to_bech32("npub", &bytes)
+}
+
 fn to_bech32(hrp: &str, data: &[u8]) -> String {
     let hrp = Hrp::parse(hrp).expect("valid hrp");
     bech32::encode::<Bech32>(hrp, data).expect("bech32 encode")
 }
 
+// Thread-local and not the env var, because `DIOXUSFUN_CONFIG_DIR` is
+// process-global and another test in this binary sets and clears it.
+#[cfg(test)]
+thread_local! {
+    static TEST_CONFIG_DIR: std::cell::RefCell<Option<PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 pub fn config_dir() -> PathBuf {
+    #[cfg(test)]
+    if let Some(dir) = TEST_CONFIG_DIR.with(|d| d.borrow().clone()) {
+        return dir;
+    }
     if let Some(dir) = std::env::var_os("DIOXUSFUN_CONFIG_DIR") {
         return PathBuf::from(dir);
     }
@@ -281,8 +451,12 @@ pub fn config_dir() -> PathBuf {
         .join("dioxusfun")
 }
 
-fn identity_path() -> PathBuf {
+fn active_path() -> PathBuf {
     config_dir().join("identity.json")
+}
+
+fn identities_dir() -> PathBuf {
+    config_dir().join("identities")
 }
 
 pub fn truncate_pubkey(pubkey: &str) -> String {
@@ -380,6 +554,170 @@ fn derive_nip06(seed: &[u8]) -> Result<SecretKey, String> {
     }
 
     Ok(key)
+}
+
+#[cfg(test)]
+mod store_tests {
+    use super::*;
+
+    /// Every test gets its own config root on its own thread, so the folder
+    /// scan sees only what the test put there.
+    fn sandbox(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("dioxusfun-identity-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("sandbox");
+        TEST_CONFIG_DIR.with(|d| *d.borrow_mut() = Some(dir.clone()));
+        dir
+    }
+
+    /// Sign out has to leave something behind, or the list it feeds is always
+    /// empty and the whole screen is decoration.
+    #[test]
+    fn signing_out_keeps_the_key_and_lists_it_again() {
+        let root = sandbox("signout");
+        let id = Identity::create("malvina").expect("identity");
+        id.save().expect("save");
+        assert!(
+            root.join("identities")
+                .join(format!("{}.json", id.pubkey))
+                .exists()
+        );
+
+        sign_out().expect("sign out");
+        assert!(
+            Identity::load().expect("load").is_none(),
+            "no longer signed in"
+        );
+
+        let found = detected();
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].pubkey, id.pubkey);
+        assert_eq!(found[0].display_name, "malvina");
+
+        let back = Identity::sign_in(&id.pubkey).expect("sign in");
+        assert_eq!(back.pubkey, id.pubkey);
+        assert_eq!(
+            Identity::load().expect("load").map(|i| i.pubkey),
+            Some(id.pubkey),
+            "picking one makes it the active one"
+        );
+    }
+
+    /// Forgetting is the destructive half that sign out gave up.
+    #[test]
+    fn forgetting_removes_the_key_and_the_pointer() {
+        let root = sandbox("forget");
+        let id = Identity::create("jotace").expect("identity");
+        id.save().expect("save");
+
+        forget(&id.pubkey).expect("forget");
+        assert!(detected().is_empty());
+        assert!(!root.join("identity.json").exists(), "pointer went with it");
+        assert!(Identity::load().expect("load").is_none());
+    }
+
+    /// Two keys are the point of a list; one must not shadow the other.
+    #[test]
+    fn both_keys_survive_each_other() {
+        sandbox("two");
+        let a = Identity::create("aa").expect("a");
+        let b = Identity::create("bb").expect("b");
+        a.save().expect("save a");
+        b.save().expect("save b");
+
+        let found = detected();
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert_eq!(
+            Identity::load().expect("load").map(|i| i.pubkey),
+            Some(b.pubkey),
+            "the last one saved is the active one"
+        );
+    }
+
+    /// An install from before the folder existed keeps its key in the pointer
+    /// file; the first read has to move it without losing the session.
+    #[test]
+    fn a_v1_file_migrates_into_the_folder() {
+        let root = sandbox("v1");
+        let id = Identity::create("legacy").expect("identity");
+        let IdentitySource::Phrase(phrase) = &id.source else {
+            panic!("expected a phrase")
+        };
+        let v1 = serde_json::json!({
+            "version": 1,
+            "display_name": "legacy",
+            "pubkey": id.pubkey,
+            "seed_phrase": phrase,
+        });
+        std::fs::write(root.join("identity.json"), v1.to_string()).expect("write v1");
+
+        let loaded = Identity::load().expect("load").expect("still signed in");
+        assert_eq!(loaded.pubkey, id.pubkey);
+        assert!(
+            root.join("identities")
+                .join(format!("{}.json", id.pubkey))
+                .exists(),
+            "the key moved into the folder"
+        );
+        let pointer = std::fs::read_to_string(root.join("identity.json")).expect("pointer");
+        assert!(
+            !pointer.contains(phrase.as_str()),
+            "the pointer must not keep the secret: {pointer}"
+        );
+        assert_eq!(detected().len(), 1, "and it is listed once, not twice");
+    }
+
+    /// The config folder is full of other json. None of it is an account.
+    #[test]
+    fn other_config_files_are_not_identities() {
+        let root = sandbox("noise");
+        std::fs::write(
+            root.join("settings.json"),
+            r#"{"version":1,"theme":"dark"}"#,
+        )
+        .expect("settings");
+        // The shape of a key file minus the key — a half-written backup.
+        std::fs::write(
+            root.join("half.json"),
+            r#"{"version":1,"display_name":"x","pubkey":"aa","seed_phrase":null}"#,
+        )
+        .expect("half");
+        assert!(detected().is_empty());
+    }
+
+    /// Somebody who drops a backup into the folder means it to be an account.
+    #[test]
+    fn a_key_left_loose_beside_the_folder_is_detected() {
+        let root = sandbox("loose");
+        let id = Identity::create("dropped").expect("identity");
+        let IdentitySource::Phrase(phrase) = &id.source else {
+            panic!("expected a phrase")
+        };
+        std::fs::write(
+            root.join("backup.json"),
+            serde_json::json!({
+                "version": 1,
+                "display_name": "dropped",
+                "pubkey": id.pubkey,
+                "seed_phrase": phrase,
+            })
+            .to_string(),
+        )
+        .expect("write backup");
+
+        let found = detected();
+        assert_eq!(found.len(), 1, "{found:?}");
+
+        Identity::sign_in(&id.pubkey).expect("sign in");
+        assert!(
+            root.join("identities")
+                .join(format!("{}.json", id.pubkey))
+                .exists(),
+            "using it files it properly"
+        );
+        assert_eq!(detected().len(), 1, "and the copy does not double the row");
+    }
 }
 
 #[cfg(test)]

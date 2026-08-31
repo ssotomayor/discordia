@@ -106,6 +106,9 @@ Closed and retired entries are not kept; `git log docs/` has them.
 - 36 · The Windows client is a console application, so every release ships a `cmd` window.
 - 77 · The macOS `.app` keeps only half of what 36 gave Windows.
 - 37 · The fade-in never re-triggers on the connect and identity-setup panels.
+- 101 · A detected identity's row shows the `pubkey` its file claims, not one
+  derived from the secret in it. A hand-edited file lists a key it cannot sign
+  for, and the row changes identity the moment it is picked.
 
 **Camera / video**
 - 42 · No camera quality control; fixed 720p30 / 1.2 Mbit.
