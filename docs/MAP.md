@@ -20,7 +20,7 @@ name instead.
 | `client/src/features/voice.rs` | 2787 |
 | `server/src/state/mod.rs` | 2324 |
 | `server/src/gateway/connection.rs` | 1989 |
-| `client/src/features/channels.rs` | 2171 |
+| `client/src/features/channels.rs` | 2190 |
 | `client/src/features/screenshare.rs` | 1582 |
 | `client/src/update.rs` | 1147 |
 | `client/src/state.rs` | 1348 |

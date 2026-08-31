@@ -156,9 +156,14 @@ Closed and retired entries are not kept; `git log docs/` has them.
   drops room tone under the AGC's floor — but it is off by default. Gating the
   pre-AGC peak fixes the room tone and reintroduces 63, so the two must be
   settled together, 63 first. Was 65, which recorded only the denoiser half.
-- 99 · The meter hides 98. `show_pre` in `channels.rs` draws the "before" ghost
-  bar only when noise cancellation is on, so on the defaults a person sees one
-  normalised bar against a threshold marker that looks meaningful.
+- 100 · Where an output trim should live is unsettled. "Others say I am loud"
+  is a real need and the microphone slider cannot serve it: before the AGC it
+  is cancelled, between the AGC and the gate it moves the gate's operating
+  point the way 98 describes, and after the gate it needs its own limiter.
+  Where it sits now it is also a hard `clamp`, not a limiter, so with auto gain
+  off a hot microphone at 200% square-waves before the denoiser ever sees it.
+  Same question as 63 and 98 — what the right order of this chain is — and the
+  same answer: it needs listening, not arithmetic.
 - 82 · No echo cancellation anywhere, on any platform. Speakers into an open mic
   feed back, and the defences are a headset and a transmit gate that 98 says is
   open anyway on the default settings.
