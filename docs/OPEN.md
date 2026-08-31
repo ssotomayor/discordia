@@ -103,8 +103,10 @@ Closed and retired entries are not kept; `git log docs/` has them.
 - 39 · Nothing on this wire can tell an old client from a new one.
 
 **Client UX**
-- 36 · The Windows client is a console application, so every release ships a `cmd` window.
-- 77 · The macOS `.app` keeps only half of what 36 gave Windows.
+- 77 · A macOS `.app` launched from Finder loses the ~139 `eprintln!`
+  diagnostics. `tracing` and the panic hook reach `<config>/logs/discordia.log`,
+  but the `SetStdHandle` redirect that sends everything else there is
+  Windows-only, so off Windows the rest writes to a stderr nobody reads.
 - 37 · The fade-in never re-triggers on the connect and identity-setup panels.
 - 101 · A detected identity's row shows the `pubkey` its file claims, not one
   derived from the secret in it. A hand-edited file lists a key it cannot sign
@@ -116,7 +118,10 @@ Closed and retired entries are not kept; `git log docs/` has them.
 
 **Screen sharing**
 - 45 · The native picker has no thumbnails.
-- 46 · No self-preview on the native capture path.
+- 46 · Nobody has seen the native path preview itself. `ScreenSelfPreview`
+  attaches by bare identity and the JS `videoTrackFor` falls back to `#video`
+  (trap 10), so the picture should arrive; what is drawn today and known to
+  work is the frame counter over black, which proves capture, not the track.
 - 48 · A screen-room reconnect republishes the camera but not the share.
 - 51 · The `CVPixelBuffer` double-release test never runs.
 - 52 · A macOS watcher can get stuck on "Connecting to stream…" indefinitely.
@@ -176,6 +181,9 @@ Closed and retired entries are not kept; `git log docs/` has them.
 
 **Nostr / DMs**
 - 70 · A DM goes to the relays *we* chose, not the ones the recipient reads.
+  Half of NIP-17 is here: `spawn_nostr` publishes our own kind 10050 list, so
+  others could route to us. The reading half is not — `parse_dm_relay_list` is
+  `#[allow(dead_code)]` and called by nothing but its own test.
 - 79 · A delete is a local watermark — the events stay on the relays and on the
   other person's machine, and no NIP-09 request is sent.
 
