@@ -56,14 +56,10 @@ const GATE_RAMP_SAMPLES: usize = 120;
 
 const ROOM_CLOSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
-/// Inert, and kept anyway: a pushed `NativeAudioSource` never reaches the APM,
-/// so asking for AEC/NS/AGC here changes nothing. `docs/OPEN.md` 64.
-fn apm_options(deepfilter_on: bool, agc: bool) -> AudioSourceOptions {
-    AudioSourceOptions {
-        echo_cancellation: true,
-        noise_suppression: !deepfilter_on,
-        auto_gain_control: agc,
-    }
+/// The constructor demands one and nothing reads it: `set_options` stores it
+/// and only `options()` reads it back. `docs/OPEN.md` 64 traces that.
+fn inert_apm_options() -> AudioSourceOptions {
+    AudioSourceOptions::default()
 }
 
 /// Atomics rather than Dioxus signals: the cpal callback is realtime and must
@@ -353,9 +349,6 @@ async fn service_loop(
             VoiceCmd::SetNoiseCancellation { enabled } => {
                 eprintln!("[voice] SetNoiseCancellation enabled={enabled}");
                 controls.denoise.store(enabled, Ordering::Relaxed);
-                if let Some(active) = session.as_ref() {
-                    active.set_apm(enabled, controls.agc.load(Ordering::Relaxed));
-                }
                 state.write().noise_cancellation = enabled;
             }
             VoiceCmd::SetMicVolume { percent } => {
@@ -368,9 +361,6 @@ async fn service_loop(
             VoiceCmd::SetAutoGainControl { enabled } => {
                 eprintln!("[voice] SetAutoGainControl enabled={enabled}");
                 controls.agc.store(enabled, Ordering::Relaxed);
-                if let Some(active) = session.as_ref() {
-                    active.set_apm(controls.denoise.load(Ordering::Relaxed), enabled);
-                }
                 state.write().auto_gain_control = enabled;
             }
             VoiceCmd::SetVoiceBitrate { kbps } => {
@@ -479,7 +469,6 @@ async fn restart_session(
 
 struct ActiveVoice {
     room: Arc<Room>,
-    source: NativeAudioSource,
     mic: MicCapture,
     local_audio: LocalAudioTrack,
     _playback: PlaybackMixer,
@@ -509,15 +498,7 @@ impl ActiveVoice {
         let room = Arc::new(room);
         crate::e2ee::register_room(&room, crate::e2ee::RoomKind::Voice);
 
-        let source = NativeAudioSource::new(
-            apm_options(
-                controls.denoise.load(Ordering::Relaxed),
-                controls.agc.load(Ordering::Relaxed),
-            ),
-            SAMPLE_RATE,
-            CHANNELS,
-            1000,
-        );
+        let source = NativeAudioSource::new(inert_apm_options(), SAMPLE_RATE, CHANNELS, 1000);
         let local_audio =
             LocalAudioTrack::create_audio_track("mic", RtcAudioSource::Native(source.clone()));
         let local_audio_for_mute = local_audio.clone();
@@ -760,7 +741,6 @@ impl ActiveVoice {
 
         Ok(Self {
             room,
-            source,
             mic,
             local_audio: local_audio_for_mute,
             _playback: playback,
@@ -957,31 +937,6 @@ impl ActiveVoice {
                 ));
             }
         }
-    }
-
-    fn set_apm(&self, deepfilter_on: bool, agc: bool) {
-        let want = apm_options(deepfilter_on, agc);
-        let (aec, ns, agc_on) = (
-            want.echo_cancellation,
-            want.noise_suppression,
-            want.auto_gain_control,
-        );
-        self.source.set_audio_options(want);
-        let got = self.source.audio_options();
-        crate::dlog!(
-            "voice apm set aec={aec} ns={ns} agc={agc_on} -> read back aec={} ns={} agc={} ({})",
-            got.echo_cancellation,
-            got.noise_suppression,
-            got.auto_gain_control,
-            if got.echo_cancellation == aec
-                && got.noise_suppression == ns
-                && got.auto_gain_control == agc_on
-            {
-                "kept"
-            } else {
-                "DIFFERS — the options are not reaching the source"
-            }
-        );
     }
 
     async fn set_muted(&mut self, muted: bool) {
@@ -2752,30 +2707,80 @@ mod tests {
         assert!(meter_pct_to_peak(1000) <= 1000);
     }
 
+    /// Not a guard — a measurement, like the raw-mode one in `rawmic`. The AGC
+    /// runs before the gate, so the bar judges audio whose level has already
+    /// been normalised. Re-run it with a real recording to settle 63/98:
+    /// synthetic speech has a crest factor near 2 and real speech 3 to 5, so
+    /// the numbers below understate what a microphone actually delivers.
     #[test]
-    fn the_apm_options_survive_the_round_trip_into_the_source() {
-        use livekit::webrtc::audio_source::native::NativeAudioSource;
-        use livekit::webrtc::prelude::AudioSourceOptions;
+    #[ignore = "a measurement to re-run, not a guard; see docs/OPEN.md 98"]
+    fn where_the_gate_opens_once_the_agc_has_normalised_the_level() {
+        fn noise(n: usize, rms_want: f32, seed: &mut u32) -> Vec<f32> {
+            let mut v: Vec<f32> = (0..n)
+                .map(|_| {
+                    *seed ^= *seed << 13;
+                    *seed ^= *seed >> 17;
+                    *seed ^= *seed << 5;
+                    (*seed >> 8) as f32 / (1u32 << 24) as f32 - 0.5
+                })
+                .collect();
+            let r = (v.iter().map(|s| s * s).sum::<f32>() / n as f32).sqrt();
+            let k = rms_want / r.max(1e-9);
+            for s in v.iter_mut() {
+                *s *= k;
+            }
+            v
+        }
+        fn voiced(n: usize, rms_want: f32, seed: &mut u32, ph: &mut f32) -> Vec<f32> {
+            let mut v = noise(n, rms_want * 0.4, seed);
+            for s in v.iter_mut() {
+                *ph += 2.0 * std::f32::consts::PI * 140.0 / 48_000.0;
+                *s += rms_want * 1.2 * ph.sin();
+            }
+            v
+        }
 
-        let source =
-            NativeAudioSource::new(AudioSourceOptions::default(), SAMPLE_RATE, CHANNELS, 1000);
+        let threshold = crate::settings::ClientSettings::default().mic_sensitivity as i32;
+        println!("bar {threshold} ({})", peak_to_db_label(threshold as u32));
 
-        for (aec, ns, agc) in [(true, false, true), (false, true, false)] {
-            source.set_audio_options(AudioSourceOptions {
-                echo_cancellation: aec,
-                noise_suppression: ns,
-                auto_gain_control: agc,
-            });
-            let got = source.audio_options();
-            assert_eq!(
-                (
-                    got.echo_cancellation,
-                    got.noise_suppression,
-                    got.auto_gain_control
-                ),
-                (aec, ns, agc),
-                "the source did not keep what `set_audio_options` handed it, so \
-                 `set_apm` has been writing into nothing"
+        println!(
+            "
+what the bar demands of the microphone, before the AGC:"
+        );
+        let (mut seed, mut ph) = (0x9E37_79B9u32, 0.0f32);
+        for rms in [0.01f32, 0.02, 0.03, 0.05, 0.13] {
+            let peak = peak_fixed(&voiced(FRAME_SAMPLES, rms, &mut seed, &mut ph));
+            println!(
+                "  speech {:+.0} dBFS -> peak {peak:>4}  {}",
+                20.0 * rms.log10(),
+                if peak > threshold { "passes" } else { "CUT" }
+            );
+        }
+
+        println!(
+            "
+two seconds of speech, then only room tone:"
+        );
+        for room in [0.002f32, 0.003, 0.005, 0.01] {
+            let (mut seed, mut ph) = (0x9E37_79B9u32, 0.0f32);
+            let mut agc = crate::agc::Agc::new();
+            let mut gate = GateState::default();
+            for _ in 0..200 {
+                let mut h = voiced(FRAME_SAMPLES, 0.02, &mut seed, &mut ph);
+                agc.process(&mut h);
+                gate.step(peak_fixed(&h), threshold);
+            }
+            let mut open = 0;
+            for _ in 0..500 {
+                let mut h = noise(FRAME_SAMPLES, room, &mut seed);
+                agc.process(&mut h);
+                if !matches!(gate.step(peak_fixed(&h), threshold), GateAction::Drop) {
+                    open += 1;
+                }
+            }
+            println!(
+                "  room {:+.0} dBFS -> {open}/500 hops of the pause transmitted",
+                20.0 * room.log10()
             );
         }
     }
