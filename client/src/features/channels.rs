@@ -1235,7 +1235,23 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
     let mic_level_pct = crate::features::voice::peak_to_meter_pct(mic_level);
     let mic_level_pre = state.read().mic_level_pre;
     let mic_level_pre_pct = crate::features::voice::peak_to_meter_pct(mic_level_pre);
-    let show_pre = noise_cancellation && mic_level_pre > mic_level;
+    // Either one moves the level the threshold is then judged against, and the
+    // AGC moves it *up*, so the old `pre > post` test could never fire for it.
+    let show_pre = (noise_cancellation || auto_gain_control) && mic_level_pre != mic_level;
+    let pre_caption = match (noise_cancellation, auto_gain_control) {
+        (true, false) => {
+            "Grey tick: your raw microphone. The gap is what noise cancellation removed."
+        }
+        (false, true) => {
+            "Grey tick: your raw microphone. Auto gain moves the level the white threshold is \
+             judged against, so the threshold is not a microphone level."
+        }
+        (true, true) => {
+            "Grey tick: your raw microphone. Noise cancellation and auto gain both move the level \
+             before the white threshold sees it."
+        }
+        (false, false) => "",
+    };
     let threshold_pct = crate::features::voice::peak_to_meter_pct(mic_sensitivity);
     let sensitivity_display = crate::features::voice::peak_to_db_label(mic_sensitivity);
     let mic_level_display = crate::features::voice::peak_to_db_label(mic_level);
@@ -1592,15 +1608,17 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                     div {
                                         class: "relative w-full h-2 mt-1 rounded-full overflow-hidden",
                                         style: "background: var(--bg2);",
-                                        if show_pre {
-                                            div {
-                                                class: "absolute inset-y-0 left-0 rounded-full transition-all duration-75",
-                                                style: "width: {mic_level_pre_pct}%; background: var(--text-dim); opacity: 0.35;",
-                                            }
-                                        }
                                         div {
                                             class: "absolute inset-y-0 left-0 rounded-full transition-all duration-75",
                                             style: "width: {mic_level_pct}%; background: linear-gradient(90deg, var(--up), var(--accent), var(--danger));",
+                                        }
+                                        // A tick, not the faint bar this replaced: the AGC pushes
+                                        // the raw level *below* the drawn one, where a bar hides.
+                                        if show_pre {
+                                            div {
+                                                class: "absolute top-0 bottom-0 w-0.5 bg-[var(--text-dim)] pointer-events-none",
+                                                style: "left: {mic_level_pre_pct}%;",
+                                            }
                                         }
                                         div {
                                             class: "absolute top-0 bottom-0 w-0.5 bg-white/70 pointer-events-none",
@@ -1609,7 +1627,7 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                     }
                                     if show_pre {
                                         span { class: "text-[10px] text-[var(--text-dim)] mt-0.5 block",
-                                            "Faint bar: before noise cancellation. The gap is what it removed."
+                                            "{pre_caption}"
                                         }
                                     }
                                 } else {
@@ -1629,7 +1647,8 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                     min: "0",
                                     max: "200",
                                     value: "{mic_volume}",
-                                    class: "w-full mt-1 accent-[var(--accent)]",
+                                    disabled: auto_gain_control,
+                                    class: if auto_gain_control { "w-full mt-1 accent-[var(--accent)] opacity-40 cursor-not-allowed" } else { "w-full mt-1 accent-[var(--accent)]" },
                                     oninput: move |e| {
                                         let pct: u16 = e.value().parse().unwrap_or(100).min(200);
                                         let mut next = settings.read().clone();
@@ -1641,9 +1660,9 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                     },
                                     onchange: persist_settings,
                                 }
-                                if auto_gain_control && mic_volume != 100 {
+                                if auto_gain_control {
                                     span { class: "text-[10px] text-[var(--text-dim)] mt-0.5 block",
-                                        "Auto gain is on and will pull this back — turn it off below to keep this level."
+                                        "Auto gain is setting your level, so this does nothing. Turn it off below to set it by hand."
                                     }
                                 }
                             }
