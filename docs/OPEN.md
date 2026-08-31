@@ -126,19 +126,42 @@ Closed and retired entries are not kept; `git log docs/` has them.
 - 58 · WASAPI has never been seen answering slowly; the branch is untested.
 
 **Voice / audio**
-- 60 · "Bypass system audio processing" reports that raw mode was *asked for*, not achieved.
-- 61 · The raw path is Windows-only; Linux is unanswered.
-- 62 · The 30-vs-12 dB DeepFilterNet ceiling numbers cannot be re-run.
-- 63 · The default mic sensitivity cuts ordinary speech. The bar now judges
-  AGC-normalised audio instead of the raw mic, so the number needs re-measuring
-  rather than re-applying.
-- 64 · The APM never runs. `AudioSourceOptions` on a pushed `NativeAudioSource`
-  is stored and never read again (`webrtc-sys/src/audio_track.cpp`), so AEC, NS
-  and AGC are requests nothing honours — and `set_apm` reads back what it just
-  stored, so its log confirms a success that did not happen. AGC is
-  `client/src/agc.rs` now and NS is DeepFilterNet; echo cancellation is 82.
+- 60 · Raw mode is a request nothing confirms. A *failure* is honest — a failed
+  `Capture::start` sets `mic_bypass_error` and the panel says the microphone was
+  opened the usual way. But `SetClientProperties(AUDCLNT_STREAMOPTIONS_RAW)` can
+  return `S_OK` on an endpoint that ignores it, and nothing reads back whether
+  the effects actually came out. "On, no error" means asked, not achieved.
+- 61 · The raw path is Windows-only. macOS and Linux are equally unanswered —
+  `rawmic::supported()` is `cfg!(target_os = "windows")` and the toggle is left
+  out of the panel off Windows, so the gap is a missing feature, not a silent
+  failure.
+- 63 · The default mic sensitivity may cut ordinary speech, and the number
+  cannot be settled with synthetic signals: the bar of 50 wants about −30 dBFS
+  at the microphone, but a synthetic hop has a crest factor near 2 where speech
+  has 3 to 5, so it understates what a real voice delivers. Needs a recording.
+  `where_the_gate_opens_once_the_agc_has_normalised_the_level` is the harness.
+- 64 · The APM never runs. In `webrtc-sys/src/audio_track.cpp`, `options_` is
+  written by `set_options` and read only by `options()` — nothing else in the
+  file touches it — so AEC, NS and AGC on a pushed `NativeAudioSource` are
+  requests nothing honours. The `set_apm` wrapper that read its own store back
+  and logged the round trip as success is gone; what remains is the argument
+  `NativeAudioSource::new` demands, passed as `Default`. AGC is
+  `client/src/agc.rs` and NS is DeepFilterNet; echo cancellation is 82.
+- 98 · The AGC defeats the transmit gate on the default settings. The gate
+  judges the peak *after* the AGC, and the AGC normalises toward one level —
+  which is the level difference the gate exists to read. Measured with the real
+  `Agc` and `GateState`: after two seconds of speech the gain is already up, so
+  a pause at −50 dBFS or louder keeps the gate open for all 500 hops measured,
+  never closing. Turning noise cancellation on hides it, because DeepFilterNet
+  drops room tone under the AGC's floor — but it is off by default. Gating the
+  pre-AGC peak fixes the room tone and reintroduces 63, so the two must be
+  settled together, 63 first. Was 65, which recorded only the denoiser half.
+- 99 · The meter hides 98. `show_pre` in `channels.rs` draws the "before" ghost
+  bar only when noise cancellation is on, so on the defaults a person sees one
+  normalised bar against a threshold marker that looks meaningful.
 - 82 · No echo cancellation anywhere, on any platform. Speakers into an open mic
-  feed back, and the only defences are a headset and the transmit gate.
+  feed back, and the defences are a headset and a transmit gate that 98 says is
+  open anyway on the default settings.
 - 66 · Call audio degrades during a screen share and nothing explains it.
 - 68 · Two app instances self-hosting on one machine fight over the SFU.
 - 69 · Per-user volumes are session-scoped.
@@ -168,7 +191,6 @@ Closed and retired entries are not kept; `git log docs/` has them.
 - 49 · Stream audio is subscribed on publication, not on watch.
 - 57 · Every Windows activation leaks its 12-byte blob, deliberately.
 - 59 · The Windows blob's lifetime rule is an observation, not a contract.
-- 65 · The transmit gate judges the denoised hop, so its operating point moves with the denoiser.
 - 86 · Two advisories are ignored in `.cargo/audit.toml`, each with its reason
   written beside it: `rsa` arrives through `jsonwebtoken` and never runs an RSA
   operation here, and `tract-nnef` is pinned by a model that will not load on a

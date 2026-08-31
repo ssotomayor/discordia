@@ -498,7 +498,7 @@ mod tests {
         );
         if r_fmt != c_fmt {
             println!(
-                "the engine named a different format for the two — that alone is                  the endpoint answering differently once the effects are out"
+                "the engine named a different format for the two — that alone is the endpoint answering differently once the effects are out"
             );
         }
         if r_rms > 0.0 && c_rms > 0.0 {
@@ -509,7 +509,7 @@ mod tests {
         }
         if r_peak.max(c_peak) < SILENCE_FLOOR {
             println!(
-                "NOTHING WAS HEARD: peak {:.4} on the louder path, below the                  {SILENCE_FLOOR} floor. This run compares silence to silence and                  says nothing about raw mode. Check which device the [rawmic]                  line above opened — the Windows default is often a line-in                  with nothing in it — then make noise and run it again.",
+                "NOTHING WAS HEARD: peak {:.4} on the louder path, below the {SILENCE_FLOOR} floor. This run compares silence to silence and says nothing about raw mode. Check which device the [rawmic] line above opened — the Windows default is often a line-in with nothing in it — then make noise and run it again.",
                 r_peak.max(c_peak)
             );
         }
@@ -521,17 +521,17 @@ mod tests {
             .filter(|(a, b)| a != b)
             .count();
         println!(
-            "sample-for-sample over {overlap} overlapping: {differing} differ              ({:.4}%)",
+            "sample-for-sample over {overlap} overlapping: {differing} differ ({:.4}%)",
             100.0 * differing as f32 / overlap.max(1) as f32
         );
 
         assert!(
             !r.is_empty(),
-            "raw mode opened and delivered nothing — the microphone would be              silent for the whole call"
+            "raw mode opened and delivered nothing — the microphone would be silent for the whole call"
         );
         assert!(
             !c.is_empty(),
-            "the processed path delivered nothing, so there is nothing to              compare raw mode against and the run says nothing either way"
+            "the processed path delivered nothing, so there is nothing to compare raw mode against and the run says nothing either way"
         );
     }
 
