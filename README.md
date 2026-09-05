@@ -79,7 +79,8 @@ minisign -Vm Discordia-windows-setup.exe -p release-signing.pub
 ```
 
 The trusted comment names the tag and filename and is covered by the signature,
-so a signature cannot be lifted onto another release's artifact. This says the
+and the in-app updater refuses a signature whose comment names another release
+or file, so one cannot be lifted onto another release's artifact. This says the
 file is the one CI built, unmodified — it is **not** an OS signature, so
 SmartScreen and Gatekeeper still warn on first launch (entries 9, 10).
 

@@ -181,11 +181,23 @@ const SECRET_FILE: &str = "quic-secret";
 /// per start would make every share string a one-time string.
 pub fn persistent_secret(data_dir: &Path) -> std::io::Result<SecretKey> {
     let path = data_dir.join(SECRET_FILE);
-    if let Ok(text) = std::fs::read_to_string(&path)
-        && let Ok(bytes) = hex::decode(text.trim())
-        && let Ok(arr) = <[u8; 32]>::try_from(bytes.as_slice())
-    {
-        return Ok(SecretKey::from_bytes(&arr));
+    if let Ok(text) = std::fs::read_to_string(&path) {
+        // Never minted over: a fresh key here would silently break every
+        // share string, so a file that cannot be read stays and is reported.
+        return hex::decode(text.trim())
+            .ok()
+            .and_then(|bytes| <[u8; 32]>::try_from(bytes.as_slice()).ok())
+            .map(|arr| SecretKey::from_bytes(&arr))
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "{} is not a 32-byte hex key; restore it from a backup, or delete it \
+                         to mint a new one (every share string will change)",
+                        path.display()
+                    ),
+                )
+            });
     }
     let secret = SecretKey::generate();
     std::fs::create_dir_all(data_dir)?;
@@ -364,5 +376,26 @@ mod tests {
         }
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&other);
+    }
+
+    #[test]
+    fn an_unreadable_quic_secret_is_reported_not_replaced() {
+        let dir = std::env::temp_dir().join(format!(
+            "dioxusfun-quic-secret-corrupt-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(SECRET_FILE);
+        std::fs::write(&path, "not hex at all\n").unwrap();
+
+        let err = persistent_secret(&dir).expect_err("garbage must not become a key");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "not hex at all\n",
+            "the file the operator can still recover from must be left alone"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

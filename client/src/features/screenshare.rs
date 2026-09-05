@@ -16,6 +16,7 @@ window.dxScreen = window.dxScreen || (function () {
   let localShareAudio = null;
   let e2eeKey = null;
   let e2eeWorker = null;
+  let e2eeWorkerUrl = null;
   let e2eeOn = false;
   let e2eeProvider = null;
   let localCameraTrack = null;
@@ -183,26 +184,35 @@ window.dxScreen = window.dxScreen || (function () {
     }
     const lk = LK();
     const opts = { adaptiveStream: true, dynacast: true };
-    if (e2eeOn && !window.__dxfE2eeWorkerSrc) {
-      console.error('[dxScreen] e2ee requested but the worker source is missing');
-      post('e2ee-error', { detail: 'the encryption worker was not injected' });
-    } else if (e2eeOn) {
-      try {
-        const provider = new lk.ExternalE2EEKeyProvider();
-        e2eeWorker = new Worker(
-          URL.createObjectURL(
+    dropE2eeWorker();
+    e2eeProvider = null;
+    // Encryption that cannot be set up is a room that is not joined: joining
+    // anyway would publish in the clear to the SFU, which is the one thing
+    // the key exists to prevent.
+    if (e2eeOn) {
+      let failure = null;
+      if (!window.__dxfE2eeWorkerSrc) {
+        failure = 'the encryption worker was not injected';
+      } else {
+        try {
+          const provider = new lk.ExternalE2EEKeyProvider();
+          e2eeWorkerUrl = URL.createObjectURL(
             new Blob([window.__dxfE2eeWorkerSrc], { type: 'application/javascript' })
-          )
-        );
-        opts.e2ee = { keyProvider: provider, worker: e2eeWorker };
-        e2eeProvider = provider;
-      } catch (e) {
-        e2eeProvider = null;
-        console.error('[dxScreen] could not set up e2ee', e);
-        post('e2ee-error', { detail: String((e && e.message) || e) });
+          );
+          e2eeWorker = new Worker(e2eeWorkerUrl);
+          opts.e2ee = { keyProvider: provider, worker: e2eeWorker };
+          e2eeProvider = provider;
+        } catch (e) {
+          failure = String((e && e.message) || e);
+        }
       }
-    } else {
-      e2eeProvider = null;
+      if (failure) {
+        dropE2eeWorker();
+        e2eeProvider = null;
+        console.error('[dxScreen] could not set up e2ee; not joining', failure);
+        post('e2ee-error', { detail: failure });
+        return;
+      }
     }
     const thisRoom = new lk.Room(opts);
     room = thisRoom;
@@ -219,8 +229,12 @@ window.dxScreen = window.dxScreen || (function () {
           await thisRoom.setE2EEEnabled(false);
         }
       } catch (e) {
-        console.error('[dxScreen] enabling e2ee failed', e);
+        room = null;
+        dropE2eeWorker();
+        e2eeProvider = null;
+        console.error('[dxScreen] enabling e2ee failed; not joining', e);
         post('e2ee-error', { detail: String((e && e.message) || e) });
+        return;
       }
     }
     thisRoom.on(lk.RoomEvent.Disconnected, function (reason) {
@@ -588,12 +602,21 @@ window.dxScreen = window.dxScreen || (function () {
   // Not provider.setKey: that hands the worker a CryptoKey, which WebKit wraps
   // with a keychain-held master key and macOS prompts for. The shim appended
   // to the worker imports the text itself; see assets/e2ee-worker-shim.js.
+  // updateCurrentKeyIndex stays true, as provider.setKey left it: that is what
+  // makes the worker forget a key it had given up on, so a rekey recovers a
+  // receiver that failed too often during the transition.
   function postRawKey(key) {
     if (!e2eeWorker) throw new Error('no e2ee worker to key');
     e2eeWorker.postMessage({
       kind: 'setKeyRaw',
-      data: { keyString: key, keyIndex: 0, updateCurrentKeyIndex: false },
+      data: { keyString: key, keyIndex: 0, updateCurrentKeyIndex: true },
     });
+  }
+  function dropE2eeWorker() {
+    if (e2eeWorker) { try { e2eeWorker.terminate(); } catch (e) {} }
+    if (e2eeWorkerUrl) { try { URL.revokeObjectURL(e2eeWorkerUrl); } catch (e) {} }
+    e2eeWorker = null;
+    e2eeWorkerUrl = null;
   }
   async function setE2eeKey(key) {
     e2eeKey = key || null;
@@ -638,6 +661,8 @@ window.dxScreen = window.dxScreen || (function () {
     const previous = room;
     room = null;
     if (previous) { try { await previous.disconnect(); } catch (e) {} }
+    dropE2eeWorker();
+    e2eeProvider = null;
     clearRemoteTracks();
     Object.keys(attached).forEach(detach);
   }
@@ -964,7 +989,8 @@ pub fn ScreenShareBridge() -> Element {
                         eprintln!("[screen] e2ee setup failed: {detail}");
                         state.write().error_toast = Some(format!(
                             "Encryption could not be enabled for this call ({detail}). \
-                             Others will not be able to hear or see you."
+                             The stream room was not joined, so nothing was sent in the clear; \
+                             leave and rejoin the channel to try again."
                         ));
                     }
                     Some("share-audio") => {

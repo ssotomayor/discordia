@@ -91,7 +91,7 @@ Closed and retired entries are not kept; `git log docs/` has them.
 - 39 · Nothing on this wire can tell an old client from a new one.
 
 **Client UX**
-- 77 · A macOS `.app` launched from Finder loses the ~139 `eprintln!`
+- 77 · A macOS `.app` launched from Finder loses the ~125 `eprintln!`
   diagnostics. `tracing` and the panic hook reach `<config>/logs/discordia.log`,
   but the `SetStdHandle` redirect that sends everything else there is
   Windows-only, so off Windows the rest writes to a stderr nobody reads.

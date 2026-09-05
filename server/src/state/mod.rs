@@ -282,7 +282,9 @@ impl AppState {
         Ok(())
     }
 
-    pub fn unregister_conn(&self, conn_id: u64, pubkey: Option<&str>) {
+    /// The only way out of `conns`, so the per-address count follows the
+    /// socket whether it left by closing or by `route` dropping it.
+    fn drop_conn(&self, conn_id: u64) {
         if let Some((_, conn)) = self.conns.remove(&conn_id)
             && let Some(ip) = conn.ip
         {
@@ -291,6 +293,10 @@ impl AppState {
                 *count == 0
             });
         }
+    }
+
+    pub fn unregister_conn(&self, conn_id: u64, pubkey: Option<&str>) {
+        self.drop_conn(conn_id);
         if let Some(pk) = pubkey {
             let now_empty = if let Some(mut set) = self.conn_ids_by_pubkey.get_mut(pk) {
                 set.remove(&conn_id);
@@ -314,7 +320,7 @@ impl AppState {
             None => return,
         };
         if tx.try_send(msg.clone()).is_err() && !matches!(msg, ServerMessage::TypingUpdate { .. }) {
-            self.conns.remove(&conn_id);
+            self.drop_conn(conn_id);
         }
     }
 
@@ -2194,12 +2200,8 @@ impl AppState {
             ));
         }
         let name = {
-            let n = name.trim();
-            if n.is_empty() {
-                "Bot".to_string()
-            } else {
-                n.chars().take(32).collect()
-            }
+            let n = crate::protocol::sanitize_line(name, 32);
+            if n.is_empty() { "Bot".to_string() } else { n }
         };
         let install = BotInstall {
             guild_id,

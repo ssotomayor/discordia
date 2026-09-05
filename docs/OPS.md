@@ -29,8 +29,15 @@
 
 | Var | Default | Meaning |
 |---|---|---|
-| `DIOXUSFUN_RENDEZVOUS_ADDR` | `0.0.0.0:7700` | relay bind |
+| `DIOXUSFUN_RENDEZVOUS_ADDR` | `0.0.0.0:7700` | HTTP bind: `/control`, `/discover`, `/resolve`, `/config`, `/voice-token` |
 | `DIOXUSFUN_RENDEZVOUS_DATA_DIR` | `./rendezvous-data` | persisted name reservations |
+| `DIOXUSFUN_RENDEZVOUS_RELAY_ADDR` | `0.0.0.0:7701` | iroh relay bind, the one that carries ciphertext for hosts behind NAT |
+| `DIOXUSFUN_RENDEZVOUS_RELAY_URL` | — | how clients reach that relay; handed out in `/config` and every entry |
+| `LIVEKIT_URL` / `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` | — | a shared SFU for hosts without one; the rendezvous mints their tokens so no host holds the secret |
+
+Serve it on the address it binds, not behind a reverse proxy: the per-address
+limits and the check that a host's advertised address is its own both read the
+peer's IP, and a proxy makes every host the same peer.
 
 **Client**
 

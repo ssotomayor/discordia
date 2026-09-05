@@ -172,6 +172,47 @@ async fn a_frame_under_the_cap_is_still_read() {
     );
 }
 
+/// A socket dropped for a full queue leaves through a different door than one
+/// that closed; both have to give the address its slot back, or a LAN behind
+/// one NAT is locked out a socket at a time.
+#[tokio::test]
+async fn a_socket_dropped_for_a_full_queue_gives_its_address_the_slot_back() {
+    use dioxusfun_server::media::{DEFAULT_MAX_BYTES, MediaStore};
+    use dioxusfun_server::protocol::ServerMessage;
+    use dioxusfun_server::state::{AppState, MAX_CONNECTIONS_PER_IP};
+    use dioxusfun_server::store::Store;
+
+    let dir = temp_data_dir();
+    let store = Store::open_in(&dir).await.expect("store");
+    let media = MediaStore::open(dir.join("media"), DEFAULT_MAX_BYTES).expect("media");
+    let state = AppState::load_or_seed(store, media, Default::default())
+        .await
+        .expect("state");
+    let ip: std::net::IpAddr = "203.0.113.7".parse().unwrap();
+
+    let mut held = Vec::new();
+    for _ in 0..MAX_CONNECTIONS_PER_IP {
+        held.push(state.register_conn(Some(ip)).expect("within the cap"));
+    }
+    assert!(state.register_conn(Some(ip)).is_err(), "the cap holds");
+
+    // Nobody reads this one, so the next few thousand frames fill its queue
+    // and the router drops it.
+    let (dropped_id, _unread_rx) = held.pop().unwrap();
+    for _ in 0..4096 {
+        state.broadcast(ServerMessage::Error {
+            message: "flood".into(),
+        });
+    }
+    state.unregister_conn(dropped_id, None);
+
+    assert!(
+        state.register_conn(Some(ip)).is_ok(),
+        "the dropped socket's slot was never returned to its address"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// One address is one machine at most, and a machine at rest holds one socket;
 /// past the cap the newcomer is told why and closed before it costs a queue.
 #[tokio::test]
