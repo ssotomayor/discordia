@@ -389,11 +389,31 @@ fn MemberRow(
         (crate::features::profiles::status_color(&status), pulse)
     };
 
-    let level = crate::protocol::level_progress(member.xp).0;
-    let subtitle = state
-        .read()
-        .profile_of(&member.user.pubkey)
-        .and_then(|p| p.custom_status.clone());
+    // A guild that named its ranks gets its names; one that did not gets the
+    // number it always had. `None` is "nothing worth drawing yet".
+    let rank = {
+        let rules = state.read().leveling_of(member.guild_id);
+        let hide = !rules.enabled
+            || (rules.tiers.is_empty() && crate::protocol::level_progress(member.xp).0 <= 1);
+        (!hide).then(|| {
+            (
+                rules.label_at(member.xp),
+                rules.tier_at(member.xp).and_then(|t| t.color.clone()),
+            )
+        })
+    };
+    // An activity outranks a custom status on the one line there is room for:
+    // it is the fresher fact, and it clears itself when they stop.
+    let subtitle = {
+        let s = state.read();
+        s.activity_of(&member.user.pubkey)
+            .map(|a| (crate::features::profiles::activity_line(a), true))
+            .or_else(|| {
+                s.profile_of(&member.user.pubkey)
+                    .and_then(|p| p.custom_status.clone())
+                    .map(|cs| (cs, false))
+            })
+    };
 
     let ctx_member = member.clone();
     rsx! {
@@ -432,17 +452,34 @@ fn MemberRow(
                         span { class: "text-[var(--up)] text-xs", title: "Key verified", "✓" }
                     }
                 }
-                if let Some(sub) = subtitle {
-                    span { class: "text-[10px] text-[var(--text-dim)] truncate", "{sub}" }
+                if let Some((sub, is_activity)) = subtitle {
+                    span {
+                        class: if is_activity {
+                            "text-[10px] text-[var(--accent)] truncate"
+                        } else {
+                            "text-[10px] text-[var(--text-dim)] truncate"
+                        },
+                        title: "{sub}",
+                        "{sub}"
+                    }
                 }
             }
             if let Some(vs) = voice {
                 VoiceBadges { vs: vs }
             }
             // Lv1 is where everyone starts, so on most rows the badge repeats a
-            // value that separates nobody from nobody.
-            if level > 1 {
-                span { class: "text-[10px] font-semibold text-[var(--text-dim)] shrink-0", "Lv{level}" }
+            // value that separates nobody from nobody. A named rank is worth
+            // drawing from the first one, because the guild chose to name it.
+            if let Some((label, color)) = rank {
+                span {
+                    class: "text-[10px] font-semibold shrink-0 truncate max-w-40",
+                    style: match color {
+                        Some(c) => format!("color: {c};"),
+                        None => "color: var(--text-dim);".to_string(),
+                    },
+                    title: "{label}",
+                    "{label}"
+                }
             }
         }
     }

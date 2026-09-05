@@ -154,6 +154,25 @@ pub fn AppearanceButton() -> Element {
                             }
                         }
                     }
+                    label { class: "flex items-center gap-2 cursor-pointer select-none mb-1",
+                        input {
+                            r#type: "checkbox",
+                            class: "accent-[var(--accent)]",
+                            checked: current.keep_my_accent,
+                            onchange: move |e| {
+                                let on = e.checked();
+                                update(&move |s| s.keep_my_accent = on);
+                            },
+                        }
+                        span { class: "text-xs text-[var(--text)] flex-1", "Keep my accent everywhere" }
+                    }
+                    div { class: "text-[10px] text-[var(--text-dim)] mb-4",
+                        if current.keep_my_accent {
+                            "Guilds that set their own accent are ignored — you see this colour everywhere."
+                        } else {
+                            "A guild that sets its own accent overrides this inside that guild. Your colour comes back in direct messages and on the home screen."
+                        }
+                    }
 
                     div { class: "text-[10px] uppercase tracking-wider text-[var(--text-muted)] mb-1.5", "Custom image" }
                     div { class: "h-20 rounded-md border border-[var(--border)] overflow-hidden bg-[var(--accent-soft)] flex items-center justify-center text-[var(--text-dim)] text-xs mb-2",

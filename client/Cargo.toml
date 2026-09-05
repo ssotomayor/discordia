@@ -53,12 +53,13 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "process"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "process", "net", "io-util"] }
 futures-util = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 minisign-verify = "0.2.5"
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
+sysinfo = { version = "0.39.6", default-features = false, features = ["system"] }
 
 [features]
 default = ["desktop"]

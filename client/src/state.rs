@@ -243,6 +243,15 @@ pub struct AppState {
     pub catalog: Vec<GuildSummary>,
     pub catalog_total: u32,
     pub profiles: HashMap<String, Profile>,
+    /// Self-asserted and never authoritative — see `nostr::xp`. Keyed by the
+    /// pubkey that signed it.
+    pub global_xp: HashMap<String, crate::nostr::xp::GlobalXp>,
+    /// The dial origin of the server this session is on, which is the key the
+    /// local experience ledger files this server's total under.
+    pub server_origin: Option<String>,
+    /// Never persisted and never merged into `profiles`: it is only true while
+    /// the person holds a socket, and the server clears it when they drop.
+    pub activities: HashMap<String, crate::protocol::Activity>,
     pub profile_card: Option<String>,
     pub image_viewer: Option<String>,
     pub guild_dialog: Option<GuildDialog>,
@@ -344,6 +353,9 @@ impl AppState {
             catalog: Vec::new(),
             catalog_total: 0,
             profiles: HashMap::new(),
+            global_xp: HashMap::new(),
+            server_origin: None,
+            activities: HashMap::new(),
             profile_card: None,
             image_viewer: None,
             guild_dialog: None,
@@ -554,6 +566,28 @@ impl AppState {
             return 0.0;
         }
         self.stream_volumes.get(pubkey).copied().unwrap_or(100) as f32 / 100.0
+    }
+
+    /// What we have earned on *this* server, across every guild on it. The
+    /// server stamps `Member::xp` per guild and knows no other server, so this
+    /// sum is the largest true number available here.
+    pub fn my_server_xp(&self) -> u64 {
+        let Some(me) = self.self_user.as_ref().map(|u| u.pubkey.as_str()) else {
+            return 0;
+        };
+        self.members
+            .iter()
+            .filter(|m| m.user.pubkey == me)
+            .map(|m| m.xp)
+            .sum()
+    }
+
+    pub fn global_xp_of(&self, pubkey: &str) -> Option<crate::nostr::xp::GlobalXp> {
+        self.global_xp.get(pubkey).copied()
+    }
+
+    pub fn activity_of(&self, pubkey: &str) -> Option<&crate::protocol::Activity> {
+        self.activities.get(pubkey)
     }
 
     pub fn avatar_of(&self, pubkey: &str) -> Option<&str> {
@@ -822,20 +856,42 @@ impl AppState {
         }
     }
 
+    pub fn leveling_of(&self, guild_id: Id) -> crate::protocol::Leveling {
+        self.guilds
+            .iter()
+            .find(|g| g.id == guild_id)
+            .map(|g| g.leveling.clone())
+            .unwrap_or_default()
+    }
+
+    /// Ordered as the guild asked. Online still leads either way: the panel
+    /// splits by presence anyway, so this only settles the order inside a
+    /// group, and a rank is a poor reason to bury everyone who is here.
     pub fn members_of(&self, guild_id: Id) -> Vec<&Member> {
         let mut v: Vec<&Member> = self
             .members
             .iter()
             .filter(|m| m.guild_id == guild_id)
             .collect();
-        v.sort_by(|a, b| {
-            b.online.cmp(&a.online).then_with(|| {
-                a.user
-                    .username
-                    .to_lowercase()
-                    .cmp(&b.user.username.to_lowercase())
-            })
-        });
+        let by_name = |a: &&Member, b: &&Member| {
+            a.user
+                .username
+                .to_lowercase()
+                .cmp(&b.user.username.to_lowercase())
+        };
+        match self.leveling_of(guild_id).member_sort {
+            crate::protocol::MemberSort::Name => {
+                v.sort_by(|a, b| b.online.cmp(&a.online).then_with(|| by_name(a, b)));
+            }
+            crate::protocol::MemberSort::Level => {
+                v.sort_by(|a, b| {
+                    b.online
+                        .cmp(&a.online)
+                        .then_with(|| b.xp.cmp(&a.xp))
+                        .then_with(|| by_name(a, b))
+                });
+            }
+        }
         v
     }
 

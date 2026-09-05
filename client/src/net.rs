@@ -299,7 +299,11 @@ async fn run(
             (socket, transport, crate::protocol::quic_origin(&key))
         }
     };
-    state.write().transport = transport;
+    {
+        let mut s = state.write();
+        s.transport = transport;
+        s.server_origin = Some(origin.clone());
+    }
 
     match ws_stream {
         Socket::Tcp(ws) => run_session(*ws, params, origin, tx, rx, state, voice_tx).await,
@@ -529,6 +533,7 @@ fn apply(
             profiles,
             roles,
             emojis,
+            activities,
             operator,
         } => {
             s.self_user = Some(user);
@@ -542,6 +547,10 @@ fn apply(
             s.profiles = profiles
                 .into_iter()
                 .map(|p| (p.pubkey.clone(), p))
+                .collect();
+            s.activities = activities
+                .into_iter()
+                .filter_map(|u| u.activity.map(|a| (u.pubkey, a)))
                 .collect();
             s.roles = {
                 let mut map: std::collections::HashMap<Id, Vec<crate::protocol::Role>> =
@@ -718,6 +727,14 @@ fn apply(
             s.profiles.insert(profile.pubkey.clone(), profile);
             resolve_media(&mut s, tx);
         }
+        ServerMessage::ActivityUpdate(update) => match update.activity {
+            Some(activity) => {
+                s.activities.insert(update.pubkey, activity);
+            }
+            None => {
+                s.activities.remove(&update.pubkey);
+            }
+        },
         ServerMessage::ReactionUpdate {
             channel_id,
             message_id,

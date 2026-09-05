@@ -5,6 +5,66 @@ use crate::identity::discriminator;
 use crate::protocol::ClientMessage;
 use crate::state::{use_app_state, use_gateway};
 
+#[component]
+fn ActivityCard(activity: crate::protocol::Activity) -> Element {
+    let mut now_ms = use_signal(|| chrono::Utc::now().timestamp_millis());
+
+    // The clock has to move on its own: nothing else re-renders this card
+    // between one activity update and the next.
+    let ticking = activity.started_ms.is_some();
+    use_future(move || async move {
+        if !ticking {
+            return;
+        }
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            now_ms.set(chrono::Utc::now().timestamp_millis());
+        }
+    });
+
+    let elapsed = activity
+        .started_ms
+        .and_then(|start| elapsed_since(start, now_ms()));
+
+    rsx! {
+        div { class: "mt-3 rounded-xl border border-[var(--edge)] p-3", style: "background: var(--bg2);",
+            div { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-1.5",
+                "{activity.kind.verb()}"
+            }
+            div { class: "text-sm text-[var(--text)] font-medium break-words", "{activity.name}" }
+            if let Some(details) = activity.details.as_deref() {
+                div { class: "text-xs text-[var(--text-muted)] break-words mt-0.5", "{details}" }
+            }
+            if let Some(st) = activity.state.as_deref() {
+                div { class: "text-xs text-[var(--text-muted)] break-words mt-0.5", "{st}" }
+            }
+            if let Some(e) = elapsed {
+                div { class: "text-xs text-[var(--text-dim)] font-mono mt-1", "{e} elapsed" }
+            }
+        }
+    }
+}
+
+/// "Playing Factorio" — the one line a member row has space for.
+pub fn activity_line(a: &crate::protocol::Activity) -> String {
+    format!("{} {}", a.kind.verb(), a.name)
+}
+
+/// `1:04:12` past the hour mark, `04:12` under it, and nothing at all for a
+/// clock that has not started or that claims to start in the future.
+pub fn elapsed_since(started_ms: i64, now_ms: i64) -> Option<String> {
+    if started_ms <= 0 || now_ms < started_ms {
+        return None;
+    }
+    let total = (now_ms - started_ms) / 1000;
+    let (h, m, sec) = (total / 3600, (total % 3600) / 60, total % 60);
+    Some(if h > 0 {
+        format!("{h}:{m:02}:{sec:02}")
+    } else {
+        format!("{m:02}:{sec:02}")
+    })
+}
+
 pub fn status_color(status: &str) -> &'static str {
     match status {
         "away" => "var(--warn)",
@@ -112,6 +172,8 @@ pub fn ProfileCard() -> Element {
         .profile_of(&pubkey)
         .and_then(|p| p.custom_status.clone())
         .filter(|s| !s.trim().is_empty());
+    let activity = snapshot.activity_of(&pubkey).cloned();
+    let global = snapshot.global_xp_of(&pubkey).filter(|g| g.xp > 0);
     let is_self = snapshot
         .self_user
         .as_ref()
@@ -139,6 +201,12 @@ pub fn ProfileCard() -> Element {
         })
         .unwrap_or(0);
     let (level, into, span) = crate::protocol::level_progress(xp);
+    let rank = state
+        .read()
+        .selected_guild
+        .map(|gid| state.read().leveling_of(gid))
+        .filter(|r| r.enabled)
+        .and_then(|r| r.tier_at(xp).cloned());
     let xp_pct = (into as f64 / span.max(1) as f64 * 100.0) as u32;
     let copy_pubkey = pubkey.clone();
     let member_roles: Vec<crate::protocol::Role> = {
@@ -200,6 +268,9 @@ pub fn ProfileCard() -> Element {
                     if let Some(cs) = custom_status {
                         div { class: "mt-1 text-sm text-[var(--text-muted)] italic", "{cs}" }
                     }
+                    if let Some(a) = activity {
+                        ActivityCard { activity: a }
+                    }
                     div { class: "mt-3 rounded-xl border border-[var(--edge)] p-3", style: "background: var(--bg2);",
                         div { class: "flex items-center justify-between mb-1.5",
                             span { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]", "Nostr public key" }
@@ -247,11 +318,36 @@ pub fn ProfileCard() -> Element {
                         }
                     }
                     div { class: "mt-4 flex items-center gap-3",
-                        span { class: "dxf-display text-sm font-bold text-[var(--accent)] shrink-0", "Lv {level}" }
+                        span {
+                            class: "dxf-display text-sm font-bold shrink-0",
+                            style: match rank.as_ref().and_then(|t| t.color.clone()) {
+                                Some(c) => format!("color: {c};"),
+                                None => "color: var(--accent);".to_string(),
+                            },
+                            title: "Earned on this server, counted by it",
+                            match rank.as_ref() {
+                                Some(t) => t.name.clone(),
+                                None => format!("Lv {level}"),
+                            }
+                        }
                         div { class: "flex-1 h-2 rounded-full overflow-hidden", style: "background: var(--bg2);",
                             div { class: "h-full rounded-full", style: "width: {xp_pct}%; background: linear-gradient(90deg, #8fb0ff, var(--accent));" }
                         }
                         span { class: "text-[10px] text-[var(--text-dim)] shrink-0", "{into}/{span}" }
+                    }
+                    // Deliberately quiet, and deliberately labelled: this number
+                    // is signed by the person it flatters and by nobody else.
+                    if let Some(g) = global {
+                        div { class: "mt-1.5 flex items-center gap-2",
+                            span { class: "text-[10px] text-[var(--text-muted)] shrink-0",
+                                "{crate::features::leveling::global_label(g)}"
+                            }
+                            span {
+                                class: "text-[9px] px-1.5 py-px rounded bg-white/[0.04] text-[var(--text-dim)] uppercase tracking-wider shrink-0",
+                                title: "Published by this key to Nostr and checked by nobody. It gates nothing.",
+                                "self-reported"
+                            }
+                        }
                     }
                     if !is_self {
                         button {

@@ -182,7 +182,7 @@ pub fn ChannelsColumn() -> Element {
     rsx! {
         aside { class: PANEL,
             if let Some(src) = banner {
-                div { class: "relative h-20 shrink-0 overflow-hidden border-b border-[var(--border)]",
+                div { class: "relative h-28 shrink-0 overflow-hidden border-b border-[var(--border)]",
                     img { class: "w-full h-full object-cover block", src: "{src}", alt: "guild banner" }
                     div {
                         class: "absolute inset-0",
@@ -1070,6 +1070,7 @@ enum SettingsTab {
     Audio,
     Mic,
     Video,
+    Activity,
     Diagnostics,
 }
 
@@ -1096,6 +1097,12 @@ const SETTINGS_TABS: &[(&str, SettingsTab, &str, &str)] = &[
     ),
     (
         "Status",
+        SettingsTab::Activity,
+        "Level and activity",
+        crate::features::icons::GAMEPAD,
+    ),
+    (
+        "",
         SettingsTab::Diagnostics,
         "Diagnostics",
         crate::features::icons::ACTIVITY,
@@ -1918,6 +1925,92 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                         },
                                     }
                                     span { class: "text-[11px] text-[var(--text-muted)] flex-1", "Share computer sound" }
+                                }
+                            }
+                            }
+                            if settings_tab() == SettingsTab::Activity {
+                            h3 { class: "dxf-display text-[17px] font-bold tracking-tight text-[var(--text)]", "Level" }
+                            p { class: "mt-0.5 mb-4 text-[12.5px] text-[var(--text-dim)]",
+                                "Each server counts what you earned on it. Only this app can add those up across servers, so publishing the total is the only way anyone else sees one."
+                            }
+                            div { class: "mb-4",
+                                label { class: "flex items-center gap-2 cursor-pointer select-none",
+                                    input {
+                                        r#type: "checkbox",
+                                        class: "accent-[var(--accent)]",
+                                        checked: settings.read().publish_global_level,
+                                        onchange: move |e| {
+                                            let mut next = settings.read().clone();
+                                            next.publish_global_level = e.checked();
+                                            settings.set(next.clone());
+                                            crate::settings::save(&next);
+                                        },
+                                    }
+                                    span { class: "text-[13px] text-[var(--text)] flex-1", "Publish my overall level to Nostr" }
+                                }
+                                p { class: "mt-1 ml-5 text-[11px] text-[var(--text-dim)]",
+                                    "A number and a count of servers — never which ones. Anyone reading it sees a claim your key signed, marked as self-reported, and it gates nothing anywhere."
+                                }
+                            }
+                            h3 { class: "dxf-display text-[17px] font-bold tracking-tight text-[var(--text)]", "Game activity" }
+                            p { class: "mt-0.5 mb-4 text-[12.5px] text-[var(--text-dim)]",
+                                "Shows the people you share a guild with what you are playing. Everything here is off until you turn it on, and nothing about this machine leaves it while it is off."
+                            }
+                            div { class: "mb-3",
+                                label { class: "flex items-center gap-2 cursor-pointer select-none",
+                                    input {
+                                        r#type: "checkbox",
+                                        class: "accent-[var(--accent)]",
+                                        checked: settings.read().share_activity,
+                                        onchange: move |e| {
+                                            let mut next = settings.read().clone();
+                                            next.share_activity = e.checked();
+                                            settings.set(next.clone());
+                                            crate::settings::save(&next);
+                                        },
+                                    }
+                                    span { class: "text-[13px] text-[var(--text)] flex-1", "Share what I am playing" }
+                                }
+                                p { class: "mt-1 ml-5 text-[11px] text-[var(--text-dim)]",
+                                    "The master switch. Turning it off clears what your guilds can see straight away."
+                                }
+                            }
+                            if settings.read().share_activity {
+                                div { class: "mb-3 pl-3 border-l border-[var(--edge)]",
+                                    label { class: "flex items-center gap-2 cursor-pointer select-none",
+                                        input {
+                                            r#type: "checkbox",
+                                            class: "accent-[var(--accent)]",
+                                            checked: settings.read().detect_games,
+                                            onchange: move |e| {
+                                                let mut next = settings.read().clone();
+                                                next.detect_games = e.checked();
+                                                settings.set(next.clone());
+                                                crate::settings::save(&next);
+                                            },
+                                        }
+                                        span { class: "text-[13px] text-[var(--text)] flex-1", "Detect running games" }
+                                    }
+                                    p { class: "mt-1 ml-5 mb-3 text-[11px] text-[var(--text-dim)]",
+                                        "Walks the process list every 15 seconds and matches it against a short built-in list. Only a match is ever sent — never the list of what is running."
+                                    }
+                                    label { class: "flex items-center gap-2 cursor-pointer select-none",
+                                        input {
+                                            r#type: "checkbox",
+                                            class: "accent-[var(--accent)]",
+                                            checked: settings.read().discord_rpc_socket,
+                                            onchange: move |e| {
+                                                let mut next = settings.read().clone();
+                                                next.discord_rpc_socket = e.checked();
+                                                settings.set(next.clone());
+                                                crate::settings::save(&next);
+                                            },
+                                        }
+                                        span { class: "text-[13px] text-[var(--text)] flex-1", "Accept Discord Rich Presence" }
+                                    }
+                                    p { class: "mt-1 ml-5 text-[11px] text-[var(--text-dim)]",
+                                        "Listens on the sockets a game already looks for, so anything shipping Rich Presence reports here with no extra work. Whichever of us starts first takes the socket, so a running Discord will stop seeing your games — or we will see none. Restart the app after changing this."
+                                    }
                                 }
                             }
                             }

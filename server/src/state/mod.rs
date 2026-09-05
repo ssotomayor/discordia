@@ -28,6 +28,7 @@ pub const MAX_CONNECTIONS_PER_IP: u32 = 32;
 pub const MAX_SESSIONS_PER_PUBKEY: usize = 8;
 pub const MAX_GUILDS_PER_OWNER: usize = 10;
 const CATALOG_FIRST_PAGE: u32 = 100;
+
 /// Counted on the data URL a client sends, per pubkey, over a sliding day.
 /// The disk quota is the real ceiling; this stops one member reaching it alone.
 pub const UPLOAD_BUDGET_BYTES: u64 = 200 * 1024 * 1024;
@@ -73,6 +74,9 @@ pub struct AppState {
     pub members: DashMap<Id, DashMap<String, Member>>,
     pub users: DashMap<String, User>,
     pub profiles: DashMap<String, Profile>,
+    /// Deliberately not in `profiles`: an activity is ephemeral, so it must not
+    /// reach `store` and must not survive the socket that set it.
+    pub activities: DashMap<String, crate::protocol::Activity>,
     pub voice_states: DashMap<String, VoiceState>,
     pub bot_installs: DashMap<String, DashMap<Id, BotInstall>>,
     pub roles: DashMap<Id, Vec<Role>>,
@@ -83,6 +87,9 @@ pub struct AppState {
     pub last_post: DashMap<(Id, String), std::time::Instant>,
     pub recent_joins: DashMap<Id, Vec<std::time::Instant>>,
     pub xp: DashMap<Id, DashMap<String, u64>>,
+    /// Memory only, and deliberately: losing it across a restart grants one
+    /// extra point, which is cheaper than a disk write per message.
+    pub xp_cooldown: DashMap<Id, DashMap<String, std::time::Instant>>,
     pub operators: std::collections::HashSet<String>,
     conns: DashMap<u64, Conn>,
     conns_by_ip: DashMap<std::net::IpAddr, u32>,
@@ -106,6 +113,7 @@ impl AppState {
             members: DashMap::new(),
             users: DashMap::new(),
             profiles: DashMap::new(),
+            activities: DashMap::new(),
             bot_installs: DashMap::new(),
             roles: DashMap::new(),
             emojis: DashMap::new(),
@@ -115,6 +123,7 @@ impl AppState {
             last_post: DashMap::new(),
             recent_joins: DashMap::new(),
             xp: DashMap::new(),
+            xp_cooldown: DashMap::new(),
             voice_states: DashMap::new(),
             operators,
             conns: DashMap::new(),
@@ -216,6 +225,7 @@ impl AppState {
             join_gate: crate::protocol::JoinGate::Open,
             rules: None,
             panic_mode: false,
+            leveling: Default::default(),
         };
         let general = Channel {
             id: Uuid::new_v4(),
@@ -384,27 +394,129 @@ impl AppState {
         member
     }
 
-    pub async fn add_xp(&self, guild_id: Id, pubkey: &str) -> Option<Member> {
+    /// One award per cooldown, not per message: without it experience is a
+    /// message count, and the way to the top of it is to say nothing at length.
+    /// A zero cooldown is a guild that asked for exactly that.
+    fn xp_off_cooldown(&self, guild_id: Id, pubkey: &str, cooldown_secs: u32) -> bool {
+        if cooldown_secs == 0 {
+            return true;
+        }
+        let window = std::time::Duration::from_secs(cooldown_secs as u64);
+        let now = std::time::Instant::now();
+        let guild = self.xp_cooldown.entry(guild_id).or_default();
+        match guild.get(pubkey) {
+            Some(last) if now.duration_since(*last) < window => false,
+            _ => {
+                guild.insert(pubkey.to_string(), now);
+                true
+            }
+        }
+    }
+
+    pub fn leveling_of(&self, guild_id: Id) -> crate::protocol::Leveling {
+        self.guilds
+            .get(&guild_id)
+            .map(|g| g.leveling.clone())
+            .unwrap_or_default()
+    }
+
+    /// `Some` on every point actually awarded, not only on a level change: the
+    /// bar the client draws under a level is fed by this and nothing else.
+    ///
+    /// `channel_id` names where it was earned, so a guild that restricts which
+    /// channels pay out can be honoured — voice minutes name theirs too.
+    pub async fn award_xp(
+        &self,
+        guild_id: Id,
+        channel_id: Option<Id>,
+        pubkey: &str,
+        action: crate::protocol::XpAction,
+    ) -> Option<Member> {
+        let rules = self.leveling_of(guild_id);
+        if !rules.enabled {
+            return None;
+        }
+        let amount = rules.amount_for(action);
+        if amount == 0 {
+            return None;
+        }
+        if let Some(cid) = channel_id
+            && !rules.channel_earns(cid)
+        {
+            return None;
+        }
+        // Voice is already once a minute by the shape of the sweep; charging it
+        // a cooldown as well could only cancel awards the guild asked for.
+        let cooldown = match action {
+            crate::protocol::XpAction::VoiceMinute => 0,
+            _ => rules.cooldown_secs,
+        };
+        if !self.xp_off_cooldown(guild_id, pubkey, cooldown) {
+            return None;
+        }
         let new_xp = {
             let guild = self.xp.entry(guild_id).or_default();
             let mut e = guild.entry(pubkey.to_string()).or_insert(0);
-            *e += 1;
+            *e = e.saturating_add(amount as u64);
             *e
         };
         persist(
             self.store.upsert_guild_xp(guild_id, pubkey, new_xp).await,
             "xp",
         );
-        if crate::protocol::level_progress(new_xp).0
-            == crate::protocol::level_progress(new_xp - 1).0
-        {
-            return None;
-        }
         let member = self
             .members
             .get(&guild_id)
             .and_then(|gm| gm.get(pubkey).map(|m| m.clone()))?;
         Some(self.stamp_xp(member))
+    }
+
+    pub async fn set_guild_leveling(
+        &self,
+        guild_id: Id,
+        leveling: crate::protocol::Leveling,
+        by_pubkey: &str,
+    ) -> Result<Guild, String> {
+        self.require_permission(guild_id, by_pubkey, Permission::ManageGuild)?;
+        let leveling = crate::protocol::sanitize_leveling(leveling);
+        let updated = {
+            let mut guild = self
+                .guilds
+                .get_mut(&guild_id)
+                .ok_or_else(|| "unknown guild".to_string())?;
+            guild.leveling = leveling;
+            guild.clone()
+        };
+        persist(self.store.upsert_guild(&updated).await, "guild leveling");
+        Ok(updated)
+    }
+
+    /// One tick of voice experience for everyone currently in a voice channel,
+    /// paired with the guild that has to be told about each.
+    pub async fn award_voice_minute(&self) -> Vec<(Id, Member)> {
+        let in_voice: Vec<(Id, Id, String)> = self
+            .voice_states
+            .iter()
+            .filter_map(|v| {
+                v.channel_id
+                    .map(|cid| (v.guild_id, cid, v.user_pubkey.clone()))
+            })
+            .collect();
+        let mut moved = Vec::new();
+        for (guild_id, channel_id, pubkey) in in_voice {
+            if let Some(member) = self
+                .award_xp(
+                    guild_id,
+                    Some(channel_id),
+                    &pubkey,
+                    crate::protocol::XpAction::VoiceMinute,
+                )
+                .await
+            {
+                moved.push((guild_id, member));
+            }
+        }
+        moved
     }
 
     pub async fn toggle_reaction(
@@ -536,6 +648,65 @@ impl AppState {
         self.profiles.iter().map(|p| p.value().clone()).collect()
     }
 
+    /// Everyone who shares a guild with this key, themselves included. The
+    /// audience for anything that is nobody else's business.
+    pub fn peers_of(&self, pubkey: &str) -> Vec<String> {
+        let mut peers: Vec<String> = self
+            .members
+            .iter()
+            .filter(|e| e.value().contains_key(pubkey))
+            .flat_map(|e| {
+                e.value()
+                    .iter()
+                    .map(|m| m.key().clone())
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        peers.sort_unstable();
+        peers.dedup();
+        peers
+    }
+
+    pub fn set_activity(
+        &self,
+        pubkey: &str,
+        activity: Option<crate::protocol::Activity>,
+    ) -> crate::protocol::UserActivity {
+        let activity = activity.and_then(crate::protocol::sanitize_activity);
+        match &activity {
+            Some(a) => {
+                self.activities.insert(pubkey.to_string(), a.clone());
+            }
+            None => {
+                self.activities.remove(pubkey);
+            }
+        }
+        crate::protocol::UserActivity {
+            pubkey: pubkey.to_string(),
+            activity,
+        }
+    }
+
+    /// `true` when there was one to clear, so a disconnect only tells the guild
+    /// about a player who was actually playing.
+    pub fn clear_activity(&self, pubkey: &str) -> bool {
+        self.activities.remove(pubkey).is_some()
+    }
+
+    fn activities_of(&self, pubkeys: &[String]) -> Vec<crate::protocol::UserActivity> {
+        pubkeys
+            .iter()
+            .filter_map(|pk| {
+                self.activities
+                    .get(pk)
+                    .map(|a| crate::protocol::UserActivity {
+                        pubkey: pk.clone(),
+                        activity: Some(a.clone()),
+                    })
+            })
+            .collect()
+    }
+
     fn resolve_user(&self, pubkey: &str) -> User {
         self.users
             .get(pubkey)
@@ -578,6 +749,7 @@ impl AppState {
             join_gate: spec.join_gate,
             rules: None,
             panic_mode: false,
+            leveling: Default::default(),
         };
 
         let mut channels = Vec::new();
@@ -694,6 +866,8 @@ impl AppState {
         let profiles = self.profiles_snapshot();
         let roles = self.roles_for_guilds(&my_guild_ids);
         let emojis = self.emojis_for_guilds(&my_guild_ids);
+        let seen: Vec<String> = members.iter().map(|m| m.user.pubkey.clone()).collect();
+        let activities = self.activities_of(&seen);
 
         ServerMessage::Ready {
             user: user.clone(),
@@ -705,6 +879,7 @@ impl AppState {
             profiles,
             roles,
             emojis,
+            activities,
             operator: self.operators.contains(&user.pubkey),
         }
     }
@@ -1588,6 +1763,7 @@ impl AppState {
     pub async fn set_guild_profile(
         &self,
         guild_id: Id,
+        name: Option<String>,
         description: Option<String>,
         icon_image: Option<String>,
         banner: Option<String>,
@@ -1610,6 +1786,9 @@ impl AppState {
                 .guilds
                 .get_mut(&guild_id)
                 .ok_or_else(|| "unknown guild".to_string())?;
+            if let Some(name) = name {
+                guild.name = name;
+            }
             guild.description = description;
             guild.icon_image = icon_image;
             guild.banner = banner;
@@ -2318,6 +2497,7 @@ impl AppState {
             // bots: sending either would leak a guild's structure to it.
             roles: Vec::new(),
             emojis: Vec::new(),
+            activities: Vec::new(),
             operator: false,
         }
     }
@@ -2411,13 +2591,7 @@ pub(crate) fn random_invite_code() -> String {
         .collect()
 }
 
-pub fn is_hex_color(s: &str) -> bool {
-    let s = s.trim();
-    let Some(hex) = s.strip_prefix('#') else {
-        return false;
-    };
-    (hex.len() == 3 || hex.len() == 6) && hex.chars().all(|c| c.is_ascii_hexdigit())
-}
+pub use crate::protocol::is_hex_color;
 
 fn serde_variant_name<T: serde::Serialize>(v: T) -> String {
     serde_json::to_string(&v)

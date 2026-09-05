@@ -37,6 +37,7 @@ fn guild(name: &str) -> Guild {
         join_gate: Default::default(),
         rules: None,
         panic_mode: false,
+        leveling: Default::default(),
     }
 }
 

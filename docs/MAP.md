@@ -11,24 +11,25 @@ numbers and seven miscategorised files before that rule was learned.
 
 ## Do not read these whole
 
-12 files hold most of the tree. Opening one to find a single arm costs more
+13 files hold most of the tree. Opening one to find a single arm costs more
 than every other document here put together, so grep the variant or the `fn`
 name instead.
 
 | File | Lines |
 |---|---|
 | `client/src/features/voice.rs` | 2796 |
-| `server/src/state/mod.rs` | 2451 |
-| `server/tests/owner_controls.rs` | 2421 |
-| `server/src/gateway/connection.rs` | 2134 |
-| `client/src/features/channels.rs` | 2191 |
+| `server/src/state/mod.rs` | 2625 |
+| `server/tests/owner_controls.rs` | 2875 |
+| `server/src/gateway/connection.rs` | 2219 |
+| `client/src/features/channels.rs` | 2284 |
 | `client/src/features/screenshare.rs` | 1617 |
-| `protocol/src/lib.rs` | 1441 |
-| `client/src/state.rs` | 1522 |
-| `client/src/update.rs` | 1224 |
-| `client/src/net.rs` | 1192 |
+| `protocol/src/lib.rs` | 1823 |
+| `client/src/state.rs` | 1578 |
+| `client/src/update.rs` | 1226 |
+| `client/src/net.rs` | 1209 |
 | `client/src/features/chat.rs` | 1052 |
-| `server/src/store.rs` | 965 |
+| `server/src/store.rs` | 976 |
+| `client/src/features/guild_settings.rs` | 929 |
 
 Everything else is small enough that `wc -l` answers faster than a list here
 could stay true. There used to be rows for "under 300" and "300 to 800": they
@@ -47,8 +48,13 @@ that direction says a file is safe to open when it is not.
 | DMs end to end | `client/src/nostr/service.rs` | `spawn_nostr`; `conversation_id` is the Uuid derivation |
 | Voice, capture, mixing | `client/src/features/voice.rs` | the largest file in the tree — grep `ScreenAudioRoom`, `ScreenVideoRoom`, `forward_mic` |
 | The first screen | `client/src/features/home.rs` | `HomeView`; the connect form is `connect::ConnectForm` |
+| Experience, and the two numbers it makes | `server/src/state/mod.rs` | `award_xp` — amount, cooldown, channels and rank names all come from the guild's `Leveling`. The cross-server sum is the client's: `client/src/xp_ledger.rs` adds it up, `nostr/xp.rs` signs it, `features/leveling.rs` joins the two |
+| What a guild calls its ranks, and who may say | `client/src/features/guild_leveling.rs` | `LevelingEditor` — the draft is the settings dialog's, so it saves with everything else |
+| What someone is playing, and who says so | `client/src/presence/mod.rs` | `PresenceService` merges the two producers; `detect.rs` walks the process table, `ipc.rs` speaks Discord's local RPC frames |
+| Guild settings, and what its one Save writes | `client/src/features/guild_settings.rs` | `GuildSettingsDialog` — every field is a draft signal; `save_all` sends only the messages whose values moved |
 | The settings dialog | `client/src/features/channels.rs` | `SETTINGS_TABS` + `SettingsTab` inside `UserPanel`. The cog that opens it is in the title bar (`workspace.rs`); only `AppState::audio_settings` connects them |
 | Keys on this machine | `client/src/identity.rs` | `detected` / `sign_in` / `forget`; one file per key under `config_dir()/identities/`, `identity.json` names the active one |
+| Which accent wins, and where | `client/src/features/workspace.rs` | `guild_accent_to_apply` — the guild's is written on a descendant of the app root, so it beats the personal one unless it is not written at all |
 | Leaving a server, and stopping an embedded one | `client/src/features/workspace.rs` | `Leaving` + `leave`; the teardown effect runs before `on_disconnect` (trap 17) |
 
 ## Change recipes
@@ -64,6 +70,8 @@ repeated here.
 | New server permission | `protocol/src/lib.rs` (`Permission`) → `server/src/state/mod.rs` (`can`) → the handler arm in `gateway/connection.rs` → `client/src/state.rs` `can()` for hiding UI |
 | A name shown anywhere | never store it — `AppState::display_name` (trap 8) |
 | A new free-text or name field | cap and filter it in the gateway arm, then mirror the cap in `server/src/sanitize.rs`, which is what an import or a legacy row gets instead |
+| A new `Guild` field | `protocol` → a column and an `ALTER TABLE` in `store.rs` (schema *and* migration list, load, upsert) → `sanitize::guild` → the `Guild { .. }` literals in `state/mod.rs` and `server/tests/{retention,archive}.rs` |
+| A new *ephemeral* field | cap it in the gateway arm only — `sanitize.rs` is for rows that come back from disk, and this kind never goes there (trap 19) |
 | Deferred work | a GitHub issue, never only a commit message |
 
 ## Tests

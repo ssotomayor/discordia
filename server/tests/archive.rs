@@ -277,6 +277,7 @@ async fn a_hostile_archive_is_filtered_on_import() {
             join_gate: Default::default(),
             rules: None,
             panic_mode: false,
+            leveling: Default::default(),
         },
         channels: vec![Channel {
             id: chan,
@@ -457,6 +458,7 @@ async fn rows_written_before_the_filters_are_cleaned_at_load() {
             join_gate: Default::default(),
             rules: None,
             panic_mode: false,
+            leveling: Default::default(),
         })
         .await
         .expect("write the dirty row directly");

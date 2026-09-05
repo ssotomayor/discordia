@@ -78,6 +78,7 @@ pub fn guild(g: &mut Guild) {
     g.rules = paragraph(g.rules.take(), RULES);
     g.icon_image = picture(g.icon_image.take());
     g.banner = picture(g.banner.take());
+    g.leveling = crate::protocol::sanitize_leveling(std::mem::take(&mut g.leveling));
 }
 
 pub fn channel(c: &mut Channel) {

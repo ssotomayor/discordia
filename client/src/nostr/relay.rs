@@ -57,6 +57,8 @@ pub struct Filter {
     pub kinds: Option<Vec<u16>>,
     #[serde(rename = "#p", skip_serializing_if = "Option::is_none")]
     pub p: Option<Vec<String>>,
+    #[serde(rename = "#d", skip_serializing_if = "Option::is_none")]
+    pub d: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub authors: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]

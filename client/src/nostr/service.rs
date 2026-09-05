@@ -27,7 +27,7 @@ use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 
 use super::event::Event;
 use super::relay::{Filter, RelayEvent, RelayPool};
-use super::{metadata, nip02, nip17, nip59};
+use super::{metadata, nip02, nip17, nip59, xp};
 use crate::identity::Identity;
 use crate::protocol::{Id, Message, User};
 use crate::state::{AppState, DmInfo};
@@ -44,6 +44,10 @@ pub enum NostrCmd {
     Open { peer: String },
     /// Add or remove a contact, and publish the whole replaced list.
     SetContact { peer: String, keep: bool },
+    /// Republish the cross-server total. Sent when the ledger moves, and
+    /// ignored when the number has not actually changed since the last one:
+    /// kind 30078 is replaceable, so a re-send costs every relay a write.
+    PublishXp(xp::GlobalXp),
 }
 
 /// Handle the UI holds.
@@ -108,6 +112,13 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
                     limit: Some(4),
                     ..Default::default()
                 },
+                Filter {
+                    kinds: Some(vec![xp::KIND_APP_DATA]),
+                    authors: Some(vec![our_pubkey.clone()]),
+                    d: Some(vec![xp::D_TAG.to_string()]),
+                    limit: Some(1),
+                    ..Default::default()
+                },
             ],
         );
 
@@ -138,6 +149,9 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
         // REQ is re-issued when the set grows and not on every message.
         let mut named: Vec<String> = Vec::new();
         request_names(&pool, &state, &our_pubkey, &mut named);
+
+        // What the last publish said, so an unchanged total is not re-signed.
+        let mut published_xp: Option<xp::GlobalXp> = None;
 
         // Relays that have said they finished replaying since they connected.
         // A message arriving once every connected relay has is one that was
@@ -177,6 +191,13 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
                         state.write().contacts = next;
                         request_names(&pool, &state, &our_pubkey, &mut named);
                     }
+                    Some(NostrCmd::PublishXp(total)) => {
+                        if published_xp != Some(total) {
+                            published_xp = Some(total);
+                            state.write().global_xp.insert(our_pubkey.clone(), total);
+                            pool.publish(xp::xp_event(&secret, &total, now()));
+                        }
+                    }
                     None => break,
                 },
                 ev = events.recv() => match ev {
@@ -194,6 +215,13 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
                                 // rename that lands before a slow relay's copy
                                 // of the old one would otherwise be undone.
                                 state.write().note_name(&event.pubkey, name, event.created_at);
+                            }
+                        }
+                        xp::KIND_APP_DATA => {
+                            // Self-asserted: stored beside the key that signed
+                            // it and drawn as a claim, never used to gate.
+                            if let Some(total) = xp::parse_xp(&event) {
+                                state.write().global_xp.insert(event.pubkey.clone(), total);
                             }
                         }
                         nip59::KIND_GIFT_WRAP => {
@@ -311,11 +339,20 @@ fn request_names(
     // *total*, quietly starving whoever sorted last.
     pool.subscribe(
         SUB_NAMES,
-        vec![Filter {
-            kinds: Some(vec![metadata::KIND_METADATA]),
-            authors: Some(want),
-            ..Default::default()
-        }],
+        vec![
+            Filter {
+                kinds: Some(vec![metadata::KIND_METADATA]),
+                authors: Some(want.clone()),
+                ..Default::default()
+            },
+            // Same authors, same reason for no `limit`: one per key per `d`.
+            Filter {
+                kinds: Some(vec![xp::KIND_APP_DATA]),
+                authors: Some(want),
+                d: Some(vec![xp::D_TAG.to_string()]),
+                ..Default::default()
+            },
+        ],
     );
 }
 

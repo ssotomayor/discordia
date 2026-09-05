@@ -89,7 +89,8 @@ impl Store {
                 description TEXT, icon_image TEXT, banner TEXT,
                 retention_days INTEGER,
                 join_gate TEXT NOT NULL DEFAULT 'open', rules TEXT,
-                panic_mode INTEGER NOT NULL DEFAULT 0)",
+                panic_mode INTEGER NOT NULL DEFAULT 0,
+                leveling TEXT)",
             "CREATE TABLE IF NOT EXISTS channels (
                 id TEXT PRIMARY KEY, guild_id TEXT NOT NULL, name TEXT NOT NULL,
                 kind TEXT NOT NULL, topic TEXT,
@@ -157,6 +158,7 @@ impl Store {
             "ALTER TABLE invites ADD COLUMN max_uses INTEGER",
             "ALTER TABLE invites ADD COLUMN uses INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE invites ADD COLUMN created_by TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE guilds ADD COLUMN leveling TEXT",
         ] {
             if let Err(e) = sqlx::query(stmt).execute(&self.pool).await
                 && !e.to_string().contains("duplicate column name")
@@ -204,7 +206,8 @@ impl Store {
         }
         for r in sqlx::query(
             "SELECT id, name, icon, owner_pubkey, accent, visibility, description,
-                    icon_image, banner, retention_days, join_gate, rules, panic_mode
+                    icon_image, banner, retention_days, join_gate, rules, panic_mode,
+                    leveling
              FROM guilds",
         )
         .fetch_all(&self.pool)
@@ -225,6 +228,12 @@ impl Store {
                 join_gate: parse_gate(&r.get::<String, _>(10)),
                 rules: r.get(11),
                 panic_mode: r.get::<i64, _>(12) != 0,
+                // A row written before the column existed reads as the
+                // behaviour it had: a point a message, once a minute.
+                leveling: r
+                    .get::<Option<String>, _>(13)
+                    .and_then(|j| serde_json::from_str(&j).ok())
+                    .unwrap_or_default(),
             });
         }
         for r in sqlx::query(
@@ -370,14 +379,15 @@ impl Store {
         sqlx::query(
             "INSERT INTO guilds (id, name, icon, owner_pubkey, accent, visibility,
                                  description, icon_image, banner, retention_days,
-                                 join_gate, rules, panic_mode)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                 join_gate, rules, panic_mode, leveling)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(id) DO UPDATE SET name=excluded.name, icon=excluded.icon,
                owner_pubkey=excluded.owner_pubkey, accent=excluded.accent,
                visibility=excluded.visibility, description=excluded.description,
                icon_image=excluded.icon_image, banner=excluded.banner,
                retention_days=excluded.retention_days, join_gate=excluded.join_gate,
-               rules=excluded.rules, panic_mode=excluded.panic_mode",
+               rules=excluded.rules, panic_mode=excluded.panic_mode,
+               leveling=excluded.leveling",
         )
         .bind(g.id.to_string())
         .bind(&g.name)
@@ -392,6 +402,7 @@ impl Store {
         .bind(gate_str(g.join_gate))
         .bind(&g.rules)
         .bind(g.panic_mode as i64)
+        .bind(serde_json::to_string(&g.leveling).ok())
         .execute(&self.pool)
         .await?;
         Ok(())

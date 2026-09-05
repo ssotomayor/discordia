@@ -51,6 +51,15 @@ pub fn GuildSettingsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element 
         });
     }
 
+    let mut name = use_signal(|| {
+        state
+            .read()
+            .guilds
+            .iter()
+            .find(|g| g.id == guild_id)
+            .map(|g| g.name.clone())
+            .unwrap_or_default()
+    });
     let mut description = use_signal(|| {
         state
             .read()
@@ -60,27 +69,193 @@ pub fn GuildSettingsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element 
             .and_then(|g| g.description.clone())
             .unwrap_or_default()
     });
-    let mut upload_note = use_signal(|| None::<(bool, String)>);
+    let mut icon = use_signal(|| {
+        state
+            .read()
+            .guilds
+            .iter()
+            .find(|g| g.id == guild_id)
+            .and_then(|g| g.icon_image.clone())
+    });
+    let mut banner = use_signal(|| {
+        state
+            .read()
+            .guilds
+            .iter()
+            .find(|g| g.id == guild_id)
+            .and_then(|g| g.banner.clone())
+    });
+    let mut private = use_signal(|| {
+        state
+            .read()
+            .guilds
+            .iter()
+            .find(|g| g.id == guild_id)
+            .map(|g| matches!(g.visibility, GuildVisibility::Private))
+            .unwrap_or(false)
+    });
+    let mut retention = use_signal(|| {
+        state
+            .read()
+            .guilds
+            .iter()
+            .find(|g| g.id == guild_id)
+            .and_then(|g| g.retention_days)
+            .map(|d| d.to_string())
+            .unwrap_or_default()
+    });
+    let mut gate = use_signal(|| {
+        state
+            .read()
+            .guilds
+            .iter()
+            .find(|g| g.id == guild_id)
+            .map(|g| g.join_gate)
+            .unwrap_or_default()
+    });
+    let mut rules = use_signal(|| {
+        state
+            .read()
+            .guilds
+            .iter()
+            .find(|g| g.id == guild_id)
+            .and_then(|g| g.rules.clone())
+            .unwrap_or_default()
+    });
+    let leveling = use_signal(|| {
+        state
+            .read()
+            .guilds
+            .iter()
+            .find(|g| g.id == guild_id)
+            .map(|g| g.leveling.clone())
+            .unwrap_or_default()
+    });
+    let mut panic_mode = use_signal(|| {
+        state
+            .read()
+            .guilds
+            .iter()
+            .find(|g| g.id == guild_id)
+            .map(|g| g.panic_mode)
+            .unwrap_or(false)
+    });
+    let mut upload_note = use_signal(|| None::<String>);
     let mut copied = use_signal(|| false);
+    let mut saved = use_signal(|| false);
+    let mut awaiting_echo = use_signal(|| false);
+
+    // What we picked is a data URL; what comes back is a `media:` sentinel for
+    // the same bytes, so adopting the echo is what stops the form reading dirty.
+    use_effect(move || {
+        let Some(g) = guild() else { return };
+        if *awaiting_echo.peek() {
+            awaiting_echo.set(false);
+            icon.set(g.icon_image);
+            banner.set(g.banner);
+        }
+    });
 
     let Some(g) = guild() else {
         return rsx! { Fragment {} };
     };
-    let is_private = matches!(g.visibility, GuildVisibility::Private);
 
-    let save_branding = {
+    let trimmed_name = name().trim().to_string();
+    let desc_now = {
+        let d = description().trim().to_string();
+        (!d.is_empty()).then_some(d)
+    };
+    let rules_now = {
+        let r = rules().trim().to_string();
+        (!r.is_empty()).then_some(r)
+    };
+    let retention_now = retention()
+        .trim()
+        .parse::<u32>()
+        .ok()
+        .map(|d| d.clamp(1, 3650));
+    let visibility_now = if private() {
+        GuildVisibility::Private
+    } else {
+        GuildVisibility::Public
+    };
+
+    let name_changed = !trimmed_name.is_empty() && trimmed_name != g.name;
+    let profile_changed =
+        name_changed || desc_now != g.description || icon() != g.icon_image || banner() != g.banner;
+    let visibility_changed = visibility_now != g.visibility;
+    let retention_changed = retention_now != g.retention_days;
+    let gate_changed = gate() != g.join_gate || rules_now != g.rules;
+    let panic_changed = panic_mode() != g.panic_mode;
+    // Compared through the same filter the server will apply, so re-ordering a
+    // tier list into the order it already had does not read as an edit.
+    let leveling_now = crate::protocol::sanitize_leveling(leveling());
+    let leveling_changed = leveling_now != g.leveling;
+    let dirty = profile_changed
+        || visibility_changed
+        || retention_changed
+        || gate_changed
+        || panic_changed
+        || leveling_changed;
+    let name_empty = trimmed_name.is_empty();
+
+    let save_all = {
         let gateway = gateway.clone();
-        let icon_image = g.icon_image.clone();
-        let banner = g.banner.clone();
         move |_| {
-            let d = description().trim().to_string();
-            gateway.send(ClientMessage::SetGuildProfile {
-                guild_id,
-                description: if d.is_empty() { None } else { Some(d) },
-                icon_image: icon_image.clone(),
-                banner: banner.clone(),
-            });
+            if name_empty {
+                return;
+            }
+            if profile_changed {
+                awaiting_echo.set(true);
+                gateway.send(ClientMessage::SetGuildProfile {
+                    guild_id,
+                    name: Some(trimmed_name.clone()),
+                    description: desc_now.clone(),
+                    icon_image: icon(),
+                    banner: banner(),
+                });
+            }
+            if visibility_changed {
+                gateway.send(ClientMessage::SetGuildVisibility {
+                    guild_id,
+                    visibility: visibility_now,
+                });
+            }
+            if retention_changed {
+                gateway.send(ClientMessage::SetGuildRetention {
+                    guild_id,
+                    days: retention_now,
+                });
+            }
+            if gate_changed {
+                gateway.send(ClientMessage::SetJoinGate {
+                    guild_id,
+                    gate: gate(),
+                    rules: rules_now.clone(),
+                });
+            }
+            if panic_changed {
+                gateway.send(ClientMessage::SetPanicMode {
+                    guild_id,
+                    on: panic_mode(),
+                });
+            }
+            if leveling_changed {
+                gateway.send(ClientMessage::SetGuildLeveling {
+                    guild_id,
+                    leveling: leveling_now.clone(),
+                });
+            }
+            saved.set(true);
         }
+    };
+
+    let icon_preview = icon().and_then(|i| state.read().media_src(&i).map(str::to_string));
+    let banner_preview = banner().and_then(|b| state.read().media_src(&b).map(str::to_string));
+    let gate_value = match gate() {
+        JoinGate::Open => "open",
+        JoinGate::Rules => "rules",
+        JoinGate::Pow => "pow",
     };
 
     rsx! {
@@ -102,19 +277,29 @@ pub fn GuildSettingsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element 
 
                     div {
                         div { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-1.5",
-                            "Branding"
+                            "Identity"
+                        }
+                        input {
+                            class: "w-full bg-transparent border border-[var(--border)] focus:border-[var(--accent)] rounded px-2 py-1 text-xs text-[var(--text)] outline-none transition-colors",
+                            placeholder: "Guild name",
+                            maxlength: 64,
+                            value: "{name}",
+                            oninput: move |e| { saved.set(false); name.set(e.value()); },
+                        }
+                        if name_empty {
+                            div { class: "text-[10px] text-[var(--danger)] mt-1", "A guild needs a name." }
                         }
                         textarea {
-                            class: "w-full bg-transparent border border-[var(--border)] focus:border-[var(--accent)] rounded px-2 py-1 text-xs text-[var(--text)] outline-none transition-colors resize-none",
+                            class: "w-full mt-2 bg-transparent border border-[var(--border)] focus:border-[var(--accent)] rounded px-2 py-1 text-xs text-[var(--text)] outline-none transition-colors resize-none",
                             rows: 2,
                             maxlength: 280,
                             placeholder: "Describe this guild…",
                             value: "{description}",
-                            oninput: move |e| description.set(e.value()),
+                            oninput: move |e| { saved.set(false); description.set(e.value()); },
                         }
                         div { class: "flex items-center gap-3 mt-2",
                             div { class: "shrink-0 text-center",
-                                if let Some(src) = g.icon_image.as_deref().and_then(|i| state.read().media_src(i).map(str::to_string)) {
+                                if let Some(src) = icon_preview {
                                     img {
                                         class: "w-10 h-10 rounded-md object-cover border border-[var(--border)]",
                                         src: "{src}", alt: "guild icon",
@@ -127,7 +312,7 @@ pub fn GuildSettingsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element 
                                 div { class: "text-[9px] text-[var(--text-dim)] mt-0.5", "Icon" }
                             }
                             div { class: "flex-1 min-w-0 text-center",
-                                if let Some(src) = g.banner.as_deref().and_then(|b| state.read().media_src(b).map(str::to_string)) {
+                                if let Some(src) = banner_preview {
                                     img {
                                         class: "w-full h-10 rounded-md object-cover border border-[var(--border)]",
                                         src: "{src}", alt: "guild banner",
@@ -142,78 +327,50 @@ pub fn GuildSettingsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element 
                                 }
                             }
                         }
-                        div { class: "flex gap-2 mt-2",
+                        div { class: "flex flex-wrap gap-2 mt-2",
                             ImagePickButton {
                                 label: "Icon…",
                                 shape: crate::features::image_editor::CropShape::Square,
-                                onpicked: {
-                                    let gateway = gateway.clone();
-                                    let banner = g.banner.clone();
-                                    move |(url, note): (Option<String>, Option<String>)| {
-                                        let ok = url.is_some();
-                                        upload_note.set(match note {
-                                            Some(n) => Some((true, n)),
-                                            None if ok => Some((false, "Icon updated.".into())),
-                                            None => None,
-                                        });
-                                        if ok {
-                                            gateway.send(ClientMessage::SetGuildProfile {
-                                                guild_id,
-                                                description: {
-                                                    let d = description.peek().trim().to_string();
-                                                    if d.is_empty() { None } else { Some(d) }
-                                                },
-                                                icon_image: url,
-                                                banner: banner.clone(),
-                                            });
-                                        }
+                                onpicked: move |(url, note): (Option<String>, Option<String>)| {
+                                    upload_note.set(note);
+                                    if url.is_some() {
+                                        saved.set(false);
+                                        icon.set(url);
                                     }
                                 },
+                            }
+                            if icon().is_some() {
+                                button {
+                                    class: "rounded px-2 py-1 text-[10px] uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--danger)] transition-colors",
+                                    onclick: move |_| { saved.set(false); icon.set(None); },
+                                    "Clear icon"
+                                }
                             }
                             ImagePickButton {
                                 label: "Banner…",
                                 shape: crate::features::image_editor::CropShape::Banner,
-                                onpicked: {
-                                    let gateway = gateway.clone();
-                                    let icon_image = g.icon_image.clone();
-                                    move |(url, note): (Option<String>, Option<String>)| {
-                                        let ok = url.is_some();
-                                        upload_note.set(match note {
-                                            Some(n) => Some((true, n)),
-                                            None if ok => Some((false, "Banner updated.".into())),
-                                            None => None,
-                                        });
-                                        if ok {
-                                            gateway.send(ClientMessage::SetGuildProfile {
-                                                guild_id,
-                                                description: {
-                                                    let d = description.peek().trim().to_string();
-                                                    if d.is_empty() { None } else { Some(d) }
-                                                },
-                                                icon_image: icon_image.clone(),
-                                                banner: url,
-                                            });
-                                        }
+                                onpicked: move |(url, note): (Option<String>, Option<String>)| {
+                                    upload_note.set(note);
+                                    if url.is_some() {
+                                        saved.set(false);
+                                        banner.set(url);
                                     }
                                 },
                             }
-                            div { class: "flex-1" }
-                            button {
-                                class: "rounded px-3 py-1 text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors",
-                                onclick: save_branding,
-                                "Save"
+                            if banner().is_some() {
+                                button {
+                                    class: "rounded px-2 py-1 text-[10px] uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--danger)] transition-colors",
+                                    onclick: move |_| { saved.set(false); banner.set(None); },
+                                    "Clear banner"
+                                }
                             }
                         }
                         div { class: "text-[10px] text-[var(--text-dim)] mt-1",
                             "Icon: square works best. Banner: wide (about 4:1). "
                             {crate::features::profiles::IMAGE_HELP}
                         }
-                        if let Some((problem, note)) = upload_note() {
-                            div {
-                                class: "text-[10px] mt-1",
-                                style: if problem { "color: var(--warn);" } else { "color: var(--up);" },
-                                "{note}"
-                            }
+                        if let Some(note) = upload_note() {
+                            div { class: "text-[10px] text-[var(--warn)] mt-1", "{note}" }
                         }
                     }
 
@@ -224,20 +381,8 @@ pub fn GuildSettingsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element 
                         label { class: "flex items-center gap-2 text-xs text-[var(--text)] cursor-pointer select-none",
                             input {
                                 r#type: "checkbox",
-                                checked: is_private,
-                                onchange: {
-                                    let gateway = gateway.clone();
-                                    move |_| {
-                                        gateway.send(ClientMessage::SetGuildVisibility {
-                                            guild_id,
-                                            visibility: if is_private {
-                                                GuildVisibility::Public
-                                            } else {
-                                                GuildVisibility::Private
-                                            },
-                                        });
-                                    }
-                                },
+                                checked: private(),
+                                onchange: move |_| { saved.set(false); private.toggle(); },
                             }
                             span { "Private (invite-only)" }
                         }
@@ -250,7 +395,18 @@ pub fn GuildSettingsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element 
                         div { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-1.5",
                             "Message retention"
                         }
-                        RetentionRow { guild_id, current: g.retention_days }
+                        div { class: "flex items-center gap-2",
+                            input {
+                                class: "w-24 bg-transparent border border-[var(--edge)] focus:border-[var(--accent)] rounded px-2 py-1 text-xs text-[var(--text)] outline-none transition-colors",
+                                r#type: "number",
+                                min: "1",
+                                max: "3650",
+                                placeholder: "forever",
+                                value: "{retention}",
+                                oninput: move |e| { saved.set(false); retention.set(e.value()); },
+                            }
+                            span { class: "text-xs text-[var(--text-muted)] flex-1", "days" }
+                        }
                         div { class: "text-[10px] text-[var(--text-dim)] mt-1",
                             "Messages older than this are deleted (hourly sweep). Blank keeps everything forever."
                         }
@@ -260,13 +416,56 @@ pub fn GuildSettingsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element 
                         div { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-1.5",
                             "Community safety"
                         }
-                        SafetyControls {
-                            guild_id,
-                            gate: g.join_gate,
-                            rules: g.rules.clone(),
-                            panic_mode: g.panic_mode,
+                        div { class: "flex items-center gap-2",
+                            span { class: "text-xs text-[var(--text-muted)] flex-1", "New members must…" }
+                            select {
+                                class: "bg-[var(--panel-solid)] border border-[var(--border)] focus:border-[var(--accent)] rounded px-2 py-1 text-xs text-[var(--text)] outline-none",
+                                value: "{gate_value}",
+                                onchange: move |e| {
+                                    saved.set(false);
+                                    gate.set(match e.value().as_str() {
+                                        "rules" => JoinGate::Rules,
+                                        "pow" => JoinGate::Pow,
+                                        _ => JoinGate::Open,
+                                    });
+                                },
+                                option { value: "open", "join freely" }
+                                option { value: "rules", "accept rules" }
+                                option { value: "pow", "solve a challenge" }
+                            }
                         }
+                        if matches!(gate(), JoinGate::Rules) {
+                            textarea {
+                                class: "w-full mt-2 bg-transparent border border-[var(--border)] focus:border-[var(--accent)] rounded px-2 py-1 text-xs text-[var(--text)] outline-none transition-colors resize-none",
+                                rows: 3,
+                                maxlength: 1000,
+                                placeholder: "Rules new members must accept…",
+                                value: "{rules}",
+                                oninput: move |e| { saved.set(false); rules.set(e.value()); },
+                            }
+                        }
+                        div { class: "text-[10px] text-[var(--text-dim)] mt-2",
+                            match gate() {
+                                JoinGate::Open => "Anyone can join instantly.",
+                                JoinGate::Rules => "Members see the rules and must accept before joining.",
+                                JoinGate::Pow => "Members' devices solve a proof-of-work — slows automated raids.",
+                            }
+                        }
+                        label { class: "flex items-center gap-2 mt-3 text-xs cursor-pointer select-none",
+                            input {
+                                r#type: "checkbox",
+                                checked: panic_mode(),
+                                onchange: move |_| { saved.set(false); panic_mode.toggle(); },
+                            }
+                            span {
+                                class: if panic_mode() { "text-[var(--warn)] font-medium" } else { "text-[var(--text)]" },
+                                "🚨 Lockdown — reject all new joins"
+                            }
+                        }
+                        AuditLog { guild_id }
                     }
+
+                    crate::features::guild_leveling::LevelingEditor { guild_id, draft: leveling }
 
                     div { class: "border-t border-[var(--border)] pt-3",
                         div { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-1.5",
@@ -308,6 +507,9 @@ pub fn GuildSettingsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element 
                                 },
                                 "Rotate"
                             }
+                        }
+                        div { class: "text-[10px] text-[var(--text-dim)] mt-1",
+                            "Rotating takes effect at once — it is not held for the Save button."
                         }
                     }
 
@@ -353,52 +555,34 @@ pub fn GuildSettingsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element 
                         }
                     }
                 }
+                div { class: "px-3 py-2.5 border-t border-[var(--border)] flex items-center gap-2 shrink-0",
+                    span { class: "text-[10px] text-[var(--text-dim)] flex-1",
+                        if dirty {
+                            "Unsaved changes."
+                        } else if saved() {
+                            "Saved."
+                        }
+                    }
+                    button {
+                        class: "rounded px-3 py-1 text-[10px] uppercase tracking-wider text-[var(--text-muted)] border border-[var(--border)] hover:border-[var(--border-strong)] transition-colors",
+                        onclick: move |_| on_close.call(()),
+                        if dirty { "Discard" } else { "Close" }
+                    }
+                    button {
+                        class: "dxf-cta rounded px-4 py-1.5 text-[11px] uppercase tracking-wider",
+                        disabled: !dirty || name_empty,
+                        onclick: save_all,
+                        "Save changes"
+                    }
+                }
             }
         }
     }
 }
 
 #[component]
-fn RetentionRow(guild_id: Id, current: Option<u32>) -> Element {
-    let gateway = use_gateway();
-    let mut draft = use_signal(|| current.map(|d| d.to_string()).unwrap_or_default());
-
-    rsx! {
-        div { class: "flex items-center gap-2",
-            input {
-                class: "w-24 bg-transparent border border-[var(--edge)] focus:border-[var(--accent)] rounded px-2 py-1 text-xs text-[var(--text)] outline-none transition-colors",
-                r#type: "number",
-                min: "1",
-                max: "3650",
-                placeholder: "forever",
-                value: "{draft}",
-                oninput: move |e| draft.set(e.value()),
-            }
-            span { class: "text-xs text-[var(--text-muted)] flex-1", "days" }
-            button {
-                class: "rounded px-3 py-1 text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--edge)] hover:border-[var(--accent)] transition-colors",
-                onclick: move |_| {
-                    let days = draft().trim().parse::<u32>().ok();
-                    gateway.send(ClientMessage::SetGuildRetention { guild_id, days });
-                },
-                "Save"
-            }
-        }
-    }
-}
-
-#[component]
-fn SafetyControls(
-    guild_id: Id,
-    gate: JoinGate,
-    rules: Option<String>,
-    panic_mode: bool,
-) -> Element {
+fn AuditLog(guild_id: Id) -> Element {
     let state = use_app_state();
-    let gateway = use_gateway();
-
-    let mut gate_draft = use_signal(|| gate);
-    let mut rules_draft = use_signal(|| rules.clone().unwrap_or_default());
     let entries = use_memo(move || {
         state
             .read()
@@ -408,82 +592,7 @@ fn SafetyControls(
             .unwrap_or_default()
     });
 
-    let gate_value = match gate_draft() {
-        JoinGate::Open => "open",
-        JoinGate::Rules => "rules",
-        JoinGate::Pow => "pow",
-    };
-
     rsx! {
-        div { class: "flex items-center gap-2",
-            span { class: "text-xs text-[var(--text-muted)] flex-1", "New members must…" }
-            select {
-                class: "bg-[var(--panel-solid)] border border-[var(--border)] focus:border-[var(--accent)] rounded px-2 py-1 text-xs text-[var(--text)] outline-none",
-                value: "{gate_value}",
-                onchange: move |e| {
-                    gate_draft.set(match e.value().as_str() {
-                        "rules" => JoinGate::Rules,
-                        "pow" => JoinGate::Pow,
-                        _ => JoinGate::Open,
-                    });
-                },
-                option { value: "open", "join freely" }
-                option { value: "rules", "accept rules" }
-                option { value: "pow", "solve a challenge" }
-            }
-        }
-        if matches!(gate_draft(), JoinGate::Rules) {
-            textarea {
-                class: "w-full mt-2 bg-transparent border border-[var(--border)] focus:border-[var(--accent)] rounded px-2 py-1 text-xs text-[var(--text)] outline-none transition-colors resize-none",
-                rows: 3,
-                maxlength: 1000,
-                placeholder: "Rules new members must accept…",
-                value: "{rules_draft}",
-                oninput: move |e| rules_draft.set(e.value()),
-            }
-        }
-        div { class: "flex items-center gap-2 mt-2",
-            div { class: "text-[10px] text-[var(--text-dim)] flex-1",
-                match gate_draft() {
-                    JoinGate::Open => "Anyone can join instantly.",
-                    JoinGate::Rules => "Members see the rules and must accept before joining.",
-                    JoinGate::Pow => "Members' devices solve a proof-of-work — slows automated raids.",
-                }
-            }
-            button {
-                class: "rounded px-3 py-1 text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors",
-                onclick: {
-                    let gateway = gateway.clone();
-                    move |_| {
-                        let r = rules_draft().trim().to_string();
-                        gateway.send(ClientMessage::SetJoinGate {
-                            guild_id,
-                            gate: gate_draft(),
-                            rules: if r.is_empty() { None } else { Some(r) },
-                        });
-                    }
-                },
-                "Save"
-            }
-        }
-
-        label { class: "flex items-center gap-2 mt-3 text-xs cursor-pointer select-none",
-            input {
-                r#type: "checkbox",
-                checked: panic_mode,
-                onchange: {
-                    let gateway = gateway.clone();
-                    move |_| {
-                        gateway.send(ClientMessage::SetPanicMode { guild_id, on: !panic_mode });
-                    }
-                },
-            }
-            span {
-                class: if panic_mode { "text-[var(--warn)] font-medium" } else { "text-[var(--text)]" },
-                "🚨 Lockdown — reject all new joins"
-            }
-        }
-
         div { class: "mt-3",
             div { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-1",
                 "Audit log"

@@ -262,6 +262,18 @@ button:active:not(:disabled) { transform: scale(0.985); }
 @keyframes dxf-pop-in { from { opacity: 0; transform: scale(0.96); } to { opacity: 1; transform: scale(1); } }
 .dxf-pop-in { animation: dxf-pop-in 0.12s var(--ease) both; }
 
+/* Fixed, and placed from the pointer: the guild rail scrolls, and an absolute
+   tip beside a tile is clipped by the column that scrolls it. */
+.dxf-tip {
+  position: fixed; transform: translateY(-50%);
+  z-index: 40; pointer-events: none; white-space: nowrap; max-width: 15rem; overflow: hidden;
+  text-overflow: ellipsis; padding: 4px 8px; border-radius: 6px; font-size: 11px;
+  background: var(--panel-solid); color: var(--text);
+  border: 1px solid var(--border-strong); box-shadow: 0 6px 18px rgba(0,0,0,.45);
+  opacity: 0; transition: opacity 0.12s var(--ease);
+}
+.dxf-tip-host:hover .dxf-tip { opacity: 1; transition-delay: 2s; }
+
 /* The update bar with no denominator: a silent installer reports nothing, so
    this says the process is alive, not how far along it is. */
 @keyframes dxf-bar-slide { from { transform: translateX(-100%); } to { transform: translateX(400%); } }

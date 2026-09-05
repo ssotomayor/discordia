@@ -52,6 +52,7 @@ pub async fn handle_connection(
     let mut reads = RateLimiter::new(READ_LIMIT, RATE_WINDOW);
     let mut signals = RateLimiter::new(SIGNAL_LIMIT, RATE_WINDOW);
     let mut flood = RateLimiter::new(FLOOD_LIMIT, RATE_WINDOW);
+    let mut activities = RateLimiter::new(ACTIVITY_LIMIT, RATE_WINDOW);
     let mut failed_identifies = 0u32;
     let identify_by = tokio::time::Instant::now() + IDENTIFY_TIMEOUT;
     let mut shutdown = ctx.shutdown.subscribe();
@@ -311,7 +312,17 @@ pub async fn handle_connection(
                                     let author_pk = msg.author.pubkey.clone();
                                     let targets = ctx.state.guild_member_pubkeys(gid);
                                     ctx.state.deliver(targets, ServerMessage::MessageCreate(msg));
-                                    if let Some(member) = ctx.state.add_xp(gid, &author_pk).await {
+                                    // A bot earns nothing: it is installed, not
+                                    // present, and a level badge on one says a
+                                    // person was here.
+                                    if !is_bot
+                                        && let Some(member) = ctx.state.award_xp(
+                                            gid,
+                                            Some(channel_id),
+                                            &author_pk,
+                                            crate::protocol::XpAction::Message,
+                                        ).await
+                                    {
                                         let targets = ctx.state.guild_member_pubkeys(gid);
                                         ctx.state.deliver(targets, ServerMessage::MemberUpdate(member));
                                     }
@@ -507,6 +518,23 @@ pub async fn handle_connection(
                         ).await;
                         ctx.state.broadcast(ServerMessage::ProfileUpdate(profile));
                     }
+                    ClientMessage::SetActivity { activity } => {
+                        let Some(u) = user.as_ref() else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "identify first".into(),
+                            }).await;
+                            continue;
+                        };
+                        if !activities.allow() {
+                            reject_rate_limited(&mut ws_tx).await;
+                            continue;
+                        }
+                        let update = ctx.state.set_activity(&u.pubkey, activity);
+                        ctx.state.deliver(
+                            ctx.state.peers_of(&u.pubkey),
+                            ServerMessage::ActivityUpdate(update),
+                        );
+                    }
                     ClientMessage::React { channel_id, message_id, emoji } => {
                         let Some(u) = user.as_ref() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
@@ -538,6 +566,18 @@ pub async fn handle_connection(
                                 audience,
                                 ServerMessage::ReactionUpdate { channel_id, message_id, reactions },
                             );
+                            if !is_bot
+                                && let Some(gid) = ctx.state.channel_guild(channel_id)
+                                && let Some(member) = ctx.state.award_xp(
+                                    gid,
+                                    Some(channel_id),
+                                    &u.pubkey,
+                                    crate::protocol::XpAction::Reaction,
+                                ).await
+                            {
+                                let targets = ctx.state.guild_member_pubkeys(gid);
+                                ctx.state.deliver(targets, ServerMessage::MemberUpdate(member));
+                            }
                         }
                     }
                     ClientMessage::Typing { channel_id } => {
@@ -1378,7 +1418,7 @@ pub async fn handle_connection(
                             }
                         }
                     }
-                    ClientMessage::SetGuildProfile { guild_id, description, icon_image, banner } => {
+                    ClientMessage::SetGuildProfile { guild_id, name, description, icon_image, banner } => {
                         let Some(u) = user.as_ref() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
@@ -1389,7 +1429,17 @@ pub async fn handle_connection(
                             reject_rate_limited(&mut ws_tx).await;
                             continue;
                         }
-                        match ctx.state.set_guild_profile(guild_id, description, icon_image, banner, &u.pubkey).await {
+                        let name = match name
+                            .map(|n| crate::protocol::sanitize_name("guild", &n, 64))
+                            .transpose()
+                        {
+                            Ok(name) => name,
+                            Err(message) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await;
+                                continue;
+                            }
+                        };
+                        match ctx.state.set_guild_profile(guild_id, name, description, icon_image, banner, &u.pubkey).await {
                             Ok(guild) => {
                                 let targets = ctx.state.guild_member_pubkeys(guild_id);
                                 ctx.state.deliver(targets, ServerMessage::GuildUpdate(guild));
@@ -1426,6 +1476,28 @@ pub async fn handle_connection(
                         };
                         match ctx.state.set_join_gate(guild_id, gate, rules, &u.pubkey).await {
                             Ok(guild) => {
+                                let targets = ctx.state.guild_member_pubkeys(guild_id);
+                                ctx.state.deliver(targets, ServerMessage::GuildUpdate(guild));
+                            }
+                            Err(e) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message: e }).await;
+                            }
+                        }
+                    }
+                    ClientMessage::SetGuildLeveling { guild_id, leveling } => {
+                        let Some(u) = user.as_ref() else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "identify first".into(),
+                            }).await;
+                            continue;
+                        };
+                        if !limiter.allow() {
+                            reject_rate_limited(&mut ws_tx).await;
+                            continue;
+                        }
+                        match ctx.state.set_guild_leveling(guild_id, leveling, &u.pubkey).await {
+                            Ok(guild) => {
+                                tracing::info!(%guild_id, by = ?u.username, "guild leveling set");
                                 let targets = ctx.state.guild_member_pubkeys(guild_id);
                                 ctx.state.deliver(targets, ServerMessage::GuildUpdate(guild));
                             }
@@ -1535,6 +1607,15 @@ pub async fn handle_connection(
         if let Some((gid, cid)) = was_sharing {
             broadcast_screen_state(&ctx.state, gid, cid);
         }
+        if ctx.state.clear_activity(&u.pubkey) {
+            ctx.state.deliver(
+                ctx.state.peers_of(&u.pubkey),
+                ServerMessage::ActivityUpdate(crate::protocol::UserActivity {
+                    pubkey: u.pubkey.clone(),
+                    activity: None,
+                }),
+            );
+        }
         for (guild_id, user_pubkey) in ctx.state.mark_offline(&u.pubkey) {
             let targets = ctx.state.guild_member_pubkeys(guild_id);
             ctx.state.deliver(
@@ -1608,6 +1689,10 @@ const MAX_MEDIA_KEY_BLOB: usize = 512;
 /// Every frame, writes included. A client at rest sends far less — typing is
 /// throttled to one every two seconds — so this only ever catches a flood.
 const FLOOD_LIMIT: usize = 300;
+
+/// Its own budget, not the write one: a game pushing rich presence must not be
+/// able to spend the allowance a person's messages need.
+const ACTIVITY_LIMIT: usize = 12;
 /// A real client identifies as soon as it reads the Hello. Anything still
 /// silent after this is holding a socket for its own reasons.
 const IDENTIFY_TIMEOUT: Duration = Duration::from_secs(10);

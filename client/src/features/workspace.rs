@@ -70,6 +70,23 @@ const STOP_WEBVIEW_MEDIA_JS: &str = r#"
 })();
 "#;
 
+/// Whether a guild's accent gets written onto the workspace element.
+///
+/// It matters that this can answer "no": the style lands on a *descendant* of
+/// the one `app.rs` puts the personal accent on, so anything written here wins
+/// the cascade. Declining to write it is the only way to let the personal one
+/// through, which is what `keep_my_accent` asks for.
+fn guild_accent_to_apply(
+    dm_mode: bool,
+    keep_my_accent: bool,
+    guild_accent: Option<String>,
+) -> Option<String> {
+    if dm_mode || keep_my_accent {
+        return None;
+    }
+    guild_accent
+}
+
 #[component]
 pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>) -> Element {
     let state = use_signal(AppState::empty);
@@ -210,18 +227,17 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
     let status = state.read().status;
 
     let guild_accent_style = {
+        let keep_mine = use_context::<Signal<crate::settings::ClientSettings>>()
+            .read()
+            .keep_my_accent;
         let s = state.read();
-        let accent = if s.dm_mode {
-            None
-        } else {
-            s.selected_guild.and_then(|gid| {
-                s.guilds
-                    .iter()
-                    .find(|g| g.id == gid)
-                    .and_then(|g| g.accent.clone())
-            })
-        };
-        accent
+        let guild_accent = s.selected_guild.and_then(|gid| {
+            s.guilds
+                .iter()
+                .find(|g| g.id == gid)
+                .and_then(|g| g.accent.clone())
+        });
+        guild_accent_to_apply(s.dm_mode, keep_mine, guild_accent)
             .map(|a| crate::app::accent_vars(&a))
             .unwrap_or_default()
     };
@@ -277,6 +293,8 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
                 None => rsx! { Fragment {} },
             }
             crate::features::activities::ActivityHost {}
+            crate::presence::PresenceService {}
+            crate::features::leveling::XpLedgerService {}
             crate::features::screenshare::ScreenShareBridge {}
             crate::features::screenshare::ScreenSourcePicker {}
             crate::features::screenshare::ScreenSelfPreview {}
@@ -872,5 +890,41 @@ fn GuildDialogHost() -> Element {
         Some(crate::state::GuildDialog::Roles(gid)) => rsx! {
             crate::features::roles::RolesDialog { guild_id: gid, on_close: close }
         },
+    }
+}
+
+#[cfg(test)]
+mod accent_tests {
+    use super::guild_accent_to_apply;
+
+    const GUILD: Option<String> = None;
+
+    fn branded() -> Option<String> {
+        Some("#3355ff".to_string())
+    }
+
+    #[test]
+    fn a_guild_that_branded_itself_wins_by_default() {
+        assert_eq!(
+            guild_accent_to_apply(false, false, branded()),
+            branded(),
+            "the behaviour that existed before the setting"
+        );
+    }
+
+    #[test]
+    fn refusing_it_lets_the_personal_accent_through() {
+        assert_eq!(guild_accent_to_apply(false, true, branded()), None);
+    }
+
+    #[test]
+    fn direct_messages_are_nobodys_guild() {
+        assert_eq!(guild_accent_to_apply(true, false, branded()), None);
+    }
+
+    #[test]
+    fn an_unbranded_guild_overrides_nothing_either_way() {
+        assert_eq!(guild_accent_to_apply(false, false, GUILD), None);
+        assert_eq!(guild_accent_to_apply(false, true, GUILD), None);
     }
 }

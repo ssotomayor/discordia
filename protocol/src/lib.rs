@@ -198,6 +198,8 @@ pub struct Guild {
     pub rules: Option<String>,
     #[serde(default)]
     pub panic_mode: bool,
+    #[serde(default)]
+    pub leveling: Leveling,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -276,6 +278,233 @@ pub struct Profile {
     pub status: Option<String>,
     #[serde(default)]
     pub custom_status: Option<String>,
+}
+
+/// A named rank, worn from `xp` until the next tier begins. Guild managers
+/// write these; an empty list means levels are drawn as plain `Lv N`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LevelTier {
+    pub xp: u64,
+    pub name: String,
+    #[serde(default)]
+    pub color: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MemberSort {
+    /// Alphabetical inside each presence group. What every guild had before
+    /// this was configurable, so it stays the default.
+    #[default]
+    Name,
+    /// Most experienced first, ties broken alphabetically.
+    Level,
+}
+
+/// How a guild turns activity into experience, and what it calls the result.
+///
+/// Defaults reproduce the behaviour every guild had before any of it was
+/// settable: a point per message, one a minute, everywhere, unnamed.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Leveling {
+    #[serde(default = "yes")]
+    pub enabled: bool,
+    #[serde(default = "one")]
+    pub per_message: u32,
+    #[serde(default)]
+    pub per_reaction: u32,
+    #[serde(default)]
+    pub per_voice_minute: u32,
+    /// Seconds between two awards for the same person. Voice is exempt: its
+    /// tick is a minute wide already, so a cooldown could only cancel it.
+    #[serde(default = "sixty")]
+    pub cooldown_secs: u32,
+    /// Empty means every channel earns. Otherwise only these do.
+    #[serde(default)]
+    pub channels: Vec<Id>,
+    /// Ascending by `xp`. `sanitize_leveling` is what guarantees that, so
+    /// `tier_at` may assume it.
+    #[serde(default)]
+    pub tiers: Vec<LevelTier>,
+    #[serde(default)]
+    pub member_sort: MemberSort,
+}
+
+fn yes() -> bool {
+    true
+}
+fn one() -> u32 {
+    1
+}
+fn sixty() -> u32 {
+    60
+}
+
+impl Default for Leveling {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            per_message: 1,
+            per_reaction: 0,
+            per_voice_minute: 0,
+            cooldown_secs: 60,
+            channels: Vec::new(),
+            tiers: Vec::new(),
+            member_sort: MemberSort::Name,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum XpAction {
+    Message,
+    Reaction,
+    VoiceMinute,
+}
+
+pub const MAX_TIERS: usize = 20;
+pub const MAX_TIER_NAME: usize = 24;
+/// A hundred a message is already absurd; the cap only stops a typo turning
+/// one message into a number the level curve walks for a very long time.
+pub const MAX_XP_PER_ACTION: u32 = 100;
+pub const MAX_XP_COOLDOWN: u32 = 3600;
+
+impl Leveling {
+    pub fn amount_for(&self, action: XpAction) -> u32 {
+        match action {
+            XpAction::Message => self.per_message,
+            XpAction::Reaction => self.per_reaction,
+            XpAction::VoiceMinute => self.per_voice_minute,
+        }
+    }
+
+    /// An empty allowlist earns everywhere; a non-empty one earns nowhere else.
+    pub fn channel_earns(&self, channel_id: Id) -> bool {
+        self.channels.is_empty() || self.channels.contains(&channel_id)
+    }
+
+    /// The highest tier reached at `xp`. Assumes the ascending order that
+    /// `sanitize_leveling` imposes.
+    pub fn tier_at(&self, xp: u64) -> Option<&LevelTier> {
+        self.tiers.iter().rev().find(|t| xp >= t.xp)
+    }
+
+    /// What to draw beside a name: the tier if one is reached, else `Lv N`.
+    pub fn label_at(&self, xp: u64) -> String {
+        match self.tier_at(xp) {
+            Some(tier) => tier.name.clone(),
+            None => format!("Lv{}", level_progress(xp).0),
+        }
+    }
+}
+
+/// The gateway's filter, and the same one a row coming back from disk gets.
+/// Sorting here rather than at every read is what lets `tier_at` walk backwards.
+pub fn sanitize_leveling(mut raw: Leveling) -> Leveling {
+    raw.per_message = raw.per_message.min(MAX_XP_PER_ACTION);
+    raw.per_reaction = raw.per_reaction.min(MAX_XP_PER_ACTION);
+    raw.per_voice_minute = raw.per_voice_minute.min(MAX_XP_PER_ACTION);
+    raw.cooldown_secs = raw.cooldown_secs.min(MAX_XP_COOLDOWN);
+    raw.channels.sort_unstable();
+    raw.channels.dedup();
+
+    let mut tiers: Vec<LevelTier> = raw
+        .tiers
+        .into_iter()
+        .filter_map(|t| {
+            let name = sanitize_line(&t.name, MAX_TIER_NAME);
+            (!name.is_empty()).then_some(LevelTier {
+                xp: t.xp,
+                name,
+                color: t.color.filter(|c| is_hex_color(c)),
+            })
+        })
+        .collect();
+    tiers.sort_by_key(|t| t.xp);
+    // One rank per threshold: two names at the same number is a tie nothing
+    // downstream can break, and the later one silently never showed.
+    tiers.dedup_by_key(|t| t.xp);
+    tiers.truncate(MAX_TIERS);
+    raw.tiers = tiers;
+    raw
+}
+
+/// `#rgb` or `#rrggbb`. The one definition: a role colour, a guild accent and a
+/// tier colour are all drawn by the same CSS and must all mean the same thing.
+pub fn is_hex_color(s: &str) -> bool {
+    let s = s.trim();
+    let Some(hex) = s.strip_prefix('#') else {
+        return false;
+    };
+    (hex.len() == 3 || hex.len() == 6) && hex.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// What someone is doing right now. Never persisted and never written to the
+/// database: it lives in server memory for exactly as long as the socket does.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Activity {
+    #[serde(default)]
+    pub kind: ActivityKind,
+    pub name: String,
+    #[serde(default)]
+    pub details: Option<String>,
+    #[serde(default)]
+    pub state: Option<String>,
+    #[serde(default)]
+    pub started_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ActivityKind {
+    #[default]
+    Playing,
+    Listening,
+    Watching,
+    Competing,
+}
+
+impl ActivityKind {
+    pub fn verb(&self) -> &'static str {
+        match self {
+            ActivityKind::Playing => "Playing",
+            ActivityKind::Listening => "Listening to",
+            ActivityKind::Watching => "Watching",
+            ActivityKind::Competing => "Competing in",
+        }
+    }
+}
+
+/// An activity with its owner. `None` is how a stop is spelled, so the wire
+/// carries a clear as explicitly as it carries a start.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UserActivity {
+    pub pubkey: String,
+    #[serde(default)]
+    pub activity: Option<Activity>,
+}
+
+pub const MAX_ACTIVITY_NAME: usize = 128;
+pub const MAX_ACTIVITY_TEXT: usize = 128;
+
+/// The gateway's filter for one, mirroring what `sanitize_line` does for every
+/// other free-text field. An unnameable activity is dropped, not renamed.
+pub fn sanitize_activity(raw: Activity) -> Option<Activity> {
+    let name = sanitize_line(&raw.name, MAX_ACTIVITY_NAME);
+    if name.is_empty() {
+        return None;
+    }
+    let text = |v: Option<String>| {
+        v.map(|t| sanitize_line(&t, MAX_ACTIVITY_TEXT))
+            .filter(|t| !t.is_empty())
+    };
+    Some(Activity {
+        kind: raw.kind,
+        name,
+        details: text(raw.details),
+        state: text(raw.state),
+        started_ms: raw.started_ms.filter(|ms| *ms > 0),
+    })
 }
 
 /// The presences a client can draw; the server refuses anything else so no
@@ -896,6 +1125,12 @@ pub enum ClientMessage {
         #[serde(default)]
         custom_status: Option<String>,
     },
+    /// Its own message and not a `SetProfile` field: an activity turns over on
+    /// every map load, and a profile is edited twice a year.
+    SetActivity {
+        #[serde(default)]
+        activity: Option<Activity>,
+    },
     React {
         channel_id: Id,
         message_id: Id,
@@ -1048,6 +1283,10 @@ pub enum ClientMessage {
     },
     SetGuildProfile {
         guild_id: Id,
+        /// Alone among these fields, `None` keeps the current name rather than
+        /// clearing it — a guild with no name is not a state that exists.
+        #[serde(default)]
+        name: Option<String>,
         #[serde(default)]
         description: Option<String>,
         #[serde(default)]
@@ -1069,6 +1308,10 @@ pub enum ClientMessage {
     SetPanicMode {
         guild_id: Id,
         on: bool,
+    },
+    SetGuildLeveling {
+        guild_id: Id,
+        leveling: Leveling,
     },
     FetchAuditLog {
         guild_id: Id,
@@ -1128,6 +1371,8 @@ pub enum ServerMessage {
         #[serde(default)]
         emojis: Vec<GuildEmoji>,
         #[serde(default)]
+        activities: Vec<UserActivity>,
+        #[serde(default)]
         operator: bool,
     },
     GuildEmojis {
@@ -1164,6 +1409,7 @@ pub enum ServerMessage {
         total: u32,
     },
     ProfileUpdate(Profile),
+    ActivityUpdate(UserActivity),
     MemberJoin(Member),
     MemberLeave {
         guild_id: Id,
@@ -1437,5 +1683,141 @@ mod origin_tests {
             "moving a byte across a field boundary changes the payload"
         );
         assert!(a.starts_with(IDENTIFY_DOMAIN.as_bytes()));
+    }
+}
+
+#[cfg(test)]
+mod leveling_tests {
+    use super::*;
+
+    fn tier(xp: u64, name: &str) -> LevelTier {
+        LevelTier {
+            xp,
+            name: name.into(),
+            color: None,
+        }
+    }
+
+    #[test]
+    fn tiers_are_sorted_and_a_repeated_threshold_keeps_one() {
+        let l = sanitize_leveling(Leveling {
+            tiers: vec![
+                tier(100, "Veteran"),
+                tier(0, "Newcomer"),
+                tier(100, "Ghost"),
+            ],
+            ..Default::default()
+        });
+        assert_eq!(
+            l.tiers.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(),
+            ["Newcomer", "Veteran"]
+        );
+    }
+
+    #[test]
+    fn a_nameless_tier_is_dropped_rather_than_drawn_blank() {
+        let l = sanitize_leveling(Leveling {
+            tiers: vec![tier(0, "  "), tier(10, "Regular")],
+            ..Default::default()
+        });
+        assert_eq!(l.tiers.len(), 1);
+        assert_eq!(l.tiers[0].name, "Regular");
+    }
+
+    #[test]
+    fn a_member_wears_the_highest_rank_reached() {
+        let l = sanitize_leveling(Leveling {
+            tiers: vec![
+                tier(0, "Newcomer"),
+                tier(50, "Regular"),
+                tier(500, "Veteran"),
+            ],
+            ..Default::default()
+        });
+        assert_eq!(l.tier_at(0).map(|t| t.name.as_str()), Some("Newcomer"));
+        assert_eq!(l.tier_at(49).map(|t| t.name.as_str()), Some("Newcomer"));
+        assert_eq!(l.tier_at(50).map(|t| t.name.as_str()), Some("Regular"));
+        assert_eq!(l.tier_at(9_000).map(|t| t.name.as_str()), Some("Veteran"));
+    }
+
+    #[test]
+    fn a_first_tier_above_zero_leaves_the_bottom_unnamed() {
+        let l = sanitize_leveling(Leveling {
+            tiers: vec![tier(50, "Regular")],
+            ..Default::default()
+        });
+        assert_eq!(l.tier_at(5), None);
+        assert_eq!(l.label_at(5), "Lv1", "unranked falls back to the number");
+        assert_eq!(
+            l.label_at(30),
+            "Lv3",
+            "and keeps counting up under the tier"
+        );
+        assert_eq!(l.label_at(50), "Regular");
+    }
+
+    #[test]
+    fn an_unnamed_guild_still_labels_by_level() {
+        let l = Leveling::default();
+        assert_eq!(l.label_at(0), "Lv1");
+        assert_eq!(l.label_at(30), "Lv3");
+    }
+
+    #[test]
+    fn an_empty_allowlist_earns_everywhere_and_a_full_one_does_not() {
+        let only = Id::new_v4();
+        let other = Id::new_v4();
+        let open = Leveling::default();
+        assert!(open.channel_earns(other));
+
+        let closed = sanitize_leveling(Leveling {
+            channels: vec![only],
+            ..Default::default()
+        });
+        assert!(closed.channel_earns(only));
+        assert!(!closed.channel_earns(other));
+    }
+
+    #[test]
+    fn amounts_and_cooldowns_are_capped_not_rejected() {
+        let l = sanitize_leveling(Leveling {
+            per_message: 10_000,
+            cooldown_secs: 999_999,
+            ..Default::default()
+        });
+        assert_eq!(l.per_message, MAX_XP_PER_ACTION);
+        assert_eq!(l.cooldown_secs, MAX_XP_COOLDOWN);
+    }
+
+    #[test]
+    fn a_colour_the_client_cannot_draw_is_dropped() {
+        let l = sanitize_leveling(Leveling {
+            tiers: vec![
+                LevelTier {
+                    xp: 0,
+                    name: "Fine".into(),
+                    color: Some("#abc".into()),
+                },
+                LevelTier {
+                    xp: 10,
+                    name: "Bad".into(),
+                    color: Some("red; content: evil".into()),
+                },
+            ],
+            ..Default::default()
+        });
+        assert_eq!(l.tiers[0].color.as_deref(), Some("#abc"));
+        assert_eq!(l.tiers[1].color, None);
+    }
+
+    #[test]
+    fn defaults_are_what_every_guild_had_before_this_was_settable() {
+        let l = Leveling::default();
+        assert!(l.enabled);
+        assert_eq!(l.amount_for(XpAction::Message), 1);
+        assert_eq!(l.amount_for(XpAction::Reaction), 0);
+        assert_eq!(l.amount_for(XpAction::VoiceMinute), 0);
+        assert_eq!(l.cooldown_secs, 60);
+        assert_eq!(l.member_sort, MemberSort::Name);
     }
 }

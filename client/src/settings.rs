@@ -76,6 +76,38 @@ pub struct ClientSettings {
     pub camera_device_id: Option<String>,
     #[serde(default)]
     pub camera_device_label: Option<String>,
+
+    /// Suppresses a guild's accent, which otherwise wins inside that guild
+    /// because it is set on a descendant of the element yours is set on.
+    /// Off by default: a guild's branding applying in its own rooms is the
+    /// behaviour that existed, and this is the refusal, not the rule.
+    #[serde(default)]
+    pub keep_my_accent: bool,
+
+    /// A level that spans servers is a number only this machine can add up, so
+    /// publishing it is how anyone else ever sees one. On by default because it
+    /// carries no server names — see `nostr::xp`.
+    #[serde(default = "default_publish_global_level")]
+    pub publish_global_level: bool,
+
+    /// Off by default, and the master switch for both producers: nothing about
+    /// what is running on this machine leaves it until this is on.
+    #[serde(default)]
+    pub share_activity: bool,
+    #[serde(default)]
+    pub detect_games: bool,
+    /// Bind `discord-ipc-N` rather than our own names. Free integration with
+    /// every game already shipping Rich Presence, at the cost of taking the
+    /// slot a running Discord wants — first to bind wins.
+    #[serde(default)]
+    pub discord_rpc_socket: bool,
+    /// Executable to display name, for what the committed catalogue misses.
+    #[serde(default)]
+    pub detect_extra: Vec<(String, String)>,
+}
+
+fn default_publish_global_level() -> bool {
+    true
 }
 
 pub fn default_screenshare_quality() -> String {
@@ -153,6 +185,12 @@ impl Default for ClientSettings {
             sfx_volume: default_sfx_volume(),
             camera_device_id: None,
             camera_device_label: None,
+            keep_my_accent: false,
+            publish_global_level: true,
+            share_activity: false,
+            detect_games: false,
+            discord_rpc_socket: false,
+            detect_extra: Vec::new(),
         }
     }
 }

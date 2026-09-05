@@ -113,6 +113,24 @@ async fn build_context(cfg: ServerConfig) -> std::io::Result<(Arc<AppContext>, G
         shutdown: shutdown.clone(),
     });
 
+    // Its own tick: the retention sweep runs hourly and a voice minute is a
+    // minute. Both are cheap when nobody is in a call.
+    let voice_xp_state = ctx.state.clone();
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
+        tick.tick().await;
+        loop {
+            tick.tick().await;
+            for (guild_id, member) in voice_xp_state.award_voice_minute().await {
+                let targets = voice_xp_state.guild_member_pubkeys(guild_id);
+                voice_xp_state.deliver(
+                    targets,
+                    crate::protocol::ServerMessage::MemberUpdate(member),
+                );
+            }
+        }
+    });
+
     let sweep_state = ctx.state.clone();
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(3600));

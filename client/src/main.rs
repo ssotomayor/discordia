@@ -14,6 +14,7 @@ mod mediakey;
 mod net;
 mod nostr;
 mod portmap;
+mod presence;
 mod profile;
 mod protocol;
 mod quic;
@@ -28,6 +29,7 @@ mod update;
 mod version;
 #[cfg(target_os = "windows")]
 mod webview2;
+mod xp_ledger;
 
 use dioxus::LaunchBuilder;
 use dioxus::desktop::{Config, WindowBuilder, tao::dpi::LogicalSize, tao::window::Icon};

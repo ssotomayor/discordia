@@ -4,7 +4,8 @@ use std::time::Duration;
 use dioxusfun_bot::{Bot, BotIdentity};
 use dioxusfun_server::livekit::LiveKitConfig;
 use dioxusfun_server::protocol::{
-    ChannelKind, ClientMessage, Id, Intent, Permission, ServerMessage,
+    Activity, ActivityKind, ChannelKind, ClientMessage, Id, Intent, LevelTier, Leveling,
+    MemberSort, Permission, ServerMessage,
 };
 
 async fn next_timeout(session: &mut Bot) -> ServerMessage {
@@ -1291,6 +1292,7 @@ async fn guild_branding() {
     owner
         .send(&ClientMessage::SetGuildProfile {
             guild_id,
+            name: None,
             description: Some("The prettiest guild".into()),
             icon_image: None,
             banner: Some("data:image/png;base64,iVBORw0KGgo=".into()),
@@ -1306,11 +1308,46 @@ async fn guild_branding() {
     };
     assert_eq!(updated.description.as_deref(), Some("The prettiest guild"));
     assert!(updated.banner.is_some());
+    assert_eq!(updated.name, "Pretty", "an absent name leaves the old one");
+
+    owner
+        .send(&ClientMessage::SetGuildProfile {
+            guild_id,
+            name: Some("  Prettier  ".into()),
+            description: Some("The prettiest guild".into()),
+            icon_image: None,
+            banner: updated.banner.clone(),
+        })
+        .await
+        .unwrap();
+    let renamed = loop {
+        if let ServerMessage::GuildUpdate(g) = next_timeout(&mut member).await
+            && g.id == guild_id
+        {
+            break g;
+        }
+    };
+    assert_eq!(renamed.name, "Prettier");
+    assert!(renamed.banner.is_some(), "a rename keeps the banner");
+
+    owner
+        .send(&ClientMessage::SetGuildProfile {
+            guild_id,
+            name: Some("   ".into()),
+            description: None,
+            icon_image: None,
+            banner: None,
+        })
+        .await
+        .unwrap();
+    let err = next_error(&mut owner).await;
+    assert!(err.contains("guild name"), "got: {err}");
 
     let huge = format!("data:image/png;base64,{}", "A".repeat(3_100_000));
     owner
         .send(&ClientMessage::SetGuildProfile {
             guild_id,
+            name: None,
             description: None,
             icon_image: Some(huge),
             banner: None,
@@ -1323,6 +1360,7 @@ async fn guild_branding() {
     member
         .send(&ClientMessage::SetGuildProfile {
             guild_id,
+            name: None,
             description: Some("mine now".into()),
             icon_image: None,
             banner: None,
@@ -1422,13 +1460,15 @@ async fn operator_can_moderate_system_guild() {
 }
 
 #[tokio::test]
-async fn message_xp_levels_up_per_guild() {
+async fn message_xp_is_per_guild_and_not_a_message_count() {
     let (url, handle) = spawn_gateway().await;
 
     let owner_id = BotIdentity::generate();
     let (mut owner, _) = connect_user(&url, &owner_id, "Grinder").await;
     let (guild_id, text) = create_guild(&mut owner, "XP Farm").await;
 
+    // Ten messages in a burst are worth one point, not ten: the cooldown is
+    // what stops the ranking from measuring how fast somebody can type.
     for i in 0..10 {
         owner.send_message(text, &format!("msg {i}")).await.unwrap();
     }
@@ -1441,12 +1481,7 @@ async fn message_xp_levels_up_per_guild() {
             break m;
         }
     };
-    assert!(member.xp >= 10, "xp should have accrued, got {}", member.xp);
-    assert_eq!(
-        dioxusfun_server::protocol::level_progress(member.xp).0,
-        2,
-        "10 messages → level 2"
-    );
+    assert_eq!(member.xp, 1, "a burst inside the cooldown earns once");
 
     let (guild2, _) = create_guild(&mut owner, "Fresh Start").await;
     let mut second = Bot::connect_as_user(&url, &owner_id, "Grinder")
@@ -1465,7 +1500,7 @@ async fn message_xp_levels_up_per_guild() {
         .iter()
         .find(|m| m.guild_id == guild2 && m.user.pubkey == owner_id.pubkey())
         .expect("member of Fresh Start");
-    assert!(in_farm.xp >= 10, "farm xp persisted on the member row");
+    assert_eq!(in_farm.xp, 1, "farm xp persisted on the member row");
     assert_eq!(in_fresh.xp, 0, "new guild starts at level 1 / 0 xp");
 
     handle.abort();
@@ -2417,5 +2452,424 @@ async fn a_proof_of_work_dies_with_the_connection_it_was_solved_on() {
             break;
         }
     }
+    handle.abort();
+}
+
+#[tokio::test]
+async fn activity_reaches_guild_peers_and_dies_with_the_socket() {
+    let (url, handle) = spawn_gateway().await;
+
+    let owner_id = BotIdentity::generate();
+    let member_id = BotIdentity::generate();
+    let (mut owner, _) = connect_user(&url, &owner_id, "Owner").await;
+    let (guild_id, _) = create_guild(&mut owner, "Arcade").await;
+
+    let (mut member, _) = connect_user(&url, &member_id, "Member").await;
+    member
+        .send(&ClientMessage::JoinGuild {
+            guild_id,
+            accept: false,
+            pow_nonce: None,
+        })
+        .await
+        .unwrap();
+    loop {
+        if matches!(
+            next_timeout(&mut member).await,
+            ServerMessage::GuildJoined { .. }
+        ) {
+            break;
+        }
+    }
+    owner
+        .send(&ClientMessage::SetActivity {
+            activity: Some(Activity {
+                kind: ActivityKind::Playing,
+                name: "  Factorio\u{202E}  ".into(),
+                details: Some("Seablock".into()),
+                state: None,
+                started_ms: Some(1_700_000_000_000),
+            }),
+        })
+        .await
+        .unwrap();
+
+    let seen = loop {
+        if let ServerMessage::ActivityUpdate(u) = next_timeout(&mut member).await {
+            break u;
+        }
+    };
+    assert_eq!(seen.pubkey, owner_id.pubkey());
+    let activity = seen.activity.expect("a start carries the activity");
+    assert_eq!(
+        activity.name, "Factorio",
+        "trimmed, and the bidi override gone"
+    );
+    assert_eq!(activity.details.as_deref(), Some("Seablock"));
+
+    // A socket that arrives mid-game is told about it in its own snapshot.
+    let mut latecomer = Bot::connect_as_user(&url, &member_id, "Member")
+        .await
+        .unwrap();
+    let activities = loop {
+        if let ServerMessage::Ready { activities, .. } = next_timeout(&mut latecomer).await {
+            break activities;
+        }
+    };
+    let mine = activities
+        .iter()
+        .find(|u| u.pubkey == owner_id.pubkey())
+        .expect("the snapshot carries a game already in progress");
+    assert_eq!(
+        mine.activity.as_ref().map(|a| a.name.as_str()),
+        Some("Factorio")
+    );
+
+    owner
+        .send(&ClientMessage::SetActivity { activity: None })
+        .await
+        .unwrap();
+    let cleared = loop {
+        if let ServerMessage::ActivityUpdate(u) = next_timeout(&mut member).await {
+            break u;
+        }
+    };
+    assert!(cleared.activity.is_none(), "a stop is spelled as None");
+
+    // And a game that never got to say it stopped, because the app was killed.
+    owner
+        .send(&ClientMessage::SetActivity {
+            activity: Some(Activity {
+                kind: ActivityKind::Playing,
+                name: "Terraria".into(),
+                details: None,
+                state: None,
+                started_ms: None,
+            }),
+        })
+        .await
+        .unwrap();
+    loop {
+        if let ServerMessage::ActivityUpdate(u) = next_timeout(&mut member).await
+            && u.activity.is_some()
+        {
+            break;
+        }
+    }
+    drop(owner);
+    let after_drop = loop {
+        if let ServerMessage::ActivityUpdate(u) = next_timeout(&mut member).await {
+            break u;
+        }
+    };
+    assert!(
+        after_drop.activity.is_none(),
+        "a dropped socket leaves nobody playing forever"
+    );
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn experience_is_earned_once_a_minute_by_people_only() {
+    let (url, handle) = spawn_gateway().await;
+
+    let owner_id = BotIdentity::generate();
+    let (mut owner, _) = connect_user(&url, &owner_id, "Owner").await;
+    let (guild_id, text_channel) = create_guild(&mut owner, "Grinder").await;
+
+    // Every point is announced, not only the ones that change a level: 0 -> 1
+    // leaves everyone at level 1, and the bar under it has nothing else to read.
+    owner.send_message(text_channel, "first").await.unwrap();
+    let after_first = loop {
+        if let ServerMessage::MemberUpdate(m) = next_timeout(&mut owner).await
+            && m.user.pubkey == owner_id.pubkey()
+        {
+            break m;
+        }
+    };
+    assert_eq!(after_first.xp, 1);
+    assert_eq!(
+        dioxusfun_server::protocol::level_progress(after_first.xp).0,
+        1,
+        "still level 1"
+    );
+
+    // The second message inside the cooldown earns nothing.
+    owner.send_message(text_channel, "second").await.unwrap();
+    owner
+        .send(&ClientMessage::FetchCatalog {
+            offset: 0,
+            limit: 0,
+        })
+        .await
+        .unwrap();
+    let mut earned_twice = false;
+    loop {
+        match next_timeout(&mut owner).await {
+            ServerMessage::MemberUpdate(m) if m.user.pubkey == owner_id.pubkey() => {
+                earned_twice = true;
+            }
+            ServerMessage::GuildCatalog { .. } => break,
+            _ => {}
+        }
+    }
+    assert!(
+        !earned_twice,
+        "a second message inside the cooldown paid out"
+    );
+
+    // A bot is installed, not present. It earns nothing at all.
+    let bot_id = BotIdentity::generate();
+    owner
+        .send(&ClientMessage::InstallBot {
+            guild_id,
+            bot_pubkey: bot_id.pubkey().to_string(),
+            name: "Grindbot".into(),
+            permissions: vec![Permission::SendMessages],
+            intents: vec![Intent::GuildMessages],
+        })
+        .await
+        .unwrap();
+    loop {
+        if matches!(
+            next_timeout(&mut owner).await,
+            ServerMessage::GuildIntegrations { .. }
+        ) {
+            break;
+        }
+    }
+    let mut bot = Bot::connect(&url, &bot_id, "Grindbot").await.unwrap();
+    loop {
+        if matches!(next_timeout(&mut bot).await, ServerMessage::Ready { .. }) {
+            break;
+        }
+    }
+    bot.send_message(text_channel, "beep").await.unwrap();
+    owner
+        .send(&ClientMessage::FetchCatalog {
+            offset: 0,
+            limit: 0,
+        })
+        .await
+        .unwrap();
+    let mut bot_earned = false;
+    loop {
+        match next_timeout(&mut owner).await {
+            ServerMessage::MemberUpdate(m) if m.user.pubkey == bot_id.pubkey() => {
+                bot_earned = true;
+            }
+            ServerMessage::GuildCatalog { .. } => break,
+            _ => {}
+        }
+    }
+    assert!(!bot_earned, "a bot earned experience");
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn a_guild_sets_what_earns_experience_and_where() {
+    let (url, handle) = spawn_gateway().await;
+
+    let owner_id = BotIdentity::generate();
+    let (mut owner, _) = connect_user(&url, &owner_id, "Owner").await;
+    let (guild_id, paid) = create_guild(&mut owner, "Ranked").await;
+
+    owner
+        .send(&ClientMessage::CreateChannel {
+            guild_id,
+            name: "unpaid".into(),
+            kind: ChannelKind::Text,
+            topic: None,
+        })
+        .await
+        .unwrap();
+    let unpaid = loop {
+        if let ServerMessage::ChannelCreate(c) = next_timeout(&mut owner).await
+            && c.name == "unpaid"
+        {
+            break c.id;
+        }
+    };
+
+    // Five a message, no cooldown, and only in the one channel.
+    owner
+        .send(&ClientMessage::SetGuildLeveling {
+            guild_id,
+            leveling: Leveling {
+                per_message: 5,
+                cooldown_secs: 0,
+                channels: vec![paid],
+                tiers: vec![
+                    LevelTier {
+                        xp: 10,
+                        name: "  Regular\u{202E} ".into(),
+                        color: Some("#abc".into()),
+                    },
+                    LevelTier {
+                        xp: 0,
+                        name: "Newcomer".into(),
+                        color: None,
+                    },
+                ],
+                member_sort: MemberSort::Level,
+                ..Default::default()
+            },
+        })
+        .await
+        .unwrap();
+    let updated = loop {
+        if let ServerMessage::GuildUpdate(g) = next_timeout(&mut owner).await
+            && g.id == guild_id
+        {
+            break g;
+        }
+    };
+    assert_eq!(
+        updated
+            .leveling
+            .tiers
+            .iter()
+            .map(|t| t.name.as_str())
+            .collect::<Vec<_>>(),
+        ["Newcomer", "Regular"],
+        "sorted by threshold, and the bidi override filtered out"
+    );
+    assert_eq!(updated.leveling.member_sort, MemberSort::Level);
+
+    owner.send_message(paid, "worth five").await.unwrap();
+    let earned = loop {
+        if let ServerMessage::MemberUpdate(m) = next_timeout(&mut owner).await
+            && m.user.pubkey == owner_id.pubkey()
+        {
+            break m;
+        }
+    };
+    assert_eq!(earned.xp, 5, "the configured amount, not one");
+    assert_eq!(
+        updated.leveling.tier_at(earned.xp).map(|t| t.name.as_str()),
+        Some("Newcomer"),
+        "the tier that starts at zero covers everyone below the next"
+    );
+
+    // A second message pays again, because this guild set no cooldown.
+    owner.send_message(paid, "worth five more").await.unwrap();
+    let again = loop {
+        if let ServerMessage::MemberUpdate(m) = next_timeout(&mut owner).await
+            && m.user.pubkey == owner_id.pubkey()
+        {
+            break m;
+        }
+    };
+    assert_eq!(again.xp, 10);
+    assert_eq!(
+        updated.leveling.tier_at(again.xp).map(|t| t.name.as_str()),
+        Some("Regular"),
+        "ten reaches the named rank"
+    );
+
+    // The channel off the allowlist pays nothing.
+    owner.send_message(unpaid, "worth nothing").await.unwrap();
+    owner
+        .send(&ClientMessage::FetchCatalog {
+            offset: 0,
+            limit: 0,
+        })
+        .await
+        .unwrap();
+    let mut paid_elsewhere = false;
+    loop {
+        match next_timeout(&mut owner).await {
+            ServerMessage::MemberUpdate(m) if m.user.pubkey == owner_id.pubkey() => {
+                paid_elsewhere = true;
+            }
+            ServerMessage::GuildCatalog { .. } => break,
+            _ => {}
+        }
+    }
+    assert!(!paid_elsewhere, "a channel off the allowlist paid out");
+
+    // Turning it off stops everything, allowlist or not.
+    owner
+        .send(&ClientMessage::SetGuildLeveling {
+            guild_id,
+            leveling: Leveling {
+                enabled: false,
+                ..updated.leveling.clone()
+            },
+        })
+        .await
+        .unwrap();
+    loop {
+        if let ServerMessage::GuildUpdate(g) = next_timeout(&mut owner).await
+            && g.id == guild_id
+        {
+            break;
+        }
+    }
+    owner.send_message(paid, "still nothing").await.unwrap();
+    owner
+        .send(&ClientMessage::FetchCatalog {
+            offset: 0,
+            limit: 0,
+        })
+        .await
+        .unwrap();
+    let mut paid_while_off = false;
+    loop {
+        match next_timeout(&mut owner).await {
+            ServerMessage::MemberUpdate(m) if m.user.pubkey == owner_id.pubkey() => {
+                paid_while_off = true;
+            }
+            ServerMessage::GuildCatalog { .. } => break,
+            _ => {}
+        }
+    }
+    assert!(!paid_while_off, "a disabled system paid out");
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn only_a_guild_manager_may_rewrite_the_ranks() {
+    let (url, handle) = spawn_gateway().await;
+
+    let owner_id = BotIdentity::generate();
+    let member_id = BotIdentity::generate();
+    let (mut owner, _) = connect_user(&url, &owner_id, "Owner").await;
+    let (guild_id, _) = create_guild(&mut owner, "Ranked").await;
+
+    let (mut member, _) = connect_user(&url, &member_id, "Member").await;
+    member
+        .send(&ClientMessage::JoinGuild {
+            guild_id,
+            accept: false,
+            pow_nonce: None,
+        })
+        .await
+        .unwrap();
+    loop {
+        if matches!(
+            next_timeout(&mut member).await,
+            ServerMessage::GuildJoined { .. }
+        ) {
+            break;
+        }
+    }
+
+    member
+        .send(&ClientMessage::SetGuildLeveling {
+            guild_id,
+            leveling: Leveling {
+                per_message: 100,
+                ..Default::default()
+            },
+        })
+        .await
+        .unwrap();
+    let err = next_error(&mut member).await;
+    assert!(err.contains("manage_guild"), "got: {err}");
+
     handle.abort();
 }

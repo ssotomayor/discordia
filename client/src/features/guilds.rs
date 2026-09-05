@@ -578,23 +578,34 @@ fn GuildIcon(
         format!("color: {tint}; background: color-mix(in srgb, {tint} 16%, transparent);")
     };
 
+    let hint = if is_mine {
+        " — yours, click the cog for settings"
+    } else if has_menu {
+        " — right-click for options"
+    } else {
+        ""
+    };
+    let mut tip_at = use_signal(|| (0.0f64, 0.0f64));
+
     rsx! {
-        div { class: "relative group",
+        div { class: "relative group dxf-tip-host",
             if selected {
                 span {
                     class: "absolute",
                     style: "left:-8px; top:50%; transform:translateY(-50%); width:3px; height:22px; border-radius:0 3px 3px 0; background: var(--accent);",
                 }
             }
+            span {
+                class: "dxf-tip",
+                style: "left: {tip_at().0}px; top: {tip_at().1}px;",
+                "{name}{hint}"
+            }
             button {
                 class: "w-11 h-11 rounded-2xl border flex items-center justify-center text-xs font-medium transition-colors overflow-hidden {cls}",
                 style: "{tile}",
-                title: if is_mine {
-                    "{name} — yours, click the cog for settings"
-                } else if has_menu {
-                    "{name} (right-click for options)"
-                } else {
-                    "{name}"
+                onmouseenter: move |e: MouseEvent| {
+                    let c = e.client_coordinates();
+                    tip_at.set((c.x + 18.0, c.y));
                 },
                 onclick: move |_| on_select.call(id),
                 oncontextmenu: move |e: MouseEvent| {
