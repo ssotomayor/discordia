@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
-use dioxusfun_server::quic::{Coordination, GATEWAY_ALPN, require_direct};
+use dioxusfun_server::quic::{Coordination, GATEWAY_ALPN};
 use futures_util::StreamExt;
 use iroh::endpoint::presets;
 use iroh::{Endpoint, EndpointAddr, EndpointId, TransportAddr};
@@ -29,9 +29,9 @@ async fn main() {
              \x20 reach <ws://host:port>\n\
              \x20 reach --key <endpoint-id> [ip:port …] [--coordinated <relay-url>]\n\
              \x20 reach --listen [--coordinated <relay-url>]\n\n\
-             --coordinated names a relay to introduce the two ends (tier 2), and then\n\
-             insists the result is a direct path — a connection the relay is still\n\
-             carrying is refused rather than used."
+             --coordinated names a relay to introduce the two ends (tier 2). The report\n\
+             says whether the connection ended up direct or carried by the relay; both\n\
+             are encrypted end to end, the relay only forwards ciphertext."
         );
         std::process::exit(2);
     }
@@ -70,8 +70,10 @@ async fn main() {
 async fn listen(coordination: Coordination) {
     let dir = std::env::temp_dir().join(format!("dioxusfun-reach-{}", std::process::id()));
     let router = dioxusfun_server::build_router(dioxusfun_server::ServerConfig {
-        livekit: dioxusfun_server::livekit::LiveKitConfig::from_env(),
+        livekit: dioxusfun_server::livekit::LiveKitConfig::from_env(&dir),
         operators: Default::default(),
+        identities: Default::default(),
+        media_max_bytes: dioxusfun_server::media::DEFAULT_MAX_BYTES,
         data_dir: dir,
     })
     .await
@@ -171,12 +173,6 @@ async fn reach_quic(
             )
         })?
         .map_err(|e| format!("quic connect: {e} (a key mismatch also lands here)"))?;
-
-    if let Err(refusal) = require_direct(&conn, &coordination).await {
-        return Err(format!(
-            "REFUSED (correctly, if the punch failed): {refusal}"
-        ));
-    }
 
     let (send, recv) = conn
         .open_bi()

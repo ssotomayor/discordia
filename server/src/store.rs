@@ -44,7 +44,15 @@ pub struct Store {
 
 type Result<T> = std::result::Result<T, sqlx::Error>;
 
+pub const DB_FILE: &str = "discordia.db";
+
 impl Store {
+    /// The only way to reach a data directory's database. `export`/`import`
+    /// spent a release opening `db.sqlite` beside the server's `discordia.db`.
+    pub async fn open_in(data_dir: &Path) -> Result<Store> {
+        Store::open(&data_dir.join(DB_FILE)).await
+    }
+
     pub async fn open(path: &Path) -> Result<Store> {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
@@ -642,6 +650,21 @@ impl Store {
         {
             let v: String = r.get(0);
             out.insert(v.strip_prefix("media:").unwrap_or(&v).to_string());
+        }
+        // Profiles and guilds point at blobs too; a sweep that forgot them
+        // deleted every avatar older than a day.
+        for sql in [
+            "SELECT avatar, banner FROM profiles",
+            "SELECT icon_image, banner FROM guilds",
+        ] {
+            for r in sqlx::query(sql).fetch_all(&self.pool).await? {
+                for col in 0..2 {
+                    let v: Option<String> = r.get(col);
+                    if let Some(name) = v.as_deref().and_then(|v| v.strip_prefix("media:")) {
+                        out.insert(name.to_string());
+                    }
+                }
+            }
         }
         Ok(out)
     }

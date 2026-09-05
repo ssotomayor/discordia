@@ -6,11 +6,13 @@ pub mod livekit;
 pub mod livekit_bundle;
 pub mod media;
 pub mod quic;
+pub mod sanitize;
 pub mod state;
 pub mod store;
 
 pub use dioxusfun_protocol as protocol;
 
+use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -20,12 +22,48 @@ use livekit::LiveKitConfig;
 pub struct AppContext {
     pub state: Arc<state::AppState>,
     pub livekit: LiveKitConfig,
+    /// Every address a client may have dialed to reach this gateway, as
+    /// `protocol::dial_origin` spells them. An Identify naming any other
+    /// address is refused before its signature is even checked.
+    pub identities: HashSet<String>,
 }
 
 pub struct ServerConfig {
     pub livekit: LiveKitConfig,
-    pub operators: std::collections::HashSet<String>,
+    pub operators: HashSet<String>,
     pub data_dir: PathBuf,
+    /// Names beyond the loopback and interface addresses, which `spawn_on`
+    /// and `serve` add for the port they bind.
+    pub identities: HashSet<String>,
+    /// Ceiling on the blob directory; `DIOXUSFUN_MEDIA_MAX_BYTES` sets it.
+    pub media_max_bytes: u64,
+}
+
+/// The addresses this machine answers on for `port`: loopback by every name,
+/// and each interface it has. What a LAN friend or a local client dials.
+pub fn local_identities(port: u16) -> HashSet<String> {
+    let mut out: HashSet<String> = ["127.0.0.1", "localhost", "[::1]"]
+        .iter()
+        .map(|h| format!("{h}:{port}"))
+        .collect();
+    if let Ok(interfaces) = local_ip_address::list_afinet_netifas() {
+        for (_, ip) in interfaces {
+            out.insert(match ip {
+                std::net::IpAddr::V4(v4) => format!("{v4}:{port}"),
+                std::net::IpAddr::V6(v6) => format!("[{v6}]:{port}"),
+            });
+        }
+    }
+    out
+}
+
+/// `DIOXUSFUN_PUBLIC_HOSTS`: comma-separated `host`, `host:port` or URLs a
+/// reverse proxy or DNS name presents this gateway as.
+pub fn declared_identities(list: &str, default_port: u16) -> HashSet<String> {
+    list.split(',')
+        .filter(|s| !s.trim().is_empty())
+        .filter_map(|s| protocol::host_origin(s, default_port))
+        .collect()
 }
 
 pub struct ServerHandle {
@@ -40,16 +78,17 @@ impl ServerHandle {
 }
 
 async fn build_context(cfg: ServerConfig) -> std::io::Result<Arc<AppContext>> {
-    let store = store::Store::open(&cfg.data_dir.join("discordia.db"))
+    let store = store::Store::open_in(&cfg.data_dir)
         .await
         .map_err(|e| std::io::Error::other(format!("store: {e}")))?;
-    let media = media::MediaStore::open(cfg.data_dir.join("media"))?;
+    let media = media::MediaStore::open(cfg.data_dir.join("media"), cfg.media_max_bytes)?;
     let state = state::AppState::load_or_seed(store, media, cfg.operators)
         .await
         .map_err(|e| std::io::Error::other(format!("state load: {e}")))?;
     let ctx = Arc::new(AppContext {
         state: Arc::new(state),
         livekit: cfg.livekit,
+        identities: cfg.identities,
     });
 
     let sweep_state = ctx.state.clone();
@@ -76,15 +115,6 @@ async fn build_context(cfg: ServerConfig) -> std::io::Result<Arc<AppContext>> {
     Ok(ctx)
 }
 
-pub async fn serve(addr: SocketAddr, cfg: ServerConfig) -> std::io::Result<()> {
-    let ctx = build_context(cfg).await?;
-    let app = http::router(ctx);
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    let bound = listener.local_addr().unwrap_or(addr);
-    tracing::info!(%bound, "dioxusfun-server listening");
-    axum::serve(listener, app).await
-}
-
 pub async fn spawn(
     preferred: SocketAddr,
     max_attempts: u16,
@@ -96,8 +126,11 @@ pub async fn spawn(
 
 pub async fn spawn_on(
     listener: tokio::net::TcpListener,
-    cfg: ServerConfig,
+    mut cfg: ServerConfig,
 ) -> std::io::Result<ServerHandle> {
+    if let Ok(addr) = listener.local_addr() {
+        cfg.identities.extend(local_identities(addr.port()));
+    }
     let router = build_router(cfg).await?;
     Ok(serve_router(listener, router))
 }
@@ -114,7 +147,8 @@ pub fn serve_router(listener: tokio::net::TcpListener, router: axum::Router) -> 
     tracing::info!(%addr, "dioxusfun-server listening");
 
     let task = tokio::spawn(async move {
-        if let Err(e) = axum::serve(listener, router).await {
+        let service = router.into_make_service_with_connect_info::<SocketAddr>();
+        if let Err(e) = axum::serve(listener, service).await {
             tracing::error!(error = %e, "axum serve ended");
         }
     });

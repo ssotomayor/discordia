@@ -166,13 +166,6 @@ impl Identity {
         hex::encode(sig.serialize())
     }
 
-    pub fn nostr_sign_id(&self, id: &[u8; 32]) -> String {
-        let secp = Secp256k1::new();
-        let keypair = Keypair::from_secret_key(&secp, &self.secret);
-        let msg = Message::from_digest(*id);
-        hex::encode(secp.sign_schnorr_no_aux_rand(&msg, &keypair).serialize())
-    }
-
     pub fn npub(&self) -> String {
         npub_of(&self.pubkey)
     }

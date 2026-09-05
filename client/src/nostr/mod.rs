@@ -1,8 +1,7 @@
 //! Nostr, as this client speaks it.
 //!
-//! Identity has always been a Nostr keypair (`crate::identity`), and
-//! `crate::blossom` already signs NIP-01 events to upload media — but nothing
-//! here has ever talked to a *relay*. This module is where that changes, so
+//! Identity has always been a Nostr keypair (`crate::identity`), but nothing
+//! outside this module has ever talked to a *relay*. This is where that changes, so
 //! direct messages can live on relays a friend can reach from any server
 //! instead of in the database of whoever happens to be hosting.
 //!

@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 
 pub use dioxusfun_server::quic::Coordination;
-use dioxusfun_server::quic::{GATEWAY_ALPN, require_direct, watch_for_relay_fallback};
+use dioxusfun_server::quic::GATEWAY_ALPN;
 use iroh::endpoint::presets;
 use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey, TransportAddr};
 
@@ -9,13 +9,18 @@ pub type GatewayIo = tokio::io::Join<iroh::endpoint::RecvStream, iroh::endpoint:
 
 pub struct ConnectionGuard {
     _endpoint: Endpoint,
-    _conn: iroh::endpoint::Connection,
-    relay_refusal: dioxusfun_server::quic::RelayRefusal,
+    conn: iroh::endpoint::Connection,
 }
 
 impl ConnectionGuard {
-    pub fn relay_refused(&self) -> bool {
-        self.relay_refusal.refused()
+    /// True while the coordinator's relay carries the packets. It forwards
+    /// ciphertext and sees only the two keys, so this is a matter of latency
+    /// and of which party learns an address, not of who can read.
+    pub fn relayed(&self) -> bool {
+        self.conn
+            .paths()
+            .iter()
+            .any(|p| p.is_selected() && p.is_relay())
     }
 }
 
@@ -29,6 +34,18 @@ pub fn parse_transport_addr(raw: &str) -> Option<TransportAddr> {
         return Some(TransportAddr::Ip(sock));
     }
     raw.parse::<iroh::RelayUrl>().ok().map(TransportAddr::Relay)
+}
+
+/// The relay named in a share string or a directory entry is the one the host
+/// is connected to, so it is the one that can introduce us.
+pub fn coordination_from(addrs: &[TransportAddr]) -> Coordination {
+    addrs
+        .iter()
+        .find_map(|a| match a {
+            TransportAddr::Relay(url) => Some(Coordination::Relay(url.to_string())),
+            _ => None,
+        })
+        .unwrap_or(Coordination::None)
 }
 
 pub async fn dial(
@@ -51,11 +68,6 @@ pub async fn dial(
         .await
         .map_err(|e| format!("quic connect: {e}"))?;
 
-    require_direct(&conn, coordination).await.inspect_err(|_| {
-        conn.close(1u32.into(), b"relayed connection refused");
-    })?;
-    let relay_refusal = watch_for_relay_fallback(conn.clone(), coordination);
-
     let (send, recv) = conn
         .open_bi()
         .await
@@ -65,8 +77,7 @@ pub async fn dial(
         tokio::io::join(recv, send),
         ConnectionGuard {
             _endpoint: endpoint,
-            _conn: conn,
-            relay_refusal,
+            conn,
         },
     ))
 }
@@ -95,5 +106,18 @@ mod tests {
         let id = crate::identity::Identity::restore_from_private_key("33".repeat(32), "c")
             .expect("identity");
         assert_ne!(id.transport_seed(), [0x33_u8; 32]);
+    }
+
+    #[test]
+    fn a_relay_in_the_address_list_is_the_coordinator() {
+        let addrs = vec![
+            parse_transport_addr("192.168.1.5:4433").unwrap(),
+            parse_transport_addr("https://relay.example/").unwrap(),
+        ];
+        assert_eq!(
+            coordination_from(&addrs),
+            Coordination::Relay("https://relay.example/".into())
+        );
+        assert_eq!(coordination_from(&addrs[..1]), Coordination::None);
     }
 }

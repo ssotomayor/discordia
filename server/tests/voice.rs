@@ -31,6 +31,8 @@ fn test_config(livekit: LiveKitConfig) -> dioxusfun_server::ServerConfig {
     dioxusfun_server::ServerConfig {
         livekit,
         operators: Default::default(),
+        identities: Default::default(),
+        media_max_bytes: dioxusfun_server::media::DEFAULT_MAX_BYTES,
         data_dir: dir,
     }
 }

@@ -2613,6 +2613,7 @@ dependencies = [
  "chrono",
  "serde",
  "serde_json",
+ "url",
  "uuid",
 ]
 
@@ -2662,6 +2663,7 @@ dependencies = [
  "hyper-util",
  "iroh",
  "livekit-api 0.4.24",
+ "local-ip-address",
  "rand 0.8.6",
  "secp256k1",
  "serde",
@@ -2671,7 +2673,6 @@ dependencies = [
  "tar",
  "tokio",
  "tokio-tungstenite 0.24.0",
- "tower-http",
  "tracing",
  "tracing-subscriber",
  "ureq",

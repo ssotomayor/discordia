@@ -1,51 +1,26 @@
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::Router;
-use axum::extract::State;
 use axum::extract::ws::WebSocketUpgrade;
-use axum::http::Request;
+use axum::extract::{ConnectInfo, State};
+use axum::http::{Request, StatusCode, header};
 use axum::middleware::{self, Next};
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Response};
 use axum::routing::get;
-use tower_http::cors::{Any, CorsLayer};
 
 use crate::AppContext;
 use crate::gateway;
 
+/// No `/media` route on purpose: blobs travel over the identified socket
+/// (`FetchEmoji`), so the server is not an anonymous file host by URL. No CORS
+/// layer either: nothing here is for a browser, and `gateway_upgrade` says so.
 pub fn router(ctx: Arc<AppContext>) -> Router {
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
-
     Router::new()
         .route("/", get(root))
         .route("/gateway", get(gateway_upgrade))
-        .route("/media/{name}", get(serve_media))
         .with_state(ctx)
         .layer(middleware::from_fn(log_request))
-        .layer(cors)
-}
-
-async fn serve_media(
-    axum::extract::Path(name): axum::extract::Path<String>,
-    State(ctx): State<Arc<AppContext>>,
-) -> axum::response::Response {
-    use axum::http::{StatusCode, header};
-    match ctx.state.media.read(&name) {
-        Some((bytes, mime)) => (
-            [
-                (header::CONTENT_TYPE, mime.to_string()),
-                (
-                    header::CACHE_CONTROL,
-                    "public, max-age=31536000, immutable".to_string(),
-                ),
-            ],
-            bytes,
-        )
-            .into_response(),
-        None => StatusCode::NOT_FOUND.into_response(),
-    }
 }
 
 async fn log_request(req: Request<axum::body::Body>, next: Next) -> impl IntoResponse {
@@ -66,17 +41,33 @@ async fn root() -> &'static str {
     "dioxusfun-server. Connect a WebSocket to /gateway."
 }
 
+/// A browser always sends `Origin` and the native client never does, so the
+/// header alone marks a web page reaching for a gateway on someone's machine
+/// or LAN — which CORS would not stop, since it does not cover WebSockets.
+///
+/// `peer` is absent over QUIC, where the stream has no TCP address; the
+/// per-address cap then does not apply and the global one still does.
 async fn gateway_upgrade(
     ws: WebSocketUpgrade,
     State(ctx): State<Arc<AppContext>>,
     headers: axum::http::HeaderMap,
-) -> impl IntoResponse {
+    peer: Option<ConnectInfo<SocketAddr>>,
+) -> Response {
+    if headers.contains_key(header::ORIGIN) {
+        return (
+            StatusCode::FORBIDDEN,
+            "this gateway does not accept connections from web pages",
+        )
+            .into_response();
+    }
     let client_host = headers
-        .get(axum::http::header::HOST)
+        .get(header::HOST)
         .and_then(|v| v.to_str().ok())
         .map(String::from);
-    tracing::info!(?client_host, "gateway upgrade requested");
+    let peer_ip = peer.map(|ConnectInfo(addr)| addr.ip());
+    tracing::info!(?client_host, ?peer_ip, "gateway upgrade requested");
     ws.max_message_size(gateway::MAX_FRAME_BYTES)
         .max_frame_size(gateway::MAX_FRAME_BYTES)
-        .on_upgrade(move |socket| gateway::handle_connection(socket, ctx, client_host))
+        .on_upgrade(move |socket| gateway::handle_connection(socket, ctx, client_host, peer_ip))
+        .into_response()
 }

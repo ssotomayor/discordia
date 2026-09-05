@@ -19,8 +19,10 @@ fn test_config() -> dioxusfun_server::ServerConfig {
         uuid::Uuid::new_v4()
     ));
     dioxusfun_server::ServerConfig {
-        livekit: LiveKitConfig::from_env(),
+        livekit: LiveKitConfig::from_env(&dir),
         operators: Default::default(),
+        identities: Default::default(),
+        media_max_bytes: dioxusfun_server::media::DEFAULT_MAX_BYTES,
         data_dir: dir,
     }
 }

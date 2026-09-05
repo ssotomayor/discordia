@@ -30,6 +30,7 @@ hex = { workspace = true }
 sha2 = "0.10"
 bs58 = { workspace = true }
 rand = "0.8"
+local-ip-address = "0.6"
 
 # No `macros` feature on purpose: store.rs builds every statement at runtime,
 # so there is no compile-time database to point them at.
@@ -38,7 +39,6 @@ base64 = "0.22"
 anyhow = "1"
 
 dioxusfun-protocol = { workspace = true }
-tower-http = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }

@@ -1,10 +1,9 @@
+use std::net::IpAddr;
 use std::sync::Arc;
-use std::time::Duration;
 
 use axum::extract::ws::{Message, WebSocket};
 use dioxusfun_protocol::rendezvous::{HostToRendezvous, RendezvousToHost};
 use futures_util::{SinkExt, StreamExt};
-use uuid::Uuid;
 
 use crate::Config;
 use crate::registry::{ClaimError, HostEntry, Registry, ReleaseError, validate_name};
@@ -12,8 +11,36 @@ use crate::shortcode;
 use crate::verify;
 
 const MAX_CLAIM_ATTEMPTS: usize = 10;
+const MAX_DESCRIPTION_CHARS: usize = 140;
 
-pub async fn handle_host_control(socket: WebSocket, registry: Arc<Registry>, cfg: Arc<Config>) {
+/// A LAN or loopback address reaches nobody a friend could not already reach
+/// from where they stand; a public one has to be the registrant's own.
+fn is_local(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => v4.is_private() || v4.is_loopback() || v4.is_link_local(),
+        IpAddr::V6(v6) => {
+            v6.is_loopback()
+                || (v6.segments()[0] & 0xfe00) == 0xfc00
+                || (v6.segments()[0] & 0xffc0) == 0xfe80
+        }
+    }
+}
+
+/// An address is `ip:port` for a hole-punch candidate or a relay URL; the only
+/// relay a friend should ever be sent to is this coordinator's own.
+fn admits_transport_addr(addr: &str, peer: Option<IpAddr>, relay_url: Option<&str>) -> bool {
+    if let Ok(socket) = addr.parse::<std::net::SocketAddr>() {
+        return peer.is_none_or(|peer| socket.ip() == peer || is_local(socket.ip()));
+    }
+    relay_url.is_some_and(|relay| relay.trim_end_matches('/') == addr.trim_end_matches('/'))
+}
+
+pub async fn handle_host_control(
+    socket: WebSocket,
+    registry: Arc<Registry>,
+    cfg: Arc<Config>,
+    peer: Option<IpAddr>,
+) {
     let (mut tx, mut rx) = socket.split();
 
     let nonce = verify::fresh_nonce();
@@ -29,7 +56,14 @@ pub async fn handle_host_control(socket: WebSocket, registry: Arc<Registry>, cfg
         return;
     }
 
-    let register = match rx.next().await {
+    let first = match tokio::time::timeout(cfg.register_timeout, rx.next()).await {
+        Ok(frame) => frame,
+        Err(_) => {
+            send_err(&mut tx, "no register frame in time").await;
+            return;
+        }
+    };
+    let register = match first {
         Some(Ok(Message::Text(t))) => match serde_json::from_str::<HostToRendezvous>(&t) {
             Ok(HostToRendezvous::Register {
                 name,
@@ -37,7 +71,6 @@ pub async fn handle_host_control(socket: WebSocket, registry: Arc<Registry>, cfg
                 signature,
                 publish_public,
                 description,
-                endpoint,
                 transport_key,
                 transport_signature,
                 transport_addrs,
@@ -47,7 +80,6 @@ pub async fn handle_host_control(socket: WebSocket, registry: Arc<Registry>, cfg
                 signature,
                 publish_public,
                 description,
-                endpoint,
                 transport_key,
                 transport_signature,
                 transport_addrs,
@@ -107,11 +139,20 @@ pub async fn handle_host_control(socket: WebSocket, registry: Arc<Registry>, cfg
         signature,
         publish_public,
         description,
-        endpoint,
         transport_key,
         transport_signature,
         transport_addrs,
     ) = register;
+
+    // Only the name and the transport key are signed, so where the entry points
+    // is checked against where the frame came from: else it aims friends at a stranger.
+    let transport_addrs: Vec<String> = transport_addrs
+        .into_iter()
+        .filter(|a| admits_transport_addr(a, peer, cfg.relay_url.as_deref()))
+        .collect();
+    let description = description
+        .map(|d| dioxusfun_protocol::sanitize_line(&d, MAX_DESCRIPTION_CHARS))
+        .filter(|d| !d.is_empty());
 
     let transport = match (&transport_key, &pubkey, &transport_signature) {
         (Some(key), Some(pk), Some(sig)) => match verify::verify_ownership(pk, sig, &nonce, key) {
@@ -159,6 +200,18 @@ pub async fn handle_host_control(socket: WebSocket, registry: Arc<Registry>, cfg
                     .await;
                     return;
                 }
+                Err(ClaimError::OwnerLimit) => {
+                    send_err(
+                        &mut tx,
+                        "this key already holds its share of names — release one first",
+                    )
+                    .await;
+                    return;
+                }
+                Err(ClaimError::Full) => {
+                    send_err(&mut tx, "this rendezvous is not taking new names").await;
+                    return;
+                }
             }
             (slug, Some(raw.clone()))
         }
@@ -170,17 +223,14 @@ pub async fn handle_host_control(socket: WebSocket, registry: Arc<Registry>, cfg
             }
         },
     };
-    tracing::info!(%shortcode, host = ?display_name, public = publish_public, direct = ?endpoint, "host registered");
+    tracing::info!(%shortcode, host = ?display_name, public = publish_public, "host registered");
 
-    let (control_tx, mut control_rx) = tokio::sync::mpsc::unbounded_channel::<RendezvousToHost>();
     let host_entry = HostEntry {
         name: display_name,
         description,
         public: publish_public,
-        endpoint,
         transport_key: transport.as_ref().map(|(k, _)| k.clone()),
         transport_addrs: transport.map(|(_, a)| a).unwrap_or_default(),
-        control_tx,
         last_seen_ms: Default::default(),
     };
     let Some(entry) = registry.try_claim(&shortcode, host_entry) else {
@@ -212,13 +262,6 @@ pub async fn handle_host_control(socket: WebSocket, registry: Arc<Registry>, cfg
     heartbeat.tick().await; // the first tick completes immediately
     loop {
         tokio::select! {
-            outbound = control_rx.recv() => {
-                let Some(msg) = outbound else { break };
-                let Ok(json) = serde_json::to_string(&msg) else { continue };
-                if tx.send(Message::Text(json)).await.is_err() {
-                    break;
-                }
-            }
             inbound = rx.next() => {
                 match inbound {
                     Some(Ok(Message::Close(_))) | None => break,
@@ -258,89 +301,9 @@ async fn claim_anonymous_shortcode(registry: &Registry) -> Option<String> {
     None
 }
 
-pub async fn handle_friend_join(socket: WebSocket, registry: Arc<Registry>, code: String) {
-    let (mut friend_tx, mut friend_rx) = socket.split();
-
-    let code = code.to_lowercase();
-    let Some(host) = registry.hosts.get(&code).map(|h| h.value().clone()) else {
-        send_err(
-            &mut friend_tx,
-            &format!("no host registered with code '{code}'"),
-        )
-        .await;
-        return;
-    };
-
-    let session_id = Uuid::new_v4().to_string();
-    let Some(host_socket_rx) = registry.open_pairing(&session_id) else {
-        send_err(&mut friend_tx, "could not open pairing slot").await;
-        return;
-    };
-
-    if host
-        .control_tx
-        .send(RendezvousToHost::NewFriend {
-            session_id: session_id.clone(),
-        })
-        .is_err()
-    {
-        send_err(&mut friend_tx, "host disconnected").await;
-        return;
-    }
-
-    registry
-        .clone()
-        .schedule_pairing_timeout(session_id.clone(), Duration::from_secs(10));
-
-    let host_socket = match host_socket_rx.await {
-        Ok(s) => s,
-        Err(_) => {
-            send_err(
-                &mut friend_tx,
-                "host did not open a proxy connection in time",
-            )
-            .await;
-            return;
-        }
-    };
-    tracing::info!(%code, %session_id, "pairing established");
-
-    let (mut host_tx, mut host_rx) = host_socket.split();
-
-    let friend_to_host = async {
-        while let Some(Ok(msg)) = friend_rx.next().await {
-            if matches!(msg, Message::Close(_)) {
-                break;
-            }
-            if host_tx.send(msg).await.is_err() {
-                break;
-            }
-        }
-        let _ = host_tx.close().await;
-    };
-    let host_to_friend = async {
-        while let Some(Ok(msg)) = host_rx.next().await {
-            if matches!(msg, Message::Close(_)) {
-                break;
-            }
-            if friend_tx.send(msg).await.is_err() {
-                break;
-            }
-        }
-        let _ = friend_tx.close().await;
-    };
-
-    tokio::select! {
-        _ = friend_to_host => {}
-        _ = host_to_friend => {}
-    }
-    tracing::info!(%session_id, "pairing closed");
-}
-
-pub async fn handle_host_proxy(socket: WebSocket, registry: Arc<Registry>, session_id: String) {
-    if !registry.fulfill_pairing(&session_id, socket).await {
-        tracing::warn!(%session_id, "no waiting friend for proxy connection");
-    }
+pub async fn refuse(mut socket: WebSocket, message: &str) {
+    send_err(&mut socket, message).await;
+    let _ = socket.close().await;
 }
 
 async fn send_msg<S>(tx: &mut S, msg: &RendezvousToHost) -> Result<(), ()>
@@ -354,12 +317,36 @@ where
 async fn send_err<S>(tx: &mut S, message: &str)
 where
     S: SinkExt<Message> + Unpin,
-    <S as futures_util::Sink<Message>>::Error: std::fmt::Display,
 {
     let err = RendezvousToHost::Error {
         message: message.to_string(),
     };
     if let Ok(json) = serde_json::to_string(&err) {
         let _ = tx.send(Message::Text(json)).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ip(s: &str) -> IpAddr {
+        s.parse().unwrap()
+    }
+
+    #[test]
+    fn a_transport_address_is_the_registrant_a_lan_or_our_own_relay() {
+        let peer = Some(ip("203.0.113.5"));
+        let relay = Some("https://relay.example/");
+        assert!(admits_transport_addr("203.0.113.5:4433", peer, relay));
+        assert!(admits_transport_addr("10.0.0.7:4433", peer, relay));
+        assert!(admits_transport_addr("[fd00::1]:4433", peer, relay));
+        assert!(!admits_transport_addr("198.51.100.9:4433", peer, relay));
+        assert!(admits_transport_addr("https://relay.example", peer, relay));
+        assert!(!admits_transport_addr("https://evil.example/", peer, relay));
+        assert!(
+            !admits_transport_addr("https://relay.example", peer, None),
+            "no relay configured"
+        );
     }
 }

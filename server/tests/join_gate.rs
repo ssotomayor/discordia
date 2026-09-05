@@ -32,8 +32,10 @@ fn temp_data_dir() -> PathBuf {
 async fn spawn_on(dir: &Path) -> (String, dioxusfun_server::ServerHandle) {
     let preferred: SocketAddr = "127.0.0.1:0".parse().unwrap();
     let cfg = dioxusfun_server::ServerConfig {
-        livekit: LiveKitConfig::from_env(),
+        livekit: LiveKitConfig::from_env(dir),
         operators: Default::default(),
+        identities: Default::default(),
+        media_max_bytes: dioxusfun_server::media::DEFAULT_MAX_BYTES,
         data_dir: dir.to_path_buf(),
     };
     let handle = dioxusfun_server::spawn(preferred, 100, cfg)

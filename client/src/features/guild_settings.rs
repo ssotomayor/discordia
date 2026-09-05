@@ -9,8 +9,6 @@ use crate::state::{use_app_state, use_gateway};
 pub fn GuildSettingsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element {
     let state = use_app_state();
     let gateway = use_gateway();
-    let identity = use_context::<crate::identity::Identity>();
-    let settings = use_context::<Signal<crate::settings::ClientSettings>>();
 
     let guild = use_memo(move || {
         state
@@ -116,7 +114,7 @@ pub fn GuildSettingsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element 
                         }
                         div { class: "flex items-center gap-3 mt-2",
                             div { class: "shrink-0 text-center",
-                                if let Some(src) = g.icon_image.clone() {
+                                if let Some(src) = g.icon_image.as_deref().and_then(|i| state.read().media_src(i).map(str::to_string)) {
                                     img {
                                         class: "w-10 h-10 rounded-md object-cover border border-[var(--border)]",
                                         src: "{src}", alt: "guild icon",
@@ -129,7 +127,7 @@ pub fn GuildSettingsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element 
                                 div { class: "text-[9px] text-[var(--text-dim)] mt-0.5", "Icon" }
                             }
                             div { class: "flex-1 min-w-0 text-center",
-                                if let Some(src) = g.banner.clone() {
+                                if let Some(src) = g.banner.as_deref().and_then(|b| state.read().media_src(b).map(str::to_string)) {
                                     img {
                                         class: "w-full h-10 rounded-md object-cover border border-[var(--border)]",
                                         src: "{src}", alt: "guild banner",
@@ -171,8 +169,6 @@ pub fn GuildSettingsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element 
                                         }
                                     }
                                 },
-                                identity: identity.clone(),
-                                settings,
                             }
                             ImagePickButton {
                                 label: "Banner…",
@@ -200,8 +196,6 @@ pub fn GuildSettingsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element 
                                         }
                                     }
                                 },
-                                identity: identity.clone(),
-                                settings,
                             }
                             div { class: "flex-1" }
                             button {
@@ -529,8 +523,6 @@ fn ImagePickButton(
     label: &'static str,
     shape: crate::features::image_editor::CropShape,
     onpicked: EventHandler<(Option<String>, Option<String>)>,
-    identity: crate::identity::Identity,
-    settings: Signal<crate::settings::ClientSettings>,
 ) -> Element {
     let mut editing = use_signal(|| None::<String>);
     rsx! {
@@ -541,18 +533,7 @@ fn ImagePickButton(
                 on_cancel: move |_| editing.set(None),
                 on_apply: move |cropped: String| {
                     editing.set(None);
-                    let identity = identity.clone();
-                    let server = settings.read().blossom_server.clone();
-                    let onpicked = onpicked;
-                    spawn(async move {
-                        let bytes = crate::features::profiles::data_url_bytes(&cropped);
-                        let mime = crate::features::profiles::data_url_mime(&cropped);
-                        let result = crate::features::profiles::image_to_ref(
-                            server, identity, bytes, mime,
-                        )
-                        .await;
-                        onpicked.call(result);
-                    });
+                    onpicked.call(crate::features::profiles::embed_image(cropped));
                 },
             }
         }

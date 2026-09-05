@@ -20,13 +20,22 @@ async fn main() {
         .parse()
         .expect("DIOXUSFUN_ADDR must be host:port");
 
+    let data_dir = cli_data_dir();
+    tracing::info!(data_dir = %data_dir.display(), "durable data directory");
+
+    let livekit_cfg = dioxusfun_server::livekit::LiveKitConfig::from_env(&data_dir);
+
     let want_autospawn = std::env::var("DIOXUSFUN_LIVEKIT_AUTOSPAWN")
         .map(|v| !matches!(v.as_str(), "0" | "false" | "no"))
         .unwrap_or(true);
     let livekit_present = std::env::var("LIVEKIT_URL").is_ok();
 
     let _livekit_handle = if want_autospawn && !livekit_present {
-        match dioxusfun_server::livekit_bundle::spawn_livekit(None).await {
+        let creds = dioxusfun_server::livekit_bundle::Credentials {
+            key: livekit_cfg.api_key.clone(),
+            secret: livekit_cfg.api_secret.clone(),
+        };
+        match dioxusfun_server::livekit_bundle::spawn_livekit(None, &creds, &data_dir).await {
             Ok(child) => {
                 tracing::info!("bundled livekit-server started on port 7880");
                 Some(child)
@@ -45,7 +54,6 @@ async fn main() {
         None
     };
 
-    let livekit_cfg = dioxusfun_server::livekit::LiveKitConfig::from_env();
     tracing::info!(
         explicit_url = ?livekit_cfg.explicit_url,
         port = livekit_cfg.port,
@@ -65,28 +73,106 @@ async fn main() {
         );
     }
 
-    let data_dir: std::path::PathBuf = std::env::var("DIOXUSFUN_DATA_DIR")
-        .unwrap_or_else(|_| "./discordia-data".into())
-        .into();
-    tracing::info!(data_dir = %data_dir.display(), "durable data directory");
+    let identities = dioxusfun_server::declared_identities(
+        &std::env::var("DIOXUSFUN_PUBLIC_HOSTS").unwrap_or_default(),
+        addr.port(),
+    );
+    if !identities.is_empty() {
+        tracing::info!(?identities, "public names clients may dial");
+    }
 
-    let cfg = dioxusfun_server::ServerConfig {
+    let media_max_bytes = std::env::var("DIOXUSFUN_MEDIA_MAX_BYTES")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(dioxusfun_server::media::DEFAULT_MAX_BYTES);
+
+    let mut cfg = dioxusfun_server::ServerConfig {
         livekit: livekit_cfg,
         operators,
-        data_dir,
+        data_dir: data_dir.clone(),
+        identities,
+        media_max_bytes,
     };
-    let serve_fut = dioxusfun_server::serve(addr, cfg);
-    tokio::select! {
-        result = serve_fut => {
-            if let Err(e) = result {
-                tracing::error!(error = %e, "server exited with error");
-                std::process::exit(1);
+
+    // The plaintext socket is for loopback and a TLS proxy; anything reaching
+    // this box directly from elsewhere comes in over QUIC with the key below.
+    let listener = match tokio::net::TcpListener::bind(addr).await {
+        Ok(l) => l,
+        Err(e) => {
+            tracing::error!(%addr, error = %e, "cannot bind the gateway");
+            std::process::exit(1);
+        }
+    };
+    let bound = listener.local_addr().unwrap_or(addr);
+    cfg.identities
+        .extend(dioxusfun_server::local_identities(bound.port()));
+
+    let coordination = match std::env::var("DIOXUSFUN_RELAY_URL") {
+        Ok(url) if !url.trim().is_empty() => {
+            dioxusfun_server::quic::Coordination::Relay(url.trim().to_string())
+        }
+        _ => dioxusfun_server::quic::Coordination::None,
+    };
+    let quic_secret = dioxusfun_server::quic::persistent_secret(&data_dir).unwrap_or_else(|e| {
+        tracing::error!(error = %e, "cannot persist the QUIC key; friends will have to re-add this server after a restart");
+        iroh::SecretKey::generate()
+    });
+    let quic_endpoint = match dioxusfun_server::quic::bind_quic(Some(quic_secret), &coordination)
+        .await
+    {
+        Ok(ep) => Some(ep),
+        Err(e) => {
+            tracing::warn!(error = %e, "QUIC endpoint not bound — only loopback and a TLS proxy can reach this gateway");
+            None
+        }
+    };
+    if let Some(ep) = quic_endpoint.as_ref() {
+        cfg.identities
+            .insert(dioxusfun_server::protocol::quic_origin(
+                &ep.id().to_string(),
+            ));
+    }
+
+    let router = match dioxusfun_server::build_router(cfg).await {
+        Ok(router) => router,
+        Err(e) => {
+            tracing::error!(error = %e, "server failed to start");
+            std::process::exit(1);
+        }
+    };
+
+    let _quic = quic_endpoint.and_then(|ep| {
+        let key = ep.id().to_string();
+        match dioxusfun_server::quic::serve_on_with(ep, router.clone(), coordination.clone()) {
+            Ok(handle) => {
+                let port = handle.sockets.first().map(|s| s.port()).unwrap_or(0);
+                let mut addrs: Vec<String> = dioxusfun_server::local_identities(port)
+                    .into_iter()
+                    .filter(|a| !a.starts_with("localhost") && !a.starts_with("127.") && !a.starts_with("[::1]"))
+                    .collect();
+                addrs.sort();
+                if let dioxusfun_server::quic::Coordination::Relay(url) = &coordination {
+                    addrs.push(url.clone());
+                }
+                tracing::info!(
+                    share = %dioxusfun_server::protocol::format_quic_share(&key, &addrs),
+                    "friends connect with this address (replace a private IP with your public one if you forward the UDP port)"
+                );
+                Some(handle)
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "QUIC gateway not serving");
+                None
             }
         }
-        _ = tokio::signal::ctrl_c() => {
-            tracing::info!("ctrl+c — shutting down");
-        }
-    }
+    });
+
+    let gateway = dioxusfun_server::serve_router(listener, router);
+    tracing::info!(%bound, "plaintext gateway listening (loopback and TLS proxies only)");
+
+    tokio::signal::ctrl_c().await.ok();
+    tracing::info!("ctrl+c — shutting down");
+    gateway.abort();
 }
 
 fn cli_data_dir() -> std::path::PathBuf {
@@ -97,7 +183,7 @@ fn cli_data_dir() -> std::path::PathBuf {
 
 async fn open_store() -> dioxusfun_server::store::Store {
     let dir = cli_data_dir();
-    dioxusfun_server::store::Store::open(&dir.join("db.sqlite"))
+    dioxusfun_server::store::Store::open_in(&dir)
         .await
         .unwrap_or_else(|e| {
             eprintln!("error: cannot open store at {}: {e}", dir.display());

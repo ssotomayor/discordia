@@ -23,8 +23,10 @@ fn test_config(operators: std::collections::HashSet<String>) -> dioxusfun_server
         N.fetch_add(1, Ordering::Relaxed)
     ));
     dioxusfun_server::ServerConfig {
-        livekit: LiveKitConfig::from_env(),
+        livekit: LiveKitConfig::from_env(&dir),
         operators,
+        identities: Default::default(),
+        media_max_bytes: dioxusfun_server::media::DEFAULT_MAX_BYTES,
         data_dir: dir,
     }
 }
@@ -2326,5 +2328,94 @@ async fn a_bot_cannot_rename_itself() {
     };
     assert_eq!(posted.author.username, "PingBot");
 
+    handle.abort();
+}
+
+async fn pow_challenge_on(session: &mut Bot, guild_id: Id) -> (String, u32) {
+    session
+        .send(&ClientMessage::JoinGuild {
+            guild_id,
+            accept: false,
+            pow_nonce: None,
+        })
+        .await
+        .unwrap();
+    loop {
+        if let ServerMessage::JoinChallenge {
+            pow_challenge: Some(c),
+            pow_difficulty: Some(bits),
+            ..
+        } = next_timeout(session).await
+        {
+            return (c, bits);
+        }
+    }
+}
+
+/// The challenge carries the connection's nonce, so work done on one socket
+/// is worthless on the next: a ban and a rejoin on the same key start over.
+#[tokio::test]
+async fn a_proof_of_work_dies_with_the_connection_it_was_solved_on() {
+    let (url, handle) = spawn_gateway().await;
+    let owner_id = BotIdentity::generate();
+    let (mut owner, _) = connect_user(&url, &owner_id, "Owner").await;
+    let (guild_id, _) = create_guild(&mut owner, "Reworked").await;
+    owner
+        .send(&ClientMessage::SetJoinGate {
+            guild_id,
+            gate: JoinGate::Pow,
+            rules: None,
+        })
+        .await
+        .unwrap();
+    loop {
+        if matches!(
+            next_timeout(&mut owner).await,
+            ServerMessage::GuildUpdate(_)
+        ) {
+            break;
+        }
+    }
+
+    let joiner_id = BotIdentity::generate();
+    let (mut first, _) = connect_user(&url, &joiner_id, "Grinder").await;
+    let (challenge_a, bits) = pow_challenge_on(&mut first, guild_id).await;
+    let solved_on_a = solve_pow(&challenge_a, bits);
+    drop(first);
+
+    let (mut second, _) = connect_user(&url, &joiner_id, "Grinder").await;
+    let (challenge_b, _) = pow_challenge_on(&mut second, guild_id).await;
+    assert_ne!(challenge_a, challenge_b, "a new socket gets new work");
+
+    second
+        .send(&ClientMessage::JoinGuild {
+            guild_id,
+            accept: false,
+            pow_nonce: Some(solved_on_a),
+        })
+        .await
+        .unwrap();
+    match next_timeout(&mut second).await {
+        ServerMessage::JoinChallenge { .. } => {}
+        ServerMessage::GuildJoined { .. } => panic!("yesterday's work was accepted today"),
+        other => panic!("expected a re-challenge, got {other:?}"),
+    }
+
+    second
+        .send(&ClientMessage::JoinGuild {
+            guild_id,
+            accept: false,
+            pow_nonce: Some(solve_pow(&challenge_b, bits)),
+        })
+        .await
+        .unwrap();
+    loop {
+        if matches!(
+            next_timeout(&mut second).await,
+            ServerMessage::GuildJoined { .. }
+        ) {
+            break;
+        }
+    }
     handle.abort();
 }

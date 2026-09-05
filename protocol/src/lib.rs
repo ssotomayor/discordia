@@ -44,6 +44,89 @@ pub fn unsafe_to_display(c: char) -> bool {
         || matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
 }
 
+/// The address the client dialed is inside the login signature, so a nonce one
+/// server hands out cannot be signed for it by a client that dialed another.
+pub const IDENTIFY_DOMAIN: &str = "discordia-identify-v2";
+
+pub fn identify_payload(nonce: &str, origin: &str, pubkey: &str, username: &str) -> Vec<u8> {
+    format!("{IDENTIFY_DOMAIN}\n{nonce}\n{origin}\n{pubkey}\n{username}").into_bytes()
+}
+
+/// `host:port` with the host lowercased and the port made explicit, so every
+/// spelling of one gateway URL yields the string the server listed for itself.
+pub fn dial_origin(url: &str) -> Option<String> {
+    let url = url::Url::parse(url).ok()?;
+    let host = url.host_str()?.to_ascii_lowercase();
+    let port = url.port_or_known_default()?;
+    Some(format!("{host}:{port}"))
+}
+
+/// A bare `host` or `host:port` as an operator or a router would write it.
+pub fn host_origin(raw: &str, default_port: u16) -> Option<String> {
+    let raw = raw.trim();
+    if raw.contains("://") {
+        return dial_origin(raw);
+    }
+    let url = url::Url::parse(&format!("ws://{raw}")).ok()?;
+    let host = url.host_str()?.to_ascii_lowercase();
+    Some(format!("{host}:{}", url.port().unwrap_or(default_port)))
+}
+
+pub fn quic_origin(endpoint_id: &str) -> String {
+    format!("quic:{}", endpoint_id.trim().to_ascii_lowercase())
+}
+
+pub const QUIC_SCHEME: &str = "quic://";
+
+/// What a host hands a friend: the key the connection is authenticated by, and
+/// where to try it. An address may also be a relay URL for hole punching.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuicShare {
+    pub key: String,
+    pub addrs: Vec<String>,
+}
+
+pub fn format_quic_share(key: &str, addrs: &[String]) -> String {
+    format!("{QUIC_SCHEME}{key}@{}", addrs.join(";"))
+}
+
+pub fn parse_quic_share(raw: &str) -> Option<QuicShare> {
+    let trimmed = raw.trim();
+    let (scheme, rest) = trimmed.split_at_checked(QUIC_SCHEME.len())?;
+    if !scheme.eq_ignore_ascii_case(QUIC_SCHEME) {
+        return None;
+    }
+    let (key, addrs) = rest.split_once('@').unwrap_or((rest, ""));
+    let key = key.trim().to_ascii_lowercase();
+    if key.is_empty() || !key.bytes().all(|b| b.is_ascii_alphanumeric()) {
+        return None;
+    }
+    let addrs = addrs
+        .split(';')
+        .map(str::trim)
+        .filter(|a| !a.is_empty())
+        .map(str::to_string)
+        .collect();
+    Some(QuicShare { key, addrs })
+}
+
+/// An address on the far side of no NAT a friend cannot already see past.
+pub fn is_private_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            v4.is_private()
+                || v4.is_loopback()
+                || v4.is_link_local()
+                || (v4.octets()[0] == 100 && (64..128).contains(&v4.octets()[1]))
+        }
+        std::net::IpAddr::V6(v6) => {
+            v6.is_loopback()
+                || (v6.segments()[0] & 0xfe00) == 0xfc00
+                || (v6.segments()[0] & 0xffc0) == 0xfe80
+        }
+    }
+}
+
 /// `kind` only names the thing in the error, so the three callers keep the
 /// wording they had.
 pub fn sanitize_name(kind: &str, raw: &str, max_chars: usize) -> Result<String, String> {
@@ -193,6 +276,15 @@ pub struct Profile {
     pub status: Option<String>,
     #[serde(default)]
     pub custom_status: Option<String>,
+}
+
+/// The presences a client can draw; the server refuses anything else so no
+/// member can wear a status nobody's screen knows how to show.
+pub const PRESENCES: [&str; 4] = ["online", "away", "dnd", "offline"];
+
+/// An x-only BIP-340 key as every pubkey field carries it.
+pub fn is_pubkey_hex(s: &str) -> bool {
+    s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 pub fn level_progress(xp: u64) -> (u32, u64, u64) {
@@ -750,6 +842,10 @@ pub enum ClientMessage {
         username: String,
         pubkey: String,
         signature: String,
+        /// What the client dialed, as `dial_origin` spells it. Signed, and the
+        /// server accepts only the addresses it knows it answers to.
+        #[serde(default)]
+        origin: String,
         /// Outside the signature on purpose — inferring bot-ness from installs
         /// would let anyone strip a victim's account of human privileges.
         #[serde(default)]
@@ -1206,6 +1302,7 @@ mod identify_wire_tests {
             username: "alice".into(),
             pubkey: "ab".into(),
             signature: "cd".into(),
+            origin: String::new(),
             bot: false,
             client_version: "v0.1.0-pre.223".into(),
         })
@@ -1219,5 +1316,126 @@ mod identify_wire_tests {
             }
             other => panic!("parsed as {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod origin_tests {
+    use super::*;
+
+    #[test]
+    fn every_spelling_of_one_gateway_is_one_origin() {
+        assert_eq!(
+            dial_origin("ws://Example.COM/gateway").as_deref(),
+            Some("example.com:80")
+        );
+        assert_eq!(
+            dial_origin("wss://example.com").as_deref(),
+            Some("example.com:443")
+        );
+        assert_eq!(
+            dial_origin("ws://192.168.0.5:9000/gateway").as_deref(),
+            Some("192.168.0.5:9000")
+        );
+        assert_eq!(
+            dial_origin("http://[::1]:9000").as_deref(),
+            Some("[::1]:9000")
+        );
+        assert_eq!(
+            dial_origin("example.com:9000"),
+            None,
+            "a scheme is required"
+        );
+    }
+
+    #[test]
+    fn an_operator_may_write_a_bare_host() {
+        assert_eq!(
+            host_origin("Chat.Example.com", 9000).as_deref(),
+            Some("chat.example.com:9000")
+        );
+        assert_eq!(
+            host_origin("chat.example.com:443", 9000).as_deref(),
+            Some("chat.example.com:443")
+        );
+        assert_eq!(
+            host_origin("wss://chat.example.com", 9000).as_deref(),
+            Some("chat.example.com:443")
+        );
+        assert_eq!(host_origin("[::1]", 9000).as_deref(), Some("[::1]:9000"));
+        assert_eq!(host_origin("", 9000), None);
+    }
+
+    #[test]
+    fn a_quic_origin_is_case_insensitive() {
+        assert_eq!(quic_origin(" ABCDEF "), "quic:abcdef");
+    }
+
+    #[test]
+    fn a_share_string_round_trips_and_tolerates_sloppy_input() {
+        let key = "ab".repeat(32);
+        let addrs = vec![
+            "192.168.1.5:4433".to_string(),
+            "https://relay.example/".into(),
+        ];
+        let share = format_quic_share(&key, &addrs);
+        assert_eq!(
+            share,
+            format!("quic://{key}@192.168.1.5:4433;https://relay.example/")
+        );
+        assert_eq!(
+            parse_quic_share(&format!(
+                "  {} ",
+                share
+                    .to_uppercase()
+                    .replace("HTTPS://RELAY.EXAMPLE/", "https://relay.example/")
+            )),
+            Some(QuicShare {
+                key: key.clone(),
+                addrs: addrs.clone()
+            })
+        );
+        assert_eq!(
+            parse_quic_share(&format!("quic://{key}")),
+            Some(QuicShare {
+                key: key.clone(),
+                addrs: vec![]
+            }),
+            "a bare key is a share that needs a relay"
+        );
+        assert_eq!(parse_quic_share("quic://@1.2.3.4:1"), None);
+        assert_eq!(parse_quic_share("quic://not a key@1.2.3.4:1"), None);
+        assert_eq!(parse_quic_share("ws://1.2.3.4:9000"), None);
+    }
+
+    #[test]
+    fn private_addresses_are_told_from_public_ones() {
+        for ip in [
+            "192.168.1.1",
+            "10.0.0.1",
+            "172.16.0.1",
+            "100.64.0.1",
+            "127.0.0.1",
+            "169.254.1.1",
+            "::1",
+            "fd00::1",
+            "fe80::1",
+        ] {
+            assert!(is_private_ip(ip.parse().unwrap()), "{ip}");
+        }
+        for ip in ["203.0.113.5", "8.8.8.8", "100.128.0.1", "2001:db8::1"] {
+            assert!(!is_private_ip(ip.parse().unwrap()), "{ip}");
+        }
+    }
+
+    #[test]
+    fn the_payload_separates_its_fields() {
+        let a = identify_payload("n", "host:1", "pk", "user");
+        let b = identify_payload("n", "host:1p", "k", "user");
+        assert_ne!(
+            a, b,
+            "moving a byte across a field boundary changes the payload"
+        );
+        assert!(a.starts_with(IDENTIFY_DOMAIN.as_bytes()));
     }
 }

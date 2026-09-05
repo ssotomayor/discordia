@@ -126,6 +126,12 @@ impl Store {
             );
         }
 
+        // The archive is whatever another instance wrote; it gets the same
+        // filters the gateway applies to a client.
+        let mut archive = archive.clone();
+        crate::sanitize::archive(&mut archive);
+        let archive = &archive;
+
         let new_guild_id = Uuid::new_v4();
         let mut channel_map: HashMap<Id, Id> = HashMap::new();
         let mut role_map: HashMap<Id, Id> = HashMap::new();

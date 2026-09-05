@@ -489,16 +489,27 @@ fn MessageRow(message: Message, grouped: bool) -> Element {
                 }
                 if let Some(img) = message.image.as_ref() {
                     {
-                        let full = img.clone();
-                        rsx! {
-                            img {
-                                class: "mt-1 rounded-md border border-[var(--border-strong)] bg-[var(--panel2)] max-w-xs max-h-80 object-contain block hover:border-[var(--accent)] transition-colors",
-                                style: "cursor: zoom-in;",
-                                src: "{img}",
-                                alt: "attachment",
-                                title: "Click to view full size",
-                                onclick: move |_| state.write().image_viewer = Some(full.clone()),
+                        let resolved = state.read().media_src(img).map(str::to_string);
+                        match resolved {
+                            Some(src) => {
+                                let full = src.clone();
+                                rsx! {
+                                    img {
+                                        class: "mt-1 rounded-md border border-[var(--border-strong)] bg-[var(--panel2)] max-w-xs max-h-80 object-contain block hover:border-[var(--accent)] transition-colors",
+                                        style: "cursor: zoom-in;",
+                                        src: "{src}",
+                                        alt: "attachment",
+                                        title: "Click to view full size",
+                                        onclick: move |_| state.write().image_viewer = Some(full.clone()),
+                                    }
+                                }
                             }
+                            None => rsx! {
+                                div {
+                                    class: "mt-1 rounded-md border border-[var(--border-strong)] bg-[var(--panel2)] w-48 h-24 flex items-center justify-center text-[10px] text-[var(--text-dim)]",
+                                    "Loading image…"
+                                }
+                            },
                         }
                     }
                 }

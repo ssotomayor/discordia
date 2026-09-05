@@ -29,8 +29,10 @@ fn temp_data_dir() -> PathBuf {
 async fn spawn_on(dir: &Path) -> (String, dioxusfun_server::ServerHandle) {
     let preferred: SocketAddr = "127.0.0.1:0".parse().unwrap();
     let cfg = dioxusfun_server::ServerConfig {
-        livekit: LiveKitConfig::from_env(),
+        livekit: LiveKitConfig::from_env(dir),
         operators: Default::default(),
+        identities: Default::default(),
+        media_max_bytes: dioxusfun_server::media::DEFAULT_MAX_BYTES,
         data_dir: dir.to_path_buf(),
     };
     let handle = dioxusfun_server::spawn(preferred, 100, cfg)
@@ -143,9 +145,22 @@ async fn state_survives_restart_and_media_is_offloaded() {
     assert_eq!(history[1].content, "with an image");
     let img = history[1].image.as_deref().expect("image survived");
     assert!(
-        img.starts_with("data:image/png;base64,"),
-        "inlined on serve"
+        img.starts_with("media:") && img.ends_with(".png"),
+        "history names the blob, it does not carry it: {img}"
     );
+
+    owner
+        .send(&ClientMessage::FetchEmoji {
+            images: vec![img.trim_start_matches("media:").to_string()],
+        })
+        .await
+        .unwrap();
+    let blob = loop {
+        if let ServerMessage::EmojiBlobs { blobs } = next_timeout(&mut owner).await {
+            break blobs.into_iter().next().expect("one blob");
+        }
+    };
+    assert_eq!(blob.data_url, TINY_PNG, "the bytes come back on request");
 
     handle.abort();
     let _ = std::fs::remove_dir_all(&dir);

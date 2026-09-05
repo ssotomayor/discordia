@@ -9,32 +9,23 @@ const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(3);
 
 const HAIRPIN_TIMEOUT: Duration = Duration::from_secs(3);
 
+/// No TCP gateway port: off this machine the gateway speaks QUIC only, so the
+/// only thing to open for chat is the UDP port the QUIC endpoint bound.
 #[derive(Debug, Clone, Copy)]
 pub struct Ports {
-    pub gateway_tcp: u16,
     pub media_tcp: u16,
     pub media_tcp_ice: u16,
     pub media_udp: u16,
-    pub quic_udp: Option<u16>,
+    pub quic_udp: u16,
 }
 
 #[derive(Debug, Clone)]
 pub struct Mapped {
     pub method: &'static str,
     pub public_ip: IpAddr,
-    pub gateway_port: u16,
     pub media: bool,
     pub quic: bool,
     pub hairpin: bool,
-}
-
-impl Mapped {
-    pub fn endpoint(&self) -> String {
-        match self.public_ip {
-            IpAddr::V6(ip) => format!("ws://[{ip}]:{}", self.gateway_port),
-            IpAddr::V4(ip) => format!("ws://{ip}:{}", self.gateway_port),
-        }
-    }
 }
 
 pub struct MappingGuard {
@@ -72,17 +63,20 @@ async fn finish(
         ));
     }
 
-    let gateway_port = router
-        .add(PortMappingProtocol::TCP, local_ip, ports.gateway_tcp)
+    let quic_ok = match router
+        .add(PortMappingProtocol::UDP, local_ip, ports.quic_udp)
         .await
-        .map_err(|e| format!("the router refused to forward the gateway port: {e}"))?;
-
-    let quic_ok = match ports.quic_udp {
-        Some(port) => matches!(
-            router.add(PortMappingProtocol::UDP, local_ip, port).await,
-            Ok(external) if external == port
-        ),
-        None => false,
+    {
+        Ok(external) if external == ports.quic_udp => true,
+        Ok(external) => {
+            tracing::warn!(
+                wanted = ports.quic_udp,
+                granted = external,
+                "router renumbered the QUIC port — friends cannot be told a port we do not hold"
+            );
+            false
+        }
+        Err(e) => return Err(format!("the router refused to forward the QUIC port: {e}")),
     };
 
     let media = {
@@ -110,31 +104,23 @@ async fn finish(
         all_ok
     };
 
-    let hairpin = probe_hairpin(SocketAddr::new(public_ip, gateway_port)).await;
+    // Hairpin matters for the SFU, which replaces its LAN candidate with the
+    // advertised address, so the SFU's own TCP port is what gets probed.
+    let hairpin = media && probe_hairpin(SocketAddr::new(public_ip, ports.media_tcp)).await;
 
     let mapped = Mapped {
         method: router.method(),
         public_ip,
-        gateway_port,
         media,
         quic: quic_ok,
         hairpin,
     };
-    Ok((mapped, keep_alive(router, local_ip, ports, gateway_port)))
+    Ok((mapped, keep_alive(router, local_ip, ports)))
 }
 
-fn keep_alive(
-    router: Router,
-    local_ip: Ipv4Addr,
-    ports: Ports,
-    gateway_external: u16,
-) -> MappingGuard {
+fn keep_alive(router: Router, local_ip: Ipv4Addr, ports: Ports) -> MappingGuard {
     let all = [
-        (
-            PortMappingProtocol::TCP,
-            ports.gateway_tcp,
-            gateway_external,
-        ),
+        (PortMappingProtocol::UDP, ports.quic_udp, ports.quic_udp),
         (PortMappingProtocol::TCP, ports.media_tcp, ports.media_tcp),
         (
             PortMappingProtocol::TCP,
@@ -315,26 +301,6 @@ async fn natpmp_response(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn endpoint_is_a_dialable_url() {
-        let mapped = |ip: IpAddr| Mapped {
-            method: "UPnP-IGD",
-            public_ip: ip,
-            gateway_port: 9000,
-            media: true,
-            quic: true,
-            hairpin: true,
-        };
-        assert_eq!(
-            mapped("203.0.113.5".parse().unwrap()).endpoint(),
-            "ws://203.0.113.5:9000"
-        );
-        assert_eq!(
-            mapped("2001:db8::1".parse().unwrap()).endpoint(),
-            "ws://[2001:db8::1]:9000"
-        );
-    }
 
     #[test]
     fn private_addresses_are_not_public() {

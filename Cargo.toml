@@ -27,6 +27,11 @@ hex = "0.4"
 iroh = "1.0"
 iroh-relay = { version = "1.0", default-features = false, features = ["server"] }
 
+# The join proof of work is a million hashes; unoptimised sha2 makes every
+# test that solves one take seconds instead of milliseconds.
+[profile.dev.package.sha2]
+opt-level = 3
+
 # Unoptimised tract fails its own self-consistency check and is orders of
 # magnitude slower — the DeepFilterNet model will not load without these.
 [profile.dev.package.deep_filter]

@@ -18,16 +18,16 @@ name instead.
 | File | Lines |
 |---|---|
 | `client/src/features/voice.rs` | 2787 |
-| `server/src/state/mod.rs` | 2324 |
-| `server/src/gateway/connection.rs` | 1989 |
-| `client/src/features/channels.rs` | 2190 |
+| `server/src/state/mod.rs` | 2449 |
+| `server/src/gateway/connection.rs` | 2099 |
+| `client/src/features/channels.rs` | 2191 |
 | `client/src/features/screenshare.rs` | 1582 |
-| `client/src/update.rs` | 1147 |
-| `client/src/state.rs` | 1348 |
-| `client/src/net.rs` | 1140 |
-| `client/src/features/chat.rs` | 1040 |
-| `protocol/src/lib.rs` | 1223 |
-| `server/src/store.rs` | 942 |
+| `client/src/update.rs` | 1183 |
+| `client/src/state.rs` | 1371 |
+| `client/src/net.rs` | 1107 |
+| `client/src/features/chat.rs` | 1052 |
+| `protocol/src/lib.rs` | 1441 |
+| `server/src/store.rs` | 965 |
 
 Everything else is small enough that `wc -l` answers faster than a list here
 could stay true. There used to be rows for "under 300" and "300 to 800": they
@@ -61,6 +61,7 @@ repeated here.
 | New Nostr event kind | `client/src/nostr/<kind>.rs` → `client/src/nostr/mod.rs` → subscribe/handle in `nostr/service.rs` → new field in `client/src/state.rs` |
 | New server permission | `protocol/src/lib.rs` (`Permission`) → `server/src/state/mod.rs` (`can`) → the handler arm in `gateway/connection.rs` → `client/src/state.rs` `can()` for hiding UI |
 | A name shown anywhere | never store it — `AppState::display_name` (trap 8) |
+| A new free-text or name field | cap and filter it in the gateway arm, then mirror the cap in `server/src/sanitize.rs`, which is what an import or a legacy row gets instead |
 | Deferred work | `docs/OPEN.md`, never only a commit message |
 
 ## Tests
@@ -101,10 +102,10 @@ flowchart LR
     GW-->LK
   end
   SFU["LiveKit SFU<br/>voice-{ch} · screen-{ch}"]
-  RZ["rendezvous/<br/>/control · /join · /proxy · /discover"]
+  RZ["rendezvous/<br/>/control · /discover · /resolve · iroh relay"]
   RELAYS[("Nostr relays")]
   BOT["bot-sdk"]
-  NET<-->|"WS /gateway or QUIC<br/>Schnorr Identify"|GW
+  NET<-->|"QUIC (loopback: WS)<br/>Schnorr Identify"|GW
   BOT<-->|filtered stream|GW
   V<-->SFU
   JS<-->SFU

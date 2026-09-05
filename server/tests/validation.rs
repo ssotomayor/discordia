@@ -37,8 +37,10 @@ fn temp_data_dir() -> PathBuf {
 async fn spawn_on(dir: &Path) -> (String, dioxusfun_server::ServerHandle) {
     let preferred: SocketAddr = "127.0.0.1:0".parse().unwrap();
     let cfg = dioxusfun_server::ServerConfig {
-        livekit: LiveKitConfig::from_env(),
+        livekit: LiveKitConfig::from_env(dir),
         operators: Default::default(),
+        identities: Default::default(),
+        media_max_bytes: dioxusfun_server::media::DEFAULT_MAX_BYTES,
         data_dir: dir.to_path_buf(),
     };
     let handle = dioxusfun_server::spawn(preferred, 100, cfg)
@@ -308,4 +310,151 @@ async fn a_name_of_pure_junk_is_refused_not_stored_blank() {
             _ => continue,
         }
     }
+}
+
+/// The label is checked against the bytes, so a PNG signature cannot be parked
+/// on disk under `.jpg`, and neither can a web page under any picture name.
+#[tokio::test]
+async fn an_image_whose_bytes_do_not_match_its_label_is_refused() {
+    let (url, _h) = spawn_gateway().await;
+    let (mut owner, channel) = owner_with_channel(&url, &BotIdentity::generate()).await;
+
+    let png_payload = TINY_PNG.split_once(";base64,").unwrap().1;
+    let mislabeled = format!("data:image/jpeg;base64,{png_payload}");
+    let refused = send_image(&mut owner, channel, &mislabeled)
+        .await
+        .expect_err("PNG bytes were accepted as a JPEG");
+    assert!(
+        refused.contains("unsupported image format"),
+        "refused for the wrong reason: {refused}"
+    );
+
+    let refused = send_image(&mut owner, channel, "data:image/svg+xml;base64,PHN2Zz4=")
+        .await
+        .expect_err("an SVG was accepted");
+    assert!(refused.contains("unsupported image format"), "{refused}");
+}
+
+/// A link would make every member's webview fetch it, handing their addresses
+/// to whoever set it; the server stores pictures itself now, so it takes none.
+#[tokio::test]
+async fn a_profile_picture_may_not_be_a_link() {
+    let (url, _h) = spawn_gateway().await;
+    let mut bot = ready(&url, &BotIdentity::generate(), "Linky").await;
+
+    bot.send(&ClientMessage::SetProfile {
+        avatar: Some("https://example.invalid/me.png".into()),
+        banner: None,
+        bio: None,
+        status: None,
+        custom_status: None,
+    })
+    .await
+    .unwrap();
+    let refused = loop {
+        match next_timeout(&mut bot).await {
+            ServerMessage::Error { message } => break message,
+            ServerMessage::ProfileUpdate(_) => panic!("a link was accepted as an avatar"),
+            _ => continue,
+        }
+    };
+    assert!(refused.contains("not a link"), "{refused}");
+
+    bot.send(&ClientMessage::SetProfile {
+        avatar: Some(TINY_PNG.into()),
+        banner: None,
+        bio: None,
+        status: None,
+        custom_status: None,
+    })
+    .await
+    .unwrap();
+    let stored = loop {
+        if let ServerMessage::ProfileUpdate(p) = next_timeout(&mut bot).await {
+            break p.avatar.expect("avatar kept");
+        }
+    };
+    assert!(
+        stored.starts_with("media:"),
+        "a real picture is stored and addressed: {stored}"
+    );
+}
+
+/// Guilds are persisted and held in memory for good, so one key gets a fixed
+/// number of them; the refusal has to arrive as an error, not a silent drop.
+#[tokio::test]
+async fn one_key_cannot_own_more_than_its_share_of_guilds() {
+    use dioxusfun_server::state::MAX_GUILDS_PER_OWNER;
+
+    let (url, _h) = spawn_gateway().await;
+    let mut bot = ready(&url, &BotIdentity::generate(), "Founder").await;
+
+    for i in 0..MAX_GUILDS_PER_OWNER {
+        bot.send(&ClientMessage::CreateGuild {
+            name: format!("Guild {i}"),
+            template: None,
+        })
+        .await
+        .unwrap();
+        loop {
+            match next_timeout(&mut bot).await {
+                ServerMessage::GuildJoined { .. } => break,
+                ServerMessage::Error { message } => panic!("guild {i} refused: {message}"),
+                _ => continue,
+            }
+        }
+        // The write limiter admits 30 per window; stay well under it.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    bot.send(&ClientMessage::CreateGuild {
+        name: "One too many".into(),
+        template: None,
+    })
+    .await
+    .unwrap();
+    let refused = loop {
+        match next_timeout(&mut bot).await {
+            ServerMessage::Error { message } => break message,
+            ServerMessage::GuildJoined { .. } => panic!("the guild past the cap was created"),
+            _ => continue,
+        }
+    };
+    assert!(refused.contains("already own"), "{refused}");
+}
+
+/// Three buttons pick a presence; the wire would take any string, and a
+/// presence nothing can draw is a blank badge on every member list.
+fn presence(status: &str) -> ClientMessage {
+    ClientMessage::SetProfile {
+        avatar: None,
+        banner: None,
+        bio: None,
+        status: Some(status.to_string()),
+        custom_status: None,
+    }
+}
+
+#[tokio::test]
+async fn a_presence_outside_the_set_is_refused() {
+    let (url, _h) = spawn_gateway().await;
+    let mut bot = ready(&url, &BotIdentity::generate(), "Moody").await;
+
+    bot.send(&presence("invisible")).await.unwrap();
+    let refused = loop {
+        match next_timeout(&mut bot).await {
+            ServerMessage::Error { message } => break message,
+            ServerMessage::ProfileUpdate(_) => panic!("an unknown presence was stored"),
+            _ => continue,
+        }
+    };
+    assert!(refused.contains("status must be one of"), "{refused}");
+
+    bot.send(&presence("away")).await.unwrap();
+    let stored = loop {
+        if let ServerMessage::ProfileUpdate(p) = next_timeout(&mut bot).await {
+            break p.status;
+        }
+    };
+    assert_eq!(stored.as_deref(), Some("away"));
 }

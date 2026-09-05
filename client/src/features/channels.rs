@@ -149,6 +149,11 @@ pub fn ChannelsColumn() -> Element {
     let can_manage_channels = selected_guild
         .map(|gid| snapshot.can(gid, Permission::ManageChannels))
         .unwrap_or(false);
+    let guild_banner = guild
+        .as_ref()
+        .and_then(|g| g.banner.as_deref())
+        .and_then(|b| snapshot.media_src(b))
+        .map(str::to_string);
     drop(snapshot);
 
     let text_channels: Vec<&Channel> = channels
@@ -172,11 +177,7 @@ pub fn ChannelsColumn() -> Element {
     let mut show_create = use_signal(|| false);
     let mut dragging = use_signal::<Option<Id>>(|| None);
 
-    let banner = if dm_mode {
-        None
-    } else {
-        guild.as_ref().and_then(|g| g.banner.clone())
-    };
+    let banner = if dm_mode { None } else { guild_banner };
 
     rsx! {
         aside { class: PANEL,

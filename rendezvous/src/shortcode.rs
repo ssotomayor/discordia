@@ -21,7 +21,7 @@ pub fn generate() -> String {
     let mut rng = rand::thread_rng();
     let adj = ADJECTIVES.choose(&mut rng).unwrap_or(&"swift");
     let animal = ANIMALS.choose(&mut rng).unwrap_or(&"fox");
-    let num: u8 = rng.gen_range(10..100);
+    let num: u16 = rng.gen_range(1000..10_000);
     format!("{adj}-{animal}-{num}")
 }
 
@@ -31,9 +31,15 @@ mod tests {
 
     #[test]
     fn shape_looks_right() {
-        let c = generate();
-        let parts: Vec<&str> = c.split('-').collect();
-        assert_eq!(parts.len(), 3);
-        assert!(parts[2].parse::<u8>().is_ok());
+        for _ in 0..200 {
+            let c = generate();
+            let parts: Vec<&str> = c.split('-').collect();
+            assert_eq!(parts.len(), 3, "{c}");
+            assert!(ADJECTIVES.contains(&parts[0]), "{c}");
+            assert!(ANIMALS.contains(&parts[1]), "{c}");
+            assert_eq!(parts[2].len(), 4, "{c}");
+            let n: u16 = parts[2].parse().unwrap();
+            assert!((1000..=9999).contains(&n), "{c}");
+        }
     }
 }
