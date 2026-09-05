@@ -609,7 +609,7 @@ async fn agc_is_measured_against_the_assumption_the_gate_default_rests_on() {
     assert!(
         gain.abs() < 1.0,
         "AGC moved the level by {gain:+.2} dB, having measured inert at ±0.03 dB. \
-         If it now works, entry 63 in docs/OPEN.md is resting on a \
+         If it now works, issue #169 is resting on a \
          different world than the one it was written in — read it before \
          widening this bound"
     );

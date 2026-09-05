@@ -527,7 +527,7 @@ mod tests {
         assert!(
             frames > 0,
             "start() succeeded and delivered no frames at all — the same shape \
-             as entry 53 in docs/OPEN.md"
+             as issue #162"
         );
         assert!(
             samples >= 4800,

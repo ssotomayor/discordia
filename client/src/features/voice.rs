@@ -57,7 +57,7 @@ const GATE_RAMP_SAMPLES: usize = 120;
 const ROOM_CLOSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// The constructor demands one and nothing reads it: `set_options` stores it
-/// and only `options()` reads it back. `docs/OPEN.md` 64 traces that.
+/// and only `options()` reads it back. Issue #170 traces that.
 fn inert_apm_options() -> AudioSourceOptions {
     AudioSourceOptions::default()
 }
@@ -2713,7 +2713,7 @@ mod tests {
     /// synthetic speech has a crest factor near 2 and real speech 3 to 5, so
     /// the numbers below understate what a microphone actually delivers.
     #[test]
-    #[ignore = "a measurement to re-run, not a guard; see docs/OPEN.md 98"]
+    #[ignore = "a measurement to re-run, not a guard; see issue #171"]
     fn where_the_gate_opens_once_the_agc_has_normalised_the_level() {
         fn noise(n: usize, rms_want: f32, seed: &mut u32) -> Vec<f32> {
             let mut v: Vec<f32> = (0..n)

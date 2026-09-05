@@ -13,7 +13,7 @@ native desktop client.
 
 > **Pre-release.** Persistence, moderation, voice, screen sharing, bots and
 > guild export/import work and are covered by the suite. No web client, no
-> hosted instance. `docs/OPEN.md` is the honest list.
+> hosted instance. The open issues are the honest list.
 
 ## What is actually yours
 
@@ -93,5 +93,4 @@ problem — a new public key travels in an update the old key signs.
 
 Fork, branch, PR. Keep `cargo test --workspace`, clippy `-D warnings` and
 `cargo fmt --all --check` green. Read `CLAUDE.md` first — it is the orientation
-and its rules are binding, including the one on comments. Deferred work goes in
-`docs/OPEN.md`.
+and its rules are binding, including the one on comments. Deferred work goes in a GitHub issue.

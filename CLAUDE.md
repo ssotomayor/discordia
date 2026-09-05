@@ -12,7 +12,7 @@ decentralisation.
   keep true. Say nothing.
 - Write one only when the reason is unrecoverable from the code: a decision that
   looks wrong until you know the constraint, a load-bearing ordering, a trap.
-- **Max 2 lines.** Needs more? It is a `docs/OPEN.md` entry, not a comment.
+- **Max 2 lines.** Needs more? It is a GitHub issue, not a comment.
 - Delete rather than update a comment you cannot justify in one sentence.
 
 **Navigating — open `docs/MAP.md` before the second grep.** Where a thing
@@ -24,7 +24,7 @@ file size band or a trap number in `docs/MAP.md` is a claim about the tree, and
 moving code is what makes one false.
 
 **Docs — terse.** Prefer a table or a mermaid chart to prose. No file restates
-another. Deferred work goes in `docs/OPEN.md`, never only in a commit message.
+another. Deferred work goes in a GitHub issue, never only in a commit message.
 
 **No Claude/AI attribution** in commits, PRs, or generated content.
 
@@ -65,5 +65,6 @@ another. Deferred work goes in `docs/OPEN.md`, never only in a commit message.
 | For | Read |
 |---|---|
 | Running, hosting, env vars, reachability, the devcontainer | `docs/OPS.md` |
-| Deferred work — the only tracker | `docs/OPEN.md` |
+| Deferred work — the only tracker | GitHub issues (`gh issue list`) |
+| Phase state, and trade-offs taken on purpose | `docs/OPEN.md` |
 | Build and test commands, contributing | `README.md` |

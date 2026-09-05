@@ -63,7 +63,7 @@ repeated here.
 | New server permission | `protocol/src/lib.rs` (`Permission`) → `server/src/state/mod.rs` (`can`) → the handler arm in `gateway/connection.rs` → `client/src/state.rs` `can()` for hiding UI |
 | A name shown anywhere | never store it — `AppState::display_name` (trap 8) |
 | A new free-text or name field | cap and filter it in the gateway arm, then mirror the cap in `server/src/sanitize.rs`, which is what an import or a legacy row gets instead |
-| Deferred work | `docs/OPEN.md`, never only a commit message |
+| Deferred work | a GitHub issue, never only a commit message |
 
 ## Tests
 
@@ -118,4 +118,4 @@ flowchart LR
 ## Not in this repo
 
 Messages in memory (DB only, trap 2) · a browser client (P3) · cluster mode
-(P7) · issue tracker (`docs/OPEN.md` is it).
+(P7) · issue tracker (GitHub issues).

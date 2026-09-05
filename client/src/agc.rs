@@ -1,7 +1,7 @@
 //! Automatic gain control for the microphone.
 //!
 //! libwebrtc's own AGC never runs on our audio, so whatever it promised has to
-//! happen here instead. `docs/OPEN.md` 64 has why.
+//! happen here instead. Issue #170 has why.
 
 /// Where speech should land. Well under full scale, so a syllable louder than
 /// the average still has somewhere to go.
