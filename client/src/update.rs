@@ -33,6 +33,7 @@ pub fn signature_name(asset: &str) -> String {
 pub enum VerifyError {
     BadPublicKey(String),
     BadSignature(String),
+    WrongArtifact(String),
     Mismatch(String),
 }
 
@@ -41,15 +42,28 @@ impl std::fmt::Display for VerifyError {
         match self {
             Self::BadPublicKey(e) => write!(f, "the built-in signing key is unreadable: {e}"),
             Self::BadSignature(e) => write!(f, "the signature file is not a signature: {e}"),
+            Self::WrongArtifact(c) => write!(f, "the signature is for another release: {c:?}"),
             Self::Mismatch(e) => write!(f, "the download does not match its signature: {e}"),
         }
     }
 }
 
-pub fn verify(data: &[u8], sig: &str) -> Result<(), VerifyError> {
+/// What CI puts in the trusted comment (`ci.yml`, the `-t` flag). Checked
+/// before the bytes: a genuine signature from an older release must not
+/// install that release.
+pub fn trusted_comment(tag: &str, asset: &str) -> String {
+    format!("discordia {tag} {asset}")
+}
+
+pub fn verify(data: &[u8], sig: &str, tag: &str, asset: &str) -> Result<(), VerifyError> {
     let key = PublicKey::from_base64(trim_key(PUBLIC_KEY))
         .map_err(|e| VerifyError::BadPublicKey(e.to_string()))?;
     let signature = Signature::decode(sig).map_err(|e| VerifyError::BadSignature(e.to_string()))?;
+    if signature.trusted_comment() != trusted_comment(tag, asset) {
+        return Err(VerifyError::WrongArtifact(
+            signature.trusted_comment().to_string(),
+        ));
+    }
     key.verify(data, &signature, false)
         .map_err(|e| VerifyError::Mismatch(e.to_string()))
 }
@@ -75,6 +89,7 @@ fn running_appimage() -> Option<std::path::PathBuf> {
 }
 
 pub async fn fetch_verified(
+    tag: &str,
     asset: &str,
     asset_url: &str,
     signature_url: &str,
@@ -109,7 +124,7 @@ pub async fn fetch_verified(
         on_progress(body.len() as u64, total);
     }
 
-    verify(&body, &sig).map_err(|e| e.to_string())?;
+    verify(&body, &sig, tag, asset).map_err(|e| e.to_string())?;
 
     let path = staging_path(asset);
     std::fs::write(&path, &body).map_err(|e| format!("could not save the update: {e}"))?;
@@ -461,8 +476,10 @@ pub fn UpdateNotice(update: crate::version::Update) -> Element {
     let mut progress = use_signal(|| (0u64, None::<u64>));
 
     let install = update.download.clone();
+    let install_tag = update.tag.clone();
     let start = move |_| {
         let Some(d) = install.clone() else { return };
+        let tag = install_tag.clone();
         progress.set((0, None));
         phase.set(Phase::Working);
         spawn(async move {
@@ -473,7 +490,7 @@ pub fn UpdateNotice(update: crate::version::Update) -> Element {
                     progress.set((got, total));
                 }
             };
-            match fetch_verified(&d.asset, &d.asset_url, &d.signature_url, tick).await {
+            match fetch_verified(&tag, &d.asset, &d.asset_url, &d.signature_url, tick).await {
                 Err(e) => phase.set(Phase::Failed(e)),
                 Ok(staged) => {
                     let plan = plan_install(staged);
@@ -686,9 +703,12 @@ mod tests {
         );
     }
 
+    const REAL_TAG: &str = "v0.1.0-pre.332";
+    const REAL_ASSET: &str = "Discordia-macos-arm64.dmg";
+
     #[test]
     fn content_that_was_not_signed_is_refused() {
-        let err = verify(b"not the dmg", REAL_SIGNATURE).unwrap_err();
+        let err = verify(b"not the dmg", REAL_SIGNATURE, REAL_TAG, REAL_ASSET).unwrap_err();
         assert!(
             matches!(err, VerifyError::Mismatch(_)),
             "expected a mismatch, got {err:?}"
@@ -696,9 +716,29 @@ mod tests {
     }
 
     #[test]
+    fn a_genuine_signature_for_another_release_or_file_is_refused() {
+        for (tag, asset) in [
+            ("v0.1.0-pre.333", REAL_ASSET),
+            ("v0.1.0-pre.331", REAL_ASSET),
+            (REAL_TAG, "Discordia-windows-setup.exe"),
+        ] {
+            let err = verify(b"anything", REAL_SIGNATURE, tag, asset).unwrap_err();
+            assert!(
+                matches!(err, VerifyError::WrongArtifact(_)),
+                "{tag} {asset}: the comment was not checked, got {err:?}"
+            );
+        }
+        assert_eq!(
+            trusted_comment(REAL_TAG, REAL_ASSET),
+            "discordia v0.1.0-pre.332 Discordia-macos-arm64.dmg",
+            "must match what ci.yml passes to -t"
+        );
+    }
+
+    #[test]
     fn something_that_is_not_a_signature_is_refused() {
         for junk in ["", "<!doctype html>", "untrusted comment: only\n"] {
-            let err = verify(b"anything", junk).unwrap_err();
+            let err = verify(b"anything", junk, REAL_TAG, REAL_ASSET).unwrap_err();
             assert!(
                 matches!(err, VerifyError::BadSignature(_)),
                 "{junk:?} was not rejected as a malformed signature: {err:?}"
@@ -720,11 +760,12 @@ mod tests {
                 .await
                 .expect("read the artifact")
         });
-        verify(&body, REAL_SIGNATURE).expect("the published artifact must verify");
+        verify(&body, REAL_SIGNATURE, REAL_TAG, REAL_ASSET)
+            .expect("the published artifact must verify");
 
         let mut tampered = body.to_vec();
         tampered[0] ^= 0xff;
-        assert!(verify(&tampered, REAL_SIGNATURE).is_err());
+        assert!(verify(&tampered, REAL_SIGNATURE, REAL_TAG, REAL_ASSET).is_err());
     }
 
     #[test]
@@ -1030,7 +1071,7 @@ mod tests {
     #[ignore = "downloads the published portable archive"]
     fn the_published_portable_archive_unpacks_over_a_folder() {
         let rt = tokio::runtime::Runtime::new().expect("build a runtime");
-        let (zip_bytes, sig) = rt.block_on(async {
+        let (zip_bytes, sig, tag) = rt.block_on(async {
             let http = reqwest::Client::new();
             let releases: serde_json::Value = http
                 .get("https://api.github.com/repos/ssotomayor/discordia/releases")
@@ -1076,10 +1117,12 @@ mod tests {
                 .text()
                 .await
                 .expect("read the signature");
-            (body, sig)
+            let tag = newest["tag_name"].as_str().expect("a tag").to_string();
+            (body, sig, tag)
         });
 
-        verify(&zip_bytes, &sig).expect("the published archive must verify");
+        verify(&zip_bytes, &sig, &tag, "Discordia-windows-portable.zip")
+            .expect("the published archive must verify");
 
         let dir = scratch("published-portable");
         let zip = dir.join("Discordia-windows-portable.zip");

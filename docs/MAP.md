@@ -11,22 +11,23 @@ numbers and seven miscategorised files before that rule was learned.
 
 ## Do not read these whole
 
-11 files hold most of the tree. Opening one to find a single arm costs more
+12 files hold most of the tree. Opening one to find a single arm costs more
 than every other document here put together, so grep the variant or the `fn`
 name instead.
 
 | File | Lines |
 |---|---|
 | `client/src/features/voice.rs` | 2787 |
-| `server/src/state/mod.rs` | 2449 |
-| `server/src/gateway/connection.rs` | 2099 |
+| `server/src/state/mod.rs` | 2451 |
+| `server/tests/owner_controls.rs` | 2421 |
+| `server/src/gateway/connection.rs` | 2101 |
 | `client/src/features/channels.rs` | 2191 |
-| `client/src/features/screenshare.rs` | 1582 |
-| `client/src/update.rs` | 1183 |
-| `client/src/state.rs` | 1371 |
-| `client/src/net.rs` | 1107 |
-| `client/src/features/chat.rs` | 1052 |
+| `client/src/features/screenshare.rs` | 1617 |
 | `protocol/src/lib.rs` | 1441 |
+| `client/src/state.rs` | 1373 |
+| `client/src/update.rs` | 1224 |
+| `client/src/net.rs` | 1187 |
+| `client/src/features/chat.rs` | 1052 |
 | `server/src/store.rs` | 965 |
 
 Everything else is small enough that `wc -l` answers faster than a list here
@@ -102,7 +103,7 @@ flowchart LR
     GW-->LK
   end
   SFU["LiveKit SFU<br/>voice-{ch} · screen-{ch}"]
-  RZ["rendezvous/<br/>/control · /discover · /resolve · iroh relay"]
+  RZ["rendezvous/<br/>/control · /discover · /resolve · /config · /voice-token · iroh relay"]
   RELAYS[("Nostr relays")]
   BOT["bot-sdk"]
   NET<-->|"QUIC (loopback: WS)<br/>Schnorr Identify"|GW

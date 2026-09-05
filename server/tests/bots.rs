@@ -219,17 +219,18 @@ async fn an_installed_bot_posts_under_the_name_its_installer_chose() {
         .send(&ClientMessage::InstallBot {
             guild_id,
             bot_pubkey: bot_id.pubkey().to_string(),
-            name: "PingBot".into(),
+            name: " Ping\u{202E}Bot\u{0} ".into(),
             permissions: vec![Permission::SendMessages],
             intents: vec![Intent::GuildMessages],
         })
         .await
         .unwrap();
     loop {
-        if matches!(
-            next_timeout(&mut owner).await,
-            ServerMessage::GuildIntegrations { .. }
-        ) {
+        if let ServerMessage::GuildIntegrations { bots, .. } = next_timeout(&mut owner).await {
+            assert_eq!(
+                bots[0].name, "PingBot",
+                "a bot name takes the same filter as every other name the gateway accepts"
+            );
             break;
         }
     }
