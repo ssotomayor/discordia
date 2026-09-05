@@ -627,22 +627,24 @@ pub async fn handle_connection(
                             reject_rate_limited(&mut ws_tx).await;
                             continue;
                         }
+                        // A blob past the budget is left out, not blanked: an
+                        // empty answer means "no such blob" and the client stops
+                        // asking, while an absent one is asked for again later.
                         let mut budget = MAX_BLOB_RESPONSE_BYTES;
                         let blobs: Vec<EmojiBlob> = images
                             .into_iter()
                             .take(MAX_EMOJI_FETCH)
-                            .map(|image| {
-                                let mut data_url = ctx
+                            .filter_map(|image| {
+                                let data_url = ctx
                                     .state
                                     .media
                                     .inline(&format!("media:{image}"))
                                     .unwrap_or_default();
                                 if data_url.len() > budget {
-                                    data_url = String::new();
-                                } else {
-                                    budget -= data_url.len();
+                                    return None;
                                 }
-                                EmojiBlob { image, data_url }
+                                budget -= data_url.len();
+                                Some(EmojiBlob { image, data_url })
                             })
                             .collect();
                         if send(&mut ws_tx, &ServerMessage::EmojiBlobs { blobs }).await.is_err() {

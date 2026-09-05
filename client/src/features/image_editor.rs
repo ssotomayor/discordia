@@ -91,7 +91,7 @@ pub fn ImageEditor(
 
     let Some((nat_w, nat_h)) = natural() else {
         return rsx! {
-            div { class: "dxf-backdrop-in fixed inset-0 z-50 flex items-center justify-center bg-black/60",
+            div { class: "dxf-backdrop-in fixed inset-0 z-[60] flex items-center justify-center bg-black/60",
                 div { class: "text-xs text-[var(--text-dim)]", "Loading image…" }
             }
         };
@@ -150,8 +150,10 @@ pub fn ImageEditor(
     };
 
     rsx! {
+        // Above the profile and guild dialogs (z-50) that open it, which sit
+        // later in the DOM and would otherwise cover it.
         div {
-            class: "dxf-backdrop-in fixed inset-0 z-50 flex items-center justify-center bg-black/60",
+            class: "dxf-backdrop-in fixed inset-0 z-[60] flex items-center justify-center bg-black/60",
             onclick: move |_| on_cancel.call(()),
             div {
                 class: "dxf-modal-in bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl p-4",
