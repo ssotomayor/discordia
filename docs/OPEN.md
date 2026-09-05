@@ -33,6 +33,11 @@ Closed and retired entries are not kept; `git log docs/` has them.
 - 8 · The Windows portable and setup ship the wrong icon.
 - 9 · Windows SmartScreen blocks the download as an unknown publisher.
 - 10 · The macOS build is not notarised.
+- 114 · Every macOS build is ad-hoc signed, so each one is a new code identity
+  to the system: camera, microphone and screen grants (TCC) are asked again
+  after every rebuild and every silent update. A stable signing identity —
+  even a self-made certificate used for every build — is what ends it; a
+  Developer ID is what the notarisation in 10 needs anyway.
 - 11 · `Discordia.html` should be named and moved, not deleted.
 - 12 · The `.icns` is downscaled from the PNG, not rasterised from the SVG.
 - 71 · Nothing checks that a test would fail if the code it guards broke.
