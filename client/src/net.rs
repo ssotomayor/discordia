@@ -367,6 +367,10 @@ where
         .await
         .map_err(|e| format!("send identify: {e}"))?;
 
+    // A link saved by an older build would be refused now and take the whole
+    // profile with it, so it is dropped here rather than sent.
+    let picture =
+        |v: Option<String>| v.filter(|p| !p.starts_with("http://") && !p.starts_with("https://"));
     if let Some(local) = crate::profile::load()
         && (local.avatar.is_some()
             || local.banner.is_some()
@@ -375,8 +379,8 @@ where
             || local.custom_status.is_some())
     {
         let set_profile = ClientMessage::SetProfile {
-            avatar: local.avatar,
-            banner: local.banner,
+            avatar: picture(local.avatar),
+            banner: picture(local.banner),
             bio: local.bio,
             status: local.status,
             custom_status: local.custom_status,
@@ -386,6 +390,7 @@ where
         }
     }
 
+    let mut media_tick = tokio::time::interval(MEDIA_TICK);
     loop {
         tokio::select! {
             outbound = rx.recv() => {
@@ -394,6 +399,10 @@ where
                 if let Err(e) = ws_tx.send(WsMessage::Text(json)).await {
                     return Err(format!("send: {e}"));
                 }
+            }
+            _ = media_tick.tick() => {
+                let mut s = state.write();
+                resolve_media(&mut s, tx);
             }
             inbound = ws_rx.next() => {
                 let Some(frame) = inbound else { break };
@@ -430,23 +439,36 @@ fn media_address(raw: &str) -> Option<String> {
     raw.strip_prefix("media:").map(str::to_string)
 }
 
+/// Asked-for and not yet answered counts as in flight for this long; after
+/// it the address is asked for again. Covers a throttled request, an answer
+/// the server cut for size, and a frame lost to a reconnect.
+const MEDIA_RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(8);
+const MEDIA_TICK: std::time::Duration = std::time::Duration::from_secs(3);
+
 /// Every picture the server named and has not yet handed over. Emoji are
 /// small and disk-cached, so they go in big batches; everything else can be
-/// a full 3 MB and goes four at a time, which is the server's per-answer cap.
+/// a full 3 MB, and the server's per-answer budget trims what does not fit.
 fn resolve_media(s: &mut AppState, tx: &UnboundedSender<ClientMessage>) {
     const EMOJI_PER_REQUEST: usize = 16;
-    const IMAGES_PER_REQUEST: usize = 4;
+    const IMAGES_PER_REQUEST: usize = 8;
+
+    let now = std::time::Instant::now();
+    let in_flight = |s: &AppState, address: &str| {
+        s.emoji_requested
+            .get(address)
+            .is_some_and(|asked| now.duration_since(*asked) < MEDIA_RETRY_AFTER)
+    };
 
     let mut emoji: Vec<String> = Vec::new();
     for image in emoji_addresses(s) {
-        if s.emoji_images.contains_key(&image) || s.emoji_requested.contains(&image) {
+        if s.emoji_images.contains_key(&image) || in_flight(s, &image) {
             continue;
         }
         if let Some(data_url) = crate::emoji::load_cached(&image) {
             s.emoji_images.insert(image, data_url);
             continue;
         }
-        s.emoji_requested.insert(image.clone());
+        s.emoji_requested.insert(image.clone(), now);
         emoji.push(image);
     }
 
@@ -465,10 +487,10 @@ fn resolve_media(s: &mut AppState, tx: &UnboundedSender<ClientMessage>) {
         .filter_map(media_address)
         .collect::<Vec<_>>();
     for address in named {
-        if s.emoji_images.contains_key(&address) || s.emoji_requested.contains(&address) {
+        if s.emoji_images.contains_key(&address) || in_flight(s, &address) {
             continue;
         }
-        s.emoji_requested.insert(address.clone());
+        s.emoji_requested.insert(address.clone(), now);
         images.push(address);
     }
 
@@ -737,6 +759,7 @@ fn apply(
                 if !blob.data_url.is_empty() && emoji.contains(&blob.image) {
                     crate::emoji::store_cached(&blob.image, &blob.data_url);
                 }
+                s.emoji_requested.remove(&blob.image);
                 s.emoji_images.insert(blob.image, blob.data_url);
             }
         }
@@ -1089,6 +1112,63 @@ mod tests {
         assert!(
             parse_target("box.example:9000").is_err(),
             "a bare host means ws://"
+        );
+    }
+
+    #[test]
+    fn a_picture_the_server_never_answered_is_asked_for_again() {
+        let (tx, mut rx) = unbounded_channel::<ClientMessage>();
+        let mut s = AppState::empty();
+        let channel = Id::new_v4();
+        s.messages.insert(
+            channel,
+            vec![crate::protocol::Message {
+                id: Id::new_v4(),
+                channel_id: channel,
+                author: crate::protocol::User {
+                    pubkey: "a".repeat(64),
+                    username: "a".into(),
+                },
+                content: String::new(),
+                image: Some(format!("media:{}.png", "b".repeat(64))),
+                reactions: Vec::new(),
+                reply_to: None,
+                created_at: chrono::Utc::now(),
+            }],
+        );
+        let address = format!("{}.png", "b".repeat(64));
+
+        resolve_media(&mut s, &tx);
+        match rx.try_recv() {
+            Ok(ClientMessage::FetchEmoji { images }) => {
+                assert_eq!(images, std::slice::from_ref(&address))
+            }
+            other => panic!("expected one fetch, got {other:?}"),
+        }
+        resolve_media(&mut s, &tx);
+        assert!(rx.try_recv().is_err(), "still in flight, not asked twice");
+
+        s.emoji_requested.insert(
+            address.clone(),
+            std::time::Instant::now() - MEDIA_RETRY_AFTER * 2,
+        );
+        resolve_media(&mut s, &tx);
+        assert!(
+            matches!(rx.try_recv(), Ok(ClientMessage::FetchEmoji { .. })),
+            "an old unanswered request is repeated"
+        );
+
+        s.emoji_requested.remove(&address);
+        s.emoji_images
+            .insert(address.clone(), "data:image/png;base64,AA==".into());
+        resolve_media(&mut s, &tx);
+        assert!(
+            rx.try_recv().is_err(),
+            "an answered picture is never asked for again"
+        );
+        assert_eq!(
+            s.media_src(&format!("media:{address}")),
+            Some("data:image/png;base64,AA==")
         );
     }
 
