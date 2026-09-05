@@ -1,0 +1,30 @@
+# Both Dockerfiles are `COPY . .` into a rust image, so everything not listed
+# here is uploaded before the build starts. Cargo build output alone is ~2.6 GB
+# across the workspace and per-crate target dirs, and none of it reaches the
+# image: without this file a local `docker build` ships gigabytes to the daemon
+# instead of ~5 MB.
+#
+# `**/target` and not `target/`: a .dockerignore pattern is rooted at the
+# context, so the bare form misses server/target and rendezvous/target.
+**/target
+/client/build/
+
+# A secret must never become an image layer; compose reads .env from the deploy
+# directory at run time, not from the build context.
+.env
+.env.local
+
+# No crate is excluded even when only one is built: cargo resolves every
+# workspace member's Cargo.toml for `-p dioxusfun-server`.
+
+.git/
+node_modules/
+discordia-data/
+rendezvous-data/
+client/nsis/MicrosoftEdgeWebview2Setup.exe
+
+.DS_Store
+Thumbs.db
+*.swp
+*~
+*.log

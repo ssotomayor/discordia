@@ -5,7 +5,7 @@
 | Rung | For | How |
 |---|---|---|
 | One click | friend groups | "Host my own" in the client — spawns a gateway and (unless the rendezvous has its own) an SFU in-process |
-| One box | communities | `cargo run -p dioxusfun-server`, or Docker (`Dockerfile`, `docker-compose.yml` — untested, entry 15) |
+| One box | communities | `cargo run -p dioxusfun-server`, or Docker (`Dockerfile`, `docker-compose.yml` — what the test deployment runs) |
 | Cluster | giants | not built (entry: demand-gated) |
 
 ## Environment
@@ -68,6 +68,34 @@ rendezvous entry. The plaintext gateway binds loopback only.
 Port mapping failure is the normal case and never stops hosting. It also
 measures hairpin NAT, because LiveKit *replaces* its LAN candidate with the
 advertised address rather than adding to it.
+
+## Deploying a box
+
+CI builds the two images on every push to `master` (`deploy-images` in
+`ci.yml`, gated on `test`) and pushes them to
+`ghcr.io/<owner>/discordia-{server,rendezvous}`, tagged `latest` and the short
+sha. **Never build on the deployment box**: the server crate needs more RAM than
+a small VPS has, and the OOM killer picks among the containers already running.
+
+Updating is then a pull, from a directory holding only `docker-compose.yml`,
+`deploy/livekit.yaml` and `.env`:
+
+```bash
+cd /opt/discordia
+docker compose pull && docker compose -p discordia up -d
+```
+
+Rolling back is the same command against an older sha in the image tag. Keep
+the deploy directory off any checkout an agent or a timer writes to — a compose
+file read out of a working tree is whatever revision that tree last held.
+
+| Trap | Why |
+|---|---|
+| `-p discordia` | volumes are project-scoped; a different project name orphans `discordia_*` and the box comes up empty |
+| `.env` is required | compose uses `${LIVEKIT_API_KEY:?}`, so a missing key fails at start rather than falling back to LiveKit's public `devkey` |
+| All three restart together | the gateway, the rendezvous and the SFU must agree on the LiveKit pair |
+| `deploy/livekit.yaml` carries no `keys:` | `LIVEKIT_KEYS` supplies them, so a copied file never carries a secret |
+| Off loopback the gateway needs QUIC reachable | host networking today, `DIOXUSFUN_RELAY_URL` so a blocked UDP port still connects (issue #151) |
 
 ## Devcontainer
 
