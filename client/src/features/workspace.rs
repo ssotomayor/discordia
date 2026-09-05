@@ -504,7 +504,8 @@ fn HostBanner() -> Element {
     drop(snapshot);
 
     let mut copied = use_signal(|| false);
-    let lan_text = info.lan_url.clone();
+    let mut copied_share = use_signal(|| false);
+    let share = info.share.clone();
     let shortcode = info.shortcode.clone();
     let publish_error = info.publish_error.clone();
     let listed_public = info.listed_public;
@@ -547,10 +548,21 @@ fn HostBanner() -> Element {
                     }
                 }
             }
-            span {
-                class: "pl-2 font-mono text-[10.5px] text-[var(--text-dim)] truncate max-w-52 border-l border-[var(--border)]",
-                title: "The address friends on this network can use",
-                "{lan_text}"
+            // The share string is long and opaque; it is copied, never read.
+            if let Some(share) = share {
+                button {
+                    class: "pl-2 inline-flex items-center gap-1 text-[10.5px] text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors border-l border-[var(--border)]",
+                    title: "Copy the quic:// address friends type to reach this machine directly. It carries the key their connection is checked against, so nothing on the way can read or pose as you.",
+                    onclick: move |_| {
+                        let js = crate::features::screenshare::js_str(&share);
+                        let _ = document::eval(&format!(
+                            "navigator.clipboard && navigator.clipboard.writeText({js});"
+                        ));
+                        copied_share.set(true);
+                    },
+                    span { class: "block w-3.5 h-3.5", dangerous_inner_html: crate::features::icons::COPY }
+                    if copied_share() { "address copied" } else { "copy address" }
+                }
             }
             if let Some(err) = publish_error {
                 span { class: "text-[var(--text-dim)]", "·" }
@@ -576,18 +588,14 @@ fn HostBanner() -> Element {
 fn Reachability(reachability: crate::host::Reachability) -> Element {
     use crate::host::Reachability as R;
     match reachability {
-        R::Direct {
-            endpoint,
-            method,
-            media,
-        } => {
+        R::Direct { method, media } => {
             let title = if media {
                 format!(
-                    "{method} mapped this machine's ports. Friends reach you at {endpoint} without the relay, voice included."
+                    "{method} mapped this machine's ports. Friends with the address reach you without any relay, voice included."
                 )
             } else {
                 format!(
-                    "{method} mapped the chat port ({endpoint}), but not the voice ports — calls still go through a relay's SFU, or stay on this network."
+                    "{method} mapped the chat port, but not the voice ports — calls still go through a relay's SFU, or stay on this network."
                 )
             };
             rsx! {
@@ -663,20 +671,20 @@ fn TransportBadge() -> Element {
 
     let (label, color, title) = match transport {
         crate::state::Transport::Loopback => return rsx! { Fragment {} },
-        crate::state::Transport::Private => (
-            "private",
-            "text-[var(--success)]",
-            "Connected straight to the host over an encrypted QUIC transport, with the host authenticated by its public key. Nobody in between can read this connection. The host can see your IP address.",
-        ),
-        crate::state::Transport::Direct => (
+        crate::state::Transport::Quic => (
             "direct",
-            "text-[var(--warn)]",
-            "Connected straight to the host — no relay in the middle — but in the clear: every hop on the path can read this connection. The host can see your IP address.",
+            "text-[var(--success)]",
+            "Connected straight to the host over encrypted QUIC, with the host authenticated by its key. Nobody in between can read this connection. The host can see your IP address.",
         ),
-        crate::state::Transport::Relayed => (
+        crate::state::Transport::QuicRelayed => (
             "relayed",
-            "text-[var(--text-muted)]",
-            "Carried by a rendezvous relay, which can read everything on this connection. The host never learns your address.",
+            "text-[var(--success)]",
+            "Carried by the rendezvous relay, still encrypted end to end: the relay forwards ciphertext and sees only the two keys. The host does not learn your address, the relay does.",
+        ),
+        crate::state::Transport::Proxied => (
+            "proxied",
+            "text-[var(--success)]",
+            "Connected over TLS to a proxy in front of the gateway. The proxy's operator, usually the server's, can read this connection; nobody else on the path can.",
         ),
     };
     rsx! {

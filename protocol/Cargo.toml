@@ -8,6 +8,7 @@ description = "Shared wire protocol for dioxusfun (client, server, and the bot S
 serde = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
+url = "2"
 
 [dev-dependencies]
 serde_json = { workspace = true }

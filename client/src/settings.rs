@@ -13,8 +13,6 @@ pub struct ClientSettings {
     pub pattern: String,
     pub background: Option<String>,
     pub background_dim: u8,
-    #[serde(default = "default_blossom_server")]
-    pub blossom_server: String,
     #[serde(default = "default_rendezvous_servers")]
     pub rendezvous_servers: Vec<String>,
 
@@ -106,10 +104,6 @@ fn default_voice_bitrate_kbps() -> u32 {
     48
 }
 
-fn default_blossom_server() -> String {
-    "https://blossom.band".into()
-}
-
 fn default_pattern() -> String {
     "dots".into()
 }
@@ -130,7 +124,6 @@ impl Default for ClientSettings {
             pattern: default_pattern(),
             background: None,
             background_dim: 55,
-            blossom_server: default_blossom_server(),
             rendezvous_servers: default_rendezvous_servers(),
             dm_relays: Vec::new(),
             dm_cleared_at: Vec::new(),

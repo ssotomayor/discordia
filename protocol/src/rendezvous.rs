@@ -22,8 +22,6 @@ pub enum HostToRendezvous {
         #[serde(default)]
         description: Option<String>,
         #[serde(default)]
-        endpoint: Option<String>,
-        #[serde(default)]
         transport_key: Option<String>,
         #[serde(default)]
         transport_signature: Option<String>,
@@ -41,8 +39,6 @@ pub struct DiscoverEntry {
     /// as stale would show every host as unreachable.
     #[serde(default)]
     pub idle_secs: u64,
-    #[serde(default)]
-    pub endpoint: Option<String>,
     #[serde(default)]
     pub transport_key: Option<String>,
     #[serde(default)]
@@ -68,9 +64,6 @@ pub enum RendezvousToHost {
     Released {
         name: String,
     },
-    NewFriend {
-        session_id: String,
-    },
     Error {
         message: String,
     },
@@ -88,7 +81,6 @@ mod tests {
             signature: Some("cd".repeat(64)),
             publish_public: true,
             description: None,
-            endpoint: None,
             transport_key: None,
             transport_signature: None,
             transport_addrs: Vec::new(),
@@ -102,40 +94,12 @@ mod tests {
     }
 
     #[test]
-    fn endpoint_round_trips_and_is_optional() {
-        let json = serde_json::to_string(&HostToRendezvous::Register {
-            name: None,
-            pubkey: None,
-            signature: None,
-            publish_public: false,
-            description: None,
-            endpoint: Some("ws://203.0.113.5:9000".into()),
-            transport_key: None,
-            transport_signature: None,
-            transport_addrs: Vec::new(),
-        })
-        .unwrap();
-        let back: HostToRendezvous = serde_json::from_str(&json).unwrap();
-        let HostToRendezvous::Register { endpoint, .. } = back else {
-            panic!("a register frame must deserialize as one");
-        };
-        assert_eq!(endpoint.as_deref(), Some("ws://203.0.113.5:9000"));
-
-        let old: HostToRendezvous =
-            serde_json::from_str(r#"{"op":"register","d":{"name":null}}"#).unwrap();
-        let HostToRendezvous::Register { endpoint, .. } = old else {
-            panic!("a register frame must deserialize as one");
-        };
-        assert!(endpoint.is_none());
-    }
-
-    #[test]
-    fn discover_entry_endpoint_is_optional() {
+    fn discover_entry_tolerates_missing_fields() {
         let entry: DiscoverEntry = serde_json::from_str(
             r#"{"shortcode":"brave-otter-07","name":null,"description":null}"#,
         )
         .unwrap();
-        assert!(entry.endpoint.is_none());
+        assert!(entry.transport_key.is_none());
         assert_eq!(entry.idle_secs, 0);
 
         let with = DiscoverEntry {
@@ -143,9 +107,8 @@ mod tests {
             name: Some("Casa".into()),
             description: None,
             idle_secs: 3,
-            endpoint: Some("ws://203.0.113.5:9000".into()),
-            transport_key: None,
-            transport_addrs: Vec::new(),
+            transport_key: Some("ab".repeat(32)),
+            transport_addrs: vec!["203.0.113.5:4433".into()],
             relay_url: None,
         };
         let back: DiscoverEntry =

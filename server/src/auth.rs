@@ -11,10 +11,14 @@ pub fn fresh_nonce() -> String {
     bs58::encode(bytes).into_string()
 }
 
+/// `origin` is the address the client dialed. Without it in the signature, a
+/// server you connect to can forward another server's nonce and log in there
+/// as you; with it, that signature names an address the other server is not.
 pub fn verify_identify(
     pubkey_hex: &str,
     signature_hex: &str,
     nonce: &str,
+    origin: &str,
     username: &str,
 ) -> Result<(), String> {
     let pubkey_bytes = hex::decode(pubkey_hex).map_err(|e| format!("pubkey not hex: {e}"))?;
@@ -25,11 +29,8 @@ pub fn verify_identify(
     let sig =
         Signature::from_slice(&sig_bytes).map_err(|e| format!("invalid schnorr signature: {e}"))?;
 
-    let mut message = Vec::with_capacity(nonce.len() + pubkey_hex.len() + username.len());
-    message.extend_from_slice(nonce.as_bytes());
-    message.extend_from_slice(pubkey_hex.as_bytes());
-    message.extend_from_slice(username.as_bytes());
-    let digest: [u8; 32] = Sha256::digest(&message).into();
+    let payload = crate::protocol::identify_payload(nonce, origin, pubkey_hex, username);
+    let digest: [u8; 32] = Sha256::digest(&payload).into();
     let msg = Message::from_digest(digest);
 
     let secp = Secp256k1::verification_only();
@@ -42,14 +43,17 @@ mod tests {
     use super::*;
     use secp256k1::{Keypair, SecretKey};
 
-    fn sign(secret: &SecretKey, nonce: &str, pubkey_hex: &str, username: &str) -> String {
+    fn sign(
+        secret: &SecretKey,
+        nonce: &str,
+        origin: &str,
+        pubkey_hex: &str,
+        username: &str,
+    ) -> String {
         let secp = Secp256k1::new();
         let keypair = Keypair::from_secret_key(&secp, secret);
-        let mut message = Vec::new();
-        message.extend_from_slice(nonce.as_bytes());
-        message.extend_from_slice(pubkey_hex.as_bytes());
-        message.extend_from_slice(username.as_bytes());
-        let digest: [u8; 32] = Sha256::digest(&message).into();
+        let payload = crate::protocol::identify_payload(nonce, origin, pubkey_hex, username);
+        let digest: [u8; 32] = Sha256::digest(&payload).into();
         let msg = Message::from_digest(digest);
         hex::encode(secp.sign_schnorr_no_aux_rand(&msg, &keypair).serialize())
     }
@@ -66,15 +70,37 @@ mod tests {
     #[test]
     fn good_signature_verifies() {
         let (secret, pubkey) = keypair();
-        let (nonce, username) = ("test-nonce", "alice");
-        let sig = sign(&secret, nonce, &pubkey, username);
-        assert!(verify_identify(&pubkey, &sig, nonce, username).is_ok());
+        let (nonce, origin, username) = ("test-nonce", "127.0.0.1:9000", "alice");
+        let sig = sign(&secret, nonce, origin, &pubkey, username);
+        assert!(verify_identify(&pubkey, &sig, nonce, origin, username).is_ok());
     }
 
     #[test]
     fn tampered_username_fails() {
         let (secret, pubkey) = keypair();
-        let sig = sign(&secret, "n", &pubkey, "alice");
-        assert!(verify_identify(&pubkey, &sig, "n", "mallory").is_err());
+        let sig = sign(&secret, "n", "h:1", &pubkey, "alice");
+        assert!(verify_identify(&pubkey, &sig, "n", "h:1", "mallory").is_err());
+    }
+
+    #[test]
+    fn a_signature_for_one_address_is_worthless_at_another() {
+        let (secret, pubkey) = keypair();
+        let sig = sign(&secret, "n", "evil.example:9000", &pubkey, "alice");
+        assert!(verify_identify(&pubkey, &sig, "n", "chat.example:9000", "alice").is_err());
+        assert!(verify_identify(&pubkey, &sig, "n", "evil.example:9000", "alice").is_ok());
+    }
+
+    #[test]
+    fn the_old_unbound_payload_no_longer_verifies() {
+        let (secret, pubkey) = keypair();
+        let secp = Secp256k1::new();
+        let keypair = Keypair::from_secret_key(&secp, &secret);
+        let legacy = format!("n{pubkey}alice");
+        let digest: [u8; 32] = Sha256::digest(legacy.as_bytes()).into();
+        let sig = hex::encode(
+            secp.sign_schnorr_no_aux_rand(&Message::from_digest(digest), &keypair)
+                .serialize(),
+        );
+        assert!(verify_identify(&pubkey, &sig, "n", "", "alice").is_err());
     }
 }

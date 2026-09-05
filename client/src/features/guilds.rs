@@ -98,7 +98,7 @@ pub fn GuildsSidebar() -> Element {
                                 key: "{guild.id}",
                                 id: guild.id,
                                 label: guild.icon.clone().unwrap_or_else(|| initials(&guild.name)),
-                                image: guild.icon_image.clone(),
+                                image: guild.icon_image.as_deref().and_then(|i| state.read().media_src(i).map(str::to_string)),
                                 name: guild.name.clone(),
                                 selected: !dm_mode && selected == Some(guild.id),
                                 has_menu,

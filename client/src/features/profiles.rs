@@ -17,7 +17,7 @@ pub fn status_color(status: &str) -> &'static str {
 pub(crate) const MAX_UPLOAD_BYTES: usize = 15_000_000;
 pub(crate) const EMBED_MAX_BYTES: usize = 2_000_000;
 
-pub(crate) const IMAGE_HELP: &str = "PNG, JPEG, GIF or WebP. Under 2 MB always works; larger needs a reachable Blossom media server.";
+pub(crate) const IMAGE_HELP: &str = "PNG, JPEG, GIF or WebP, under 2 MB once cropped.";
 
 pub(crate) fn check_image(bytes: &[u8], mime: &str) -> Result<(), String> {
     if bytes.is_empty() {
@@ -46,57 +46,27 @@ pub(crate) fn data_url_bytes(url: &str) -> Vec<u8> {
         .unwrap_or_default()
 }
 
-pub(crate) fn data_url_mime(url: &str) -> String {
-    url.strip_prefix("data:")
-        .and_then(|rest| rest.split_once(';'))
-        .map(|(mime, _)| mime.to_string())
-        .filter(|m| m.starts_with("image/"))
-        .unwrap_or_else(|| "image/png".to_string())
-}
-
 pub(crate) fn image_mime(reported: Option<String>) -> String {
     reported
         .filter(|m| m.starts_with("image/"))
         .unwrap_or_else(|| "image/png".to_string())
 }
 
-pub(crate) async fn image_to_ref(
-    server: String,
-    identity: crate::identity::Identity,
-    bytes: Vec<u8>,
-    mime: String,
-) -> (Option<String>, Option<String>) {
-    let n = bytes.len();
-    crate::dlog!("[blossom] uploading {n} bytes ({mime}) to {server}");
-    match crate::blossom::upload_blob(&server, bytes.clone(), &mime, &identity).await {
-        Ok(url) => {
-            crate::dlog!("[blossom] upload ok -> {url}");
-            (Some(url), None)
-        }
-        Err(e) => {
-            crate::dlog!("[blossom] upload failed: {e}");
-            if n > EMBED_MAX_BYTES {
-                (
-                    None,
-                    Some(format!(
-                        "Couldn't upload to the media server ({e}), and this image is \
-                         {:.1} MB — too large to embed instead. Pick one under 2 MB, or set \
-                         a working Blossom server under Appearance.",
-                        n as f64 / 1_000_000.0
-                    )),
-                )
-            } else {
-                let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-                (
-                    Some(format!("data:{mime};base64,{b64}")),
-                    Some(format!(
-                        "Media server unavailable ({e}) — embedded the image instead, which works \
-                         but makes this guild's snapshot larger for everyone."
-                    )),
-                )
-            }
-        }
+/// The server stores the picture and hands back an address, so the only
+/// thing a client ever sends is the bytes themselves — never a link for every
+/// other member's webview to go and fetch.
+pub(crate) fn embed_image(cropped: String) -> (Option<String>, Option<String>) {
+    let n = data_url_bytes(&cropped).len();
+    if n > EMBED_MAX_BYTES {
+        return (
+            None,
+            Some(format!(
+                "This image is {:.1} MB after cropping — pick one under 2 MB.",
+                n as f64 / 1_000_000.0
+            )),
+        );
     }
+    (Some(cropped), None)
 }
 
 #[component]
@@ -136,7 +106,7 @@ pub fn ProfileCard() -> Element {
         .profile_of(&pubkey)
         .and_then(|p| p.bio.clone())
         .filter(|b| !b.trim().is_empty());
-    let banner = snapshot.profile_of(&pubkey).and_then(|p| p.banner.clone());
+    let banner = snapshot.banner_of(&pubkey).map(str::to_string);
     let status = snapshot.presence_of(&pubkey).to_string();
     let custom_status = snapshot
         .profile_of(&pubkey)
@@ -319,10 +289,6 @@ pub fn ProfileCard() -> Element {
 pub fn ProfileEditor(class: String, children: Element) -> Element {
     let state = use_app_state();
     let gateway = use_gateway();
-    let identity = use_context::<crate::identity::Identity>();
-    let settings = use_context::<Signal<crate::settings::ClientSettings>>();
-    let id_avatar_crop = identity.clone();
-    let id_banner_crop = identity.clone();
 
     let mut open = use_signal(|| false);
     let mut avatar = use_signal::<Option<String>>(|| None);
@@ -376,9 +342,14 @@ pub fn ProfileEditor(class: String, children: Element) -> Element {
             }
         };
         let status_opt = Some(status());
+        // The local copy is what gets re-sent to the *next* server, and a
+        // `media:` address only means something to the server that issued it.
+        let portable = |img: Option<String>| {
+            img.map(|i| state.read().media_src(&i).map(str::to_string).unwrap_or(i))
+        };
         let local = crate::profile::LocalProfile {
-            avatar: avatar(),
-            banner: banner(),
+            avatar: portable(avatar()),
+            banner: portable(banner()),
             bio: bio_opt.clone(),
             status: status_opt.clone(),
             custom_status: custom_opt.clone(),
@@ -419,15 +390,9 @@ pub fn ProfileEditor(class: String, children: Element) -> Element {
                 on_cancel: move |_| editing_avatar.set(None),
                 on_apply: move |cropped: String| {
                     editing_avatar.set(None);
-                    let identity = id_avatar_crop.clone();
-                    let server = settings.read().blossom_server.clone();
-                    spawn(async move {
-                        let bytes = data_url_bytes(&cropped);
-                        let mime = data_url_mime(&cropped);
-                        let (val, note) = image_to_ref(server, identity, bytes, mime).await;
-                        err.set(note);
-                        avatar.set(val);
-                    });
+                    let (val, note) = embed_image(cropped);
+                    err.set(note);
+                    avatar.set(val);
                 },
             }
         }
@@ -438,15 +403,9 @@ pub fn ProfileEditor(class: String, children: Element) -> Element {
                 on_cancel: move |_| editing_banner.set(None),
                 on_apply: move |cropped: String| {
                     editing_banner.set(None);
-                    let identity = id_banner_crop.clone();
-                    let server = settings.read().blossom_server.clone();
-                    spawn(async move {
-                        let bytes = data_url_bytes(&cropped);
-                        let mime = data_url_mime(&cropped);
-                        let (val, note) = image_to_ref(server, identity, bytes, mime).await;
-                        err.set(note);
-                        banner.set(val);
-                    });
+                    let (val, note) = embed_image(cropped);
+                    err.set(note);
+                    banner.set(val);
                 },
             }
         }
@@ -461,7 +420,7 @@ pub fn ProfileEditor(class: String, children: Element) -> Element {
 
                     div { class: "flex items-center gap-3 mb-3",
                         div { class: "w-16 h-16 rounded-md border border-[var(--border)] overflow-hidden flex items-center justify-center text-[var(--text-dim)] text-xs shrink-0",
-                            if let Some(url) = avatar() {
+                            if let Some(url) = avatar().and_then(|a| state.read().media_src(&a).map(str::to_string)) {
                                 img { class: "w-full h-full object-cover", src: "{url}", alt: "avatar preview" }
                             } else {
                                 "none"
@@ -514,7 +473,7 @@ pub fn ProfileEditor(class: String, children: Element) -> Element {
                     div { class: "mb-3",
                         div { class: "text-[10px] uppercase tracking-wider text-[var(--text-muted)] mb-1", "Banner" }
                         div { class: "h-16 rounded-md border border-[var(--border)] overflow-hidden bg-[var(--accent-soft)] flex items-center justify-center text-[var(--text-dim)] text-xs",
-                            if let Some(url) = banner() {
+                            if let Some(url) = banner().and_then(|b| state.read().media_src(&b).map(str::to_string)) {
                                 img { class: "w-full h-full object-cover", src: "{url}", alt: "banner preview" }
                             } else {
                                 "no banner"

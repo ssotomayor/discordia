@@ -1,5 +1,8 @@
+use std::path::Path;
+
 use livekit_api::access_token::{AccessToken, VideoGrants};
 
+use crate::livekit_bundle;
 use crate::protocol::Id;
 
 #[derive(Debug, Clone)]
@@ -28,31 +31,52 @@ pub struct LiveKitConfig {
 }
 
 impl LiveKitConfig {
-    pub fn from_env() -> Self {
+    pub fn from_env(data_dir: &Path) -> Self {
+        let env = |name| std::env::var(name).ok().filter(|v| !v.trim().is_empty());
+        let (api_key, api_secret) = match (env("LIVEKIT_API_KEY"), env("LIVEKIT_API_SECRET")) {
+            (Some(key), Some(secret)) => (key, secret),
+            _ => {
+                let c = livekit_bundle::credentials_or_ephemeral(data_dir);
+                (c.key, c.secret)
+            }
+        };
         Self {
             explicit_url: std::env::var("LIVEKIT_URL").ok(),
             port: std::env::var("LIVEKIT_PORT")
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(7880),
-            api_key: std::env::var("LIVEKIT_API_KEY").unwrap_or_else(|_| "devkey".into()),
-            api_secret: std::env::var("LIVEKIT_API_SECRET")
-                .unwrap_or_else(|_| "secret-must-be-at-least-32-chars-long".into()),
+            api_key,
+            api_secret,
             minter: None,
             lan_host: None,
             public_host: None,
         }
     }
 
-    pub fn url_for_client(&self, client_host: Option<&str>) -> String {
+    /// Over QUIC the `Host` header is a fixed loopback placeholder, so the
+    /// peer's own address says which side of the NAT it stands on: a private
+    /// one gets the LAN address, a public one the mapped address.
+    pub fn url_for_client(
+        &self,
+        client_host: Option<&str>,
+        peer: Option<std::net::IpAddr>,
+    ) -> String {
         if let Some(url) = &self.explicit_url {
             return url.clone();
         }
         let host = client_host.map(host_without_port).unwrap_or("127.0.0.1");
-        let host = match (&self.public_host, &self.lan_host, is_loopback(host)) {
-            (Some(public), _, true) => public.as_str(),
-            (None, Some(lan), true) => lan.as_str(),
-            _ => host,
+        let host = if is_loopback(host) {
+            let prefer_lan =
+                peer.is_some_and(|ip| !ip.is_loopback() && crate::protocol::is_private_ip(ip));
+            let (first, second) = if prefer_lan {
+                (&self.lan_host, &self.public_host)
+            } else {
+                (&self.public_host, &self.lan_host)
+            };
+            first.as_deref().or(second.as_deref()).unwrap_or(host)
+        } else {
+            host
         };
         format!("ws://{host}:{}", self.port)
     }
@@ -243,7 +267,7 @@ mod tests {
             public_host: None,
         };
         assert_eq!(
-            cfg.url_for_client(Some("192.168.0.5:9000")),
+            cfg.url_for_client(Some("192.168.0.5:9000"), None),
             "wss://my.livekit.cloud"
         );
     }
@@ -260,10 +284,10 @@ mod tests {
             public_host: None,
         };
         assert_eq!(
-            cfg.url_for_client(Some("192.168.0.5:9000")),
+            cfg.url_for_client(Some("192.168.0.5:9000"), None),
             "ws://192.168.0.5:7880"
         );
-        assert_eq!(cfg.url_for_client(None), "ws://127.0.0.1:7880");
+        assert_eq!(cfg.url_for_client(None, None), "ws://127.0.0.1:7880");
     }
 
     #[test]
@@ -278,10 +302,10 @@ mod tests {
             public_host: None,
         };
         for h in ["127.0.0.1:9000", "localhost:9000", "[::1]:9000"] {
-            assert_eq!(cfg.url_for_client(Some(h)), "ws://192.168.0.61:7880");
+            assert_eq!(cfg.url_for_client(Some(h), None), "ws://192.168.0.61:7880");
         }
         assert_eq!(
-            cfg.url_for_client(Some("192.168.0.99:9000")),
+            cfg.url_for_client(Some("192.168.0.99:9000"), None),
             "ws://192.168.0.99:7880"
         );
     }
@@ -298,12 +322,41 @@ mod tests {
             public_host: Some("203.0.113.5".into()),
         };
         assert_eq!(
-            cfg.url_for_client(Some("127.0.0.1:9000")),
+            cfg.url_for_client(Some("127.0.0.1:9000"), None),
             "ws://203.0.113.5:7880"
         );
         assert_eq!(
-            cfg.url_for_client(Some("192.168.0.99:9000")),
+            cfg.url_for_client(Some("192.168.0.99:9000"), None),
             "ws://192.168.0.99:7880"
+        );
+    }
+
+    #[test]
+    fn a_quic_peer_is_placed_by_its_own_address() {
+        let cfg = LiveKitConfig {
+            explicit_url: None,
+            port: 7880,
+            api_key: "".into(),
+            api_secret: "".into(),
+            minter: None,
+            lan_host: Some("192.168.0.61".into()),
+            public_host: Some("203.0.113.5".into()),
+        };
+        let quic_host = Some("127.0.0.1");
+        assert_eq!(
+            cfg.url_for_client(quic_host, Some("192.168.0.99".parse().unwrap())),
+            "ws://192.168.0.61:7880",
+            "a friend on the LAN gets the LAN address"
+        );
+        assert_eq!(
+            cfg.url_for_client(quic_host, Some("198.51.100.9".parse().unwrap())),
+            "ws://203.0.113.5:7880",
+            "a friend across the internet gets the mapped address"
+        );
+        assert_eq!(
+            cfg.url_for_client(quic_host, Some("127.0.0.1".parse().unwrap())),
+            "ws://203.0.113.5:7880",
+            "our own client behaves as before"
         );
     }
 }

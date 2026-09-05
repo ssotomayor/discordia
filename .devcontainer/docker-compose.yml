@@ -1,0 +1,146 @@
+# The agent's container, and nothing else. The repo-root docker-compose.yml is
+# deliberately NOT chained in here the way a devcontainer usually chains its
+# project's services: those are the self-host deployment, they build release
+# images of this same tree, and PUBLIC_HOST is `:?` — required — so pulling it
+# in would fail before this file was read. Nothing in here needs them; the
+# suite spawns its own gateway per test.
+#
+# Every relative path below resolves against THIS directory, because this is
+# the only compose file the devcontainer passes, and compose takes the project
+# directory from the first one. Hence `..` for the repo root.
+services:
+  dev:
+    build:
+      context: ..
+      dockerfile: .devcontainer/Dockerfile
+    # ipset and iptables in the container's own namespace — init-firewall.sh.
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    volumes:
+      # Mounted at the host's own absolute path. Claude derives its project
+      # slug from the directory, so mounting it anywhere else would land on a
+      # second, empty store instead of the sessions and memory mounted below —
+      # and any git worktree under .claude/worktrees/ records an absolute
+      # `gitdir:` that only resolves at this path.
+      - ..:/Users/tehsoto/Projects/dioxusfun-monorepo:cached
+
+      # Read-only on exactly the paths that cause code to run ON THE HOST,
+      # overlaying the mount above. The rest of .git stays writable, so branch,
+      # add and commit all work in here while the escape is shut.
+      #
+      # The threat: git on the host executes whatever sits in .git/hooks, so a
+      # malicious build.rs — the live supply-chain surface in a Rust tree,
+      # where build scripts and proc macros run arbitrary code at compile time,
+      # and this one pulls deep_filter straight from a git rev — could drop a
+      # post-checkout hook and have it run outside the container, as the host
+      # user, on the next ordinary `git commit`.
+      #
+      # .git/config has to be read-only too, or the hooks mount is pointless:
+      # core.hooksPath set in the LOCAL config overrides any global setting and
+      # would redirect git at a writable directory. Locking it also closes the
+      # worktree-config variant and named filter/diff drivers, whose commands
+      # only ever come from config. The cost is real and small: `git push -u`
+      # writes branch.*.merge and so fails in here. Push with
+      # `git push origin HEAD` instead.
+      #
+      # .cargo is the same class of hole by a different door: config.toml can
+      # name a `linker` or `runner` that HOST cargo executes. The whole
+      # directory rather than that one file, because cargo reads `config` as
+      # well as `config.toml` and a file mount leaves the other name writable.
+      - ../.git/hooks:/Users/tehsoto/Projects/dioxusfun-monorepo/.git/hooks:ro
+      - ../.git/config:/Users/tehsoto/Projects/dioxusfun-monorepo/.git/config:ro
+      - ../.cargo:/Users/tehsoto/Projects/dioxusfun-monorepo/.cargo:ro
+
+      # Build output on a named volume rather than the bind mount. Two reasons:
+      # bind-mounted I/O this heavy is slow on macOS, and the host's target/
+      # holds Mach-O objects a Linux toolchain would reject — it is 50GB of
+      # them. One volume, not CARGO_TARGET_DIR, so `target/dx` stays where dx
+      # and the workflows expect to find a bundle.
+      - target:/Users/tehsoto/Projects/dioxusfun-monorepo/target
+
+      # The host's SSH agent, which Docker Desktop exposes at this fixed path
+      # inside its VM. It is what makes the full git workflow work in here
+      # without a single private key crossing the boundary: both the push and
+      # the commit signature are produced by the agent on the host, which only
+      # ever returns a signature, never the key.
+      - /run/host-services/ssh-auth.sock:/ssh-agent
+
+      # Survives a rebuild: the Claude Code login, gh's token, the crate cache,
+      # dx's downloaded Tailwind CLI, and shell history.
+      - claude-home:/home/vscode/.claude
+      - gh-config:/home/vscode/.config/gh
+      - cargo-registry:/usr/local/cargo/registry
+      - cargo-git:/usr/local/cargo/git
+      - dx-tools:/home/vscode/.dx
+      - command-history:/commandhistory
+
+      # The host's Claude config, minus its credentials. Without these the
+      # agent in here runs with none of the global instructions, none of the
+      # user hooks — including the destructive-command guard, which matters
+      # more inside a --dangerously-skip-permissions session than outside one —
+      # no skills, and no memory of this project.
+      #
+      # Deliberately NOT mounted: ~/.claude/credentials* and ~/.claude.json. A
+      # compromised dependency in here could read whatever it can see, and a
+      # Claude session token is exactly the kind of thing to keep out. Logging
+      # in inside the container is cheap; leaking the host's login is not.
+      #
+      # The per-project store goes in whole rather than just its memory/: the
+      # session transcripts sit beside it, so sharing the directory is what
+      # makes `claude --resume` on either side see the other's conversations.
+      # Read-write on purpose — read-only would let it recall notes but never
+      # record what it learned in here.
+      #
+      # settings.json is what makes the hooks/ mount mean anything: a hook
+      # script is inert until something registers it, and the registration —
+      # along with the deny list, which `--dangerously-skip-permissions` does
+      # not override — lives only in that file. It holds no credentials.
+      - ~/.claude/CLAUDE.md:/home/vscode/.claude/CLAUDE.md:ro
+      - ~/.claude/settings.json:/home/vscode/.claude/settings.json:ro
+      - ~/.claude/skills:/home/vscode/.claude/skills:ro
+      - ~/.claude/hooks:/home/vscode/.claude/hooks:ro
+      - ~/.claude/plugins:/home/vscode/.claude/plugins:ro
+      - ~/.claude/projects/-Users-tehsoto-Projects-dioxusfun-monorepo:/home/vscode/.claude/projects/-Users-tehsoto-Projects-dioxusfun-monorepo
+    environment:
+      # server/build.rs otherwise fetches a ~51MB livekit-server release into
+      # every fresh target volume, and autospawn then fails at runtime with
+      # "not bundled" if it did not. Unset both to build a server binary that
+      # embeds the SFU — CI refuses to publish one under 40MB.
+      LIVEKIT_BUNDLE_SKIP: "1"
+      DIOXUSFUN_LIVEKIT_AUTOSPAWN: "0"
+
+      # Linking the client OOM-kills GNU ld in a stock Docker Desktop VM: 16
+      # CPUs means cargo starts 16 jobs, several of them linking at once,
+      # against ~7.7GB of VM memory. The failure is `collect2: fatal error: ld
+      # terminated with signal 9`, which reads like a toolchain bug rather than
+      # the memory ceiling it is.
+      #
+      # Three mitigations, all env vars so no committed file changes: lld
+      # instead of GNU ld (far lower peak RSS), debuginfo trimmed to line
+      # tables (panics still name file and line), and a job cap below nproc.
+      # Raise CARGO_BUILD_JOBS toward 16 if you give the VM more memory in
+      # Docker Desktop → Settings → Resources.
+      #
+      # Target-scoped, and both Linux triples, so an Intel host gets lld too
+      # and the Apple/Windows rustflags in .cargo/config.toml keep applying to
+      # their own targets.
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -C link-arg=-fuse-ld=lld
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -C link-arg=-fuse-ld=lld
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
+      CARGO_BUILD_JOBS: "6"
+
+      SSH_AUTH_SOCK: /ssh-agent
+      HISTFILE: /commandhistory/.bash_history
+    # Keep the container alive; the devcontainer attaches to it.
+    command: sleep infinity
+
+volumes:
+  target:
+  claude-home:
+  gh-config:
+  cargo-registry:
+  cargo-git:
+  dx-tools:
+  command-history:

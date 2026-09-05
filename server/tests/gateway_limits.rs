@@ -24,10 +24,13 @@ fn temp_data_dir() -> PathBuf {
 
 async fn spawn_gateway() -> (String, dioxusfun_server::ServerHandle) {
     let preferred: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let dir = temp_data_dir();
     let cfg = dioxusfun_server::ServerConfig {
-        livekit: LiveKitConfig::from_env(),
+        livekit: LiveKitConfig::from_env(&dir),
         operators: Default::default(),
-        data_dir: temp_data_dir(),
+        identities: Default::default(),
+        media_max_bytes: dioxusfun_server::media::DEFAULT_MAX_BYTES,
+        data_dir: dir,
     };
     let handle = dioxusfun_server::spawn(preferred, 100, cfg)
         .await
@@ -40,6 +43,7 @@ fn bad_identify() -> String {
         username: "mallory".into(),
         pubkey: "00".repeat(32),
         signature: "11".repeat(64),
+        origin: "127.0.0.1:1".into(),
         bot: false,
         client_version: String::new(),
     })
@@ -166,4 +170,88 @@ async fn a_frame_under_the_cap_is_still_read() {
         Ok(true),
         "a frame the size of a legal image must reach the parser, not the socket's limit"
     );
+}
+
+/// One address is one machine at most, and a machine at rest holds one socket;
+/// past the cap the newcomer is told why and closed before it costs a queue.
+#[tokio::test]
+async fn one_address_cannot_hold_more_than_its_share_of_sockets() {
+    use dioxusfun_server::state::MAX_CONNECTIONS_PER_IP;
+
+    let (url, _h) = spawn_gateway().await;
+    let mut held = Vec::new();
+    for _ in 0..MAX_CONNECTIONS_PER_IP {
+        let (ws, _) = tokio_tungstenite::connect_async(&url)
+            .await
+            .expect("connect within the cap");
+        held.push(ws);
+    }
+
+    let (mut extra, _) = tokio_tungstenite::connect_async(&url)
+        .await
+        .expect("the tcp accept itself still happens");
+    let verdict = tokio::time::timeout(Duration::from_secs(5), async {
+        while let Some(Ok(msg)) = extra.next().await {
+            if let WsMessage::Text(t) = msg
+                && t.contains("too many connections")
+            {
+                return true;
+            }
+        }
+        false
+    })
+    .await;
+    assert_eq!(verdict, Ok(true), "the socket past the cap was admitted");
+    assert!(
+        closed_within(&mut extra, Duration::from_secs(5)).await,
+        "the refused socket stayed open"
+    );
+
+    drop(held.pop());
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let (mut again, _) = tokio_tungstenite::connect_async(&url)
+        .await
+        .expect("connect");
+    let hello = tokio::time::timeout(Duration::from_secs(5), again.next())
+        .await
+        .expect("a frame")
+        .expect("stream open")
+        .expect("frame");
+    assert!(
+        matches!(hello, WsMessage::Text(t) if t.contains("hello")),
+        "closing a socket gives the address its slot back"
+    );
+}
+
+/// A browser always sends `Origin`; the desktop client and the bot SDK never
+/// do. Refusing the header is what keeps a web page from driving the gateway
+/// on a user's own machine or LAN — CORS does not apply to WebSockets.
+#[tokio::test]
+async fn an_upgrade_carrying_an_origin_header_is_refused() {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+    let (url, _h) = spawn_gateway().await;
+
+    let mut from_a_page = url.as_str().into_client_request().expect("request");
+    from_a_page.headers_mut().insert(
+        "Origin",
+        "https://evil.example".parse().expect("header value"),
+    );
+    match tokio_tungstenite::connect_async(from_a_page).await {
+        Ok(_) => panic!("a browser-originated upgrade was accepted"),
+        Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
+            assert_eq!(response.status(), 403, "refused with the wrong status");
+        }
+        Err(other) => panic!("refused, but not as an HTTP status: {other}"),
+    }
+
+    let (mut plain, _) = tokio_tungstenite::connect_async(&url)
+        .await
+        .expect("a native client still connects");
+    let hello = tokio::time::timeout(Duration::from_secs(5), plain.next())
+        .await
+        .expect("a frame")
+        .expect("stream open")
+        .expect("frame");
+    assert!(matches!(hello, WsMessage::Text(t) if t.contains("hello")));
 }

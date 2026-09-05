@@ -1,8 +1,9 @@
 use std::net::SocketAddr;
-use std::time::Duration;
+use std::path::Path;
 
 use axum::Router;
-use iroh::endpoint::presets;
+use axum::extract::ConnectInfo;
+use iroh::endpoint::{IncomingAddr, presets};
 use iroh::{Endpoint, EndpointId, SecretKey};
 
 pub const GATEWAY_ALPN: &[u8] = b"dioxusfun/gateway/1";
@@ -29,103 +30,6 @@ impl Coordination {
             }
         }
     }
-}
-
-const PUNCH_WINDOW: Duration = Duration::from_secs(6);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PathSummary {
-    pub direct_selected: bool,
-    pub direct_available: bool,
-}
-
-impl PathSummary {
-    fn of(conn: &iroh::endpoint::Connection) -> Self {
-        let paths = conn.paths();
-        Self {
-            direct_selected: paths.iter().any(|p| p.is_ip() && p.is_selected()),
-            direct_available: paths.iter().any(|p| p.is_ip()),
-        }
-    }
-}
-
-pub fn verdict(summary: PathSummary, coordination: &Coordination) -> Result<(), String> {
-    match coordination {
-        Coordination::None => Ok(()),
-        Coordination::Relay(_) if summary.direct_selected => Ok(()),
-        Coordination::Relay(_) if summary.direct_available => Err(
-            "a direct path exists but the connection is not using it — refusing rather than \
-             letting the relay carry the session"
-                .into(),
-        ),
-        Coordination::Relay(_) => Err(
-            "hole punching did not produce a direct path, so this connection would be carried \
-             by the relay. It was refused: the coordinator was allowed to introduce us, not to \
-             read what we say."
-                .into(),
-        ),
-    }
-}
-
-pub async fn require_direct(
-    conn: &iroh::endpoint::Connection,
-    coordination: &Coordination,
-) -> Result<(), String> {
-    if !coordination.is_coordinated() {
-        return Ok(());
-    }
-    let deadline = tokio::time::Instant::now() + PUNCH_WINDOW;
-    loop {
-        let summary = PathSummary::of(conn);
-        if summary.direct_selected {
-            return Ok(());
-        }
-        if tokio::time::Instant::now() >= deadline {
-            return verdict(summary, coordination);
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-}
-
-#[derive(Clone, Default)]
-pub struct RelayRefusal(std::sync::Arc<std::sync::atomic::AtomicBool>);
-
-impl RelayRefusal {
-    pub fn refused(&self) -> bool {
-        self.0.load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    fn set(&self) {
-        self.0.store(true, std::sync::atomic::Ordering::Relaxed);
-    }
-}
-
-pub fn watch_for_relay_fallback(
-    conn: iroh::endpoint::Connection,
-    coordination: &Coordination,
-) -> RelayRefusal {
-    let refusal = RelayRefusal::default();
-    if !coordination.is_coordinated() {
-        return refusal;
-    }
-    let flag = refusal.clone();
-    tokio::spawn(async move {
-        use futures_util::StreamExt;
-        let mut paths = conn.paths_stream();
-        while let Some(list) = paths.next().await {
-            let direct_selected = list.iter().any(|p| p.is_ip() && p.is_selected());
-            if !direct_selected {
-                tracing::warn!(
-                    "connection fell back to the relay — closing, because a coordinator was \
-                     allowed to introduce us and not to carry us"
-                );
-                flag.set();
-                conn.close(1u32.into(), b"relay fallback refused");
-                return;
-            }
-        }
-    });
-    refusal
 }
 
 pub struct QuicHandle {
@@ -210,22 +114,37 @@ pub fn dialable_addrs(sockets: &[SocketAddr]) -> Vec<SocketAddr> {
         .collect()
 }
 
+/// A relayed connection is accepted: the coordinator's relay forwards QUIC
+/// ciphertext and sees only the two keys, so it can carry what it cannot read.
+/// A direct peer's address becomes `ConnectInfo`, which is what the per-address
+/// cap and the LiveKit URL choice read; a relayed peer has none.
 async fn serve_connection(
     incoming: iroh::endpoint::Incoming,
     router: Router,
-    coordination: &Coordination,
+    _coordination: &Coordination,
 ) -> Result<(), String> {
+    let arrived = incoming.remote_addr();
     let conn = incoming.await.map_err(|e| format!("handshake: {e}"))?;
     let remote = conn.remote_id();
+    let peer = match arrived {
+        IncomingAddr::Ip(addr) => Some(addr),
+        IncomingAddr::Relay { url, .. } => {
+            tracing::info!(%remote, %url, "quic peer connected through the relay");
+            None
+        }
+        _ => None,
+    };
+    let router = match peer {
+        Some(addr) => {
+            tracing::info!(%remote, %addr, "quic peer connected");
+            router.layer(axum::Extension(ConnectInfo(addr)))
+        }
+        None => router,
+    };
 
-    if let Err(e) = require_direct(&conn, coordination).await {
-        tracing::warn!(%remote, error = %e, "refusing a relayed connection");
-        conn.close(1u32.into(), b"relayed connection refused");
-        return Err(e);
-    }
-    watch_for_relay_fallback(conn.clone(), coordination);
-    tracing::info!(%remote, "quic peer connected");
-
+    // One QUIC peer is one machine; each stream it opens is a whole HTTP
+    // connection on our side, so the count is bounded here, not in the router.
+    let streams = std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_STREAMS_PER_PEER));
     loop {
         let (send, recv) = match conn.accept_bi().await {
             Ok(pair) => pair,
@@ -234,8 +153,13 @@ async fn serve_connection(
                 return Ok(());
             }
         };
+        let Ok(permit) = streams.clone().try_acquire_owned() else {
+            tracing::warn!(%remote, "quic peer opened too many streams — dropping one");
+            continue;
+        };
         let router = router.clone();
         tokio::spawn(async move {
+            let _permit = permit;
             let io = hyper_util::rt::TokioIo::new(tokio::io::join(recv, send));
             let service = hyper_util::service::TowerToHyperService::new(router);
             if let Err(e) = hyper::server::conn::http1::Builder::new()
@@ -247,6 +171,29 @@ async fn serve_connection(
             }
         });
     }
+}
+
+const MAX_STREAMS_PER_PEER: usize = 8;
+
+const SECRET_FILE: &str = "quic-secret";
+
+/// The key friends dial and pin, so it has to outlive the process; a fresh one
+/// per start would make every share string a one-time string.
+pub fn persistent_secret(data_dir: &Path) -> std::io::Result<SecretKey> {
+    let path = data_dir.join(SECRET_FILE);
+    if let Ok(text) = std::fs::read_to_string(&path)
+        && let Ok(bytes) = hex::decode(text.trim())
+        && let Ok(arr) = <[u8; 32]>::try_from(bytes.as_slice())
+    {
+        return Ok(SecretKey::from_bytes(&arr));
+    }
+    let secret = SecretKey::generate();
+    std::fs::create_dir_all(data_dir)?;
+    let tmp = data_dir.join(format!("{SECRET_FILE}.tmp"));
+    let _ = std::fs::remove_file(&tmp);
+    crate::livekit_bundle::write_private(&tmp, format!("{}\n", hex::encode(secret.to_bytes())))?;
+    std::fs::rename(&tmp, &path)?;
+    Ok(secret)
 }
 
 #[cfg(test)]
@@ -265,8 +212,10 @@ mod tests {
             N.fetch_add(1, Ordering::Relaxed)
         ));
         let ctx = crate::build_context(crate::ServerConfig {
-            livekit: crate::livekit::LiveKitConfig::from_env(),
+            livekit: crate::livekit::LiveKitConfig::from_env(&dir),
             operators: Default::default(),
+            identities: Default::default(),
+            media_max_bytes: crate::media::DEFAULT_MAX_BYTES,
             data_dir: dir,
         })
         .await
@@ -352,52 +301,6 @@ mod tests {
         handle.shutdown().await;
     }
 
-    #[test]
-    fn a_coordinator_may_introduce_but_not_carry() {
-        let direct = PathSummary {
-            direct_selected: true,
-            direct_available: true,
-        };
-        let relayed = PathSummary {
-            direct_selected: false,
-            direct_available: false,
-        };
-        let punched_but_unused = PathSummary {
-            direct_selected: false,
-            direct_available: true,
-        };
-
-        let coordinated = Coordination::Relay("https://relay.example/".into());
-
-        assert!(verdict(relayed, &Coordination::None).is_ok());
-        assert!(verdict(direct, &Coordination::None).is_ok());
-
-        assert!(verdict(direct, &coordinated).is_ok());
-
-        let refused = verdict(relayed, &coordinated).unwrap_err();
-        assert!(refused.contains("refused"), "{refused}");
-        assert!(refused.contains("relay"), "{refused}");
-
-        assert!(verdict(punched_but_unused, &coordinated).is_err());
-    }
-
-    #[tokio::test]
-    async fn enforcement_passes_a_genuinely_direct_connection() {
-        let handle = serve_quic(gateway_router().await, None)
-            .await
-            .expect("serve quic");
-        let (_ep, conn, _io) = open_stream(&handle).await;
-
-        assert!(
-            require_direct(&conn, &Coordination::Relay("https://relay.example/".into()))
-                .await
-                .is_ok()
-        );
-        assert!(PathSummary::of(&conn).direct_selected);
-
-        handle.shutdown().await;
-    }
-
     #[tokio::test]
     async fn a_wrong_key_cannot_connect() {
         let handle = serve_quic(gateway_router().await, None)
@@ -425,5 +328,41 @@ mod tests {
         }
 
         handle.shutdown().await;
+    }
+
+    #[test]
+    fn the_quic_secret_survives_a_restart_and_is_private_to_its_directory() {
+        let dir = std::env::temp_dir().join(format!(
+            "dioxusfun-quic-secret-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let first = persistent_secret(&dir).expect("first");
+        let second = persistent_secret(&dir).expect("second");
+        assert_eq!(
+            first.public(),
+            second.public(),
+            "the same file, the same key"
+        );
+
+        let other = std::env::temp_dir().join(format!("{}-other", dir.display()));
+        let elsewhere = persistent_secret(&other).expect("other dir");
+        assert_ne!(first.public(), elsewhere.public());
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(dir.join(SECRET_FILE))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(
+                mode & 0o777,
+                0o600,
+                "the secret is readable by its owner only"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&other);
     }
 }

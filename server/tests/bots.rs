@@ -23,8 +23,10 @@ fn test_config(operators: std::collections::HashSet<String>) -> dioxusfun_server
         N.fetch_add(1, Ordering::Relaxed)
     ));
     dioxusfun_server::ServerConfig {
-        livekit: LiveKitConfig::from_env(),
+        livekit: LiveKitConfig::from_env(&dir),
         operators,
+        identities: Default::default(),
+        media_max_bytes: dioxusfun_server::media::DEFAULT_MAX_BYTES,
         data_dir: dir,
     }
 }

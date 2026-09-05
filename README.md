@@ -53,6 +53,9 @@ cargo fmt --all
 First run is slow: `server/` fetches or builds `livekit-server` once (macOS
 builds from source, needs `go`). `LIVEKIT_BUNDLE_SKIP=1` opts out.
 
+`devcontainer up --workspace-folder .` builds a Linux container that can do all
+of the above except run the client — `docs/OPS.md`.
+
 On macOS `dx serve` cannot relax App Transport Security for the webview, so
 screen share and camera reach no self-hosted SFU under it; `cargo run` and the
 bundle both carry the `Info.plist` that does.

@@ -12,8 +12,7 @@ rtc:
   port_range_start: 50000
   port_range_end: 50100
   use_external_ip: true
-keys:
-  # Override these in .env — never ship the dev credentials publicly.
-  devkey: secret-must-be-at-least-32-chars-long
+# No `keys:` here on purpose: LIVEKIT_KEYS in docker-compose.yml supplies them, so a
+# copied file never carries a secret and a missing .env fails the SFU at start.
 logging:
   level: info

@@ -6,6 +6,7 @@ use crate::features::{
 use crate::identity::Identity;
 use crate::session::{self, SavedSession};
 use crate::state::{SessionMode, SessionParams};
+use url::Url;
 
 const DISCORDIA_LOGO_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="Discordia">
   <defs>
@@ -54,25 +55,40 @@ pub fn start_window_drag() {
 }
 
 pub fn open_external(url: &str) {
-    let url = url.to_string();
-    #[cfg(target_os = "macos")]
-    let cmd = ("open", vec![url]);
-    #[cfg(target_os = "windows")]
-    let cmd = (
-        "cmd",
-        vec!["/C".to_string(), "start".to_string(), String::new(), url],
-    );
-    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
-    let cmd = ("xdg-open", vec![url]);
-    let mut command = std::process::Command::new(cmd.0);
-    command.args(cmd.1);
+    let Some(url) = openable(url) else { return };
     #[cfg(target_os = "windows")]
     {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        command.creation_flags(CREATE_NO_WINDOW);
+        use windows::Win32::UI::Shell::ShellExecuteW;
+        use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+        use windows::core::{HSTRING, PCWSTR, w};
+        let target = HSTRING::from(url.as_str());
+        // SAFETY: every pointer outlives the call and ShellExecuteW does not retain them.
+        unsafe {
+            ShellExecuteW(
+                None,
+                w!("open"),
+                &target,
+                PCWSTR::null(),
+                PCWSTR::null(),
+                SW_SHOWNORMAL,
+            );
+        }
     }
-    let _ = command.spawn();
+    #[cfg(not(target_os = "windows"))]
+    {
+        #[cfg(target_os = "macos")]
+        let opener = "open";
+        #[cfg(not(target_os = "macos"))]
+        let opener = "xdg-open";
+        let _ = std::process::Command::new(opener).arg(url.as_str()).spawn();
+    }
+}
+
+/// Chat text reaches this. Anything but a parsed web URL is refused because the
+/// opener dispatches on scheme, and `cmd /C start` once read `&` as a command.
+fn openable(url: &str) -> Option<Url> {
+    let url = Url::parse(url).ok()?;
+    (matches!(url.scheme(), "http" | "https") && url.host_str().is_some()).then_some(url)
 }
 
 #[component]
@@ -577,5 +593,36 @@ fn AppHead() -> Element {
         }
         document::Style { {font_face_css()} }
         document::Style { {BASE_CSS} }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::openable;
+
+    #[test]
+    fn rejects_non_web_schemes() {
+        assert!(openable("javascript:alert(1)").is_none());
+        assert!(openable("file:///etc/passwd").is_none());
+    }
+
+    #[test]
+    fn rejects_http_without_host() {
+        assert!(openable("http://").is_none());
+    }
+
+    #[test]
+    fn keeps_shell_metacharacters_as_url_text() {
+        let url = openable("https://a.b/?x&calc").expect("a well-formed https URL");
+        assert_eq!(url.host_str(), Some("a.b"));
+        assert_eq!(url.query(), Some("x&calc"));
+    }
+
+    #[test]
+    fn round_trips_a_plain_url() {
+        assert_eq!(
+            openable("https://example.com/path?q=1").map(|u| u.to_string()),
+            Some("https://example.com/path?q=1".to_string())
+        );
     }
 }

@@ -20,12 +20,24 @@ fn persist(res: Result<(), sqlx::Error>, what: &str) {
     }
 }
 
-const CONN_QUEUE_CAP: usize = 256;
+const CONN_QUEUE_CAP: usize = 1024;
+/// Sockets, not people: a client at rest holds one. Past these, a new socket
+/// is told so and closed before it costs a queue or a Schnorr verification.
+pub const MAX_CONNECTIONS: usize = 4096;
+pub const MAX_CONNECTIONS_PER_IP: u32 = 32;
+pub const MAX_SESSIONS_PER_PUBKEY: usize = 8;
+pub const MAX_GUILDS_PER_OWNER: usize = 10;
+const CATALOG_FIRST_PAGE: u32 = 100;
+/// Counted on the data URL a client sends, per pubkey, over a sliding day.
+/// The disk quota is the real ceiling; this stops one member reaching it alone.
+pub const UPLOAD_BUDGET_BYTES: u64 = 200 * 1024 * 1024;
+const UPLOAD_WINDOW: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
 
 pub const MAX_IMAGE_LEN: usize = 3_000_000;
 
 struct Conn {
     tx: mpsc::Sender<ServerMessage>,
+    ip: Option<std::net::IpAddr>,
 }
 
 #[derive(Debug, Clone)]
@@ -73,8 +85,10 @@ pub struct AppState {
     pub xp: DashMap<Id, DashMap<String, u64>>,
     pub operators: std::collections::HashSet<String>,
     conns: DashMap<u64, Conn>,
+    conns_by_ip: DashMap<std::net::IpAddr, u32>,
     conn_ids_by_pubkey: DashMap<String, std::collections::HashSet<u64>>,
     next_conn_id: AtomicU64,
+    upload_budget: DashMap<String, (std::time::Instant, u64)>,
 }
 
 impl AppState {
@@ -104,11 +118,14 @@ impl AppState {
             voice_states: DashMap::new(),
             operators,
             conns: DashMap::new(),
+            conns_by_ip: DashMap::new(),
             conn_ids_by_pubkey: DashMap::new(),
             next_conn_id: AtomicU64::new(1),
+            upload_budget: DashMap::new(),
         };
 
-        let loaded = state.store.load_all().await?;
+        let mut loaded = state.store.load_all().await?;
+        crate::sanitize::loaded(&mut loaded);
         let fresh = loaded.guilds.is_empty();
 
         for u in loaded.users {
@@ -177,6 +194,7 @@ impl AppState {
                 .insert(i.guild_id, i);
         }
 
+        state.detach_inline_images().await;
         if fresh {
             state.seed_lobby().await;
         }
@@ -230,22 +248,49 @@ impl AppState {
         self.guilds.insert(lobby.id, lobby);
     }
 
-    pub fn register_conn(&self) -> (u64, mpsc::Receiver<ServerMessage>) {
+    pub fn register_conn(
+        &self,
+        ip: Option<std::net::IpAddr>,
+    ) -> Result<(u64, mpsc::Receiver<ServerMessage>), &'static str> {
+        if self.conns.len() >= MAX_CONNECTIONS {
+            return Err("this server is full");
+        }
+        if let Some(ip) = ip {
+            let mut count = self.conns_by_ip.entry(ip).or_default();
+            if *count >= MAX_CONNECTIONS_PER_IP {
+                return Err("too many connections from your address");
+            }
+            *count += 1;
+        }
         let id = self.next_conn_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = mpsc::channel(CONN_QUEUE_CAP);
-        self.conns.insert(id, Conn { tx });
-        (id, rx)
+        self.conns.insert(id, Conn { tx, ip });
+        Ok((id, rx))
     }
 
-    pub fn identify_conn(&self, conn_id: u64, pubkey: &str) {
-        self.conn_ids_by_pubkey
+    pub fn identify_conn(&self, conn_id: u64, pubkey: &str) -> Result<(), String> {
+        let mut set = self
+            .conn_ids_by_pubkey
             .entry(pubkey.to_string())
-            .or_default()
-            .insert(conn_id);
+            .or_default();
+        if set.len() >= MAX_SESSIONS_PER_PUBKEY {
+            return Err(format!(
+                "this key already has {MAX_SESSIONS_PER_PUBKEY} open sessions"
+            ));
+        }
+        set.insert(conn_id);
+        Ok(())
     }
 
     pub fn unregister_conn(&self, conn_id: u64, pubkey: Option<&str>) {
-        self.conns.remove(&conn_id);
+        if let Some((_, conn)) = self.conns.remove(&conn_id)
+            && let Some(ip) = conn.ip
+        {
+            self.conns_by_ip.remove_if_mut(&ip, |_, count| {
+                *count = count.saturating_sub(1);
+                *count == 0
+            });
+        }
         if let Some(pk) = pubkey {
             let now_empty = if let Some(mut set) = self.conn_ids_by_pubkey.get_mut(pk) {
                 set.remove(&conn_id);
@@ -260,12 +305,15 @@ impl AppState {
         }
     }
 
+    /// A full queue drops the socket, since a client that missed state has to
+    /// re-snapshot anyway — except for typing, which nobody needs replayed and
+    /// which a hostile guild could otherwise use to knock members offline.
     fn route(&self, conn_id: u64, msg: &ServerMessage) {
         let tx = match self.conns.get(&conn_id) {
             Some(c) => c.tx.clone(),
             None => return,
         };
-        if tx.try_send(msg.clone()).is_err() {
+        if tx.try_send(msg.clone()).is_err() && !matches!(msg, ServerMessage::TypingUpdate { .. }) {
             self.conns.remove(&conn_id);
         }
     }
@@ -497,7 +545,17 @@ impl AppState {
         name: &str,
         template: Option<&str>,
         creator: &User,
-    ) -> (Guild, Vec<Channel>, Member, Vec<Role>) {
+    ) -> Result<(Guild, Vec<Channel>, Member, Vec<Role>), String> {
+        let owned = self
+            .guilds
+            .iter()
+            .filter(|g| g.owner_pubkey == creator.pubkey)
+            .count();
+        if owned >= MAX_GUILDS_PER_OWNER {
+            return Err(format!(
+                "you already own {MAX_GUILDS_PER_OWNER} guilds on this server"
+            ));
+        }
         let spec = GuildTemplate::resolve(template);
         let gid = Uuid::new_v4();
         let guild = Guild {
@@ -573,7 +631,7 @@ impl AppState {
         }
         persist(self.store.upsert_member(&member).await, "member create");
 
-        (guild, channels, member, roles)
+        Ok((guild, channels, member, roles))
     }
 
     pub async fn snapshot_for(&self, user: &User) -> ServerMessage {
@@ -626,7 +684,7 @@ impl AppState {
             .map(|v| v.value().clone())
             .collect();
 
-        let catalog = self.guild_catalog();
+        let (catalog, _) = self.guild_catalog_page(0, CATALOG_FIRST_PAGE);
         let profiles = self.profiles_snapshot();
         let roles = self.roles_for_guilds(&my_guild_ids);
         let emojis = self.emojis_for_guilds(&my_guild_ids);
@@ -1530,21 +1588,14 @@ impl AppState {
         by_pubkey: &str,
     ) -> Result<Guild, String> {
         self.require_permission(guild_id, by_pubkey, Permission::ManageGuild)?;
-        let valid_image = |img: &String| {
-            let is_url =
-                (img.starts_with("https://") || img.starts_with("http://")) && img.len() <= 2048;
-            let is_data = img.starts_with("data:image/") && img.len() <= MAX_IMAGE_LEN;
-            is_url || is_data
-        };
-        if icon_image.as_ref().is_some_and(|i| !valid_image(i))
-            || banner.as_ref().is_some_and(|i| !valid_image(i))
-        {
-            return Err(format!(
-                "Guild icon and banner must be an image (PNG, JPEG, GIF or WebP) \
-                 under {} MB, or a link to one.",
-                MAX_IMAGE_LEN / 1_000_000
-            ));
-        }
+        let icon_image = icon_image
+            .map(|i| self.image_reference(by_pubkey, &i))
+            .transpose()
+            .map_err(|e| format!("guild icon: {e}"))?;
+        let banner = banner
+            .map(|b| self.image_reference(by_pubkey, &b))
+            .transpose()
+            .map_err(|e| format!("guild banner: {e}"))?;
         let description = description
             .map(|d| crate::protocol::sanitize_paragraph(&d, 280))
             .filter(|d| !d.is_empty());
@@ -1816,6 +1867,8 @@ impl AppState {
         Ok(())
     }
 
+    /// Rows come back as stored: a `media:` address, never the bytes. A page of
+    /// 200 inlined images was 600 MB of JSON for one cheap request.
     pub async fn history(
         &self,
         channel_id: Id,
@@ -1823,14 +1876,7 @@ impl AppState {
         before_ms: Option<i64>,
     ) -> Vec<Message> {
         match self.store.history(channel_id, limit, before_ms).await {
-            Ok(mut messages) => {
-                for m in &mut messages {
-                    if let Some(img) = &m.image {
-                        m.image = self.media.inline(img);
-                    }
-                }
-                messages
-            }
+            Ok(messages) => messages,
             Err(e) => {
                 tracing::error!(error = %e, "history query failed");
                 Vec::new()
@@ -1845,7 +1891,7 @@ impl AppState {
         content: String,
         image: Option<String>,
         reply_to: Option<Id>,
-    ) -> Option<Message> {
+    ) -> Result<Message, String> {
         let author = self.attributed_author(channel_id, author);
         let kind_ok = self
             .channels
@@ -1853,16 +1899,104 @@ impl AppState {
             .map(|c| matches!(c.kind, crate::protocol::ChannelKind::Text))
             .unwrap_or(false);
         if !kind_ok {
-            return None;
+            return Err("can't post to this channel".into());
         }
+        let image = match image {
+            Some(img) => Some(self.store_upload(&author.pubkey, &img)?),
+            None => None,
+        };
         let reply_ref = match reply_to {
             Some(id) => self.store.reply_ref(channel_id, id).await.unwrap_or(None),
             None => None,
         };
-        Some(
-            self.append_message(channel_id, author, content, image, reply_ref)
-                .await,
-        )
+        Ok(self
+            .append_message(channel_id, author, content, image, reply_ref)
+            .await)
+    }
+
+    /// One rule for every picture a client may hand the server. A data URL is
+    /// stored and replaced by its address; an address must already be on disk.
+    /// A link is refused: every viewer's webview would fetch it, handing the
+    /// viewer's IP to whoever set it.
+    pub fn image_reference(&self, by_pubkey: &str, img: &str) -> Result<String, String> {
+        if let Some(address) = self.media.existing(img) {
+            return Ok(address);
+        }
+        if img.starts_with("data:image/") {
+            if img.len() > MAX_IMAGE_LEN {
+                return Err(format!(
+                    "an image must be under {} MB",
+                    MAX_IMAGE_LEN / 1_000_000
+                ));
+            }
+            return self.store_upload(by_pubkey, img);
+        }
+        Err(format!(
+            "must be an image file (PNG, JPEG, GIF, WebP or AVIF) under {} MB, not a link",
+            MAX_IMAGE_LEN / 1_000_000
+        ))
+    }
+
+    pub fn store_upload(&self, by_pubkey: &str, data_url: &str) -> Result<String, String> {
+        let now = std::time::Instant::now();
+        let cost = data_url.len() as u64;
+        {
+            let mut slot = self
+                .upload_budget
+                .entry(by_pubkey.to_string())
+                .or_insert((now, 0));
+            if now.duration_since(slot.0) > UPLOAD_WINDOW {
+                *slot = (now, 0);
+            }
+            if slot.1.saturating_add(cost) > UPLOAD_BUDGET_BYTES {
+                return Err(format!(
+                    "you have uploaded {} MB today, which is this server's daily limit",
+                    UPLOAD_BUDGET_BYTES / (1024 * 1024)
+                ));
+            }
+            slot.1 += cost;
+        }
+        self.media
+            .store_data_url(data_url)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Rows written before images had addresses hold the bytes themselves;
+    /// moving them out at load is what makes every later snapshot small.
+    async fn detach_inline_images(&self) {
+        let detach = |img: Option<String>| {
+            img.map(|i| match i.starts_with("data:") {
+                true => self.media.store_data_url(&i).unwrap_or(i),
+                false => i,
+            })
+        };
+        let inline = |img: &Option<String>| img.as_deref().is_some_and(|i| i.starts_with("data:"));
+
+        let profiles: Vec<Profile> = self
+            .profiles
+            .iter()
+            .filter(|p| inline(&p.avatar) || inline(&p.banner))
+            .map(|p| p.value().clone())
+            .collect();
+        for mut p in profiles {
+            p.avatar = detach(p.avatar);
+            p.banner = detach(p.banner);
+            self.profiles.insert(p.pubkey.clone(), p.clone());
+            persist(self.store.upsert_profile(&p).await, "profile image detach");
+        }
+
+        let guilds: Vec<Guild> = self
+            .guilds
+            .iter()
+            .filter(|g| inline(&g.icon_image) || inline(&g.banner))
+            .map(|g| g.value().clone())
+            .collect();
+        for mut g in guilds {
+            g.icon_image = detach(g.icon_image);
+            g.banner = detach(g.banner);
+            self.guilds.insert(g.id, g.clone());
+            persist(self.store.upsert_guild(&g).await, "guild image detach");
+        }
     }
 
     fn attributed_author(&self, channel_id: Id, author: User) -> User {
@@ -1886,27 +2020,18 @@ impl AppState {
         image: Option<String>,
         reply_to: Option<ReplyRef>,
     ) -> Message {
-        let stored_image = image.as_ref().map(|img| {
-            if img.starts_with("data:") {
-                self.media
-                    .store_data_url(img)
-                    .unwrap_or_else(|| img.clone())
-            } else {
-                img.clone()
-            }
-        });
         let message = Message {
             id: Uuid::new_v4(),
             channel_id,
             author,
             content,
-            image: stored_image,
+            image,
             reactions: Vec::new(),
             reply_to,
             created_at: chrono::Utc::now(),
         };
         persist(self.store.insert_message(&message).await, "message insert");
-        Message { image, ..message }
+        message
     }
 
     pub async fn rename_user(&self, pubkey: &str, username: &str) -> Vec<Member> {

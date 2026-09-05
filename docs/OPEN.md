@@ -23,30 +23,11 @@ Closed and retired entries are not kept; `git log docs/` has them.
 - 1 · No `LICENSE` file — defaults to all rights reserved, contradicting the README.
 
 **Security**
-- 6 · The gateway is plaintext and `wss://` looks supported without being.
-- 32 · A relay older than `can_publish` grants publish, and nothing on the wire detects it.
 - 73 · The rendezvous challenge nonce is not asserted to be fresh.
-- 83 · Nothing checks `Origin` on the WebSocket upgrade, and the CORS layer
-  allows any. WebSockets are not subject to CORS, so any page a user visits can
-  open a socket to their own `127.0.0.1` server or to one on the LAN. It cannot
-  authenticate — the Schnorr goes over a per-connection nonce — but everything
-  reachable before `Identify` is reachable from a web page.
-- 84 · The join proof of work is precomputable. `pow_challenge` is
-  `"{guild_id}:{pubkey}"`, with no server secret and no expiry, so the work can
-  be done offline before ever contacting the server and the answer never stops
-  being valid — a ban and a rejoin on the same key reuse it. At 16 bits it is
-  ~65k hashes, single-digit milliseconds, so a thousand identities cost under a
-  minute. Fixing it means a server secret with a window and more bits, which is
-  latency charged to everyone who joins honestly.
-- 94 · `status` is chosen from three buttons and the server takes any string.
-  It is filtered and capped now, but the closed set is not enforced, so a
-  client can set a presence nothing knows how to draw.
-- 95 · The name and free-text filters are on the write path only. Both ingest
-  paths skip them: `archive.rs` `import_guild` clones the archive's guild,
-  roles, channels and members straight into the store, and `load_or_seed`
-  inserts every row as it was written. So a hostile archive — the very thing
-  cross-instance migration (34) is for — lands unfiltered, and anything stored
-  before this filter existed stays that way.
+- 113 · The upload budget (`UPLOAD_BUDGET_BYTES`) is per pubkey and identities
+  are free, so it slows one member and not a determined one; the disk quota
+  (`DIOXUSFUN_MEDIA_MAX_BYTES`) is the real ceiling and a filled one refuses
+  every member's pictures until the sweep or the operator makes room.
 
 **Repo & CI**
 - 8 · The Windows portable and setup ship the wrong icon.
@@ -59,7 +40,9 @@ Closed and retired entries are not kept; `git log docs/` has them.
   `[bundle.macos] info_plist_path`, so the webview keeps ATS at its default and
   cannot reach a cleartext SFU. `cargo run` is covered by `build.rs`; the CLI's
   only override, `[application] macos_info_plist`, resolves against the shell's
-  cwd, so setting it breaks `dx` run from the repo root.
+  cwd, so setting it breaks `dx` run from the repo root. `dev-client.sh` runs
+  `cargo run` for that reason; `dev-client-hotreload.sh` is the `dx serve` path
+  and prints what it costs.
 
 **Tests with no coverage** (from the mutation run)
 - 75 · The Nostr DM service loop and `net.rs` are still mostly unguarded. What
@@ -76,7 +59,7 @@ Closed and retired entries are not kept; `git log docs/` has them.
   moving the running program aside, the rollback rule, where the cast-off is
   swept from — but nothing exercises `/S` against a real NSIS install, which
   needs a Windows box with Discordia installed and two published releases.
-- 85 · The identify handshake timeout has no test. It is 30 seconds, and a test
+- 85 · The identify handshake timeout has no test. It is 10 seconds, and a test
   that waits one out does not belong in a suite that has to stay fast; testing
   it needs the timeout to be injectable, which is config surface for a
   test-only knob.

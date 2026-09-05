@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use dioxusfun_protocol::rendezvous::DiscoverEntry;
 use dioxusfun_rendezvous::{AppCtx, Config, registry::Registry, router};
@@ -76,25 +77,18 @@ async fn send_register(ws: &mut Ws, name: &str, pubkey: &str, signature: &str) {
 }
 
 #[tokio::test]
-async fn an_advertised_endpoint_reaches_a_friend_holding_the_code() {
+async fn resolve_answers_an_unlisted_host_by_code_and_nobody_else() {
     let (base, registry) = spawn_with(Config::default()).await;
     let (secret, pubkey) = identity(11);
 
     let (mut ws, nonce) = connect_control(&base).await;
     let sig = sign(&secret, &nonce, &pubkey, "Casa");
-    let frame = serde_json::json!({
-        "op": "register",
-        "d": {
-            "name": "Casa", "pubkey": pubkey, "signature": sig,
-            "publish_public": false,
-            "endpoint": "ws://203.0.113.5:9000",
-        }
-    });
-    ws.send(Message::Text(frame.to_string())).await.unwrap();
+    send_register(&mut ws, "Casa", &pubkey, &sig).await;
     assert_eq!(next_json(&mut ws).await["op"], "registered");
-
-    let entry = registry.lookup("casa").expect("host is live");
-    assert_eq!(entry.endpoint.as_deref(), Some("ws://203.0.113.5:9000"));
+    assert!(
+        registry.discover().is_empty(),
+        "unlisted hosts stay unlisted"
+    );
 
     let http = base.replace("ws://", "http://");
     let fetched: DiscoverEntry = reqwest::get(format!("{http}/resolve/CASA"))
@@ -103,28 +97,9 @@ async fn an_advertised_endpoint_reaches_a_friend_holding_the_code() {
         .json()
         .await
         .unwrap();
-    assert_eq!(fetched.endpoint.as_deref(), Some("ws://203.0.113.5:9000"));
-    assert!(registry.discover().is_empty());
-}
-
-#[tokio::test]
-async fn a_host_without_an_endpoint_resolves_to_none() {
-    let (base, _registry) = spawn_with(Config::default()).await;
-    let (secret, pubkey) = identity(12);
-
-    let (mut ws, nonce) = connect_control(&base).await;
-    let sig = sign(&secret, &nonce, &pubkey, "Plain");
-    send_register(&mut ws, "Plain", &pubkey, &sig).await;
-    assert_eq!(next_json(&mut ws).await["op"], "registered");
-
-    let http = base.replace("ws://", "http://");
-    let fetched: DiscoverEntry = reqwest::get(format!("{http}/resolve/plain"))
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert!(fetched.endpoint.is_none());
+    assert_eq!(fetched.shortcode, "casa");
+    assert_eq!(fetched.name.as_deref(), Some("Casa"));
+    assert!(fetched.transport_key.is_none());
 
     let missing = reqwest::get(format!("{http}/resolve/nobody-here-01"))
         .await
@@ -425,4 +400,50 @@ async fn a_release_with_a_bad_signature_is_refused() {
         registry.reservation_owner("sellada").as_deref(),
         Some(&owner[..])
     );
+}
+
+#[tokio::test]
+async fn a_host_that_never_sends_register_is_cut_off() {
+    let (base, _registry) = spawn_with(Config {
+        register_timeout: Duration::from_millis(50),
+        ..Config::default()
+    })
+    .await;
+    let (mut ws, _nonce) = connect_control(&base).await;
+    let reply = tokio::time::timeout(Duration::from_secs(2), next_json(&mut ws))
+        .await
+        .expect("the socket must be answered, not held open");
+    assert_eq!(reply["op"], "error", "got {reply}");
+    assert!(
+        reply["d"]["message"].as_str().unwrap().contains("in time"),
+        "got {reply}"
+    );
+}
+
+#[tokio::test]
+async fn an_oversized_control_frame_is_dropped_unread() {
+    let base = spawn().await;
+    let (mut ws, _nonce) = connect_control(&base).await;
+    ws.send(Message::Text("x".repeat(65 * 1024))).await.unwrap();
+    let next = tokio::time::timeout(Duration::from_secs(2), ws.next())
+        .await
+        .expect("the server must react to the frame");
+    assert!(
+        !matches!(next, Some(Ok(Message::Text(_)))),
+        "an oversized frame was parsed and answered: {next:?}"
+    );
+}
+
+#[tokio::test]
+async fn resolve_is_throttled_per_address() {
+    let base = spawn().await;
+    let http = base.replace("ws://", "http://");
+    let client = reqwest::Client::new();
+    let url = format!("{http}/resolve/nobody-here-1234");
+    for _ in 0..30 {
+        let r = client.get(&url).send().await.unwrap();
+        assert_eq!(r.status(), reqwest::StatusCode::NOT_FOUND);
+    }
+    let r = client.get(&url).send().await.unwrap();
+    assert_eq!(r.status(), reqwest::StatusCode::TOO_MANY_REQUESTS);
 }

@@ -79,13 +79,10 @@ impl BotIdentity {
         bs58::encode(self.secret.secret_bytes()).into_string()
     }
 
-    fn sign_identify(&self, nonce: &str, username: &str) -> String {
+    pub fn sign_identify(&self, nonce: &str, origin: &str, username: &str) -> String {
         let secp = Secp256k1::new();
         let keypair = Keypair::from_secret_key(&secp, &self.secret);
-        let mut msg = Vec::with_capacity(nonce.len() + self.pubkey_hex.len() + username.len());
-        msg.extend_from_slice(nonce.as_bytes());
-        msg.extend_from_slice(self.pubkey_hex.as_bytes());
-        msg.extend_from_slice(username.as_bytes());
+        let msg = dioxusfun_protocol::identify_payload(nonce, origin, &self.pubkey_hex, username);
         let digest: [u8; 32] = Sha256::digest(&msg).into();
         let m = Message::from_digest(digest);
         hex::encode(secp.sign_schnorr_no_aux_rand(&m, &keypair).serialize())
@@ -114,6 +111,8 @@ impl Bot {
         bot: bool,
     ) -> Result<Bot> {
         let ws_url = normalize_gateway_url(url)?;
+        let origin = dioxusfun_protocol::dial_origin(&ws_url)
+            .ok_or_else(|| BotError::Url("server URL has no host".into()))?;
         let (stream, _) = tokio_tungstenite::connect_async(&ws_url)
             .await
             .map_err(|e| BotError::Ws(format!("connect failed: {e}")))?;
@@ -148,11 +147,12 @@ impl Bot {
         // The server canonicalizes before verifying, so signing the raw
         // string fails for names over 32 chars.
         let username = dioxusfun_protocol::canonical_username(username);
-        let signature = identity.sign_identify(&nonce, &username);
+        let signature = identity.sign_identify(&nonce, &origin, &username);
         let identify = ClientMessage::Identify {
             username: username.clone(),
             pubkey: identity.pubkey().to_string(),
             signature,
+            origin,
             bot,
             client_version: concat!("bot-sdk/", env!("CARGO_PKG_VERSION")).to_string(),
         };

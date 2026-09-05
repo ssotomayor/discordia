@@ -1,11 +1,15 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
 use base64::Engine as _;
 use sha2::{Digest, Sha256};
 
 const SENTINEL: &str = "media:";
+
+pub const DEFAULT_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct SweepReport {
@@ -15,38 +19,89 @@ pub struct SweepReport {
     pub freed_bytes: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StoreError {
+    Unsupported,
+    Full,
+    Io,
+}
+
+impl std::fmt::Display for StoreError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            StoreError::Unsupported => "unsupported image format (PNG, JPEG, GIF, WebP or AVIF)",
+            StoreError::Full => "this server's media storage is full",
+            StoreError::Io => "the server could not store the image",
+        })
+    }
+}
+
+/// `used` is what a quota can be checked against without a directory walk on
+/// every upload; it is summed once at open and moved by writes and sweeps.
 #[derive(Clone)]
 pub struct MediaStore {
     dir: PathBuf,
+    used: Arc<AtomicU64>,
+    max_bytes: u64,
 }
 
 impl MediaStore {
-    pub fn open(dir: PathBuf) -> std::io::Result<MediaStore> {
+    pub fn open(dir: PathBuf, max_bytes: u64) -> std::io::Result<MediaStore> {
         std::fs::create_dir_all(&dir)?;
-        Ok(MediaStore { dir })
+        let used = std::fs::read_dir(&dir)?
+            .flatten()
+            .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
+            .filter_map(|e| e.metadata().ok())
+            .map(|m| m.len())
+            .sum();
+        Ok(MediaStore {
+            dir,
+            used: Arc::new(AtomicU64::new(used)),
+            max_bytes,
+        })
     }
 
-    pub fn store_data_url(&self, data_url: &str) -> Option<String> {
-        let rest = data_url.strip_prefix("data:")?;
-        let (mime, payload) = rest.split_once(";base64,")?;
-        let ext = ext_for_mime(mime)?;
+    pub fn used_bytes(&self) -> u64 {
+        self.used.load(Ordering::Relaxed)
+    }
+
+    pub fn store_data_url(&self, data_url: &str) -> Result<String, StoreError> {
+        let rest = data_url
+            .strip_prefix("data:")
+            .ok_or(StoreError::Unsupported)?;
+        let (mime, payload) = rest.split_once(";base64,").ok_or(StoreError::Unsupported)?;
+        let ext = ext_for_mime(mime).ok_or(StoreError::Unsupported)?;
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(payload)
-            .ok()?;
+            .map_err(|_| StoreError::Unsupported)?;
+        if !looks_like(ext, &bytes) {
+            return Err(StoreError::Unsupported);
+        }
         let hash = hex::encode(Sha256::digest(&bytes));
         let name = format!("{hash}.{ext}");
         let path = self.dir.join(&name);
-        if !path.exists() {
-            let tmp = self.dir.join(format!(".{name}.tmp"));
-            if std::fs::write(&tmp, &bytes).is_err() {
-                return None;
-            }
-            if std::fs::rename(&tmp, &path).is_err() {
-                let _ = std::fs::remove_file(&tmp);
-                return None;
-            }
+        if path.exists() {
+            return Ok(format!("{SENTINEL}{name}"));
         }
-        Some(format!("{SENTINEL}{name}"))
+        let len = bytes.len() as u64;
+        if self.used_bytes().saturating_add(len) > self.max_bytes {
+            return Err(StoreError::Full);
+        }
+        static TMP: AtomicU64 = AtomicU64::new(0);
+        let tmp = self.dir.join(format!(
+            ".{name}.{}.tmp",
+            TMP.fetch_add(1, Ordering::Relaxed)
+        ));
+        if std::fs::write(&tmp, &bytes).is_err() {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(StoreError::Io);
+        }
+        if std::fs::rename(&tmp, &path).is_err() {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(StoreError::Io);
+        }
+        self.used.fetch_add(len, Ordering::Relaxed);
+        Ok(format!("{SENTINEL}{name}"))
     }
 
     pub fn inline(&self, stored: &str) -> Option<String> {
@@ -91,14 +146,26 @@ impl MediaStore {
                 report.freed_bytes += size;
             }
         }
+        let _ = self
+            .used
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |u| {
+                Some(u.saturating_sub(report.freed_bytes))
+            });
         report
     }
 
-    pub fn read(&self, name: &str) -> Option<(Vec<u8>, &'static str)> {
-        let name = sanitize(name)?;
-        let bytes = std::fs::read(self.dir.join(&name)).ok()?;
-        Some((bytes, mime_for_name(&name)))
+    pub fn existing(&self, stored: &str) -> Option<String> {
+        let name = sanitize(stored.strip_prefix(SENTINEL)?)?;
+        self.dir
+            .join(&name)
+            .is_file()
+            .then(|| format!("{SENTINEL}{name}"))
     }
+}
+
+/// Emoji rows hold the bare name and everything else the `media:` form.
+pub fn is_address(stored: &str) -> bool {
+    sanitize(stored.strip_prefix(SENTINEL).unwrap_or(stored)).is_some()
 }
 
 fn sanitize(name: &str) -> Option<String> {
@@ -121,12 +188,26 @@ fn ext_for_mime(mime: &str) -> Option<&'static str> {
         "image/gif" => Some("gif"),
         "image/webp" => Some("webp"),
         "image/avif" => Some("avif"),
-        ENCRYPTED_BLOB_MIME => Some("enc"),
         _ => None,
     }
 }
 
-pub const ENCRYPTED_BLOB_MIME: &str = "application/vnd.discordia.enc";
+/// The claimed type is checked against the bytes, so what is stored under
+/// `.png` decodes as one and nothing else can be parked here under that name.
+fn looks_like(ext: &str, bytes: &[u8]) -> bool {
+    match ext {
+        "png" => bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
+        "jpg" => bytes.starts_with(&[0xFF, 0xD8, 0xFF]),
+        "gif" => bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a"),
+        "webp" => bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP",
+        "avif" => {
+            bytes.len() >= 12
+                && &bytes[4..8] == b"ftyp"
+                && matches!(&bytes[8..12], b"avif" | b"avis")
+        }
+        _ => false,
+    }
+}
 
 fn mime_for_name(name: &str) -> &'static str {
     match name.rsplit_once('.').map(|(_, e)| e) {
@@ -135,7 +216,6 @@ fn mime_for_name(name: &str) -> &'static str {
         Some("gif") => "image/gif",
         Some("webp") => "image/webp",
         Some("avif") => "image/avif",
-        Some("enc") => ENCRYPTED_BLOB_MIME,
         _ => "application/octet-stream",
     }
 }
@@ -146,7 +226,10 @@ mod tests {
 
     fn store() -> (MediaStore, tempdir::Dir) {
         let dir = tempdir::Dir::new();
-        (MediaStore::open(dir.path()).expect("open"), dir)
+        (
+            MediaStore::open(dir.path(), DEFAULT_MAX_BYTES).expect("open"),
+            dir,
+        )
     }
 
     mod tempdir {
@@ -176,6 +259,14 @@ mod tests {
     }
 
     const PNG: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+
+    fn png_bytes() -> u64 {
+        let payload = PNG.split_once(";base64,").unwrap().1;
+        base64::engine::general_purpose::STANDARD
+            .decode(payload)
+            .unwrap()
+            .len() as u64
+    }
 
     #[test]
     fn an_unreferenced_blob_is_reclaimed_and_a_referenced_one_is_not() {
@@ -236,16 +327,19 @@ mod tests {
     }
 
     #[test]
-    fn read_refuses_a_path_that_is_not_a_content_address() {
+    fn existing_answers_only_for_a_blob_on_disk() {
         let (media, dir) = store();
         std::fs::write(dir.path().join("secret.txt"), b"not a picture").expect("write");
+        let stored = media.store_data_url(PNG).expect("stored");
 
-        assert!(media.read("secret.txt").is_none());
-        assert!(media.read("../secret.txt").is_none());
+        assert_eq!(media.existing(&stored).as_deref(), Some(stored.as_str()));
+        assert!(media.existing("media:secret.txt").is_none());
+        assert!(media.existing("media:../secret.txt").is_none());
         assert!(
             media
-                .read(&format!("{}/../secret.txt", "a".repeat(64)))
-                .is_none()
+                .existing(&format!("media:{}.png", "b".repeat(64)))
+                .is_none(),
+            "a well-formed address nobody uploaded is not one"
         );
     }
 
@@ -258,5 +352,63 @@ mod tests {
         let report = media.sweep(&HashSet::new(), Duration::ZERO);
         assert_eq!(report.deleted, 0);
         assert!(tmp.exists(), "the temp file must be left for its owner");
+    }
+
+    #[test]
+    fn the_bytes_have_to_be_what_the_label_says() {
+        let (media, _dir) = store();
+        let png_payload = PNG.split_once(";base64,").unwrap().1;
+
+        for wrong in ["image/jpeg", "image/gif", "image/webp", "image/avif"] {
+            assert_eq!(
+                media.store_data_url(&format!("data:{wrong};base64,{png_payload}")),
+                Err(StoreError::Unsupported),
+                "PNG bytes were accepted as {wrong}"
+            );
+        }
+        let html = base64::engine::general_purpose::STANDARD.encode(b"<html>hi</html>");
+        assert_eq!(
+            media.store_data_url(&format!("data:image/png;base64,{html}")),
+            Err(StoreError::Unsupported)
+        );
+        assert_eq!(
+            media.store_data_url("data:image/svg+xml;base64,PHN2Zz4="),
+            Err(StoreError::Unsupported)
+        );
+        assert_eq!(
+            media.store_data_url("data:image/png;base64,!!!not base64"),
+            Err(StoreError::Unsupported)
+        );
+        assert!(media.store_data_url(PNG).is_ok());
+    }
+
+    #[test]
+    fn the_quota_is_enforced_and_follows_writes_and_sweeps() {
+        let dir = tempdir::Dir::new();
+        let media = MediaStore::open(dir.path(), png_bytes() + 10).expect("open");
+        assert_eq!(media.used_bytes(), 0);
+
+        let stored = media.store_data_url(PNG).expect("first fits");
+        assert_eq!(media.used_bytes(), png_bytes());
+        assert_eq!(
+            media.store_data_url(PNG).as_deref(),
+            Ok(stored.as_str()),
+            "the same bytes again cost nothing"
+        );
+
+        const OTHER: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+        assert_eq!(media.store_data_url(OTHER), Err(StoreError::Full));
+
+        let report = media.sweep(&HashSet::new(), Duration::ZERO);
+        assert_eq!(report.deleted, 1);
+        assert_eq!(media.used_bytes(), 0, "a sweep gives the space back");
+        assert!(media.store_data_url(OTHER).is_ok());
+
+        let reopened = MediaStore::open(dir.path(), DEFAULT_MAX_BYTES).expect("reopen");
+        assert_eq!(
+            reopened.used_bytes(),
+            png_bytes(),
+            "usage is recounted at open"
+        );
     }
 }

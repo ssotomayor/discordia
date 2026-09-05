@@ -87,23 +87,61 @@ fn supersedes(have: Option<u32>, epoch: u32, from: &str, me: Option<&str>) -> bo
     }
 }
 
-fn coordination(relay_url: Option<String>) -> crate::quic::Coordination {
-    match relay_url {
-        Some(url) => crate::quic::Coordination::Relay(url),
-        None => crate::quic::Coordination::None,
-    }
-}
-
+/// Off this machine every connection is QUIC — encrypted end to end and
+/// authenticated by the key in the share string or the directory entry. A
+/// plain socket is allowed only to loopback, or over TLS through a proxy.
+#[derive(Debug)]
 enum Dial {
-    Single {
+    Socket {
         url: String,
+        origin: String,
         transport: Transport,
     },
-    DirectOrRelay {
-        quic: Option<(String, Vec<String>, crate::quic::Coordination)>,
-        direct: String,
-        relay: String,
+    Quic {
+        key: String,
+        addrs: Vec<String>,
     },
+}
+
+fn origin_of(url: &str) -> Result<String, String> {
+    crate::protocol::dial_origin(url).ok_or_else(|| format!("{url} has no host"))
+}
+
+/// `ws://` off loopback is refused rather than dialed: every hop on the path
+/// could read it, and the host has a share string to give instead.
+fn parse_target(raw: &str) -> Result<Dial, String> {
+    if let Some(share) = crate::protocol::parse_quic_share(raw) {
+        return Ok(Dial::Quic {
+            key: share.key,
+            addrs: share.addrs,
+        });
+    }
+    let url = normalize_url(raw)?;
+    let parsed = Url::parse(&url).map_err(|e| format!("invalid URL: {e}"))?;
+    let loopback = match parsed.host() {
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        Some(url::Host::Domain(name)) => name.eq_ignore_ascii_case("localhost"),
+        None => false,
+    };
+    let transport = match (parsed.scheme(), loopback) {
+        ("ws", true) => Transport::Loopback,
+        ("wss", _) => Transport::Proxied,
+        ("ws", false) => {
+            return Err(format!(
+                "{} would travel in the clear, readable by everyone on the way. Ask the host \
+                 for their quic:// address, or use wss:// through a TLS proxy.",
+                raw.trim()
+            ));
+        }
+        (other, _) => return Err(format!("unsupported scheme {other}://")),
+    };
+    let origin = origin_of(&url)?;
+    Ok(Dial::Socket {
+        url,
+        origin,
+        transport,
+    })
 }
 
 async fn resolve_session(
@@ -112,16 +150,7 @@ async fn resolve_session(
     state: &mut Signal<AppState>,
 ) -> Result<(Dial, Option<HostHandle>), String> {
     match mode {
-        SessionMode::Remote { server_url } => {
-            let url = normalize_url(&server_url)?;
-            Ok((
-                Dial::Single {
-                    url,
-                    transport: Transport::Direct,
-                },
-                None,
-            ))
-        }
+        SessionMode::Remote { server_url } => Ok((parse_target(&server_url)?, None)),
         SessionMode::SelfHost {
             allow_lan,
             rendezvous_url,
@@ -136,10 +165,12 @@ async fn resolve_session(
             };
             let handle = start_self_host(allow_lan, rendezvous_url, publish, identity).await?;
             let url = normalize_url(&handle.info.local_url)?;
+            let origin = origin_of(&url)?;
             state.write().host_info = Some(handle.info.clone());
             Ok((
-                Dial::Single {
+                Dial::Socket {
                     url,
+                    origin,
                     transport: Transport::Loopback,
                 },
                 Some(handle),
@@ -155,47 +186,21 @@ async fn resolve_session(
             }
             let with_scheme = ws_scheme(base);
             let code = code.trim();
-            let relay = format!("{with_scheme}/join/{code}");
-            let relayed_only = |relay: String| {
-                Ok((
-                    Dial::Single {
-                        url: relay,
-                        transport: Transport::Relayed,
-                    },
-                    None,
-                ))
-            };
             let Some(entry) = resolve_host(&with_scheme, code).await else {
-                return relayed_only(relay);
+                return Err(format!("no host answers to '{code}' at {base}"));
             };
-            let coordinate = coordination(entry.relay_url.clone());
-            let quic = entry
-                .transport_key
-                .filter(|_| !entry.transport_addrs.is_empty() || coordinate.is_coordinated())
-                .map(|key| (key, entry.transport_addrs, coordinate));
-            match entry.endpoint.as_deref().map(normalize_url) {
-                Some(Ok(direct)) => Ok((
-                    Dial::DirectOrRelay {
-                        quic,
-                        direct,
-                        relay,
-                    },
-                    None,
-                )),
-                Some(Err(e)) => {
-                    tracing::warn!(error = %e, "host advertised an unusable endpoint");
-                    relayed_only(relay)
-                }
-                None if quic.is_some() => Ok((
-                    Dial::DirectOrRelay {
-                        quic,
-                        direct: relay.clone(),
-                        relay,
-                    },
-                    None,
-                )),
-                None => relayed_only(relay),
+            let Some(key) = entry.transport_key else {
+                return Err(
+                    "that host offers no encrypted path; it needs a newer Discordia".into(),
+                );
+            };
+            let mut addrs = entry.transport_addrs;
+            if let Some(relay) = entry.relay_url
+                && !addrs.contains(&relay)
+            {
+                addrs.push(relay);
             }
+            Ok((Dial::Quic { key, addrs }, None))
         }
     }
 }
@@ -239,78 +244,24 @@ async fn resolve_host(
 type Ws =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
-const DIRECT_ATTEMPT: std::time::Duration = std::time::Duration::from_secs(4);
-
-const PUNCH_ATTEMPT: std::time::Duration = std::time::Duration::from_secs(12);
-
-async fn connect_best(
-    quic: Option<(String, Vec<String>, crate::quic::Coordination)>,
-    direct: &str,
-    relay: &str,
-) -> Result<(Socket, Transport), String> {
-    let relay_url = relay.to_string();
-    let relay_attempt =
-        tokio::spawn(async move { tokio_tungstenite::connect_async(&relay_url).await });
-
-    if let Some((key, addrs, coordination)) = quic {
-        let budget = if coordination.is_coordinated() {
-            PUNCH_ATTEMPT
-        } else {
-            DIRECT_ATTEMPT
-        };
-        match tokio::time::timeout(budget, dial_quic(&key, &addrs, &coordination)).await {
-            Ok(Ok(socket)) => {
-                relay_attempt.abort();
-                eprintln!("[dioxusfun] connected over QUIC to {key}");
-                return Ok((socket, Transport::Private));
-            }
-            Ok(Err(e)) => tracing::info!(error = %e, "quic path unavailable — trying the rest"),
-            Err(_) => tracing::info!("quic path timed out — trying the rest"),
-        }
-    }
-
-    if direct != relay {
-        eprintln!("[dioxusfun] trying {direct} directly, {relay} as fallback");
-        match tokio::time::timeout(DIRECT_ATTEMPT, tokio_tungstenite::connect_async(direct)).await {
-            Ok(Ok((ws, _))) => {
-                relay_attempt.abort();
-                eprintln!("[dioxusfun] connected directly to {direct}");
-                return Ok((Socket::Tcp(Box::new(ws)), Transport::Direct));
-            }
-            Ok(Err(e)) => {
-                tracing::info!(%direct, error = %e, "direct connection refused — using the relay")
-            }
-            Err(_) => tracing::info!(%direct, "direct connection timed out — using the relay"),
-        }
-    }
-
-    match relay_attempt.await {
-        Ok(Ok((ws, _))) => {
-            eprintln!("[dioxusfun] connected through the relay {relay}");
-            Ok((Socket::Tcp(Box::new(ws)), Transport::Relayed))
-        }
-        Ok(Err(e)) => Err(format!("connect failed: {e}")),
-        Err(e) => Err(format!("connect failed: {e}")),
-    }
-}
+/// Long enough for a hole punch through a relay; a LAN answer takes a moment.
+const QUIC_ATTEMPT: std::time::Duration = std::time::Duration::from_secs(15);
 
 const QUIC_HANDSHAKE_URL: &str = "ws://127.0.0.1/gateway";
 
-async fn dial_quic(
-    key: &str,
-    addrs: &[String],
-    coordination: &crate::quic::Coordination,
-) -> Result<Socket, String> {
+async fn dial_quic(key: &str, addrs: &[String]) -> Result<(Socket, bool), String> {
     let endpoint_id = crate::quic::parse_endpoint_id(key)?;
     let addrs: Vec<_> = addrs
         .iter()
         .filter_map(|a| crate::quic::parse_transport_addr(a))
         .collect();
-    let (io, guard) = crate::quic::dial(endpoint_id, &addrs, coordination).await?;
+    let coordination = crate::quic::coordination_from(&addrs);
+    let (io, guard) = crate::quic::dial(endpoint_id, &addrs, &coordination).await?;
     let (ws, _) = tokio_tungstenite::client_async(QUIC_HANDSHAKE_URL, io)
         .await
         .map_err(|e| format!("websocket over quic: {e}"))?;
-    Ok(Socket::Quic(Box::new(ws), guard))
+    let relayed = guard.relayed();
+    Ok((Socket::Quic(Box::new(ws), guard), relayed))
 }
 
 async fn run(
@@ -323,41 +274,37 @@ async fn run(
     let (dial, _host_handle) =
         resolve_session(params.mode.clone(), params.identity.clone(), &mut state).await?;
 
-    let (ws_stream, transport) = match dial {
-        Dial::Single { url, transport } => {
+    let (ws_stream, transport, origin) = match dial {
+        Dial::Socket {
+            url,
+            origin,
+            transport,
+        } => {
             eprintln!("[dioxusfun] connecting to {url}");
             let (ws, _) = tokio_tungstenite::connect_async(&url)
                 .await
                 .map_err(|e| format!("connect failed: {e}"))?;
-            (Socket::Tcp(Box::new(ws)), transport)
+            (Socket::Tcp(Box::new(ws)), transport, origin)
         }
-        Dial::DirectOrRelay {
-            quic,
-            direct,
-            relay,
-        } => connect_best(quic, &direct, &relay).await?,
+        Dial::Quic { key, addrs } => {
+            eprintln!("[dioxusfun] dialling {key} at {addrs:?}");
+            let (socket, relayed) = tokio::time::timeout(QUIC_ATTEMPT, dial_quic(&key, &addrs))
+                .await
+                .map_err(|_| format!("no answer from the host within {QUIC_ATTEMPT:?}"))??;
+            let transport = if relayed {
+                Transport::QuicRelayed
+            } else {
+                Transport::Quic
+            };
+            (socket, transport, crate::protocol::quic_origin(&key))
+        }
     };
     state.write().transport = transport;
 
     match ws_stream {
-        Socket::Tcp(ws) => run_session(*ws, params, tx, rx, state, voice_tx).await,
-        Socket::Quic(ws, guard) => {
-            let ended = run_session(*ws, params, tx, rx, state, voice_tx).await;
-            quic_disconnect_reason(guard.relay_refused(), ended)
-        }
+        Socket::Tcp(ws) => run_session(*ws, params, origin, tx, rx, state, voice_tx).await,
+        Socket::Quic(ws, _guard) => run_session(*ws, params, origin, tx, rx, state, voice_tx).await,
     }
-}
-
-fn quic_disconnect_reason(relay_refused: bool, ended: Result<(), String>) -> Result<(), String> {
-    if relay_refused {
-        return Err(
-            "the direct connection dropped, and the only path left ran through the \
-                    coordinator — which is allowed to introduce you, not to carry your \
-                    traffic. Reconnecting may find a direct path again."
-                .into(),
-        );
-    }
-    ended
 }
 
 enum Socket {
@@ -371,6 +318,7 @@ enum Socket {
 async fn run_session<S>(
     ws_stream: tokio_tungstenite::WebSocketStream<S>,
     params: SessionParams,
+    origin: String,
     tx: &UnboundedSender<ClientMessage>,
     mut rx: UnboundedReceiver<ClientMessage>,
     mut state: Signal<AppState>,
@@ -402,16 +350,14 @@ where
 
     let username = crate::protocol::canonical_username(&params.username);
     let pubkey = params.identity.pubkey.clone();
-    let mut to_sign = Vec::with_capacity(nonce.len() + pubkey.len() + username.len());
-    to_sign.extend_from_slice(nonce.as_bytes());
-    to_sign.extend_from_slice(pubkey.as_bytes());
-    to_sign.extend_from_slice(username.as_bytes());
+    let to_sign = crate::protocol::identify_payload(&nonce, &origin, &pubkey, &username);
     let signature = params.identity.sign_hex(&to_sign);
 
     let identify = ClientMessage::Identify {
         username,
         pubkey,
         signature,
+        origin,
         bot: false,
         client_version: crate::version::VERSION.to_string(),
     };
@@ -472,17 +418,27 @@ where
     Ok(())
 }
 
-fn resolve_emoji_images(s: &mut AppState, tx: &UnboundedSender<ClientMessage>) {
-    const MAX_PER_REQUEST: usize = 64;
-
-    let mut wanted: Vec<String> = Vec::new();
-    let images: Vec<String> = s
-        .guild_emojis
+fn emoji_addresses(s: &AppState) -> Vec<String> {
+    s.guild_emojis
         .values()
         .flatten()
         .map(|e| e.image.clone())
-        .collect();
-    for image in images {
+        .collect()
+}
+
+fn media_address(raw: &str) -> Option<String> {
+    raw.strip_prefix("media:").map(str::to_string)
+}
+
+/// Every picture the server named and has not yet handed over. Emoji are
+/// small and disk-cached, so they go in big batches; everything else can be
+/// a full 3 MB and goes four at a time, which is the server's per-answer cap.
+fn resolve_media(s: &mut AppState, tx: &UnboundedSender<ClientMessage>) {
+    const EMOJI_PER_REQUEST: usize = 16;
+    const IMAGES_PER_REQUEST: usize = 4;
+
+    let mut emoji: Vec<String> = Vec::new();
+    for image in emoji_addresses(s) {
         if s.emoji_images.contains_key(&image) || s.emoji_requested.contains(&image) {
             continue;
         }
@@ -491,9 +447,37 @@ fn resolve_emoji_images(s: &mut AppState, tx: &UnboundedSender<ClientMessage>) {
             continue;
         }
         s.emoji_requested.insert(image.clone());
-        wanted.push(image);
+        emoji.push(image);
     }
-    for chunk in wanted.chunks(MAX_PER_REQUEST) {
+
+    let mut images: Vec<String> = Vec::new();
+    let named = s
+        .profiles
+        .values()
+        .flat_map(|p| [p.avatar.as_deref(), p.banner.as_deref()])
+        .chain(
+            s.guilds
+                .iter()
+                .flat_map(|g| [g.icon_image.as_deref(), g.banner.as_deref()]),
+        )
+        .chain(s.messages.values().flatten().map(|m| m.image.as_deref()))
+        .flatten()
+        .filter_map(media_address)
+        .collect::<Vec<_>>();
+    for address in named {
+        if s.emoji_images.contains_key(&address) || s.emoji_requested.contains(&address) {
+            continue;
+        }
+        s.emoji_requested.insert(address.clone());
+        images.push(address);
+    }
+
+    for chunk in emoji.chunks(EMOJI_PER_REQUEST) {
+        let _ = tx.send(ClientMessage::FetchEmoji {
+            images: chunk.to_vec(),
+        });
+    }
+    for chunk in images.chunks(IMAGES_PER_REQUEST) {
         let _ = tx.send(ClientMessage::FetchEmoji {
             images: chunk.to_vec(),
         });
@@ -548,8 +532,11 @@ fn apply(
                 }
                 map
             };
-            resolve_emoji_images(&mut s, tx);
             s.messages = BTreeMap::new();
+            // A request the last session never got an answer to would
+            // otherwise stay "in flight" forever.
+            s.emoji_requested.clear();
+            resolve_media(&mut s, tx);
             s.screen_shares = std::collections::HashMap::new();
             s.screen_viewing = None;
             s.status = ConnectionStatus::Ready;
@@ -572,6 +559,7 @@ fn apply(
             messages,
         } => {
             s.merge_history(channel_id, messages);
+            resolve_media(&mut s, tx);
         }
         ServerMessage::MessageCreate(m) => {
             let cid = m.channel_id;
@@ -591,12 +579,16 @@ fn apply(
             if let Some(set) = s.typing.get_mut(&cid) {
                 set.remove(&m.author.pubkey);
             }
+            let has_image = m.image.is_some();
             s.messages.entry(cid).or_default().push(m);
             if is_dm && !author_is_self && !viewing {
                 *s.dm_unread.entry(cid).or_insert(0) += 1;
             }
             if s.should_ring(cid, author_is_self, viewing) {
                 s.notify_tick = s.notify_tick.wrapping_add(1);
+            }
+            if has_image {
+                resolve_media(&mut s, tx);
             }
         }
         ServerMessage::GuildJoined {
@@ -613,7 +605,7 @@ fn apply(
             }
             s.roles.insert(gid, roles);
             s.guild_emojis.insert(gid, emojis);
-            resolve_emoji_images(&mut s, tx);
+            resolve_media(&mut s, tx);
             s.voice_states.retain(|v| v.guild_id != gid);
             s.voice_states.extend(voice_states);
             for ch in channels {
@@ -697,6 +689,7 @@ fn apply(
                 profile.banner.is_some()
             );
             s.profiles.insert(profile.pubkey.clone(), profile);
+            resolve_media(&mut s, tx);
         }
         ServerMessage::ReactionUpdate {
             channel_id,
@@ -723,6 +716,7 @@ fn apply(
             if let Some(slot) = s.guilds.iter_mut().find(|g| g.id == guild.id) {
                 *slot = guild;
             }
+            resolve_media(&mut s, tx);
         }
         ServerMessage::GuildIntegrations { guild_id, bots } => {
             s.integrations.insert(guild_id, bots);
@@ -732,11 +726,15 @@ fn apply(
         }
         ServerMessage::GuildEmojis { guild_id, emojis } => {
             s.guild_emojis.insert(guild_id, emojis);
-            resolve_emoji_images(&mut s, tx);
+            resolve_media(&mut s, tx);
         }
         ServerMessage::EmojiBlobs { blobs } => {
+            // Only emoji reach the disk cache: they are small, shared by a
+            // whole guild and asked for on every connect. A message picture
+            // is none of those.
+            let emoji = emoji_addresses(&s);
             for blob in blobs {
-                if !blob.data_url.is_empty() {
+                if !blob.data_url.is_empty() && emoji.contains(&blob.image) {
                     crate::emoji::store_cached(&blob.image, &blob.data_url);
                 }
                 s.emoji_images.insert(blob.image, blob.data_url);
@@ -1033,48 +1031,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_refused_relay_fallback_is_what_the_user_is_told() {
-        let socket_said = Err("connection reset".to_string());
-
-        let told = quic_disconnect_reason(true, socket_said.clone()).unwrap_err();
-        assert!(
-            told.contains("coordinator"),
-            "the refusal must name what refused: {told}"
-        );
-        assert!(
-            told.contains("Reconnecting"),
-            "and say what to do about it: {told}"
-        );
-
-        assert_eq!(
-            quic_disconnect_reason(false, socket_said.clone()),
-            socket_said
-        );
-        assert_eq!(quic_disconnect_reason(false, Ok(())), Ok(()));
-    }
-
-    async fn ws_server() -> String {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        tokio::spawn(async move {
-            while let Ok((stream, _)) = listener.accept().await {
-                tokio::spawn(async move {
-                    let _ = tokio_tungstenite::accept_async(stream).await;
-                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-                });
-            }
-        });
-        format!("ws://{addr}/gateway")
-    }
-
-    async fn dead_address() -> String {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
-        format!("ws://{addr}/gateway")
-    }
-
-    #[test]
     fn an_equal_epoch_is_broken_by_pubkey_so_both_sides_converge() {
         let mine = Some("bbbb");
 
@@ -1096,45 +1052,56 @@ mod tests {
         assert_eq!(url.path(), "/gateway");
     }
 
-    #[tokio::test]
-    async fn direct_wins_when_it_answers() {
-        let direct = ws_server().await;
-        let relay = ws_server().await;
-        let (_ws, transport) = connect_best(None, &direct, &relay).await.unwrap();
-        assert_eq!(transport, Transport::Direct);
+    fn share(addrs: &str) -> String {
+        format!("quic://{}@{addrs}", "ab".repeat(32))
     }
 
-    #[tokio::test]
-    async fn relay_carries_the_session_when_direct_is_refused() {
-        let direct = dead_address().await;
-        let relay = ws_server().await;
-        let (_ws, transport) = connect_best(None, &direct, &relay).await.unwrap();
-        assert_eq!(transport, Transport::Relayed);
+    #[test]
+    fn a_share_string_dials_the_key_it_names() {
+        match parse_target(&share("192.168.1.5:4433;https://relay.example/")) {
+            Ok(Dial::Quic { key, addrs }) => {
+                assert_eq!(key, "ab".repeat(32));
+                assert_eq!(addrs, ["192.168.1.5:4433", "https://relay.example/"]);
+            }
+            _ => panic!("a share string must dial QUIC"),
+        }
     }
 
-    #[tokio::test]
-    async fn an_unreachable_quic_key_falls_through_to_the_rest() {
-        let direct = ws_server().await;
-        let relay = ws_server().await;
-        let key = iroh::SecretKey::generate().public().to_string();
-        let dead = dead_address().await;
-        let addr = dead
-            .trim_start_matches("ws://")
-            .trim_end_matches("/gateway");
-
-        let quic = Some((key, vec![addr.to_string()], crate::quic::Coordination::None));
-        let (_ws, transport) = connect_best(quic, &direct, &relay).await.unwrap();
-        assert_eq!(transport, Transport::Direct);
+    #[test]
+    fn plaintext_is_for_this_machine_only() {
+        for local in [
+            "ws://127.0.0.1:9000",
+            "localhost:9000",
+            "http://[::1]:9000/",
+        ] {
+            match parse_target(local) {
+                Ok(Dial::Socket {
+                    transport, origin, ..
+                }) => {
+                    assert_eq!(transport, Transport::Loopback, "{local}");
+                    assert!(origin.ends_with(":9000"), "{origin}");
+                }
+                _ => panic!("{local} is loopback and must be allowed"),
+            }
+        }
+        let refused = parse_target("ws://192.168.1.5:9000").expect_err("plaintext off loopback");
+        assert!(refused.contains("in the clear"), "{refused}");
+        assert!(
+            parse_target("box.example:9000").is_err(),
+            "a bare host means ws://"
+        );
     }
 
-    #[tokio::test]
-    async fn both_down_is_a_connect_failure() {
-        let direct = dead_address().await;
-        let relay = dead_address().await;
-        let err = match connect_best(None, &direct, &relay).await {
-            Ok(_) => panic!("connected to two dead addresses"),
-            Err(e) => e,
-        };
-        assert!(err.contains("connect failed"), "{err}");
+    #[test]
+    fn tls_through_a_proxy_is_allowed_anywhere() {
+        match parse_target("wss://chat.example.com") {
+            Ok(Dial::Socket {
+                transport, origin, ..
+            }) => {
+                assert_eq!(transport, Transport::Proxied);
+                assert_eq!(origin, "chat.example.com:443");
+            }
+            _ => panic!("wss:// must be allowed"),
+        }
     }
 }

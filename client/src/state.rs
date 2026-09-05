@@ -38,9 +38,9 @@ pub struct SessionParams {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Transport {
     Loopback,
-    Private,
-    Direct,
-    Relayed,
+    Quic,
+    QuicRelayed,
+    Proxied,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -549,7 +549,30 @@ impl AppState {
     }
 
     pub fn avatar_of(&self, pubkey: &str) -> Option<&str> {
-        self.profiles.get(pubkey).and_then(|p| p.avatar.as_deref())
+        self.profiles
+            .get(pubkey)
+            .and_then(|p| p.avatar.as_deref())
+            .and_then(|a| self.media_src(a))
+    }
+
+    pub fn banner_of(&self, pubkey: &str) -> Option<&str> {
+        self.profiles
+            .get(pubkey)
+            .and_then(|p| p.banner.as_deref())
+            .and_then(|b| self.media_src(b))
+    }
+
+    /// The server sends pictures as `media:` addresses and the bytes arrive
+    /// separately, so a lookup can miss while the blob is still in flight.
+    pub fn media_src<'a>(&'a self, raw: &'a str) -> Option<&'a str> {
+        match raw.strip_prefix("media:") {
+            None => Some(raw),
+            Some(address) => self
+                .emoji_images
+                .get(address)
+                .map(String::as_str)
+                .filter(|u| !u.is_empty()),
+        }
     }
 
     pub fn default_channel_of(&self, guild_id: Id) -> Option<Id> {

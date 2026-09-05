@@ -247,12 +247,12 @@ pub fn ConnectForm(
                                     input {
                                         class: INPUT_SM,
                                         r#type: "text",
-                                        placeholder: "ws://localhost:9000",
+                                        placeholder: "quic://… from the host, or wss://…",
                                         value: "{server_url}",
                                         oninput: move |e| server_url.set(e.value()),
                                     }
                                     div { class: "text-xs text-[var(--text-dim)] leading-relaxed text-pretty",
-                                        "Connects straight to a gateway, ignoring the code and the directory. Leave it empty to use the code above."
+                                        "Connects straight to a gateway, ignoring the code and the directory. A quic:// address is what a host copies from their banner; wss:// is a server behind a TLS proxy. Plain ws:// works only on this machine."
                                     }
                                 }
                             }
@@ -282,7 +282,7 @@ pub fn ConnectForm(
                                 }
                                 span {
                                     class: "w-4 h-4 shrink-0 flex items-center justify-center rounded-full border border-[var(--border)] text-[9px] text-[var(--text-dim)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors cursor-help",
-                                    title: "Friends here reach you directly, and Discordia asks your router (UPnP / NAT-PMP) to let in friends elsewhere. Your home IP becomes visible to anyone who joins that way.",
+                                    title: "Offers this machine's own address in the share string and asks your router (UPnP / NAT-PMP) to let in friends elsewhere. Connections stay encrypted either way; your home IP becomes visible to anyone who joins that way.",
                                     "?"
                                 }
                             }
@@ -666,9 +666,13 @@ fn BrowseTab(
                                 let title = entry.name.clone().unwrap_or_else(|| sc.clone());
                                 let named = entry.name.is_some();
                                 let (fresh_label, fresh_ok) = freshness(entry.idle_secs);
-                                let direct = entry.endpoint.is_some();
-                                // Whether a relay operator sits in the middle is the
-                                // one property worth reading before the name.
+                                // Every host is reached over encrypted QUIC; what
+                                // differs is whether it has an address of its own or
+                                // only the relay to be introduced through.
+                                let direct = entry
+                                    .transport_addrs
+                                    .iter()
+                                    .any(|a| a.parse::<std::net::SocketAddr>().is_ok());
                                 let stripe = if direct { "#8fb0ff" } else { "var(--violet, #b98cff)" };
                                 let row_cls = if selected {
                                     "border-[var(--accent)] bg-[var(--accent-soft)]"

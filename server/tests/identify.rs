@@ -21,10 +21,13 @@ fn temp_data_dir() -> PathBuf {
 
 async fn spawn_gateway() -> (String, dioxusfun_server::ServerHandle) {
     let preferred: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let dir = temp_data_dir();
     let cfg = dioxusfun_server::ServerConfig {
-        livekit: LiveKitConfig::from_env(),
+        livekit: LiveKitConfig::from_env(&dir),
         operators: Default::default(),
-        data_dir: temp_data_dir(),
+        identities: Default::default(),
+        media_max_bytes: dioxusfun_server::media::DEFAULT_MAX_BYTES,
+        data_dir: dir,
     };
     let handle = dioxusfun_server::spawn(preferred, 100, cfg)
         .await
@@ -85,5 +88,101 @@ async fn an_ordinary_username_is_unaffected() {
         identify_as(&url, &"b".repeat(32)).await.unwrap(),
         "b".repeat(32),
         "exactly at the limit is untouched"
+    );
+}
+
+/// Speaks the wire by hand so the test can sign for whatever address it likes.
+async fn raw_identify(url: &str, identity: &BotIdentity, signed_for: &str, sent: &str) -> String {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message as WsMessage;
+
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!("{url}/gateway"))
+        .await
+        .expect("connect");
+    let nonce = loop {
+        if let Some(Ok(WsMessage::Text(t))) = ws.next().await
+            && let Ok(ServerMessage::Hello { nonce }) = serde_json::from_str::<ServerMessage>(&t)
+        {
+            break nonce;
+        }
+    };
+    let identify = dioxusfun_server::protocol::ClientMessage::Identify {
+        username: "alice".into(),
+        pubkey: identity.pubkey().to_string(),
+        signature: identity.sign_identify(&nonce, signed_for, "alice"),
+        origin: sent.to_string(),
+        bot: false,
+        client_version: String::new(),
+    };
+    ws.send(WsMessage::Text(serde_json::to_string(&identify).unwrap()))
+        .await
+        .unwrap();
+    loop {
+        match tokio::time::timeout(Duration::from_secs(5), ws.next())
+            .await
+            .expect("timed out waiting for the verdict")
+        {
+            Some(Ok(WsMessage::Text(t))) => match serde_json::from_str::<ServerMessage>(&t) {
+                Ok(ServerMessage::Ready { .. }) => return "ready".into(),
+                Ok(ServerMessage::Error { message }) => return message,
+                _ => continue,
+            },
+            other => panic!("socket ended before a verdict: {other:?}"),
+        }
+    }
+}
+
+fn origin_of(url: &str) -> String {
+    dioxusfun_server::protocol::dial_origin(&format!("{url}/gateway")).unwrap()
+}
+
+#[tokio::test]
+async fn a_login_is_bound_to_the_address_that_was_dialed() {
+    let (url, _h) = spawn_gateway().await;
+    let id = BotIdentity::generate();
+    let dialed = origin_of(&url);
+
+    assert_eq!(raw_identify(&url, &id, &dialed, &dialed).await, "ready");
+
+    let alias = dialed.replace("127.0.0.1", "localhost");
+    assert_eq!(
+        raw_identify(&url, &id, &alias, &alias).await,
+        "ready",
+        "every name the machine answers to is accepted"
+    );
+
+    let refused = raw_identify(&url, &id, "evil.example:9000", "evil.example:9000").await;
+    assert!(
+        refused.contains("does not answer to"),
+        "a signature for a stranger's address is refused: {refused}"
+    );
+
+    let refused = raw_identify(&url, &id, "", "").await;
+    assert!(
+        refused.contains("too old"),
+        "an unbound login is refused, not accepted for compatibility: {refused}"
+    );
+}
+
+/// The relay attack: a server you dialed takes another server's nonce, has you
+/// sign it, and forwards the result. Your signature names the address *you*
+/// dialed, which is not one the other server answers to.
+#[tokio::test]
+async fn a_challenge_relayed_from_another_server_does_not_log_in_there() {
+    let (evil, _e) = spawn_gateway().await;
+    let (target, _t) = spawn_gateway().await;
+    let victim = BotIdentity::generate();
+
+    let dialed = origin_of(&evil);
+    let forwarded = raw_identify(&target, &victim, &dialed, &dialed).await;
+    assert!(
+        forwarded.contains("does not answer to"),
+        "the target refused the forwarded login: {forwarded}"
+    );
+
+    let lied = raw_identify(&target, &victim, &dialed, &origin_of(&target)).await;
+    assert!(
+        lied.contains("did not verify"),
+        "renaming the origin in transit breaks the signature: {lied}"
     );
 }

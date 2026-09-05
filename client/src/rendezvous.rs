@@ -1,5 +1,3 @@
-use std::net::SocketAddr;
-
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
@@ -61,13 +59,41 @@ impl dioxusfun_server::livekit::VoiceTokenMinter for RendezvousMinter {
                 let body = res.text().await.unwrap_or_default();
                 return Err(format!("rendezvous mint rejected ({code}): {body}"));
             }
-            Ok(res
+            let token = res
                 .json::<Resp>()
                 .await
                 .map_err(|e| format!("rendezvous mint response: {e}"))?
-                .token)
+                .token;
+            grants_match(&token, req.can_publish)?;
+            Ok(token)
         })
     }
+}
+
+/// The rendezvous signs with a secret this host never holds, so the claims
+/// cannot be verified — but they can be read, and a subscribe-only identity
+/// handed publish rights is refused here rather than passed to the client.
+fn grants_match(token: &str, can_publish: bool) -> Result<(), String> {
+    use base64::Engine as _;
+    let payload = token
+        .split('.')
+        .nth(1)
+        .ok_or("rendezvous token is not a JWT")?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload)
+        .map_err(|_| "rendezvous token payload is not base64url")?;
+    let claims: serde_json::Value =
+        serde_json::from_slice(&bytes).map_err(|_| "rendezvous token payload is not JSON")?;
+    let video = &claims["video"];
+    let publish = video["canPublish"].as_bool().unwrap_or(false);
+    let data = video["canPublishData"].as_bool().unwrap_or(false);
+    if publish != can_publish || data != can_publish {
+        return Err(format!(
+            "rendezvous minted publish={publish} data={data} for an identity that asked for \
+             publish={can_publish}"
+        ));
+    }
+    Ok(())
 }
 
 pub async fn coordination_offered(rendezvous_url: &str) -> dioxusfun_server::quic::Coordination {
@@ -122,7 +148,6 @@ pub struct PublishOptions {
 pub async fn register(
     rendezvous_url: &str,
     options: PublishOptions,
-    endpoint: Option<String>,
     transport: Option<TransportAdvert>,
     identity: &crate::identity::Identity,
 ) -> Result<(PublishInfo, ControlStream), String> {
@@ -183,7 +208,6 @@ pub async fn register(
         signature,
         publish_public: options.publish_public,
         description: options.description,
-        endpoint,
         transport_key,
         transport_signature,
         transport_addrs,
@@ -225,7 +249,7 @@ pub async fn register(
                 eprintln!("[rendezvous] unexpected release confirmation for '{name}'");
                 continue;
             }
-            RendezvousToHost::NewFriend { .. } | RendezvousToHost::Challenge { .. } => continue,
+            RendezvousToHost::Challenge { .. } => continue,
         }
     }
 }
@@ -236,79 +260,55 @@ pub struct ControlStream {
     >,
 }
 
-pub fn run_adapter(
-    mut stream: ControlStream,
-    rendezvous_base: String,
-    local_gateway_addr: SocketAddr,
-) -> tokio::task::JoinHandle<()> {
+/// The rendezvous pings to notice a dead host, and a ping is only answered
+/// while the stream is polled; nothing else reads it once registered.
+pub fn keep_alive(mut stream: ControlStream) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        while let Some(frame) = stream.ws.next().await {
-            let frame = match frame {
-                Ok(f) => f,
-                Err(e) => {
-                    eprintln!("[rendezvous] control recv error: {e}");
-                    break;
-                }
-            };
-            let text = match frame {
-                WsMessage::Text(t) => t.to_string(),
-                WsMessage::Close(_) => break,
-                _ => continue,
-            };
-            let Ok(msg) = serde_json::from_str::<RendezvousToHost>(&text) else {
-                continue;
-            };
-            if let RendezvousToHost::NewFriend { session_id } = msg {
-                let proxy_url = format!("{rendezvous_base}/proxy/{session_id}");
-                let sid = session_id.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = bridge_friend(&proxy_url, local_gateway_addr).await {
-                        eprintln!("[rendezvous] bridge {sid} failed: {e}");
-                    }
-                });
+        while let Some(Ok(frame)) = stream.ws.next().await {
+            if matches!(frame, WsMessage::Close(_)) {
+                break;
             }
         }
         eprintln!("[rendezvous] control stream ended");
     })
 }
 
-async fn bridge_friend(proxy_url: &str, local_gateway: SocketAddr) -> Result<(), String> {
-    let (proxy_ws, _) = tokio_tungstenite::connect_async(proxy_url)
-        .await
-        .map_err(|e| format!("proxy connect: {e}"))?;
+#[cfg(test)]
+mod grant_tests {
+    use super::grants_match;
+    use livekit_api::access_token::{AccessToken, VideoGrants};
 
-    let local_url = format!("ws://{}/gateway", local_gateway);
-    let (gw_ws, _) = tokio_tungstenite::connect_async(&local_url)
-        .await
-        .map_err(|e| format!("local gateway connect: {e}"))?;
-
-    let (mut proxy_tx, mut proxy_rx) = proxy_ws.split();
-    let (mut gw_tx, mut gw_rx) = gw_ws.split();
-
-    let to_gw = async move {
-        while let Some(Ok(msg)) = proxy_rx.next().await {
-            if matches!(msg, WsMessage::Close(_)) {
-                break;
-            }
-            if gw_tx.send(msg).await.is_err() {
-                break;
-            }
-        }
-    };
-    let to_friend = async move {
-        while let Some(Ok(msg)) = gw_rx.next().await {
-            if matches!(msg, WsMessage::Close(_)) {
-                break;
-            }
-            if proxy_tx.send(msg).await.is_err() {
-                break;
-            }
-        }
-    };
-
-    tokio::select! {
-        _ = to_gw => {}
-        _ = to_friend => {}
+    fn token(can_publish: bool) -> String {
+        AccessToken::with_api_key("devkey", "a-secret-long-enough-for-hs256-signing")
+            .with_identity("someone#audio")
+            .with_grants(VideoGrants {
+                room_join: true,
+                room: "code--screen-1".into(),
+                can_publish,
+                can_subscribe: true,
+                can_publish_data: can_publish,
+                ..Default::default()
+            })
+            .to_jwt()
+            .expect("mint")
     }
-    Ok(())
+
+    #[test]
+    fn a_token_is_only_accepted_with_the_grant_that_was_asked_for() {
+        assert!(grants_match(&token(false), false).is_ok());
+        assert!(grants_match(&token(true), true).is_ok());
+        let err = grants_match(&token(true), false).expect_err("publish handed to a subscriber");
+        assert!(err.contains("publish=true"), "{err}");
+        assert!(
+            grants_match(&token(false), true).is_err(),
+            "a publisher denied publish"
+        );
+    }
+
+    #[test]
+    fn garbage_is_not_a_token() {
+        assert!(grants_match("not-a-jwt", false).is_err());
+        assert!(grants_match("a.!!!.c", false).is_err());
+        assert!(grants_match("a.bm90IGpzb24.c", false).is_err());
+    }
 }

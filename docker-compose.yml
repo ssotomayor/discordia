@@ -9,8 +9,8 @@ services:
       DIOXUSFUN_ADDR: 0.0.0.0:9000
       DIOXUSFUN_DATA_DIR: /data
       LIVEKIT_URL: ws://${PUBLIC_HOST:?set PUBLIC_HOST in .env}:7880
-      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-devkey}
-      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-secret-must-be-at-least-32-chars-long}
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:?set LIVEKIT_API_KEY in .env}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:?set LIVEKIT_API_SECRET in .env}
       DIOXUSFUN_OPERATORS: ${DIOXUSFUN_OPERATORS:-}
     volumes:
       - discordia-data:/data
@@ -29,8 +29,8 @@ services:
       DIOXUSFUN_RENDEZVOUS_RELAY_URL: http://${PUBLIC_HOST:?set PUBLIC_HOST in .env}:7701
       DIOXUSFUN_RENDEZVOUS_RELAY_ADDR: 0.0.0.0:7701
       LIVEKIT_URL: ws://${PUBLIC_HOST:?set PUBLIC_HOST in .env}:7880
-      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-devkey}
-      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-secret-must-be-at-least-32-chars-long}
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:?set LIVEKIT_API_KEY in .env}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:?set LIVEKIT_API_SECRET in .env}
     volumes:
       - rendezvous-data:/data
 
@@ -40,7 +40,7 @@ services:
     network_mode: host
     command: --config /etc/livekit.yaml
     environment:
-      LIVEKIT_KEYS: "${LIVEKIT_API_KEY:-devkey}: ${LIVEKIT_API_SECRET:-secret-must-be-at-least-32-chars-long}"
+      LIVEKIT_KEYS: "${LIVEKIT_API_KEY:?set LIVEKIT_API_KEY in .env}: ${LIVEKIT_API_SECRET:?set LIVEKIT_API_SECRET in .env}"
     volumes:
       - ./deploy/livekit.yaml:/etc/livekit.yaml:ro
 

@@ -16,9 +16,22 @@ pub async fn handle_connection(
     socket: WebSocket,
     ctx: Arc<AppContext>,
     client_host: Option<String>,
+    peer: Option<std::net::IpAddr>,
 ) {
     let (mut ws_tx, mut ws_rx) = socket.split();
-    let (conn_id, mut outbound_rx) = ctx.state.register_conn();
+    let (conn_id, mut outbound_rx) = match ctx.state.register_conn(peer) {
+        Ok(registered) => registered,
+        Err(reason) => {
+            let _ = send(
+                &mut ws_tx,
+                &ServerMessage::Error {
+                    message: reason.into(),
+                },
+            )
+            .await;
+            return;
+        }
+    };
 
     let nonce = auth::fresh_nonce();
     if send(
@@ -36,6 +49,8 @@ pub async fn handle_connection(
     let mut user: Option<User> = None;
     let mut is_bot = false;
     let mut limiter = RateLimiter::new(WRITE_LIMIT, RATE_WINDOW);
+    let mut reads = RateLimiter::new(READ_LIMIT, RATE_WINDOW);
+    let mut signals = RateLimiter::new(SIGNAL_LIMIT, RATE_WINDOW);
     let mut flood = RateLimiter::new(FLOOD_LIMIT, RATE_WINDOW);
     let mut failed_identifies = 0u32;
     let identify_by = tokio::time::Instant::now() + IDENTIFY_TIMEOUT;
@@ -87,6 +102,7 @@ pub async fn handle_connection(
                         username,
                         pubkey,
                         signature,
+                        origin,
                         bot,
                         client_version,
                     } => {
@@ -97,10 +113,33 @@ pub async fn handle_connection(
                             continue;
                         }
                         let username = sanitize_username(&username);
-                        if let Err(e) = auth::verify_identify(&pubkey, &signature, &nonce, &username) {
-                            let _ = send(&mut ws_tx, &ServerMessage::Error {
-                                message: format!("identify rejected: {e}"),
-                            }).await;
+                        let refused = if origin.is_empty() {
+                            Some(
+                                "identify rejected: this client is too old — a login must \
+                                 name the server address it dialed"
+                                    .to_string(),
+                            )
+                        } else if !ctx.identities.contains(&origin) {
+                            Some(format!(
+                                "identify rejected: this server does not answer to '{origin}'. \
+                                 A host reached through another name has to list it in \
+                                 DIOXUSFUN_PUBLIC_HOSTS"
+                            ))
+                        } else {
+                            auth::verify_identify(&pubkey, &signature, &nonce, &origin, &username)
+                                .err()
+                                .map(|e| format!("identify rejected: {e}"))
+                        };
+                        if let Some(message) = refused {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await;
+                            failed_identifies += 1;
+                            if failed_identifies >= MAX_IDENTIFY_ATTEMPTS {
+                                break;
+                            }
+                            continue;
+                        }
+                        if let Err(message) = ctx.state.identify_conn(conn_id, &pubkey) {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await;
                             failed_identifies += 1;
                             if failed_identifies >= MAX_IDENTIFY_ATTEMPTS {
                                 break;
@@ -110,7 +149,6 @@ pub async fn handle_connection(
                         let new_user = User { pubkey: pubkey.clone(), username };
                         ctx.state.remember_user(&new_user).await;
                         is_bot = bot;
-                        ctx.state.identify_conn(conn_id, &new_user.pubkey);
                         let ready = if is_bot {
                             ctx.state.snapshot_for_bot(&new_user)
                         } else {
@@ -169,6 +207,10 @@ pub async fn handle_connection(
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "bot lacks the read_message_history permission here".into(),
                             }).await;
+                            continue;
+                        }
+                        if !reads.allow() {
+                            reject_rate_limited(&mut ws_tx).await;
                             continue;
                         }
                         let history = ctx.state.history(channel_id, limit.clamp(1, 200), before_ms).await;
@@ -264,7 +306,7 @@ pub async fn handle_connection(
                                     continue;
                                 }
                             match ctx.state.push_message(channel_id, author, content, image, reply_to).await {
-                                Some(msg) => {
+                                Ok(msg) => {
                                     let author_pk = msg.author.pubkey.clone();
                                     let targets = ctx.state.guild_member_pubkeys(gid);
                                     ctx.state.deliver(targets, ServerMessage::MessageCreate(msg));
@@ -273,10 +315,8 @@ pub async fn handle_connection(
                                         ctx.state.deliver(targets, ServerMessage::MemberUpdate(member));
                                     }
                                 }
-                                None => {
-                                    let _ = send(&mut ws_tx, &ServerMessage::Error {
-                                        message: "can't post to this channel".into(),
-                                    }).await;
+                                Err(message) => {
+                                    let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await;
                                 }
                             }
                         } else {
@@ -292,6 +332,10 @@ pub async fn handle_connection(
                             }).await;
                             continue;
                         };
+                        if !limiter.allow() {
+                            reject_rate_limited(&mut ws_tx).await;
+                            continue;
+                        }
                         let name = match crate::protocol::sanitize_name("guild", &name, 64) {
                             Ok(name) => name,
                             Err(message) => {
@@ -300,7 +344,13 @@ pub async fn handle_connection(
                             }
                         };
                         let (guild, channels, member, roles) =
-                            ctx.state.create_guild(&name, template.as_deref(), &creator).await;
+                            match ctx.state.create_guild(&name, template.as_deref(), &creator).await {
+                                Ok(created) => created,
+                                Err(message) => {
+                                    let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await;
+                                    continue;
+                                }
+                            };
                         tracing::info!(guild = ?guild.name, by = ?creator.username, "guild created");
                         if send(&mut ws_tx, &ServerMessage::GuildJoined {
                             guild,
@@ -326,7 +376,7 @@ pub async fn handle_connection(
                             }).await;
                             continue;
                         }
-                        match check_join_gate(&ctx.state, guild_id, &joiner.pubkey, accept, pow_nonce.as_deref(), None) {
+                        match check_join_gate(&ctx.state, guild_id, &joiner.pubkey, accept, pow_nonce.as_deref(), None, &nonce) {
                             Gate::Reject(msg) => {
                                 let _ = send(&mut ws_tx, &ServerMessage::Error { message: msg }).await;
                                 continue;
@@ -367,7 +417,7 @@ pub async fn handle_connection(
                             }).await;
                             continue;
                         };
-                        match check_join_gate(&ctx.state, guild_id, &joiner.pubkey, accept, pow_nonce.as_deref(), Some(code.clone())) {
+                        match check_join_gate(&ctx.state, guild_id, &joiner.pubkey, accept, pow_nonce.as_deref(), Some(code.clone()), &nonce) {
                             Gate::Reject(msg) => {
                                 let _ = send(&mut ws_tx, &ServerMessage::Error { message: msg }).await;
                                 continue;
@@ -414,42 +464,43 @@ pub async fn handle_connection(
                             }).await;
                             continue;
                         };
-                        let valid_image = |img: &String| {
-                            let is_url = (img.starts_with("https://") || img.starts_with("http://"))
-                                && img.len() <= 2048;
-                            let is_data =
-                                img.starts_with("data:image/") && img.len() <= crate::state::MAX_IMAGE_LEN;
-                            is_url || is_data
-                        };
-                        let field_kind = |v: &Option<String>| match v {
-                            None => "none".to_string(),
-                            Some(s) if s.starts_with("data:") => format!("data-url({})", s.len()),
-                            Some(s) => format!("url({}..)", &s[..s.len().min(24)]),
-                        };
-                        eprintln!(
-                            "[profile] SetProfile from {} avatar={} banner={}",
-                            &u.pubkey[..u.pubkey.len().min(8)],
-                            field_kind(&avatar),
-                            field_kind(&banner),
-                        );
-                        if avatar.as_ref().is_some_and(|i| !valid_image(i)) {
-                            eprintln!("[profile] REJECTED: avatar invalid");
-                            let _ = send(&mut ws_tx, &ServerMessage::Error {
-                                message: "avatar must be an http(s) or data:image URL under the size limit".into(),
-                            }).await;
+                        if !limiter.allow() {
+                            reject_rate_limited(&mut ws_tx).await;
                             continue;
                         }
-                        if banner.as_ref().is_some_and(|i| !valid_image(i)) {
-                            eprintln!("[profile] REJECTED: banner invalid");
-                            let _ = send(&mut ws_tx, &ServerMessage::Error {
-                                message: "banner must be an http(s) or data:image URL under the size limit".into(),
-                            }).await;
-                            continue;
-                        }
+                        let avatar = match avatar.map(|a| ctx.state.image_reference(&u.pubkey, &a)).transpose() {
+                            Ok(a) => a,
+                            Err(e) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                    message: format!("avatar: {e}"),
+                                }).await;
+                                continue;
+                            }
+                        };
+                        let banner = match banner.map(|b| ctx.state.image_reference(&u.pubkey, &b)).transpose() {
+                            Ok(b) => b,
+                            Err(e) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                    message: format!("banner: {e}"),
+                                }).await;
+                                continue;
+                            }
+                        };
                         let bio = bio.map(|b| crate::protocol::sanitize_paragraph(&b, 280));
                         let custom_status =
                             custom_status.map(|c| crate::protocol::sanitize_line(&c, 80));
                         let status = status.map(|s| crate::protocol::sanitize_line(&s, 32));
+                        if let Some(s) = status.as_deref()
+                            && !crate::protocol::PRESENCES.contains(&s)
+                        {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: format!(
+                                    "status must be one of {}",
+                                    crate::protocol::PRESENCES.join(", ")
+                                ),
+                            }).await;
+                            continue;
+                        }
                         let profile = ctx.state.set_profile(
                             &u.pubkey, avatar, banner, bio, status, custom_status,
                         ).await;
@@ -490,6 +541,9 @@ pub async fn handle_connection(
                     }
                     ClientMessage::Typing { channel_id } => {
                         let Some(u) = user.as_ref() else { continue };
+                        if !signals.allow() {
+                            continue;
+                        }
                         let Some(audience) = channel_audience(&ctx.state, channel_id) else {
                             continue;
                         };
@@ -519,11 +573,12 @@ pub async fn handle_connection(
                             }).await;
                             continue;
                         }
-                        let Some(stored) = ctx.state.media.store_data_url(&image) else {
-                            let _ = send(&mut ws_tx, &ServerMessage::Error {
-                                message: "unsupported image format".into(),
-                            }).await;
-                            continue;
+                        let stored = match ctx.state.store_upload(&u.pubkey, &image) {
+                            Ok(stored) => stored,
+                            Err(message) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await;
+                                continue;
+                            }
                         };
                         let address = stored.strip_prefix("media:").unwrap_or(&stored).to_string();
                         match ctx.state.create_emoji(guild_id, &shortcode, address, &u.pubkey).await {
@@ -568,15 +623,25 @@ pub async fn handle_connection(
                             }).await;
                             continue;
                         }
+                        if !reads.allow() {
+                            reject_rate_limited(&mut ws_tx).await;
+                            continue;
+                        }
+                        let mut budget = MAX_BLOB_RESPONSE_BYTES;
                         let blobs: Vec<EmojiBlob> = images
                             .into_iter()
                             .take(MAX_EMOJI_FETCH)
                             .map(|image| {
-                                let data_url = ctx
+                                let mut data_url = ctx
                                     .state
                                     .media
                                     .inline(&format!("media:{image}"))
                                     .unwrap_or_default();
+                                if data_url.len() > budget {
+                                    data_url = String::new();
+                                } else {
+                                    budget -= data_url.len();
+                                }
                                 EmojiBlob { image, data_url }
                             })
                             .collect();
@@ -674,6 +739,9 @@ pub async fn handle_connection(
                     }
                     ClientMessage::SetScreenShare { channel_id: _, sharing } => {
                         let Some(u) = user.as_ref() else { continue };
+                        if !signals.allow() {
+                            continue;
+                        }
                         let Some(vs) = ctx.state.update_screen_share(&u.pubkey, sharing) else {
                             continue;
                         };
@@ -717,7 +785,7 @@ pub async fn handle_connection(
                         match livekit::voice_token(&ctx.livekit, &u.pubkey, &u.username, channel_id).await {
                             Ok(token) => {
                                 let livekit_url =
-                                    ctx.livekit.url_for_client(client_host.as_deref());
+                                    ctx.livekit.url_for_client(client_host.as_deref(), peer);
                                 let _ = send(
                                     &mut ws_tx,
                                     &ServerMessage::VoiceToken {
@@ -809,6 +877,9 @@ pub async fn handle_connection(
                     }
                     ClientMessage::SetVoiceMute { muted, deafened } => {
                         let Some(u) = user.as_ref() else { continue };
+                        if !signals.allow() {
+                            continue;
+                        }
                         if let Some(state) = ctx.state.update_voice_flags(&u.pubkey, muted, deafened) {
                             let targets = ctx.state.guild_member_pubkeys(state.guild_id);
                             ctx.state.deliver(targets, ServerMessage::VoiceStateUpdate(state));
@@ -816,6 +887,9 @@ pub async fn handle_connection(
                     }
                     ClientMessage::SetSpeaking { speaking } => {
                         let Some(u) = user.as_ref() else { continue };
+                        if !signals.allow() {
+                            continue;
+                        }
                         if let Some(state) = ctx.state.update_speaking(&u.pubkey, speaking) {
                             let targets = ctx.state.guild_member_pubkeys(state.guild_id);
                             ctx.state.deliver(targets, ServerMessage::VoiceStateUpdate(state));
@@ -823,6 +897,9 @@ pub async fn handle_connection(
                     }
                     ClientMessage::ShareMediaKey { channel_id, to, epoch, blob } => {
                         let Some(u) = user.as_ref() else { continue };
+                        if blob.len() > MAX_MEDIA_KEY_BLOB || !signals.allow() {
+                            continue;
+                        }
                         let Some(guild_id) = ctx.state.channel_guild(channel_id) else {
                             tracing::warn!(%channel_id, "media key for a channel with no guild");
                             continue;
@@ -848,6 +925,9 @@ pub async fn handle_connection(
                     }
                     ClientMessage::SetCamera { on } => {
                         let Some(u) = user.as_ref() else { continue };
+                        if !signals.allow() {
+                            continue;
+                        }
                         if let Some(state) = ctx.state.update_camera(&u.pubkey, on) {
                             let targets = ctx.state.guild_member_pubkeys(state.guild_id);
                             ctx.state.deliver(targets, ServerMessage::VoiceStateUpdate(state));
@@ -1100,6 +1180,10 @@ pub async fn handle_connection(
                             }).await;
                             continue;
                         };
+                        if !reads.allow() {
+                            reject_rate_limited(&mut ws_tx).await;
+                            continue;
+                        }
                         match ctx.state.ban_list(guild_id, &u.pubkey) {
                             Ok(users) => {
                                 let _ = send(&mut ws_tx, &ServerMessage::GuildBans {
@@ -1372,6 +1456,10 @@ pub async fn handle_connection(
                             }).await;
                             continue;
                         };
+                        if !reads.allow() {
+                            reject_rate_limited(&mut ws_tx).await;
+                            continue;
+                        }
                         match ctx.state.audit_log(guild_id, &u.pubkey).await {
                             Ok(entries) => {
                                 let _ = send(&mut ws_tx, &ServerMessage::AuditLog { guild_id, entries }).await;
@@ -1383,6 +1471,10 @@ pub async fn handle_connection(
                     }
                     ClientMessage::FetchCatalog { offset, limit } => {
                         const DEFAULT_PAGE: u32 = 100;
+                        if !reads.allow() {
+                            reject_rate_limited(&mut ws_tx).await;
+                            continue;
+                        }
                         const MAX_PAGE: u32 = 500;
                         let limit = if limit == 0 { DEFAULT_PAGE } else { limit.min(MAX_PAGE) };
                         let (guilds, total) = ctx.state.guild_catalog_page(offset, limit);
@@ -1469,12 +1561,21 @@ pub const RATE_LIMITED: &str = "rate limited: slow down";
 const RATE_WINDOW: Duration = Duration::from_secs(10);
 /// Writes that cost the room something: a message, a join.
 const WRITE_LIMIT: usize = 30;
+/// Reads that cost the disk something: a history page, a blob. A client
+/// scrolling and resolving images in batches stays far under it.
+const READ_LIMIT: usize = 60;
+/// Signals that fan out to a whole guild and are not worth an error: typing,
+/// speaking, mute, camera, share, and a media key per member on a rekey.
+const SIGNAL_LIMIT: usize = 120;
+/// A sealed 32-byte key is 144 hex characters; anything near the frame cap is
+/// a payload aimed at the recipient's queue.
+const MAX_MEDIA_KEY_BLOB: usize = 512;
 /// Every frame, writes included. A client at rest sends far less — typing is
 /// throttled to one every two seconds — so this only ever catches a flood.
 const FLOOD_LIMIT: usize = 300;
 /// A real client identifies as soon as it reads the Hello. Anything still
 /// silent after this is holding a socket for its own reasons.
-const IDENTIFY_TIMEOUT: Duration = Duration::from_secs(30);
+const IDENTIFY_TIMEOUT: Duration = Duration::from_secs(10);
 /// Each attempt is a Schnorr verification, so an unbounded retry is CPU we hand
 /// to anyone who can open a socket.
 const MAX_IDENTIFY_ATTEMPTS: u32 = 5;
@@ -1574,6 +1675,9 @@ fn removal_broadcasts(
 
 const MAX_EMOJI_DATA_LEN: usize = 350_000; // ~256 KB of bytes once base64 is undone
 const MAX_EMOJI_FETCH: usize = 64;
+/// Four full-size images, so a client asking for message pictures four at a time
+/// is never cut off, and 64 of them cannot be asked for in one frame.
+const MAX_BLOB_RESPONSE_BYTES: usize = 4 * crate::state::MAX_IMAGE_LEN;
 
 fn broadcast_emojis(state: &crate::state::AppState, guild_id: Id) {
     let targets = state.guild_member_pubkeys(guild_id);
@@ -1763,10 +1867,15 @@ where
     Ok(())
 }
 
-const POW_BITS: u32 = 16;
+/// About a million hashes: well under a second for a joiner, a thousand times
+/// that for a raid of a thousand identities.
+const POW_BITS: u32 = 20;
 
-fn pow_challenge(guild_id: crate::protocol::Id, pubkey: &str) -> String {
-    format!("{guild_id}:{pubkey}")
+/// The connection's own nonce is in the challenge, so the work cannot be done
+/// before dialing and a solved answer dies with the socket it was solved on —
+/// a ban and a rejoin on the same key start from zero.
+fn pow_challenge(guild_id: crate::protocol::Id, pubkey: &str, conn_nonce: &str) -> String {
+    format!("{guild_id}:{pubkey}:{conn_nonce}")
 }
 
 fn pow_ok(challenge: &str, nonce: &str, bits: u32) -> bool {
@@ -1801,6 +1910,7 @@ fn check_join_gate(
     accept: bool,
     pow_nonce: Option<&str>,
     invite_code: Option<String>,
+    conn_nonce: &str,
 ) -> Gate {
     use crate::protocol::JoinGate;
     if state.is_guild_member(guild_id, pubkey) {
@@ -1829,7 +1939,7 @@ fn check_join_gate(
             }
         }
         JoinGate::Pow => {
-            let challenge = pow_challenge(guild_id, pubkey);
+            let challenge = pow_challenge(guild_id, pubkey, conn_nonce);
             let solved = pow_nonce
                 .map(|n| pow_ok(&challenge, n, POW_BITS))
                 .unwrap_or(false);

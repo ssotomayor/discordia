@@ -1,0 +1,35 @@
+{
+  "name": "discordia",
+  "dockerComposeFile": ["docker-compose.yml"],
+  "service": "dev",
+  "workspaceFolder": "/Users/tehsoto/Projects/dioxusfun-monorepo",
+  "remoteUser": "vscode",
+
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": { "version": "22" },
+    "ghcr.io/devcontainers/features/github-cli:1": {}
+  },
+
+  "postCreateCommand": "bash .devcontainer/post-create.sh",
+  // Not postCreate: iptables rules are per network namespace and do not
+  // survive `docker stop`, so the allowlist has to be re-applied every start.
+  "postStartCommand": "sudo /usr/local/bin/init-firewall.sh",
+
+  // The gateway and the rendezvous. Not 7880: the bundled SFU is skipped in
+  // here (DIOXUSFUN_LIVEKIT_AUTOSPAWN=0), and a forwarded port for a process
+  // that never starts is a debugging red herring.
+  "forwardPorts": [9000, 7700, 7701],
+  "portsAttributes": {
+    "9000": { "label": "gateway" },
+    "7700": { "label": "rendezvous" },
+    "7701": { "label": "rendezvous relay" }
+  }
+
+  // No "customizations" block. That key is editor-specific (it lists VS Code
+  // extensions to auto-install) and the devcontainer CLI ignores it entirely,
+  // so for a terminal-driven workflow it is dead weight.
+  //
+  // The `vscode` user this config runs as is NOT related: that is just the
+  // name Microsoft gives the non-root account in its devcontainers base
+  // images, the way other images call theirs `node` or `ubuntu`.
+}

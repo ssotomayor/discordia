@@ -1,22 +1,28 @@
+pub mod limits;
 pub mod registry;
 pub mod relay;
 pub mod relay_server;
 pub mod shortcode;
 pub mod verify;
 
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
 use axum::Json;
 use axum::Router;
-use axum::extract::Path;
-use axum::extract::State;
 use axum::extract::ws::WebSocketUpgrade;
+use axum::extract::{ConnectInfo, Path, State};
+use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::get;
 use dioxusfun_protocol::rendezvous::DiscoverEntry;
 use tower_http::cors::{Any, CorsLayer};
 
 use crate::registry::Registry;
+
+/// A register frame is a few hundred bytes; anything near this is someone
+/// filling the coordinator's buffers, not a host.
+const CONTROL_FRAME_BYTES: usize = 64 * 1024;
 
 #[derive(Clone)]
 pub struct Config {
@@ -25,6 +31,7 @@ pub struct Config {
     pub livekit_api_secret: Option<String>,
     pub heartbeat_interval: std::time::Duration,
     pub host_timeout: std::time::Duration,
+    pub register_timeout: std::time::Duration,
     pub relay_url: Option<String>,
 }
 
@@ -37,6 +44,7 @@ impl Default for Config {
             relay_url: None,
             heartbeat_interval: std::time::Duration::from_secs(20),
             host_timeout: std::time::Duration::from_secs(60),
+            register_timeout: std::time::Duration::from_secs(10),
         }
     }
 }
@@ -59,14 +67,12 @@ pub fn router(ctx: AppCtx) -> Router {
         .route("/config", get(config))
         .route("/voice-token", axum::routing::post(voice_token))
         .route("/control", get(control))
-        .route("/join/:code", get(join))
-        .route("/proxy/:session", get(proxy))
         .with_state(ctx)
         .layer(cors)
 }
 
 async fn root() -> &'static str {
-    "dioxusfun-rendezvous. Endpoints: /config, /discover, /resolve/:code, /control, /join/:code, /proxy/:session"
+    "dioxusfun-rendezvous. Endpoints: /config, /discover, /resolve/:code, /voice-token, /control"
 }
 
 async fn config(State(ctx): State<AppCtx>) -> Json<serde_json::Value> {
@@ -84,17 +90,25 @@ async fn discover(State(ctx): State<AppCtx>) -> Json<Vec<DiscoverEntry>> {
     Json(entries)
 }
 
+fn peer_ip(peer: Option<ConnectInfo<SocketAddr>>) -> Option<IpAddr> {
+    peer.map(|ConnectInfo(addr)| addr.ip())
+}
+
 async fn resolve(
     State(ctx): State<AppCtx>,
     Path(code): Path<String>,
-) -> Result<Json<DiscoverEntry>, axum::http::StatusCode> {
+    peer: Option<ConnectInfo<SocketAddr>>,
+) -> Result<Json<DiscoverEntry>, StatusCode> {
+    if !ctx.registry.limits.resolve.admit(peer_ip(peer)) {
+        return Err(StatusCode::TOO_MANY_REQUESTS);
+    }
     ctx.registry
         .lookup(&code.to_lowercase())
         .map(|mut entry| {
             entry.relay_url = ctx.config.relay_url.clone();
             Json(entry)
         })
-        .ok_or(axum::http::StatusCode::NOT_FOUND)
+        .ok_or(StatusCode::NOT_FOUND)
 }
 
 #[derive(serde::Deserialize)]
@@ -157,24 +171,24 @@ fn grants_for(room: String, can_publish: bool) -> livekit_api::access_token::Vid
     }
 }
 
-async fn control(ws: WebSocketUpgrade, State(ctx): State<AppCtx>) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| relay::handle_host_control(socket, ctx.registry, ctx.config))
-}
-
-async fn join(
+async fn control(
     ws: WebSocketUpgrade,
-    Path(code): Path<String>,
+    peer: Option<ConnectInfo<SocketAddr>>,
     State(ctx): State<AppCtx>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| relay::handle_friend_join(socket, ctx.registry, code))
-}
-
-async fn proxy(
-    ws: WebSocketUpgrade,
-    Path(session): Path<String>,
-    State(ctx): State<AppCtx>,
-) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| relay::handle_host_proxy(socket, ctx.registry, session))
+    let ws = ws
+        .max_message_size(CONTROL_FRAME_BYTES)
+        .max_frame_size(CONTROL_FRAME_BYTES);
+    if !ctx.registry.limits.control.admit(peer_ip(peer)) {
+        return ws.on_upgrade(|socket| {
+            relay::refuse(
+                socket,
+                "too many registrations from this address — wait a minute",
+            )
+        });
+    }
+    let peer = peer_ip(peer);
+    ws.on_upgrade(move |socket| relay::handle_host_control(socket, ctx.registry, ctx.config, peer))
 }
 
 #[cfg(test)]
