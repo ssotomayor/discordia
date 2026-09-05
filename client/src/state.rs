@@ -217,6 +217,11 @@ pub struct AppState {
     /// Seeded from `ClientSettings::dm_read_at`. Read on every insert, so the
     /// history the relays replay at launch does not raise an alert twice.
     pub dm_read_at: HashMap<String, i64>,
+    /// Author pubkey → seconds that author's clock runs ahead of ours, as
+    /// measured on a live message. A DM carries the time its *sender* wrote on
+    /// it, so without this a peer whose clock is a minute out has every reply
+    /// filed a minute away from where it belongs. See `note_clock_offset`.
+    pub dm_clock_offset: HashMap<String, i64>,
     /// Seeded from `ClientSettings`. Local and personal: muting is never sent
     /// anywhere, and a muted channel is silent for its mentions too — otherwise
     /// the word would mean two things.
@@ -326,6 +331,7 @@ impl AppState {
             dms: Vec::new(),
             dm_unread: HashMap::new(),
             dm_cleared_at: HashMap::new(),
+            dm_clock_offset: HashMap::new(),
             dm_read_at: HashMap::new(),
             muted_channels: HashSet::new(),
             muted_guilds: HashSet::new(),
@@ -653,6 +659,43 @@ impl AppState {
         true
     }
 
+    /// What to subtract from `author`'s timestamps to put them on our clock.
+    pub fn clock_offset(&self, author: &str) -> i64 {
+        self.dm_clock_offset.get(author).copied().unwrap_or(0)
+    }
+
+    /// Records a fresh estimate of `author`'s clock offset and re-times what is
+    /// already held, so a correction learned from one live message also fixes
+    /// the history the relays replayed before it. Returns whether it changed.
+    ///
+    /// The correction is a pure shift, so re-timing is a shift too: nothing has
+    /// to remember the raw timestamp it arrived with.
+    pub fn note_clock_offset(&mut self, author: &str, offset: i64) -> bool {
+        let delta = offset - self.clock_offset(author);
+        if delta == 0 {
+            return false;
+        }
+        self.dm_clock_offset.insert(author.to_string(), offset);
+        let shift = chrono::TimeDelta::seconds(delta);
+        // Conversations only. A guild message carries the *server's* time, and
+        // a member who also DMs us must not have their channel messages moved.
+        let conversations: Vec<Id> = self.dms.iter().map(|d| d.channel_id).collect();
+        for cid in conversations {
+            let Some(held) = self.messages.get_mut(&cid) else {
+                continue;
+            };
+            let mut moved = false;
+            for m in held.iter_mut().filter(|m| m.author.pubkey == author) {
+                m.created_at -= shift;
+                moved = true;
+            }
+            if moved {
+                held.sort_by_key(|m| m.created_at);
+            }
+        }
+        true
+    }
+
     /// Merges a fetched page into what is already held.
     pub fn merge_history(&mut self, channel_id: Id, page: Vec<Message>) {
         let held = self.messages.entry(channel_id).or_default();
@@ -890,6 +933,40 @@ pub fn use_dm_read_persistence(state: Signal<AppState>) {
     });
 }
 
+/// Writes the learned clock offsets back to disk.
+///
+/// Separate from the read marks because it moves for a different reason and
+/// almost never: an offset is learned once per peer whose clock is out.
+pub fn use_dm_clock_persistence(state: Signal<AppState>) {
+    let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
+    let offsets = use_memo(move || {
+        let mut v: Vec<(String, i64)> = state
+            .read()
+            .dm_clock_offset
+            .iter()
+            .map(|(author, off)| (author.clone(), *off))
+            .collect();
+        v.sort();
+        v
+    });
+    use_effect(move || {
+        let offsets = offsets();
+        if offsets.is_empty() {
+            return;
+        }
+        // `peek`, not `read`: writing back what this effect subscribes to is a
+        // loop.
+        let mut next = settings.peek().clone();
+        let changed = offsets.into_iter().fold(false, |acc, (author, off)| {
+            next.set_clock_offset(&author, off) || acc
+        });
+        if changed {
+            settings.set(next.clone());
+            crate::settings::save(&next);
+        }
+    });
+}
+
 pub fn use_gateway() -> GatewayTx {
     use_context::<GatewayTx>()
 }
@@ -1038,6 +1115,78 @@ mod tests {
             .map(|m| m.created_at.timestamp())
             .collect();
         assert_eq!(order, vec![100, 200, 300]);
+    }
+
+    fn dm_at(s: &mut AppState, peer: &str, author: &str, secs: i64) -> Id {
+        let cid = crate::nostr::service::conversation_id(peer);
+        if !s.dms.iter().any(|d| d.channel_id == cid) {
+            s.dms.push(DmInfo {
+                channel_id: cid,
+                other_pubkey: peer.to_string(),
+            });
+        }
+        let id = Id::new_v4();
+        let mut m = at(id, cid, secs);
+        m.author = user(author);
+        s.insert_message(cid, m);
+        id
+    }
+
+    /// The bug this exists for: a peer whose clock is a quarter of an hour
+    /// behind has every reply filed above the question it answers, and the
+    /// correction has to reach the history already on screen, not only what
+    /// arrives next.
+    #[test]
+    fn correcting_a_clock_re_times_the_conversation_already_held() {
+        let peer = "b".repeat(64);
+        let me = "a".repeat(64);
+        let cid = crate::nostr::service::conversation_id(&peer);
+        let mut s = AppState::empty();
+
+        let question = dm_at(&mut s, &peer, &me, 2_000);
+        let answer = dm_at(&mut s, &peer, &peer, 2_000 - 900 + 10);
+
+        let order: Vec<Id> = s.messages[&cid].iter().map(|m| m.id).collect();
+        assert_eq!(
+            order,
+            vec![answer, question],
+            "the skew is what we start from"
+        );
+
+        assert!(s.note_clock_offset(&peer, -900));
+        let order: Vec<Id> = s.messages[&cid].iter().map(|m| m.id).collect();
+        assert_eq!(order, vec![question, answer]);
+        assert_eq!(
+            s.messages[&cid][1].created_at.timestamp(),
+            2_010,
+            "their stamp is put on our clock, not merely reordered"
+        );
+    }
+
+    /// A member of a guild who also DMs us must not have their channel
+    /// messages moved: those carry the server's time, not theirs.
+    #[test]
+    fn a_clock_correction_stops_at_the_conversation() {
+        let peer = "b".repeat(64);
+        let guild_channel = Id::new_v4();
+        let mut s = AppState::empty();
+        dm_at(&mut s, &peer, &peer, 1_000);
+        let mut in_guild = at(Id::new_v4(), guild_channel, 1_000);
+        in_guild.author = user(&peer);
+        s.insert_message(guild_channel, in_guild);
+
+        s.note_clock_offset(&peer, -900);
+
+        assert_eq!(s.messages[&guild_channel][0].created_at.timestamp(), 1_000);
+    }
+
+    /// Nothing to do is not a change, or the settings file would be rewritten
+    /// on every message.
+    #[test]
+    fn an_unchanged_offset_reports_nothing() {
+        let mut s = AppState::empty();
+        assert!(s.note_clock_offset("abcd", -900));
+        assert!(!s.note_clock_offset("abcd", -900));
     }
 
     /// The page and the memory overlap by design — the fetch re-reads what a

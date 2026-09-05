@@ -23,11 +23,13 @@ pub fn HomeView(
         let mut s = AppState::empty();
         s.dm_cleared_at = settings.read().dm_cleared_at.iter().cloned().collect();
         s.dm_read_at = settings.read().dm_read_at.iter().cloned().collect();
+        s.dm_clock_offset = settings.read().dm_clock_offset.iter().cloned().collect();
         s.muted_channels = settings.read().muted_channels.iter().copied().collect();
         s.muted_guilds = settings.read().muted_guilds.iter().copied().collect();
         s
     });
     crate::state::use_dm_read_persistence(state);
+    crate::state::use_dm_clock_persistence(state);
 
     let nostr_tx = use_hook(|| {
         let relays = {

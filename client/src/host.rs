@@ -32,19 +32,37 @@ pub struct HostInfo {
 pub struct HostHandle {
     pub info: HostInfo,
     gateway: Option<ServerHandle>,
-    _quic: Option<dioxusfun_server::quic::QuicHandle>,
+    quic: Option<dioxusfun_server::quic::QuicHandle>,
+    shutdown: Option<dioxusfun_server::GatewayShutdown>,
     livekit: Option<LivekitSubprocess>,
     rendezvous_task: Option<tokio::task::JoinHandle<()>>,
+    runtime: tokio::runtime::Handle,
     _port_mapping: Option<portmap::MappingGuard>,
 }
 
+/// How long the QUIC door stays open after the sockets are told to go, so the
+/// close frame reaches a friend before the endpoint it travelled over is gone.
+const QUIC_CLOSE_GRACE: std::time::Duration = std::time::Duration::from_millis(250);
+
 impl Drop for HostHandle {
     fn drop(&mut self) {
+        // Aborting the listener leaves everyone already connected being served:
+        // axum spawns a task per connection and `on_upgrade` spawns another,
+        // neither of them a child of the accept loop. This is what ends them.
+        if let Some(shutdown) = self.shutdown.take() {
+            shutdown.close_all();
+        }
         if let Some(handle) = self.gateway.take() {
             handle.abort();
         }
         if let Some(task) = self.rendezvous_task.take() {
             task.abort();
+        }
+        if let Some(quic) = self.quic.take() {
+            self.runtime.spawn(async move {
+                tokio::time::sleep(QUIC_CLOSE_GRACE).await;
+                quic.shutdown().await;
+            });
         }
         self.livekit = None;
     }
@@ -267,7 +285,7 @@ pub async fn start_self_host(
         identities,
         media_max_bytes: dioxusfun_server::media::DEFAULT_MAX_BYTES,
     };
-    let router = dioxusfun_server::build_router(cfg)
+    let (router, shutdown) = dioxusfun_server::build_gateway(cfg)
         .await
         .map_err(|e| format!("embedded server: {e}"))?;
 
@@ -315,9 +333,11 @@ pub async fn start_self_host(
             reachability,
         },
         gateway: Some(gateway),
-        _quic: quic,
+        quic,
+        shutdown: Some(shutdown),
         livekit,
         rendezvous_task,
+        runtime: tokio::runtime::Handle::current(),
         _port_mapping: port_mapping,
     })
 }

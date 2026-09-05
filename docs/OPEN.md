@@ -35,7 +35,10 @@ and the decisions taken deliberately.
   written beside it: `rsa` arrives through `jsonwebtoken` and never runs an RSA
   operation here, and `tract-nnef` is pinned by a model that will not load on a
   newer one. Ignores without a reason are bugs.
-- A DM delete compares our clock to the sender's `created_at`. Two clocks
-  apart by N seconds hide a genuinely new message for N. Per-relay "finished
-  replaying" would date it locally instead, but `RelayEvent::Event` withholds
-  the relay on purpose — the pool dedupes by id, so first-to-arrive is a race.
+- A sender's clock is corrected, not trusted (trap 18), and only from a message
+  that arrived once every connected relay had finished replaying. A relay that
+  is down at launch and comes up later replays into a session already counted
+  live; its events are only ever *samples*, so the worst that costs is a
+  correction learned from a stale message, and the next live one replaces it.
+  Nothing is corrected until such a message exists, which is why a conversation
+  that has only ever been replayed keeps the sender's stamps.

@@ -122,7 +122,11 @@ pub enum VoiceCmd {
         token: String,
         channel_id: Id,
     },
-    Disconnect,
+    /// `done` fires once the rooms are closed and the capture is stopped, so a
+    /// caller that is about to drop this service can wait for it.
+    Disconnect {
+        done: Option<tokio::sync::oneshot::Sender<()>>,
+    },
     ListDevices,
     SetDevices {
         input: Option<String>,
@@ -251,16 +255,21 @@ async fn service_loop(
                     }
                 }
             }
-            VoiceCmd::Disconnect => {
+            VoiceCmd::Disconnect { done } => {
                 eprintln!("[voice] Disconnect");
                 if let Some(prev) = session.take() {
                     prev.shutdown(state).await;
                 }
-                let mut s = state.write();
-                s.voice.phase = VoicePhase::Idle;
-                s.voice.channel_id = None;
-                s.voice.error = None;
+                {
+                    let mut s = state.write();
+                    s.voice.phase = VoicePhase::Idle;
+                    s.voice.channel_id = None;
+                    s.voice.error = None;
+                }
                 last_connect = None;
+                if let Some(done) = done {
+                    let _ = done.send(());
+                }
             }
             VoiceCmd::ListDevices => {
                 eprintln!("[voice] ListDevices request");

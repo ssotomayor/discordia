@@ -31,6 +31,12 @@ pub struct ClientSettings {
     #[serde(default)]
     pub dm_read_at: Vec<(String, i64)>,
 
+    /// Author pubkey → seconds that author's clock runs ahead of ours.
+    /// Persisted because the estimate is only measurable on a live message and
+    /// the correction has to apply to the history the relays replay first.
+    #[serde(default)]
+    pub dm_clock_offset: Vec<(String, i64)>,
+
     /// Channels and whole guilds that should never ring. Personal and local:
     /// nothing about muting is sent to the server or seen by anyone else.
     #[serde(default)]
@@ -127,6 +133,7 @@ impl Default for ClientSettings {
             rendezvous_servers: default_rendezvous_servers(),
             dm_relays: Vec::new(),
             dm_cleared_at: Vec::new(),
+            dm_clock_offset: Vec::new(),
             dm_read_at: Vec::new(),
             muted_channels: Vec::new(),
             muted_guilds: Vec::new(),
@@ -181,6 +188,22 @@ impl ClientSettings {
         match self.dm_cleared_at.iter_mut().find(|(p, _)| p == peer) {
             Some(entry) => entry.1 = entry.1.max(at),
             None => self.dm_cleared_at.push((peer.to_string(), at)),
+        }
+    }
+
+    /// Records an author's clock offset. Returns whether anything changed, so
+    /// the caller can skip a file write for an estimate it already holds.
+    pub fn set_clock_offset(&mut self, author: &str, offset: i64) -> bool {
+        match self.dm_clock_offset.iter_mut().find(|(p, _)| p == author) {
+            Some(entry) if entry.1 == offset => false,
+            Some(entry) => {
+                entry.1 = offset;
+                true
+            }
+            None => {
+                self.dm_clock_offset.push((author.to_string(), offset));
+                true
+            }
         }
     }
 

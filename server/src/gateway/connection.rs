@@ -54,6 +54,7 @@ pub async fn handle_connection(
     let mut flood = RateLimiter::new(FLOOD_LIMIT, RATE_WINDOW);
     let mut failed_identifies = 0u32;
     let identify_by = tokio::time::Instant::now() + IDENTIFY_TIMEOUT;
+    let mut shutdown = ctx.shutdown.subscribe();
 
     loop {
         tokio::select! {
@@ -1492,6 +1493,17 @@ pub async fn handle_connection(
                 break;
             }
 
+            // The reason travels in the close frame rather than as a message:
+            // the client is about to lose the socket either way, and a frame
+            // it might not read before the close says nothing.
+            _ = host_stopped(&mut shutdown) => {
+                let _ = ws_tx.send(WsMessage::Close(Some(axum::extract::ws::CloseFrame {
+                    code: axum::extract::ws::close_code::AWAY,
+                    reason: HOST_STOPPED.into(),
+                }))).await;
+                break;
+            }
+
             outbound = outbound_rx.recv() => {
                 let Some(msg) = outbound else { break };
                 let out = if is_bot {
@@ -1559,6 +1571,27 @@ where
 }
 
 pub const RATE_LIMITED: &str = "rate limited: slow down";
+
+/// What a client is told when the host stops the server under it. Read back on
+/// the client side to name the reason instead of "connection closed".
+pub const HOST_STOPPED: &str = "the host stopped this server";
+
+/// Resolves when the host has stopped the server — including when it already
+/// had before this socket subscribed, which `changed()` alone would sleep
+/// through.
+async fn host_stopped(rx: &mut tokio::sync::watch::Receiver<bool>) {
+    loop {
+        let stopping = *rx.borrow_and_update();
+        if stopping {
+            return;
+        }
+        // The sender lives in the `AppContext` this connection holds, so the
+        // only way out of here is the flag being set.
+        if rx.changed().await.is_err() {
+            std::future::pending::<()>().await;
+        }
+    }
+}
 
 const RATE_WINDOW: Duration = Duration::from_secs(10);
 /// Writes that cost the room something: a message, a join.

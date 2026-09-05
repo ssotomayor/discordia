@@ -139,6 +139,12 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
         let mut named: Vec<String> = Vec::new();
         request_names(&pool, &state, &our_pubkey, &mut named);
 
+        // Relays that have said they finished replaying since they connected.
+        // A message arriving once every connected relay has is one that was
+        // sent moments ago, which is the only kind whose delivery time says
+        // anything about the sender's clock.
+        let mut replayed: std::collections::HashSet<String> = std::collections::HashSet::new();
+
         loop {
             tokio::select! {
                 cmd = rx.recv() => match cmd {
@@ -191,19 +197,24 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
                             }
                         }
                         nip59::KIND_GIFT_WRAP => {
-                            receive(&secret, &our_pubkey, &event, &mut state);
+                            let live = every_relay_replayed(&state, &replayed);
+                            receive(&secret, &our_pubkey, &event, &mut state, live);
                             request_names(&pool, &state, &our_pubkey, &mut named);
                         }
                         _ => {}
                     },
                     Some(RelayEvent::Connected(url)) => {
                         eprintln!("[nostr] {url}: connected");
+                        // A reconnect re-issues the subscriptions, so this relay
+                        // is replaying again until it says otherwise.
+                        replayed.remove(&url);
                         state.write().nostr_relays_up.insert(url);
                     }
                     Some(RelayEvent::Disconnected { relay, why }) => {
                         // Pool retries automatically; this is the only source
                         // of the disconnect reason for status.
                         eprintln!("[nostr] {relay}: disconnected ({why}), retrying");
+                        replayed.remove(&relay);
                         state.write().nostr_relays_up.remove(&relay);
                     }
                     Some(RelayEvent::Published { relay, id, accepted, message }) => {
@@ -223,6 +234,7 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
                     }
                     Some(RelayEvent::EndOfStored { relay }) => {
                         eprintln!("[nostr] {relay}: finished replaying stored events");
+                        replayed.insert(relay);
                     }
                     None => break,
                 },
@@ -353,7 +365,7 @@ fn send_message(
                 created_at: ts,
                 reply_to,
             };
-            insert_message(&msg, our_pubkey, state, Source::Ours);
+            insert_message(&msg, our_pubkey, state, Source::Ours, false);
         }
         Err(e) => {
             // Refused rather than sent in the clear — there is no cleartext
@@ -364,12 +376,27 @@ fn send_message(
     }
 }
 
+/// Whether every relay we are connected to has finished replaying.
+///
+/// Conservative on purpose: with one relay still replaying, a stored event
+/// could arrive next, and dating that by our clock would say the sender's is
+/// wrong by however old the message is. No relays up at all is not "live"
+/// either — it is nothing to conclude from.
+fn every_relay_replayed(
+    state: &Signal<AppState>,
+    replayed: &std::collections::HashSet<String>,
+) -> bool {
+    let up = &state.read().nostr_relays_up;
+    !up.is_empty() && up.iter().all(|relay| replayed.contains(relay))
+}
+
 /// Open an inbound gift wrap and file it, if it is a chat message for us.
 fn receive(
     secret: &secp256k1::SecretKey,
     our_pubkey: &str,
     gift: &Event,
     state: &mut Signal<AppState>,
+    live: bool,
 ) {
     // Failure is the normal case, not an error: the subscription asks for every
     // gift wrap addressed to us, and other Nostr apps wrap other things. A wrap
@@ -378,7 +405,7 @@ fn receive(
     let Ok(msg) = nip17::open_chat(secret, our_pubkey, gift) else {
         return;
     };
-    insert_message(&msg, our_pubkey, state, Source::Relay);
+    insert_message(&msg, our_pubkey, state, Source::Relay, live);
 }
 
 /// Where a message came from. Only a relay can be replaying deleted history;
@@ -395,11 +422,32 @@ enum Source {
 /// would walk back in without this. Strictly below the mark, and never for our
 /// own send: both are the same second of a delete, and dropping a message
 /// someone actually sent is worse than a stale one reappearing once.
-fn hidden_by_delete(s: &AppState, msg: &nip17::ChatMessage, source: Source) -> bool {
-    source == Source::Relay
-        && s.dm_cleared_at
-            .get(&msg.peer)
-            .is_some_and(|at| msg.created_at < *at)
+///
+/// `at` is the message's time already put on our clock, which the mark is on
+/// too; comparing the sender's raw stamp hid a genuinely new message for as
+/// long as the two clocks were apart.
+fn hidden_by_delete(s: &AppState, peer: &str, at: i64, source: Source) -> bool {
+    source == Source::Relay && s.dm_cleared_at.get(peer).is_some_and(|mark| at < *mark)
+}
+
+/// How far a sender's stamp may sit from ours before we call it a clock
+/// difference rather than the delivery taking a moment. Wide enough that
+/// network delay and a relay holding an event never move a conversation.
+const CLOCK_DEADBAND_SECS: i64 = 60;
+
+/// Re-estimate how far ahead an author's clock runs, from a message that was
+/// sent moments ago.
+///
+/// The latest sample rather than the largest: an author who fixes their clock
+/// has to be able to bring the correction back to zero. The deadband is what
+/// keeps ordinary latency from rewriting a conversation on every message.
+fn note_sender_clock(s: &mut AppState, author: &str, claimed: i64, seen_at: i64) {
+    let sample = claimed - seen_at;
+    if (sample - s.clock_offset(author)).abs() <= CLOCK_DEADBAND_SECS {
+        return;
+    }
+    eprintln!("[nostr] {author}: clock reads {sample}s from ours; correcting");
+    s.note_clock_offset(author, sample);
 }
 
 /// Put a message into the conversation it belongs to, in time order.
@@ -412,12 +460,21 @@ fn insert_message(
     our_pubkey: &str,
     state: &mut Signal<AppState>,
     source: Source,
+    live: bool,
 ) {
     let cid = conversation_id(&msg.peer);
     let mid = message_id(&msg.id);
     let mut s = state.write();
 
-    if hidden_by_delete(&s, msg, source) {
+    // A DM carries the time its sender wrote on it, and nothing keeps two
+    // clocks in step: without this a peer running a minute behind has every
+    // reply filed a minute above the question it answers.
+    if live && source == Source::Relay && msg.author != our_pubkey {
+        note_sender_clock(&mut s, &msg.author, msg.created_at, now());
+    }
+    let created_at = msg.created_at - s.clock_offset(&msg.author);
+
+    if hidden_by_delete(&s, &msg.peer, created_at, source) {
         return;
     }
 
@@ -449,7 +506,7 @@ fn insert_message(
             image: None,
             reactions: Vec::new(),
             reply_to: None,
-            created_at: chrono::DateTime::from_timestamp(msg.created_at, 0)
+            created_at: chrono::DateTime::from_timestamp(created_at, 0)
                 .unwrap_or_else(chrono::Utc::now),
         },
     );
@@ -458,7 +515,7 @@ fn insert_message(
     }
 
     if msg.author != our_pubkey {
-        s.note_dm_arrival(cid, &msg.peer, msg.created_at);
+        s.note_dm_arrival(cid, &msg.peer, created_at);
     }
 }
 
@@ -561,17 +618,6 @@ mod tests {
         assert_eq!(names_wanted(&AppState::empty(), &me), vec![me]);
     }
 
-    fn chat(peer: &str, created_at: i64) -> nip17::ChatMessage {
-        nip17::ChatMessage {
-            id: "beef".into(),
-            author: key('a'),
-            peer: peer.to_string(),
-            content: "hi".into(),
-            created_at,
-            reply_to: None,
-        }
-    }
-
     /// What a delete is for: the relays still hold the events and hand them
     /// back on the next launch.
     #[test]
@@ -580,8 +626,8 @@ mod tests {
         let mut s = AppState::empty();
         s.clear_dm(&peer, 100);
 
-        assert!(hidden_by_delete(&s, &chat(&peer, 99), Source::Relay));
-        assert!(!hidden_by_delete(&s, &chat(&peer, 101), Source::Relay));
+        assert!(hidden_by_delete(&s, &peer, 99, Source::Relay));
+        assert!(!hidden_by_delete(&s, &peer, 101, Source::Relay));
     }
 
     /// Delete, then write to the same person inside that second. Both stamps
@@ -593,13 +639,12 @@ mod tests {
         let mut s = AppState::empty();
         s.clear_dm(&peer, 100);
 
-        assert!(!hidden_by_delete(&s, &chat(&peer, 100), Source::Ours));
+        assert!(!hidden_by_delete(&s, &peer, 100, Source::Ours));
         // And once it comes back from a relay on the next launch, still ours.
-        assert!(!hidden_by_delete(&s, &chat(&peer, 100), Source::Relay));
+        assert!(!hidden_by_delete(&s, &peer, 100, Source::Relay));
     }
 
-    /// The mark is our clock; `created_at` is the sender's. Nothing keeps the
-    /// two in step, so the mark may only ever hide, never a whole conversation.
+    /// A delete is one conversation's, however old the message is.
     #[test]
     fn a_delete_never_reaches_another_peer() {
         let cleared = key('b');
@@ -607,6 +652,29 @@ mod tests {
         let mut s = AppState::empty();
         s.clear_dm(&cleared, 100);
 
-        assert!(!hidden_by_delete(&s, &chat(&other, 1), Source::Relay));
+        assert!(!hidden_by_delete(&s, &other, 1, Source::Relay));
+    }
+
+    /// The case the deadband exists for: a message that took a moment to
+    /// arrive is not a sender whose clock is wrong.
+    #[test]
+    fn ordinary_delivery_delay_is_not_a_clock_difference() {
+        let author = key('a');
+        let mut s = AppState::empty();
+        note_sender_clock(&mut s, &author, 1_000, 1_002);
+        assert_eq!(s.clock_offset(&author), 0);
+    }
+
+    /// And the case it must not swallow: a peer a quarter of an hour behind.
+    #[test]
+    fn a_skewed_sender_is_corrected_onto_our_clock() {
+        let author = key('a');
+        let mut s = AppState::empty();
+        note_sender_clock(&mut s, &author, 1_000 - 900, 1_000);
+        assert_eq!(s.clock_offset(&author), -900);
+
+        // And once they fix it, the correction has to come back off.
+        note_sender_clock(&mut s, &author, 2_000, 2_000);
+        assert_eq!(s.clock_offset(&author), 0);
     }
 }

@@ -201,12 +201,16 @@ fn sweep_stale(dir: &Path, keep: &str) {
 }
 
 pub struct LivekitSubprocess {
-    _child: Child,
+    child: Child,
     pid_file: PathBuf,
 }
 
 impl Drop for LivekitSubprocess {
     fn drop(&mut self) {
+        // Kill before forgetting the pid. `kill_on_drop` would do it a moment
+        // later, but the record removed first is the one `reclaim_orphan`
+        // needs if the kill never lands.
+        let _ = self.child.start_kill();
         let _ = fs::remove_file(&self.pid_file);
     }
 }
@@ -336,7 +340,7 @@ pub async fn spawn_livekit(
         .map_err(|e| format!("livekit not ready: {e}"))?;
 
     Ok(LivekitSubprocess {
-        _child: child,
+        child,
         pid_file: dir.join(pid_file_name()),
     })
 }

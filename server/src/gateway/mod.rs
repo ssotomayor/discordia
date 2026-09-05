@@ -1,3 +1,3 @@
 mod connection;
 
-pub use connection::{MAX_FRAME_BYTES, RATE_LIMITED, handle_connection};
+pub use connection::{HOST_STOPPED, MAX_FRAME_BYTES, RATE_LIMITED, handle_connection};

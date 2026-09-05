@@ -72,7 +72,7 @@ pub fn spawn_gateway(
             Err(e) => e,
         };
         state.write().status = ConnectionStatus::Disconnected;
-        let _ = voice_tx.send(VoiceCmd::Disconnect);
+        let _ = voice_tx.send(VoiceCmd::Disconnect { done: None });
         on_disconnect(reason);
     });
 
@@ -409,6 +409,11 @@ where
                 let frame = frame.map_err(|e| format!("recv: {e}"))?;
                 let text = match frame {
                     WsMessage::Text(t) => t.to_string(),
+                    // A host that stops on purpose says so in the close frame;
+                    // "connection closed" would be true and useless.
+                    WsMessage::Close(Some(f)) if !f.reason.is_empty() => {
+                        return Err(f.reason.to_string());
+                    }
                     WsMessage::Close(_) => break,
                     _ => continue,
                 };
@@ -999,7 +1004,7 @@ fn apply(
                     eprintln!("[net] server says we're out of voice — forcing Idle");
                     s.voice.phase = VoicePhase::Idle;
                     s.voice.channel_id = None;
-                    let _ = voice_tx.send(VoiceCmd::Disconnect);
+                    let _ = voice_tx.send(VoiceCmd::Disconnect { done: None });
                     s.screen_token = None;
                     s.screen_audio_token = None;
                     s.screen_video_token = None;

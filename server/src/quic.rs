@@ -223,7 +223,7 @@ mod tests {
             std::process::id(),
             N.fetch_add(1, Ordering::Relaxed)
         ));
-        let ctx = crate::build_context(crate::ServerConfig {
+        let (ctx, _shutdown) = crate::build_context(crate::ServerConfig {
             livekit: crate::livekit::LiveKitConfig::from_env(&dir),
             operators: Default::default(),
             identities: Default::default(),

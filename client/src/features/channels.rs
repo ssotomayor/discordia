@@ -435,7 +435,7 @@ pub fn ChannelsColumn() -> Element {
                                             },
                                             on_leave: move |_| {
                                                 g_leave.send(ClientMessage::LeaveVoice);
-                                                v_leave.send(VoiceCmd::Disconnect);
+                                                v_leave.send(VoiceCmd::Disconnect { done: None });
                                             },
                                         }
                                     }
@@ -1391,7 +1391,7 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                             title: "Leave voice",
                             onclick: move |_| {
                                 g_for_hang.send(ClientMessage::LeaveVoice);
-                                v_for_hang.send(VoiceCmd::Disconnect);
+                                v_for_hang.send(VoiceCmd::Disconnect { done: None });
                             },
                             span { class: "block w-4 h-4", dangerous_inner_html: crate::features::icons::PHONE_OFF }
                             "Leave"

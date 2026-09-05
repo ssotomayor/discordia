@@ -26,6 +26,26 @@ pub struct AppContext {
     /// `protocol::dial_origin` spells them. An Identify naming any other
     /// address is refused before its signature is even checked.
     pub identities: HashSet<String>,
+    /// Flipped once, by `GatewayShutdown::close_all`. Every connection task
+    /// subscribes. Owned here rather than by the handle so that dropping the
+    /// handle — which `build_router` does — closes nothing.
+    pub shutdown: Arc<tokio::sync::watch::Sender<bool>>,
+}
+
+/// The switch that closes every open gateway socket at once.
+///
+/// Dropping the listener is not enough: axum spawns a task per connection and
+/// `on_upgrade` spawns another, both detached from it, so a stopped host would
+/// otherwise go on serving everyone already connected.
+pub struct GatewayShutdown(Arc<tokio::sync::watch::Sender<bool>>);
+
+impl GatewayShutdown {
+    /// `send_replace`, not `send`: the value has to stick even with nobody
+    /// watching yet, or a socket accepted a moment later reads a channel that
+    /// still says the server is running.
+    pub fn close_all(&self) {
+        self.0.send_replace(true);
+    }
 }
 
 pub struct ServerConfig {
@@ -77,7 +97,7 @@ impl ServerHandle {
     }
 }
 
-async fn build_context(cfg: ServerConfig) -> std::io::Result<Arc<AppContext>> {
+async fn build_context(cfg: ServerConfig) -> std::io::Result<(Arc<AppContext>, GatewayShutdown)> {
     let store = store::Store::open_in(&cfg.data_dir)
         .await
         .map_err(|e| std::io::Error::other(format!("store: {e}")))?;
@@ -85,10 +105,12 @@ async fn build_context(cfg: ServerConfig) -> std::io::Result<Arc<AppContext>> {
     let state = state::AppState::load_or_seed(store, media, cfg.operators)
         .await
         .map_err(|e| std::io::Error::other(format!("state load: {e}")))?;
+    let shutdown = Arc::new(tokio::sync::watch::Sender::new(false));
     let ctx = Arc::new(AppContext {
         state: Arc::new(state),
         livekit: cfg.livekit,
         identities: cfg.identities,
+        shutdown: shutdown.clone(),
     });
 
     let sweep_state = ctx.state.clone();
@@ -112,7 +134,7 @@ async fn build_context(cfg: ServerConfig) -> std::io::Result<Arc<AppContext>> {
         }
     });
 
-    Ok(ctx)
+    Ok((ctx, GatewayShutdown(shutdown)))
 }
 
 pub async fn spawn(
@@ -136,8 +158,16 @@ pub async fn spawn_on(
 }
 
 pub async fn build_router(cfg: ServerConfig) -> std::io::Result<axum::Router> {
-    let ctx = build_context(cfg).await?;
-    Ok(http::router(ctx))
+    Ok(build_gateway(cfg).await?.0)
+}
+
+/// The router and the switch that closes the sockets it went on to serve.
+///
+/// Anything that can be stopped while people are still connected — the
+/// in-process host, above all — wants both halves.
+pub async fn build_gateway(cfg: ServerConfig) -> std::io::Result<(axum::Router, GatewayShutdown)> {
+    let (ctx, shutdown) = build_context(cfg).await?;
+    Ok((http::router(ctx), shutdown))
 }
 
 pub fn serve_router(listener: tokio::net::TcpListener, router: axum::Router) -> ServerHandle {

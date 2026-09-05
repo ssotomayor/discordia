@@ -17,16 +17,16 @@ name instead.
 
 | File | Lines |
 |---|---|
-| `client/src/features/voice.rs` | 2787 |
+| `client/src/features/voice.rs` | 2796 |
 | `server/src/state/mod.rs` | 2451 |
 | `server/tests/owner_controls.rs` | 2421 |
-| `server/src/gateway/connection.rs` | 2101 |
+| `server/src/gateway/connection.rs` | 2134 |
 | `client/src/features/channels.rs` | 2191 |
 | `client/src/features/screenshare.rs` | 1617 |
 | `protocol/src/lib.rs` | 1441 |
-| `client/src/state.rs` | 1373 |
+| `client/src/state.rs` | 1522 |
 | `client/src/update.rs` | 1224 |
-| `client/src/net.rs` | 1187 |
+| `client/src/net.rs` | 1192 |
 | `client/src/features/chat.rs` | 1052 |
 | `server/src/store.rs` | 965 |
 
@@ -49,6 +49,7 @@ that direction says a file is safe to open when it is not.
 | The first screen | `client/src/features/home.rs` | `HomeView`; the connect form is `connect::ConnectForm` |
 | The settings dialog | `client/src/features/channels.rs` | `SETTINGS_TABS` + `SettingsTab` inside `UserPanel`. The cog that opens it is in the title bar (`workspace.rs`); only `AppState::audio_settings` connects them |
 | Keys on this machine | `client/src/identity.rs` | `detected` / `sign_in` / `forget`; one file per key under `config_dir()/identities/`, `identity.json` names the active one |
+| Leaving a server, and stopping an embedded one | `client/src/features/workspace.rs` | `Leaving` + `leave`; the teardown effect runs before `on_disconnect` (trap 17) |
 
 ## Change recipes
 

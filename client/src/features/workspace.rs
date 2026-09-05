@@ -47,10 +47,55 @@ fn default_layout() -> Vec<(String, GridPosition)> {
 
 const UNPLUG_ICON_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>"##;
 
+/// Leaving a session in two beats: ask first when this machine is the host,
+/// then tear the media down before the views that own it are unmounted.
+#[derive(Clone, PartialEq)]
+enum Leaving {
+    /// Waiting on the host's answer. Carries the reason it would leave with.
+    Confirm(String),
+    /// Shutting the media down; `on_disconnect` fires when it is finished.
+    Running(String),
+}
+
+/// A cap on the teardown, so a wedged webview or SFU cannot trap the session.
+const LEAVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Closes the webview's LiveKit room — camera, screen share and the E2EE
+/// worker with it — and answers when it is really gone rather than when the
+/// call was made.
+const STOP_WEBVIEW_MEDIA_JS: &str = r#"
+(async () => {
+  try { await window.dxScreen.disconnect(); } catch (e) {}
+  dioxus.send(true);
+})();
+"#;
+
 #[component]
 pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>) -> Element {
     let state = use_signal(AppState::empty);
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
+    let leaving = use_signal(|| None::<Leaving>);
+
+    // Every exit funnels through here: the button, and the gateway task ending
+    // under us. Media published from the webview outlives this component —
+    // the page does not reload — so somebody has to say stop.
+    //
+    // An empty reason is the button; anything else is the connection reporting
+    // how it ended, which is not a question and so overtakes an open confirm.
+    let leave = move |reason: String| {
+        let mut leaving = leaving;
+        let asked = matches!(*leaving.peek(), Some(Leaving::Confirm(_)));
+        let idle = leaving.peek().is_none();
+        if !(idle || (asked && !reason.is_empty())) {
+            return;
+        }
+        let hosting = state.peek().host_info.is_some();
+        leaving.set(Some(if hosting && reason.is_empty() {
+            Leaving::Confirm(reason)
+        } else {
+            Leaving::Running(reason)
+        }));
+    };
 
     let (gateway_tx, voice_tx, nostr_tx) = use_hook(|| {
         {
@@ -74,6 +119,7 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
             w.selected_input_device = saved.selected_input_device.clone();
             w.selected_output_device = saved.selected_output_device.clone();
             w.dm_cleared_at = saved.dm_cleared_at.iter().cloned().collect();
+            w.dm_clock_offset = saved.dm_clock_offset.iter().cloned().collect();
             w.dm_read_at = saved.dm_read_at.iter().cloned().collect();
             w.muted_channels = saved.muted_channels.iter().copied().collect();
             w.muted_guilds = saved.muted_guilds.iter().copied().collect();
@@ -82,7 +128,7 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
         // controls from AppState on the first poll.
         let voice_tx = spawn_voice_service(state);
         let gateway_tx = spawn_gateway(params.clone(), state, voice_tx.clone(), move |reason| {
-            on_disconnect.call(reason);
+            leave(reason);
         });
         let relays = {
             let saved = settings.read();
@@ -104,6 +150,7 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
     provide_context(state);
     provide_context(params.identity.clone());
     crate::state::use_dm_read_persistence(state);
+    crate::state::use_dm_clock_persistence(state);
 
     let mut layout = use_layout_store(|| {
         let saved = settings.read();
@@ -125,6 +172,38 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
         for (id, [x, y, w, h]) in &saved.layout_free {
             store.set_free(id.clone(), FloatRect::new(*x, *y, *w, *h));
         }
+    });
+
+    // Runs once per session, when the exit is settled. The order is what
+    // matters: the webview room publishes camera and screen and survives this
+    // component, so it goes first; the native rooms own the mic, the macOS
+    // capture and the SFU participants, and are given until LEAVE_TIMEOUT to
+    // close before the session is dropped out from under them.
+    let leave_voice = voice_tx.clone();
+    use_effect(move || {
+        let Some(Leaving::Running(reason)) = leaving() else {
+            return;
+        };
+        let voice_tx = leave_voice.clone();
+        spawn(async move {
+            let stop_webview = document::eval(&format!(
+                "{}\n{STOP_WEBVIEW_MEDIA_JS}",
+                crate::features::screenshare::SCREEN_JS
+            ));
+            let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+            let _ = voice_tx.send(crate::features::voice::VoiceCmd::Disconnect {
+                done: Some(done_tx),
+            });
+            let teardown = async move {
+                let mut stop_webview = stop_webview;
+                let _ = stop_webview.recv::<bool>().await;
+                let _ = done_rx.await;
+            };
+            if tokio::time::timeout(LEAVE_TIMEOUT, teardown).await.is_err() {
+                eprintln!("[dioxusfun] media teardown timed out; leaving anyway");
+            }
+            on_disconnect.call(reason);
+        });
     });
 
     let mut edit_mode = use_signal(|| false);
@@ -187,6 +266,16 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
             crate::features::sounds::MessageSounds {}
             VoiceSpeakingBridge {}
             ErrorToast {}
+            match leaving() {
+                Some(Leaving::Confirm(_)) => rsx! { StopHostingDialog { leaving } },
+                Some(Leaving::Running(_)) => rsx! {
+                    div {
+                        class: "dxf-backdrop-in fixed inset-0 z-50 flex items-center justify-center bg-black/50",
+                        div { class: "text-sm text-[var(--text-muted)]", "Disconnecting…" }
+                    }
+                },
+                None => rsx! { Fragment {} },
+            }
             crate::features::activities::ActivityHost {}
             crate::features::screenshare::ScreenShareBridge {}
             crate::features::screenshare::ScreenSourcePicker {}
@@ -218,7 +307,7 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
                     button {
                         class: "h-8 px-2 flex items-center gap-1.5 border-l border-[var(--border)] text-[10px] uppercase tracking-wider text-[var(--text-muted)] hover:text-[var(--danger)] transition-colors",
                         title: "Disconnect from this server",
-                        onclick: move |_| on_disconnect.call(String::new()),
+                        onclick: move |_| leave(String::new()),
                         span { class: "block w-4 h-4", dangerous_inner_html: UNPLUG_ICON_SVG }
                         "Disconnect"
                     }
@@ -492,6 +581,77 @@ fn VoiceSpeakingBridge() -> Element {
     });
 
     rsx! { Fragment {} }
+}
+
+/// What stopping the host actually costs, said before it happens.
+///
+/// The count is of people the gateway still holds a connection for, which is
+/// what "and everyone in them" means here — the member list also carries people
+/// who are merely members and already offline.
+#[component]
+fn StopHostingDialog(leaving: Signal<Option<Leaving>>) -> Element {
+    let state = use_app_state();
+    let mut leaving = leaving;
+
+    let (guilds, others) = {
+        let s = state.read();
+        let me = s.self_user.as_ref().map(|u| u.pubkey.as_str());
+        let mut online: Vec<&str> = s
+            .members
+            .iter()
+            .filter(|m| m.online && Some(m.user.pubkey.as_str()) != me)
+            .map(|m| m.user.pubkey.as_str())
+            .collect();
+        online.sort_unstable();
+        online.dedup();
+        (s.guilds.len(), online.len())
+    };
+    let guilds_label = if guilds == 1 { "guild" } else { "guilds" };
+    let people = match others {
+        0 => "Nobody else is connected right now.".to_string(),
+        1 => "One other person is connected right now, and will be dropped.".to_string(),
+        n => format!("{n} other people are connected right now, and will be dropped."),
+    };
+
+    let cancel = move |_| leaving.set(None);
+    let confirm = move |_| leaving.set(Some(Leaving::Running(String::new())));
+
+    rsx! {
+        div {
+            class: "dxf-backdrop-in fixed inset-0 z-50 flex items-center justify-center bg-black/50",
+            onclick: cancel,
+            div {
+                class: "dxf-modal-in w-[26rem] flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl overflow-hidden",
+                onclick: move |e| e.stop_propagation(),
+                div { class: "px-4 py-3 border-b border-[var(--border)]",
+                    h3 { class: "text-sm font-medium text-[var(--warn)]", "This machine is the server" }
+                }
+                div { class: "px-4 py-3 flex flex-col gap-2 text-sm text-[var(--text-muted)]",
+                    p {
+                        "Disconnecting shuts the server down. Its {guilds} {guilds_label}, "
+                        "their channels and any voice or screen share go with it, and nobody "
+                        "can reach them until you host again from here."
+                    }
+                    p { "{people}" }
+                    p { class: "text-[var(--text-dim)]",
+                        "Nothing is deleted — messages and settings stay on this machine."
+                    }
+                }
+                div { class: "px-4 py-3 border-t border-[var(--border)] flex items-center justify-end gap-2",
+                    button {
+                        class: "px-3 py-1 rounded text-[11px] text-[var(--text-muted)] hover:text-[var(--text)] transition-colors",
+                        onclick: cancel,
+                        "Keep hosting"
+                    }
+                    button {
+                        class: "px-3 py-1 rounded text-[11px] uppercase tracking-wider text-[var(--danger)] border border-[var(--border)] hover:border-[var(--danger)] transition-colors",
+                        onclick: confirm,
+                        "Stop the server"
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[component]
