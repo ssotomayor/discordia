@@ -325,6 +325,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
+          # Named, not everything in the run: deploy-images also uploads
+          # .dockerbuild records, and a failure fetching one of those would
+          # fail a publish that has no use for them.
+          pattern: prerelease-*
           path: artifacts
       - name: Stage release artifacts
         run: |
@@ -431,6 +435,11 @@ jobs:
             type=sha,prefix=,format=short
 
       - uses: docker/build-push-action@v6
+        env:
+          # Nothing consumes the build record, and uploading it puts an
+          # artifact in the run that other jobs have to know to skip.
+          DOCKER_BUILD_RECORD_UPLOAD: "false"
+          DOCKER_BUILD_SUMMARY: "false"
         with:
           context: .
           file: ${{ matrix.dockerfile }}
