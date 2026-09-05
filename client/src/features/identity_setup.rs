@@ -326,86 +326,94 @@ fn DetectedIdentities(on_pick: EventHandler<Identity>, on_error: EventHandler<St
     if rows.is_empty() {
         return rsx! {};
     }
+    let count = rows.len();
 
     rsx! {
         div { class: "space-y-2",
-            div { class: LABEL, "On this machine" }
-            for f in rows.iter().cloned() {
-                {
-                    let pick = f.pubkey.clone();
-                    let drop_key = f.pubkey.clone();
-                    let asking = confirming() == Some(f.pubkey.clone());
-                    let initial = f
-                        .display_name
-                        .chars()
-                        .next()
-                        .unwrap_or('?')
-                        .to_ascii_uppercase()
-                        .to_string();
-                    let tag = crate::identity::discriminator(&f.pubkey).to_string();
-                    let npub = crate::identity::npub_of(&f.pubkey);
-                    let short = format!("{}…{}", &npub[..12.min(npub.len())], &npub[npub.len() - 4..]);
-                    let signature = crate::identity::color_signature(&f.pubkey, 12);
-                    let forget_cls = if asking {
-                        "px-2 py-1 rounded-md border border-[var(--danger)] text-[9px] font-semibold uppercase tracking-wider text-[var(--danger)]"
-                    } else {
-                        "w-6 h-6 rounded-md text-[11px] text-[var(--text-dim)] hover:text-[var(--danger)] hover:border-[var(--danger)] border border-transparent"
-                    };
-                    rsx! {
-                        div {
-                            key: "found-{f.pubkey}",
-                            class: "w-full flex items-center gap-3 border border-[var(--edge)] hover:border-[var(--accent)] rounded-xl p-3 transition-colors",
-                            style: "background: var(--panel2);",
-                            button {
-                                r#type: "button",
-                                class: "flex-1 min-w-0 flex items-center gap-3 text-left",
-                                onclick: move |_| {
-                                    confirming.set(None);
-                                    match Identity::sign_in(&pick) {
-                                        Ok(id) => on_pick.call(id),
-                                        Err(e) => on_error.call(e),
+            div { class: "flex items-baseline gap-2",
+                span { class: "{LABEL} flex-1", "On this machine" }
+                if count > 1 {
+                    span { class: "text-[10px] text-[var(--text-dim)]", "{count} keys" }
+                }
+            }
+            div { class: "max-h-64 overflow-y-auto space-y-2 pr-0.5",
+                for f in rows.iter().cloned() {
+                    {
+                        let pick = f.pubkey.clone();
+                        let drop_key = f.pubkey.clone();
+                        let asking = confirming() == Some(f.pubkey.clone());
+                        let initial = f
+                            .display_name
+                            .chars()
+                            .next()
+                            .unwrap_or('?')
+                            .to_ascii_uppercase()
+                            .to_string();
+                        let tag = crate::identity::discriminator(&f.pubkey).to_string();
+                        let npub = crate::identity::npub_of(&f.pubkey);
+                        let short = format!("{}…{}", &npub[..12.min(npub.len())], &npub[npub.len() - 4..]);
+                        let signature = crate::identity::color_signature(&f.pubkey, 12);
+                        let forget_cls = if asking {
+                            "px-2 py-1 rounded-md border border-[var(--danger)] text-[9px] font-semibold uppercase tracking-wider text-[var(--danger)]"
+                        } else {
+                            "w-6 h-6 rounded-md text-[11px] text-[var(--text-dim)] hover:text-[var(--danger)] hover:border-[var(--danger)] border border-transparent"
+                        };
+                        rsx! {
+                            div {
+                                key: "found-{f.pubkey}",
+                                class: "w-full flex items-center gap-3 border border-[var(--edge)] hover:border-[var(--accent)] rounded-xl p-3 transition-colors",
+                                style: "background: var(--panel2);",
+                                button {
+                                    r#type: "button",
+                                    class: "flex-1 min-w-0 flex items-center gap-3 text-left",
+                                    onclick: move |_| {
+                                        confirming.set(None);
+                                        match Identity::sign_in(&pick) {
+                                            Ok(id) => on_pick.call(id),
+                                            Err(e) => on_error.call(e),
+                                        }
+                                    },
+                                    div {
+                                        class: "w-9 h-9 shrink-0 rounded-lg border border-[var(--edge)] flex items-center justify-center text-sm font-semibold text-[var(--accent)]",
+                                        style: "background: var(--bg2);",
+                                        "{initial}"
                                     }
-                                },
-                                div {
-                                    class: "w-9 h-9 shrink-0 rounded-lg border border-[var(--edge)] flex items-center justify-center text-sm font-semibold text-[var(--accent)]",
-                                    style: "background: var(--bg2);",
-                                    "{initial}"
+                                    div { class: "flex-1 min-w-0",
+                                        div { class: "flex items-baseline gap-1.5",
+                                            span { class: "truncate text-sm font-medium text-[var(--text)]",
+                                                "{f.display_name}"
+                                            }
+                                            span { class: "shrink-0 font-mono text-[10px] text-[var(--text-dim)]",
+                                                "#{tag}"
+                                            }
+                                        }
+                                        div { class: "truncate font-mono text-[10px] text-[var(--text-dim)]",
+                                            "{short}"
+                                        }
+                                        div { class: "flex gap-0.5 pt-1.5",
+                                            for c in signature.iter() {
+                                                div { class: "h-1 flex-1 rounded-full", style: "background: {c};" }
+                                            }
+                                        }
+                                    }
                                 }
-                                div { class: "flex-1 min-w-0",
-                                    div { class: "flex items-baseline gap-1.5",
-                                        span { class: "truncate text-sm font-medium text-[var(--text)]",
-                                            "{f.display_name}"
+                                button {
+                                    r#type: "button",
+                                    class: "shrink-0 flex items-center justify-center transition-colors {forget_cls}",
+                                    title: "Delete this key from this machine. Without its recovery phrase it cannot be brought back.",
+                                    onclick: move |_| {
+                                        if !asking {
+                                            confirming.set(Some(drop_key.clone()));
+                                            return;
                                         }
-                                        span { class: "shrink-0 font-mono text-[10px] text-[var(--text-dim)]",
-                                            "#{tag}"
+                                        if let Err(e) = crate::identity::forget(&drop_key) {
+                                            on_error.call(e);
                                         }
-                                    }
-                                    div { class: "truncate font-mono text-[10px] text-[var(--text-dim)]",
-                                        "{short}"
-                                    }
-                                    div { class: "flex gap-0.5 pt-1.5",
-                                        for c in signature.iter() {
-                                            div { class: "h-1 flex-1 rounded-full", style: "background: {c};" }
-                                        }
-                                    }
+                                        confirming.set(None);
+                                        found.set(crate::identity::detected());
+                                    },
+                                    if asking { "Forget?" } else { "✕" }
                                 }
-                            }
-                            button {
-                                r#type: "button",
-                                class: "shrink-0 flex items-center justify-center transition-colors {forget_cls}",
-                                title: "Delete this key from this machine. Without its recovery phrase it cannot be brought back.",
-                                onclick: move |_| {
-                                    if !asking {
-                                        confirming.set(Some(drop_key.clone()));
-                                        return;
-                                    }
-                                    if let Err(e) = crate::identity::forget(&drop_key) {
-                                        on_error.call(e);
-                                    }
-                                    confirming.set(None);
-                                    found.set(crate::identity::detected());
-                                },
-                                if asking { "Forget?" } else { "✕" }
                             }
                         }
                     }

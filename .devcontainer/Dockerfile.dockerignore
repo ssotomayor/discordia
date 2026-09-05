@@ -1,0 +1,14 @@
+# The build context is the repo root, and the repo root is ~52GB — target/
+# alone is 50 of it. Without this the daemon receives all of it before the
+# first line of the Dockerfile runs.
+#
+# Named for the Dockerfile rather than placed at the repo root so it applies to
+# this build only: Dockerfile and Dockerfile.rendezvous take the same root as
+# their context and must NOT inherit an allowlist that excludes the source.
+#
+# Deny everything, then re-admit exactly what the Dockerfile reads. The source
+# tree arrives at runtime over the bind mount, never through the image.
+*
+# A glob, not the two names: adding a third script and forgetting this line
+# fails the build with a "not found" that points at the Dockerfile, not here.
+!.devcontainer/*.sh
