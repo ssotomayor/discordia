@@ -58,6 +58,7 @@ another. Deferred work goes in `docs/OPEN.md`, never only in a commit message.
 | 13 | Tailwind is dx's, not npm's: it finds `client/tailwind.css` at the crate root, installs a standalone CLI, and writes `client/assets/tailwind.css` — which is committed because a plain `cargo build` has no dx to generate it. |
 | 14 | CI lints with `-D warnings`: one warning is a red build. It lints in two groups — `dioxusfun`+`dioxus-grid-layout`, and `protocol`+`server`+`bot`+`rendezvous` — so `-p dioxusfun` alone misses half the tree. |
 | 15 | Off loopback the gateway speaks QUIC only, keyed to the host (`quic.rs` both sides, `quic://key@addrs` share strings). `ws://` is loopback or behind a TLS proxy and the client refuses it elsewhere; the rendezvous never proxies frames, its iroh relay carries ciphertext. A friend's peer address arrives as `ConnectInfo` on direct QUIC and is absent when relayed. |
+| 16 | No `CryptoKey` may cross the webview's page/worker boundary. WebKit wraps a cloned key with a master key in the macOS keychain, and every rebuilt (ad-hoc signed) binary then prompts for the login password. The E2EE key goes to the worker as text and `assets/e2ee-worker-shim.js` imports it there; ratchet results come back without their key. |
 
 ## Elsewhere
 

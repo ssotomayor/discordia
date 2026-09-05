@@ -111,6 +111,10 @@ const LIVEKIT_JS: &str = include_str!("../assets/livekit-client.umd.js");
 
 const LIVEKIT_E2EE_WORKER_JS: &str = include_str!("../assets/livekit-client.e2ee.worker.js");
 
+/// Runs after the worker's own script so it can wrap the handler that script
+/// installed. Keeps every CryptoKey inside the worker; see the file.
+const E2EE_WORKER_SHIM_JS: &str = include_str!("../assets/e2ee-worker-shim.js");
+
 const BASE_CSS: &str = "
 /* Variable *names* are the styling interface, so new palette entries are added
    rather than renamed; `theme_vars()` overrides these inline on the app root. */
@@ -588,7 +592,8 @@ fn AppHead() -> Element {
         document::Script {
             {format!(
                 "window.__dxfE2eeWorkerSrc = {};",
-                serde_json::to_string(LIVEKIT_E2EE_WORKER_JS).unwrap_or_else(|_| "null".into())
+                serde_json::to_string(&format!("{LIVEKIT_E2EE_WORKER_JS}\n{E2EE_WORKER_SHIM_JS}"))
+                    .unwrap_or_else(|_| "null".into())
             )}
         }
         document::Style { {font_face_css()} }

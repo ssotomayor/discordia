@@ -15,6 +15,7 @@ window.dxScreen = window.dxScreen || (function () {
   let reconnectAttempt = 0;
   let localShareAudio = null;
   let e2eeKey = null;
+  let e2eeWorker = null;
   let e2eeOn = false;
   let e2eeProvider = null;
   let localCameraTrack = null;
@@ -188,14 +189,12 @@ window.dxScreen = window.dxScreen || (function () {
     } else if (e2eeOn) {
       try {
         const provider = new lk.ExternalE2EEKeyProvider();
-        opts.e2ee = {
-          keyProvider: provider,
-          worker: new Worker(
-            URL.createObjectURL(
-              new Blob([window.__dxfE2eeWorkerSrc], { type: 'application/javascript' })
-            )
-          ),
-        };
+        e2eeWorker = new Worker(
+          URL.createObjectURL(
+            new Blob([window.__dxfE2eeWorkerSrc], { type: 'application/javascript' })
+          )
+        );
+        opts.e2ee = { keyProvider: provider, worker: e2eeWorker };
         e2eeProvider = provider;
       } catch (e) {
         e2eeProvider = null;
@@ -214,7 +213,7 @@ window.dxScreen = window.dxScreen || (function () {
     if (e2eeProvider) {
       try {
         if (e2eeKey) {
-          await e2eeProvider.setKey(e2eeKey);
+          postRawKey(e2eeKey);
           await thisRoom.setE2EEEnabled(true);
         } else {
           await thisRoom.setE2EEEnabled(false);
@@ -586,12 +585,22 @@ window.dxScreen = window.dxScreen || (function () {
       post('camera-error', { detail: String((e && e.message) || e) });
     }
   }
+  // Not provider.setKey: that hands the worker a CryptoKey, which WebKit wraps
+  // with a keychain-held master key and macOS prompts for. The shim appended
+  // to the worker imports the text itself; see assets/e2ee-worker-shim.js.
+  function postRawKey(key) {
+    if (!e2eeWorker) throw new Error('no e2ee worker to key');
+    e2eeWorker.postMessage({
+      kind: 'setKeyRaw',
+      data: { keyString: key, keyIndex: 0, updateCurrentKeyIndex: false },
+    });
+  }
   async function setE2eeKey(key) {
     e2eeKey = key || null;
     if (desiredRoom) desiredRoom.key = e2eeKey;
     if (!e2eeKey || !e2eeProvider) return;
     try {
-      await e2eeProvider.setKey(e2eeKey);
+      postRawKey(e2eeKey);
       if (room) await room.setE2EEEnabled(true);
     } catch (e) {
       console.error('[dxScreen] rekey failed', e);
