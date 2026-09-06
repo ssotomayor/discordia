@@ -481,6 +481,31 @@ fn font_face_css() -> String {
     )
 }
 
+/// The root keeps an opaque `--bg`; the shell above it does not.
+///
+/// The two layers exist for one reason: the pattern is painted on a fixed layer
+/// *between* them, and `HomeView` and `WorkspaceView` both fill themselves with
+/// `bg-[var(--bg)]`. Overriding `--bg` on the root — which is what the custom
+/// image did — makes the pattern's own ground transparent too; overriding it on
+/// the shell leaves the pattern something to sit on and takes the lid off it.
+///
+/// This is why every pattern did nothing at all before: the layer was drawn and
+/// then painted over, every time.
+fn shell_style(has_image: bool, pattern_class: &str) -> String {
+    let mut out = String::new();
+    if has_image || !pattern_class.is_empty() {
+        out.push_str("--bg: transparent;");
+    }
+    // Panels stay solid for a pattern and go translucent for a photograph. Both
+    // let the ground through where the app paints `--bg`, the chat log
+    // included — a background nobody can see behind the biggest surface in the
+    // window is the bug this function exists to fix.
+    if has_image {
+        out.push_str("--panel: color-mix(in srgb, var(--panel-solid) 66%, transparent);");
+    }
+    out
+}
+
 fn background_pattern_class(pattern: &str) -> &'static str {
     match pattern {
         "grid" => "app-bg-pattern app-bg-grid",
@@ -525,11 +550,7 @@ pub fn App() -> Element {
     if let Some(a) = &accent {
         root_style.push_str(&accent_vars(a));
     }
-    if background.is_some() {
-        root_style.push_str(
-            "--bg: transparent; --panel: color-mix(in srgb, var(--panel-solid) 66%, transparent);",
-        );
-    }
+    let shell = shell_style(background.is_some(), pattern_class);
 
     rsx! {
         AppHead {}
@@ -552,7 +573,7 @@ pub fn App() -> Element {
                     }
                 }
             }
-            div { class: "app-shell",
+            div { class: "app-shell", style: "{shell}",
             match (identity.read().clone(), session.read().clone()) {
                 (None, _) => rsx! {
                     IdentitySetupView {
@@ -677,5 +698,68 @@ mod tests {
             openable("https://example.com/path?q=1").map(|u| u.to_string()),
             Some("https://example.com/path?q=1".to_string())
         );
+    }
+}
+
+#[cfg(test)]
+mod background_tests {
+    use super::{background_pattern_class, shell_style};
+
+    #[test]
+    fn a_pattern_lifts_the_lid_that_was_hiding_it() {
+        let cls = background_pattern_class("dots");
+        assert!(!cls.is_empty());
+        let shell = shell_style(false, cls);
+        assert!(
+            shell.contains("--bg: transparent"),
+            "the shell has to stop painting over the pattern layer"
+        );
+        assert!(
+            !shell.contains("--panel"),
+            "panels stay solid for a pattern; only a photograph earns translucency"
+        );
+    }
+
+    #[test]
+    fn no_pattern_and_no_image_leaves_every_surface_alone() {
+        assert_eq!(background_pattern_class("none"), "");
+        assert_eq!(shell_style(false, ""), "");
+    }
+
+    #[test]
+    fn an_image_still_gets_translucent_panels() {
+        let shell = shell_style(true, "");
+        assert!(shell.contains("--bg: transparent"));
+        assert!(shell.contains("--panel"));
+    }
+
+    #[test]
+    fn every_offered_pattern_resolves_to_a_layer() {
+        for (id, _, _) in crate::features::appearance::BACKGROUND_TILES {
+            let cls = background_pattern_class(id);
+            if *id == "none" {
+                assert!(cls.is_empty());
+            } else {
+                assert!(cls.starts_with("app-bg-pattern "), "{id} draws nothing");
+            }
+        }
+    }
+
+    /// `--bg` is overridden to `transparent` whenever a pattern or an image is
+    /// on, so anything using it as *ink* disappears. Two unread badges did.
+    #[test]
+    fn nothing_paints_foreground_with_the_overridable_ground() {
+        for file in [
+            include_str!("features/guilds.rs"),
+            include_str!("features/channels.rs"),
+            include_str!("features/chat.rs"),
+            include_str!("features/members.rs"),
+            include_str!("features/workspace.rs"),
+        ] {
+            assert!(
+                !file.contains("text-[var(--bg)]"),
+                "use --panel-solid for ink: --bg goes transparent under a background"
+            );
+        }
     }
 }

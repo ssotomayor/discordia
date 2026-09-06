@@ -150,7 +150,7 @@ pub fn GuildsSidebar() -> Element {
                     },
                     "🔍"
                     if !available.is_empty() {
-                        span { class: "dxf-pop absolute -top-1 -right-1 min-w-4 h-4 px-1 rounded-full bg-[var(--accent)] text-[var(--bg)] text-[9px] font-bold flex items-center justify-center",
+                        span { class: "dxf-pop absolute -top-1 -right-1 min-w-4 h-4 px-1 rounded-full bg-[var(--accent)] text-[var(--panel-solid)] text-[9px] font-bold flex items-center justify-center",
                             "{available.len()}"
                         }
                     }
@@ -477,7 +477,7 @@ fn DmHomeButton(active: bool, count: usize, onclick: EventHandler<()>) -> Elemen
             onclick: move |_| onclick.call(()),
             "DM"
             if count > 0 {
-                span { class: "dxf-pop absolute -top-1 -right-1 min-w-4 h-4 px-1 rounded-full bg-[var(--accent)] text-[var(--bg)] text-[9px] font-bold flex items-center justify-center",
+                span { class: "dxf-pop absolute -top-1 -right-1 min-w-4 h-4 px-1 rounded-full bg-[var(--accent)] text-[var(--panel-solid)] text-[9px] font-bold flex items-center justify-center",
                     "{count}"
                 }
             }

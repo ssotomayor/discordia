@@ -6,7 +6,7 @@ use crate::settings::{self, ClientSettings};
 
 const MAX_BACKGROUND_BYTES: usize = 4_000_000;
 
-const BACKGROUND_TILES: &[(&str, &str, &str)] = &[
+pub(crate) const BACKGROUND_TILES: &[(&str, &str, &str)] = &[
     (
         "grid",
         "Grid",
