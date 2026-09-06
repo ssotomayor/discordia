@@ -249,6 +249,10 @@ pub struct AppState {
     /// The dial origin of the server this session is on, which is the key the
     /// local experience ledger files this server's total under.
     pub server_origin: Option<String>,
+    /// The rendezvous this session used, when it used one at all: to resolve a
+    /// join code, to register a self-host, or to relay the connection. A
+    /// `Remote` dial to a plain address uses none, and this stays `None`.
+    pub rendezvous_url: Option<String>,
     /// Never persisted and never merged into `profiles`: it is only true while
     /// the person holds a socket, and the server clears it when they drop.
     pub activities: HashMap<String, crate::protocol::Activity>,
@@ -259,8 +263,13 @@ pub struct AppState {
     /// Opened from the title bar, rendered by the voice panel that owns the
     /// device signals — the flag is the only thing the two need to share.
     pub audio_settings: bool,
+    /// The "where does my data go" panel, opened from the transport chip.
+    pub topology_open: bool,
     pub typing: HashMap<Id, HashMap<String, (String, std::time::Instant)>>,
     pub notify_tick: u64,
+    /// Its own counter, so a DM can have its own sound. A channel message and
+    /// somebody messaging you directly are not the same event.
+    pub dm_notify_tick: u64,
     pub screen_token: Option<(String, String)>,
     pub screen_audio_token: Option<(String, String)>,
     /// Whether the native side is *actually in*, not merely holding a token:
@@ -355,14 +364,17 @@ impl AppState {
             profiles: HashMap::new(),
             global_xp: HashMap::new(),
             server_origin: None,
+            rendezvous_url: None,
             activities: HashMap::new(),
             profile_card: None,
             image_viewer: None,
             guild_dialog: None,
             rules_prompt: None,
             audio_settings: false,
+            topology_open: false,
             typing: HashMap::new(),
             notify_tick: 0,
+            dm_notify_tick: 0,
             screen_token: None,
             screen_audio_token: None,
             screen_video_token: None,
@@ -797,7 +809,7 @@ impl AppState {
             // the whole history on every launch, and ringing for that would be a
             // burst of sound for messages read days ago.
             if self.should_ring(channel_id, false, viewing) {
-                self.notify_tick = self.notify_tick.wrapping_add(1);
+                self.dm_notify_tick = self.dm_notify_tick.wrapping_add(1);
             }
         }
     }
@@ -1343,13 +1355,17 @@ mod tests {
 
         s.note_dm_arrival(cid, peer, 100);
         assert_eq!(s.dm_unread.get(&cid), Some(&1));
-        assert_eq!(s.notify_tick, 1);
+        assert_eq!(s.dm_notify_tick, 1);
+        assert_eq!(
+            s.notify_tick, 0,
+            "a DM rings the DM bell, not the other one"
+        );
 
         s.mark_dm_read(cid);
-        let after_reading = s.notify_tick;
+        let after_reading = s.dm_notify_tick;
         s.note_dm_arrival(cid, peer, 100);
         assert!(s.dm_unread.is_empty());
-        assert_eq!(s.notify_tick, after_reading, "the replay rang again");
+        assert_eq!(s.dm_notify_tick, after_reading, "the replay rang again");
     }
 
     fn dm_with(s: &mut AppState, peer: &str, ats: &[i64]) -> Id {

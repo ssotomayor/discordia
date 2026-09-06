@@ -21,10 +21,10 @@ name instead.
 | `server/src/state/mod.rs` | 2625 |
 | `server/tests/owner_controls.rs` | 2875 |
 | `server/src/gateway/connection.rs` | 2219 |
-| `client/src/features/channels.rs` | 2284 |
+| `client/src/features/channels.rs` | 1571 |
 | `client/src/features/screenshare.rs` | 1617 |
 | `protocol/src/lib.rs` | 1823 |
-| `client/src/state.rs` | 1578 |
+| `client/src/state.rs` | 1589 |
 | `client/src/update.rs` | 1226 |
 | `client/src/net.rs` | 1209 |
 | `client/src/features/chat.rs` | 1052 |
@@ -52,7 +52,9 @@ that direction says a file is safe to open when it is not.
 | What a guild calls its ranks, and who may say | `client/src/features/guild_leveling.rs` | `LevelingEditor` — the draft is the settings dialog's, so it saves with everything else |
 | What someone is playing, and who says so | `client/src/presence/mod.rs` | `PresenceService` merges the two producers; `detect.rs` walks the process table, `ipc.rs` speaks Discord's local RPC frames |
 | Guild settings, and what its one Save writes | `client/src/features/guild_settings.rs` | `GuildSettingsDialog` — every field is a draft signal; `save_all` sends only the messages whose values moved |
-| The settings dialog | `client/src/features/channels.rs` | `SETTINGS_TABS` + `SettingsTab` inside `UserPanel`. The cog that opens it is in the title bar (`workspace.rs`); only `AppState::audio_settings` connects them |
+| The settings dialog | `client/src/features/settings_dialog.rs` | `SETTINGS_TABS` + `SettingsTab`. Mounted at the *workspace root*, never inside a grid panel — a raised panel carries a `z-index`, and that traps `position: fixed` children (trap 22). `AppState::audio_settings` opens it |
+| Where this session's data goes | `client/src/features/topology.rs` | `TopologyDialog` — per-leg, per-session; opened from the transport chip |
+| Panel arrangements | `client/src/features/workspace.rs` | `LAYOUT_TEMPLATES` + `LayoutButton`; `persist_layout` writes both the cell and free snapshots |
 | Keys on this machine | `client/src/identity.rs` | `detected` / `sign_in` / `forget`; one file per key under `config_dir()/identities/`, `identity.json` names the active one |
 | Which accent wins, and where | `client/src/features/workspace.rs` | `guild_accent_to_apply` — the guild's is written on a descendant of the app root, so it beats the personal one unless it is not written at all |
 | Leaving a server, and stopping an embedded one | `client/src/features/workspace.rs` | `Leaving` + `leave`; the teardown effect runs before `on_disconnect` (trap 17) |

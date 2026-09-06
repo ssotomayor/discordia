@@ -37,11 +37,75 @@ fn persist_layout(
 }
 
 fn default_layout() -> Vec<(String, GridPosition)> {
+    LAYOUT_TEMPLATES[0].1()
+}
+
+/// Whole-window arrangements, each covering all four panels and all twelve
+/// columns. A template that left a gap would read as a bug in the drag handles.
+#[allow(clippy::type_complexity)]
+const LAYOUT_TEMPLATES: &[(&str, fn() -> Vec<(String, GridPosition)>, &str)] = &[
+    ("Default", tpl_default, "Rail, channels, chat, members."),
+    (
+        "Wide chat",
+        tpl_wide_chat,
+        "Members under the channel list; the log gets the room.",
+    ),
+    (
+        "Stacked",
+        tpl_stacked,
+        "Members along the bottom, under the log.",
+    ),
+    (
+        "Even",
+        tpl_even,
+        "Channels and members matched, chat in the middle.",
+    ),
+];
+
+fn tpl_default() -> Vec<(String, GridPosition)> {
     vec![
         ("guilds".into(), GridPosition::new(0, 0, 1, GRID_ROWS)),
         ("channels".into(), GridPosition::new(1, 0, 2, GRID_ROWS)),
         ("chat".into(), GridPosition::new(3, 0, 7, GRID_ROWS)),
         ("members".into(), GridPosition::new(10, 0, 2, GRID_ROWS)),
+    ]
+}
+
+/// No panel is ever dropped, only moved: every item has a `min_h` of 10 rows,
+/// so a template that split 30 rows more finely than 20/10 would be silently
+/// clamped and land somewhere nobody asked for.
+fn tpl_wide_chat() -> Vec<(String, GridPosition)> {
+    let half = GRID_ROWS / 2;
+    vec![
+        ("guilds".into(), GridPosition::new(0, 0, 1, GRID_ROWS)),
+        ("channels".into(), GridPosition::new(1, 0, 2, half)),
+        (
+            "members".into(),
+            GridPosition::new(1, half, 2, GRID_ROWS - half),
+        ),
+        ("chat".into(), GridPosition::new(3, 0, 9, GRID_ROWS)),
+    ]
+}
+
+fn tpl_stacked() -> Vec<(String, GridPosition)> {
+    let top = 20;
+    vec![
+        ("guilds".into(), GridPosition::new(0, 0, 1, GRID_ROWS)),
+        ("channels".into(), GridPosition::new(1, 0, 2, GRID_ROWS)),
+        ("chat".into(), GridPosition::new(3, 0, 9, top)),
+        (
+            "members".into(),
+            GridPosition::new(3, top, 9, GRID_ROWS - top),
+        ),
+    ]
+}
+
+fn tpl_even() -> Vec<(String, GridPosition)> {
+    vec![
+        ("guilds".into(), GridPosition::new(0, 0, 1, GRID_ROWS)),
+        ("channels".into(), GridPosition::new(1, 0, 3, GRID_ROWS)),
+        ("chat".into(), GridPosition::new(4, 0, 5, GRID_ROWS)),
+        ("members".into(), GridPosition::new(9, 0, 3, GRID_ROWS)),
     ]
 }
 
@@ -85,6 +149,122 @@ fn guild_accent_to_apply(
         return None;
     }
     guild_accent
+}
+
+/// The layout control: templates, hand-rearranging, and the way back. Its own
+/// popover because the button that used to do this floated over the bottom
+/// right corner of every screen, which is where a chat window's newest message
+/// is.
+#[component]
+fn LayoutButton(
+    layout: dioxus_grid_layout::LayoutStore,
+    settings: Signal<crate::settings::ClientSettings>,
+    edit_mode: Signal<bool>,
+) -> Element {
+    let mut open = use_signal(|| false);
+    let mut edit_mode = edit_mode;
+
+    let apply = move |make: fn() -> Vec<(String, GridPosition)>| {
+        let mut layout = layout;
+        layout.restore(make(), Vec::new());
+        persist_layout(settings, layout);
+    };
+
+    rsx! {
+        div { class: "relative",
+            button {
+                class: if edit_mode() {
+                    "w-8 h-8 flex items-center justify-center rounded-lg border border-[var(--accent)] bg-[var(--panel2)] text-[var(--accent)] transition-colors"
+                } else {
+                    "w-8 h-8 flex items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--panel2)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors"
+                },
+                title: "Panel layout",
+                onclick: move |_| open.toggle(),
+                span { class: "block w-4 h-4", dangerous_inner_html: crate::features::icons::LAYOUT }
+            }
+            if open() {
+                div {
+                    class: "fixed inset-0 z-40",
+                    onclick: move |_| open.set(false),
+                }
+                div {
+                    class: "dxf-pop-in absolute right-0 top-10 z-50 w-60 rounded-lg border border-[var(--border)] bg-[var(--panel-solid)] shadow-xl p-2",
+                    onclick: move |e: MouseEvent| e.stop_propagation(),
+                    div { class: "text-[10px] uppercase tracking-wider text-[var(--text-muted)] px-1 mb-1.5",
+                        "Arrangements"
+                    }
+                    for (name, make, hint) in LAYOUT_TEMPLATES.iter().copied() {
+                        button {
+                            key: "{name}",
+                            class: "w-full text-left px-2 py-1.5 rounded-md hover:bg-white/[0.04] transition-colors",
+                            onclick: move |_| {
+                                apply(make);
+                                open.set(false);
+                            },
+                            div { class: "text-xs text-[var(--text)]", "{name}" }
+                            div { class: "text-[10px] text-[var(--text-dim)] leading-snug", "{hint}" }
+                        }
+                    }
+                    div { class: "border-t border-[var(--border)] mt-2 pt-2",
+                        button {
+                            class: "w-full text-left px-2 py-1.5 rounded-md hover:bg-white/[0.04] transition-colors text-xs text-[var(--text)]",
+                            onclick: move |_| {
+                                let now = !edit_mode();
+                                edit_mode.set(now);
+                                open.set(false);
+                            },
+                            if edit_mode() { "Stop rearranging" } else { "Rearrange by hand…" }
+                        }
+                        div { class: "text-[10px] text-[var(--text-dim)] px-2 pb-1 leading-snug",
+                            "Drag a panel by its top edge, resize from the corner."
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// What to call the place we are dialling, from what the session asked for.
+/// The gateway has not answered yet, so its own name is not available — this is
+/// the only description that exists before `Ready`.
+fn connecting_target(mode: &crate::state::SessionMode) -> String {
+    use crate::state::SessionMode;
+    match mode {
+        SessionMode::Remote { server_url } => crate::protocol::dial_origin(server_url)
+            .unwrap_or_else(|| server_url.trim().to_string()),
+        SessionMode::SelfHost { .. } => "this machine".to_string(),
+        SessionMode::ByCode { code, .. } => code.trim().to_uppercase(),
+    }
+}
+
+/// Covers the whole app, not the chat pane: until `Ready` lands there is no
+/// guild, no channel and no member list, so the panels behind this are empty
+/// furniture and framing them as a loaded app was the lie.
+#[component]
+fn ConnectingOverlay(target: String) -> Element {
+    rsx! {
+        div {
+            class: "dxf-backdrop-in fixed inset-0 z-[80] flex flex-col items-center justify-center gap-6 overflow-hidden",
+            style: "background: color-mix(in srgb, var(--bg) 92%, black);",
+            div { class: "dxf-crt absolute inset-0 pointer-events-none" }
+            div { class: "dxf-crt-roll absolute inset-x-0 top-0 pointer-events-none" }
+
+            div { class: "dxf-connect-bob",
+                crate::app::DiscordiaLogo { class: "w-20 h-20" }
+            }
+            div { class: "flex flex-col items-center gap-1.5 z-10",
+                div { class: "dxf-display text-lg font-bold tracking-tight text-[var(--text)]",
+                    "Connecting to {target}"
+                }
+                div { class: "dxf-ellipsis flex items-center gap-1 text-[var(--accent)] text-xl leading-none",
+                    span { "\u{00b7}" }
+                    span { "\u{00b7}" }
+                    span { "\u{00b7}" }
+                }
+            }
+        }
+    }
 }
 
 #[component]
@@ -169,7 +349,7 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
     crate::state::use_dm_read_persistence(state);
     crate::state::use_dm_clock_persistence(state);
 
-    let mut layout = use_layout_store(|| {
+    let layout = use_layout_store(|| {
         let saved = settings.read();
         if saved.layout_cells.is_empty() {
             return default_layout();
@@ -305,6 +485,15 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
             crate::features::screenshare::ScreenWatchWindow {}
             crate::features::profiles::ProfileCard {}
             crate::features::chat::ImageViewer {}
+            if status == ConnectionStatus::Connecting {
+                ConnectingOverlay { target: connecting_target(&params.mode) }
+            }
+            if state.read().topology_open {
+                crate::features::topology::TopologyDialog {
+                    on_close: move |_| state.clone().write().topology_open = false,
+                }
+            }
+            crate::features::settings_dialog::SettingsDialog {}
             GuildDialogHost {}
             crate::features::guilds::RulesPromptDialog {}
 
@@ -334,6 +523,7 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
                 // beside your name: they are about the app, not about you.
                 div { class: "dxf-no-drag ml-auto shrink-0 flex items-center gap-1.5",
                     onmousedown: move |e| e.stop_propagation(),
+                    LayoutButton { layout, settings, edit_mode }
                     crate::features::appearance::AppearanceButton {}
                     button {
                         class: "w-8 h-8 flex items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--panel2)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors",
@@ -363,13 +553,7 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
                         // The log is the darkest surface in the window: the
                         // panels around it read as chrome only if they sit above it.
                         div { class: "panel-hover w-full h-full flex flex-col bg-[var(--bg)] border border-[var(--border)] rounded-xl overflow-hidden",
-                            if status == ConnectionStatus::Connecting {
-                                div { class: "flex-1 flex items-center justify-center text-[var(--text-muted)] text-sm",
-                                    "Connecting…"
-                                }
-                            } else {
-                                ChatView {}
-                            }
+                            ChatView {}
                         }
                     }
                     GridItem { id: "members", x: 10, y: 0, w: 2, h: GRID_ROWS, min_w: 2, min_h: 10,
@@ -378,22 +562,15 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
                 }
             }
 
-            div { class: "fixed bottom-3 right-3 z-40 flex items-center gap-1.5",
-                if edit_mode() {
+            // While rearranging, one reminder of how to stop — the button that
+            // started it is up in the corner and easy to lose track of.
+            if edit_mode() {
+                div { class: "fixed bottom-3 right-3 z-40",
                     button {
-                        class: "border border-[var(--border)] rounded px-3 py-1 text-[10px] uppercase tracking-wider bg-[var(--panel)] hover:border-[var(--danger)] text-[var(--text-muted)] hover:text-[var(--danger)] transition-colors",
-                        title: "Put the panels back the way they started",
-                        onclick: move |_| {
-                            layout.restore(default_layout(), Vec::new());
-                            persist_layout(settings, layout);
-                        },
-                        "Reset"
+                        class: "dxf-cta rounded-lg px-3 py-1.5 text-[10px] uppercase tracking-wider",
+                        onclick: move |_| edit_mode.set(false),
+                        "Done rearranging"
                     }
-                }
-                button {
-                    class: "border border-[var(--border)] rounded px-3 py-1 text-[10px] uppercase tracking-wider bg-[var(--panel)] hover:border-[var(--accent)] text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors",
-                    onclick: move |_| edit_mode.set(!edit_mode()),
-                    if edit_mode() { "Done" } else { "Edit layout" }
                 }
             }
         }
@@ -674,7 +851,7 @@ fn StopHostingDialog(leaving: Signal<Option<Leaving>>) -> Element {
 
 #[component]
 fn HostBanner() -> Element {
-    let state = use_app_state();
+    let mut state = use_app_state();
     let snapshot = state.read();
     let Some(info) = snapshot.host_info.clone() else {
         return rsx! { Fragment {} };
@@ -705,7 +882,12 @@ fn HostBanner() -> Element {
                 style: "background: var(--success);",
                 title: "Hosting from this machine",
             }
-            span { class: "text-[11.5px] text-[var(--text-dim)]", "self-hosted" }
+            button {
+                class: "text-[11.5px] text-[var(--text-dim)] hover:text-[var(--accent)] transition-colors",
+                title: "Where your data goes",
+                onclick: move |_| state.write().topology_open = true,
+                "self-hosted"
+            }
             // The code is what you hand a friend, so it is the one thing here
             // sized to be read and copied rather than skimmed.
             if let Some(code) = shortcode {
@@ -802,7 +984,7 @@ fn Reachability(reachability: crate::host::Reachability) -> Element {
 
 #[component]
 fn EncryptionBadge() -> Element {
-    let state = use_app_state();
+    let mut state = use_app_state();
     let snapshot = state.read();
     let in_voice = snapshot.voice.channel_id.is_some();
     let has_key = snapshot
@@ -830,8 +1012,10 @@ fn EncryptionBadge() -> Element {
         )
     };
     rsx! {
-        span { class: "shrink-0 px-2 py-1 text-[10px] uppercase tracking-wider {color}",
-            title: "{title}",
+        button {
+            class: "shrink-0 px-2 py-1 text-[10px] uppercase tracking-wider {color} hover:underline",
+            title: "{title} — click for the whole picture",
+            onclick: move |_| state.write().topology_open = true,
             "{label}"
         }
     }
@@ -839,7 +1023,7 @@ fn EncryptionBadge() -> Element {
 
 #[component]
 fn TransportBadge() -> Element {
-    let state = use_app_state();
+    let mut state = use_app_state();
     let snapshot = state.read();
     if snapshot.host_info.is_some() {
         return rsx! { Fragment {} };
@@ -866,8 +1050,10 @@ fn TransportBadge() -> Element {
         ),
     };
     rsx! {
-        span { class: "shrink-0 px-2 py-1 text-[10px] uppercase tracking-wider {color}",
-            title: "{title}",
+        button {
+            class: "shrink-0 px-2 py-1 text-[10px] uppercase tracking-wider {color} hover:underline",
+            title: "{title} — click for the whole picture",
+            onclick: move |_| state.write().topology_open = true,
             "{label}"
         }
     }

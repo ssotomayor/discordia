@@ -163,6 +163,7 @@ async fn resolve_session(
                 description,
                 publish_public,
             };
+            state.write().rendezvous_url = rendezvous_url.clone();
             let handle = start_self_host(allow_lan, rendezvous_url, publish, identity).await?;
             let url = normalize_url(&handle.info.local_url)?;
             let origin = origin_of(&url)?;
@@ -185,6 +186,7 @@ async fn resolve_session(
                 return Err("rendezvous URL required".into());
             }
             let with_scheme = ws_scheme(base);
+            state.write().rendezvous_url = Some(base.to_string());
             let code = code.trim();
             let Some(entry) = resolve_host(&with_scheme, code).await else {
                 return Err(format!("no host answers to '{code}' at {base}"));
@@ -621,7 +623,11 @@ fn apply(
                 *s.dm_unread.entry(cid).or_insert(0) += 1;
             }
             if s.should_ring(cid, author_is_self, viewing) {
-                s.notify_tick = s.notify_tick.wrapping_add(1);
+                if is_dm {
+                    s.dm_notify_tick = s.dm_notify_tick.wrapping_add(1);
+                } else {
+                    s.notify_tick = s.notify_tick.wrapping_add(1);
+                }
             }
             if has_image {
                 resolve_media(&mut s, tx);

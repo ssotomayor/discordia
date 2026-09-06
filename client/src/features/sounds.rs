@@ -1,4 +1,4 @@
-//! The sound bank, and the one sound in it that is about messages.
+//! The sound bank, and the two sounds in it that are about messages.
 
 use dioxus::prelude::*;
 
@@ -56,6 +56,12 @@ window.dxSfx = window.dxSfx || (function () {
       case 'notify':
         tone(c, t, 660, 0.3, 0.14);
         break;
+      // Two notes where a channel message gets one, so a DM is recognisable
+      // from the next room without being louder than one.
+      case 'dm':
+        tone(c, t, 784, 0.13, 0.11, 'triangle');
+        tone(c, t + 0.11, 1046, 0.22, 0.10, 'triangle');
+        break;
       case 'connect':
         tone(c, t, 440, 0.12, 0.12); tone(c, t + 0.09, 660, 0.18, 0.12);
         break;
@@ -112,6 +118,16 @@ pub fn MessageSounds() -> Element {
             sfx("notify");
         }
         last_notify.set(now);
+    });
+
+    let dm_notify = use_memo(move || state.read().dm_notify_tick);
+    let mut last_dm = use_signal(|| 0u64);
+    use_effect(move || {
+        let now = dm_notify();
+        if now != 0 && now != *last_dm.peek() {
+            sfx("dm");
+        }
+        last_dm.set(now);
     });
 
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();

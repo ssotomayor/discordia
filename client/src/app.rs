@@ -262,6 +262,42 @@ button:active:not(:disabled) { transform: scale(0.985); }
 @keyframes dxf-pop-in { from { opacity: 0; transform: scale(0.96); } to { opacity: 1; transform: scale(1); } }
 .dxf-pop-in { animation: dxf-pop-in 0.12s var(--ease) both; }
 
+/* The connecting screen. Scanlines and a rolling band, because a dial that
+   cannot report progress should at least look like it is doing something —
+   there is no denominator here, only a wait. */
+.dxf-crt {
+  background-image: repeating-linear-gradient(
+    to bottom,
+    rgba(0,0,0,0.22) 0px, rgba(0,0,0,0.22) 1px,
+    transparent 1px, transparent 3px);
+  animation: dxf-crt-flicker 5.5s steps(1, end) infinite;
+}
+@keyframes dxf-crt-flicker {
+  0%, 96%, 100% { opacity: 1; }
+  97%           { opacity: 0.86; }
+  98%           { opacity: 1; }
+  99%           { opacity: 0.92; }
+}
+@keyframes dxf-crt-roll {
+  from { transform: translateY(-30vh); }
+  to   { transform: translateY(130vh); }
+}
+.dxf-crt-roll {
+  height: 22vh;
+  background: linear-gradient(to bottom, transparent,
+    color-mix(in srgb, var(--accent) 9%, transparent), transparent);
+  animation: dxf-crt-roll 3.6s linear infinite;
+}
+@keyframes dxf-connect-bob {
+  0%, 100% { transform: translateY(0) scale(1); }
+  50%      { transform: translateY(-14px) scale(1.04); }
+}
+.dxf-connect-bob { animation: dxf-connect-bob 1.5s var(--ease) infinite; }
+@keyframes dxf-ellipsis { 0% { opacity: 0.25; } 50% { opacity: 1; } 100% { opacity: 0.25; } }
+.dxf-ellipsis > span { animation: dxf-ellipsis 1.2s var(--ease) infinite; }
+.dxf-ellipsis > span:nth-child(2) { animation-delay: 0.15s; }
+.dxf-ellipsis > span:nth-child(3) { animation-delay: 0.3s; }
+
 /* Fixed, and placed from the pointer: the guild rail scrolls, and an absolute
    tip beside a tile is clipped by the column that scrolls it. */
 .dxf-tip {
