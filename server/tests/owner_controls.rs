@@ -2873,3 +2873,164 @@ async fn only_a_guild_manager_may_rewrite_the_ranks() {
 
     handle.abort();
 }
+
+/// A toggle removes as readily as it adds, and only the add is worth
+/// anything (#187). The number on the next award says whether the removal
+/// paid, so nothing here waits for a message that must not come.
+#[tokio::test]
+async fn removing_a_reaction_earns_nothing() {
+    let (url, handle) = spawn_gateway().await;
+
+    let owner_id = BotIdentity::generate();
+    let (mut owner, _) = connect_user(&url, &owner_id, "Owner").await;
+    let (guild_id, channel) = create_guild(&mut owner, "Reactive").await;
+
+    owner
+        .send(&ClientMessage::SetGuildLeveling {
+            guild_id,
+            leveling: Leveling {
+                per_message: 1,
+                per_reaction: 5,
+                cooldown_secs: 0,
+                ..Default::default()
+            },
+        })
+        .await
+        .unwrap();
+    loop {
+        if let ServerMessage::GuildUpdate(g) = next_timeout(&mut owner).await
+            && g.id == guild_id
+        {
+            break;
+        }
+    }
+
+    owner.send_message(channel, "react to this").await.unwrap();
+    let message = loop {
+        if let ServerMessage::MessageCreate(m) = next_timeout(&mut owner).await {
+            break m;
+        }
+    };
+    assert_eq!(next_xp(&mut owner, owner_id.pubkey()).await, 1);
+
+    owner.react(channel, message.id, "👍").await.unwrap();
+    assert_eq!(
+        next_xp(&mut owner, owner_id.pubkey()).await,
+        6,
+        "adding a reaction pays what the guild set"
+    );
+
+    owner.react(channel, message.id, "👍").await.unwrap();
+    owner.send_message(channel, "and again").await.unwrap();
+    assert_eq!(
+        next_xp(&mut owner, owner_id.pubkey()).await,
+        7,
+        "removing the reaction paid nothing; only the message did"
+    );
+
+    handle.abort();
+}
+
+/// The experience on the next award `pubkey` receives.
+async fn next_xp(session: &mut Bot, pubkey: &str) -> u64 {
+    loop {
+        if let ServerMessage::MemberUpdate(m) = next_timeout(session).await
+            && m.user.pubkey == pubkey
+        {
+            break m.xp;
+        }
+    }
+}
+
+/// A key may hold several sockets, and one of them closing is not the person
+/// leaving (#188): the activity the other still produces stays, and so does
+/// the presence.
+#[tokio::test]
+async fn a_second_session_closing_leaves_the_first_ones_presence_alone() {
+    let (url, handle) = spawn_gateway().await;
+
+    let owner_id = BotIdentity::generate();
+    let member_id = BotIdentity::generate();
+    let (mut owner, _) = connect_user(&url, &owner_id, "Owner").await;
+    let (guild_id, channel) = create_guild(&mut owner, "Arcade").await;
+
+    let (mut member, _) = connect_user(&url, &member_id, "Member").await;
+    member
+        .send(&ClientMessage::JoinGuild {
+            guild_id,
+            accept: false,
+            pow_nonce: None,
+        })
+        .await
+        .unwrap();
+    loop {
+        if matches!(
+            next_timeout(&mut member).await,
+            ServerMessage::GuildJoined { .. }
+        ) {
+            break;
+        }
+    }
+
+    let (second, _) = connect_user(&url, &owner_id, "Owner").await;
+
+    owner
+        .send(&ClientMessage::SetActivity {
+            activity: Some(Activity {
+                kind: ActivityKind::Playing,
+                name: "Factorio".into(),
+                details: None,
+                state: None,
+                started_ms: None,
+            }),
+        })
+        .await
+        .unwrap();
+    loop {
+        if let ServerMessage::ActivityUpdate(u) = next_timeout(&mut member).await
+            && u.pubkey == owner_id.pubkey()
+            && u.activity.is_some()
+        {
+            break;
+        }
+    }
+
+    drop(second);
+    // Long enough for the server to have torn that socket down; what it must
+    // not have sent would already be queued ahead of the message below.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    owner.send_message(channel, "still here").await.unwrap();
+    loop {
+        match next_timeout(&mut member).await {
+            ServerMessage::ActivityUpdate(u)
+                if u.pubkey == owner_id.pubkey() && u.activity.is_none() =>
+            {
+                panic!("a second session closing cleared the activity the first still produces")
+            }
+            ServerMessage::MemberLeave { user_pubkey, .. } if user_pubkey == owner_id.pubkey() => {
+                panic!("a second session closing marked the person offline")
+            }
+            ServerMessage::MessageCreate(m) if m.content == "still here" => break,
+            _ => {}
+        }
+    }
+
+    // The last socket going is the person leaving: both follow.
+    drop(owner);
+    let (mut cleared, mut left) = (false, false);
+    while !(cleared && left) {
+        match next_timeout(&mut member).await {
+            ServerMessage::ActivityUpdate(u)
+                if u.pubkey == owner_id.pubkey() && u.activity.is_none() =>
+            {
+                cleared = true
+            }
+            ServerMessage::MemberLeave { user_pubkey, .. } if user_pubkey == owner_id.pubkey() => {
+                left = true
+            }
+            _ => {}
+        }
+    }
+
+    handle.abort();
+}

@@ -305,6 +305,14 @@ impl AppState {
         }
     }
 
+    /// Whether this key still holds an identified socket. A teardown reads it
+    /// before saying someone went away: a second session closing is not that.
+    pub fn has_sessions(&self, pubkey: &str) -> bool {
+        self.conn_ids_by_pubkey
+            .get(pubkey)
+            .is_some_and(|set| !set.is_empty())
+    }
+
     pub fn unregister_conn(&self, conn_id: u64, pubkey: Option<&str>) {
         self.drop_conn(conn_id);
         if let Some(pk) = pubkey {
