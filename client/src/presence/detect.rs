@@ -33,7 +33,6 @@ const CATALOGUE: &[(&str, &str)] = &[
     ("balatro", "Balatro"),
     ("balatro.exe", "Balatro"),
     ("minecraft", "Minecraft"),
-    ("javaw.exe", "Minecraft"),
     ("terraria", "Terraria"),
     ("terraria.exe", "Terraria"),
 ];

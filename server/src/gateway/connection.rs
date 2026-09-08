@@ -562,11 +562,17 @@ pub async fn handle_connection(
                         if let Some(reactions) =
                             ctx.state.toggle_reaction(channel_id, message_id, &emoji, &u.pubkey).await
                         {
+                            // A toggle removes as readily as it adds, and only
+                            // the add is worth anything (#187).
+                            let added = reactions
+                                .iter()
+                                .any(|r| r.emoji == emoji && r.users.iter().any(|p| p == &u.pubkey));
                             ctx.state.deliver(
                                 audience,
                                 ServerMessage::ReactionUpdate { channel_id, message_id, reactions },
                             );
                             if !is_bot
+                                && added
                                 && let Some(gid) = ctx.state.channel_guild(channel_id)
                                 && let Some(member) = ctx.state.award_xp(
                                     gid,
@@ -1606,6 +1612,12 @@ pub async fn handle_connection(
         }
         if let Some((gid, cid)) = was_sharing {
             broadcast_screen_state(&ctx.state, gid, cid);
+        }
+        // A key may hold several sockets, and only the last one going says
+        // the person went away (#188).
+        if ctx.state.has_sessions(&u.pubkey) {
+            tracing::info!(user = ?u.username, "a session closed; others remain");
+            return;
         }
         if ctx.state.clear_activity(&u.pubkey) {
             ctx.state.deliver(

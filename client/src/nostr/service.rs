@@ -487,6 +487,21 @@ fn note_sender_clock(s: &mut AppState, author: &str, claimed: i64, seen_at: i64)
     s.note_clock_offset(author, sample);
 }
 
+/// Inside the deadband no offset is learned, so a clock two seconds behind
+/// would still file a quick reply above the question it answers. A live
+/// message therefore never goes behind the newest one held: the order it
+/// arrived in is the order it happened. Replayed history keeps its stamps.
+fn filed_at(created_at: i64, newest_held: Option<i64>, live: bool) -> i64 {
+    match newest_held {
+        Some(newest)
+            if live && created_at < newest && newest - created_at <= CLOCK_DEADBAND_SECS =>
+        {
+            newest
+        }
+        _ => created_at,
+    }
+}
+
 /// Put a message into the conversation it belongs to, in time order.
 ///
 /// Relays replay stored events in whatever order they like and the same message
@@ -510,6 +525,12 @@ fn insert_message(
         note_sender_clock(&mut s, &msg.author, msg.created_at, now());
     }
     let created_at = msg.created_at - s.clock_offset(&msg.author);
+    let newest_held = s
+        .messages
+        .get(&cid)
+        .and_then(|held| held.last())
+        .map(|m| m.created_at.timestamp());
+    let created_at = filed_at(created_at, newest_held, live || source == Source::Ours);
 
     if hidden_by_delete(&s, &msg.peer, created_at, source) {
         return;
@@ -713,5 +734,25 @@ mod tests {
         // And once they fix it, the correction has to come back off.
         note_sender_clock(&mut s, &author, 2_000, 2_000);
         assert_eq!(s.clock_offset(&author), 0);
+    }
+
+    /// The case under the deadband (#186): two machines two seconds apart,
+    /// a reply written after the question. It has to file after it.
+    #[test]
+    fn a_reply_from_inside_the_deadband_files_after_the_message_it_answers() {
+        let ours_at = 1_000;
+        assert_eq!(filed_at(ours_at - 2, Some(ours_at), true), ours_at);
+        assert_eq!(filed_at(ours_at + 3, Some(ours_at), true), ours_at + 3);
+        assert_eq!(filed_at(ours_at, None, true), ours_at);
+    }
+
+    /// Replayed history is old and arrives in any order: it keeps its stamps.
+    /// So does a live straggler from beyond the deadband, which is a slow
+    /// relay, not a clock — and past the deadband `note_sender_clock` has it.
+    #[test]
+    fn replayed_history_and_old_stragglers_keep_their_stamps() {
+        assert_eq!(filed_at(998, Some(1_000), false), 998);
+        let long_ago = 1_000 - CLOCK_DEADBAND_SECS - 1;
+        assert_eq!(filed_at(long_ago, Some(1_000), true), long_ago);
     }
 }
