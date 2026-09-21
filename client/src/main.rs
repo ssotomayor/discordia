@@ -10,6 +10,7 @@ mod emoji;
 mod features;
 mod host;
 mod identity;
+mod keyvault;
 mod mediakey;
 mod net;
 mod nostr;

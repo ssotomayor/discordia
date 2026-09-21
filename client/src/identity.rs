@@ -7,8 +7,10 @@ use secp256k1::{Keypair, Message, PublicKey, Scalar, Secp256k1, SecretKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256, Sha512};
 
-const FILE_VERSION: u32 = 1;
+const FILE_VERSION: u32 = 2;
+const PLAINTEXT_FILE_VERSION: u32 = 1;
 const ACTIVE_VERSION: u32 = 2;
+const IDENTITIES_DIR_POINTER: &str = "identities-dir";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IdentitySource {
@@ -178,28 +180,36 @@ impl Identity {
     /// Writes the key under its own pubkey and points `identity.json` at it,
     /// so signing in again is a choice rather than a re-import.
     pub fn save(&self) -> Result<(), String> {
+        self.write_key_file()?;
+        set_active(&self.pubkey)
+    }
+
+    /// The file holds the encrypted key and never the phrase: a phrase is
+    /// shown once at creation and is the user's to keep, not the disk's.
+    fn write_key_file(&self) -> Result<(), String> {
         let dir = identities_dir();
         std::fs::create_dir_all(&dir).map_err(|e| format!("create identities dir: {e}"))?;
+        let passphrase = crate::keyvault::passphrase()?;
+        let ncryptsec = crate::keyvault::encrypt(
+            &self.secret.secret_bytes(),
+            &passphrase,
+            crate::keyvault::LOG_N,
+        )?;
         let stored = Stored {
             version: FILE_VERSION,
             display_name: self.display_name.clone(),
             pubkey: self.pubkey.clone(),
-            seed_phrase: match &self.source {
-                IdentitySource::Phrase(p) => Some(p.clone()),
-                IdentitySource::Nsec(_) => None,
-            },
-            nsec: match &self.source {
-                IdentitySource::Nsec(k) => Some(k.clone()),
-                IdentitySource::Phrase(_) => None,
-            },
+            ncryptsec: Some(ncryptsec),
+            seed_phrase: None,
+            nsec: None,
         };
         let content = serde_json::to_string_pretty(&stored)
             .map_err(|e| format!("serialize identity: {e}"))?;
-        write_private(&self.key_path(), &content)?;
-        set_active(&self.pubkey)
+        write_private(&self.key_path(), &content)
     }
 
     pub fn load() -> Result<Option<Self>, String> {
+        encrypt_plaintext_files();
         let path = active_path();
         if !path.exists() {
             return Ok(None);
@@ -251,18 +261,27 @@ impl Identity {
     }
 
     fn from_stored(stored: Stored) -> Result<Self, String> {
-        if stored.version != FILE_VERSION {
-            return Err(format!(
-                "unknown identity file version {}; expected {}",
-                stored.version, FILE_VERSION
-            ));
-        }
-        if let Some(phrase) = stored.seed_phrase {
-            Self::restore_from_phrase(&phrase, stored.display_name)
-        } else if let Some(nsec) = stored.nsec {
-            Self::restore_from_private_key(&nsec, stored.display_name)
-        } else {
-            Err("identity file has neither seed_phrase nor nsec".into())
+        match stored.version {
+            FILE_VERSION => {
+                let ncryptsec = stored
+                    .ncryptsec
+                    .ok_or_else(|| "identity file has no ncryptsec".to_string())?;
+                let passphrase = crate::keyvault::passphrase()?;
+                let bytes = crate::keyvault::decrypt(&ncryptsec, &passphrase)?;
+                Self::restore_from_private_key(hex::encode(bytes.as_ref()), stored.display_name)
+            }
+            PLAINTEXT_FILE_VERSION => {
+                if let Some(phrase) = stored.seed_phrase {
+                    Self::restore_from_phrase(&phrase, stored.display_name)
+                } else if let Some(nsec) = stored.nsec {
+                    Self::restore_from_private_key(&nsec, stored.display_name)
+                } else {
+                    Err("identity file has neither seed_phrase nor nsec".into())
+                }
+            }
+            other => Err(format!(
+                "unknown identity file version {other}; expected {FILE_VERSION}"
+            )),
         }
     }
 
@@ -326,29 +345,40 @@ pub struct FoundIdentity {
 }
 
 fn collect_from(dir: &Path, out: &mut Vec<FoundIdentity>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+        Err(e) => {
+            tracing::warn!(dir = %dir.display(), error = %e, "identities folder unreadable");
+            return;
+        }
     };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) != Some("json") {
             continue;
         }
-        let Ok(content) = std::fs::read_to_string(&path) else {
-            continue;
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(path = %path.display(), error = %e, "identity file unreadable");
+                continue;
+            }
         };
-        let Ok(stored) = serde_json::from_str::<Stored>(&content) else {
-            continue;
+        let stored = match serde_json::from_str::<Stored>(&content) {
+            Ok(s) => s,
+            Err(e) => {
+                if path.file_name().and_then(|n| n.to_str()) != Some("identity.json") {
+                    tracing::debug!(path = %path.display(), error = %e, "not a key file");
+                }
+                continue;
+            }
         };
-        // Without a secret it is some other file that happens to carry a name
-        // and a key — a profile, half a backup, the pointer's own successor.
-        if stored.version != FILE_VERSION
-            || (stored.seed_phrase.is_none() && stored.nsec.is_none())
-            || stored.pubkey.len() != 64
-            || out
-                .iter()
-                .any(|f: &FoundIdentity| f.pubkey == stored.pubkey)
-        {
+        if let Some(reason) = stored.rejection() {
+            tracing::warn!(path = %path.display(), reason, "key file skipped");
+            continue;
+        }
+        if out.iter().any(|f| f.pubkey == stored.pubkey) {
             continue;
         }
         out.push(FoundIdentity {
@@ -356,6 +386,35 @@ fn collect_from(dir: &Path, out: &mut Vec<FoundIdentity>) {
             display_name: stored.display_name,
             path,
         });
+    }
+}
+
+/// A key file from before encryption is rewritten the first time the app
+/// runs with it, so the plaintext stops existing without anyone signing in.
+fn encrypt_plaintext_files() {
+    let mut found = Vec::new();
+    collect_from(&identities_dir(), &mut found);
+    for f in found {
+        let Ok(content) = std::fs::read_to_string(&f.path) else {
+            continue;
+        };
+        let Ok(stored) = serde_json::from_str::<Stored>(&content) else {
+            continue;
+        };
+        if stored.version != PLAINTEXT_FILE_VERSION {
+            continue;
+        }
+        match Identity::from_stored(stored).and_then(|id| id.write_key_file().map(|()| id)) {
+            Ok(id) => {
+                if f.path != id.key_path() {
+                    let _ = std::fs::remove_file(&f.path);
+                }
+                tracing::info!(pubkey = %f.pubkey, "key file encrypted");
+            }
+            Err(e) => {
+                tracing::warn!(path = %f.path.display(), error = %e, "key file left in plaintext")
+            }
+        }
     }
 }
 
@@ -376,33 +435,71 @@ fn set_active(pubkey: &str) -> Result<(), String> {
     write_private(&active_path(), &content)
 }
 
-fn write_private(path: &Path, content: &str) -> Result<(), String> {
+/// Written beside and renamed over, so a scan from another instance never
+/// sees half a file, and 0600 before any byte lands.
+pub(crate) fn write_private(path: &Path, content: &str) -> Result<(), String> {
     let parent = path
         .parent()
         .ok_or_else(|| "identity path has no parent".to_string())?;
     std::fs::create_dir_all(parent).map_err(|e| format!("create config dir: {e}"))?;
-    std::fs::write(path, content).map_err(|e| format!("write identity: {e}"))?;
-    #[cfg(unix)]
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| "identity path has no file name".to_string())?;
+    let tmp = parent.join(format!(".{name}.{}.tmp", std::process::id()));
     {
-        use std::os::unix::fs::PermissionsExt;
-        if let Ok(meta) = std::fs::metadata(path) {
-            let mut perms = meta.permissions();
-            perms.set_mode(0o600);
-            let _ = std::fs::set_permissions(path, perms);
+        use std::io::Write;
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
         }
+        let mut file = opts
+            .open(&tmp)
+            .map_err(|e| format!("write identity: {e}"))?;
+        file.write_all(content.as_bytes())
+            .and_then(|()| file.sync_all())
+            .map_err(|e| format!("write identity: {e}"))?;
     }
-    Ok(())
+    std::fs::rename(&tmp, path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("write identity: {e}")
+    })
 }
 
+/// v2 carries `ncryptsec`; v1 carried the phrase or nsec in the clear and is
+/// still read so it can be rewritten.
 #[derive(Serialize, Deserialize)]
 struct Stored {
     version: u32,
     display_name: String,
     pubkey: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    ncryptsec: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     seed_phrase: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     nsec: Option<String>,
+}
+
+impl Stored {
+    /// Why this is not an account: a profile, half a backup, the pointer's own
+    /// successor all carry a name and a key and none carries a secret.
+    fn rejection(&self) -> Option<&'static str> {
+        if self.pubkey.len() != 64 || !self.pubkey.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Some("pubkey is not 64 hex characters");
+        }
+        match self.version {
+            FILE_VERSION if self.ncryptsec.is_none() => Some("v2 file without ncryptsec"),
+            PLAINTEXT_FILE_VERSION if self.seed_phrase.is_none() && self.nsec.is_none() => {
+                Some("v1 file without a secret")
+            }
+            FILE_VERSION | PLAINTEXT_FILE_VERSION => None,
+            _ => Some("unknown file version"),
+        }
+    }
 }
 
 /// Which of the folder's keys is signed in. A separate shape from `Stored` so
@@ -448,8 +545,43 @@ fn active_path() -> PathBuf {
     config_dir().join("identity.json")
 }
 
-fn identities_dir() -> PathBuf {
+pub fn default_identities_dir() -> PathBuf {
     config_dir().join("identities")
+}
+
+/// The folder keys live in: the default, unless `identities-dir` in the
+/// config folder names another one.
+pub fn identities_dir() -> PathBuf {
+    identities_dir_override().unwrap_or_else(default_identities_dir)
+}
+
+pub fn identities_dir_override() -> Option<PathBuf> {
+    let raw = std::fs::read_to_string(config_dir().join(IDENTITIES_DIR_POINTER)).ok()?;
+    let trimmed = raw.trim();
+    (!trimmed.is_empty()).then(|| PathBuf::from(trimmed))
+}
+
+/// `None` returns to the default. The folder is created so the choice is
+/// visible at once, and the pointer file stays out of it.
+pub fn set_identities_dir(dir: Option<&Path>) -> Result<(), String> {
+    let pointer = config_dir().join(IDENTITIES_DIR_POINTER);
+    match dir {
+        None => match std::fs::remove_file(&pointer) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(format!("reset identities folder: {e}")),
+        },
+        Some(dir) => {
+            if !dir.is_absolute() {
+                return Err("the identities folder must be an absolute path".into());
+            }
+            if dir == default_identities_dir() {
+                return set_identities_dir(None);
+            }
+            std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+            write_private(&pointer, &dir.display().to_string())
+        }
+    }
 }
 
 pub fn truncate_pubkey(pubkey: &str) -> String {
@@ -658,7 +790,93 @@ mod store_tests {
             !pointer.contains(phrase.as_str()),
             "the pointer must not keep the secret: {pointer}"
         );
+        let key_file =
+            std::fs::read_to_string(root.join("identities").join(format!("{}.json", id.pubkey)))
+                .expect("key file");
+        assert!(
+            key_file.contains("ncryptsec1") && !key_file.contains(phrase.as_str()),
+            "the key file is encrypted and phrase-free: {key_file}"
+        );
         assert_eq!(detected().len(), 1, "and it is listed once, not twice");
+    }
+
+    /// A plaintext file that was already in the folder is rewritten on the
+    /// first launch, whatever it was called, and the plaintext goes away.
+    #[test]
+    fn plaintext_files_in_the_folder_are_encrypted_on_load() {
+        let root = sandbox("encrypt-on-load");
+        let id = Identity::create("early").expect("identity");
+        let IdentitySource::Phrase(phrase) = &id.source else {
+            panic!("expected a phrase")
+        };
+        let folder = root.join("identities");
+        std::fs::create_dir_all(&folder).expect("folder");
+        std::fs::write(
+            folder.join("early-backup.json"),
+            serde_json::json!({
+                "version": 1,
+                "display_name": "early",
+                "pubkey": id.pubkey,
+                "seed_phrase": phrase,
+            })
+            .to_string(),
+        )
+        .expect("write v1");
+
+        assert!(
+            Identity::load().expect("load").is_none(),
+            "nobody is signed in"
+        );
+        assert!(
+            !folder.join("early-backup.json").exists(),
+            "plaintext removed"
+        );
+        let key_file =
+            std::fs::read_to_string(folder.join(format!("{}.json", id.pubkey))).expect("v2");
+        assert!(key_file.contains("ncryptsec1") && !key_file.contains(phrase.as_str()));
+
+        let back = Identity::sign_in(&id.pubkey).expect("sign in");
+        assert_eq!(back.pubkey, id.pubkey, "and the encrypted copy still opens");
+    }
+
+    /// The folder can be somewhere else; what is in the default stops showing.
+    #[test]
+    fn the_identities_folder_can_move() {
+        let root = sandbox("move");
+        let home = Identity::create("home").expect("identity");
+        home.save().expect("save");
+
+        let elsewhere = root.join("elsewhere");
+        set_identities_dir(Some(&elsewhere)).expect("set folder");
+        assert_eq!(identities_dir(), elsewhere);
+        assert!(detected().is_empty(), "the new folder starts empty");
+
+        let away = Identity::create("away").expect("identity");
+        away.save().expect("save");
+        assert!(elsewhere.join(format!("{}.json", away.pubkey)).exists());
+        assert_eq!(detected().len(), 1);
+
+        set_identities_dir(None).expect("reset");
+        assert_eq!(identities_dir(), default_identities_dir());
+        let found = detected();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].pubkey, home.pubkey);
+
+        assert!(set_identities_dir(Some(Path::new("relative/dir"))).is_err());
+    }
+
+    /// The name a write-in-progress carries is one the scan ignores.
+    #[test]
+    fn a_half_written_file_is_not_listed() {
+        let root = sandbox("half");
+        let folder = root.join("identities");
+        std::fs::create_dir_all(&folder).expect("folder");
+        std::fs::write(
+            folder.join(".abc.json.4242.tmp"),
+            r#"{"version":2,"display"#,
+        )
+        .expect("tmp");
+        assert!(detected().is_empty());
     }
 
     /// The config folder is full of other json. None of it is an account.

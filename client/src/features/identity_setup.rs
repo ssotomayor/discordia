@@ -22,6 +22,8 @@ pub fn IdentitySetupView(on_done: EventHandler<Identity>) -> Element {
     let mut reveal = use_signal(|| false);
     let mut restore_phrase = use_signal(String::new);
     let mut private_key_input = use_signal(String::new);
+    // Bumped whenever the folder or its contents changed under the list.
+    let folder_rev = use_signal(|| 0u32);
 
     let mac_top_pad = if cfg!(target_os = "macos") {
         "pt-7"
@@ -58,11 +60,12 @@ pub fn IdentitySetupView(on_done: EventHandler<Identity>) -> Element {
                 }
             }
 
-            div { class: "flex-1 flex flex-col overflow-hidden min-w-0",
+            div { class: "relative flex-1 flex flex-col overflow-hidden min-w-0",
                 div {
                     class: "dxf-drag-region h-8 shrink-0 {mac_top_pad}",
                     onmousedown: move |_| crate::app::start_window_drag(),
                 }
+                FolderSettings { rev: folder_rev }
                 div { class: "flex-1 overflow-auto px-8 py-8 flex flex-col dxf-no-drag",
                     div { class: "w-full max-w-md mx-auto my-auto space-y-5",
 
@@ -86,6 +89,7 @@ pub fn IdentitySetupView(on_done: EventHandler<Identity>) -> Element {
                     Step::Choose => rsx! {
                         div { class: "space-y-2",
                             DetectedIdentities {
+                                rev: folder_rev,
                                 on_pick: move |id: Identity| on_done.call(id),
                                 on_error: move |e: String| error.set(Some(e)),
                             }
@@ -317,12 +321,19 @@ const PRIMARY_BUTTON: &str = "dxf-cta w-full py-2.5 rounded-xl text-sm transitio
 /// The keys already in the config folder. Signing out leaves one behind, so
 /// the second visit is a click instead of a re-import.
 #[component]
-fn DetectedIdentities(on_pick: EventHandler<Identity>, on_error: EventHandler<String>) -> Element {
-    let mut found = use_signal(crate::identity::detected);
+fn DetectedIdentities(
+    rev: Signal<u32>,
+    on_pick: EventHandler<Identity>,
+    on_error: EventHandler<String>,
+) -> Element {
+    let mut rev = rev;
     // Deleting a key is not undoable, so the ✕ only arms; the second click acts.
     let mut confirming = use_signal(|| None::<String>);
 
-    let rows = found();
+    // Scanned on every render, not once: the folder is small and a key that
+    // lands while this screen is up must show without a relaunch.
+    let _ = rev();
+    let rows = crate::identity::detected();
     if rows.is_empty() {
         return rsx! {};
     }
@@ -410,7 +421,7 @@ fn DetectedIdentities(on_pick: EventHandler<Identity>, on_error: EventHandler<St
                                             on_error.call(e);
                                         }
                                         confirming.set(None);
-                                        found.set(crate::identity::detected());
+                                        rev += 1;
                                     },
                                     if asking { "Forget?" } else { "✕" }
                                 }
@@ -468,4 +479,119 @@ fn dot_mask(s: &str) -> String {
     s.chars()
         .map(|c| if c.is_whitespace() { c } else { '•' })
         .collect()
+}
+
+/// Where keys live on this machine. The default suits one person on one
+/// computer; anything else — a shared disk, a synced folder — is chosen here.
+#[component]
+fn FolderSettings(rev: Signal<u32>) -> Element {
+    let mut rev = rev;
+    let mut open = use_signal(|| false);
+    let mut input = use_signal(|| crate::identity::identities_dir().display().to_string());
+    let mut error = use_signal(|| None::<String>);
+
+    let _ = rev();
+    let current = crate::identity::identities_dir().display().to_string();
+    let is_default = crate::identity::identities_dir_override().is_none();
+
+    let mut apply = move |dir: Option<std::path::PathBuf>| match crate::identity::set_identities_dir(
+        dir.as_deref(),
+    ) {
+        Ok(()) => {
+            error.set(None);
+            input.set(crate::identity::identities_dir().display().to_string());
+            rev += 1;
+            open.set(false);
+        }
+        Err(e) => error.set(Some(e)),
+    };
+
+    rsx! {
+        div { class: "absolute top-2 right-3 z-20 dxf-no-drag",
+            button {
+                r#type: "button",
+                class: "w-8 h-8 rounded-lg flex items-center justify-center text-base text-[var(--text-dim)] hover:text-[var(--text)] border border-transparent hover:border-[var(--edge)] transition-colors",
+                title: "Where keys are stored",
+                onclick: move |_| {
+                    if !open() {
+                        input.set(crate::identity::identities_dir().display().to_string());
+                        error.set(None);
+                    }
+                    open.set(!open());
+                },
+                "⚙"
+            }
+            if open() {
+                div {
+                    class: "absolute right-0 top-9 w-[360px] max-w-[calc(100vw-2rem)] rounded-xl border border-[var(--edge)] p-3 space-y-3 shadow-xl",
+                    style: "background: var(--panel2);",
+                    div { class: "space-y-1",
+                        div { class: "flex items-baseline gap-2",
+                            span { class: "{LABEL} flex-1", "Identities folder" }
+                            if is_default {
+                                span { class: "text-[10px] text-[var(--text-dim)]", "default" }
+                            }
+                        }
+                        code {
+                            class: "block text-[11px] font-mono text-[var(--text-muted)] break-all leading-relaxed",
+                            title: "{current}",
+                            "{current}"
+                        }
+                    }
+                    div { class: "space-y-2",
+                        input {
+                            class: INPUT,
+                            r#type: "text",
+                            spellcheck: "false",
+                            value: "{input}",
+                            placeholder: "/absolute/path/to/folder",
+                            oninput: move |e| input.set(e.value()),
+                        }
+                        div { class: "flex flex-wrap gap-2",
+                            if !cfg!(target_os = "linux") {
+                                button {
+                                    r#type: "button",
+                                    class: "px-3 py-1.5 rounded-lg border border-[var(--edge)] text-xs text-[var(--text)] hover:border-[var(--accent)] transition-colors",
+                                    onclick: move |_| {
+                                        let start = std::path::PathBuf::from(input().trim());
+                                        spawn(async move {
+                                            let mut dialog = rfd::AsyncFileDialog::new();
+                                            if start.is_dir() {
+                                                dialog = dialog.set_directory(&start);
+                                            }
+                                            if let Some(dir) = dialog.pick_folder().await {
+                                                input.set(dir.path().display().to_string());
+                                            }
+                                        });
+                                    },
+                                    "Browse…"
+                                }
+                            }
+                            button {
+                                r#type: "button",
+                                class: "px-3 py-1.5 rounded-lg text-xs dxf-cta transition-colors disabled:opacity-30",
+                                disabled: input().trim().is_empty(),
+                                onclick: move |_| apply(Some(std::path::PathBuf::from(input().trim()))),
+                                "Use this folder"
+                            }
+                            button {
+                                r#type: "button",
+                                class: "px-3 py-1.5 rounded-lg border border-[var(--edge)] text-xs text-[var(--text-muted)] hover:text-[var(--text)] transition-colors disabled:opacity-30",
+                                disabled: is_default,
+                                onclick: move |_| apply(None),
+                                "Use default"
+                            }
+                        }
+                    }
+                    if let Some(e) = error() {
+                        div { class: "text-xs text-[var(--danger)]", "{e}" }
+                    }
+                    p { class: "text-[11px] text-[var(--text-dim)] leading-relaxed",
+                        "Keys in this folder are encrypted for this computer; the passphrase lives in "
+                        "{crate::keyvault::backend().describe()}. A copy of the folder opens nowhere else."
+                    }
+                }
+            }
+        }
+    }
 }
