@@ -11,7 +11,7 @@ numbers and seven miscategorised files before that rule was learned.
 
 ## Do not read these whole
 
-13 files hold most of the tree. Opening one to find a single arm costs more
+15 files hold most of the tree. Opening one to find a single arm costs more
 than every other document here put together, so grep the variant or the `fn`
 name instead.
 
@@ -30,6 +30,8 @@ name instead.
 | `client/src/features/chat.rs` | 1052 |
 | `server/src/store.rs` | 976 |
 | `client/src/features/guild_settings.rs` | 929 |
+| `client/src/identity.rs` | 1029 |
+| `client/src/features/discord_import.rs` | 1125 |
 
 Everything else is small enough that `wc -l` answers faster than a list here
 could stay true. There used to be rows for "under 300" and "300 to 800": they
@@ -55,7 +57,12 @@ that direction says a file is safe to open when it is not.
 | The settings dialog | `client/src/features/settings_dialog.rs` | `SETTINGS_TABS` + `SettingsTab`. Mounted at the *workspace root*, never inside a grid panel — a raised panel carries a `z-index`, and that traps `position: fixed` children (trap 22). `AppState::audio_settings` opens it |
 | Where this session's data goes | `client/src/features/topology.rs` | `TopologyDialog` — per-leg, per-session; opened from the transport chip |
 | Panel arrangements | `client/src/features/workspace.rs` | `LAYOUT_TEMPLATES` + `LayoutButton`; `persist_layout` writes both the cell and free snapshots |
-| Keys on this machine | `client/src/identity.rs` | `detected` / `sign_in` / `forget`; one file per key under `config_dir()/identities/`, `identity.json` names the active one |
+| Keys on this machine | `client/src/identity.rs` | `detected` / `sign_in` / `forget`; one file per key under `identities_dir()` (default `config_dir()/identities/`, `identities-dir` overrides), `identity.json` names the active one |
+| Keys at rest | `client/src/keyvault.rs` | NIP-49 `ncryptsec` under a random passphrase; `backend()` picks keychain or `vault.key` once and `vault.backend` remembers (trap 23) |
+| Choosing the keys folder | `client/src/features/identity_setup.rs` | `FolderSettings` — the cog on the setup screen; `DetectedIdentities` rescans on every render, `rev` forces one |
+| Bringing a Discord server over | `client/src/features/discord_import.rs` | `read_plan` fetches with a bot token, `flatten_channels`/`plan_roles` map, `run_import` replays `CreateGuild`→`SetGuildProfile`→`CreateChannel`→`CreateRole`→`CreateGuildEmoji` one write per 450 ms; opened from the rail via `GuildDialog::ImportDiscord` |
+| A device that stays busy after voice | `client/src/features/voice.rs` | `pick_device`, and the `Drop` impls of `MicCapture` / `PlaybackMixer` (trap 24); `client/src/audio_diag.rs` prints CoreAudio's view in debug builds |
+| Bisecting audio without the app | `client/examples/bt_probe.rs` | `cpal`, `livekit`, `room` modes; `room` spawns the bundled LiveKit on loopback |
 | Which accent wins, and where | `client/src/features/workspace.rs` | `guild_accent_to_apply` — the guild's is written on a descendant of the app root, so it beats the personal one unless it is not written at all |
 | Leaving a server, and stopping an embedded one | `client/src/features/workspace.rs` | `Leaving` + `leave`; the teardown effect runs before `on_disconnect` (trap 17) |
 

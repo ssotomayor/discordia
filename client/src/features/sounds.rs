@@ -7,8 +7,12 @@ use crate::state::use_app_state;
 pub(crate) const SFX_JS: &str = r#"
 window.dxSfx = window.dxSfx || (function () {
   let ctx = null;
+  let idle = null;
   const lastAt = {};
   const COOLDOWN_MS = 250;
+  // Closed once idle: a live context keeps WebKit's output unit on the
+  // headset, and macOS holds a Bluetooth headset in HFP while anything does.
+  const IDLE_MS = 1500;
   let masterVolume = 0.7;
   function audio() {
     if (!ctx) { try { ctx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { return null; } }
@@ -93,6 +97,12 @@ window.dxSfx = window.dxSfx || (function () {
         tone(c, t, 440, 0.06, 0.10, 'square');
         break;
     }
+    if (idle) clearTimeout(idle);
+    idle = setTimeout(function () {
+      idle = null;
+      const done = ctx; ctx = null;
+      if (done) { try { done.close().catch(function () {}); } catch (e) {} }
+    }, IDLE_MS);
   }
   function setVolume(v) { masterVolume = Math.max(0, Math.min(1, v)); }
   return { play: play, setVolume: setVolume };

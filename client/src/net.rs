@@ -1025,18 +1025,8 @@ fn apply(
                 s.voice.deafened = vs.deafened;
                 if vs.channel_id.is_none() && s.voice.phase != VoicePhase::Idle {
                     eprintln!("[net] server says we're out of voice — forcing Idle");
-                    s.voice.phase = VoicePhase::Idle;
-                    s.voice.channel_id = None;
                     let _ = voice_tx.send(VoiceCmd::Disconnect { done: None });
-                    s.screen_token = None;
-                    s.screen_audio_token = None;
-                    s.screen_video_token = None;
-                    s.screen_share_target = None;
-                    s.screen_sharing = false;
-                    s.screen_viewing = None;
-                    s.camera_on = false;
-                    s.camera_starting = false;
-                    s.cameras_watching.clear();
+                    s.end_voice_locally();
                 }
             }
         }

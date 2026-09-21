@@ -433,6 +433,23 @@ impl AppState {
         }
     }
 
+    /// On the *local* disconnect, not the server's echo, which lands after the
+    /// phase is Idle: a token left behind kept the webview's room alive for good.
+    pub fn end_voice_locally(&mut self) {
+        self.voice.phase = VoicePhase::Idle;
+        self.voice.channel_id = None;
+        self.voice.error = None;
+        self.screen_token = None;
+        self.screen_audio_token = None;
+        self.screen_video_token = None;
+        self.screen_share_target = None;
+        self.screen_sharing = false;
+        self.screen_viewing = None;
+        self.camera_on = false;
+        self.camera_starting = false;
+        self.cameras_watching.clear();
+    }
+
     pub fn is_owner(&self, guild_id: Id) -> bool {
         let Some(me) = self.self_user.as_ref() else {
             return false;

@@ -260,12 +260,11 @@ async fn service_loop(
                 if let Some(prev) = session.take() {
                     prev.shutdown(state).await;
                 }
-                {
-                    let mut s = state.write();
-                    s.voice.phase = VoicePhase::Idle;
-                    s.voice.channel_id = None;
-                    s.voice.error = None;
-                }
+                state.write().end_voice_locally();
+                tokio::spawn(async {
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    crate::audio_diag::log("5 s after leaving");
+                });
                 last_connect = None;
                 if let Some(done) = done {
                     let _ = done.send(());
@@ -553,6 +552,7 @@ impl ActiveVoice {
         }
         tokio::spawn(publish_loop(gated_rx, source.clone()));
         let mic = MicCapture::start(frame_tx, state, muted, gate_stats)?;
+        crate::audio_diag::log("mic open");
         let meter_task = spawn_meter_task(state, meter);
 
         let playback = PlaybackMixer::start(state, controls.clone())?;
@@ -958,6 +958,7 @@ impl ActiveVoice {
         self.meter_task.cancel();
         self.stats_task.cancel();
         self.mic.stop();
+        crate::audio_diag::log("mic dropped");
         if let Some(sa) = self.screen_audio {
             sa.shutdown().await;
         }
@@ -1686,6 +1687,27 @@ fn outbound_rates(
     ))
 }
 
+/// The default handle when the chosen name is the default device's, and only
+/// otherwise a handle found by name: cpal 0.15 leaks the latter's stream (trap 24).
+fn pick_device(
+    selected: Option<&str>,
+    default: Option<cpal::Device>,
+    all: Option<impl Iterator<Item = cpal::Device>>,
+) -> Option<cpal::Device> {
+    let Some(wanted) = selected else {
+        return default;
+    };
+    let default_name = default.as_ref().and_then(|d| d.name().ok());
+    if default_name.as_deref() == Some(wanted) {
+        return default;
+    }
+    all.and_then(|devs| {
+        devs.into_iter()
+            .find(|d| d.name().map(|n| n == wanted).unwrap_or(false))
+    })
+    .or(default)
+}
+
 struct MicCapture {
     _backend: MicBackend,
     muted: Arc<AtomicBool>,
@@ -1694,7 +1716,7 @@ struct MicCapture {
 
 enum MicBackend {
     Cpal {
-        _stream: cpal::Stream,
+        stream: cpal::Stream,
     },
     #[cfg(target_os = "windows")]
     Raw {
@@ -1809,26 +1831,12 @@ impl MicCapture {
     ) -> Result<MicBackend, String> {
         let frame_tx = frame_tx.clone();
         let host = cpal::default_host();
-        let device = if let Some(sel_name) = selected {
-            let mut found = None;
-            if let Ok(devs) = host.input_devices() {
-                for d in devs {
-                    if let Ok(name) = d.name()
-                        && name == sel_name
-                    {
-                        found = Some(d);
-                        break;
-                    }
-                }
-            }
-            found.unwrap_or_else(|| {
-                host.default_input_device()
-                    .expect("no default input device")
-            })
-        } else {
-            host.default_input_device()
-                .ok_or_else(|| "no default input device".to_string())?
-        };
+        let device = pick_device(
+            selected.as_deref(),
+            host.default_input_device(),
+            host.input_devices().ok(),
+        )
+        .ok_or_else(|| "no default input device".to_string())?;
         let device_name = device.name().unwrap_or_else(|_| "<unknown>".into());
         let config = device
             .default_input_config()
@@ -1939,7 +1947,7 @@ impl MicCapture {
         .map_err(|e| format!("build_input_stream: {e}"))?;
 
         stream.play().map_err(|e| format!("play mic: {e}"))?;
-        Ok(MicBackend::Cpal { _stream: stream })
+        Ok(MicBackend::Cpal { stream })
     }
 
     fn spawn_heartbeat(
@@ -1986,6 +1994,15 @@ impl MicCapture {
 impl Drop for MicCapture {
     fn drop(&mut self) {
         self.heartbeat.abort();
+        // Dropping a by-name stream disposes nothing in cpal 0.15 (trap 24);
+        // an explicit stop is what makes the device idle.
+        #[allow(irrefutable_let_patterns)]
+        if let MicBackend::Cpal { stream } = &self._backend {
+            match stream.pause() {
+                Ok(()) => eprintln!("[voice] mic stream stopped"),
+                Err(e) => eprintln!("[voice] mic stream would not stop: {e}"),
+            }
+        }
     }
 }
 
@@ -2256,34 +2273,29 @@ fn pop_drift_compensated(
 }
 
 struct PlaybackMixer {
-    _stream: cpal::Stream,
+    stream: cpal::Stream,
     handle: PlaybackHandle,
+}
+
+impl Drop for PlaybackMixer {
+    fn drop(&mut self) {
+        match self.stream.pause() {
+            Ok(()) => eprintln!("[voice] playback stream stopped"),
+            Err(e) => eprintln!("[voice] playback stream would not stop: {e}"),
+        }
+    }
 }
 
 impl PlaybackMixer {
     fn start(state: Signal<AppState>, controls: AudioControls) -> Result<Self, String> {
         let host = cpal::default_host();
         let selected = state.read().selected_output_device.clone();
-        let device = if let Some(sel_name) = selected {
-            let mut found = None;
-            if let Ok(devs) = host.output_devices() {
-                for d in devs {
-                    if let Ok(name) = d.name()
-                        && name == sel_name
-                    {
-                        found = Some(d);
-                        break;
-                    }
-                }
-            }
-            found.unwrap_or_else(|| {
-                host.default_output_device()
-                    .expect("no default output device")
-            })
-        } else {
-            host.default_output_device()
-                .ok_or_else(|| "no default output device".to_string())?
-        };
+        let device = pick_device(
+            selected.as_deref(),
+            host.default_output_device(),
+            host.output_devices().ok(),
+        )
+        .ok_or_else(|| "no default output device".to_string())?;
         let device_name = device.name().unwrap_or_else(|_| "<unknown>".into());
         let config = device
             .default_output_config()
@@ -2427,10 +2439,7 @@ impl PlaybackMixer {
             stream_gains: controls.stream_gains.clone(),
         };
 
-        Ok(Self {
-            _stream: stream,
-            handle,
-        })
+        Ok(Self { stream, handle })
     }
 
     fn handle(&self) -> PlaybackHandle {

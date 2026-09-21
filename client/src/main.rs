@@ -2,6 +2,7 @@
 
 mod agc;
 mod app;
+mod audio_diag;
 mod denoise;
 mod e2ee;
 #[macro_use]
