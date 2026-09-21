@@ -1076,6 +1076,9 @@ fn GuildDialogHost() -> Element {
         Some(crate::state::GuildDialog::Roles(gid)) => rsx! {
             crate::features::roles::RolesDialog { guild_id: gid, on_close: close }
         },
+        Some(crate::state::GuildDialog::ImportDiscord) => rsx! {
+            crate::features::discord_import::DiscordImportDialog { on_close: close }
+        },
     }
 }
 

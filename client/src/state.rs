@@ -145,6 +145,7 @@ pub enum GuildDialog {
     Settings(Id),
     Integrations(Id),
     Roles(Id),
+    ImportDiscord,
 }
 /// The guild is not in `guilds` yet — we have not joined — so the name is
 /// looked up in the catalog and may be absent on an invite-code join.

@@ -4,6 +4,7 @@ pub mod camera;
 pub mod channels;
 pub mod chat;
 pub mod connect;
+pub mod discord_import;
 pub mod guild_leveling;
 pub mod guild_settings;
 pub mod guilds;

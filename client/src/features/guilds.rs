@@ -139,6 +139,15 @@ pub fn GuildsSidebar() -> Element {
                 CreateGuild {}
 
                 button {
+                    class: "relative w-11 h-11 rounded-2xl border border-dashed border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] flex items-center justify-center text-[10px] font-semibold tracking-wide leading-none transition-colors",
+                    title: "Import a Discord server",
+                    onclick: move |_| {
+                        state.write().guild_dialog = Some(crate::state::GuildDialog::ImportDiscord);
+                    },
+                    "DC↓"
+                }
+
+                button {
                     class: "relative w-11 h-11 rounded-2xl border border-dashed border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] flex items-center justify-center text-base leading-none transition-colors",
                     title: "Browse guilds to join",
                     onclick: {
