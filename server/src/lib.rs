@@ -9,6 +9,7 @@ pub mod quic;
 pub mod sanitize;
 pub mod state;
 pub mod store;
+pub mod watchdog;
 
 pub use dioxusfun_protocol as protocol;
 

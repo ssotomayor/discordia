@@ -1,4 +1,7 @@
 use std::collections::BTreeMap;
+use std::sync::Arc;
+
+use dioxusfun_server::watchdog::{ArmWatch, op_of, watchdog};
 
 use dioxus::prelude::*;
 use futures_util::{SinkExt, StreamExt};
@@ -435,8 +438,11 @@ where
         }
     }
 
+    let watch = Arc::new(ArmWatch::default());
+    let dog = watchdog(watch.clone(), "session".into());
     let mut media_tick = tokio::time::interval(MEDIA_TICK);
     loop {
+        watch.finish("session");
         tokio::select! {
             update = async {
                 match host_updates.as_mut() {
@@ -444,6 +450,7 @@ where
                     None => std::future::pending().await,
                 }
             } => {
+                watch.begin("host update");
                 match update {
                     Some(u) => apply_host_update(&mut state.write(), u),
                     None => host_updates = None,
@@ -452,11 +459,13 @@ where
             outbound = rx.recv() => {
                 let Some(msg) = outbound else { break };
                 let json = serde_json::to_string(&msg).map_err(|e| e.to_string())?;
+                watch.begin(format!("send {}", op_of(&json)));
                 if let Err(e) = ws_tx.send(WsMessage::Text(json)).await {
                     return Err(format!("send: {e}"));
                 }
             }
             _ = media_tick.tick() => {
+                watch.begin("media tick");
                 let mut s = state.write();
                 resolve_media(&mut s, tx);
             }
@@ -473,6 +482,7 @@ where
                     WsMessage::Close(_) => break,
                     _ => continue,
                 };
+                watch.begin(format!("recv {}", op_of(&text)));
                 let parsed: ServerMessage = match serde_json::from_str(&text) {
                     Ok(m) => m,
                     Err(e) => {
@@ -484,6 +494,9 @@ where
             }
         }
     }
+    dog.abort();
+    watch.finish("session");
+    tracing::info!("session loop ended");
 
     Ok(())
 }

@@ -56,8 +56,12 @@ pub async fn handle_connection(
     let mut failed_identifies = 0u32;
     let identify_by = tokio::time::Instant::now() + IDENTIFY_TIMEOUT;
     let mut shutdown = ctx.shutdown.subscribe();
+    let watch = Arc::new(crate::watchdog::ArmWatch::default());
+    let who = format!("conn {conn_id}");
+    let dog = crate::watchdog::watchdog(watch.clone(), who.clone());
 
     loop {
+        watch.finish(&who);
         tokio::select! {
             incoming = ws_rx.next() => {
                 let Some(Ok(msg)) = incoming else { break };
@@ -77,6 +81,7 @@ pub async fn handle_connection(
                     WsMessage::Close(_) => break,
                     WsMessage::Ping(_) | WsMessage::Pong(_) | WsMessage::Binary(_) => continue,
                 };
+                watch.begin(format!("recv {}", crate::watchdog::op_of(&text)));
                 let parsed: Result<ClientMessage, _> = serde_json::from_str(&text);
                 let Ok(client_msg) = parsed else {
                     let _ = send(&mut ws_tx, &ServerMessage::Error {
@@ -1524,6 +1529,7 @@ pub async fn handle_connection(
 
             outbound = outbound_rx.recv() => {
                 let Some(msg) = outbound else { break };
+                watch.begin("send");
                 let out = if is_bot {
                     let Some(u) = user.as_ref() else { continue };
                     match filter_for_bot(&ctx.state, &u.pubkey, &msg) {
@@ -1540,6 +1546,9 @@ pub async fn handle_connection(
         }
     }
 
+    dog.abort();
+    watch.finish(&who);
+    tracing::debug!(%who, "gateway socket loop ended");
     ctx.state
         .unregister_conn(conn_id, user.as_ref().map(|u| u.pubkey.as_str()));
 

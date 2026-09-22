@@ -338,6 +338,7 @@ impl AppState {
             None => return,
         };
         if tx.try_send(msg.clone()).is_err() && !matches!(msg, ServerMessage::TypingUpdate { .. }) {
+            tracing::warn!(conn_id, "outbound queue full — dropping the connection");
             self.drop_conn(conn_id);
         }
     }

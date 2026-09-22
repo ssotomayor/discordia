@@ -948,7 +948,9 @@ pub struct GatewayTx(pub UnboundedSender<ClientMessage>);
 
 impl GatewayTx {
     pub fn send(&self, msg: ClientMessage) {
-        let _ = self.0.send(msg);
+        if self.0.send(msg).is_err() {
+            tracing::warn!("gateway send dropped: the session loop is gone");
+        }
     }
 }
 
