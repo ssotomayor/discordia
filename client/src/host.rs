@@ -102,7 +102,13 @@ pub async fn start_self_host(
         None
     } else {
         let transport_secret = crate::quic::secret_for(&identity);
-        match dioxusfun_server::quic::bind_quic(Some(transport_secret), &coordination).await {
+        match dioxusfun_server::quic::bind_quic(
+            Some(transport_secret),
+            &coordination,
+            dioxusfun_server::quic::RANDOM_PORT,
+        )
+        .await
+        {
             Ok(ep) => Some(ep),
             Err(e) => {
                 eprintln!("[host] quic unavailable: {e}");

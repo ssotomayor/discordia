@@ -5,8 +5,10 @@ services:
     restart: unless-stopped
     ports:
       - "9000:9000"
+      - "9001:9001/udp"
     environment:
       DIOXUSFUN_ADDR: 0.0.0.0:9000
+      DIOXUSFUN_QUIC_PORT: 9001
       DIOXUSFUN_DATA_DIR: /data
       LIVEKIT_URL: ws://${PUBLIC_HOST:?set PUBLIC_HOST in .env}:7880
       LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:?set LIVEKIT_API_KEY in .env}

@@ -15,6 +15,7 @@
 | Var | Default | Meaning |
 |---|---|---|
 | `DIOXUSFUN_ADDR` | `0.0.0.0:9000` | plaintext gateway bind — for loopback and a TLS proxy; clients refuse `ws://` to anything else |
+| `DIOXUSFUN_QUIC_PORT` | `9001` | UDP port the QUIC endpoint binds — the one to publish and open; `0` takes a random free one |
 | `DIOXUSFUN_RELAY_URL` | — | an iroh relay (a rendezvous's `/config` names one) that introduces friends behind NAT and carries ciphertext when a punch fails |
 | `DIOXUSFUN_DATA_DIR` | `./discordia-data` | SQLite, media blobs, `livekit-keys`, `quic-secret` (the key in the share string; back it up or friends re-add you) |
 | `DIOXUSFUN_MEDIA_MAX_BYTES` | `2 GiB` | cap on `<data dir>/media`; uploads are refused past it |
@@ -96,7 +97,7 @@ file read out of a working tree is whatever revision that tree last held.
 | `.env` is required | compose uses `${LIVEKIT_API_KEY:?}`, so a missing key fails at start rather than falling back to LiveKit's public `devkey` |
 | All three restart together | the gateway, the rendezvous and the SFU must agree on the LiveKit pair |
 | `deploy/livekit.yaml` carries no `keys:` | `LIVEKIT_KEYS` supplies them, so a copied file never carries a secret |
-| Off loopback the gateway needs QUIC reachable | host networking today, `DIOXUSFUN_RELAY_URL` so a blocked UDP port still connects (issue #151) |
+| Off loopback the gateway needs QUIC reachable | `9001/udp` published and open (`DIOXUSFUN_QUIC_PORT`); `DIOXUSFUN_RELAY_URL` so a blocked UDP port still connects |
 
 ## Devcontainer
 

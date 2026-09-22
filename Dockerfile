@@ -12,8 +12,9 @@ RUN apt-get update \
 COPY --from=builder /src/target/release/dioxusfun-server /usr/local/bin/discordia-server
 
 ENV DIOXUSFUN_ADDR=0.0.0.0:9000 \
+    DIOXUSFUN_QUIC_PORT=9001 \
     DIOXUSFUN_DATA_DIR=/data \
     DIOXUSFUN_LIVEKIT_AUTOSPAWN=0
 VOLUME /data
-EXPOSE 9000
+EXPOSE 9000 9001/udp
 ENTRYPOINT ["discordia-server"]

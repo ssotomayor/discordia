@@ -1,12 +1,17 @@
-use std::net::SocketAddr;
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::Path;
 
 use axum::Router;
 use axum::extract::ConnectInfo;
-use iroh::endpoint::{IncomingAddr, presets};
+use iroh::endpoint::{BindOpts, IncomingAddr, presets};
 use iroh::{Endpoint, EndpointId, SecretKey};
 
 pub const GATEWAY_ALPN: &[u8] = b"dioxusfun/gateway/1";
+
+/// UDP port the standalone server binds unless `DIOXUSFUN_QUIC_PORT` says otherwise;
+/// `RANDOM_PORT` is what a self-host uses, since a port mapping takes whatever it got.
+pub const DEFAULT_PORT: u16 = 9001;
+pub const RANDOM_PORT: u16 = 0;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Coordination {
@@ -47,16 +52,30 @@ impl QuicHandle {
 }
 
 pub async fn serve_quic(router: Router, secret: Option<SecretKey>) -> Result<QuicHandle, String> {
-    serve_on(bind_quic(secret, &Coordination::None).await?, router)
+    serve_on(
+        bind_quic(secret, &Coordination::None, RANDOM_PORT).await?,
+        router,
+    )
 }
 
 pub async fn bind_quic(
     secret: Option<SecretKey>,
     coordination: &Coordination,
+    port: u16,
 ) -> Result<Endpoint, String> {
+    // Same shape as iroh's own default pair, only with the port chosen: IPv4 must
+    // bind, IPv6 may not exist on the box. The v6 socket is v6-only, so both fit one port.
     let mut builder = Endpoint::builder(presets::Minimal)
         .alpns(vec![GATEWAY_ALPN.to_vec()])
-        .relay_mode(coordination.relay_mode()?);
+        .relay_mode(coordination.relay_mode()?)
+        .clear_ip_transports()
+        .bind_addr(SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), port))
+        .map_err(|e| format!("quic bind: {e}"))?
+        .bind_addr_with_opts(
+            SocketAddr::new(Ipv6Addr::UNSPECIFIED.into(), port),
+            BindOpts::default().set_is_required(false),
+        )
+        .map_err(|e| format!("quic bind: {e}"))?;
     if let Some(secret) = secret {
         builder = builder.secret_key(secret);
     }
@@ -257,6 +276,27 @@ mod tests {
             .expect("quic connect");
         let (send, recv) = conn.open_bi().await.expect("open bi");
         (client, conn, tokio::io::join(recv, send))
+    }
+
+    #[tokio::test]
+    async fn binds_the_port_it_is_given() {
+        let probe = tokio::net::UdpSocket::bind("0.0.0.0:0").await.unwrap();
+        let port = probe.local_addr().unwrap().port();
+        drop(probe);
+
+        let endpoint = bind_quic(None, &Coordination::None, port)
+            .await
+            .expect("bind quic on a chosen port");
+        let sockets = endpoint.bound_sockets();
+        assert!(!sockets.is_empty());
+        assert!(
+            sockets.iter().all(|s| s.port() == port),
+            "expected every socket on {port}, got {sockets:?}"
+        );
+
+        let taken = bind_quic(None, &Coordination::None, port).await;
+        assert!(taken.is_err(), "a second endpoint bound the same port");
+        endpoint.close().await;
     }
 
     #[tokio::test]

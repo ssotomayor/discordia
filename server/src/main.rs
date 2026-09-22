@@ -117,12 +117,23 @@ async fn main() {
         tracing::error!(error = %e, "cannot persist the QUIC key; friends will have to re-add this server after a restart");
         iroh::SecretKey::generate()
     });
-    let quic_endpoint = match dioxusfun_server::quic::bind_quic(Some(quic_secret), &coordination)
-        .await
+    let quic_port: u16 = match std::env::var("DIOXUSFUN_QUIC_PORT") {
+        Ok(v) if !v.trim().is_empty() => v
+            .trim()
+            .parse()
+            .expect("DIOXUSFUN_QUIC_PORT must be a UDP port number; 0 picks a random one"),
+        _ => dioxusfun_server::quic::DEFAULT_PORT,
+    };
+    let quic_endpoint = match dioxusfun_server::quic::bind_quic(
+        Some(quic_secret),
+        &coordination,
+        quic_port,
+    )
+    .await
     {
         Ok(ep) => Some(ep),
         Err(e) => {
-            tracing::warn!(error = %e, "QUIC endpoint not bound — only loopback and a TLS proxy can reach this gateway");
+            tracing::warn!(error = %e, port = quic_port, "QUIC endpoint not bound — only loopback and a TLS proxy can reach this gateway");
             None
         }
     };

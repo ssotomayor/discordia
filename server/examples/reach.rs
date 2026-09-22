@@ -79,9 +79,10 @@ async fn listen(coordination: Coordination) {
     .await
     .expect("build router");
 
-    let endpoint = dioxusfun_server::quic::bind_quic(None, &coordination)
-        .await
-        .expect("bind quic");
+    let endpoint =
+        dioxusfun_server::quic::bind_quic(None, &coordination, dioxusfun_server::quic::RANDOM_PORT)
+            .await
+            .expect("bind quic");
 
     if coordination.is_coordinated() {
         println!("reaching a relay …");
