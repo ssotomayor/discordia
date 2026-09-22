@@ -831,87 +831,27 @@ pub async fn handle_connection(
                             ctx.state.set_voice_channel(&u.pubkey, guild_id, Some(channel_id));
                         let targets = ctx.state.guild_member_pubkeys(guild_id);
                         ctx.state.deliver(targets, ServerMessage::VoiceStateUpdate(new_state));
-                        match livekit::voice_token(&ctx.livekit, &u.pubkey, &u.username, channel_id).await {
-                            Ok(token) => {
-                                let livekit_url =
-                                    ctx.livekit.url_for_client(client_host.as_deref(), peer);
-                                let _ = send(
-                                    &mut ws_tx,
-                                    &ServerMessage::VoiceToken {
-                                        channel_id,
-                                        livekit_url: livekit_url.clone(),
-                                        token,
-                                    },
-                                )
-                                .await;
-                                let screen_name = format!("{} (screen)", u.username);
-                                let screen_token = livekit::screen_token_as(
-                                    &ctx.livekit,
-                                    &u.pubkey,
-                                    &screen_name,
-                                    channel_id,
-                                    true,
-                                )
-                                .await;
-                                match screen_token {
-                                    Ok(screen_token) => {
-                                        let audio_token = optional_screen_token(
-                                            &ctx.livekit,
-                                            OptionalScreen::Audio,
-                                            &u.pubkey,
-                                            &screen_name,
-                                            channel_id,
-                                            &mut ws_tx,
-                                        )
-                                        .await;
-                                        let video_token = optional_screen_token(
-                                            &ctx.livekit,
-                                            OptionalScreen::Video,
-                                            &u.pubkey,
-                                            &screen_name,
-                                            channel_id,
-                                            &mut ws_tx,
-                                        )
-                                        .await;
-                                        let _ = send(
-                                            &mut ws_tx,
-                                            &ServerMessage::ScreenToken {
-                                                channel_id,
-                                                livekit_url,
-                                                token: screen_token,
-                                                audio_token,
-                                                video_token,
-                                            },
-                                        )
-                                        .await;
-                                    }
-                                    Err(err) => {
-                                        tracing::error!(
-                                            %err, %channel_id,
-                                            "screen token mint failed"
-                                        );
-                                        let _ = send(
-                                            &mut ws_tx,
-                                            &ServerMessage::Error {
-                                                message: format!(
-                                                    "screen-share token mint failed: {err}"
-                                                ),
-                                            },
-                                        )
-                                        .await;
-                                    }
-                                }
+                        // Minting may wait on a rendezvous. Off this loop, so a slow
+                        // one costs this join and not every frame on the socket.
+                        let ctx = ctx.clone();
+                        let (pubkey, username) = (u.pubkey.clone(), u.username.clone());
+                        let livekit_url = ctx.livekit.url_for_client(client_host.as_deref(), peer);
+                        tokio::spawn(async move {
+                            let frames = mint_voice_frames(
+                                &ctx.livekit,
+                                &pubkey,
+                                &username,
+                                channel_id,
+                                livekit_url,
+                            )
+                            .await;
+                            if ctx.state.voice_channel_of(&pubkey) != Some(channel_id) {
+                                return;
                             }
-                            Err(err) => {
-                                let _ = send(
-                                    &mut ws_tx,
-                                    &ServerMessage::Error {
-                                        message: format!("token mint failed: {err}"),
-                                    },
-                                )
-                                .await;
+                            for frame in &frames {
+                                ctx.state.deliver_to_conn(conn_id, frame);
                             }
-                        }
+                        });
                     }
                     ClientMessage::LeaveVoice => {
                         let Some(u) = user.as_ref() else { continue };
@@ -1728,17 +1668,92 @@ enum OptionalScreen {
     Video,
 }
 
-async fn optional_screen_token<S>(
+/// Longest a voice join waits on the token service before the client hears
+/// that it failed. Long enough for a slow link, short enough to feel like an answer.
+const MINT_TIMEOUT: Duration = Duration::from_secs(10);
+
+const MINT_TIMED_OUT: &str = "the token service did not answer in time";
+
+async fn minted<F>(fut: F) -> Result<String, String>
+where
+    F: std::future::Future<Output = Result<String, String>>,
+{
+    tokio::time::timeout(MINT_TIMEOUT, fut)
+        .await
+        .unwrap_or_else(|_| Err(MINT_TIMED_OUT.to_string()))
+}
+
+/// Everything a voice join sends back, in order: the voice token, then any
+/// screen-share complaints, then the screen tokens. Or one error and nothing else.
+async fn mint_voice_frames(
+    cfg: &livekit::LiveKitConfig,
+    pubkey: &str,
+    username: &str,
+    channel_id: Id,
+    livekit_url: String,
+) -> Vec<ServerMessage> {
+    let mut frames = Vec::new();
+    let token = match minted(livekit::voice_token(cfg, pubkey, username, channel_id)).await {
+        Ok(token) => token,
+        Err(err) => {
+            tracing::error!(%err, %channel_id, "voice token mint failed");
+            frames.push(ServerMessage::Error {
+                message: format!("token mint failed: {err}"),
+            });
+            return frames;
+        }
+    };
+    frames.push(ServerMessage::VoiceToken {
+        channel_id,
+        livekit_url: livekit_url.clone(),
+        token,
+    });
+    let screen_name = format!("{username} (screen)");
+    match minted(livekit::screen_token_as(
+        cfg,
+        pubkey,
+        &screen_name,
+        channel_id,
+        true,
+    ))
+    .await
+    {
+        Ok(screen_token) => {
+            let (audio_token, audio_err) =
+                optional_screen_token(cfg, OptionalScreen::Audio, pubkey, &screen_name, channel_id)
+                    .await;
+            let (video_token, video_err) =
+                optional_screen_token(cfg, OptionalScreen::Video, pubkey, &screen_name, channel_id)
+                    .await;
+            frames.extend(audio_err);
+            frames.extend(video_err);
+            frames.push(ServerMessage::ScreenToken {
+                channel_id,
+                livekit_url,
+                token: screen_token,
+                audio_token,
+                video_token,
+            });
+        }
+        Err(err) => {
+            tracing::error!(%err, %channel_id, "screen token mint failed");
+            frames.push(ServerMessage::Error {
+                message: format!("screen-share token mint failed: {err}"),
+            });
+        }
+    }
+    frames
+}
+
+/// The token, or an empty string and maybe a complaint: a missing audio
+/// identity is invisible to the user, a missing video one is not.
+async fn optional_screen_token(
     cfg: &livekit::LiveKitConfig,
     which: OptionalScreen,
     user_pubkey: &str,
     screen_name: &str,
     channel_id: Id,
-    ws_tx: &mut S,
-) -> String
-where
-    S: SinkExt<WsMessage, Error = axum::Error> + Unpin,
-{
+) -> (String, Option<ServerMessage>) {
     let (identity, can_publish, label, notify) = match which {
         OptionalScreen::Audio => (
             livekit::screen_audio_identity(user_pubkey),
@@ -1753,20 +1768,22 @@ where
             true,
         ),
     };
-    match livekit::screen_token_as(cfg, &identity, screen_name, channel_id, can_publish).await {
-        Ok(token) => token,
+    match minted(livekit::screen_token_as(
+        cfg,
+        &identity,
+        screen_name,
+        channel_id,
+        can_publish,
+    ))
+    .await
+    {
+        Ok(token) => (token, None),
         Err(err) => {
             tracing::error!(%err, %channel_id, kind = label, "screen token mint failed");
-            if notify {
-                let _ = send(
-                    ws_tx,
-                    &ServerMessage::Error {
-                        message: format!("screen-share {label} token mint failed: {err}"),
-                    },
-                )
-                .await;
-            }
-            String::new()
+            let complaint = notify.then(|| ServerMessage::Error {
+                message: format!("screen-share {label} token mint failed: {err}"),
+            });
+            (String::new(), complaint)
         }
     }
 }

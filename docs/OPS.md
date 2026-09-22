@@ -4,7 +4,7 @@
 
 | Rung | For | How |
 |---|---|---|
-| One click | friend groups | "Host my own" in the client — spawns a gateway and (unless the rendezvous has its own) an SFU in-process |
+| One click | friend groups | "Host my own" in the client — spawns a gateway and an SFU in-process; the rendezvous's SFU is used only when friends cannot reach this machine's media ports |
 | One box | communities | `cargo run -p dioxusfun-server`, or Docker (`Dockerfile`, `docker-compose.yml` — what the test deployment runs) |
 | Cluster | giants | not built (entry: demand-gated) |
 
@@ -34,7 +34,7 @@
 | `DIOXUSFUN_RENDEZVOUS_DATA_DIR` | `./rendezvous-data` | persisted name reservations |
 | `DIOXUSFUN_RENDEZVOUS_RELAY_ADDR` | `0.0.0.0:7701` | iroh relay bind, the one that carries ciphertext for hosts behind NAT |
 | `DIOXUSFUN_RENDEZVOUS_RELAY_URL` | — | how clients reach that relay; handed out in `/config` and every entry |
-| `LIVEKIT_URL` / `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` | — | a shared SFU for hosts without one; the rendezvous mints their tokens so no host holds the secret |
+| `LIVEKIT_URL` / `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` | — | a shared SFU for hosts whose media ports nobody outside can reach; the rendezvous mints their tokens so no host holds the secret. A host that maps its ports carries its own calls and ignores this |
 
 Serve it on the address it binds, not behind a reverse proxy: the per-address
 limits and the check that a host's advertised address is its own both read the
@@ -63,8 +63,8 @@ rendezvous entry. The plaintext gateway binds loopback only.
 | Setup | You | LAN friend | Friend over the internet |
 |---|---|---|---|
 | Self-host, nothing else | loopback | share string with the LAN address (needs "accept direct connections") | **unreachable** |
-| + rendezvous | loopback | punched, or carried by the relay | punched by the relay, or carried by it |
-| + port mapping (UPnP/NAT-PMP) | loopback | direct | **direct** on the forwarded UDP port |
+| + rendezvous | loopback | punched, or carried by the relay | punched by the relay, or carried by it. Calls on the rendezvous's SFU, since nobody outside reaches this machine's |
+| + port mapping (UPnP/NAT-PMP) | loopback | direct | **direct** on the forwarded UDP port. Calls on this machine's SFU, whatever the rendezvous offers |
 | Community server | loopback or `wss://` proxy | QUIC by share string | QUIC by share string, or `wss://` through a TLS proxy (`DIOXUSFUN_PUBLIC_HOSTS`) |
 
 Port mapping failure is the normal case and never stops hosting. It also

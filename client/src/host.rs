@@ -29,8 +29,28 @@ pub struct HostInfo {
     pub reachability: Reachability,
 }
 
+/// Where a session's calls go. One per session, not per caller: a room lives
+/// on one SFU, so everyone in a channel must be handed the same one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SfuPlan {
+    Bundled,
+    Shared(String),
+}
+
+/// This machine pays for its own calls whenever friends can reach its media
+/// ports; the rendezvous's SFU is for the host nobody outside can reach.
+pub fn sfu_plan(reachability: &Reachability, shared_offer: Option<&str>) -> SfuPlan {
+    match (reachability, shared_offer) {
+        (_, None) => SfuPlan::Bundled,
+        (Reachability::Direct { media: true, .. }, Some(_)) => SfuPlan::Bundled,
+        (_, Some(url)) => SfuPlan::Shared(url.to_string()),
+    }
+}
+
 pub struct HostHandle {
     pub info: HostInfo,
+    /// What the rendezvous link does after start: lost, restored, renamed.
+    pub updates: Option<tokio::sync::mpsc::UnboundedReceiver<crate::rendezvous::HostUpdate>>,
     gateway: Option<ServerHandle>,
     quic: Option<dioxusfun_server::quic::QuicHandle>,
     shutdown: Option<dioxusfun_server::GatewayShutdown>,
@@ -213,8 +233,8 @@ pub async fn start_self_host(
     )> = None;
     let mut publish_error: Option<String> = None;
     let listed_public = publish.publish_public;
-    if let Some(url) = rendezvous_url {
-        match crate::rendezvous::register(&url, publish, transport, &identity).await {
+    if let Some(url) = rendezvous_url.as_deref() {
+        match crate::rendezvous::register(url, &publish, transport.as_ref(), &identity).await {
             Ok((info, control)) => {
                 eprintln!(
                     "[host] rendezvous registered: shortcode={} livekit_url={:?}",
@@ -230,32 +250,58 @@ pub async fn start_self_host(
         }
     }
 
-    let explicit_url = rendezvous_state
+    let shared_offer = rendezvous_state
         .as_ref()
         .and_then(|(_, info)| info.livekit_url.clone());
+    let plan = sfu_plan(&reachability, shared_offer.as_deref());
 
     let data_dir = crate::identity::config_dir().join("host-data");
     let creds = livekit_bundle::credentials_or_ephemeral(&data_dir);
 
-    let shared_sfu_url = explicit_url.clone();
-    let (livekit, voice_bundled) = if explicit_url.is_some() {
-        eprintln!("[host] rendezvous supplies the SFU — not starting the bundled one");
-        (None, false)
-    } else {
-        match livekit_bundle::spawn_livekit(advertise_ip, &creds, &data_dir).await {
-            Ok(child) => {
-                eprintln!(
-                    "[host] livekit ready at ws://127.0.0.1:{}",
-                    livekit_bundle::ports().ws
-                );
-                (Some(child), true)
-            }
-            Err(e) => {
-                eprintln!("[host] livekit unavailable: {e}");
-                tracing::warn!(error = %e, "self-host voice unavailable");
-                (None, false)
+    let (livekit, explicit_url) = match &plan {
+        SfuPlan::Shared(url) => {
+            eprintln!(
+                "[host] friends cannot reach this machine's voice ports — calls go through the rendezvous's SFU at {url}"
+            );
+            (None, Some(url.clone()))
+        }
+        SfuPlan::Bundled => {
+            match livekit_bundle::spawn_livekit(advertise_ip, &creds, &data_dir).await {
+                Ok(child) => {
+                    eprintln!(
+                        "[host] livekit ready at ws://127.0.0.1:{} — this machine carries the calls",
+                        livekit_bundle::ports().ws
+                    );
+                    (Some(child), None)
+                }
+                Err(e) => match shared_offer.clone() {
+                    Some(url) => {
+                        eprintln!(
+                            "[host] livekit unavailable ({e}) — calls go through the rendezvous's SFU at {url}"
+                        );
+                        tracing::warn!(error = %e, "bundled SFU failed; using the rendezvous's");
+                        (None, Some(url))
+                    }
+                    None => {
+                        eprintln!("[host] livekit unavailable: {e}");
+                        tracing::warn!(error = %e, "self-host voice unavailable");
+                        (None, None)
+                    }
+                },
             }
         }
+    };
+    let voice_bundled = livekit.is_some();
+    let shared_sfu_url = explicit_url.clone();
+
+    let rendezvous_minter = match (&explicit_url, rendezvous_state.as_ref()) {
+        (Some(_), Some((_, info))) => info.voice_token_grant.as_ref().map(|grant| {
+            std::sync::Arc::new(crate::rendezvous::RendezvousMinter::new(
+                &info.rendezvous_base,
+                grant.clone(),
+            ))
+        }),
+        _ => None,
     };
 
     let livekit_cfg = LiveKitConfig {
@@ -263,15 +309,9 @@ pub async fn start_self_host(
         port: livekit_bundle::ports().ws,
         api_key: creds.key,
         api_secret: creds.secret,
-        minter: rendezvous_state.as_ref().and_then(|(_, info)| {
-            match (&info.livekit_url, &info.voice_token_grant) {
-                (Some(_), Some(grant)) => Some(std::sync::Arc::new(
-                    crate::rendezvous::RendezvousMinter::new(&info.rendezvous_base, grant.clone()),
-                )
-                    as std::sync::Arc<dyn dioxusfun_server::livekit::VoiceTokenMinter>),
-                _ => None,
-            }
-        }),
+        minter: rendezvous_minter
+            .clone()
+            .map(|m| m as std::sync::Arc<dyn dioxusfun_server::livekit::VoiceTokenMinter>),
         lan_host: local_ip_address::local_ip().ok().map(|ip| ip.to_string()),
         public_host: advertise_ip.map(|ip| ip.to_string()),
     };
@@ -312,11 +352,25 @@ pub async fn start_self_host(
     let gateway = dioxusfun_server::serve_router(listener, router);
     let local_url = format!("ws://127.0.0.1:{}", gateway_addr.port());
 
+    let (updates_tx, updates_rx) = tokio::sync::mpsc::unbounded_channel();
     let (shortcode, rendezvous_task) = match rendezvous_state {
-        Some((control, info)) => (
-            Some(info.shortcode),
-            Some(crate::rendezvous::keep_alive(control)),
-        ),
+        Some((control, info)) => {
+            let registration = crate::rendezvous::Registration {
+                url: rendezvous_url.clone().unwrap_or_default(),
+                options: publish,
+                transport,
+                identity: identity.clone(),
+            };
+            (
+                Some(info.shortcode),
+                Some(crate::rendezvous::maintain(
+                    control,
+                    registration,
+                    rendezvous_minter,
+                    updates_tx,
+                )),
+            )
+        }
         None => (None, None),
     };
 
@@ -338,6 +392,7 @@ pub async fn start_self_host(
             listed_public,
             reachability,
         },
+        updates: Some(updates_rx),
         gateway: Some(gateway),
         quic,
         shutdown: Some(shutdown),
@@ -352,5 +407,45 @@ fn local_ipv4() -> Option<Ipv4Addr> {
     match local_ip_address::local_ip().ok()? {
         IpAddr::V4(v4) if !v4.is_loopback() && !v4.is_unspecified() => Some(v4),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod sfu_tests {
+    use super::*;
+
+    #[test]
+    fn the_host_carries_calls_whenever_friends_can_reach_it() {
+        let direct = Reachability::Direct {
+            method: "UPnP",
+            media: true,
+        };
+        assert_eq!(sfu_plan(&direct, Some("ws://shared")), SfuPlan::Bundled);
+        assert_eq!(
+            sfu_plan(&Reachability::LoopbackOnly, None),
+            SfuPlan::Bundled
+        );
+        let lan = Reachability::LanOnly {
+            reason: "no mapping".into(),
+        };
+        assert_eq!(sfu_plan(&lan, None), SfuPlan::Bundled);
+    }
+
+    #[test]
+    fn the_shared_sfu_is_only_for_a_host_nobody_outside_can_reach() {
+        let shared = SfuPlan::Shared("ws://shared".into());
+        let lan = Reachability::LanOnly {
+            reason: "no mapping".into(),
+        };
+        assert_eq!(sfu_plan(&lan, Some("ws://shared")), shared);
+        let chat_only = Reachability::Direct {
+            method: "UPnP",
+            media: false,
+        };
+        assert_eq!(sfu_plan(&chat_only, Some("ws://shared")), shared);
+        assert_eq!(
+            sfu_plan(&Reachability::LoopbackOnly, Some("ws://shared")),
+            shared
+        );
     }
 }

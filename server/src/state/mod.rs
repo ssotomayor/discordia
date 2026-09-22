@@ -363,6 +363,12 @@ impl AppState {
         }
     }
 
+    /// One socket, not a key: the answer to a request goes back to the
+    /// connection that asked, not to every session the key holds.
+    pub fn deliver_to_conn(&self, conn_id: u64, msg: &ServerMessage) {
+        self.route(conn_id, msg);
+    }
+
     pub async fn remember_user(&self, user: &User) {
         self.users.insert(user.pubkey.clone(), user.clone());
         persist(self.store.upsert_user(user).await, "user");
@@ -2328,6 +2334,12 @@ impl AppState {
         }
         entry.speaking = speaking;
         Some(entry.clone())
+    }
+
+    pub fn voice_channel_of(&self, user_pubkey: &str) -> Option<Id> {
+        self.voice_states
+            .get(user_pubkey)
+            .and_then(|v| v.channel_id)
     }
 
     pub fn clear_voice(&self, user_pubkey: &str) -> Option<VoiceState> {

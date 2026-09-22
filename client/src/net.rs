@@ -275,8 +275,9 @@ async fn run(
     mut state: Signal<AppState>,
     voice_tx: &UnboundedSender<VoiceCmd>,
 ) -> Result<(), String> {
-    let (dial, _host_handle) =
+    let (dial, mut host_handle) =
         resolve_session(params.mode.clone(), params.identity.clone(), &mut state).await?;
+    let host_updates = host_handle.as_mut().and_then(|h| h.updates.take());
 
     let (ws_stream, transport, origin) = match dial {
         Dial::Socket {
@@ -309,9 +310,33 @@ async fn run(
         s.server_origin = Some(origin.clone());
     }
 
-    match ws_stream {
-        Socket::Tcp(ws) => run_session(*ws, params, origin, tx, rx, state, voice_tx).await,
-        Socket::Quic(ws, _guard) => run_session(*ws, params, origin, tx, rx, state, voice_tx).await,
+    let links = Links {
+        tx,
+        rx,
+        voice_tx,
+        host_updates,
+    };
+    let outcome = match ws_stream {
+        Socket::Tcp(ws) => run_session(*ws, params, origin, state, links).await,
+        Socket::Quic(ws, _guard) => run_session(*ws, params, origin, state, links).await,
+    };
+    drop(host_handle);
+    outcome
+}
+
+fn apply_host_update(s: &mut AppState, update: crate::rendezvous::HostUpdate) {
+    use crate::rendezvous::HostUpdate;
+    let Some(info) = s.host_info.as_mut() else {
+        return;
+    };
+    match update {
+        HostUpdate::RendezvousLost { error } => {
+            info.publish_error = Some(format!("rendezvous link lost, retrying: {error}"));
+        }
+        HostUpdate::RendezvousRestored { shortcode } => {
+            info.publish_error = None;
+            info.shortcode = Some(shortcode);
+        }
     }
 }
 
@@ -323,18 +348,30 @@ enum Socket {
     ),
 }
 
+/// The channels a session talks over, apart from the socket itself.
+struct Links<'a> {
+    tx: &'a UnboundedSender<ClientMessage>,
+    rx: UnboundedReceiver<ClientMessage>,
+    voice_tx: &'a UnboundedSender<VoiceCmd>,
+    host_updates: Option<UnboundedReceiver<crate::rendezvous::HostUpdate>>,
+}
+
 async fn run_session<S>(
     ws_stream: tokio_tungstenite::WebSocketStream<S>,
     params: SessionParams,
     origin: String,
-    tx: &UnboundedSender<ClientMessage>,
-    mut rx: UnboundedReceiver<ClientMessage>,
     mut state: Signal<AppState>,
-    voice_tx: &UnboundedSender<VoiceCmd>,
+    links: Links<'_>,
 ) -> Result<(), String>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
+    let Links {
+        tx,
+        mut rx,
+        voice_tx,
+        mut host_updates,
+    } = links;
     state.write().identity = Some(params.identity.clone());
     let (mut ws_tx, mut ws_rx) = ws_stream.split();
 
@@ -401,6 +438,17 @@ where
     let mut media_tick = tokio::time::interval(MEDIA_TICK);
     loop {
         tokio::select! {
+            update = async {
+                match host_updates.as_mut() {
+                    Some(rx) => rx.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                match update {
+                    Some(u) => apply_host_update(&mut state.write(), u),
+                    None => host_updates = None,
+                }
+            }
             outbound = rx.recv() => {
                 let Some(msg) = outbound else { break };
                 let json = serde_json::to_string(&msg).map_err(|e| e.to_string())?;

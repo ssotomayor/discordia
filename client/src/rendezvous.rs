@@ -1,7 +1,17 @@
+use std::sync::{Arc, RwLock};
+use std::time::Duration;
+
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
 use crate::protocol::rendezvous::{HostToRendezvous, RendezvousToHost};
+
+/// A token request beyond this has failed; the server bounds the join too,
+/// but a request left running would pile up behind a dead rendezvous.
+const MINT_TIMEOUT: Duration = Duration::from_secs(8);
+
+/// A registration attempt beyond this is a black hole, not a slow link.
+const REGISTER_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[derive(Debug, Clone)]
 pub struct PublishInfo {
@@ -13,7 +23,10 @@ pub struct PublishInfo {
 
 pub struct RendezvousMinter {
     endpoint: String,
-    grant: String,
+    /// Replaced by `maintain` after every re-registration: the rendezvous
+    /// keeps grants in memory, so its restart voids the one it gave us.
+    grant: RwLock<String>,
+    http: reqwest::Client,
 }
 
 impl RendezvousMinter {
@@ -27,8 +40,20 @@ impl RendezvousMinter {
         };
         Self {
             endpoint: format!("{}/voice-token", http.trim_end_matches('/')),
-            grant,
+            grant: RwLock::new(grant),
+            http: reqwest::Client::builder()
+                .timeout(MINT_TIMEOUT)
+                .build()
+                .unwrap_or_default(),
         }
+    }
+
+    pub fn set_grant(&self, grant: String) {
+        *self.grant.write().unwrap_or_else(|e| e.into_inner()) = grant;
+    }
+
+    fn grant(&self) -> String {
+        self.grant.read().unwrap_or_else(|e| e.into_inner()).clone()
     }
 }
 
@@ -42,10 +67,11 @@ impl dioxusfun_server::livekit::VoiceTokenMinter for RendezvousMinter {
             struct Resp {
                 token: String,
             }
-            let res = reqwest::Client::new()
+            let res = self
+                .http
                 .post(&self.endpoint)
                 .json(&serde_json::json!({
-                    "grant": self.grant,
+                    "grant": self.grant(),
                     "room": req.room,
                     "identity": req.identity,
                     "name": req.name,
@@ -148,8 +174,8 @@ pub struct PublishOptions {
 
 pub async fn register(
     rendezvous_url: &str,
-    options: PublishOptions,
-    transport: Option<TransportAdvert>,
+    options: &PublishOptions,
+    transport: Option<&TransportAdvert>,
     identity: &crate::identity::Identity,
 ) -> Result<(PublishInfo, ControlStream), String> {
     let base = rendezvous_url.trim_end_matches('/').to_string();
@@ -186,7 +212,7 @@ pub async fn register(
         None => (None, None),
     };
 
-    let (transport_key, transport_signature, transport_addrs) = match &transport {
+    let (transport_key, transport_signature, transport_addrs) = match transport {
         Some(t) => {
             let pk = identity.pubkey.clone();
             let mut msg = Vec::new();
@@ -201,14 +227,14 @@ pub async fn register(
         }
         None => (None, None, Vec::new()),
     };
-    let pubkey = pubkey.or_else(|| transport.as_ref().map(|_| identity.pubkey.clone()));
+    let pubkey = pubkey.or_else(|| transport.map(|_| identity.pubkey.clone()));
 
     let hello = HostToRendezvous::Register {
-        name: options.publish_name,
+        name: options.publish_name.clone(),
         pubkey,
         signature,
         publish_public: options.publish_public,
-        description: options.description,
+        description: options.description.clone(),
         transport_key,
         transport_signature,
         transport_addrs,
@@ -262,17 +288,90 @@ pub struct ControlStream {
     >,
 }
 
-/// The rendezvous pings to notice a dead host, and a ping is only answered
-/// while the stream is polled; nothing else reads it once registered.
-pub fn keep_alive(mut stream: ControlStream) -> tokio::task::JoinHandle<()> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HostUpdate {
+    RendezvousLost { error: String },
+    RendezvousRestored { shortcode: String },
+}
+
+/// Everything a second registration needs; the frame is signed afresh each time.
+pub struct Registration {
+    pub url: String,
+    pub options: PublishOptions,
+    pub transport: Option<TransportAdvert>,
+    pub identity: crate::identity::Identity,
+}
+
+/// Answers the rendezvous's pings, and when the stream ends registers again
+/// with backoff: its memory is all that holds the listing, the pin and the voice grant.
+pub fn maintain(
+    mut stream: ControlStream,
+    registration: Registration,
+    minter: Option<Arc<RendezvousMinter>>,
+    updates: tokio::sync::mpsc::UnboundedSender<HostUpdate>,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        while let Some(Ok(frame)) = stream.ws.next().await {
-            if matches!(frame, WsMessage::Close(_)) {
-                break;
+        loop {
+            while let Some(Ok(frame)) = stream.ws.next().await {
+                if matches!(frame, WsMessage::Close(_)) {
+                    break;
+                }
             }
+            eprintln!("[rendezvous] control stream ended — registering again");
+            tracing::warn!("rendezvous control stream ended; registering again");
+            let mut attempt = 0u32;
+            stream = loop {
+                tokio::time::sleep(backoff(attempt)).await;
+                attempt += 1;
+                let again = tokio::time::timeout(
+                    REGISTER_TIMEOUT,
+                    register(
+                        &registration.url,
+                        &registration.options,
+                        registration.transport.as_ref(),
+                        &registration.identity,
+                    ),
+                )
+                .await
+                .unwrap_or_else(|_| Err("no answer from the rendezvous".to_string()));
+                match again {
+                    Ok((info, control)) => {
+                        if let (Some(m), Some(grant)) = (&minter, info.voice_token_grant) {
+                            m.set_grant(grant);
+                        }
+                        eprintln!("[rendezvous] registered again as {}", info.shortcode);
+                        tracing::info!(shortcode = %info.shortcode, attempt, "rendezvous registration restored");
+                        let _ = updates.send(HostUpdate::RendezvousRestored {
+                            shortcode: info.shortcode,
+                        });
+                        break control;
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, attempt, "rendezvous re-registration failed");
+                        let _ = updates.send(HostUpdate::RendezvousLost { error });
+                    }
+                }
+            };
         }
-        eprintln!("[rendezvous] control stream ended");
     })
+}
+
+/// 1 s, 2 s, 4 s … 32 s: quick after a blip, patient through a restart.
+pub fn backoff(attempt: u32) -> Duration {
+    Duration::from_secs(1u64 << attempt.min(5))
+}
+
+#[cfg(test)]
+mod backoff_tests {
+    use super::*;
+
+    #[test]
+    fn backoff_doubles_and_caps() {
+        assert_eq!(backoff(0), Duration::from_secs(1));
+        assert_eq!(backoff(3), Duration::from_secs(8));
+        assert_eq!(backoff(5), Duration::from_secs(32));
+        assert_eq!(backoff(40), Duration::from_secs(32));
+    }
 }
 
 #[cfg(test)]

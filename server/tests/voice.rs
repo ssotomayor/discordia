@@ -81,6 +81,72 @@ impl VoiceTokenMinter for RecordingMinter {
     }
 }
 
+/// Answers only once released, so a test can hold the token service hostage.
+struct StallingMinter {
+    released: tokio::sync::watch::Receiver<bool>,
+}
+
+impl VoiceTokenMinter for StallingMinter {
+    fn mint<'a>(&'a self, req: MintRequest) -> BoxFuture<'a, Result<String, String>> {
+        let mut released = self.released.clone();
+        Box::pin(async move {
+            released.wait_for(|v| *v).await.map_err(|e| e.to_string())?;
+            Ok(format!("token-for-{}-as-{}", req.room, req.identity))
+        })
+    }
+}
+
+fn stalling() -> (LiveKitConfig, tokio::sync::watch::Sender<bool>) {
+    let (tx, rx) = tokio::sync::watch::channel(false);
+    let cfg = LiveKitConfig {
+        minter: Some(Arc::new(StallingMinter { released: rx })),
+        ..local_signing()
+    };
+    (cfg, tx)
+}
+
+async fn text_channel_of(owner: &mut Bot) -> (Id, Id) {
+    owner
+        .send(&ClientMessage::CreateGuild {
+            name: "Voice Test".into(),
+            template: None,
+        })
+        .await
+        .unwrap();
+    loop {
+        if let ServerMessage::GuildJoined {
+            guild, channels, ..
+        } = next_timeout(owner).await
+        {
+            let text = channels
+                .iter()
+                .find(|c| c.kind == ChannelKind::Text)
+                .expect("guild has a text channel")
+                .id;
+            return (guild.id, text);
+        }
+    }
+}
+
+async fn create_voice_channel(owner: &mut Bot, guild_id: Id) -> Id {
+    owner
+        .send(&ClientMessage::CreateChannel {
+            guild_id,
+            name: "Voice".into(),
+            kind: ChannelKind::Voice,
+            topic: None,
+        })
+        .await
+        .unwrap();
+    loop {
+        if let ServerMessage::ChannelCreate(ch) = next_timeout(owner).await
+            && ch.kind == ChannelKind::Voice
+        {
+            return ch.id;
+        }
+    }
+}
+
 fn delegated(fail_when: impl Fn(&MintRequest) -> bool + Send + Sync + 'static) -> LiveKitConfig {
     LiveKitConfig {
         minter: Some(Arc::new(ScriptedMinter {
@@ -187,6 +253,67 @@ fn has_voice_token(frames: &[ServerMessage]) -> bool {
     frames
         .iter()
         .any(|m| matches!(m, ServerMessage::VoiceToken { .. }))
+}
+
+#[tokio::test]
+async fn a_stalled_token_service_does_not_stall_the_socket() {
+    let (cfg, _hold) = stalling();
+    let (url, _handle) = spawn_gateway(cfg).await;
+    let id = BotIdentity::generate();
+    let mut user = connect_user(&url, &id, "talker").await;
+    let (guild_id, text) = text_channel_of(&mut user).await;
+    let voice = create_voice_channel(&mut user, guild_id).await;
+
+    user.send(&ClientMessage::JoinVoice { channel_id: voice })
+        .await
+        .unwrap();
+    user.send(&ClientMessage::SendMessage {
+        channel_id: text,
+        content: "still here".into(),
+        image: None,
+        reply_to: None,
+    })
+    .await
+    .unwrap();
+
+    let mut seen = Vec::new();
+    loop {
+        let frame = next_timeout(&mut user).await;
+        if let ServerMessage::MessageCreate(m) = &frame
+            && m.content == "still here"
+        {
+            break;
+        }
+        seen.push(frame);
+    }
+    assert!(
+        !has_voice_token(&seen),
+        "a token appeared while the minter was held: {seen:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_token_minted_after_leaving_is_not_delivered() {
+    let (cfg, release) = stalling();
+    let (url, _handle) = spawn_gateway(cfg).await;
+    let id = BotIdentity::generate();
+    let mut user = connect_user(&url, &id, "leaver").await;
+    let (guild_id, _text) = text_channel_of(&mut user).await;
+    let voice = create_voice_channel(&mut user, guild_id).await;
+
+    user.send(&ClientMessage::JoinVoice { channel_id: voice })
+        .await
+        .unwrap();
+    user.send(&ClientMessage::LeaveVoice).await.unwrap();
+    let before = drain_quiet(&mut user).await;
+    assert!(!has_voice_token(&before), "{before:?}");
+
+    release.send(true).unwrap();
+    let after = drain_quiet(&mut user).await;
+    assert!(
+        !has_voice_token(&after),
+        "a join answered after the leave: {after:?}"
+    );
 }
 
 #[tokio::test]
