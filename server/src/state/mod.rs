@@ -416,16 +416,12 @@ impl AppState {
         if cooldown_secs == 0 {
             return true;
         }
-        let window = std::time::Duration::from_secs(cooldown_secs as u64);
-        let now = std::time::Instant::now();
         let guild = self.xp_cooldown.entry(guild_id).or_default();
-        match guild.get(pubkey) {
-            Some(last) if now.duration_since(*last) < window => false,
-            _ => {
-                guild.insert(pubkey.to_string(), now);
-                true
-            }
-        }
+        mark_if_off_cooldown(
+            &guild,
+            pubkey,
+            std::time::Duration::from_secs(cooldown_secs as u64),
+        )
     }
 
     pub fn leveling_of(&self, guild_id: Id) -> crate::protocol::Leveling {
@@ -2614,6 +2610,24 @@ pub(crate) fn random_invite_code() -> String {
 
 pub use crate::protocol::is_hex_color;
 
+/// The read guard ends before the write. `match map.get(k)` keeps its guard
+/// alive through every arm, and an insert there on the same key hangs the thread.
+fn mark_if_off_cooldown(
+    last_by_key: &DashMap<String, std::time::Instant>,
+    key: &str,
+    window: std::time::Duration,
+) -> bool {
+    let now = std::time::Instant::now();
+    let still_cooling = last_by_key
+        .get(key)
+        .is_some_and(|last| now.duration_since(*last) < window);
+    if still_cooling {
+        return false;
+    }
+    last_by_key.insert(key.to_string(), now);
+    true
+}
+
 fn serde_variant_name<T: serde::Serialize>(v: T) -> String {
     serde_json::to_string(&v)
         .unwrap_or_default()
@@ -2642,5 +2656,34 @@ fn guild_initials(name: &str) -> String {
         "?".into()
     } else {
         initials
+    }
+}
+
+#[cfg(test)]
+mod cooldown_tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// In a thread with a deadline: the regression this guards against is a
+    /// hang, and a hung test is a red build with no name on it.
+    #[test]
+    fn the_first_award_after_the_cooldown_does_not_deadlock() {
+        let (done, finished) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let map: DashMap<String, std::time::Instant> = DashMap::new();
+            let window = Duration::from_millis(50);
+            assert!(mark_if_off_cooldown(&map, "k", window), "first award");
+            assert!(
+                !mark_if_off_cooldown(&map, "k", window),
+                "inside the window"
+            );
+            std::thread::sleep(Duration::from_millis(80));
+            assert!(mark_if_off_cooldown(&map, "k", window), "window passed");
+            assert!(!mark_if_off_cooldown(&map, "k", window), "inside again");
+            done.send(()).unwrap();
+        });
+        finished
+            .recv_timeout(Duration::from_secs(5))
+            .expect("cooldown bookkeeping deadlocked");
     }
 }
