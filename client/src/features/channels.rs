@@ -426,7 +426,7 @@ pub fn ChannelsColumn() -> Element {
                                             occupants: occupants,
                                             self_pubkey: self_user.as_ref().map(|u| u.pubkey.clone()),
                                             on_join: move |_| {
-                                                tracing::debug!(channel_id = cid, "join voice clicked");
+                                                tracing::debug!(channel_id = %cid, "join voice clicked");
                                                 g_join.send(ClientMessage::JoinVoice { channel_id: cid });
                                             },
                                             on_leave: move |_| {
