@@ -842,6 +842,7 @@ fn Composer(channel_id: Id, composer_label: String, drag_over: Signal<bool>) -> 
         if content.is_empty() && image.is_none() {
             return;
         }
+        tracing::debug!(channel_id, chars = content.len(), "composer submit");
         let reply_to = replying_to().map(|r| r.message_id);
         let dm_peer = state
             .read()

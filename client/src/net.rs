@@ -459,6 +459,7 @@ where
             outbound = rx.recv() => {
                 let Some(msg) = outbound else { break };
                 let json = serde_json::to_string(&msg).map_err(|e| e.to_string())?;
+                tracing::debug!(op = op_of(&json), "→ gateway");
                 watch.begin(format!("send {}", op_of(&json)));
                 if let Err(e) = ws_tx.send(WsMessage::Text(json)).await {
                     return Err(format!("send: {e}"));
@@ -482,6 +483,7 @@ where
                     WsMessage::Close(_) => break,
                     _ => continue,
                 };
+                tracing::debug!(op = op_of(&text), "← gateway");
                 watch.begin(format!("recv {}", op_of(&text)));
                 let parsed: ServerMessage = match serde_json::from_str(&text) {
                     Ok(m) => m,
