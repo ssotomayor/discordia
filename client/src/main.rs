@@ -27,6 +27,7 @@ mod settings;
 mod state;
 mod sysaudio;
 mod sysvideo;
+mod tzgeo;
 mod update;
 mod version;
 #[cfg(target_os = "windows")]

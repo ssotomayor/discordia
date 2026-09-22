@@ -143,6 +143,7 @@ pub struct PublishOptions {
     pub publish_name: Option<String>,
     pub description: Option<String>,
     pub publish_public: bool,
+    pub location: Option<crate::protocol::rendezvous::GeoPoint>,
 }
 
 pub async fn register(
@@ -211,6 +212,7 @@ pub async fn register(
         transport_key,
         transport_signature,
         transport_addrs,
+        location: options.location,
     };
     let json = serde_json::to_string(&hello).map_err(|e| e.to_string())?;
     ws.send(WsMessage::Text(json))

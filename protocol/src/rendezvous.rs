@@ -27,10 +27,31 @@ pub enum HostToRendezvous {
         transport_signature: Option<String>,
         #[serde(default)]
         transport_addrs: Vec<String>,
+        #[serde(default)]
+        location: Option<GeoPoint>,
     },
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+/// Where a host says it is. Self-declared and unverified, like `bot` in
+/// `Identify`: nothing may geolocate an address to fill it in.
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq)]
+pub struct GeoPoint {
+    pub lat: f64,
+    pub lon: f64,
+}
+
+impl GeoPoint {
+    /// One decimal is a town, not a doorstep; anything finer is not kept.
+    pub fn coarse(self) -> Option<Self> {
+        let ok = |v: f64, max: f64| v.is_finite() && v.abs() <= max;
+        (ok(self.lat, 90.0) && ok(self.lon, 180.0)).then(|| Self {
+            lat: (self.lat * 10.0).round() / 10.0,
+            lon: (self.lon * 10.0).round() / 10.0,
+        })
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct DiscoverEntry {
     pub shortcode: String,
     pub name: Option<String>,
@@ -45,6 +66,8 @@ pub struct DiscoverEntry {
     pub transport_addrs: Vec<String>,
     #[serde(default)]
     pub relay_url: Option<String>,
+    #[serde(default)]
+    pub location: Option<GeoPoint>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -84,6 +107,7 @@ mod tests {
             transport_key: None,
             transport_signature: None,
             transport_addrs: Vec::new(),
+            location: None,
         })
         .unwrap();
         assert_eq!(json["op"], "register");
@@ -110,10 +134,55 @@ mod tests {
             transport_key: Some("ab".repeat(32)),
             transport_addrs: vec!["203.0.113.5:4433".into()],
             relay_url: None,
+            location: Some(GeoPoint {
+                lat: 17.3,
+                lon: -62.7,
+            }),
         };
         let back: DiscoverEntry =
             serde_json::from_str(&serde_json::to_string(&with).unwrap()).unwrap();
         assert_eq!(back, with);
+    }
+
+    #[test]
+    fn a_location_is_rounded_to_a_town_and_nonsense_is_dropped() {
+        let p = GeoPoint {
+            lat: 17.2971,
+            lon: -62.7237,
+        }
+        .coarse()
+        .unwrap();
+        assert_eq!(
+            p,
+            GeoPoint {
+                lat: 17.3,
+                lon: -62.7
+            }
+        );
+        assert!(
+            GeoPoint {
+                lat: 91.0,
+                lon: 0.0
+            }
+            .coarse()
+            .is_none()
+        );
+        assert!(
+            GeoPoint {
+                lat: 0.0,
+                lon: -180.5
+            }
+            .coarse()
+            .is_none()
+        );
+        assert!(
+            GeoPoint {
+                lat: f64::NAN,
+                lon: 0.0
+            }
+            .coarse()
+            .is_none()
+        );
     }
 
     #[test]

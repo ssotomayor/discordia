@@ -50,6 +50,7 @@ that direction says a file is safe to open when it is not.
 | DMs end to end | `client/src/nostr/service.rs` | `spawn_nostr`; `conversation_id` is the Uuid derivation |
 | Voice, capture, mixing | `client/src/features/voice.rs` | the largest file in the tree — grep `ScreenAudioRoom`, `ScreenVideoRoom`, `forward_mic` |
 | The first screen | `client/src/features/home.rs` | `HomeView`; the connect form is `connect::ConnectForm` |
+| Public servers on a globe | `client/src/features/globe.rs` | `Globe` — a canvas driven by `assets/globe.js` (dots, drag, pins, the land mask); `connect::BrowseTab` feeds it `/discover`, and the Create tab reuses it in `pick` mode to place a host's own pin, pre-placed by `tzgeo::guess` from the machine's timezone |
 | Experience, and the two numbers it makes | `server/src/state/mod.rs` | `award_xp` — amount, cooldown, channels and rank names all come from the guild's `Leveling`. The cross-server sum is the client's: `client/src/xp_ledger.rs` adds it up, `nostr/xp.rs` signs it, `features/leveling.rs` joins the two |
 | What a guild calls its ranks, and who may say | `client/src/features/guild_leveling.rs` | `LevelingEditor` — the draft is the settings dialog's, so it saves with everything else |
 | What someone is playing, and who says so | `client/src/presence/mod.rs` | `PresenceService` merges the two producers; `detect.rs` walks the process table, `ipc.rs` speaks Discord's local RPC frames |

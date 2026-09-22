@@ -2571,6 +2571,7 @@ dependencies = [
  "hex",
  "hkdf",
  "hmac",
+ "iana-time-zone",
  "igd-next",
  "image",
  "iroh",

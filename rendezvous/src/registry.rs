@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 
 use dashmap::DashMap;
-use dioxusfun_protocol::rendezvous::DiscoverEntry;
+use dioxusfun_protocol::rendezvous::{DiscoverEntry, GeoPoint};
 use serde::{Deserialize, Serialize};
 
 use crate::limits::Limits;
@@ -15,6 +15,7 @@ pub struct HostEntry {
     pub public: bool,
     pub transport_key: Option<String>,
     pub transport_addrs: Vec<String>,
+    pub location: Option<GeoPoint>,
     pub last_seen_ms: AtomicI64,
 }
 
@@ -294,6 +295,7 @@ fn entry_for(shortcode: &str, host: &HostEntry) -> DiscoverEntry {
         transport_key: host.transport_key.clone(),
         transport_addrs: host.transport_addrs.clone(),
         relay_url: None,
+        location: host.location,
     }
 }
 

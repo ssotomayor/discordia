@@ -74,6 +74,7 @@ pub async fn handle_host_control(
                 transport_key,
                 transport_signature,
                 transport_addrs,
+                location,
             }) => (
                 name,
                 pubkey,
@@ -83,6 +84,7 @@ pub async fn handle_host_control(
                 transport_key,
                 transport_signature,
                 transport_addrs,
+                location,
             ),
             Ok(HostToRendezvous::ReleaseName {
                 name,
@@ -142,6 +144,7 @@ pub async fn handle_host_control(
         transport_key,
         transport_signature,
         transport_addrs,
+        location,
     ) = register;
 
     // Only the name and the transport key are signed, so where the entry points
@@ -153,6 +156,7 @@ pub async fn handle_host_control(
     let description = description
         .map(|d| dioxusfun_protocol::sanitize_line(&d, MAX_DESCRIPTION_CHARS))
         .filter(|d| !d.is_empty());
+    let location = location.and_then(|p| p.coarse());
 
     let transport = match (&transport_key, &pubkey, &transport_signature) {
         (Some(key), Some(pk), Some(sig)) => match verify::verify_ownership(pk, sig, &nonce, key) {
@@ -231,6 +235,7 @@ pub async fn handle_host_control(
         public: publish_public,
         transport_key: transport.as_ref().map(|(k, _)| k.clone()),
         transport_addrs: transport.map(|(_, a)| a).unwrap_or_default(),
+        location,
         last_seen_ms: Default::default(),
     };
     let Some(entry) = registry.try_claim(&shortcode, host_entry) else {

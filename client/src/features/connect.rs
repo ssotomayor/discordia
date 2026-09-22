@@ -1,7 +1,8 @@
 use dioxus::prelude::*;
 
+use crate::features::globe::{Globe, GlobePin, describe};
 use crate::identity::Identity;
-use crate::protocol::rendezvous::DiscoverEntry;
+use crate::protocol::rendezvous::{DiscoverEntry, GeoPoint};
 use crate::session::{self, SavedSession};
 use crate::state::{SessionMode, SessionParams};
 
@@ -60,6 +61,8 @@ pub fn ConnectForm(
     let mut publish_name = use_signal(String::new);
     let mut description = use_signal(String::new);
     let mut publish_public = use_signal(|| true);
+    let guessed = use_hook(crate::tzgeo::guess);
+    let mut location = use_signal(|| guessed);
 
     let identity_for_rows = identity.clone();
     let identity_for_submit = identity.clone();
@@ -100,6 +103,8 @@ pub fn ConnectForm(
                         publish_name: if pn.is_empty() { None } else { Some(pn) },
                         description: if desc.is_empty() { None } else { Some(desc) },
                         publish_public: publish_to_rendezvous() && publish_public(),
+                        location: location()
+                            .filter(|_| publish_to_rendezvous() && publish_public()),
                     },
                     username: name,
                     identity: identity_for_submit.clone(),
@@ -318,6 +323,44 @@ pub fn ConnectForm(
                                             oninput: move |e| publish_public.set(e.value() == "true"),
                                         }
                                         "List it publicly, so strangers can find it by name"
+                                    }
+                                    if publish_public() {
+                                        div { class: "space-y-1",
+                                            label { class: LABEL, "Put it on the globe (optional)" }
+                                            div { class: "rounded-[10px] bg-[var(--panel2)] border border-[var(--edge-strong)] overflow-hidden",
+                                                Globe {
+                                                    pins: Vec::<GlobePin>::new(),
+                                                    selected: None::<String>,
+                                                    pick: true,
+                                                    place: location(),
+                                                    height: 190,
+                                                    on_pick: move |_| {},
+                                                    on_place: move |p: GeoPoint| location.set(Some(p)),
+                                                }
+                                            }
+                                            div { class: "flex items-center gap-2 text-[10px] text-[var(--text-dim)]",
+                                                match location() {
+                                                    Some(p) => rsx! {
+                                                        span { class: "flex-1",
+                                                            if Some(p) == guessed {
+                                                                "Guessed from this machine's timezone: {describe(p)}. Click the globe to move it. Everyone browsing sees this spot."
+                                                            } else {
+                                                                "Pinned at {describe(p)}. Everyone browsing sees this spot."
+                                                            }
+                                                        }
+                                                        button {
+                                                            r#type: "button",
+                                                            class: "shrink-0 text-[var(--accent)] hover:text-[var(--accent-strong)] transition-colors",
+                                                            onclick: move |_| location.set(None),
+                                                            "Remove"
+                                                        }
+                                                    },
+                                                    None => rsx! {
+                                                        span { class: "flex-1", "Click roughly where it lives. Kept to about a town, and shown to anyone browsing." }
+                                                    },
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -600,6 +643,12 @@ fn initials(name: &str) -> String {
         .to_uppercase()
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BrowseView {
+    Globe,
+    List,
+}
+
 #[component]
 fn BrowseTab(
     rendezvous_url: String,
@@ -608,6 +657,7 @@ fn BrowseTab(
     picked_shortcode: String,
 ) -> Element {
     let mut refresh_tick = use_signal(|| 0u32);
+    let mut view = use_signal(|| BrowseView::Globe);
     let url_for_fetch = rendezvous_url.clone();
     let entries = use_resource(move || {
         let _ = refresh_tick();
@@ -625,10 +675,61 @@ fn BrowseTab(
         }
     });
 
+    let list: Vec<DiscoverEntry> = match &*entries.read_unchecked() {
+        Some(Ok(l)) => l.clone(),
+        _ => Vec::new(),
+    };
+    let pins: Vec<GlobePin> = list
+        .iter()
+        .filter_map(|e| {
+            let p = e.location?;
+            Some(GlobePin {
+                code: e.shortcode.clone(),
+                label: e.name.clone().unwrap_or_else(|| e.shortcode.clone()),
+                lat: p.lat,
+                lon: p.lon,
+                fresh: e.idle_secs < HOST_STALE_AFTER_SECS,
+            })
+        })
+        .collect();
+    let unplaced = list.len() - pins.len();
+    let picked = list
+        .iter()
+        .find(|e| e.shortcode == picked_shortcode)
+        .cloned();
+    let pin_list = list.clone();
+
+    let status = match &*entries.read_unchecked() {
+        None => Some(rsx! {
+            div { class: "text-[12.5px] text-[var(--text-dim)] px-6 py-5 text-center border border-[var(--edge-strong)] rounded-xl", "Loading\u{2026}" }
+        }),
+        Some(Err(e)) => Some(rsx! {
+            div { class: "text-[12.5px] px-6 py-5 space-y-1.5 border border-[var(--edge-strong)] rounded-xl",
+                div { class: "font-semibold text-[var(--danger)]", "Couldn't reach the server directory." }
+                div { class: "text-[var(--text-dim)] leading-relaxed text-pretty",
+                    "A code from a friend still works, or create your own server. ({e})"
+                }
+            }
+        }),
+        Some(Ok(l)) if l.is_empty() => Some(rsx! {
+            div { class: "px-6 py-5 text-center bg-[var(--panel)] border border-dashed border-[var(--edge-strong)] rounded-xl",
+                div { class: "text-sm font-semibold text-[var(--text-muted)]", "Nothing listed here yet" }
+                div { class: "mt-1.5 mx-auto max-w-[380px] text-[12.5px] text-[var(--text-dim)] leading-relaxed text-pretty",
+                    "A code from a friend works without one \u{2014} or make your own from the Create tab."
+                }
+            }
+        }),
+        Some(Ok(_)) => None,
+    };
+
     rsx! {
         div { class: "space-y-2",
-            div { class: "flex items-baseline gap-2",
+            div { class: "flex items-center gap-2",
                 span { class: "{LABEL} flex-1", "Public servers" }
+                div { class: "flex gap-0.5 p-1 rounded-md bg-[var(--panel2)] border border-[var(--edge)]",
+                    ViewButton { active: view() == BrowseView::Globe, label: "Find a server", onclick: move |_| view.set(BrowseView::Globe) }
+                    ViewButton { active: view() == BrowseView::List, label: "List", onclick: move |_| view.set(BrowseView::List) }
+                }
                 button {
                     r#type: "button",
                     class: "text-[12.5px] font-medium text-[var(--accent)] hover:text-[var(--accent-strong)] transition-colors",
@@ -637,95 +738,154 @@ fn BrowseTab(
                 }
             }
 
-            div { class: "max-h-64 overflow-y-auto space-y-1.5 pr-0.5",
-                match &*entries.read_unchecked() {
-                    None => rsx! {
-                        div { class: "text-[12.5px] text-[var(--text-dim)] px-6 py-5 text-center border border-[var(--edge-strong)] rounded-xl", "Loading\u{2026}" }
-                    },
-                    Some(Err(e)) => rsx! {
-                        div { class: "text-[12.5px] px-6 py-5 space-y-1.5 border border-[var(--edge-strong)] rounded-xl",
-                            div { class: "font-semibold text-[var(--danger)]", "Couldn't reach the server directory." }
-                            div { class: "text-[var(--text-dim)] leading-relaxed text-pretty",
-                                "A code from a friend still works, or create your own server. ({e})"
-                            }
-                        }
-                    },
-                    Some(Ok(list)) if list.is_empty() => rsx! {
-                        div { class: "px-6 py-5 text-center bg-[var(--panel)] border border-dashed border-[var(--edge-strong)] rounded-xl",
-                            div { class: "text-sm font-semibold text-[var(--text-muted)]", "Nothing listed here yet" }
-                            div { class: "mt-1.5 mx-auto max-w-[380px] text-[12.5px] text-[var(--text-dim)] leading-relaxed text-pretty",
-                                "A code from a friend works without one \u{2014} or make your own from the Create tab."
-                            }
-                        }
-                    },
-                    Some(Ok(list)) => rsx! {
-                        for entry in list.iter().cloned() {
-                            {
-                                let sc = entry.shortcode.clone();
-                                let selected = picked_shortcode == sc;
-                                let title = entry.name.clone().unwrap_or_else(|| sc.clone());
-                                let named = entry.name.is_some();
-                                let (fresh_label, fresh_ok) = freshness(entry.idle_secs);
-                                // Every host is reached over encrypted QUIC; what
-                                // differs is whether it has an address of its own or
-                                // only the relay to be introduced through.
-                                let direct = entry
-                                    .transport_addrs
-                                    .iter()
-                                    .any(|a| a.parse::<std::net::SocketAddr>().is_ok());
-                                let stripe = if direct { "#8fb0ff" } else { "var(--violet, #b98cff)" };
-                                let row_cls = if selected {
-                                    "border-[var(--accent)] bg-[var(--accent-soft)]"
-                                } else {
-                                    "border-[var(--border)] hover:border-[var(--border-strong)]"
-                                };
-                                let mark = initials(&title);
-                                let for_pick = entry.clone();
-                                let for_enter = entry.clone();
-                                rsx! {
-                                    div {
-                                        key: "{sc}",
-                                        class: "flex items-center gap-3 pl-2.5 pr-2.5 py-2 rounded-lg border transition-colors {row_cls}",
-                                        style: "border-left: 3px solid {stripe};",
-                                        button {
-                                            r#type: "button",
-                                            class: "flex-1 min-w-0 flex items-center gap-3 text-left",
-                                            onclick: move |_| on_pick.call(for_pick.clone()),
-                                            span { class: "w-8 h-8 shrink-0 rounded-lg border border-[var(--border)] flex items-center justify-center text-[11px] text-[var(--text-muted)]",
-                                                "{mark}"
-                                            }
-                                            span { class: "flex-1 min-w-0",
-                                                span { class: "flex items-baseline gap-1.5",
-                                                    span { class: "truncate text-[13px] text-[var(--text)]", "{title}" }
-                                                    if named {
-                                                        span {
-                                                            class: "shrink-0 text-[9px] text-[var(--text-dim)]",
-                                                            title: "A reserved name, proved with the host's key",
-                                                            "\u{1f511}"
-                                                        }
-                                                    }
-                                                }
-                                                span { class: "block truncate text-[9px] font-mono uppercase tracking-wider text-[var(--text-dim)]",
-                                                    if direct { "{fresh_label} \u{b7} direct" } else { "{fresh_label} \u{b7} relayed" }
-                                                }
-                                                if let Some(d) = entry.description.clone() {
-                                                    span { class: "block truncate text-[11px] text-[var(--text-muted)]", "{d}" }
-                                                }
-                                            }
-                                        }
-                                        button {
-                                            r#type: "button",
-                                            class: "shrink-0 px-3 py-1 rounded-md border border-[var(--border)] text-[11px] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors",
-                                            style: if fresh_ok { "" } else { "opacity: .6;" },
-                                            onclick: move |_| on_enter.call(for_enter.clone()),
-                                            "Enter"
-                                        }
+            match view() {
+                BrowseView::Globe => rsx! {
+                    div { class: "space-y-1.5",
+                        div { class: "rounded-xl bg-[var(--panel)] border border-[var(--edge-strong)] overflow-hidden",
+                            Globe {
+                                pins,
+                                selected: (!picked_shortcode.is_empty()).then(|| picked_shortcode.clone()),
+                                pick: false,
+                                place: None::<GeoPoint>,
+                                height: 260,
+                                on_pick: move |code: String| {
+                                    if let Some(e) = pin_list.iter().find(|e| e.shortcode == code) {
+                                        on_pick.call(e.clone());
                                     }
+                                },
+                                on_place: move |_| {},
+                            }
+                        }
+                        if let Some(st) = status {
+                            {st}
+                        } else if let Some(entry) = picked {
+                            HostRow { entry, selected: true, on_pick, on_enter }
+                        } else {
+                            div { class: "text-[11px] text-[var(--text-dim)] text-center",
+                                "Drag to spin. Click a pin to pick that server."
+                            }
+                        }
+                        if unplaced > 0 {
+                            div { class: "text-[11px] text-[var(--text-dim)] text-center",
+                                if unplaced == 1 { "1 server hasn't said where it is" } else { "{unplaced} servers haven't said where they are" }
+                                " \u{b7} "
+                                button {
+                                    r#type: "button",
+                                    class: "text-[var(--accent)] hover:text-[var(--accent-strong)] transition-colors",
+                                    onclick: move |_| view.set(BrowseView::List),
+                                    "see the list"
                                 }
                             }
                         }
                     }
+                },
+                BrowseView::List => rsx! {
+                    div { class: "max-h-64 overflow-y-auto space-y-1.5 pr-0.5",
+                        if let Some(st) = status {
+                            {st}
+                        } else {
+                            for entry in list.iter().cloned() {
+                                HostRow {
+                                    key: "{entry.shortcode}",
+                                    selected: picked_shortcode == entry.shortcode,
+                                    entry,
+                                    on_pick,
+                                    on_enter,
+                                }
+                            }
+                        }
+                    }
+                },
+            }
+        }
+    }
+}
+
+#[component]
+fn ViewButton(active: bool, label: &'static str, onclick: EventHandler<()>) -> Element {
+    let cls = if active {
+        "bg-[var(--panel)] text-[var(--text)] border-[var(--edge-strong)]"
+    } else {
+        "text-[var(--text-dim)] border-transparent hover:text-[var(--text)]"
+    };
+    rsx! {
+        button {
+            r#type: "button",
+            class: "px-2 py-0.5 rounded text-[10.5px] border transition-colors {cls}",
+            onclick: move |_| onclick.call(()),
+            "{label}"
+        }
+    }
+}
+
+#[component]
+fn HostRow(
+    entry: DiscoverEntry,
+    selected: bool,
+    on_pick: EventHandler<DiscoverEntry>,
+    on_enter: EventHandler<DiscoverEntry>,
+) -> Element {
+    let sc = entry.shortcode.clone();
+    let title = entry.name.clone().unwrap_or_else(|| sc.clone());
+    let named = entry.name.is_some();
+    let (fresh_label, fresh_ok) = freshness(entry.idle_secs);
+    // Every host is reached over encrypted QUIC; what differs is whether it
+    // has an address of its own or only the relay to be introduced through.
+    let direct = entry
+        .transport_addrs
+        .iter()
+        .any(|a| a.parse::<std::net::SocketAddr>().is_ok());
+    let stripe = if direct {
+        "#8fb0ff"
+    } else {
+        "var(--violet, #b98cff)"
+    };
+    let row_cls = if selected {
+        "border-[var(--accent)] bg-[var(--accent-soft)]"
+    } else {
+        "border-[var(--border)] hover:border-[var(--border-strong)]"
+    };
+    let mark = initials(&title);
+    let where_ = entry.location.map(describe);
+    let for_pick = entry.clone();
+    let for_enter = entry.clone();
+    rsx! {
+        div {
+            class: "flex items-center gap-3 pl-2.5 pr-2.5 py-2 rounded-lg border transition-colors {row_cls}",
+            style: "border-left: 3px solid {stripe};",
+            button {
+                r#type: "button",
+                class: "flex-1 min-w-0 flex items-center gap-3 text-left",
+                onclick: move |_| on_pick.call(for_pick.clone()),
+                span { class: "w-8 h-8 shrink-0 rounded-lg border border-[var(--border)] flex items-center justify-center text-[11px] text-[var(--text-muted)]",
+                    "{mark}"
                 }
+                span { class: "flex-1 min-w-0",
+                    span { class: "flex items-baseline gap-1.5",
+                        span { class: "truncate text-[13px] text-[var(--text)]", "{title}" }
+                        if named {
+                            span {
+                                class: "shrink-0 text-[9px] text-[var(--text-dim)]",
+                                title: "A reserved name, proved with the host's key",
+                                "\u{1f511}"
+                            }
+                        }
+                    }
+                    span { class: "block truncate text-[9px] font-mono uppercase tracking-wider text-[var(--text-dim)]",
+                        if direct { "{fresh_label} \u{b7} direct" } else { "{fresh_label} \u{b7} relayed" }
+                        if let Some(w) = where_ { " \u{b7} {w}" }
+                    }
+                    if let Some(d) = entry.description.clone() {
+                        span { class: "block truncate text-[11px] text-[var(--text-muted)]", "{d}" }
+                    }
+                }
+            }
+            button {
+                r#type: "button",
+                class: "shrink-0 px-3 py-1 rounded-md border border-[var(--border)] text-[11px] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors",
+                style: if fresh_ok { "" } else { "opacity: .6;" },
+                onclick: move |_| on_enter.call(for_enter.clone()),
+                "Enter"
             }
         }
     }

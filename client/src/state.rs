@@ -9,7 +9,7 @@ use crate::protocol::{
     Profile, Role, User, VoiceState,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SessionMode {
     Remote {
@@ -21,6 +21,8 @@ pub enum SessionMode {
         publish_name: Option<String>,
         description: Option<String>,
         publish_public: bool,
+        #[serde(default)]
+        location: Option<crate::protocol::rendezvous::GeoPoint>,
     },
     ByCode {
         rendezvous_url: String,
@@ -28,7 +30,7 @@ pub enum SessionMode {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SessionParams {
     pub mode: SessionMode,
     pub username: String,

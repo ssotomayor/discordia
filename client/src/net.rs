@@ -157,11 +157,13 @@ async fn resolve_session(
             publish_name,
             description,
             publish_public,
+            location,
         } => {
             let publish = crate::rendezvous::PublishOptions {
                 publish_name,
                 description,
                 publish_public,
+                location,
             };
             state.write().rendezvous_url = rendezvous_url.clone();
             let handle = start_self_host(allow_lan, rendezvous_url, publish, identity).await?;
