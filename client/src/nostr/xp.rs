@@ -38,6 +38,63 @@ pub struct GlobalXp {
     pub servers: u32,
 }
 
+/// At most one ledger event per this span. The event is replaceable, so a
+/// burst of points needs only its last total out, not one event per point (#198).
+pub const PUBLISH_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Paces the ledger's publishes: the first goes at once, later ones wait for
+/// the cooldown and only the latest waiting total is sent when it ends.
+#[derive(Debug, Default)]
+pub struct Publisher {
+    published: Option<GlobalXp>,
+    last_at: Option<std::time::Instant>,
+    pending: Option<GlobalXp>,
+}
+
+impl Publisher {
+    /// `Some` is a total to sign and send now.
+    pub fn offer(&mut self, total: GlobalXp, now: std::time::Instant) -> Option<GlobalXp> {
+        if self.published == Some(total) {
+            self.pending = None;
+            return None;
+        }
+        if !self.cooled(now) {
+            self.pending = Some(total);
+            return None;
+        }
+        self.mark_sent(total, now);
+        Some(total)
+    }
+
+    /// When the waiting total may go, if one is waiting.
+    pub fn due_at(&self) -> Option<std::time::Instant> {
+        self.pending?;
+        Some(self.last_at? + PUBLISH_COOLDOWN)
+    }
+
+    /// The waiting total, once its time has come.
+    pub fn take_due(&mut self, now: std::time::Instant) -> Option<GlobalXp> {
+        let due = self.due_at()?;
+        if now < due {
+            return None;
+        }
+        let total = self.pending.take()?;
+        self.mark_sent(total, now);
+        Some(total)
+    }
+
+    fn cooled(&self, now: std::time::Instant) -> bool {
+        self.last_at
+            .is_none_or(|t| now.duration_since(t) >= PUBLISH_COOLDOWN)
+    }
+
+    fn mark_sent(&mut self, total: GlobalXp, now: std::time::Instant) {
+        self.published = Some(total);
+        self.last_at = Some(now);
+        self.pending = None;
+    }
+}
+
 pub fn xp_event(secret: &SecretKey, xp: &GlobalXp, now: i64) -> Event {
     let content = serde_json::to_string(&GlobalXp {
         xp: xp.xp.min(MAX_XP),
@@ -131,5 +188,54 @@ mod tests {
             "{}".into(),
         );
         assert_eq!(parse_xp(&e), Some(GlobalXp::default()));
+    }
+}
+
+#[cfg(test)]
+mod publisher_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    fn xp(n: u64) -> GlobalXp {
+        GlobalXp { xp: n, servers: 1 }
+    }
+
+    #[test]
+    fn a_burst_sends_the_first_total_now_and_the_last_one_later() {
+        let t0 = Instant::now();
+        let mut p = Publisher::default();
+        assert_eq!(p.offer(xp(10), t0), Some(xp(10)));
+        assert_eq!(p.offer(xp(11), t0 + Duration::from_secs(1)), None);
+        assert_eq!(p.offer(xp(12), t0 + Duration::from_secs(2)), None);
+        assert_eq!(p.due_at(), Some(t0 + PUBLISH_COOLDOWN));
+        assert_eq!(p.take_due(t0 + Duration::from_secs(10)), None);
+        assert_eq!(p.take_due(t0 + PUBLISH_COOLDOWN), Some(xp(12)));
+        assert_eq!(p.due_at(), None, "nothing left waiting");
+    }
+
+    #[test]
+    fn an_unchanged_total_is_never_resent() {
+        let t0 = Instant::now();
+        let mut p = Publisher::default();
+        assert_eq!(p.offer(xp(10), t0), Some(xp(10)));
+        assert_eq!(p.offer(xp(11), t0 + Duration::from_secs(1)), None);
+        assert_eq!(p.offer(xp(10), t0 + Duration::from_secs(2)), None);
+        assert_eq!(
+            p.due_at(),
+            None,
+            "back to the published total: nothing to send"
+        );
+        assert_eq!(p.offer(xp(10), t0 + PUBLISH_COOLDOWN * 2), None);
+    }
+
+    #[test]
+    fn after_the_cooldown_a_new_total_goes_at_once() {
+        let t0 = Instant::now();
+        let mut p = Publisher::default();
+        assert_eq!(p.offer(xp(10), t0), Some(xp(10)));
+        let later = t0 + PUBLISH_COOLDOWN + Duration::from_secs(1);
+        assert_eq!(p.offer(xp(20), later), Some(xp(20)));
+        assert_eq!(p.offer(xp(21), later + Duration::from_secs(1)), None);
+        assert_eq!(p.due_at(), Some(later + PUBLISH_COOLDOWN));
     }
 }

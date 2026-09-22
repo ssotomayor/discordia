@@ -150,8 +150,7 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
         let mut named: Vec<String> = Vec::new();
         request_names(&pool, &state, &our_pubkey, &mut named);
 
-        // What the last publish said, so an unchanged total is not re-signed.
-        let mut published_xp: Option<xp::GlobalXp> = None;
+        let mut xp_publisher = xp::Publisher::default();
 
         // Relays that have said they finished replaying since they connected.
         // A message arriving once every connected relay has is one that was
@@ -192,14 +191,22 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
                         request_names(&pool, &state, &our_pubkey, &mut named);
                     }
                     Some(NostrCmd::PublishXp(total)) => {
-                        if published_xp != Some(total) {
-                            published_xp = Some(total);
+                        if state.read().global_xp.get(&our_pubkey) != Some(&total) {
                             state.write().global_xp.insert(our_pubkey.clone(), total);
+                        }
+                        if let Some(total) = xp_publisher.offer(total, std::time::Instant::now()) {
                             pool.publish(xp::xp_event(&secret, &total, now()));
                         }
                     }
                     None => break,
                 },
+                _ = tokio::time::sleep_until(
+                    tokio::time::Instant::from_std(xp_publisher.due_at().unwrap_or_else(std::time::Instant::now))
+                ), if xp_publisher.due_at().is_some() => {
+                    if let Some(total) = xp_publisher.take_due(std::time::Instant::now()) {
+                        pool.publish(xp::xp_event(&secret, &total, now()));
+                    }
+                }
                 ev = events.recv() => match ev {
                     Some(RelayEvent::Event(event)) => match event.kind {
                         nip02::KIND_CONTACTS if event.pubkey == our_pubkey => {
