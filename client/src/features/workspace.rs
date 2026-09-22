@@ -866,12 +866,24 @@ fn HostBanner() -> Element {
     let listed_public = info.listed_public;
     let has_shortcode = info.shortcode.is_some();
     let reachability = info.reachability.clone();
-    let (voice_label, voice_color) = if info.livekit_url.is_empty() {
-        ("voice unavailable", "text-[var(--warn)]")
+    let (voice_label, voice_color, voice_title) = if info.livekit_url.is_empty() {
+        (
+            "voice unavailable",
+            "text-[var(--warn)]",
+            "No SFU: the bundled one did not start and the rendezvous offers none.",
+        )
     } else if info.voice_bundled {
-        ("voice ready", "text-[var(--success)]")
+        (
+            "voice on this machine",
+            "text-[var(--success)]",
+            "Calls run through the SFU on this machine, so this machine carries their bandwidth.",
+        )
     } else {
-        ("voice via rendezvous", "text-[var(--success)]")
+        (
+            "voice via rendezvous",
+            "text-[var(--success)]",
+            "Friends cannot reach this machine's voice ports, so calls run through the rendezvous's SFU. Let the router map the ports to carry them yourself.",
+        )
     };
 
     rsx! {
@@ -939,7 +951,7 @@ fn HostBanner() -> Element {
             }
             span { class: "flex-1" }
             Reachability { reachability }
-            span { class: "{voice_color}", "● {voice_label}" }
+            span { class: "{voice_color}", title: "{voice_title}", "● {voice_label}" }
         }
     }
 }
