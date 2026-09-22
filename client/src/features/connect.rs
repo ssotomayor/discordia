@@ -132,7 +132,7 @@ pub fn ConnectForm(
     };
 
     rsx! {
-        div { class: "h-full w-full flex flex-col min-w-0",
+        div { class: "flex-1 min-h-0 w-full flex flex-col min-w-0",
             div { class: "flex-1 flex flex-col overflow-hidden min-w-0",
                 form {
                     class: "flex-1 overflow-auto px-7 pt-4 pb-5 flex flex-col items-stretch dxf-no-drag",
