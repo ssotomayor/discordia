@@ -74,6 +74,16 @@ pub struct ClientSettings {
     pub sfx_volume: u8,
     #[serde(default = "default_soundboard_volume")]
     pub soundboard_volume: u8,
+    /// Person pubkey → playback percent, and who is muted for us. A key is the
+    /// account, so what we chose for someone still applies next launch.
+    #[serde(default)]
+    pub user_volumes: Vec<(String, u32)>,
+    #[serde(default)]
+    pub user_muted: Vec<String>,
+    #[serde(default)]
+    pub stream_volumes: Vec<(String, u32)>,
+    #[serde(default)]
+    pub stream_muted: Vec<String>,
     #[serde(default)]
     pub camera_device_id: Option<String>,
     #[serde(default)]
@@ -192,6 +202,10 @@ impl Default for ClientSettings {
             screenshare_audio: default_screenshare_audio(),
             sfx_volume: default_sfx_volume(),
             soundboard_volume: default_soundboard_volume(),
+            user_volumes: Vec::new(),
+            user_muted: Vec::new(),
+            stream_volumes: Vec::new(),
+            stream_muted: Vec::new(),
             camera_device_id: None,
             camera_device_label: None,
             keep_my_accent: false,
@@ -301,13 +315,41 @@ fn settings_path() -> std::path::PathBuf {
 
 pub fn load_or_default() -> ClientSettings {
     let path = settings_path();
-    if let Ok(content) = std::fs::read_to_string(&path)
-        && let Ok(stored) = serde_json::from_str::<Stored>(&content)
-        && stored.version == FILE_VERSION
-    {
-        return stored.settings;
+    match std::fs::read_to_string(&path) {
+        Ok(content) => parse(&content).unwrap_or_else(|| {
+            tracing::warn!(path = %path.display(), "settings file unreadable; starting from defaults");
+            ClientSettings::default()
+        }),
+        Err(_) => ClientSettings::default(),
     }
-    ClientSettings::default()
+}
+
+/// One field that no longer parses costs that field, not the file: a whole-file
+/// fallback reset every audio setting, and the next save wrote the defaults over them.
+fn parse(content: &str) -> Option<ClientSettings> {
+    use serde_json::Value;
+    let stored: Value = serde_json::from_str(content).ok()?;
+    if stored.get("version").and_then(Value::as_u64) != Some(u64::from(FILE_VERSION)) {
+        return None;
+    }
+    let saved = stored.get("settings")?.as_object()?;
+    if let Ok(settings) = serde_json::from_value::<ClientSettings>(Value::Object(saved.clone())) {
+        return Some(settings);
+    }
+    let mut merged = serde_json::to_value(ClientSettings::default())
+        .ok()?
+        .as_object()?
+        .clone();
+    for (field, value) in saved {
+        let mut trial = merged.clone();
+        trial.insert(field.clone(), value.clone());
+        if serde_json::from_value::<ClientSettings>(Value::Object(trial.clone())).is_ok() {
+            merged = trial;
+        } else {
+            tracing::warn!(%field, "a saved setting could not be read; it is back to its default");
+        }
+    }
+    serde_json::from_value(Value::Object(merged)).ok()
 }
 
 pub fn save(settings: &ClientSettings) {
@@ -319,7 +361,49 @@ pub fn save(settings: &ClientSettings) {
         version: FILE_VERSION,
         settings: settings.clone(),
     };
-    if let Ok(content) = serde_json::to_string_pretty(&stored) {
-        let _ = std::fs::write(&path, content);
+    match serde_json::to_string_pretty(&stored) {
+        Ok(content) => {
+            if let Err(e) = std::fs::write(&path, content) {
+                tracing::warn!(path = %path.display(), error = %e, "could not save settings");
+            }
+        }
+        Err(e) => tracing::warn!(error = %e, "could not encode settings"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn file(settings: serde_json::Value) -> String {
+        serde_json::json!({ "version": FILE_VERSION, "settings": settings }).to_string()
+    }
+
+    #[test]
+    fn one_unreadable_field_does_not_cost_the_rest() {
+        let mut good = serde_json::to_value(ClientSettings::default()).unwrap();
+        good["noise_cancellation"] = true.into();
+        good["mic_volume"] = 150.into();
+        good["user_volumes"] = serde_json::json!([["abc", 40]]);
+        // What serde_json writes for a NaN, and cannot read back as an f64.
+        good["layout_free"] = serde_json::json!([["chat", [0.0, null, 1.0, 1.0]]]);
+        let loaded = parse(&file(good)).expect("salvaged");
+        assert!(loaded.noise_cancellation);
+        assert_eq!(loaded.mic_volume, 150);
+        assert_eq!(loaded.user_volumes, vec![("abc".to_string(), 40)]);
+        assert!(
+            loaded.layout_free.is_empty(),
+            "only the broken field is dropped"
+        );
+    }
+
+    #[test]
+    fn a_file_written_before_a_field_existed_still_loads() {
+        let mut old = serde_json::to_value(ClientSettings::default()).unwrap();
+        old.as_object_mut().unwrap().remove("user_volumes");
+        old["auto_gain_control"] = false.into();
+        let loaded = parse(&file(old)).expect("loads");
+        assert!(!loaded.auto_gain_control);
+        assert!(loaded.user_volumes.is_empty());
     }
 }

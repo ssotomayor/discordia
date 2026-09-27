@@ -183,6 +183,14 @@ fn forget_absent(sent: &mut Ledger, channel: Id, present: &[String]) -> usize {
     before - sent.len()
 }
 
+/// What we sent in a channel we left says nothing about who holds which key
+/// when we come back, and a stale entry would stop us sending a new one.
+fn forget_other_channels(sent: &mut Ledger, channel: Id) -> usize {
+    let before = sent.len();
+    sent.retain(|(ch, _), _| *ch == channel);
+    before - sent.len()
+}
+
 fn forget_absent_now(channel: Id, present: &[String]) -> usize {
     let mut guard = SENT.lock().expect("media key ledger");
     let sent = guard.get_or_insert_with(Ledger::new);
@@ -243,6 +251,13 @@ pub fn MediaKeyBridge() -> Element {
             return;
         };
 
+        let left_behind = {
+            let mut guard = SENT.lock().expect("media key ledger");
+            forget_other_channels(guard.get_or_insert_with(Ledger::new), channel)
+        };
+        if left_behind > 0 {
+            tracing::debug!(%channel, left_behind, "forgot the media key ledger of channels we left");
+        }
         let forgotten = forget_absent_now(channel, &present);
         if forgotten > 0 {
             tracing::debug!(%channel, forgotten, "forgot the media key ledger for members who left");
@@ -472,6 +487,21 @@ mod orchestration_tests {
         assert!(
             !should_send(&sent, other, "bob", 1),
             "the other channel's entry must survive"
+        );
+    }
+
+    #[test]
+    fn coming_back_to_a_channel_owes_its_members_the_key_again() {
+        use super::{Ledger, forget_other_channels, mark_sent, should_send};
+        let first = crate::protocol::Id::new_v4();
+        let second = crate::protocol::Id::new_v4();
+        let mut sent = Ledger::new();
+
+        mark_sent(&mut sent, first, "bob", 1);
+        assert_eq!(forget_other_channels(&mut sent, second), 1);
+        assert!(
+            should_send(&sent, first, "bob", 1),
+            "a key sent before we left is sent again after we return"
         );
     }
 }

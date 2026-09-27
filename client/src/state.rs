@@ -268,6 +268,8 @@ pub struct AppState {
     pub audio_settings: bool,
     /// The "where does my data go" panel, opened from the transport chip.
     pub topology_open: bool,
+    /// The voice channel whose access dialog is open.
+    pub channel_access_open: Option<Id>,
     pub typing: HashMap<Id, HashMap<String, (String, std::time::Instant)>>,
     pub notify_tick: u64,
     /// Its own counter, so a DM can have its own sound. A channel message and
@@ -316,6 +318,8 @@ pub struct AppState {
     pub stream_muted: HashSet<String>,
     pub soundboard_volume: u32,
     pub soundboard_open: bool,
+    /// The board shows its volume slider instead of the sounds.
+    pub soundboard_adjusting: bool,
     /// The click's x and the toggle's top edge, on screen. The popover is mounted
     /// at the root (trap 22), so it cannot sit beside the button in the DOM.
     pub soundboard_anchor: (f64, f64),
@@ -383,6 +387,7 @@ impl AppState {
             rules_prompt: None,
             audio_settings: false,
             topology_open: false,
+            channel_access_open: None,
             typing: HashMap::new(),
             notify_tick: 0,
             dm_notify_tick: 0,
@@ -425,6 +430,7 @@ impl AppState {
             stream_muted: HashSet::new(),
             soundboard_volume: crate::settings::DEFAULT_SOUNDBOARD_VOLUME as u32,
             soundboard_open: false,
+            soundboard_adjusting: false,
             soundboard_anchor: (0.0, 0.0),
             recent_sounds: HashMap::new(),
             stream_has_audio: HashSet::new(),
@@ -450,9 +456,12 @@ impl AppState {
 
     /// On the *local* disconnect, not the server's echo, which lands after the
     /// phase is Idle: a token left behind kept the webview's room alive for good.
+    /// Everything a call held goes, the media key included: the key in use is
+    /// global to the process, so a cached one would never be applied again.
     pub fn end_voice_locally(&mut self) {
         self.voice.phase = VoicePhase::Idle;
         self.voice.channel_id = None;
+        self.media_keys.clear();
         self.voice.error = None;
         self.screen_token = None;
         self.screen_audio_token = None;
@@ -1108,6 +1117,50 @@ pub fn use_dm_clock_persistence(state: Signal<AppState>) {
     });
 }
 
+/// Per-person and per-stream playback, written back as it moves. One hook, as
+/// for the read marks: the sliders and mute buttons live in three components.
+pub fn use_volume_persistence(state: Signal<AppState>) {
+    let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
+    let chosen = use_memo(move || {
+        let s = state.read();
+        let sorted = |m: &HashMap<String, u32>| {
+            let mut v: Vec<(String, u32)> = m.iter().map(|(k, v)| (k.clone(), *v)).collect();
+            v.sort();
+            v
+        };
+        let listed = |m: &HashSet<String>| {
+            let mut v: Vec<String> = m.iter().cloned().collect();
+            v.sort();
+            v
+        };
+        (
+            sorted(&s.user_volumes),
+            listed(&s.user_muted),
+            sorted(&s.stream_volumes),
+            listed(&s.stream_muted),
+        )
+    });
+    use_effect(move || {
+        let (users, muted, streams, streams_muted) = chosen();
+        // `peek`, not `read`: writing back what this effect subscribes to is a loop.
+        let now = settings.peek().clone();
+        if now.user_volumes == users
+            && now.user_muted == muted
+            && now.stream_volumes == streams
+            && now.stream_muted == streams_muted
+        {
+            return;
+        }
+        let mut next = now;
+        next.user_volumes = users;
+        next.user_muted = muted;
+        next.stream_volumes = streams;
+        next.stream_muted = streams_muted;
+        settings.set(next.clone());
+        crate::settings::save(&next);
+    });
+}
+
 pub fn use_gateway() -> GatewayTx {
     use_context::<GatewayTx>()
 }
@@ -1368,6 +1421,7 @@ mod tests {
             read_only: false,
             slowmode_secs: 0,
             position: 0,
+            access: None,
         });
         id
     }
@@ -1556,6 +1610,24 @@ mod tests {
             status: status.map(Into::into),
             ..Default::default()
         }
+    }
+
+    /// The key in use is global to the process; a key kept for a call we left
+    /// is one the bridge would never apply again on the way back.
+    #[test]
+    fn leaving_a_call_drops_its_media_key_and_everything_published() {
+        let mut s = AppState::empty();
+        let channel = uuid::Uuid::from_u128(7);
+        s.voice.channel_id = Some(channel);
+        s.voice.phase = VoicePhase::Connected;
+        s.media_keys.insert(channel, (3, [9; 32]));
+        s.screen_sharing = true;
+        s.camera_on = true;
+        s.screen_token = Some(("url".into(), "tok".into()));
+        s.end_voice_locally();
+        assert!(s.media_keys.is_empty());
+        assert!(!s.screen_sharing && !s.camera_on && s.screen_token.is_none());
+        assert_eq!(s.voice.channel_id, None);
     }
 
     #[test]

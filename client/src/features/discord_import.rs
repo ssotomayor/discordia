@@ -242,6 +242,7 @@ pub fn map_permissions(bits: &str) -> Vec<Permission> {
             Permission::ManageGuild,
             Permission::CreateInvite,
             Permission::ManageEmojis,
+            Permission::DisconnectMembers,
         ];
     }
     const TABLE: &[(u64, Permission)] = &[
@@ -254,6 +255,7 @@ pub fn map_permissions(bits: &str) -> Vec<Permission> {
         (1 << 11, Permission::SendMessages),
         (1 << 13, Permission::ManageMessages),
         (1 << 16, Permission::ReadMessageHistory),
+        (1 << 24, Permission::DisconnectMembers),
         (1 << 28, Permission::ManageRoles),
         (1 << 30, Permission::ManageEmojis),
     ];
@@ -1057,7 +1059,7 @@ mod tests {
 
     #[test]
     fn administrator_is_everything_and_bits_map_one_to_one() {
-        assert_eq!(map_permissions("8").len(), 11);
+        assert_eq!(map_permissions("8").len(), Permission::ALL.len());
         let bits = (1u64 << 1) | (1 << 2) | (1 << 13) | (1 << 40);
         let mapped = map_permissions(&bits.to_string());
         assert_eq!(

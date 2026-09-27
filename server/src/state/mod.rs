@@ -244,6 +244,7 @@ impl AppState {
             read_only: false,
             slowmode_secs: 0,
             position: 0,
+            access: None,
         };
         let voice = Channel {
             id: Uuid::new_v4(),
@@ -254,6 +255,7 @@ impl AppState {
             read_only: false,
             slowmode_secs: 0,
             position: 1,
+            access: None,
         };
         persist(self.store.upsert_guild(&lobby).await, "seed guild");
         persist(self.store.upsert_channel(&general).await, "seed channel");
@@ -782,6 +784,7 @@ impl AppState {
                 read_only: *read_only,
                 slowmode_secs: 0,
                 position: pos as u32,
+                access: None,
             });
         }
         let mut roles = Vec::new();
@@ -860,12 +863,13 @@ impl AppState {
             .iter()
             .filter_map(|id| self.guilds.get(id).map(|g| g.clone()))
             .collect();
-        let channels: Vec<Channel> = self
+        let mut channels: Vec<Channel> = self
             .channels
             .iter()
             .filter(|c| my_guild_ids.contains(&c.guild_id))
             .map(|c| c.clone())
             .collect();
+        channels.retain(|c| self.can_see_channel(&user.pubkey, c));
         let mut members: Vec<Member> = Vec::new();
         for gid in &my_guild_ids {
             if let Some(guild_members) = self.members.get(gid) {
@@ -879,6 +883,9 @@ impl AppState {
             .iter()
             .filter(|v| my_guild_ids.contains(&v.guild_id))
             .map(|v| v.value().clone())
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|v| self.voice_state_seen_by(&user.pubkey, v))
             .collect();
 
         let (catalog, _) = self.guild_catalog_page(0, CATALOG_FIRST_PAGE);
@@ -1586,7 +1593,7 @@ impl AppState {
             return Err("you can't moderate yourself (leave the guild instead)".into());
         }
         if self.is_owner(guild_id, target_pubkey) {
-            return Err("the owner can't be kicked or banned".into());
+            return Err("the owner is beyond a moderator's reach".into());
         }
         let target_is_bot = self
             .members
@@ -1645,6 +1652,28 @@ impl AppState {
             "member kick",
         );
         Ok(cleared)
+    }
+
+    pub fn disconnect_from_voice(
+        &self,
+        guild_id: Id,
+        target_pubkey: &str,
+        by_pubkey: &str,
+    ) -> Result<VoiceState, String> {
+        self.require_permission(guild_id, by_pubkey, Permission::DisconnectMembers)?;
+        if target_pubkey == by_pubkey {
+            return Err("leave the call instead".into());
+        }
+        self.validate_moderation_target(guild_id, target_pubkey, by_pubkey)?;
+        let in_a_call_here = self
+            .voice_states
+            .get(target_pubkey)
+            .is_some_and(|v| v.guild_id == guild_id && v.channel_id.is_some());
+        if !in_a_call_here {
+            return Err("they aren't in a voice channel here".into());
+        }
+        self.clear_voice(target_pubkey)
+            .ok_or_else(|| "they aren't in a voice channel here".into())
     }
 
     pub async fn ban_member(
@@ -1760,6 +1789,7 @@ impl AppState {
             read_only: false,
             slowmode_secs: 0,
             position: next_pos,
+            access: None,
         };
         self.channels.insert(channel.id, channel.clone());
         self.channels_by_guild
@@ -2498,6 +2528,75 @@ impl AppState {
         Some(entry.clone())
     }
 
+    pub fn channel(&self, channel_id: Id) -> Option<Channel> {
+        self.channels.get(&channel_id).map(|c| c.clone())
+    }
+
+    pub fn voice_channels_of(&self, guild_id: Id) -> Vec<Channel> {
+        self.channels
+            .iter()
+            .filter(|c| c.guild_id == guild_id && c.kind == crate::protocol::ChannelKind::Voice)
+            .map(|c| c.clone())
+            .collect()
+    }
+
+    /// Who is sent a channel and may join it (trap 30). Whoever manages
+    /// channels always can: someone has to be able to open it back up.
+    pub fn can_see_channel(&self, pubkey: &str, channel: &Channel) -> bool {
+        let Some(access) = &channel.access else {
+            return true;
+        };
+        if access.users.iter().any(|u| u == pubkey) {
+            return true;
+        }
+        if self
+            .effective_permissions(channel.guild_id, pubkey)
+            .contains(&Permission::ManageChannels)
+        {
+            return true;
+        }
+        let held: Vec<Id> = self
+            .members
+            .get(&channel.guild_id)
+            .and_then(|m| m.get(pubkey).map(|m| m.roles.clone()))
+            .unwrap_or_default();
+        access.roles.iter().any(|r| held.contains(r))
+    }
+
+    /// What one person is shown of someone's voice state: inside a channel
+    /// they cannot see, they are not in voice at all.
+    pub fn voice_state_seen_by(&self, viewer: &str, vs: VoiceState) -> VoiceState {
+        let hidden = vs
+            .channel_id
+            .and_then(|c| self.channel(c))
+            .is_some_and(|c| !self.can_see_channel(viewer, &c));
+        if hidden { masked_voice_state(vs) } else { vs }
+    }
+
+    pub async fn set_channel_access(
+        &self,
+        channel_id: Id,
+        access: Option<crate::protocol::ChannelAccess>,
+        by_pubkey: &str,
+    ) -> Result<Channel, String> {
+        let channel = self.channel(channel_id).ok_or("unknown channel")?;
+        self.require_permission(channel.guild_id, by_pubkey, Permission::ManageChannels)?;
+        if channel.kind != crate::protocol::ChannelKind::Voice {
+            return Err("only voice channels can be hidden".into());
+        }
+        let access = access.map(crate::sanitize::access);
+        let updated = {
+            let mut entry = self
+                .channels
+                .get_mut(&channel_id)
+                .ok_or("unknown channel")?;
+            entry.access = access;
+            entry.clone()
+        };
+        persist(self.store.upsert_channel(&updated).await, "channel access");
+        Ok(updated)
+    }
+
     pub fn voice_members_in(&self, channel_id: Id) -> Vec<String> {
         self.voice_states
             .iter()
@@ -2657,12 +2756,13 @@ impl AppState {
             .iter()
             .filter_map(|id| self.guilds.get(id).map(|g| g.clone()))
             .collect();
-        let channels: Vec<Channel> = self
+        let mut channels: Vec<Channel> = self
             .channels
             .iter()
             .filter(|c| my_guild_ids.contains(&c.guild_id))
             .map(|c| c.clone())
             .collect();
+        channels.retain(|c| self.can_see_channel(&bot.pubkey, c));
         let mut members: Vec<Member> = Vec::new();
         for install in &installs {
             if !install.has_intent(Intent::Members) {
@@ -2691,6 +2791,16 @@ impl AppState {
             activities: Vec::new(),
             operator: false,
         }
+    }
+}
+
+pub fn masked_voice_state(vs: VoiceState) -> VoiceState {
+    VoiceState {
+        channel_id: None,
+        speaking: false,
+        camera_on: false,
+        screen_sharing: false,
+        ..vs
     }
 }
 

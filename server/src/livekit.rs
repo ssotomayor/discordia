@@ -166,6 +166,45 @@ pub async fn screen_token_as(
     }
 }
 
+impl LiveKitConfig {
+    /// `None` when a rendezvous mints the tokens: its SFU, its keys.
+    fn admin_url(&self) -> Option<String> {
+        if self.minter.is_some() {
+            return None;
+        }
+        Some(match &self.explicit_url {
+            Some(url) => url
+                .replacen("wss://", "https://", 1)
+                .replacen("ws://", "http://", 1),
+            None => format!("http://127.0.0.1:{}", self.port),
+        })
+    }
+}
+
+/// Every identity one person can hold in a channel's two rooms (trap 10). One
+/// that is not there is the usual answer, not a failure.
+pub async fn evict(cfg: &LiveKitConfig, channel_id: Id, user_pubkey: &str) {
+    let Some(url) = cfg.admin_url() else {
+        tracing::debug!(%channel_id, "no SFU keys here; the app is trusted to leave");
+        return;
+    };
+    let client =
+        livekit_api::services::room::RoomClient::with_api_key(&url, &cfg.api_key, &cfg.api_secret);
+    let screen = screen_room_name(channel_id);
+    let seats = [
+        (room_name(channel_id), user_pubkey.to_string()),
+        (screen.clone(), user_pubkey.to_string()),
+        (screen.clone(), screen_audio_identity(user_pubkey)),
+        (screen, screen_video_identity(user_pubkey)),
+    ];
+    for (room, identity) in seats {
+        match client.remove_participant(&room, &identity).await {
+            Ok(()) => tracing::info!(%room, %identity, "evicted from the SFU"),
+            Err(e) => tracing::debug!(%room, %identity, error = %e, "nothing to evict"),
+        }
+    }
+}
+
 pub fn room_name(channel_id: Id) -> String {
     format!("voice-{channel_id}")
 }

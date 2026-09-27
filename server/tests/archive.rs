@@ -288,6 +288,7 @@ async fn a_hostile_archive_is_filtered_on_import() {
             read_only: false,
             slowmode_secs: 0,
             position: 0,
+            access: None,
         }],
         roles: vec![Role {
             id: Uuid::new_v4(),

@@ -87,6 +87,7 @@ fn SoundboardPopover(guild_id: Id) -> Element {
 
     let sounds = use_memo(move || state.read().sounds_of(guild_id).to_vec());
     let can_manage = state.read().can(guild_id, Permission::ManageGuild);
+    let adjusting = state.read().soundboard_adjusting;
     let deafened = state.read().voice.deafened;
     let connected = state.read().voice.phase == VoicePhase::Connected;
     let blocked = if !connected {
@@ -113,43 +114,74 @@ fn SoundboardPopover(guild_id: Id) -> Element {
     rsx! {
         div {
             id: "dxf-soundboard",
-            class: "fixed z-[70] max-h-[50vh] overflow-y-auto p-2 bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl",
+            class: "fixed z-[70] max-h-[50vh] flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl overflow-hidden",
             style: "{style}",
-            if sounds().is_empty() {
-                div { class: "px-1 py-0.5 text-[11px] text-[var(--text-dim)]",
-                    if can_manage {
-                        "No sounds yet — add them in guild settings, under Soundboard."
+            oncontextmenu: move |e: MouseEvent| {
+                e.prevent_default();
+                state.write().soundboard_adjusting = true;
+            },
+            div { class: "h-8 pl-3 pr-1 flex items-center gap-2 border-b border-[var(--border)] shrink-0 select-none",
+                span { class: "text-xs font-semibold text-[var(--text)] flex-1 truncate",
+                    if adjusting { "Soundboard volume" } else { "Soundboard" }
+                }
+                button {
+                    class: "[&>svg]:pointer-events-none w-6 h-6 flex items-center justify-center rounded text-[var(--text-dim)] hover:text-[var(--text)] transition-colors",
+                    title: if adjusting { "Back to the sounds" } else { "Volume — or right-click anywhere here" },
+                    onclick: move |_| {
+                        let now = !state.read().soundboard_adjusting;
+                        state.write().soundboard_adjusting = now;
+                    },
+                    dangerous_inner_html: if adjusting {
+                        crate::features::icons::SOUNDBOARD
                     } else {
-                        "This guild has no sounds yet."
-                    }
+                        crate::features::icons::SPEAKER
+                    },
                 }
             }
-            div { class: "grid grid-cols-3 gap-1.5",
-                for sound in sounds().iter().cloned() {
-                    {
-                        let ready = blob_of(&state.read(), &sound).is_some();
-                        let cooling = last_play().is_some_and(|t| t.elapsed() < PLAY_COOLDOWN);
-                        let gw = gateway.clone();
-                        let v = voice.clone();
-                        let title = match blocked {
-                            Some(why) => why.to_string(),
-                            None if !ready => "Loading…".to_string(),
-                            None => sound.name.clone(),
-                        };
-                        rsx! {
-                            button {
-                                key: "{sound.id}",
-                                class: "h-9 px-2 rounded-md border border-[var(--border)] text-xs text-[var(--text)] truncate hover:border-[var(--accent)] hover:text-[var(--accent)] transition-colors disabled:opacity-40",
-                                disabled: !ready || blocked.is_some() || cooling,
-                                title: "{title}",
-                                onclick: move |_| {
-                                    if last_play().is_some_and(|t| t.elapsed() < PLAY_COOLDOWN) {
-                                        return;
+            div { class: "p-2 overflow-y-auto",
+                if adjusting {
+                    SoundboardVolume {}
+                    div { class: "mt-1 text-[10px] text-[var(--text-dim)]",
+                        "How loud other people's sounds are for you, and yours to yourself."
+                    }
+                } else {
+                    if sounds().is_empty() {
+                        div { class: "px-1 py-0.5 text-[11px] text-[var(--text-dim)]",
+                            if can_manage {
+                                "No sounds yet — add them in guild settings, under Soundboard."
+                            } else {
+                                "This guild has no sounds yet."
+                            }
+                        }
+                    }
+                    div { class: "grid grid-cols-3 gap-1.5",
+                        for sound in sounds().iter().cloned() {
+                            {
+                                let ready = blob_of(&state.read(), &sound).is_some();
+                                let cooling = last_play().is_some_and(|t| t.elapsed() < PLAY_COOLDOWN);
+                                let gw = gateway.clone();
+                                let v = voice.clone();
+                                let title = match blocked {
+                                    Some(why) => why.to_string(),
+                                    None if !ready => "Loading…".to_string(),
+                                    None => sound.name.clone(),
+                                };
+                                rsx! {
+                                    button {
+                                        key: "{sound.id}",
+                                        class: "h-9 px-2 rounded-md border border-[var(--border)] text-xs text-[var(--text)] truncate hover:border-[var(--accent)] hover:text-[var(--accent)] transition-colors disabled:opacity-40",
+                                        disabled: !ready || blocked.is_some() || cooling,
+                                        title: "{title}",
+                                        onclick: move |_| {
+                                            if last_play().is_some_and(|t| t.elapsed() < PLAY_COOLDOWN) {
+                                                return;
+                                            }
+                                            last_play.set(Some(Instant::now()));
+                                            play(state, gw.clone(), v.clone(), sound.clone());
+                                        },
+                                        "{sound.name}"
                                     }
-                                    last_play.set(Some(Instant::now()));
-                                    play(state, gw.clone(), v.clone(), sound.clone());
-                                },
-                                "{sound.name}"
+                                }
                             }
                         }
                     }

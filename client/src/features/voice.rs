@@ -92,7 +92,14 @@ impl AudioControls {
             bitrate_kbps: Arc::new(AtomicU32::new(s.voice_bitrate_kbps)),
             stats_polling: Arc::new(AtomicBool::new(false)),
             deafened: Arc::new(AtomicBool::new(false)),
-            gains: Arc::new(Mutex::new(HashMap::new())),
+            // Restored volumes reach the mixer here: nothing sends them again.
+            gains: Arc::new(Mutex::new(
+                s.user_volumes
+                    .keys()
+                    .chain(s.user_muted.iter())
+                    .map(|pk| (pk.clone(), s.voice_gain_of(pk)))
+                    .collect(),
+            )),
             stream_gains: Arc::new(Mutex::new(HashMap::new())),
             soundboard_pct: Arc::new(AtomicU32::new(s.soundboard_volume.min(100))),
         }
@@ -268,7 +275,11 @@ async fn service_loop(
                 if let Some(prev) = session.take() {
                     prev.shutdown(state).await;
                 }
-                state.write().end_voice_locally();
+                // A join answered while the room was closing is already under way;
+                // wiping now would take its channel and its screen token with it.
+                if state.peek().voice.phase != VoicePhase::Connecting {
+                    state.write().end_voice_locally();
+                }
                 tokio::spawn(async {
                     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                     crate::audio_diag::log("5 s after leaving");

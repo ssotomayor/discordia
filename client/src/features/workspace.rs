@@ -302,6 +302,18 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
             w.mic_sensitivity = saved.mic_sensitivity.clamp(1, 1000);
             w.mic_volume = saved.mic_volume.min(200);
             w.soundboard_volume = saved.soundboard_volume.min(100) as u32;
+            w.user_volumes = saved
+                .user_volumes
+                .iter()
+                .map(|(pk, v)| (pk.clone(), (*v).min(200)))
+                .collect();
+            w.user_muted = saved.user_muted.iter().cloned().collect();
+            w.stream_volumes = saved
+                .stream_volumes
+                .iter()
+                .map(|(pk, v)| (pk.clone(), (*v).min(200)))
+                .collect();
+            w.stream_muted = saved.stream_muted.iter().cloned().collect();
             w.auto_gain_control = saved.auto_gain_control;
             w.noise_cancellation = saved.noise_cancellation;
             w.bypass_system_audio_processing =
@@ -349,6 +361,7 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
     provide_context(params.identity.clone());
     crate::state::use_dm_read_persistence(state);
     crate::state::use_dm_clock_persistence(state);
+    crate::state::use_volume_persistence(state);
 
     let layout = use_layout_store(|| {
         let saved = settings.read();
@@ -496,6 +509,7 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
             }
             crate::features::settings_dialog::SettingsDialog {}
             crate::features::soundboard::SoundboardPanel {}
+            crate::features::channel_access::ChannelAccessHost {}
             GuildDialogHost {}
             crate::features::guilds::RulesPromptDialog {}
 

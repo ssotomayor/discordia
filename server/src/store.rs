@@ -165,6 +165,7 @@ impl Store {
             "ALTER TABLE invites ADD COLUMN uses INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE invites ADD COLUMN created_by TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE guilds ADD COLUMN leveling TEXT",
+            "ALTER TABLE channels ADD COLUMN access TEXT",
         ] {
             if let Err(e) = sqlx::query(stmt).execute(&self.pool).await
                 && !e.to_string().contains("duplicate column name")
@@ -243,7 +244,7 @@ impl Store {
             });
         }
         for r in sqlx::query(
-            "SELECT id, guild_id, name, kind, topic, read_only, slowmode_secs, position
+            "SELECT id, guild_id, name, kind, topic, read_only, slowmode_secs, position, access
              FROM channels",
         )
         .fetch_all(&self.pool)
@@ -258,6 +259,9 @@ impl Store {
                 read_only: r.get::<i64, _>(5) != 0,
                 slowmode_secs: r.get::<i64, _>(6).max(0) as u32,
                 position: r.get::<i64, _>(7).max(0) as u32,
+                access: r
+                    .get::<Option<String>, _>(8)
+                    .and_then(|a| serde_json::from_str(&a).ok()),
             });
         }
         for r in sqlx::query("SELECT guild_id, pubkey, username, bot, roles FROM members")
@@ -464,11 +468,11 @@ impl Store {
     pub async fn upsert_channel(&self, c: &Channel) -> Result<()> {
         sqlx::query(
             "INSERT INTO channels (id, guild_id, name, kind, topic, read_only,
-                                   slowmode_secs, position)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                   slowmode_secs, position, access)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(id) DO UPDATE SET name=excluded.name, topic=excluded.topic,
                read_only=excluded.read_only, slowmode_secs=excluded.slowmode_secs,
-               position=excluded.position",
+               position=excluded.position, access=excluded.access",
         )
         .bind(c.id.to_string())
         .bind(c.guild_id.to_string())
@@ -478,6 +482,11 @@ impl Store {
         .bind(c.read_only as i64)
         .bind(c.slowmode_secs as i64)
         .bind(c.position as i64)
+        .bind(
+            c.access
+                .as_ref()
+                .and_then(|a| serde_json::to_string(a).ok()),
+        )
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -1001,14 +1010,15 @@ fn kind_str(k: ChannelKind) -> &'static str {
     match k {
         ChannelKind::Text => "text",
         ChannelKind::Voice => "voice",
+        ChannelKind::Category => "category",
     }
 }
 
 fn parse_kind(s: &str) -> ChannelKind {
-    if s == "voice" {
-        ChannelKind::Voice
-    } else {
-        ChannelKind::Text
+    match s {
+        "voice" => ChannelKind::Voice,
+        "category" => ChannelKind::Category,
+        _ => ChannelKind::Text,
     }
 }
 

@@ -19,7 +19,7 @@ fn reorder_positions(guild: &[Channel], moved: Id, target: Id) -> Vec<(Id, u32)>
     ) else {
         return Vec::new();
     };
-    if std::mem::discriminant(&guild[from].kind) != std::mem::discriminant(&guild[to].kind) {
+    if !guild[from].kind.same_list(guild[to].kind) {
         return Vec::new();
     }
 
@@ -156,10 +156,8 @@ pub fn ChannelsColumn() -> Element {
         .filter(|c| matches!(c.kind, ChannelKind::Text))
         .collect();
 
-    let voice_channels: Vec<&Channel> = channels
-        .iter()
-        .filter(|c| matches!(c.kind, ChannelKind::Voice))
-        .collect();
+    let voice_channels: Vec<&Channel> =
+        channels.iter().filter(|c| c.kind.in_voice_list()).collect();
     let guild_order: Vec<Channel> = text_channels
         .iter()
         .chain(voice_channels.iter())
@@ -385,6 +383,46 @@ pub fn ChannelsColumn() -> Element {
                                 let ctx_ch = ch.clone();
                                 let g_drop = gateway.clone();
                                 let drop_group = guild_order.clone();
+                                if ch.kind == ChannelKind::Category {
+                                    let menu_ch = ch.clone();
+                                    rsx! {
+                                        div {
+                                            key: "{cid}",
+                                            class: "mt-2.5 mb-0.5 px-2 flex items-center gap-2 select-none",
+                                            draggable: can_manage_channels,
+                                            ondragstart: move |_| dragging.set(Some(cid)),
+                                            ondragover: move |e: Event<DragData>| {
+                                                if dragging().is_some() {
+                                                    e.prevent_default();
+                                                }
+                                            },
+                                            ondrop: move |e: Event<DragData>| {
+                                                e.prevent_default();
+                                                let moved = dragging();
+                                                dragging.set(None);
+                                                if let Some(moved) = moved {
+                                                    send_reorder(&g_drop, &drop_group, moved, cid);
+                                                }
+                                            },
+                                            ondragend: move |_| dragging.set(None),
+                                            oncontextmenu: move |e: MouseEvent| {
+                                                if !can_manage_channels {
+                                                    return;
+                                                }
+                                                e.prevent_default();
+                                                let c = e.client_coordinates();
+                                                chan_menu.set(Some(ChanMenu {
+                                                    channel: menu_ch.clone(),
+                                                    x: c.x,
+                                                    y: c.y,
+                                                    mode: ChanMenuMode::Menu,
+                                                }));
+                                            },
+                                            span { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-dim)] truncate", "{ch.name}" }
+                                            div { class: "flex-1 h-px bg-[var(--border)]" }
+                                        }
+                                    }
+                                } else {
                                 rsx! {
                                     div {
                                         key: "{cid}",
@@ -435,6 +473,7 @@ pub fn ChannelsColumn() -> Element {
                                             },
                                         }
                                     }
+                                }
                                 }
                             }
                         }
@@ -496,7 +535,11 @@ fn CreateChannelForm(guild_id: Id, on_done: EventHandler<()>) -> Element {
                 oninput: move |e| name.set(e.value()),
             }
             div { class: "flex gap-1",
-                for (k, label) in [(ChannelKind::Text, "# Text"), (ChannelKind::Voice, "♪ Voice")] {
+                for (k, label) in [
+                    (ChannelKind::Text, "# Text"),
+                    (ChannelKind::Voice, "♪ Voice"),
+                    (ChannelKind::Category, "— Category"),
+                ] {
                     button {
                         r#type: "button",
                         class: if kind() == k {
@@ -532,7 +575,7 @@ fn ChannelMenuPopover(
     let ch = menu.channel.clone();
     let siblings: Vec<Channel> = guild_order
         .iter()
-        .filter(|c| std::mem::discriminant(&c.kind) == std::mem::discriminant(&ch.kind))
+        .filter(|c| c.kind.same_list(ch.kind))
         .cloned()
         .collect();
     let at = siblings.iter().position(|c| c.id == ch.id);
@@ -578,11 +621,26 @@ fn ChannelMenuPopover(
                                 }
                                 }
                             }
+                            if can_manage && ch.kind == ChannelKind::Voice {
+                                {
+                                    let cid = ch.id;
+                                    rsx! {
+                                        button {
+                                            class: "w-full text-left px-3 py-1.5 rounded text-[var(--text)] hover:bg-white/[0.04] transition-colors",
+                                            onclick: move |_| {
+                                                state.write().channel_access_open = Some(cid);
+                                                on_close.call(());
+                                            },
+                                            "Who can see this…"
+                                        }
+                                    }
+                                }
+                            }
                             if can_manage {
                                 button {
                                     class: "w-full text-left px-3 py-1.5 rounded text-[var(--text)] hover:bg-white/[0.04] transition-colors",
                                     onclick: move |_| on_mode.call(ChanMenuMode::Edit),
-                                    "Edit name & topic"
+                                    if ch.kind == ChannelKind::Category { "Rename category" } else { "Edit name & topic" }
                                 }
                                 if let Some(above) = move_up {
                                     {
@@ -638,7 +696,7 @@ fn ChannelMenuPopover(
                                 button {
                                     class: "w-full text-left px-3 py-1.5 rounded text-[var(--danger)] hover:bg-[var(--danger)]/10 transition-colors",
                                     onclick: move |_| on_mode.call(ChanMenuMode::ConfirmDelete),
-                                    "Delete channel"
+                                    if ch.kind == ChannelKind::Category { "Delete category" } else { "Delete channel" }
                                 }
                             }
                         }
@@ -671,12 +729,14 @@ fn ChannelMenuPopover(
                                     autofocus: true,
                                     oninput: move |e| name.set(e.value()),
                                 }
-                                input {
-                                    class: "w-full bg-transparent border border-[var(--border)] focus:border-[var(--accent)] rounded px-2 py-1 text-xs text-[var(--text)] outline-none transition-colors",
-                                    placeholder: "Topic (optional)",
-                                    value: "{topic}",
-                                    maxlength: 120,
-                                    oninput: move |e| topic.set(e.value()),
+                                if ch.kind != ChannelKind::Category {
+                                    input {
+                                        class: "w-full bg-transparent border border-[var(--border)] focus:border-[var(--accent)] rounded px-2 py-1 text-xs text-[var(--text)] outline-none transition-colors",
+                                        placeholder: "Topic (optional)",
+                                        value: "{topic}",
+                                        maxlength: 120,
+                                        oninput: move |e| topic.set(e.value()),
+                                    }
                                 }
                                 button {
                                     r#type: "submit",
@@ -755,6 +815,13 @@ fn VoiceChannelRow(
                     dangerous_inner_html: crate::features::icons::SPEAKER,
                 }
                 span { class: "truncate flex-1", draggable: false, "{channel.name}" }
+                if channel.access.is_some() {
+                    span {
+                        class: "text-[10px] text-[var(--text-dim)]",
+                        title: "Hidden from everyone but the roles and people allowed",
+                        "🔒"
+                    }
+                }
                 if connected {
                     span { class: "text-[9px] text-[var(--up)] font-semibold uppercase tracking-wider", "live" }
                 }
@@ -885,7 +952,25 @@ fn VoiceOccupant(
 ) -> Element {
     let mut state = use_app_state();
     let voice = use_voice_tx();
+    let gw_disconnect = use_gateway();
     let mut show_volume = use_signal(|| false);
+    // The server re-checks; this only hides a button that would be refused.
+    let disconnect_in = {
+        let s = state.read();
+        s.voice_states
+            .iter()
+            .find(|v| v.user_pubkey == pubkey)
+            .map(|v| v.guild_id)
+            .filter(|gid| {
+                !is_self
+                    && s.can(*gid, crate::protocol::Permission::DisconnectMembers)
+                    && !s
+                        .guilds
+                        .iter()
+                        .any(|g| g.id == *gid && g.owner_pubkey == pubkey)
+            })
+    };
+    let pk_disconnect = pubkey.clone();
 
     let volume = state
         .read()
@@ -1057,6 +1142,20 @@ fn VoiceOccupant(
                     }
                     span { class: "text-[9px] text-[var(--text-dim)] w-8 text-right shrink-0", "{volume}%" }
                 }
+                if let Some(gid) = disconnect_in {
+                    button {
+                        class: "mb-0.5 text-[9px] uppercase tracking-wider text-[var(--warn)] hover:text-[var(--danger)] font-semibold",
+                        title: "Drops their voice, screen share and camera for everyone. They can join again.",
+                        onclick: move |_| {
+                            gw_disconnect.send(ClientMessage::DisconnectVoice {
+                                guild_id: gid,
+                                user_pubkey: pk_disconnect.clone(),
+                            });
+                            show_volume.set(false);
+                        },
+                        "Disconnect from voice"
+                    }
+                }
             }
         }
     }
@@ -1143,6 +1242,7 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
     let g_for_hang = gateway.clone();
     let v_for_hang = voice.clone();
     let g_for_share = gateway.clone();
+    let g_for_camera = gateway.clone();
     let voice_channel = self_voice.channel_id;
     let soundboard_open = state.read().soundboard_open;
 
@@ -1233,8 +1333,14 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                             } else if camera_starting {
                                 "Starting your camera…"
                             } else if camera_on { "Turn your camera off" } else { "Turn your camera on" },
+                            // While it is still starting, a press cancels it.
                             onclick: move |_| {
-                                crate::features::camera::toggle_camera(state, settings, !camera_on);
+                                crate::features::camera::toggle_camera(
+                                    state,
+                                    settings,
+                                    &g_for_camera,
+                                    !(camera_on || camera_starting),
+                                );
                             },
                             dangerous_inner_html: if camera_on {
                                 crate::features::icons::CAMERA
@@ -1290,13 +1396,23 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                 "[&>svg]:pointer-events-none flex-1 h-9 flex items-center justify-center rounded-lg border transition-colors border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--text)] hover:border-[var(--border-strong)]"
                             },
                             id: "dxf-soundboard-toggle",
-                            title: "Soundboard",
+                            title: "Soundboard — right-click for its volume",
                             onclick: move |e: MouseEvent| {
                                 let at = e.client_coordinates();
                                 let inside = e.element_coordinates();
                                 let mut s = state.write();
                                 s.soundboard_anchor = (at.x, at.y - inside.y);
-                                s.soundboard_open = !s.soundboard_open;
+                                s.soundboard_open = !(s.soundboard_open && !s.soundboard_adjusting);
+                                s.soundboard_adjusting = false;
+                            },
+                            oncontextmenu: move |e: MouseEvent| {
+                                e.prevent_default();
+                                let at = e.client_coordinates();
+                                let inside = e.element_coordinates();
+                                let mut s = state.write();
+                                s.soundboard_anchor = (at.x, at.y - inside.y);
+                                s.soundboard_open = !(s.soundboard_open && s.soundboard_adjusting);
+                                s.soundboard_adjusting = true;
                             },
                             dangerous_inner_html: crate::features::icons::SOUNDBOARD,
                         }
@@ -1404,6 +1520,7 @@ mod tests {
             topic: None,
             read_only: false,
             position,
+            access: None,
             slowmode_secs: 0,
         }
     }
@@ -1480,6 +1597,25 @@ mod tests {
             updates,
             vec![(guild[3].id, 2), (guild[2].id, 3)],
             "moving one voice channel past the other must touch those two and              nothing else — the text channels above them do not move"
+        );
+    }
+
+    #[test]
+    fn a_category_moves_among_voice_channels_but_not_into_text() {
+        let guild = vec![
+            kinded("general", 0, ChannelKind::Text),
+            kinded("Lobby", 1, ChannelKind::Voice),
+            kinded("Games", 2, ChannelKind::Category),
+            kinded("Raid", 3, ChannelKind::Voice),
+        ];
+        let updates = reorder_positions(&guild, guild[2].id, guild[1].id);
+        assert_eq!(
+            applied(&guild, &updates),
+            ["general", "Games", "Lobby", "Raid"]
+        );
+        assert!(
+            reorder_positions(&guild, guild[2].id, guild[0].id).is_empty(),
+            "a separator belongs to the voice list"
         );
     }
 

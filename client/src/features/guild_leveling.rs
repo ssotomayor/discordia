@@ -25,7 +25,7 @@ pub fn LevelingEditor(guild_id: Id, draft: Signal<Leveling>) -> Element {
         let mut v: Vec<Channel> = s
             .channels
             .iter()
-            .filter(|c| c.guild_id == guild_id)
+            .filter(|c| c.guild_id == guild_id && c.kind != ChannelKind::Category)
             .cloned()
             .collect();
         v.sort_by(|a, b| {

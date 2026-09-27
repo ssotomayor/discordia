@@ -235,6 +235,19 @@ pub struct GuildSummary {
 pub enum ChannelKind {
     Text,
     Voice,
+    /// A titled separator in the voice list: no messages, no call.
+    Category,
+}
+
+impl ChannelKind {
+    /// Voice channels and categories are one list, ordered and dragged together.
+    pub fn same_list(self, other: ChannelKind) -> bool {
+        self.in_voice_list() == other.in_voice_list()
+    }
+
+    pub fn in_voice_list(self) -> bool {
+        matches!(self, ChannelKind::Voice | ChannelKind::Category)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -250,7 +263,23 @@ pub struct Channel {
     pub slowmode_secs: u32,
     #[serde(default)]
     pub position: u32,
+    /// `None` is everyone. Only voice channels carry one.
+    #[serde(default)]
+    pub access: Option<ChannelAccess>,
 }
+
+/// An allowlist: these roles and these people see and may join the channel,
+/// besides whoever can manage channels. Everyone else is never sent it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ChannelAccess {
+    #[serde(default)]
+    pub roles: Vec<Id>,
+    #[serde(default)]
+    pub users: Vec<String>,
+}
+
+pub const MAX_ACCESS_ROLES: usize = 50;
+pub const MAX_ACCESS_USERS: usize = 200;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Member {
@@ -935,6 +964,7 @@ pub enum Permission {
     ManageGuild,
     CreateInvite,
     ManageEmojis,
+    DisconnectMembers,
 }
 
 impl Permission {
@@ -950,6 +980,7 @@ impl Permission {
         Permission::ManageGuild,
         Permission::CreateInvite,
         Permission::ManageEmojis,
+        Permission::DisconnectMembers,
     ];
 
     pub const BOT_INSTALLABLE: &'static [Permission] = &[
@@ -972,6 +1003,7 @@ impl Permission {
             Permission::ManageGuild => "Manage guild",
             Permission::CreateInvite => "Create invites",
             Permission::ManageEmojis => "Manage emojis",
+            Permission::DisconnectMembers => "Disconnect from voice",
         }
     }
 }
@@ -1198,6 +1230,17 @@ pub enum ClientMessage {
     },
     PlaySound {
         sound_id: Id,
+    },
+    SetChannelAccess {
+        channel_id: Id,
+        #[serde(default)]
+        access: Option<ChannelAccess>,
+    },
+    /// Out of whatever voice channel of this guild they are in, and out of the
+    /// SFU with it. They can join again; a kick is what keeps someone out.
+    DisconnectVoice {
+        guild_id: Id,
+        user_pubkey: String,
     },
     SetGuildAccent {
         guild_id: Id,

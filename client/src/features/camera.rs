@@ -52,15 +52,27 @@ fn resolve_device(
     None
 }
 
+/// Stopping tells the server here, not when the webview reports the track
+/// ended: that report arrives after `camera_on` is already cleared, and never
+/// comes at all for a camera that had not reached the room yet.
 pub fn toggle_camera(
     mut state: Signal<crate::state::AppState>,
     settings: Signal<crate::settings::ClientSettings>,
+    gateway: &crate::state::GatewayTx,
     on: bool,
 ) {
     if !on {
-        state.write().camera_on = false;
-        state.write().camera_starting = false;
+        let was = {
+            let mut w = state.write();
+            let was = w.camera_on || w.camera_starting;
+            w.camera_on = false;
+            w.camera_starting = false;
+            was
+        };
         let _ = document::eval(&stop_camera_js());
+        if was {
+            gateway.send(ClientMessage::SetCamera { on: false });
+        }
         return;
     }
     let device = {
@@ -106,6 +118,15 @@ pub fn CameraBridge() -> Element {
 
     use_hook(|| {
         let _ = document::eval(&list_cameras_js());
+    });
+
+    // Leaving, being moved or dropped from a call releases the camera itself,
+    // whatever the screen room is doing: nothing a call started outlives it.
+    let in_call = use_memo(move || state.read().voice.channel_id.is_some());
+    use_effect(move || {
+        if !in_call() {
+            let _ = document::eval(&stop_camera_js());
+        }
     });
 
     let mut had_token = use_signal(|| false);
@@ -238,6 +259,7 @@ const SELF_CHROME: f64 = 32.0;
 pub fn CameraSelfPreview() -> Element {
     let state = use_app_state();
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
+    let gateway = use_gateway();
 
     let mut px = use_signal(|| 968.0_f64);
     let mut py = use_signal(|| 280.0_f64);
@@ -300,7 +322,7 @@ pub fn CameraSelfPreview() -> Element {
                     class: "text-[9px] uppercase tracking-wider text-[var(--danger)] hover:text-[var(--accent-strong)] font-semibold",
                     onmousedown: move |e| {
                         e.stop_propagation();
-                        toggle_camera(state, settings, false);
+                        toggle_camera(state, settings, &gateway, false);
                     },
                     "Stop"
                 }

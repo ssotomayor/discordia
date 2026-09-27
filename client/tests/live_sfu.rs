@@ -734,3 +734,55 @@ async fn the_knobs_that_shape_voice_quality_are_measured() {
         );
     }
 }
+
+/// What a moderator's disconnect, a kick or a dropped socket relies on when the
+/// app itself does not hang up: the server removes every seat the person holds.
+#[tokio::test]
+#[ignore = "needs a running LiveKit server; see the module docs"]
+async fn the_server_evicts_every_seat_a_person_holds_in_a_call() {
+    let url = env_or("LIVEKIT_URL", "ws://127.0.0.1:7880");
+    let channel = uuid::Uuid::new_v4();
+    let who = format!("evictee-{}", uuid::Uuid::new_v4().simple());
+    let voice_room = dioxusfun_server::livekit::room_name(channel);
+    let screen_room = dioxusfun_server::livekit::screen_room_name(channel);
+    let audio_identity = dioxusfun_server::livekit::screen_audio_identity(&who);
+
+    let mut seats = Vec::new();
+    for (room, identity) in [
+        (&voice_room, who.clone()),
+        (&screen_room, who.clone()),
+        (&screen_room, audio_identity),
+    ] {
+        let (joined, events) =
+            Room::connect(&url, &token(&identity, room, true), RoomOptions::default())
+                .await
+                .unwrap_or_else(|e| panic!("{identity} could not join {room}: {e}"));
+        seats.push((identity, joined, events));
+    }
+
+    let cfg = dioxusfun_server::livekit::LiveKitConfig {
+        explicit_url: Some(url.clone()),
+        port: 7880,
+        lan_host: None,
+        public_host: None,
+        api_key: env_or("LIVEKIT_API_KEY", "devkey"),
+        api_secret: env_or(
+            "LIVEKIT_API_SECRET",
+            "secret-must-be-at-least-32-chars-long",
+        ),
+        minter: None,
+    };
+    dioxusfun_server::livekit::evict(&cfg, channel, &who).await;
+
+    for (identity, _room, mut events) in seats {
+        wait_for(&mut events, &identity, |ev| {
+            matches!(
+                ev,
+                RoomEvent::Disconnected {
+                    reason: livekit::DisconnectReason::ParticipantRemoved
+                }
+            )
+        })
+        .await;
+    }
+}

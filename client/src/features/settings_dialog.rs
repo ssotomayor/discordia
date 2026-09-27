@@ -60,6 +60,7 @@ const SETTINGS_TABS: &[(&str, SettingsTab, &str, &str)] = &[
 pub fn SettingsDialog() -> Element {
     let mut state = use_app_state();
     let voice = use_voice_tx();
+    let gw_camera = crate::state::use_gateway();
     let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let persist_settings = move |_: FormEvent| crate::settings::save(&settings.read());
 
@@ -553,8 +554,8 @@ pub fn SettingsDialog() -> Element {
                                     settings.set(next.clone());
                                     crate::settings::save(&next);
                                     if state.read().camera_on {
-                                        crate::features::camera::toggle_camera(state, settings, false);
-                                        crate::features::camera::toggle_camera(state, settings, true);
+                                        crate::features::camera::toggle_camera(state, settings, &gw_camera, false);
+                                        crate::features::camera::toggle_camera(state, settings, &gw_camera, true);
                                     }
                                 },
                                 option { value: "", "System default" }

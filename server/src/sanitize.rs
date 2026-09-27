@@ -84,6 +84,27 @@ pub fn guild(g: &mut Guild) {
 pub fn channel(c: &mut Channel) {
     c.name = name_or("channel", &c.name, CHANNEL_NAME, "channel");
     c.topic = line(c.topic.take(), TOPIC);
+    c.access = match c.kind {
+        crate::protocol::ChannelKind::Voice => c.access.take().map(access),
+        _ => None,
+    };
+}
+
+pub fn access(a: crate::protocol::ChannelAccess) -> crate::protocol::ChannelAccess {
+    let mut roles = a.roles;
+    roles.sort_unstable();
+    roles.dedup();
+    roles.truncate(crate::protocol::MAX_ACCESS_ROLES);
+    let mut users: Vec<String> = a
+        .users
+        .iter()
+        .map(|u| pubkey(u))
+        .filter(|u| !u.is_empty())
+        .collect();
+    users.sort_unstable();
+    users.dedup();
+    users.truncate(crate::protocol::MAX_ACCESS_USERS);
+    crate::protocol::ChannelAccess { roles, users }
 }
 
 pub fn role(r: &mut Role) {

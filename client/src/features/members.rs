@@ -100,12 +100,13 @@ pub fn MembersPanel() -> Element {
                 .collect()
         })
         .unwrap_or_default();
-    let (can_kick, can_ban, can_roles, owner_pk, self_pk) = guild_id
+    let (can_kick, can_ban, can_roles, can_disconnect, owner_pk, self_pk) = guild_id
         .map(|gid| {
             (
                 snapshot.can(gid, Permission::KickMembers),
                 snapshot.can(gid, Permission::BanMembers),
                 snapshot.can(gid, Permission::ManageRoles),
+                snapshot.can(gid, Permission::DisconnectMembers),
                 snapshot
                     .guilds
                     .iter()
@@ -119,10 +120,10 @@ pub fn MembersPanel() -> Element {
                     .unwrap_or_default(),
             )
         })
-        .unwrap_or((false, false, false, String::new(), String::new()));
+        .unwrap_or((false, false, false, false, String::new(), String::new()));
     drop(snapshot);
 
-    let can_moderate = can_kick || can_ban || can_roles;
+    let can_moderate = can_kick || can_ban || can_roles || can_disconnect;
     let mut menu = use_signal::<Option<MemberMenu>>(|| None);
 
     let guild_voice_states: Vec<VoiceState> = voice_states
@@ -223,6 +224,7 @@ pub fn MembersPanel() -> Element {
                     can_kick,
                     can_ban,
                     can_roles,
+                    can_disconnect,
                     on_close: move |_| menu.set(None),
                     on_confirm: move |action: ModAction| {
                         if let Some(cur) = menu.write().as_mut() {
@@ -241,6 +243,7 @@ fn MemberMenuPopover(
     can_kick: bool,
     can_ban: bool,
     can_roles: bool,
+    can_disconnect: bool,
     on_close: EventHandler<()>,
     on_confirm: EventHandler<ModAction>,
 ) -> Element {
@@ -249,6 +252,13 @@ fn MemberMenuPopover(
 
     let gid = menu.guild_id;
     let target_pk = menu.pubkey.clone();
+    let in_a_call_here = state
+        .read()
+        .voice_states
+        .iter()
+        .any(|v| v.user_pubkey == target_pk && v.guild_id == gid && v.channel_id.is_some());
+    let gw_disconnect = gateway.clone();
+    let pk_disconnect = menu.pubkey.clone();
     let (target_roles, guild_roles) = {
         let s = state.read();
         let assigned = s
@@ -305,6 +315,20 @@ fn MemberMenuPopover(
                                         }
                                     }
                                 }
+                            }
+                        }
+                        if can_disconnect && in_a_call_here {
+                            button {
+                                class: "w-full text-left px-3 py-1.5 rounded text-[var(--warn)] hover:bg-[var(--warn)]/10 transition-colors",
+                                title: "Drops their voice, screen share and camera. They can join again.",
+                                onclick: move |_| {
+                                    gw_disconnect.send(ClientMessage::DisconnectVoice {
+                                        guild_id: gid,
+                                        user_pubkey: pk_disconnect.clone(),
+                                    });
+                                    on_close.call(());
+                                },
+                                "Disconnect from voice"
                             }
                         }
                         if can_kick {

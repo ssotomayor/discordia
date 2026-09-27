@@ -23,6 +23,7 @@ window.dxScreen = window.dxScreen || (function () {
   let localCameraStream = null;
   let lastCameraOpts = {};
   let cameraStarting = false;
+  let cameraGen = 0;
   const tracks = {};
   const audioTracks = {};
   function trackKey(id, kind) { return id + '|' + kind; }
@@ -170,7 +171,11 @@ window.dxScreen = window.dxScreen || (function () {
     desiredRoom = { url: url, token: token, key: key || null, e2ee: e2eeOn };
     if (room) {
       if (same) return;
+      // A different room is a different call: nothing published follows the
+      // move. A reconnect to the same room comes back through the null-room path.
       await stopLocalShareAudio();
+      await stopCamera();
+      try { await room.localParticipant.setScreenShareEnabled(false); } catch (e) {}
       const previous = room;
       room = null;
       try { await previous.disconnect(); } catch (e) {}
@@ -315,6 +320,11 @@ window.dxScreen = window.dxScreen || (function () {
   function isUserCancel(e) {
     const n = e && e.name;
     return n === 'NotAllowedError' || n === 'AbortError' || n === 'SecurityError';
+  }
+  function releaseStream(stream) {
+    if (stream) {
+      try { stream.getTracks().forEach(function (t) { t.stop(); }); } catch (e) {}
+    }
   }
   function abortShare(stream) {
     if (stream) {
@@ -565,6 +575,10 @@ window.dxScreen = window.dxScreen || (function () {
       return;
     }
     if (localCameraTrack) await stopCamera();
+    // A stop during any wait below moves the generation on; the start then
+    // releases what it opened and publishes nothing.
+    const gen = cameraGen;
+    const cancelled = function () { return gen !== cameraGen; };
     lastCameraOpts = opts;
     const base = { width: { ideal: opts.width || 1280 }, height: { ideal: opts.height || 720 }, frameRate: { ideal: opts.fps || 30 } };
     const attempts = opts.deviceId
@@ -578,12 +592,14 @@ window.dxScreen = window.dxScreen || (function () {
         if (i === attempts.length - 1) { post('camera-error', { detail: String((e && e.message) || e) }); return; }
       }
     }
+    if (cancelled()) { releaseStream(stream); return; }
     const vt = stream && stream.getVideoTracks()[0];
     if (!vt) { post('camera-error', { detail: 'no video track' }); return; }
     localCameraTrack = vt; localCameraStream = stream;
     attachLocalCamera('camera-self');
     vt.addEventListener('ended', function () { notifyCameraEnded(); });
-    for (let i = 0; i < 150 && !room; i++) await new Promise(function (r) { setTimeout(r, 100); });
+    for (let i = 0; i < 150 && !room && !cancelled(); i++) await new Promise(function (r) { setTimeout(r, 100); });
+    if (cancelled()) { releaseStream(stream); return; }
     if (!room) { await stopCamera(); post('camera-error', { detail: 'not connected to the stream room' }); return; }
     try {
       await withTimeout(
@@ -591,6 +607,11 @@ window.dxScreen = window.dxScreen || (function () {
         15000,
         'publishing the camera track timed out'
       );
+      if (cancelled()) {
+        try { await room.localParticipant.unpublishTrack(vt, true); } catch (e) {}
+        releaseStream(stream);
+        return;
+      }
       const s = (function () { try { return vt.getSettings(); } catch (e) { return {}; } })();
       post('camera-started', { deviceId: (s && s.deviceId) || '', label: vt.label || '' });
       listCameras();
@@ -631,6 +652,7 @@ window.dxScreen = window.dxScreen || (function () {
     }
   }
   async function stopCamera() {
+    cameraGen++;
     const vt = localCameraTrack;
     localCameraTrack = null; localCameraStream = null;
     detachLocalCamera('camera-self');
