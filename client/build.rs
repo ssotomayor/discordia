@@ -12,6 +12,21 @@ fn main() {
     println!("cargo::rustc-env=DISCORDIA_VERSION={version}");
 
     embed_info_plist();
+    grow_windows_main_stack();
+}
+
+/// Windows gives the main thread 1 MB where macOS and Linux give 8, and the UI,
+/// the gateway loop and the voice engine all run on it: a debug build joining a
+/// call overflowed there and nowhere else. Same 8 MB as the other platforms.
+fn grow_windows_main_stack() {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+        return;
+    }
+    match std::env::var("CARGO_CFG_TARGET_ENV").as_deref() {
+        Ok("msvc") => println!("cargo::rustc-link-arg-bins=/STACK:8388608"),
+        Ok("gnu") => println!("cargo::rustc-link-arg-bins=-Wl,--stack,8388608"),
+        _ => {}
+    }
 }
 
 /// macOS reads ATS and the TCC usage strings from the app's `Info.plist`, and a
