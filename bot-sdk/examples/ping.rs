@@ -1,4 +1,4 @@
-use dioxusfun_bot::protocol::ServerMessage;
+use dioxusfun_bot::protocol::{BotCommand, CommandOption, ServerMessage};
 use dioxusfun_bot::{Bot, BotIdentity};
 
 #[tokio::main]
@@ -35,7 +35,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let names: Vec<_> = guilds.iter().map(|g| g.name.as_str()).collect();
                     eprintln!("ready — active in: {}", names.join(", "));
                 }
+                bot.register_commands(vec![
+                    BotCommand::new("ping", "Ping").description("Replies with pong"),
+                    BotCommand::new("roll", "Roll")
+                        .description("Rolls a die, privately")
+                        .option(CommandOption::integer("sides", "Sides", 2, 100)),
+                ])
+                .await?;
             }
+            ServerMessage::CommandInvoked(inv) => match inv.command.as_str() {
+                "ping" => {
+                    let who = &inv.invoker.username;
+                    bot.send_message(inv.channel_id, &format!("pong 🏓 ({who} pressed it)"))
+                        .await?;
+                }
+                "roll" => {
+                    let sides = inv.integer("sides").unwrap_or(6) as u64;
+                    let nanos = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)?
+                        .subsec_nanos() as u64;
+                    bot.respond(&inv, &format!("🎲 {} of {sides}", nanos % sides + 1))
+                        .await?;
+                }
+                _ => {}
+            },
             ServerMessage::MessageCreate(msg) => {
                 if msg.author.pubkey == bot.user.pubkey {
                     continue;

@@ -1,5 +1,6 @@
 pub mod activities;
 pub mod appearance;
+pub mod bot_commands;
 pub mod camera;
 pub mod channel_access;
 pub mod channels;

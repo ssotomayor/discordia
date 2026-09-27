@@ -12,6 +12,8 @@ use crate::protocol::{
 };
 use crate::store::Store;
 
+mod commands;
+
 /// A failed write is logged and ignored: the change survives the session but
 /// not a restart, and is never a user-facing error.
 fn persist(res: Result<(), sqlx::Error>, what: &str) {
@@ -79,6 +81,9 @@ pub struct AppState {
     pub activities: DashMap<String, crate::protocol::Activity>,
     pub voice_states: DashMap<String, VoiceState>,
     pub bot_installs: DashMap<String, DashMap<Id, BotInstall>>,
+    /// Memory only: a bot declares its commands on every connect.
+    pub bot_commands: DashMap<String, Vec<crate::protocol::BotCommand>>,
+    invocations: DashMap<Id, commands::Pending>,
     pub roles: DashMap<Id, Vec<Role>>,
     pub emojis: DashMap<Id, Vec<GuildEmoji>>,
     pub sounds: DashMap<Id, Vec<GuildSound>>,
@@ -116,6 +121,8 @@ impl AppState {
             profiles: DashMap::new(),
             activities: DashMap::new(),
             bot_installs: DashMap::new(),
+            bot_commands: DashMap::new(),
+            invocations: DashMap::new(),
             roles: DashMap::new(),
             emojis: DashMap::new(),
             sounds: DashMap::new(),
@@ -895,6 +902,7 @@ impl AppState {
         let sounds = self.sounds_for_guilds(&my_guild_ids);
         let seen: Vec<String> = members.iter().map(|m| m.user.pubkey.clone()).collect();
         let activities = self.activities_of(&seen);
+        let bot_commands = self.commands_for_guilds(&my_guild_ids);
 
         ServerMessage::Ready {
             user: user.clone(),
@@ -908,6 +916,7 @@ impl AppState {
             emojis,
             sounds,
             activities,
+            bot_commands,
             operator: self.operators.contains(&user.pubkey),
         }
     }
@@ -2789,6 +2798,7 @@ impl AppState {
             emojis: Vec::new(),
             sounds: Vec::new(),
             activities: Vec::new(),
+            bot_commands: Vec::new(),
             operator: false,
         }
     }

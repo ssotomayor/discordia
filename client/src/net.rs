@@ -632,6 +632,7 @@ fn apply(
             emojis,
             sounds,
             activities,
+            bot_commands,
             operator,
         } => {
             s.self_user = Some(user);
@@ -677,6 +678,11 @@ fn apply(
                 }
                 map
             };
+            s.bot_commands = bot_commands
+                .into_iter()
+                .map(|set| (set.bot_pubkey, set.commands))
+                .collect();
+            s.command_notes.clear();
             s.messages = BTreeMap::new();
             // A request the last session never got an answer to would
             // otherwise stay "in flight" forever.
@@ -879,6 +885,30 @@ fn apply(
         }
         ServerMessage::GuildIntegrations { guild_id, bots } => {
             s.integrations.insert(guild_id, bots);
+        }
+        ServerMessage::BotCommands(set) => {
+            s.bot_commands.insert(set.bot_pubkey, set.commands);
+        }
+        ServerMessage::CommandResponse {
+            invocation_id,
+            bot_pubkey,
+            channel_id,
+            content,
+        } => {
+            s.command_notes.push(crate::state::CommandNote {
+                invocation_id,
+                bot_pubkey,
+                channel_id,
+                content,
+            });
+            let over = s
+                .command_notes
+                .len()
+                .saturating_sub(crate::state::MAX_COMMAND_NOTES);
+            s.command_notes.drain(..over);
+        }
+        ServerMessage::CommandInvoked(_) => {
+            tracing::warn!("ignoring a bot invocation sent to a person");
         }
         ServerMessage::GuildRoles { guild_id, roles } => {
             s.roles.insert(guild_id, by_position(roles));

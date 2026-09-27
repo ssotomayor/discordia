@@ -18,16 +18,16 @@ name instead.
 | File | Lines |
 |---|---|
 | `client/src/features/voice.rs` | 3065 |
-| `server/src/state/mod.rs` | 2973 |
+| `server/src/state/mod.rs` | 2983 |
 | `server/tests/owner_controls.rs` | 3036 |
-| `server/src/gateway/connection.rs` | 2680 |
+| `server/src/gateway/connection.rs` | 2790 |
 | `client/src/features/channels.rs` | 1727 |
 | `client/src/features/screenshare.rs` | 1639 |
-| `protocol/src/lib.rs` | 1928 |
-| `client/src/state.rs` | 1791 |
+| `protocol/src/lib.rs` | 2500 |
+| `client/src/state.rs` | 1832 |
 | `client/src/update.rs` | 1226 |
-| `client/src/net.rs` | 1344 |
-| `client/src/features/chat.rs` | 1053 |
+| `client/src/net.rs` | 1374 |
+| `client/src/features/chat.rs` | 1057 |
 | `server/src/store.rs` | 1041 |
 | `client/src/features/guild_settings.rs` | 1138 |
 | `client/src/identity.rs` | 1029 |
@@ -69,6 +69,7 @@ that direction says a file is safe to open when it is not.
 | Who sees a voice channel | `server/src/state/mod.rs` | `can_see_channel`; the gateway's `send_voice_state`, `viewers_of`, `voice_sight` and `apply_sight_change` carry it out (trap 30). Configured in `client/src/features/channel_access.rs`, opened from the channel menu |
 | Taking someone out of a call | `server/src/gateway/connection.rs` | `DisconnectVoice` (Disconnect from voice permission); every exit calls `evict_from_call` → `livekit::evict`, proven against a real SFU by `client/tests/live_sfu.rs` |
 | Where a self-host's calls go, and what outlives a rendezvous restart | `client/src/host.rs` | `sfu_plan` — bundled unless friends cannot reach the media ports; `rendezvous::maintain` re-registers and refreshes the grant, `net::apply_host_update` shows it in the banner |
+| A bot's buttons | `server/src/state/commands.rs` | `invoke_command` — every check a press passes before the bot sees it; `protocol::validate_commands` and `check_args` hold the declaration and the args, and the client form runs the same `check_args`. Drawn by `features/bot_commands.rs`: `BotCommandsSection` on the profile card, `CommandNotes` for private replies under the chat |
 | A socket that went quiet | `server/src/watchdog.rs` | `ArmWatch` — both socket loops name the branch they are in; `loop step still running` in the log names the arm that never returned, `gateway send dropped` a client loop that is gone |
 | Leaving a server, and stopping an embedded one | `client/src/features/workspace.rs` | `Leaving` + `leave`; the teardown effect runs before `on_disconnect` (trap 17) |
 

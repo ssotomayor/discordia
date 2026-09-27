@@ -97,10 +97,12 @@ pub async fn handle_connection(
                         ClientMessage::FetchMessages { .. }
                             | ClientMessage::SendMessage { .. }
                             | ClientMessage::React { .. }
+                            | ClientMessage::RegisterCommands { .. }
+                            | ClientMessage::RespondToCommand { .. }
                     )
                 {
                     let _ = send(&mut ws_tx, &ServerMessage::Error {
-                        message: "bots may only fetch history, send messages, and react".into(),
+                        message: "bots may only fetch history, send messages, react, and answer commands".into(),
                     }).await;
                     continue;
                 }
@@ -900,7 +902,10 @@ pub async fn handle_connection(
                             Ok((install, member)) => {
                                 tracing::info!(%guild_id, bot = ?bot_pubkey, by = ?u.username, "bot installed");
                                 let targets = ctx.state.guild_member_pubkeys(guild_id);
-                                ctx.state.deliver(targets, ServerMessage::MemberJoin(member));
+                                ctx.state.deliver(targets.clone(), ServerMessage::MemberJoin(member));
+                                if let Some(set) = ctx.state.commands_of(&bot_pubkey) {
+                                    ctx.state.deliver(targets, ServerMessage::BotCommands(set));
+                                }
                                 let _ = send(&mut ws_tx, &ServerMessage::GuildIntegrations {
                                     guild_id,
                                     bots: ctx.state.guild_installs(guild_id),
@@ -956,6 +961,103 @@ pub async fn handle_connection(
                             guild_id,
                             bots: ctx.state.guild_installs(guild_id),
                         }).await;
+                    }
+                    ClientMessage::RegisterCommands { commands } => {
+                        let Some(u) = user.as_ref() else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "identify first".into(),
+                            }).await;
+                            continue;
+                        };
+                        if !is_bot {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "only a bot declares commands".into(),
+                            }).await;
+                            continue;
+                        }
+                        if !limiter.allow() {
+                            reject_rate_limited(&mut ws_tx).await;
+                            continue;
+                        }
+                        match ctx.state.register_commands(&u.pubkey, commands) {
+                            Ok((guilds, commands)) => {
+                                tracing::info!(bot = %u.pubkey, count = commands.len(), "bot commands registered");
+                                let mut targets: Vec<String> = guilds
+                                    .iter()
+                                    .flat_map(|g| ctx.state.guild_member_pubkeys(*g))
+                                    .collect();
+                                targets.sort_unstable();
+                                targets.dedup();
+                                ctx.state.deliver(targets, ServerMessage::BotCommands(
+                                    crate::protocol::BotCommandSet { bot_pubkey: u.pubkey.clone(), commands },
+                                ));
+                            }
+                            Err(message) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await;
+                            }
+                        }
+                    }
+                    ClientMessage::InvokeCommand { guild_id, channel_id, bot_pubkey, command, args } => {
+                        let Some(u) = user.as_ref() else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "identify first".into(),
+                            }).await;
+                            continue;
+                        };
+                        if !limiter.allow() {
+                            reject_rate_limited(&mut ws_tx).await;
+                            continue;
+                        }
+                        match ctx.state.invoke_command(u, guild_id, channel_id, &bot_pubkey, &command, args) {
+                            Ok(invocation) => {
+                                tracing::debug!(%guild_id, bot = %bot_pubkey, command = ?invocation.command, by = ?u.username, "bot command invoked");
+                                ctx.state.deliver(vec![bot_pubkey], ServerMessage::CommandInvoked(invocation));
+                            }
+                            Err(message) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await;
+                            }
+                        }
+                    }
+                    ClientMessage::RespondToCommand { invocation_id, content } => {
+                        let Some(u) = user.as_ref() else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "identify first".into(),
+                            }).await;
+                            continue;
+                        };
+                        if !is_bot {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "only a bot answers commands".into(),
+                            }).await;
+                            continue;
+                        }
+                        if !limiter.allow() {
+                            reject_rate_limited(&mut ws_tx).await;
+                            continue;
+                        }
+                        let content = crate::protocol::sanitize_paragraph(
+                            &content,
+                            crate::protocol::MAX_COMMAND_REPLY,
+                        ).trim().to_string();
+                        if content.is_empty() {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "a reply needs some text".into(),
+                            }).await;
+                            continue;
+                        }
+                        match ctx.state.take_invocation(&u.pubkey, invocation_id) {
+                            Ok((invoker, channel_id)) => {
+                                ctx.state.deliver(vec![invoker], ServerMessage::CommandResponse {
+                                    invocation_id,
+                                    bot_pubkey: u.pubkey.clone(),
+                                    channel_id,
+                                    content,
+                                });
+                            }
+                            Err(message) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await;
+                            }
+                        }
                     }
                     ClientMessage::SetScreenShare { channel_id: _, sharing } => {
                         let Some(u) = user.as_ref() else { continue };
@@ -2380,6 +2482,9 @@ fn filter_for_bot(
         ServerMessage::ChannelDelete { guild_id, .. } => state
             .bot_install(*guild_id, bot_pubkey)
             .map(|_| msg.clone()),
+        ServerMessage::CommandInvoked(inv) => state
+            .bot_install(inv.guild_id, bot_pubkey)
+            .map(|_| msg.clone()),
         ServerMessage::Error { .. } => Some(msg.clone()),
         _ => None,
     }
@@ -2440,6 +2545,11 @@ where
     .is_err()
     {
         return Err(());
+    }
+    for set in state.commands_for_guilds(&[guild_id]) {
+        if send(ws_tx, &ServerMessage::BotCommands(set)).await.is_err() {
+            return Err(());
+        }
     }
     if let Some(updated) = state.note_join_and_maybe_panic(guild_id).await {
         let members = state.guild_member_pubkeys(guild_id);

@@ -8,7 +8,7 @@ use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 pub use dioxusfun_protocol as protocol;
-use protocol::{ClientMessage, Id, ServerMessage, User};
+use protocol::{BotCommand, ClientMessage, Id, Invocation, ServerMessage, User};
 
 type Stream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
@@ -214,6 +214,22 @@ impl Bot {
             channel_id,
             message_id,
             emoji: emoji.to_string(),
+        })
+        .await
+    }
+
+    /// Replaces every command declared before. Call it after `Ready`, on each
+    /// connect: the server keeps them only while it runs.
+    pub async fn register_commands(&mut self, commands: Vec<BotCommand>) -> Result<()> {
+        self.send(&ClientMessage::RegisterCommands { commands })
+            .await
+    }
+
+    /// A reply only the person who pressed sees. Once per invocation.
+    pub async fn respond(&mut self, invocation: &Invocation, content: &str) -> Result<()> {
+        self.send(&ClientMessage::RespondToCommand {
+            invocation_id: invocation.id,
+            content: content.to_string(),
         })
         .await
     }

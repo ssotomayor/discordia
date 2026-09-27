@@ -184,11 +184,12 @@ pub fn ChatView() -> Element {
             cid,
             msgs.and_then(|m| m.first().map(|x| x.id)),
             msgs.and_then(|m| m.last().map(|x| x.id)),
+            s.command_notes.len(),
         )
     });
     let mut prev_key = use_signal(|| (None::<Id>, None::<Id>));
     use_effect(move || {
-        let (cid, first, _last) = scroll_key();
+        let (cid, first, _last, _notes) = scroll_key();
         let (prev_cid, prev_first) = *prev_key.peek();
         let channel_changed = cid != prev_cid;
         let prepended = !channel_changed && prev_first.is_some() && first != prev_first;
@@ -290,6 +291,9 @@ pub fn ChatView() -> Element {
                                 }
                             }
                         }
+                    }
+                    if let Some(channel_id) = selected_channel {
+                        crate::features::bot_commands::CommandNotes { channel_id }
                     }
                 }
 

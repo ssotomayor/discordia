@@ -349,6 +349,7 @@ pub fn ProfileCard() -> Element {
                             }
                         }
                     }
+                    crate::features::bot_commands::BotCommandsSection { bot_pubkey: pubkey.clone() }
                     if !is_self {
                         button {
                             class: "mt-4 w-full py-2 rounded-xl text-xs border border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--text)] transition-all",

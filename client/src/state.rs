@@ -207,6 +207,17 @@ pub struct CameraDevice {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandNote {
+    pub invocation_id: Id,
+    pub bot_pubkey: String,
+    pub channel_id: Id,
+    pub content: String,
+}
+
+/// Enough to scroll back through a burst of presses, not a history.
+pub const MAX_COMMAND_NOTES: usize = 20;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DmInfo {
     pub channel_id: Id,
     pub other_pubkey: String,
@@ -346,6 +357,10 @@ pub struct AppState {
     pub host_info: Option<HostInfo>,
     pub transport: Transport,
     pub integrations: HashMap<Id, Vec<BotInstall>>,
+    /// By bot pubkey. What each bot's profile card offers to press.
+    pub bot_commands: HashMap<String, Vec<crate::protocol::BotCommand>>,
+    /// A bot's private answers: never stored anywhere, gone on reconnect.
+    pub command_notes: Vec<CommandNote>,
     pub guild_emojis: HashMap<Id, Vec<crate::protocol::GuildEmoji>>,
     pub guild_sounds: HashMap<Id, Vec<crate::protocol::GuildSound>>,
     pub emoji_images: HashMap<String, String>,
@@ -454,6 +469,8 @@ impl AppState {
             host_info: None,
             transport: Transport::Loopback,
             integrations: HashMap::new(),
+            bot_commands: HashMap::new(),
+            command_notes: Vec::new(),
             guild_emojis: HashMap::new(),
             guild_sounds: HashMap::new(),
             emoji_images: HashMap::new(),

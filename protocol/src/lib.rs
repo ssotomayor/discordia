@@ -1122,6 +1122,373 @@ impl BotInstall {
     }
 }
 
+pub const MAX_BOT_COMMANDS: usize = 25;
+pub const MAX_COMMAND_OPTIONS: usize = 8;
+pub const MAX_COMMAND_CHOICES: usize = 25;
+pub const MAX_COMMAND_ID: usize = 32;
+pub const MAX_COMMAND_LABEL: usize = 32;
+pub const MAX_COMMAND_DESCRIPTION: usize = 100;
+pub const MAX_COMMAND_TEXT: u16 = 1000;
+pub const MAX_COMMAND_MEMBERS: u8 = 25;
+pub const MAX_COMMAND_REPLY: usize = 2000;
+
+/// A button a bot puts on its profile card. Declared by the bot on every
+/// connect, so it is the bot's code, never the guild's data.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BotCommand {
+    pub id: String,
+    pub label: String,
+    #[serde(default)]
+    pub description: String,
+    /// Checked against whoever presses it, by the server: a bot is never sent
+    /// roles, so it cannot tell an admin from anyone else.
+    #[serde(default)]
+    pub permission: Option<Permission>,
+    #[serde(default)]
+    pub options: Vec<CommandOption>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CommandOption {
+    pub id: String,
+    pub label: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub required: bool,
+    pub kind: OptionKind,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum OptionKind {
+    Text { max_len: u16 },
+    Integer { min: i64, max: i64 },
+    Choice { choices: Vec<Choice> },
+    Members { min: u8, max: u8 },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Choice {
+    pub value: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CommandArg {
+    pub id: String,
+    pub value: ArgValue,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", content = "value", rename_all = "snake_case")]
+pub enum ArgValue {
+    Text(String),
+    Integer(i64),
+    Choice(String),
+    /// Pubkeys. The bot gets their names in `Invocation::users`.
+    Members(Vec<String>),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BotCommandSet {
+    pub bot_pubkey: String,
+    pub commands: Vec<BotCommand>,
+}
+
+/// A press of a bot's button, as the bot receives it: already permitted and
+/// checked against the command's options by the server.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Invocation {
+    pub id: Id,
+    pub guild_id: Id,
+    pub channel_id: Id,
+    pub invoker: User,
+    pub command: String,
+    pub args: Vec<CommandArg>,
+    /// Every pubkey a `Members` arg names, under the name this guild knows.
+    #[serde(default)]
+    pub users: Vec<User>,
+}
+
+impl Invocation {
+    fn arg(&self, id: &str) -> Option<&ArgValue> {
+        self.args.iter().find(|a| a.id == id).map(|a| &a.value)
+    }
+
+    pub fn text(&self, id: &str) -> Option<&str> {
+        match self.arg(id) {
+            Some(ArgValue::Text(t)) => Some(t),
+            _ => None,
+        }
+    }
+
+    pub fn integer(&self, id: &str) -> Option<i64> {
+        match self.arg(id) {
+            Some(ArgValue::Integer(n)) => Some(*n),
+            _ => None,
+        }
+    }
+
+    pub fn choice(&self, id: &str) -> Option<&str> {
+        match self.arg(id) {
+            Some(ArgValue::Choice(c)) => Some(c),
+            _ => None,
+        }
+    }
+
+    pub fn members(&self, id: &str) -> Vec<&User> {
+        match self.arg(id) {
+            Some(ArgValue::Members(keys)) => keys
+                .iter()
+                .filter_map(|k| self.users.iter().find(|u| &u.pubkey == k))
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+}
+
+impl BotCommand {
+    pub fn new(id: &str, label: &str) -> Self {
+        Self {
+            id: id.to_string(),
+            label: label.to_string(),
+            description: String::new(),
+            permission: None,
+            options: Vec::new(),
+        }
+    }
+
+    pub fn description(mut self, text: &str) -> Self {
+        self.description = text.to_string();
+        self
+    }
+
+    pub fn requires(mut self, perm: Permission) -> Self {
+        self.permission = Some(perm);
+        self
+    }
+
+    pub fn option(mut self, option: CommandOption) -> Self {
+        self.options.push(option);
+        self
+    }
+}
+
+impl CommandOption {
+    fn new(id: &str, label: &str, kind: OptionKind) -> Self {
+        Self {
+            id: id.to_string(),
+            label: label.to_string(),
+            description: String::new(),
+            required: true,
+            kind,
+        }
+    }
+
+    pub fn text(id: &str, label: &str, max_len: u16) -> Self {
+        Self::new(id, label, OptionKind::Text { max_len })
+    }
+
+    pub fn integer(id: &str, label: &str, min: i64, max: i64) -> Self {
+        Self::new(id, label, OptionKind::Integer { min, max })
+    }
+
+    pub fn choice(id: &str, label: &str, choices: &[(&str, &str)]) -> Self {
+        let choices = choices
+            .iter()
+            .map(|(value, label)| Choice {
+                value: value.to_string(),
+                label: label.to_string(),
+            })
+            .collect();
+        Self::new(id, label, OptionKind::Choice { choices })
+    }
+
+    pub fn members(id: &str, label: &str, min: u8, max: u8) -> Self {
+        Self::new(id, label, OptionKind::Members { min, max })
+    }
+
+    pub fn optional(mut self) -> Self {
+        self.required = false;
+        self
+    }
+
+    pub fn description(mut self, text: &str) -> Self {
+        self.description = text.to_string();
+        self
+    }
+}
+
+pub fn is_command_id(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= MAX_COMMAND_ID
+        && s.bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
+}
+
+fn command_label(kind: &str, raw: &str) -> Result<String, String> {
+    let label = sanitize_line(raw, MAX_COMMAND_LABEL);
+    let label = label.trim();
+    if label.is_empty() {
+        return Err(format!("{kind} needs a label"));
+    }
+    Ok(label.to_string())
+}
+
+/// A bot's declaration is untrusted input: it is drawn on every member's
+/// screen. One bad command refuses the lot, so a bot author sees why.
+pub fn validate_commands(raw: Vec<BotCommand>) -> Result<Vec<BotCommand>, String> {
+    if raw.len() > MAX_BOT_COMMANDS {
+        return Err(format!(
+            "a bot may declare at most {MAX_BOT_COMMANDS} commands"
+        ));
+    }
+    let mut out: Vec<BotCommand> = Vec::with_capacity(raw.len());
+    for cmd in raw {
+        if !is_command_id(&cmd.id) {
+            return Err(format!(
+                "command id '{}' must be 1..={MAX_COMMAND_ID} of a-z, 0-9, _ or -",
+                cmd.id
+            ));
+        }
+        if out.iter().any(|c| c.id == cmd.id) {
+            return Err(format!("command id '{}' is declared twice", cmd.id));
+        }
+        if cmd.options.len() > MAX_COMMAND_OPTIONS {
+            return Err(format!(
+                "command '{}' has more than {MAX_COMMAND_OPTIONS} options",
+                cmd.id
+            ));
+        }
+        let mut options: Vec<CommandOption> = Vec::with_capacity(cmd.options.len());
+        for opt in cmd.options {
+            if !is_command_id(&opt.id) || options.iter().any(|o| o.id == opt.id) {
+                return Err(format!(
+                    "command '{}' has a missing, malformed or repeated option id '{}'",
+                    cmd.id, opt.id
+                ));
+            }
+            let kind = match opt.kind {
+                OptionKind::Text { max_len } => OptionKind::Text {
+                    max_len: max_len.clamp(1, MAX_COMMAND_TEXT),
+                },
+                OptionKind::Integer { min, max } if min <= max => OptionKind::Integer { min, max },
+                OptionKind::Choice { choices }
+                    if !choices.is_empty() && choices.len() <= MAX_COMMAND_CHOICES =>
+                {
+                    let mut kept: Vec<Choice> = Vec::with_capacity(choices.len());
+                    for c in choices {
+                        if !is_command_id(&c.value) || kept.iter().any(|k| k.value == c.value) {
+                            return Err(format!(
+                                "option '{}' has a malformed or repeated choice '{}'",
+                                opt.id, c.value
+                            ));
+                        }
+                        kept.push(Choice {
+                            label: command_label("a choice", &c.label)?,
+                            value: c.value,
+                        });
+                    }
+                    OptionKind::Choice { choices: kept }
+                }
+                OptionKind::Members { min, max } if min <= max && max >= 1 => {
+                    let max = max.min(MAX_COMMAND_MEMBERS);
+                    OptionKind::Members {
+                        min: min.min(max),
+                        max,
+                    }
+                }
+                _ => {
+                    return Err(format!(
+                        "option '{}' of command '{}' has impossible bounds",
+                        opt.id, cmd.id
+                    ));
+                }
+            };
+            options.push(CommandOption {
+                label: command_label("an option", &opt.label)?,
+                description: sanitize_line(&opt.description, MAX_COMMAND_DESCRIPTION),
+                id: opt.id,
+                required: opt.required,
+                kind,
+            });
+        }
+        out.push(BotCommand {
+            label: command_label("a command", &cmd.label)?,
+            description: sanitize_line(&cmd.description, MAX_COMMAND_DESCRIPTION),
+            id: cmd.id,
+            permission: cmd.permission,
+            options,
+        });
+    }
+    Ok(out)
+}
+
+/// Holds a press to the command's own declaration, returning the arguments in
+/// option order. Whether a picked member belongs to the guild is the server's.
+pub fn check_args(cmd: &BotCommand, args: Vec<CommandArg>) -> Result<Vec<CommandArg>, String> {
+    for (i, a) in args.iter().enumerate() {
+        if !cmd.options.iter().any(|o| o.id == a.id) {
+            return Err(format!("'{}' has no option '{}'", cmd.label, a.id));
+        }
+        if args[..i].iter().any(|b| b.id == a.id) {
+            return Err(format!("option '{}' was sent twice", a.id));
+        }
+    }
+    let mut out = Vec::with_capacity(cmd.options.len());
+    for opt in &cmd.options {
+        let given = args
+            .iter()
+            .find(|a| a.id == opt.id)
+            .map(|a| a.value.clone());
+        let value = match (&opt.kind, given) {
+            (_, None) => None,
+            (OptionKind::Text { max_len }, Some(ArgValue::Text(t))) => {
+                let t = sanitize_line(&t, *max_len as usize).trim().to_string();
+                (!t.is_empty()).then_some(ArgValue::Text(t))
+            }
+            (OptionKind::Integer { min, max }, Some(ArgValue::Integer(n))) => {
+                if n < *min || n > *max {
+                    return Err(format!("{} must be between {min} and {max}", opt.label));
+                }
+                Some(ArgValue::Integer(n))
+            }
+            (OptionKind::Choice { choices }, Some(ArgValue::Choice(c))) => {
+                if !choices.iter().any(|k| k.value == c) {
+                    return Err(format!("{} has no choice '{c}'", opt.label));
+                }
+                Some(ArgValue::Choice(c))
+            }
+            (OptionKind::Members { min, max }, Some(ArgValue::Members(keys))) => {
+                let mut unique: Vec<String> = Vec::with_capacity(keys.len());
+                for k in keys {
+                    if !is_pubkey_hex(&k) {
+                        return Err(format!("{} names something that is not a key", opt.label));
+                    }
+                    if !unique.contains(&k) {
+                        unique.push(k);
+                    }
+                }
+                if unique.len() < *min as usize || unique.len() > *max as usize {
+                    return Err(format!("{} takes {min} to {max} people", opt.label));
+                }
+                (!unique.is_empty()).then_some(ArgValue::Members(unique))
+            }
+            _ => return Err(format!("{} got the wrong kind of value", opt.label)),
+        };
+        match value {
+            Some(value) => out.push(CommandArg {
+                id: opt.id.clone(),
+                value,
+            }),
+            None if opt.required => return Err(format!("{} is required", opt.label)),
+            None => {}
+        }
+    }
+    Ok(out)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", content = "d", rename_all = "snake_case")]
 pub enum ClientMessage {
@@ -1260,6 +1627,23 @@ pub enum ClientMessage {
     },
     FetchIntegrations {
         guild_id: Id,
+    },
+    /// Bot only. Replaces whatever the bot declared before.
+    RegisterCommands {
+        commands: Vec<BotCommand>,
+    },
+    InvokeCommand {
+        guild_id: Id,
+        channel_id: Id,
+        bot_pubkey: String,
+        command: String,
+        #[serde(default)]
+        args: Vec<CommandArg>,
+    },
+    /// Bot only. Reaches the one person who pressed, once, and is never stored.
+    RespondToCommand {
+        invocation_id: Id,
+        content: String,
     },
     CreateRole {
         guild_id: Id,
@@ -1467,6 +1851,8 @@ pub enum ServerMessage {
         #[serde(default)]
         activities: Vec<UserActivity>,
         #[serde(default)]
+        bot_commands: Vec<BotCommandSet>,
+        #[serde(default)]
         operator: bool,
     },
     GuildEmojis {
@@ -1583,6 +1969,14 @@ pub enum ServerMessage {
     GuildIntegrations {
         guild_id: Id,
         bots: Vec<BotInstall>,
+    },
+    BotCommands(BotCommandSet),
+    CommandInvoked(Invocation),
+    CommandResponse {
+        invocation_id: Id,
+        bot_pubkey: String,
+        channel_id: Id,
+        content: String,
     },
     ScreenShareState {
         channel_id: Id,
@@ -1924,5 +2318,183 @@ mod leveling_tests {
         assert_eq!(l.amount_for(XpAction::VoiceMinute), 0);
         assert_eq!(l.cooldown_secs, 60);
         assert_eq!(l.member_sort, MemberSort::Name);
+    }
+}
+
+#[cfg(test)]
+mod command_tests {
+    use super::*;
+
+    fn key(c: char) -> String {
+        std::iter::repeat_n(c, 64).collect()
+    }
+
+    fn lechear() -> BotCommand {
+        BotCommand::new("lechear", "Lechear")
+            .option(CommandOption::choice(
+                "game",
+                "Juego",
+                &[("smash", "Smash"), ("cod", "CoD")],
+            ))
+            .option(CommandOption::members("targets", "A quién", 1, 3))
+            .option(CommandOption::integer("kills", "Kills", 0, 30).optional())
+    }
+
+    #[test]
+    fn a_declaration_is_cleaned_not_trusted() {
+        let mut cmd = lechear();
+        cmd.label = " Lech\u{202E}ear ".into();
+        cmd.options[1].kind = OptionKind::Members { min: 1, max: 200 };
+        let out = validate_commands(vec![cmd]).unwrap();
+        assert_eq!(out[0].label, "Lechear");
+        assert_eq!(
+            out[0].options[1].kind,
+            OptionKind::Members {
+                min: 1,
+                max: MAX_COMMAND_MEMBERS
+            }
+        );
+    }
+
+    #[test]
+    fn a_malformed_declaration_is_refused_whole() {
+        assert!(validate_commands(vec![BotCommand::new("Ping!", "Ping")]).is_err());
+        assert!(validate_commands(vec![BotCommand::new("ping", "  ")]).is_err());
+        assert!(
+            validate_commands(vec![BotCommand::new("a", "A"), BotCommand::new("a", "B")]).is_err()
+        );
+        let backwards = BotCommand::new("n", "N").option(CommandOption::integer("x", "X", 5, 1));
+        assert!(validate_commands(vec![backwards]).is_err());
+        let too_many: Vec<_> = (0..=MAX_BOT_COMMANDS)
+            .map(|i| BotCommand::new(&format!("c{i}"), "C"))
+            .collect();
+        assert!(validate_commands(too_many).is_err());
+    }
+
+    #[test]
+    fn args_come_back_in_option_order_and_deduplicated() {
+        let cmd = lechear();
+        let args = vec![
+            CommandArg {
+                id: "targets".into(),
+                value: ArgValue::Members(vec![key('a'), key('a'), key('b')]),
+            },
+            CommandArg {
+                id: "game".into(),
+                value: ArgValue::Choice("cod".into()),
+            },
+        ];
+        let out = check_args(&cmd, args).unwrap();
+        assert_eq!(out[0].id, "game");
+        assert_eq!(out[1].value, ArgValue::Members(vec![key('a'), key('b')]));
+        assert_eq!(out.len(), 2, "an optional option left out stays out");
+    }
+
+    #[test]
+    fn args_outside_the_declaration_are_refused() {
+        let cmd = lechear();
+        let game = CommandArg {
+            id: "game".into(),
+            value: ArgValue::Choice("smash".into()),
+        };
+        let one = CommandArg {
+            id: "targets".into(),
+            value: ArgValue::Members(vec![key('a')]),
+        };
+        let refused = [
+            vec![one.clone()],
+            vec![
+                game.clone(),
+                CommandArg {
+                    id: "targets".into(),
+                    value: ArgValue::Members(vec![]),
+                },
+            ],
+            vec![
+                CommandArg {
+                    id: "game".into(),
+                    value: ArgValue::Choice("r6".into()),
+                },
+                one.clone(),
+            ],
+            vec![
+                game.clone(),
+                one.clone(),
+                CommandArg {
+                    id: "kills".into(),
+                    value: ArgValue::Integer(31),
+                },
+            ],
+            vec![
+                game.clone(),
+                one.clone(),
+                CommandArg {
+                    id: "kills".into(),
+                    value: ArgValue::Text("3".into()),
+                },
+            ],
+            vec![
+                game.clone(),
+                one.clone(),
+                CommandArg {
+                    id: "extra".into(),
+                    value: ArgValue::Integer(1),
+                },
+            ],
+            vec![
+                game.clone(),
+                CommandArg {
+                    id: "targets".into(),
+                    value: ArgValue::Members(vec!["nobody".into()]),
+                },
+            ],
+            vec![game.clone(), game.clone(), one.clone()],
+        ];
+        for args in refused {
+            assert!(check_args(&cmd, args.clone()).is_err(), "accepted {args:?}");
+        }
+    }
+
+    #[test]
+    fn an_invocation_reads_its_members_by_name() {
+        let inv = Invocation {
+            id: Id::nil(),
+            guild_id: Id::nil(),
+            channel_id: Id::nil(),
+            invoker: User {
+                pubkey: key('c'),
+                username: "c".into(),
+            },
+            command: "lechear".into(),
+            args: vec![CommandArg {
+                id: "targets".into(),
+                value: ArgValue::Members(vec![key('a')]),
+            }],
+            users: vec![User {
+                pubkey: key('a'),
+                username: "ana".into(),
+            }],
+        };
+        assert_eq!(inv.members("targets")[0].username, "ana");
+        assert!(inv.text("targets").is_none());
+    }
+
+    #[test]
+    fn the_wire_shape_is_tagged() {
+        let json = serde_json::to_value(ClientMessage::InvokeCommand {
+            guild_id: Id::nil(),
+            channel_id: Id::nil(),
+            bot_pubkey: key('a'),
+            command: "ping".into(),
+            args: vec![CommandArg {
+                id: "n".into(),
+                value: ArgValue::Integer(3),
+            }],
+        })
+        .unwrap();
+        assert_eq!(json["op"], "invoke_command");
+        assert_eq!(json["d"]["args"][0]["value"]["type"], "integer");
+        let kind = serde_json::to_value(OptionKind::Members { min: 1, max: 2 }).unwrap();
+        assert_eq!(kind["type"], "members");
     }
 }
