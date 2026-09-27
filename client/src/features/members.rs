@@ -20,31 +20,14 @@ enum ModAction {
     Ban,
 }
 
-/// `voice_states` must already be narrowed to one guild: `AppState` keeps every
-/// guild's states in one Vec, so a member in voice elsewhere would otherwise be
-/// pulled into this guild's "In voice" and vanish from its Online and Offline.
-fn split_by_presence(
-    members: &[Member],
-    voice_states: &[VoiceState],
-) -> (Vec<Member>, Vec<Member>, Vec<Member>) {
-    let in_voice: std::collections::HashSet<&str> = voice_states
+/// Who is in a call in this guild. `AppState` keeps every guild's states in
+/// one Vec, and someone in a call elsewhere is only online here.
+fn in_call_here(voice_states: &[VoiceState], guild: Option<Id>) -> Vec<VoiceState> {
+    voice_states
         .iter()
-        .filter(|v| v.channel_id.is_some())
-        .map(|v| v.user_pubkey.as_str())
-        .collect();
-    let mut voice = Vec::new();
-    let mut online = Vec::new();
-    let mut offline = Vec::new();
-    for m in members {
-        if in_voice.contains(m.user.pubkey.as_str()) {
-            voice.push(m.clone());
-        } else if m.online {
-            online.push(m.clone());
-        } else {
-            offline.push(m.clone());
-        }
-    }
-    (voice, online, offline)
+        .filter(|v| Some(v.guild_id) == guild && v.channel_id.is_some())
+        .cloned()
+        .collect()
 }
 
 /// A role's id and name, and the online members listed under it.
@@ -126,13 +109,9 @@ pub fn MembersPanel() -> Element {
     let can_moderate = can_kick || can_ban || can_roles || can_disconnect;
     let mut menu = use_signal::<Option<MemberMenu>>(|| None);
 
-    let guild_voice_states: Vec<VoiceState> = voice_states
-        .iter()
-        .filter(|v| Some(v.guild_id) == guild_id)
-        .cloned()
-        .collect();
-    let (voice_members, online_members, offline_members) =
-        split_by_presence(&members, &guild_voice_states);
+    let guild_voice_states = in_call_here(&voice_states, guild_id);
+    let (online_members, offline_members): (Vec<Member>, Vec<Member>) =
+        members.iter().cloned().partition(|m| m.online);
     let online_groups: Vec<(String, String, Vec<Member>)> = if by_role {
         group_by_top_role(online_members.clone(), |m| {
             top_roles.get(&m.user.pubkey).cloned()
@@ -186,20 +165,12 @@ pub fn MembersPanel() -> Element {
             }
             NoDrag {
                 div { class: "flex-1 overflow-y-auto py-3 space-y-3",
-                    if !voice_members.is_empty() {
-                        Section {
-                            label: format!("In voice — {}", voice_members.len()),
-                            members: voice_members.clone(),
-                            voice_states: guild_voice_states.clone(),
-                            on_context: on_context.clone(),
-                        }
-                    }
                     for (key, label, run) in online_groups.iter().cloned() {
                         Section {
                             key: "{key}",
                             label,
                             members: run,
-                            voice_states: Vec::new(),
+                            voice_states: guild_voice_states.clone(),
                             on_context: on_context.clone(),
                         }
                     }
@@ -451,11 +422,8 @@ fn MemberRow(
         "text-[var(--text-dim)]"
     };
     let speaking = voice.as_ref().map(|v| v.speaking).unwrap_or(false);
-    let speaking_ring = if speaking {
-        "ring-1 ring-[var(--accent)]"
-    } else {
-        ""
-    };
+    let health = state.read().voice_quality.get(&member.user.pubkey).copied();
+    let speaking_ring = crate::state::talk_ring(speaking, health);
 
     let dim = if member.online { "" } else { "opacity-60" };
     let card_pubkey = member.user.pubkey.clone();
@@ -515,7 +483,7 @@ fn MemberRow(
                 }
                 span {
                     class: "absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-[var(--panel-solid)] {pulse}",
-                    style: "background:{dot_color}; color:{dot_color};",
+                    style: "background-color:{dot_color}; color:{dot_color};",
                 }
             }
             div { class: "flex flex-col min-w-0 flex-1",
@@ -568,8 +536,25 @@ fn MemberRow(
 
 #[component]
 fn VoiceBadges(vs: VoiceState) -> Element {
+    let state = use_app_state();
+    let place = vs
+        .channel_id
+        .and_then(|cid| {
+            state
+                .read()
+                .channels
+                .iter()
+                .find(|c| c.id == cid)
+                .map(|c| format!("In voice — {}", c.name))
+        })
+        .unwrap_or_else(|| "In voice".into());
     rsx! {
         div { class: "flex items-center gap-1 shrink-0 text-[var(--text-dim)]",
+            span {
+                class: "block w-3 h-3",
+                title: "{place}",
+                dangerous_inner_html: crate::features::icons::SPEAKER,
+            }
             if vs.deafened {
                 span {
                     class: "block w-3 h-3",
@@ -658,37 +643,19 @@ mod tests {
     /// Someone in voice in another guild is online here, not "in voice" here —
     /// and must not fall out of every bucket on the way.
     #[test]
-    fn voice_elsewhere_stays_online_here() {
+    fn a_call_in_another_guild_is_not_a_call_here() {
         let here = Id::new_v4();
         let elsewhere = Id::new_v4();
-        let members = vec![member("a", here, true), member("b", here, false)];
-        let states = [voice("a", elsewhere, Some(Id::new_v4()))];
-
-        let narrowed: Vec<VoiceState> = states
-            .iter()
-            .filter(|v| v.guild_id == here)
-            .cloned()
+        let states = [
+            voice("a", elsewhere, Some(Id::new_v4())),
+            voice("b", here, Some(Id::new_v4())),
+            voice("c", here, None),
+        ];
+        let in_call: Vec<String> = in_call_here(&states, Some(here))
+            .into_iter()
+            .map(|v| v.user_pubkey)
             .collect();
-        let (in_voice, online, offline) = split_by_presence(&members, &narrowed);
-
-        assert!(in_voice.is_empty());
-        assert_eq!(online.len(), 1);
-        assert_eq!(online[0].user.pubkey, "a");
-        assert_eq!(offline.len(), 1);
-    }
-
-    #[test]
-    fn voice_in_this_guild_leaves_the_other_buckets() {
-        let here = Id::new_v4();
-        let members = vec![member("a", here, true), member("b", here, true)];
-        let states = vec![voice("a", here, Some(Id::new_v4())), voice("b", here, None)];
-
-        let (in_voice, online, offline) = split_by_presence(&members, &states);
-
-        assert_eq!(in_voice.len(), 1);
-        assert_eq!(in_voice[0].user.pubkey, "a");
-        assert_eq!(online.len(), 1);
-        assert_eq!(online[0].user.pubkey, "b");
-        assert!(offline.is_empty());
+        assert_eq!(in_call, ["b"]);
+        assert!(in_call_here(&states, None).is_empty());
     }
 }

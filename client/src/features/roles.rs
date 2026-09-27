@@ -129,7 +129,7 @@ pub fn RolesEditor(guild_id: Id) -> Element {
                                             span {
                                                 class: "w-3 h-3 rounded-full shrink-0 border border-[var(--border)]",
                                                 style: format!(
-                                                    "background: {};",
+                                                    "background-color: {};",
                                                     role.color.as_deref().unwrap_or("transparent")
                                                 ),
                                             }

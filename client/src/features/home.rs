@@ -225,7 +225,7 @@ fn TopBar(
                     class: "flex items-center gap-2 shrink-0 pl-2.5 pr-3 py-1.5 rounded-full border",
                     style: "background: color-mix(in srgb, var(--accent) 10%, transparent); border-color: color-mix(in srgb, var(--accent) 28%, transparent);",
                     title: "{relay_detail}",
-                    span { class: "w-[7px] h-[7px] rounded-full shrink-0", style: "background: {dot};" }
+                    span { class: "w-[7px] h-[7px] rounded-full shrink-0", style: "background-color: {dot};" }
                     span {
                         class: "text-xs whitespace-nowrap hidden min-[1180px]:inline",
                         style: "color: color-mix(in srgb, var(--accent) 45%, var(--text));",

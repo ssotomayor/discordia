@@ -255,7 +255,7 @@ pub fn ProfileCard() -> Element {
                         }
                     }
                     div { class: "mt-3 flex items-center gap-2 flex-wrap",
-                        span { class: "w-2.5 h-2.5 rounded-full shrink-0", style: "background:{status_color(&status)};", title: "{status}" }
+                        span { class: "w-2.5 h-2.5 rounded-full shrink-0", style: "background-color:{status_color(&status)};", title: "{status}" }
                         span { class: "dxf-display text-2xl font-bold", style: "color: {accent};",
                             "{name}"
                         }
@@ -287,7 +287,7 @@ pub fn ProfileCard() -> Element {
                         div { class: "font-mono text-xs text-[var(--text-muted)] break-all leading-relaxed", "{pubkey}" }
                         div { class: "flex gap-1 mt-2.5",
                             for c in signature.iter() {
-                                div { class: "h-2 flex-1 rounded-full", style: "background: {c};" }
+                                div { class: "h-2 flex-1 rounded-full", style: "background-color: {c};" }
                             }
                         }
                     }
@@ -308,7 +308,7 @@ pub fn ProfileCard() -> Element {
                                                 key: "{role.id}",
                                                 class: "flex items-center gap-1.5 px-2 py-0.5 rounded-md border text-xs",
                                                 style: "color: {color}; border-color: color-mix(in srgb, {color} 45%, transparent); background: color-mix(in srgb, {color} 10%, transparent);",
-                                                span { class: "w-2 h-2 rounded-full shrink-0", style: "background: {color};" }
+                                                span { class: "w-2 h-2 rounded-full shrink-0", style: "background-color: {color};" }
                                                 "{role.name}"
                                             }
                                         }
@@ -635,7 +635,7 @@ pub fn ProfileEditor(class: String, children: Element) -> Element {
                                         r#type: "button",
                                         class: "flex items-center gap-1.5 px-2 py-1 rounded border text-[11px] transition-colors {ring}",
                                         onclick: move |_| status.set(id.to_string()),
-                                        span { class: "w-2 h-2 rounded-full", style: "background:{color};" }
+                                        span { class: "w-2 h-2 rounded-full", style: "background-color:{color};" }
                                         "{label}"
                                     }
                                 }

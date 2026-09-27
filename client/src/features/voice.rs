@@ -253,7 +253,7 @@ async fn service_loop(
                 .await
                 {
                     Ok(active) => {
-                        eprintln!("[voice] connected ok");
+                        eprintln!("[voice] connected ok — phase Connected");
                         {
                             let mut s = state.write();
                             s.voice.phase = VoicePhase::Connected;
@@ -533,7 +533,7 @@ impl ActiveVoice {
     async fn connect(
         livekit_url: &str,
         token: &str,
-        _channel_id: Id,
+        channel_id: Id,
         state: Signal<AppState>,
         controls: AudioControls,
     ) -> Result<Self, String> {
@@ -618,6 +618,27 @@ impl ActiveVoice {
                             );
                             s.screen_audio_joined = false;
                         }
+                    }
+                }
+            });
+        }
+
+        // The banner's dot follows the room itself, so a silent reconnect shows
+        // yellow and the return to green does not wait on anything else.
+        let (phase_tx, mut phase_rx) = tokio::sync::mpsc::unbounded_channel::<VoicePhase>();
+        {
+            let mut state = state;
+            dioxus::prelude::spawn(async move {
+                while let Some(phase) = phase_rx.recv().await {
+                    let current = state.peek().voice.clone();
+                    let ours = current.channel_id == Some(channel_id)
+                        && matches!(
+                            current.phase,
+                            VoicePhase::Connecting | VoicePhase::Connected
+                        );
+                    if ours && current.phase != phase {
+                        eprintln!("[voice] room says {phase:?}");
+                        state.write().voice.phase = phase;
                     }
                 }
             });
@@ -728,9 +749,14 @@ impl ActiveVoice {
                         }
                         RoomEvent::Reconnecting => {
                             eprintln!("[voice] reconnecting");
+                            let _ = phase_tx.send(VoicePhase::Connecting);
                         }
                         RoomEvent::Reconnected => {
                             eprintln!("[voice] reconnected");
+                            let _ = phase_tx.send(VoicePhase::Connected);
+                        }
+                        RoomEvent::ConnectionStateChanged(ConnectionState::Connected) => {
+                            let _ = phase_tx.send(VoicePhase::Connected);
                         }
                         RoomEvent::E2eeStateChanged { participant, state } => {
                             use livekit::webrtc::native::frame_cryptor::EncryptionState;

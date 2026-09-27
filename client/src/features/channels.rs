@@ -822,9 +822,6 @@ fn VoiceChannelRow(
                         "🔒"
                     }
                 }
-                if connected {
-                    span { class: "text-[9px] text-[var(--up)] font-semibold uppercase tracking-wider", "live" }
-                }
             }
             if !occupants.is_empty() {
                 div {
@@ -979,18 +976,9 @@ fn VoiceOccupant(
         .copied()
         .unwrap_or(100);
     let locally_muted = state.read().user_muted.contains(&pubkey);
-    let health_dot = state
-        .read()
-        .voice_quality
-        .get(&pubkey)
-        .copied()
-        .and_then(|h| h.dot(is_self));
-
-    let dot = if speaking && !locally_muted {
-        "bg-[var(--accent)]"
-    } else {
-        "bg-[var(--text-dim)]"
-    };
+    let health = state.read().voice_quality.get(&pubkey).copied();
+    let health_label = health.and_then(|h| h.dot(is_self)).map(|(_, label)| label);
+    let ring = crate::state::talk_ring(speaking && !locally_muted, health);
     let apply = {
         let pubkey = pubkey.clone();
         let voice = voice.clone();
@@ -1013,7 +1001,13 @@ fn VoiceOccupant(
     rsx! {
         div { class: "px-2 py-0.5",
             div { class: "flex items-center gap-1.5 text-xs text-[var(--text-muted)]",
-                span { class: "w-1.5 h-1.5 rounded-full shrink-0 {dot}" }
+                span { class: "shrink-0 flex", title: health_label.unwrap_or_default(),
+                    crate::features::profiles::Avatar {
+                        pubkey: pubkey.clone(),
+                        name: name.clone(),
+                        size: "w-5 h-5 text-[9px] {ring}",
+                    }
+                }
                 span { class: "truncate flex-1",
                     "{name}"
                     if is_self { " (you)" }
@@ -1023,13 +1017,6 @@ fn VoiceOccupant(
                     span { class: "text-[9px] text-[var(--text-dim)] uppercase tracking-wider", "deafened" }
                 } else if remote_muted {
                     span { class: "text-[9px] text-[var(--text-dim)] uppercase tracking-wider", "muted" }
-                }
-                if let Some((color, label)) = health_dot {
-                    span {
-                        class: "w-1.5 h-1.5 rounded-full shrink-0",
-                        style: "background:{color};",
-                        title: "{label}",
-                    }
                 }
                 if !is_self {
                     button {
@@ -1269,7 +1256,7 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                     div { class: "flex items-center gap-2",
                         span {
                             class: "w-2 h-2 rounded-full shrink-0",
-                            style: "background:{dot_color};",
+                            style: "background-color:{dot_color};",
                             title: "{phase_text}",
                         }
                         span {

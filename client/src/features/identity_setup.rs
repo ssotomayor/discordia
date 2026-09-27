@@ -145,7 +145,7 @@ pub fn IdentitySetupView(on_done: EventHandler<Identity>) -> Element {
                                     }
                                     div { class: "flex gap-1 pt-1",
                                         for c in crate::identity::color_signature(&pubkey, 16) {
-                                            div { class: "h-2 flex-1 rounded-full", style: "background: {c};" }
+                                            div { class: "h-2 flex-1 rounded-full", style: "background-color: {c};" }
                                         }
                                     }
                                 }
@@ -403,7 +403,7 @@ fn DetectedIdentities(
                                         }
                                         div { class: "flex gap-0.5 pt-1.5",
                                             for c in signature.iter() {
-                                                div { class: "h-1 flex-1 rounded-full", style: "background: {c};" }
+                                                div { class: "h-1 flex-1 rounded-full", style: "background-color: {c};" }
                                             }
                                         }
                                     }

@@ -604,7 +604,7 @@ pub fn IdentityCard(
             }
             div { class: "flex gap-1",
                 for c in signature.iter() {
-                    div { class: "h-2 flex-1 rounded-full", style: "background: {c};" }
+                    div { class: "h-2 flex-1 rounded-full", style: "background-color: {c};" }
                 }
             }
             div { class: "text-[11px] text-[var(--text-dim)]",
