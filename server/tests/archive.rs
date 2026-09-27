@@ -249,8 +249,8 @@ fn hex_key(fill: char) -> String {
 async fn a_hostile_archive_is_filtered_on_import() {
     use dioxusfun_server::archive::{ARCHIVE_VERSION, GuildArchive};
     use dioxusfun_server::protocol::{
-        AuditEntry, BotInstall, Channel, ChannelKind, Guild, GuildEmoji, Intent, Member,
-        Permission, Role,
+        AuditEntry, BotInstall, Channel, ChannelKind, Guild, GuildEmoji, GuildSound, Intent,
+        Member, Permission, Role,
     };
 
     let state = fresh_state().await;
@@ -305,6 +305,24 @@ async fn a_hostile_archive_is_filtered_on_import() {
             added_by: owner.clone(),
             created_ms: 0,
         }],
+        sounds: vec![
+            GuildSound {
+                id: Uuid::new_v4(),
+                guild_id: gid,
+                name: "airhorn".into(),
+                audio: "../../etc/passwd".into(),
+                added_by: owner.clone(),
+                created_ms: 0,
+            },
+            GuildSound {
+                id: Uuid::new_v4(),
+                guild_id: gid,
+                name: "\u{202E}\n".into(),
+                audio: format!("media:{}.mp3", "a".repeat(64)),
+                added_by: owner.clone(),
+                created_ms: 0,
+            },
+        ],
         members: vec![
             Member {
                 user: author.clone(),
@@ -398,6 +416,10 @@ async fn a_hostile_archive_is_filtered_on_import() {
     assert!(
         loaded.emojis.iter().all(|e| e.guild_id != new_id),
         "a bad emoji was kept"
+    );
+    assert!(
+        loaded.sounds.iter().all(|s| s.guild_id != new_id),
+        "a sound with a bad address or name was kept"
     );
 
     let members: Vec<_> = loaded

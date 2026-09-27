@@ -246,6 +246,13 @@ pub fn SettingsDialog() -> Element {
                                 span { class: "text-[10px] text-[var(--text-dim)] w-8 text-right", "{settings.read().sfx_volume}%" }
                             }
                         }
+                        div { class: "mb-2",
+                            span { class: "text-[11px] text-[var(--text-muted)]", "Soundboard" }
+                            div { class: "mt-1", crate::features::soundboard::SoundboardVolume {} }
+                            div { class: "mt-1 text-[10px] text-[var(--text-dim)]",
+                                "How loud other people's soundboard sounds are for you. Muting someone mutes their sounds too."
+                            }
+                        }
                         }
                         if settings_tab() == SettingsTab::Mic {
                         h3 { class: "dxf-display text-[17px] font-bold tracking-tight text-[var(--text)]", "Microphone" }

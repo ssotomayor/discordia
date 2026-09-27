@@ -301,6 +301,7 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
             let mut w = app.write();
             w.mic_sensitivity = saved.mic_sensitivity.clamp(1, 1000);
             w.mic_volume = saved.mic_volume.min(200);
+            w.soundboard_volume = saved.soundboard_volume.min(100) as u32;
             w.auto_gain_control = saved.auto_gain_control;
             w.noise_cancellation = saved.noise_cancellation;
             w.bypass_system_audio_processing =
@@ -494,6 +495,7 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
                 }
             }
             crate::features::settings_dialog::SettingsDialog {}
+            crate::features::soundboard::SoundboardPanel {}
             GuildDialogHost {}
             crate::features::guilds::RulesPromptDialog {}
 
@@ -1086,7 +1088,11 @@ fn GuildDialogHost() -> Element {
             crate::features::integrations::IntegrationsDialog { guild_id: gid, on_close: close }
         },
         Some(crate::state::GuildDialog::Roles(gid)) => rsx! {
-            crate::features::roles::RolesDialog { guild_id: gid, on_close: close }
+            crate::features::guild_settings::GuildSettingsDialog {
+                guild_id: gid,
+                open_on: crate::features::guild_settings::GuildTab::Roles,
+                on_close: close,
+            }
         },
         Some(crate::state::GuildDialog::ImportDiscord) => rsx! {
             crate::features::discord_import::DiscordImportDialog { on_close: close }

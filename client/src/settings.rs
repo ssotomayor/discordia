@@ -72,6 +72,8 @@ pub struct ClientSettings {
     pub screenshare_audio: bool,
     #[serde(default = "default_sfx_volume")]
     pub sfx_volume: u8,
+    #[serde(default = "default_soundboard_volume")]
+    pub soundboard_volume: u8,
     #[serde(default)]
     pub camera_device_id: Option<String>,
     #[serde(default)]
@@ -120,6 +122,12 @@ fn default_screenshare_audio() -> bool {
 
 fn default_sfx_volume() -> u8 {
     70
+}
+
+pub const DEFAULT_SOUNDBOARD_VOLUME: u8 = 60;
+
+fn default_soundboard_volume() -> u8 {
+    DEFAULT_SOUNDBOARD_VOLUME
 }
 
 fn default_mic_sensitivity() -> u32 {
@@ -183,6 +191,7 @@ impl Default for ClientSettings {
             screenshare_quality: default_screenshare_quality(),
             screenshare_audio: default_screenshare_audio(),
             sfx_volume: default_sfx_volume(),
+            soundboard_volume: default_soundboard_volume(),
             camera_device_id: None,
             camera_device_label: None,
             keep_my_accent: false,

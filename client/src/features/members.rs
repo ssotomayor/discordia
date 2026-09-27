@@ -47,6 +47,28 @@ fn split_by_presence(
     (voice, online, offline)
 }
 
+/// A role's id and name, and the online members listed under it.
+type RoleRun = (Option<(Id, String)>, Vec<Member>);
+
+/// Consecutive runs of the same top role, so `members` must already be in
+/// role order. `None` is the run of members holding no role.
+fn group_by_top_role(
+    members: Vec<Member>,
+    top: impl Fn(&Member) -> Option<(Id, String)>,
+) -> Vec<RoleRun> {
+    let mut groups: Vec<RoleRun> = Vec::new();
+    for m in members {
+        let role = top(&m);
+        match groups.last_mut() {
+            Some((last, run)) if last.as_ref().map(|r| r.0) == role.as_ref().map(|r| r.0) => {
+                run.push(m)
+            }
+            _ => groups.push((role, vec![m])),
+        }
+    }
+    groups
+}
+
 #[component]
 pub fn MembersPanel() -> Element {
     let state = use_app_state();
@@ -63,6 +85,21 @@ pub fn MembersPanel() -> Element {
         })
         .unwrap_or_default();
     let voice_states: Vec<VoiceState> = snapshot.voice_states.clone();
+    let by_role = guild_id.is_some_and(|gid| {
+        snapshot.leveling_of(gid).member_sort == crate::protocol::MemberSort::Role
+    });
+    let top_roles: std::collections::HashMap<String, (Id, String)> = guild_id
+        .filter(|_| by_role)
+        .map(|gid| {
+            members
+                .iter()
+                .filter_map(|m| {
+                    let r = snapshot.top_role(gid, m)?;
+                    Some((m.user.pubkey.clone(), (r.id, r.name.clone())))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     let (can_kick, can_ban, can_roles, owner_pk, self_pk) = guild_id
         .map(|gid| {
             (
@@ -95,6 +132,25 @@ pub fn MembersPanel() -> Element {
         .collect();
     let (voice_members, online_members, offline_members) =
         split_by_presence(&members, &guild_voice_states);
+    let online_groups: Vec<(String, String, Vec<Member>)> = if by_role {
+        group_by_top_role(online_members.clone(), |m| {
+            top_roles.get(&m.user.pubkey).cloned()
+        })
+        .into_iter()
+        .map(|(role, run)| match role {
+            Some((id, name)) => (id.to_string(), format!("{name} — {}", run.len()), run),
+            None => ("online".into(), format!("Online — {}", run.len()), run),
+        })
+        .collect()
+    } else if online_members.is_empty() {
+        Vec::new()
+    } else {
+        vec![(
+            "online".into(),
+            format!("Online — {}", online_members.len()),
+            online_members.clone(),
+        )]
+    };
     let online_count = members.iter().filter(|m| m.online).count();
 
     let on_context = {
@@ -137,10 +193,11 @@ pub fn MembersPanel() -> Element {
                             on_context: on_context.clone(),
                         }
                     }
-                    if !online_members.is_empty() {
+                    for (key, label, run) in online_groups.iter().cloned() {
                         Section {
-                            label: format!("Online — {}", online_members.len()),
-                            members: online_members.clone(),
+                            key: "{key}",
+                            label,
+                            members: run,
                             voice_states: Vec::new(),
                             on_context: on_context.clone(),
                         }
@@ -536,6 +593,42 @@ mod tests {
             camera_on: false,
             screen_sharing: false,
         }
+    }
+
+    #[test]
+    fn online_members_are_grouped_under_their_top_role_in_order() {
+        let gid = Id::nil();
+        let mods = (Id::from_u128(1), "Mods".to_string());
+        let vips = (Id::from_u128(2), "VIPs".to_string());
+        let sorted = vec![
+            member("a", gid, true),
+            member("b", gid, true),
+            member("c", gid, true),
+            member("d", gid, true),
+        ];
+        let top = |m: &Member| match m.user.pubkey.as_str() {
+            "a" | "b" => Some(mods.clone()),
+            "c" => Some(vips.clone()),
+            _ => None,
+        };
+        let groups = group_by_top_role(sorted, top);
+        let shape: Vec<(Option<String>, Vec<&str>)> = groups
+            .iter()
+            .map(|(r, run)| {
+                (
+                    r.as_ref().map(|r| r.1.clone()),
+                    run.iter().map(|m| m.user.pubkey.as_str()).collect(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            shape,
+            vec![
+                (Some("Mods".to_string()), vec!["a", "b"]),
+                (Some("VIPs".to_string()), vec!["c"]),
+                (None, vec!["d"]),
+            ]
+        );
     }
 
     /// Someone in voice in another guild is online here, not "in voice" here —

@@ -299,6 +299,9 @@ pub enum MemberSort {
     Name,
     /// Most experienced first, ties broken alphabetically.
     Level,
+    /// Online members grouped under their highest role, in the guild's role
+    /// order; members with no role follow, then everyone offline.
+    Role,
 }
 
 /// How a guild turns activity into experience, and what it calls the result.
@@ -1006,6 +1009,29 @@ pub struct EmojiBlob {
 pub const MAX_SHORTCODE_LEN: usize = 32;
 pub const MAX_EMOJIS_PER_GUILD: usize = 100;
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GuildSound {
+    pub id: Id,
+    pub guild_id: Id,
+    pub name: String,
+    pub audio: String,
+    #[serde(default)]
+    pub added_by: String,
+    #[serde(default)]
+    pub created_ms: i64,
+}
+
+pub const MAX_SOUND_NAME_LEN: usize = 32;
+pub const MAX_SOUNDS_PER_GUILD: usize = 48;
+pub const MAX_SOUND_BYTES: usize = 512 * 1024;
+/// Checked by the uploader and enforced by every player: the server cannot
+/// decode audio, so a longer file is cut off rather than refused.
+pub const MAX_SOUND_SECS: f32 = 5.5;
+
+pub fn sound_name(raw: &str) -> Result<String, String> {
+    sanitize_name("sound", raw, MAX_SOUND_NAME_LEN)
+}
+
 /// Narrower than NIP-30 on purpose: lowercase-only makes `:Tada:` and `:tada:`
 /// one emoji rather than two.
 pub fn valid_shortcode(s: &str) -> bool {
@@ -1156,6 +1182,23 @@ pub enum ClientMessage {
     FetchEmoji {
         images: Vec<String>,
     },
+    CreateGuildSound {
+        guild_id: Id,
+        name: String,
+        audio: String,
+    },
+    RenameGuildSound {
+        guild_id: Id,
+        sound_id: Id,
+        name: String,
+    },
+    DeleteGuildSound {
+        guild_id: Id,
+        sound_id: Id,
+    },
+    PlaySound {
+        sound_id: Id,
+    },
     SetGuildAccent {
         guild_id: Id,
         #[serde(default)]
@@ -1225,6 +1268,12 @@ pub enum ClientMessage {
     ReorderChannels {
         guild_id: Id,
         positions: Vec<(Id, u32)>,
+    },
+    /// Every role of the guild, top first. The whole list rather than a move,
+    /// so two managers dragging at once cannot leave two roles on one position.
+    ReorderRoles {
+        guild_id: Id,
+        order: Vec<Id>,
     },
     JoinByInvite {
         code: String,
@@ -1371,6 +1420,8 @@ pub enum ServerMessage {
         #[serde(default)]
         emojis: Vec<GuildEmoji>,
         #[serde(default)]
+        sounds: Vec<GuildSound>,
+        #[serde(default)]
         activities: Vec<UserActivity>,
         #[serde(default)]
         operator: bool,
@@ -1378,6 +1429,15 @@ pub enum ServerMessage {
     GuildEmojis {
         guild_id: Id,
         emojis: Vec<GuildEmoji>,
+    },
+    GuildSounds {
+        guild_id: Id,
+        sounds: Vec<GuildSound>,
+    },
+    SoundPlayed {
+        channel_id: Id,
+        user_pubkey: String,
+        sound_id: Id,
     },
     EmojiBlobs {
         blobs: Vec<EmojiBlob>,
@@ -1395,6 +1455,8 @@ pub enum ServerMessage {
         roles: Vec<Role>,
         #[serde(default)]
         emojis: Vec<GuildEmoji>,
+        #[serde(default)]
+        sounds: Vec<GuildSound>,
         #[serde(default)]
         voice_states: Vec<VoiceState>,
     },

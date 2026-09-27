@@ -3,8 +3,24 @@ use dioxus::prelude::*;
 use crate::protocol::{ClientMessage, Id, Permission, Role};
 use crate::state::{use_app_state, use_gateway};
 
+/// Dragging down lands on the target's slot and dragging up takes it too, as
+/// the channel list does.
+fn moved_order(ids: &[Id], moved: Id, target: Id) -> Option<Vec<Id>> {
+    let from = ids.iter().position(|id| *id == moved)?;
+    let to = ids.iter().position(|id| *id == target)?;
+    if from == to {
+        return None;
+    }
+    let mut order = ids.to_vec();
+    let id = order.remove(from);
+    order.insert(to, id);
+    Some(order)
+}
+
+/// A role saves on its own button, not with the guild settings' Save: a role
+/// change reaches members at once, as the server applies it.
 #[component]
-pub fn RolesDialog(guild_id: Id, on_close: EventHandler<()>) -> Element {
+pub fn RolesEditor(guild_id: Id) -> Element {
     let state = use_app_state();
     let gateway = use_gateway();
 
@@ -15,6 +31,8 @@ pub fn RolesDialog(guild_id: Id, on_close: EventHandler<()>) -> Element {
     let mut name = use_signal(String::new);
     let mut color = use_signal(|| None::<String>);
     let mut perms = use_signal(Vec::<Permission>::new);
+    let mut dragging = use_signal(|| None::<Id>);
+    let ids: Vec<Id> = roles.iter().map(|r| r.id).collect();
 
     let mut reset_form = move || {
         editing.set(None);
@@ -50,24 +68,15 @@ pub fn RolesDialog(guild_id: Id, on_close: EventHandler<()>) -> Element {
     };
 
     rsx! {
-        div {
-            class: "dxf-backdrop-in fixed inset-0 z-50 flex items-center justify-center bg-black/50",
-            onclick: move |_| on_close.call(()),
-            div {
-                class: "dxf-modal-in w-[26rem] max-h-[80vh] flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl overflow-hidden",
-                onclick: move |e| e.stop_propagation(),
-                div { class: "px-4 py-3 border-b border-[var(--border)] flex items-center",
-                    h3 { class: "text-sm font-medium text-[var(--accent)] flex-1", "Roles" }
-                    button {
-                        class: "text-[var(--text-dim)] hover:text-[var(--text)] text-lg leading-none",
-                        onclick: move |_| on_close.call(()),
-                        "✕"
-                    }
-                }
-                div { class: "flex-1 overflow-y-auto p-3 space-y-4",
-                    div {
+                div { class: "grid grid-cols-2 gap-4 items-start",
+                    div { class: "space-y-2",
                         div { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-1.5",
                             "Defined roles"
+                        }
+                        if roles.len() > 1 {
+                            div { class: "text-[10px] text-[var(--text-dim)] -mt-1",
+                                "Drag to reorder. The top role is listed first when members are ordered by role."
+                            }
                         }
                         if roles.is_empty() {
                             div { class: "text-xs text-[var(--text-dim)] py-2",
@@ -77,7 +86,10 @@ pub fn RolesDialog(guild_id: Id, on_close: EventHandler<()>) -> Element {
                         for role in roles.iter().cloned() {
                             {
                                 let gw_del = gateway.clone();
+                                let gw_drop = gateway.clone();
+                                let drop_ids = ids.clone();
                                 let rid = role.id;
+                                let lifted = if dragging() == Some(role.id) { "opacity-40" } else { "" };
                                 let r_name = role.name.clone();
                                 let r_color = role.color.clone();
                                 let r_perms = role.permissions.clone();
@@ -90,7 +102,23 @@ pub fn RolesDialog(guild_id: Id, on_close: EventHandler<()>) -> Element {
                                 rsx! {
                                     div {
                                         key: "{rid}",
-                                        class: "border {row_cls} rounded-md p-2.5 flex flex-col gap-1.5 cursor-pointer transition-colors",
+                                        class: "border {row_cls} {lifted} rounded-md p-2.5 flex flex-col gap-1.5 cursor-pointer transition-colors",
+                                        draggable: true,
+                                        ondragstart: move |_| dragging.set(Some(rid)),
+                                        ondragover: move |e: Event<DragData>| {
+                                            if dragging().is_some() {
+                                                e.prevent_default();
+                                            }
+                                        },
+                                        ondrop: move |e: Event<DragData>| {
+                                            e.prevent_default();
+                                            let moved = dragging();
+                                            dragging.set(None);
+                                            if let Some(order) = moved.and_then(|m| moved_order(&drop_ids, m, rid)) {
+                                                gw_drop.send(ClientMessage::ReorderRoles { guild_id, order });
+                                            }
+                                        },
+                                        ondragend: move |_| dragging.set(None),
                                         onclick: move |_| {
                                             editing.set(Some(rid));
                                             name.set(r_name.clone());
@@ -130,7 +158,7 @@ pub fn RolesDialog(guild_id: Id, on_close: EventHandler<()>) -> Element {
                         }
                     }
 
-                    div { class: "border-t border-[var(--border)] pt-3",
+                    div { class: "border border-[var(--border)] rounded-md p-3",
                         div { class: "flex items-center mb-1.5",
                             span { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] flex-1",
                                 if editing().is_some() { "Edit role" } else { "New role" }
@@ -199,7 +227,35 @@ pub fn RolesDialog(guild_id: Id, on_close: EventHandler<()>) -> Element {
                         }
                     }
                 }
-            }
-        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::moved_order;
+    use crate::protocol::Id;
+
+    fn ids(n: u128) -> Vec<Id> {
+        (0..n).map(Id::from_u128).collect()
+    }
+
+    #[test]
+    fn dragging_down_and_up_lands_on_the_target_slot() {
+        let v = ids(4);
+        assert_eq!(
+            moved_order(&v, v[0], v[2]).unwrap(),
+            [v[1], v[2], v[0], v[3]]
+        );
+        assert_eq!(
+            moved_order(&v, v[3], v[1]).unwrap(),
+            [v[0], v[3], v[1], v[2]]
+        );
+    }
+
+    #[test]
+    fn a_drop_on_itself_or_a_stranger_sends_nothing() {
+        let v = ids(3);
+        assert!(moved_order(&v, v[1], v[1]).is_none());
+        assert!(moved_order(&v, Id::from_u128(99), v[0]).is_none());
     }
 }

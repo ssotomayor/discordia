@@ -314,6 +314,13 @@ pub struct AppState {
     pub user_muted: HashSet<String>,
     pub stream_volumes: HashMap<String, u32>,
     pub stream_muted: HashSet<String>,
+    pub soundboard_volume: u32,
+    pub soundboard_open: bool,
+    /// The click's x and the toggle's top edge, on screen. The popover is mounted
+    /// at the root (trap 22), so it cannot sit beside the button in the DOM.
+    pub soundboard_anchor: (f64, f64),
+    /// Who pressed what, for the few seconds a voice row shows it.
+    pub recent_sounds: HashMap<String, (String, std::time::Instant)>,
     pub stream_has_audio: HashSet<String>,
     pub media_undecryptable: bool,
     pub pending_rekey: bool,
@@ -323,6 +330,7 @@ pub struct AppState {
     pub transport: Transport,
     pub integrations: HashMap<Id, Vec<BotInstall>>,
     pub guild_emojis: HashMap<Id, Vec<crate::protocol::GuildEmoji>>,
+    pub guild_sounds: HashMap<Id, Vec<crate::protocol::GuildSound>>,
     pub emoji_images: HashMap<String, String>,
     /// Address → when it was last asked for. A request the server dropped,
     /// throttled or cut for size is asked again once this is old enough.
@@ -415,6 +423,10 @@ impl AppState {
             user_muted: HashSet::new(),
             stream_volumes: HashMap::new(),
             stream_muted: HashSet::new(),
+            soundboard_volume: crate::settings::DEFAULT_SOUNDBOARD_VOLUME as u32,
+            soundboard_open: false,
+            soundboard_anchor: (0.0, 0.0),
+            recent_sounds: HashMap::new(),
             stream_has_audio: HashSet::new(),
             media_undecryptable: false,
             pending_rekey: false,
@@ -424,6 +436,7 @@ impl AppState {
             transport: Transport::Loopback,
             integrations: HashMap::new(),
             guild_emojis: HashMap::new(),
+            guild_sounds: HashMap::new(),
             emoji_images: HashMap::new(),
             emoji_requested: HashMap::new(),
             roles: HashMap::new(),
@@ -513,6 +526,22 @@ impl AppState {
             .get(&guild_id)
             .map(|v| v.as_slice())
             .unwrap_or(&[])
+    }
+
+    pub fn sounds_of(&self, guild_id: Id) -> &[crate::protocol::GuildSound] {
+        self.guild_sounds
+            .get(&guild_id)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// The guild of the voice channel we are in, whose sounds the board offers.
+    pub fn voice_guild(&self) -> Option<Id> {
+        let channel = self.voice.channel_id?;
+        self.channels
+            .iter()
+            .find(|c| c.id == channel)
+            .map(|c| c.guild_id)
     }
 
     pub fn roles_of(&self, guild_id: Id) -> &[Role] {
@@ -923,8 +952,30 @@ impl AppState {
                         .then_with(|| by_name(a, b))
                 });
             }
+            crate::protocol::MemberSort::Role => {
+                // The id breaks a tie in position, so a role's members stay together.
+                let rank = |m: &Member| {
+                    self.top_role(guild_id, m)
+                        .map_or((u32::MAX, None), |r| (r.position, Some(r.id)))
+                };
+                v.sort_by(|a, b| {
+                    b.online
+                        .cmp(&a.online)
+                        .then_with(|| rank(a).cmp(&rank(b)))
+                        .then_with(|| by_name(a, b))
+                });
+            }
         }
         v
+    }
+
+    /// The highest role a member holds: the lowest position.
+    pub fn top_role(&self, guild_id: Id, member: &Member) -> Option<&Role> {
+        self.roles
+            .get(&guild_id)?
+            .iter()
+            .filter(|r| member.roles.contains(&r.id))
+            .min_by_key(|r| r.position)
     }
 
     pub fn user_of(&self, pubkey: &str) -> Option<&User> {
@@ -1505,6 +1556,45 @@ mod tests {
             status: status.map(Into::into),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn by_role_the_top_role_leads_and_offline_still_comes_last() {
+        let gid = uuid::Uuid::nil();
+        let mut s = AppState::empty();
+        let mut guild: crate::protocol::Guild = serde_json::from_value(serde_json::json!({
+            "id": gid, "name": "g", "icon": null
+        }))
+        .unwrap();
+        guild.leveling.member_sort = crate::protocol::MemberSort::Role;
+        s.guilds.push(guild);
+        let role = |n: u128, name: &str, position: u32| Role {
+            id: uuid::Uuid::from_u128(n),
+            guild_id: gid,
+            name: name.into(),
+            color: None,
+            permissions: Vec::new(),
+            position,
+        };
+        s.roles
+            .insert(gid, vec![role(1, "Admin", 0), role(2, "Mod", 1)]);
+        let with = |pk: &str, online: bool, roles: &[u128]| {
+            let mut m = member(pk, online);
+            m.roles = roles.iter().map(|n| uuid::Uuid::from_u128(*n)).collect();
+            m
+        };
+        s.members = vec![
+            with("a-plain", true, &[]),
+            with("b-mod", true, &[2]),
+            with("c-both", true, &[2, 1]),
+            with("d-admin-away", false, &[1]),
+        ];
+        let order: Vec<&str> = s
+            .members_of(gid)
+            .iter()
+            .map(|m| m.user.pubkey.as_str())
+            .collect();
+        assert_eq!(order, ["c-both", "b-mod", "a-plain", "d-admin-away"]);
     }
 
     #[test]

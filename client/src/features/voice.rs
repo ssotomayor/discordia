@@ -32,12 +32,12 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use crate::protocol::Id;
 use crate::state::{AppState, ConnectionHealth, TrackStats, VoicePhase};
 
-const SAMPLE_RATE: u32 = 48_000;
+pub(crate) const SAMPLE_RATE: u32 = 48_000;
 const CHANNELS: u32 = 1;
 const FRAME_MS: u32 = 10;
 const FRAME_SAMPLES: usize = (SAMPLE_RATE / 1000 * FRAME_MS) as usize;
 
-const RESAMPLER_CHUNK: usize = 512;
+pub(crate) const RESAMPLER_CHUNK: usize = 512;
 
 const PLAYBACK_CAP_DIVISOR: u32 = 5;
 
@@ -78,6 +78,7 @@ struct AudioControls {
     /// Absent means **silent**, not unity — a share you have not opted into
     /// should not start playing.
     stream_gains: Arc<Mutex<HashMap<String, f32>>>,
+    soundboard_pct: Arc<AtomicU32>,
 }
 
 impl AudioControls {
@@ -93,6 +94,7 @@ impl AudioControls {
             deafened: Arc::new(AtomicBool::new(false)),
             gains: Arc::new(Mutex::new(HashMap::new())),
             stream_gains: Arc::new(Mutex::new(HashMap::new())),
+            soundboard_pct: Arc::new(AtomicU32::new(s.soundboard_volume.min(100))),
         }
     }
 }
@@ -181,6 +183,12 @@ pub enum VoiceCmd {
     SetUserVolume {
         pubkey: String,
         gain: f32,
+    },
+    SetSoundboardVolume {
+        percent: u32,
+    },
+    PlaySound {
+        pcm: Arc<[f32]>,
     },
 }
 
@@ -432,6 +440,21 @@ async fn service_loop(
                 );
                 controls.gains.lock().insert(pubkey, gain);
             }
+            VoiceCmd::SetSoundboardVolume { percent } => {
+                controls
+                    .soundboard_pct
+                    .store(percent.min(100), Ordering::Relaxed);
+            }
+            VoiceCmd::PlaySound { pcm } => {
+                if let Some(active) = session.as_mut() {
+                    if let Err(e) = active.play_sound(pcm).await {
+                        eprintln!("[voice] soundboard failed: {e}");
+                        state.write().error_toast = Some(format!("Couldn't play that sound: {e}"));
+                    }
+                } else {
+                    eprintln!("[voice] PlaySound ignored — no voice session");
+                }
+            }
         }
     }
     eprintln!("[voice] service loop ended (channel closed)");
@@ -482,6 +505,7 @@ struct ActiveVoice {
     _playback: PlaybackMixer,
     event_task: tokio::task::JoinHandle<()>,
     system_audio: Option<SystemAudioTrack>,
+    soundboard: Option<SoundboardTrack>,
     screen_audio: Option<ScreenAudioRoom>,
     screen_video: Option<ScreenVideoRoom>,
     mixer: PlaybackHandle,
@@ -712,7 +736,7 @@ impl ActiveVoice {
                         participant,
                     } = ev
                     {
-                        let is_stream = publication.source() == TrackSource::ScreenshareAudio;
+                        let kind = TrackKind::of(publication.source(), &publication.name());
                         if let RemoteTrack::Audio(audio) = track {
                             let stream = NativeAudioStream::new(
                                 audio.rtc_track(),
@@ -721,7 +745,7 @@ impl ActiveVoice {
                             );
                             let mixer_handle = mixer_handle.clone();
                             let identity = participant.identity().0.clone();
-                            if is_stream {
+                            if kind == TrackKind::Stream {
                                 let _ =
                                     native_audio_tx.send(StreamAudio::Present(identity.clone()));
                             }
@@ -729,7 +753,7 @@ impl ActiveVoice {
                                 stream,
                                 mixer_handle,
                                 identity,
-                                is_stream,
+                                kind,
                             ));
                         }
                     }
@@ -757,6 +781,7 @@ impl ActiveVoice {
             meter_task,
             stats_task,
             system_audio: None,
+            soundboard: None,
             screen_audio: None,
             screen_video: None,
             mixer: mixer_handle,
@@ -850,6 +875,65 @@ impl ActiveVoice {
         eprintln!("[voice] system audio started");
         crate::dlog!("voice system audio started (target={target:?})");
         Ok(())
+    }
+
+    async fn play_sound(&mut self, pcm: Arc<[f32]>) -> Result<(), String> {
+        if self.soundboard.is_none() {
+            self.soundboard = Some(self.publish_soundboard().await?);
+        }
+        if let Some(board) = &self.soundboard {
+            let _ = board.tx.send(pcm);
+        }
+        Ok(())
+    }
+
+    /// Published on the first play and kept for the session: publishing costs
+    /// a signalling round trip, which would land on every click.
+    async fn publish_soundboard(&self) -> Result<SoundboardTrack, String> {
+        let source = NativeAudioSource::new(
+            AudioSourceOptions {
+                echo_cancellation: false,
+                noise_suppression: false,
+                auto_gain_control: false,
+            },
+            SAMPLE_RATE,
+            CHANNELS,
+            1000,
+        );
+        let track = LocalAudioTrack::create_audio_track(
+            SOUNDBOARD_TRACK,
+            RtcAudioSource::Native(source.clone()),
+        );
+        let publication = self
+            .room
+            .local_participant()
+            .publish_track(
+                LocalTrack::Audio(track),
+                TrackPublishOptions {
+                    source: TrackSource::Unknown,
+                    audio_encoding: Some(
+                        livekit::options::audio::MUSIC_HIGH_QUALITY.encoding.clone(),
+                    ),
+                    dtx: false,
+                    ..Default::default()
+                },
+            )
+            .await
+            .map_err(|e| format!("publishing it failed ({e})"))?;
+        crate::e2ee::place_new_voice_publication(&self.room);
+        let (tx, rx) = unbounded_channel::<Arc<[f32]>>();
+        let task = tokio::spawn(soundboard_loop(
+            rx,
+            source,
+            self.mixer.clone(),
+            self.self_pubkey.clone().unwrap_or_default(),
+        ));
+        crate::dlog!("voice soundboard track published");
+        Ok(SoundboardTrack {
+            _sid: publication.sid(),
+            tx,
+            task,
+        })
     }
 
     async fn set_screen_video(
@@ -1205,7 +1289,7 @@ impl ScreenAudioRoom {
                                 stream,
                                 mixer.clone(),
                                 identity,
-                                true,
+                                TrackKind::Stream,
                             ));
                         }
                         RoomEvent::TrackUnsubscribed {
@@ -1464,6 +1548,85 @@ impl Drop for SystemAudioTrack {
     fn drop(&mut self) {
         self.task.abort();
     }
+}
+
+/// The name is the tag: livekit 0.7's `TrackSource` has no soundboard value,
+/// and a listener has to tell this apart from a microphone to give it its own volume.
+const SOUNDBOARD_TRACK: &str = "soundboard";
+/// A spammed button stacks sounds; past this many the oldest is dropped.
+const MAX_OVERLAPPING_SOUNDS: usize = 4;
+
+struct SoundboardTrack {
+    _sid: livekit::prelude::TrackSid,
+    tx: UnboundedSender<Arc<[f32]>>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for SoundboardTrack {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+/// Frames go out only while something plays, as the mic's do while its gate is
+/// shut. The player hears the same mix locally: nobody is sent their own track.
+async fn soundboard_loop(
+    mut rx: UnboundedReceiver<Arc<[f32]>>,
+    source: NativeAudioSource,
+    mixer: PlaybackHandle,
+    self_identity: String,
+) {
+    let local = mixer.add_track(self_identity, TrackKind::Soundboard);
+    let cap = (mixer.device_rate / PLAYBACK_CAP_DIVISOR) as usize;
+    let mut resampler = AudioResampler::new(SAMPLE_RATE, mixer.device_rate);
+    let mut resampled: Vec<f32> = Vec::with_capacity(FRAME_SAMPLES * 4);
+    let mut playing: Vec<(Arc<[f32]>, usize)> = Vec::new();
+    let mut tick = tokio::time::interval(std::time::Duration::from_millis(FRAME_MS as u64));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        if playing.is_empty() {
+            let Some(pcm) = rx.recv().await else { break };
+            playing.push((pcm, 0));
+            tick.reset_immediately();
+        }
+        while let Ok(pcm) = rx.try_recv() {
+            playing.push((pcm, 0));
+        }
+        if playing.len() > MAX_OVERLAPPING_SOUNDS {
+            playing.drain(..playing.len() - MAX_OVERLAPPING_SOUNDS);
+        }
+        tick.tick().await;
+        let mut frame = [0.0f32; FRAME_SAMPLES];
+        for (pcm, pos) in playing.iter_mut() {
+            let end = (*pos + FRAME_SAMPLES).min(pcm.len());
+            for (out, s) in frame.iter_mut().zip(&pcm[*pos..end]) {
+                *out += s;
+            }
+            *pos = end;
+        }
+        playing.retain(|(pcm, pos)| *pos < pcm.len());
+        let data: Vec<i16> = frame
+            .iter()
+            .map(|s| (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16)
+            .collect();
+        let sent = AudioFrame {
+            data: data.into(),
+            sample_rate: SAMPLE_RATE,
+            num_channels: CHANNELS,
+            samples_per_channel: FRAME_SAMPLES as u32,
+        };
+        if let Err(e) = source.capture_frame(&sent).await {
+            eprintln!("[voice] soundboard capture_frame error: {e:?}");
+        }
+        match resampler.as_mut() {
+            Some(r) => {
+                r.process_into(&frame, &mut resampled);
+                mixer.push(local, &resampled, cap);
+            }
+            None => mixer.push(local, &frame, cap),
+        }
+    }
+    mixer.remove_track(local);
 }
 
 async fn publish_pcm(mut rx: UnboundedReceiver<Vec<f32>>, source: NativeAudioSource) {
@@ -2069,7 +2232,7 @@ fn update_peak(peak: &Arc<std::sync::atomic::AtomicI32>, samples: &[f32]) {
     }
 }
 
-struct AudioResampler {
+pub(crate) struct AudioResampler {
     inner: FftFixedIn<f32>,
     input_accum: Vec<f32>,
     chunk_in: Vec<f32>,
@@ -2077,7 +2240,7 @@ struct AudioResampler {
 }
 
 impl AudioResampler {
-    fn new(from_rate: u32, to_rate: u32) -> Option<Self> {
+    pub(crate) fn new(from_rate: u32, to_rate: u32) -> Option<Self> {
         if from_rate == to_rate {
             return None;
         }
@@ -2094,7 +2257,7 @@ impl AudioResampler {
         })
     }
 
-    fn process_into(&mut self, input: &[f32], out: &mut Vec<f32>) {
+    pub(crate) fn process_into(&mut self, input: &[f32], out: &mut Vec<f32>) {
         out.clear();
         self.input_accum.extend_from_slice(input);
 
@@ -2149,11 +2312,30 @@ struct MixerTracks {
     next_id: u64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TrackKind {
+    Voice,
+    Stream,
+    Soundboard,
+}
+
+impl TrackKind {
+    fn of(source: TrackSource, name: &str) -> Self {
+        if name == SOUNDBOARD_TRACK {
+            TrackKind::Soundboard
+        } else if source == TrackSource::ScreenshareAudio {
+            TrackKind::Stream
+        } else {
+            TrackKind::Voice
+        }
+    }
+}
+
 struct TrackBuf {
     samples: std::collections::VecDeque<f32>,
     identity: String,
     gain: f32,
-    is_stream: bool,
+    kind: TrackKind,
 }
 
 #[derive(Clone)]
@@ -2162,22 +2344,36 @@ struct PlaybackHandle {
     device_rate: u32,
     gains: Arc<Mutex<HashMap<String, f32>>>,
     stream_gains: Arc<Mutex<HashMap<String, f32>>>,
+    soundboard_pct: Arc<AtomicU32>,
+}
+
+/// Someone you muted for yourself stays muted when they press a sound.
+fn track_gain(
+    kind: TrackKind,
+    identity: &str,
+    gains: &HashMap<String, f32>,
+    stream_gains: &HashMap<String, f32>,
+    soundboard_pct: u32,
+) -> f32 {
+    let voice = gains.get(identity).copied().unwrap_or(1.0);
+    match kind {
+        TrackKind::Voice => voice,
+        TrackKind::Stream => stream_gains.get(identity).copied().unwrap_or(0.0),
+        TrackKind::Soundboard if voice == 0.0 => 0.0,
+        TrackKind::Soundboard => soundboard_pct.min(100) as f32 / 100.0,
+    }
 }
 
 impl PlaybackHandle {
-    fn add_track(&self, identity: String, is_stream: bool) -> u64 {
-        let gain = if is_stream {
-            self.stream_gains
-                .lock()
-                .get(&identity)
-                .copied()
-                .unwrap_or(0.0)
-        } else {
-            self.gains.lock().get(&identity).copied().unwrap_or(1.0)
-        };
-        crate::dlog!(
-            "mixer add_track identity={identity} is_stream={is_stream} initial_gain={gain:.2}"
+    fn add_track(&self, identity: String, kind: TrackKind) -> u64 {
+        let gain = track_gain(
+            kind,
+            &identity,
+            &self.gains.lock(),
+            &self.stream_gains.lock(),
+            self.soundboard_pct.load(Ordering::Relaxed),
         );
+        crate::dlog!("mixer add_track identity={identity} kind={kind:?} initial_gain={gain:.2}");
         let mut t = self.tracks.lock();
         let id = t.next_id;
         t.next_id = t.next_id.wrapping_add(1);
@@ -2187,7 +2383,7 @@ impl PlaybackHandle {
                 samples: std::collections::VecDeque::with_capacity(SAMPLE_RATE as usize / 2),
                 identity,
                 gain,
-                is_stream,
+                kind,
             },
         );
         id
@@ -2207,9 +2403,9 @@ impl PlaybackHandle {
         let removed = self.tracks.lock().buffers.remove(&id);
         if let Some(t) = removed {
             crate::dlog!(
-                "mixer remove_track identity={} is_stream={}",
+                "mixer remove_track identity={} kind={:?}",
                 t.identity,
-                t.is_stream
+                t.kind
             );
         }
     }
@@ -2219,6 +2415,7 @@ fn refresh_gains(
     tracks: &mut MixerTracks,
     gains: &Arc<Mutex<HashMap<String, f32>>>,
     stream_gains: &Arc<Mutex<HashMap<String, f32>>>,
+    soundboard_pct: &Arc<AtomicU32>,
     deafened: &Arc<AtomicBool>,
 ) {
     if tracks.buffers.is_empty() {
@@ -2232,12 +2429,9 @@ fn refresh_gains(
     }
     let g = gains.lock();
     let sg = stream_gains.lock();
+    let board = soundboard_pct.load(Ordering::Relaxed);
     for track in tracks.buffers.values_mut() {
-        track.gain = if track.is_stream {
-            sg.get(&track.identity).copied().unwrap_or(0.0)
-        } else {
-            g.get(&track.identity).copied().unwrap_or(1.0)
-        };
+        track.gain = track_gain(track.kind, &track.identity, &g, &sg, board);
     }
 }
 
@@ -2321,6 +2515,8 @@ impl PlaybackMixer {
         let gains_i16 = controls.gains.clone();
         let stream_gains_f32 = controls.stream_gains.clone();
         let stream_gains_i16 = controls.stream_gains.clone();
+        let board_f32 = controls.soundboard_pct.clone();
+        let board_i16 = controls.soundboard_pct.clone();
         let deafened_f32 = controls.deafened.clone();
         let deafened_i16 = controls.deafened.clone();
         let mut dither_rng = DITHER_SEED;
@@ -2332,7 +2528,13 @@ impl PlaybackMixer {
                 move |data: &mut [f32], _| {
                     cb_counter_cb.fetch_add(1, Ordering::Relaxed);
                     let mut tracks = tracks_cb.lock();
-                    refresh_gains(&mut tracks, &gains_f32, &stream_gains_f32, &deafened_f32);
+                    refresh_gains(
+                        &mut tracks,
+                        &gains_f32,
+                        &stream_gains_f32,
+                        &board_f32,
+                        &deafened_f32,
+                    );
                     let mut pulled = 0u64;
                     let overrun_threshold = (device_rate_cb as f64 * DRIFT_OVERRUN_SECS) as usize;
                     let underrun_threshold = (device_rate_cb as f64 * DRIFT_UNDERRUN_SECS) as usize;
@@ -2369,7 +2571,13 @@ impl PlaybackMixer {
                 move |data: &mut [i16], _| {
                     cb_counter_cb.fetch_add(1, Ordering::Relaxed);
                     let mut tracks = tracks_cb.lock();
-                    refresh_gains(&mut tracks, &gains_i16, &stream_gains_i16, &deafened_i16);
+                    refresh_gains(
+                        &mut tracks,
+                        &gains_i16,
+                        &stream_gains_i16,
+                        &board_i16,
+                        &deafened_i16,
+                    );
                     let overrun_threshold = (device_rate_cb as f64 * DRIFT_OVERRUN_SECS) as usize;
                     let underrun_threshold = (device_rate_cb as f64 * DRIFT_UNDERRUN_SECS) as usize;
                     let mut counter = drift_counter_cb.load(Ordering::Relaxed);
@@ -2437,6 +2645,7 @@ impl PlaybackMixer {
             device_rate,
             gains: controls.gains.clone(),
             stream_gains: controls.stream_gains.clone(),
+            soundboard_pct: controls.soundboard_pct.clone(),
         };
 
         Ok(Self { stream, handle })
@@ -2451,7 +2660,7 @@ async fn consume_remote_track(
     mut stream: NativeAudioStream,
     handle: PlaybackHandle,
     identity: String,
-    is_stream: bool,
+    kind: TrackKind,
 ) {
     let mut frames = 0u64;
     let mut sample_count = 0u64;
@@ -2463,7 +2672,7 @@ async fn consume_remote_track(
         Some((pk, suffix)) => format!("{}#{suffix}", crate::identity::truncate_pubkey(pk)),
         None => crate::identity::truncate_pubkey(&identity),
     };
-    let track_id = handle.add_track(identity, is_stream);
+    let track_id = handle.add_track(identity, kind);
     let cap = (handle.device_rate / PLAYBACK_CAP_DIVISOR) as usize;
     while let Some(frame) = stream.next().await {
         if frames == 0 {
@@ -2530,6 +2739,42 @@ mod tests {
 
     /// The f32 output stream writes what it is handed, so a sum that leaves
     /// full scale reaches the device as clipping it never asked for.
+    #[test]
+    fn a_sound_follows_the_soundboard_volume_and_a_local_mute() {
+        let mut gains = HashMap::new();
+        let streams = HashMap::new();
+        gains.insert("loud".to_string(), 1.8);
+        gains.insert("muted".to_string(), 0.0);
+        let board = |who| track_gain(TrackKind::Soundboard, who, &gains, &streams, 40);
+        assert_eq!(board("stranger"), 0.4);
+        assert_eq!(
+            board("loud"),
+            0.4,
+            "a person's voice boost is not a soundboard boost"
+        );
+        assert_eq!(board("muted"), 0.0);
+        assert_eq!(
+            track_gain(TrackKind::Soundboard, "x", &gains, &streams, 900),
+            1.0
+        );
+    }
+
+    #[test]
+    fn a_track_is_a_sound_by_its_name_whatever_its_source() {
+        assert_eq!(
+            TrackKind::of(TrackSource::Unknown, SOUNDBOARD_TRACK),
+            TrackKind::Soundboard
+        );
+        assert_eq!(
+            TrackKind::of(TrackSource::ScreenshareAudio, "screen-audio"),
+            TrackKind::Stream
+        );
+        assert_eq!(
+            TrackKind::of(TrackSource::Microphone, "mic"),
+            TrackKind::Voice
+        );
+    }
+
     #[test]
     fn a_sum_never_leaves_full_scale() {
         assert_eq!(mix(1.8), 1.0);

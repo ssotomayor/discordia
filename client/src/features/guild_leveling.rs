@@ -7,7 +7,7 @@
 
 use dioxus::prelude::*;
 
-use crate::protocol::{Channel, ChannelKind, Id, LevelTier, Leveling, MemberSort};
+use crate::protocol::{Channel, ChannelKind, Id, LevelTier, Leveling};
 use crate::state::use_app_state;
 
 const FIELD: &str = "w-16 bg-transparent border border-[var(--edge)] focus:border-[var(--accent)] rounded px-2 py-1 text-xs text-[var(--text)] outline-none transition-colors";
@@ -37,10 +37,6 @@ pub fn LevelingEditor(guild_id: Id, draft: Signal<Leveling>) -> Element {
     };
 
     let enabled = draft.read().enabled;
-    let sort_value = match draft.read().member_sort {
-        MemberSort::Name => "name",
-        MemberSort::Level => "level",
-    };
 
     rsx! {
         div { class: "border-t border-[var(--border)] pt-3",
@@ -138,24 +134,6 @@ pub fn LevelingEditor(guild_id: Id, draft: Signal<Leveling>) -> Element {
 
                 TierEditor { draft }
 
-                div { class: "mt-3",
-                    div { class: HEADING, "Member list order" }
-                    select {
-                        class: "w-full bg-[var(--panel-solid)] border border-[var(--border)] focus:border-[var(--accent)] rounded px-2 py-1 text-xs text-[var(--text)] outline-none",
-                        value: "{sort_value}",
-                        onchange: move |e| {
-                            draft.write().member_sort = match e.value().as_str() {
-                                "level" => MemberSort::Level,
-                                _ => MemberSort::Name,
-                            };
-                        },
-                        option { value: "name", "By name" }
-                        option { value: "level", "Most experienced first" }
-                    }
-                    div { class: HINT,
-                        "Applies inside each group. Whoever is online or in voice still comes first."
-                    }
-                }
             }
         }
     }

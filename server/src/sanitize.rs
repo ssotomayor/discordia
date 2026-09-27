@@ -4,8 +4,8 @@
 
 use crate::archive::GuildArchive;
 use crate::protocol::{
-    AuditEntry, BotInstall, Channel, Guild, GuildEmoji, Message, PRESENCES, Permission, Profile,
-    REPLY_EXCERPT_CHARS, Role, User, canonical_username, sanitize_line, sanitize_name,
+    AuditEntry, BotInstall, Channel, Guild, GuildEmoji, GuildSound, Message, PRESENCES, Permission,
+    Profile, REPLY_EXCERPT_CHARS, Role, User, canonical_username, sanitize_line, sanitize_name,
     sanitize_paragraph, valid_shortcode,
 };
 use crate::store::LoadedState;
@@ -95,6 +95,14 @@ pub fn emoji_is_sound(e: &GuildEmoji) -> bool {
     valid_shortcode(&e.shortcode) && crate::media::is_address(&e.image)
 }
 
+pub fn sound(s: &mut GuildSound) -> bool {
+    match crate::protocol::sound_name(&s.name) {
+        Ok(name) => s.name = name,
+        Err(_) => return false,
+    }
+    s.audio.starts_with("media:") && crate::media::is_address(&s.audio)
+}
+
 pub fn user(u: &mut User) -> bool {
     u.pubkey = pubkey(&u.pubkey);
     u.username = canonical_username(&u.username);
@@ -159,6 +167,7 @@ pub fn archive(a: &mut GuildArchive) {
     a.channels.iter_mut().for_each(channel);
     a.roles.iter_mut().for_each(role);
     a.emojis.retain(emoji_is_sound);
+    a.sounds.retain_mut(sound);
     a.members.retain_mut(|m| user(&mut m.user));
     a.bans = a
         .bans
@@ -178,6 +187,7 @@ pub fn loaded(l: &mut LoadedState) {
     l.channels.iter_mut().for_each(channel);
     l.roles.iter_mut().for_each(role);
     l.emojis.retain(emoji_is_sound);
+    l.sounds.retain_mut(sound);
     l.users.retain_mut(user);
     l.profiles.retain_mut(profile);
     l.bot_installs.retain_mut(bot_install);

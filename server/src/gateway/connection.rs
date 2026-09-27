@@ -53,6 +53,7 @@ pub async fn handle_connection(
     let mut signals = RateLimiter::new(SIGNAL_LIMIT, RATE_WINDOW);
     let mut flood = RateLimiter::new(FLOOD_LIMIT, RATE_WINDOW);
     let mut activities = RateLimiter::new(ACTIVITY_LIMIT, RATE_WINDOW);
+    let mut sound_plays = RateLimiter::new(SOUND_PLAY_LIMIT, RATE_WINDOW);
     let mut failed_identifies = 0u32;
     let identify_by = tokio::time::Instant::now() + IDENTIFY_TIMEOUT;
     let mut shutdown = ctx.shutdown.subscribe();
@@ -375,6 +376,7 @@ pub async fn handle_connection(
                             members: vec![member],
                             roles,
                             emojis: Vec::new(),
+                            sounds: Vec::new(),
                             voice_states: Vec::new(),
                         }).await.is_err() {
                             break;
@@ -701,6 +703,104 @@ pub async fn handle_connection(
                             .collect();
                         if send(&mut ws_tx, &ServerMessage::EmojiBlobs { blobs }).await.is_err() {
                             break;
+                        }
+                    }
+                    ClientMessage::CreateGuildSound { guild_id, name, audio } => {
+                        let Some(u) = user.as_ref() else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "identify first".into(),
+                            }).await;
+                            continue;
+                        };
+                        if !limiter.allow() {
+                            reject_rate_limited(&mut ws_tx).await;
+                            continue;
+                        }
+                        if let Err(message) = ctx.state.require_permission(guild_id, &u.pubkey, Permission::ManageGuild) {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await;
+                            continue;
+                        }
+                        if !audio.starts_with("data:audio/") || audio.len() > MAX_SOUND_DATA_LEN {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: format!(
+                                    "a sound must be an MP3, OGG or WAV file under {} KB",
+                                    crate::protocol::MAX_SOUND_BYTES / 1024
+                                ),
+                            }).await;
+                            continue;
+                        }
+                        if let Err(message) = crate::protocol::sound_name(&name) {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await;
+                            continue;
+                        }
+                        let address = match ctx.state.store_sound_upload(&u.pubkey, &audio) {
+                            Ok(address) => address,
+                            Err(message) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await;
+                                continue;
+                            }
+                        };
+                        match ctx.state.create_sound(guild_id, &name, address, &u.pubkey).await {
+                            Ok(_) => broadcast_sounds(&ctx.state, guild_id),
+                            Err(message) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await;
+                            }
+                        }
+                    }
+                    ClientMessage::RenameGuildSound { guild_id, sound_id, name } => {
+                        let Some(u) = user.as_ref() else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "identify first".into(),
+                            }).await;
+                            continue;
+                        };
+                        match ctx.state.rename_sound(guild_id, sound_id, &name, &u.pubkey).await {
+                            Ok(_) => broadcast_sounds(&ctx.state, guild_id),
+                            Err(message) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await;
+                            }
+                        }
+                    }
+                    ClientMessage::DeleteGuildSound { guild_id, sound_id } => {
+                        let Some(u) = user.as_ref() else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "identify first".into(),
+                            }).await;
+                            continue;
+                        };
+                        match ctx.state.delete_sound(guild_id, sound_id, &u.pubkey).await {
+                            Ok(()) => broadcast_sounds(&ctx.state, guild_id),
+                            Err(message) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await;
+                            }
+                        }
+                    }
+                    ClientMessage::PlaySound { sound_id } => {
+                        let Some(u) = user.as_ref() else { continue };
+                        if !sound_plays.allow() {
+                            continue;
+                        }
+                        let Some(channel_id) = ctx.state.voice_channel_of(&u.pubkey) else {
+                            continue;
+                        };
+                        let Some(guild_id) = ctx.state.voice_channel_guild(channel_id) else {
+                            continue;
+                        };
+                        if !ctx.state.sound_in_guild(guild_id, sound_id) {
+                            continue;
+                        }
+                        let targets: Vec<String> = ctx
+                            .state
+                            .voice_members_in(channel_id)
+                            .into_iter()
+                            .filter(|p| p != &u.pubkey)
+                            .collect();
+                        if !targets.is_empty() {
+                            ctx.state.deliver(targets, ServerMessage::SoundPlayed {
+                                channel_id,
+                                user_pubkey: u.pubkey.clone(),
+                                sound_id,
+                            });
                         }
                     }
                     ClientMessage::SetGuildAccent { guild_id, accent } => {
@@ -1274,6 +1374,27 @@ pub async fn handle_connection(
                             }
                         }
                     }
+                    ClientMessage::ReorderRoles { guild_id, order } => {
+                        let Some(u) = user.as_ref() else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "identify first".into(),
+                            }).await;
+                            continue;
+                        };
+                        if !limiter.allow() {
+                            reject_rate_limited(&mut ws_tx).await;
+                            continue;
+                        }
+                        match ctx.state.reorder_roles(guild_id, &order, &u.pubkey).await {
+                            Ok(roles) => {
+                                let targets = ctx.state.guild_member_pubkeys(guild_id);
+                                ctx.state.deliver(targets, ServerMessage::GuildRoles { guild_id, roles });
+                            }
+                            Err(message) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await;
+                            }
+                        }
+                    }
                     ClientMessage::UpdateChannel { channel_id, name, topic, read_only, position, slowmode_secs } => {
                         let Some(u) = user.as_ref() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
@@ -1654,6 +1775,9 @@ const FLOOD_LIMIT: usize = 300;
 /// Its own budget, not the write one: a game pushing rich presence must not be
 /// able to spend the allowance a person's messages need.
 const ACTIVITY_LIMIT: usize = 12;
+/// Only the notice is limited here: the sound itself goes over the SFU, which
+/// the gateway never sees. The client holds its own, tighter cooldown.
+const SOUND_PLAY_LIMIT: usize = 10;
 /// A real client identifies as soon as it reads the Hello. Anything still
 /// silent after this is holding a socket for its own reasons.
 const IDENTIFY_TIMEOUT: Duration = Duration::from_secs(10);
@@ -1667,6 +1791,7 @@ pub const MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;
 /// The socket enforces the cap and the handler enforces the image size, so a
 /// cap under it would kill the connection before anything could explain why.
 const _: () = assert!(MAX_FRAME_BYTES > crate::state::MAX_IMAGE_LEN);
+const _: () = assert!(MAX_FRAME_BYTES > MAX_SOUND_DATA_LEN);
 /// Under the write bar the write limiter would be dead code, and every burst
 /// would close the socket instead of slowing it.
 const _: () = assert!(FLOOD_LIMIT > WRITE_LIMIT);
@@ -1833,6 +1958,7 @@ fn removal_broadcasts(
 
 const MAX_EMOJI_DATA_LEN: usize = 350_000; // ~256 KB of bytes once base64 is undone
 const MAX_EMOJI_FETCH: usize = 64;
+const MAX_SOUND_DATA_LEN: usize = crate::protocol::MAX_SOUND_BYTES.div_ceil(3) * 4 + 64;
 /// Four full-size images, so a client asking for message pictures four at a time
 /// is never cut off, and 64 of them cannot be asked for in one frame.
 const MAX_BLOB_RESPONSE_BYTES: usize = 4 * crate::state::MAX_IMAGE_LEN;
@@ -1841,6 +1967,12 @@ fn broadcast_emojis(state: &crate::state::AppState, guild_id: Id) {
     let targets = state.guild_member_pubkeys(guild_id);
     let emojis = state.emojis_of(guild_id);
     state.deliver(targets, ServerMessage::GuildEmojis { guild_id, emojis });
+}
+
+fn broadcast_sounds(state: &crate::state::AppState, guild_id: Id) {
+    let targets = state.guild_member_pubkeys(guild_id);
+    let sounds = state.sounds_of(guild_id);
+    state.deliver(targets, ServerMessage::GuildSounds { guild_id, sounds });
 }
 
 fn sharing_in(state: &crate::state::AppState, pubkey: &str) -> Option<(Id, Id)> {
@@ -2001,6 +2133,7 @@ where
         }),
     );
     let emojis = state.emojis_of(guild_id);
+    let sounds = state.sounds_of(guild_id);
     let voice_states = state.voice_states_in(guild_id);
     if send(
         ws_tx,
@@ -2010,6 +2143,7 @@ where
             members,
             roles,
             emojis,
+            sounds,
             voice_states,
         },
     )

@@ -6,9 +6,9 @@ use uuid::Uuid;
 
 use crate::media::MediaStore;
 use crate::protocol::{
-    BotInstall, Channel, Guild, GuildEmoji, GuildVisibility, Id, Intent, MAX_EMOJIS_PER_GUILD,
-    Member, Message, Permission, Profile, ReplyRef, Role, ServerMessage, User, VoiceState,
-    valid_shortcode,
+    BotInstall, Channel, Guild, GuildEmoji, GuildSound, GuildVisibility, Id, Intent,
+    MAX_EMOJIS_PER_GUILD, MAX_SOUNDS_PER_GUILD, Member, Message, Permission, Profile, ReplyRef,
+    Role, ServerMessage, User, VoiceState, valid_shortcode,
 };
 use crate::store::Store;
 
@@ -81,6 +81,7 @@ pub struct AppState {
     pub bot_installs: DashMap<String, DashMap<Id, BotInstall>>,
     pub roles: DashMap<Id, Vec<Role>>,
     pub emojis: DashMap<Id, Vec<GuildEmoji>>,
+    pub sounds: DashMap<Id, Vec<GuildSound>>,
     pub invites: DashMap<String, Invite>,
     pub invite_by_guild: DashMap<Id, String>,
     pub bans: DashMap<Id, std::collections::HashSet<String>>,
@@ -117,6 +118,7 @@ impl AppState {
             bot_installs: DashMap::new(),
             roles: DashMap::new(),
             emojis: DashMap::new(),
+            sounds: DashMap::new(),
             invites: DashMap::new(),
             invite_by_guild: DashMap::new(),
             bans: DashMap::new(),
@@ -174,8 +176,14 @@ impl AppState {
         for r in loaded.roles {
             state.roles.entry(r.guild_id).or_default().push(r);
         }
+        for mut roles in state.roles.iter_mut() {
+            roles.sort_by_key(|r| r.position);
+        }
         for e in loaded.emojis {
             state.emojis.entry(e.guild_id).or_default().push(e);
+        }
+        for s in loaded.sounds {
+            state.sounds.entry(s.guild_id).or_default().push(s);
         }
         for (gid, pk) in loaded.bans {
             state.bans.entry(gid).or_default().insert(pk);
@@ -877,6 +885,7 @@ impl AppState {
         let profiles = self.profiles_snapshot();
         let roles = self.roles_for_guilds(&my_guild_ids);
         let emojis = self.emojis_for_guilds(&my_guild_ids);
+        let sounds = self.sounds_for_guilds(&my_guild_ids);
         let seen: Vec<String> = members.iter().map(|m| m.user.pubkey.clone()).collect();
         let activities = self.activities_of(&seen);
 
@@ -890,6 +899,7 @@ impl AppState {
             profiles,
             roles,
             emojis,
+            sounds,
             activities,
             operator: self.operators.contains(&user.pubkey),
         }
@@ -964,13 +974,16 @@ impl AppState {
             if roles.len() >= Self::MAX_ROLES_PER_GUILD {
                 return Err("role limit reached for this guild".into());
             }
+            // Past the highest, not the count: after a deletion the count is
+            // a position some role still holds.
+            let position = roles.iter().map(|r| r.position + 1).max().unwrap_or(0);
             let role = Role {
                 id: Uuid::new_v4(),
                 guild_id,
                 name,
                 color,
                 permissions,
-                position: roles.len() as u32,
+                position,
             };
             roles.push(role.clone());
             role
@@ -1013,6 +1026,45 @@ impl AppState {
         };
         persist(self.store.upsert_role(&updated).await, "role update");
         Ok(updated)
+    }
+
+    /// A position only decides display order, so moving a role grants nothing
+    /// and needs no more than Manage roles, even for an owner-only role.
+    pub async fn reorder_roles(
+        &self,
+        guild_id: Id,
+        order: &[Id],
+        by_pubkey: &str,
+    ) -> Result<Vec<Role>, String> {
+        self.require_permission(guild_id, by_pubkey, Permission::ManageRoles)?;
+        let changed = {
+            let mut roles = self
+                .roles
+                .get_mut(&guild_id)
+                .ok_or("this guild has no roles")?;
+            let mut wanted: Vec<Id> = order.to_vec();
+            wanted.sort_unstable();
+            wanted.dedup();
+            let mut have: Vec<Id> = roles.iter().map(|r| r.id).collect();
+            have.sort_unstable();
+            if wanted != have || order.len() != have.len() {
+                return Err("the role list changed — reopen it and try again".into());
+            }
+            let mut changed = Vec::new();
+            for role in roles.iter_mut() {
+                let position = order.iter().position(|id| *id == role.id).unwrap_or(0) as u32;
+                if role.position != position {
+                    role.position = position;
+                    changed.push(role.clone());
+                }
+            }
+            roles.sort_by_key(|r| r.position);
+            changed
+        };
+        for role in &changed {
+            persist(self.store.upsert_role(role).await, "role position");
+        }
+        Ok(self.guild_roles(guild_id))
     }
 
     pub fn emojis_of(&self, guild_id: Id) -> Vec<GuildEmoji> {
@@ -1111,6 +1163,107 @@ impl AppState {
             return Err("unknown emoji".into());
         }
         persist(self.store.delete_emoji(emoji_id).await, "emoji delete");
+        Ok(())
+    }
+
+    pub fn sounds_of(&self, guild_id: Id) -> Vec<GuildSound> {
+        self.sounds
+            .get(&guild_id)
+            .map(|s| s.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn sounds_for_guilds(&self, guild_ids: &[Id]) -> Vec<GuildSound> {
+        guild_ids.iter().flat_map(|g| self.sounds_of(*g)).collect()
+    }
+
+    pub fn sound_in_guild(&self, guild_id: Id, sound_id: Id) -> bool {
+        self.sounds
+            .get(&guild_id)
+            .is_some_and(|list| list.iter().any(|s| s.id == sound_id))
+    }
+
+    /// `audio` is already stored; the gateway checks the permission before
+    /// storing it too, so a refused upload never reaches the disk.
+    pub async fn create_sound(
+        &self,
+        guild_id: Id,
+        name: &str,
+        audio: String,
+        by_pubkey: &str,
+    ) -> Result<GuildSound, String> {
+        self.require_permission(guild_id, by_pubkey, Permission::ManageGuild)?;
+        let name = crate::protocol::sound_name(name)?;
+        let sound = {
+            let mut list = self.sounds.entry(guild_id).or_default();
+            if list.len() >= MAX_SOUNDS_PER_GUILD {
+                return Err(format!(
+                    "sound limit reached ({MAX_SOUNDS_PER_GUILD} per guild)"
+                ));
+            }
+            if list.iter().any(|s| s.name.eq_ignore_ascii_case(&name)) {
+                return Err(format!("a sound called \"{name}\" already exists"));
+            }
+            let sound = GuildSound {
+                id: Uuid::new_v4(),
+                guild_id,
+                name,
+                audio,
+                added_by: by_pubkey.to_string(),
+                created_ms: chrono::Utc::now().timestamp_millis(),
+            };
+            list.push(sound.clone());
+            sound
+        };
+        persist(self.store.upsert_sound(&sound).await, "sound create");
+        Ok(sound)
+    }
+
+    pub async fn rename_sound(
+        &self,
+        guild_id: Id,
+        sound_id: Id,
+        name: &str,
+        by_pubkey: &str,
+    ) -> Result<GuildSound, String> {
+        self.require_permission(guild_id, by_pubkey, Permission::ManageGuild)?;
+        let name = crate::protocol::sound_name(name)?;
+        let updated = {
+            let mut list = self.sounds.get_mut(&guild_id).ok_or("unknown sound")?;
+            if list
+                .iter()
+                .any(|s| s.name.eq_ignore_ascii_case(&name) && s.id != sound_id)
+            {
+                return Err(format!("a sound called \"{name}\" already exists"));
+            }
+            let s = list
+                .iter_mut()
+                .find(|s| s.id == sound_id)
+                .ok_or("unknown sound")?;
+            s.name = name;
+            s.clone()
+        };
+        persist(self.store.upsert_sound(&updated).await, "sound rename");
+        Ok(updated)
+    }
+
+    pub async fn delete_sound(
+        &self,
+        guild_id: Id,
+        sound_id: Id,
+        by_pubkey: &str,
+    ) -> Result<(), String> {
+        self.require_permission(guild_id, by_pubkey, Permission::ManageGuild)?;
+        let existed = {
+            let mut list = self.sounds.get_mut(&guild_id).ok_or("unknown sound")?;
+            let before = list.len();
+            list.retain(|s| s.id != sound_id);
+            before != list.len()
+        };
+        if !existed {
+            return Err("unknown sound".into());
+        }
+        persist(self.store.delete_sound(sound_id).await, "sound delete");
         Ok(())
     }
 
@@ -2050,6 +2203,7 @@ impl AppState {
         self.guilds.remove(&guild_id);
         self.members.remove(&guild_id);
         self.roles.remove(&guild_id);
+        self.sounds.remove(&guild_id);
         self.bans.remove(&guild_id);
         if let Some((_, code)) = self.invite_by_guild.remove(&guild_id) {
             self.invites.remove(&code);
@@ -2134,8 +2288,21 @@ impl AppState {
     }
 
     pub fn store_upload(&self, by_pubkey: &str, data_url: &str) -> Result<String, String> {
+        self.charge_upload(by_pubkey, data_url.len() as u64)?;
+        self.media
+            .store_data_url(data_url)
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn store_sound_upload(&self, by_pubkey: &str, data_url: &str) -> Result<String, String> {
+        self.charge_upload(by_pubkey, data_url.len() as u64)?;
+        self.media
+            .store_sound_data_url(data_url)
+            .map_err(|e| e.to_string())
+    }
+
+    fn charge_upload(&self, by_pubkey: &str, cost: u64) -> Result<(), String> {
         let now = std::time::Instant::now();
-        let cost = data_url.len() as u64;
         {
             let mut slot = self
                 .upload_budget
@@ -2152,9 +2319,7 @@ impl AppState {
             }
             slot.1 += cost;
         }
-        self.media
-            .store_data_url(data_url)
-            .map_err(|e| e.to_string())
+        Ok(())
     }
 
     /// Rows written before images had addresses hold the bytes themselves;
@@ -2331,6 +2496,14 @@ impl AppState {
         }
         entry.speaking = speaking;
         Some(entry.clone())
+    }
+
+    pub fn voice_members_in(&self, channel_id: Id) -> Vec<String> {
+        self.voice_states
+            .iter()
+            .filter(|v| v.channel_id == Some(channel_id))
+            .map(|v| v.user_pubkey.clone())
+            .collect()
     }
 
     pub fn voice_channel_of(&self, user_pubkey: &str) -> Option<Id> {
@@ -2514,6 +2687,7 @@ impl AppState {
             // bots: sending either would leak a guild's structure to it.
             roles: Vec::new(),
             emojis: Vec::new(),
+            sounds: Vec::new(),
             activities: Vec::new(),
             operator: false,
         }

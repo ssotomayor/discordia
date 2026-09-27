@@ -372,6 +372,17 @@ async fn every_kind_of_blob_reference_is_found() {
         })
         .await
         .unwrap();
+    // A sound row stores the `media:` form, unlike an emoji row.
+    const SILENT_WAV: &str =
+        "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAgLsAAAB3AQACABAAZGF0YQAAAAA=";
+    session
+        .send(&ClientMessage::CreateGuildSound {
+            guild_id,
+            name: "silence".into(),
+            audio: SILENT_WAV.into(),
+        })
+        .await
+        .unwrap();
 
     tokio::time::sleep(Duration::from_millis(400)).await;
 
@@ -388,6 +399,10 @@ async fn every_kind_of_blob_reference_is_found() {
         .collect();
 
     assert!(!on_disk.is_empty(), "something was written");
+    assert!(
+        on_disk.iter().any(|n| n.ends_with(".wav")),
+        "the sound was stored: {on_disk:?}"
+    );
     for name in &on_disk {
         assert!(
             referenced.contains(name),

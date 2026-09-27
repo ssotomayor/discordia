@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::protocol::{
-    AuditEntry, BotInstall, Channel, Guild, GuildEmoji, Id, Member, Message, Role,
+    AuditEntry, BotInstall, Channel, Guild, GuildEmoji, GuildSound, Id, Member, Message, Role,
 };
 use crate::store::Store;
 
@@ -18,6 +18,8 @@ pub struct GuildArchive {
     pub roles: Vec<Role>,
     #[serde(default)]
     pub emojis: Vec<GuildEmoji>,
+    #[serde(default)]
+    pub sounds: Vec<GuildSound>,
     pub members: Vec<Member>,
     pub bans: Vec<String>,
     pub invite: Option<String>,
@@ -47,6 +49,11 @@ impl Store {
             .emojis
             .into_iter()
             .filter(|e| e.guild_id == guild_id)
+            .collect();
+        let sounds: Vec<GuildSound> = loaded
+            .sounds
+            .into_iter()
+            .filter(|s| s.guild_id == guild_id)
             .collect();
 
         let members: Vec<Member> = loaded
@@ -108,6 +115,7 @@ impl Store {
             channels,
             roles,
             emojis,
+            sounds,
             members,
             bans,
             invite,
@@ -158,6 +166,13 @@ impl Store {
             emoji.id = Uuid::new_v4();
             emoji.guild_id = new_guild_id;
             self.upsert_emoji(&emoji).await?;
+        }
+
+        for s in &archive.sounds {
+            let mut sound = s.clone();
+            sound.id = Uuid::new_v4();
+            sound.guild_id = new_guild_id;
+            self.upsert_sound(&sound).await?;
         }
 
         for c in &archive.channels {

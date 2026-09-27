@@ -22,6 +22,7 @@ pub struct SweepReport {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StoreError {
     Unsupported,
+    UnsupportedSound,
     Full,
     Io,
 }
@@ -30,6 +31,7 @@ impl std::fmt::Display for StoreError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             StoreError::Unsupported => "unsupported image format (PNG, JPEG, GIF, WebP or AVIF)",
+            StoreError::UnsupportedSound => "unsupported sound format (MP3, OGG or WAV)",
             StoreError::Full => "this server's media storage is full",
             StoreError::Io => "the server could not store the image",
         })
@@ -66,16 +68,26 @@ impl MediaStore {
     }
 
     pub fn store_data_url(&self, data_url: &str) -> Result<String, StoreError> {
-        let rest = data_url
-            .strip_prefix("data:")
-            .ok_or(StoreError::Unsupported)?;
-        let (mime, payload) = rest.split_once(";base64,").ok_or(StoreError::Unsupported)?;
-        let ext = ext_for_mime(mime).ok_or(StoreError::Unsupported)?;
+        self.store_kind(data_url, Kind::Image)
+    }
+
+    pub fn store_sound_data_url(&self, data_url: &str) -> Result<String, StoreError> {
+        self.store_kind(data_url, Kind::Sound)
+    }
+
+    fn store_kind(&self, data_url: &str, kind: Kind) -> Result<String, StoreError> {
+        let unsupported = match kind {
+            Kind::Image => StoreError::Unsupported,
+            Kind::Sound => StoreError::UnsupportedSound,
+        };
+        let rest = data_url.strip_prefix("data:").ok_or(unsupported)?;
+        let (mime, payload) = rest.split_once(";base64,").ok_or(unsupported)?;
+        let ext = ext_for_mime(mime, kind).ok_or(unsupported)?;
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(payload)
-            .map_err(|_| StoreError::Unsupported)?;
+            .map_err(|_| unsupported)?;
         if !looks_like(ext, &bytes) {
-            return Err(StoreError::Unsupported);
+            return Err(unsupported);
         }
         let hash = hex::encode(Sha256::digest(&bytes));
         let name = format!("{hash}.{ext}");
@@ -181,13 +193,23 @@ fn sanitize(name: &str) -> Option<String> {
     }
 }
 
-fn ext_for_mime(mime: &str) -> Option<&'static str> {
-    match mime {
-        "image/png" => Some("png"),
-        "image/jpeg" | "image/jpg" => Some("jpg"),
-        "image/gif" => Some("gif"),
-        "image/webp" => Some("webp"),
-        "image/avif" => Some("avif"),
+/// Kept apart so a message picture or an avatar can never be stored as audio.
+#[derive(Clone, Copy)]
+enum Kind {
+    Image,
+    Sound,
+}
+
+fn ext_for_mime(mime: &str, kind: Kind) -> Option<&'static str> {
+    match (kind, mime) {
+        (Kind::Image, "image/png") => Some("png"),
+        (Kind::Image, "image/jpeg" | "image/jpg") => Some("jpg"),
+        (Kind::Image, "image/gif") => Some("gif"),
+        (Kind::Image, "image/webp") => Some("webp"),
+        (Kind::Image, "image/avif") => Some("avif"),
+        (Kind::Sound, "audio/mpeg" | "audio/mp3") => Some("mp3"),
+        (Kind::Sound, "audio/ogg" | "application/ogg") => Some("ogg"),
+        (Kind::Sound, "audio/wav" | "audio/x-wav" | "audio/wave" | "audio/vnd.wave") => Some("wav"),
         _ => None,
     }
 }
@@ -205,6 +227,12 @@ fn looks_like(ext: &str, bytes: &[u8]) -> bool {
                 && &bytes[4..8] == b"ftyp"
                 && matches!(&bytes[8..12], b"avif" | b"avis")
         }
+        "mp3" => {
+            bytes.starts_with(b"ID3")
+                || (bytes.len() >= 2 && bytes[0] == 0xFF && bytes[1] & 0xE0 == 0xE0)
+        }
+        "ogg" => bytes.starts_with(b"OggS"),
+        "wav" => bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WAVE",
         _ => false,
     }
 }
@@ -216,6 +244,9 @@ fn mime_for_name(name: &str) -> &'static str {
         Some("gif") => "image/gif",
         Some("webp") => "image/webp",
         Some("avif") => "image/avif",
+        Some("mp3") => "audio/mpeg",
+        Some("ogg") => "audio/ogg",
+        Some("wav") => "audio/wav",
         _ => "application/octet-stream",
     }
 }
@@ -380,6 +411,34 @@ mod tests {
             Err(StoreError::Unsupported)
         );
         assert!(media.store_data_url(PNG).is_ok());
+    }
+
+    #[test]
+    fn sounds_and_pictures_never_cross() {
+        let (media, _dir) = store();
+        let b64 = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
+        let mut wav = b"RIFF\x24\0\0\0WAVEfmt ".to_vec();
+        wav.extend_from_slice(&[0; 16]);
+        let wav = format!("data:audio/wav;base64,{}", b64(&wav));
+        let mp3 = format!("data:audio/mpeg;base64,{}", b64(b"ID3\x04\0\0\0\0\0\0rest"));
+        let ogg = format!("data:audio/ogg;base64,{}", b64(b"OggS\0\x02rest"));
+
+        for sound in [&wav, &mp3, &ogg] {
+            let stored = media
+                .store_sound_data_url(sound)
+                .expect("a sound is stored");
+            assert!(media.inline(&stored).unwrap().starts_with("data:audio/"));
+            assert_eq!(media.store_data_url(sound), Err(StoreError::Unsupported));
+        }
+        assert_eq!(
+            media.store_sound_data_url(PNG),
+            Err(StoreError::UnsupportedSound)
+        );
+        assert_eq!(
+            media.store_sound_data_url(&format!("data:audio/mpeg;base64,{}", b64(b"<html>"))),
+            Err(StoreError::UnsupportedSound),
+            "the bytes are checked for sounds too"
+        );
     }
 
     #[test]

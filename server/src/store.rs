@@ -8,8 +8,8 @@ use sqlx::{Row, SqlitePool};
 use uuid::Uuid;
 
 use crate::protocol::{
-    BotInstall, Channel, ChannelKind, Guild, GuildEmoji, GuildVisibility, Id, Member, Message,
-    Profile, Reaction, ReplyRef, Role, User,
+    BotInstall, Channel, ChannelKind, Guild, GuildEmoji, GuildSound, GuildVisibility, Id, Member,
+    Message, Profile, Reaction, ReplyRef, Role, User,
 };
 
 #[derive(Debug, Clone)]
@@ -32,6 +32,7 @@ pub struct LoadedState {
     pub members: Vec<(Id, String, String, bool, Vec<Id>)>,
     pub roles: Vec<Role>,
     pub emojis: Vec<GuildEmoji>,
+    pub sounds: Vec<GuildSound>,
     pub bans: Vec<(Id, String)>,
     pub invites: Vec<InviteRow>,
     pub bot_installs: Vec<BotInstall>,
@@ -120,6 +121,11 @@ impl Store {
                 created_ms INTEGER NOT NULL DEFAULT 0,
                 UNIQUE (guild_id, shortcode))",
             "CREATE INDEX IF NOT EXISTS idx_emojis_guild ON guild_emojis(guild_id)",
+            "CREATE TABLE IF NOT EXISTS guild_sounds (
+                id TEXT PRIMARY KEY, guild_id TEXT NOT NULL, name TEXT NOT NULL,
+                audio TEXT NOT NULL, added_by TEXT NOT NULL DEFAULT '',
+                created_ms INTEGER NOT NULL DEFAULT 0)",
+            "CREATE INDEX IF NOT EXISTS idx_sounds_guild ON guild_sounds(guild_id)",
             "CREATE TABLE IF NOT EXISTS messages (
                 id TEXT PRIMARY KEY, channel_id TEXT NOT NULL,
                 author_pubkey TEXT NOT NULL, author_username TEXT NOT NULL,
@@ -294,6 +300,20 @@ impl Store {
                 created_ms: r.get(5),
             });
         }
+        for r in
+            sqlx::query("SELECT id, guild_id, name, audio, added_by, created_ms FROM guild_sounds")
+                .fetch_all(&self.pool)
+                .await?
+        {
+            out.sounds.push(GuildSound {
+                id: parse_id(&r.get::<String, _>(0)),
+                guild_id: parse_id(&r.get::<String, _>(1)),
+                name: r.get(2),
+                audio: r.get(3),
+                added_by: r.get(4),
+                created_ms: r.get(5),
+            });
+        }
         for r in sqlx::query("SELECT guild_id, pubkey FROM bans")
             .fetch_all(&self.pool)
             .await?
@@ -423,6 +443,7 @@ impl Store {
             "members",
             "roles",
             "guild_emojis",
+            "guild_sounds",
             "bans",
             "invites",
             "bot_installs",
@@ -587,6 +608,31 @@ impl Store {
         Ok(())
     }
 
+    pub async fn upsert_sound(&self, s: &GuildSound) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO guild_sounds (id, guild_id, name, audio, added_by, created_ms)
+             VALUES (?, ?, ?, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET name=excluded.name, audio=excluded.audio",
+        )
+        .bind(s.id.to_string())
+        .bind(s.guild_id.to_string())
+        .bind(&s.name)
+        .bind(&s.audio)
+        .bind(&s.added_by)
+        .bind(s.created_ms)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn delete_sound(&self, sound_id: Id) -> Result<()> {
+        sqlx::query("DELETE FROM guild_sounds WHERE id = ?")
+            .bind(sound_id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     pub async fn delete_role(&self, role_id: Id) -> Result<()> {
         sqlx::query("DELETE FROM roles WHERE id = ?")
             .bind(role_id.to_string())
@@ -661,6 +707,15 @@ impl Store {
         {
             let v: String = r.get(0);
             out.insert(v.strip_prefix("media:").unwrap_or(&v).to_string());
+        }
+        for r in sqlx::query("SELECT audio FROM guild_sounds")
+            .fetch_all(&self.pool)
+            .await?
+        {
+            let v: String = r.get(0);
+            if let Some(name) = v.strip_prefix("media:") {
+                out.insert(name.to_string());
+            }
         }
         // Profiles and guilds point at blobs too; a sweep that forgot them
         // deleted every avatar older than a day.

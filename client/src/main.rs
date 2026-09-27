@@ -24,6 +24,7 @@ mod rawmic;
 mod rendezvous;
 mod session;
 mod settings;
+mod sound_decode;
 mod state;
 mod sysaudio;
 mod sysvideo;

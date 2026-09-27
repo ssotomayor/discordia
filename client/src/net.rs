@@ -503,11 +503,30 @@ where
     Ok(())
 }
 
+/// Stable, so roles written before positions were kept apart stay in the
+/// order the server sent them.
+fn by_position(mut roles: Vec<crate::protocol::Role>) -> Vec<crate::protocol::Role> {
+    roles.sort_by_key(|r| r.position);
+    roles
+}
+
 fn emoji_addresses(s: &AppState) -> Vec<String> {
     s.guild_emojis
         .values()
         .flatten()
         .map(|e| e.image.clone())
+        .collect()
+}
+
+/// Only the open board's guild: a library can be dozens of files, and a
+/// listener never needs them — what they hear arrives over the SFU.
+fn sound_addresses(s: &AppState) -> Vec<String> {
+    let Some(guild) = s.voice_guild().filter(|_| s.soundboard_open) else {
+        return Vec::new();
+    };
+    s.sounds_of(guild)
+        .iter()
+        .filter_map(|sound| media_address(&sound.audio))
         .collect()
 }
 
@@ -524,9 +543,10 @@ const MEDIA_TICK: std::time::Duration = std::time::Duration::from_secs(3);
 /// Every picture the server named and has not yet handed over. Emoji are
 /// small and disk-cached, so they go in big batches; everything else can be
 /// a full 3 MB, and the server's per-answer budget trims what does not fit.
-fn resolve_media(s: &mut AppState, tx: &UnboundedSender<ClientMessage>) {
+pub(crate) fn resolve_media(s: &mut AppState, tx: &UnboundedSender<ClientMessage>) {
     const EMOJI_PER_REQUEST: usize = 16;
     const IMAGES_PER_REQUEST: usize = 8;
+    const SOUNDS_PER_REQUEST: usize = 8;
 
     let now = std::time::Instant::now();
     let in_flight = |s: &AppState, address: &str| {
@@ -546,6 +566,19 @@ fn resolve_media(s: &mut AppState, tx: &UnboundedSender<ClientMessage>) {
         }
         s.emoji_requested.insert(image.clone(), now);
         emoji.push(image);
+    }
+
+    let mut sounds: Vec<String> = Vec::new();
+    for address in sound_addresses(s) {
+        if s.emoji_images.contains_key(&address) || in_flight(s, &address) {
+            continue;
+        }
+        if let Some(data_url) = crate::emoji::load_cached(&address) {
+            s.emoji_images.insert(address, data_url);
+            continue;
+        }
+        s.emoji_requested.insert(address.clone(), now);
+        sounds.push(address);
     }
 
     let mut images: Vec<String> = Vec::new();
@@ -580,6 +613,11 @@ fn resolve_media(s: &mut AppState, tx: &UnboundedSender<ClientMessage>) {
             images: chunk.to_vec(),
         });
     }
+    for chunk in sounds.chunks(SOUNDS_PER_REQUEST) {
+        let _ = tx.send(ClientMessage::FetchEmoji {
+            images: chunk.to_vec(),
+        });
+    }
 }
 
 fn apply(
@@ -600,6 +638,7 @@ fn apply(
             profiles,
             roles,
             emojis,
+            sounds,
             activities,
             operator,
         } => {
@@ -625,6 +664,9 @@ fn apply(
                 for role in roles {
                     map.entry(role.guild_id).or_default().push(role);
                 }
+                for list in map.values_mut() {
+                    list.sort_by_key(|r| r.position);
+                }
                 map
             };
             s.guild_emojis = {
@@ -632,6 +674,14 @@ fn apply(
                     std::collections::HashMap::new();
                 for e in emojis {
                     map.entry(e.guild_id).or_default().push(e);
+                }
+                map
+            };
+            s.guild_sounds = {
+                let mut map: std::collections::HashMap<Id, Vec<crate::protocol::GuildSound>> =
+                    std::collections::HashMap::new();
+                for sound in sounds {
+                    map.entry(sound.guild_id).or_default().push(sound);
                 }
                 map
             };
@@ -704,14 +754,16 @@ fn apply(
             members,
             roles,
             emojis,
+            sounds,
             voice_states,
         } => {
             let gid = guild.id;
             if !s.guilds.iter().any(|g| g.id == gid) {
                 s.guilds.push(guild);
             }
-            s.roles.insert(gid, roles);
+            s.roles.insert(gid, by_position(roles));
             s.guild_emojis.insert(gid, emojis);
+            s.guild_sounds.insert(gid, sounds);
             resolve_media(&mut s, tx);
             s.voice_states.retain(|v| v.guild_id != gid);
             s.voice_states.extend(voice_states);
@@ -837,19 +889,41 @@ fn apply(
             s.integrations.insert(guild_id, bots);
         }
         ServerMessage::GuildRoles { guild_id, roles } => {
-            s.roles.insert(guild_id, roles);
+            s.roles.insert(guild_id, by_position(roles));
         }
         ServerMessage::GuildEmojis { guild_id, emojis } => {
             s.guild_emojis.insert(guild_id, emojis);
             resolve_media(&mut s, tx);
         }
+        ServerMessage::GuildSounds { guild_id, sounds } => {
+            s.guild_sounds.insert(guild_id, sounds);
+            resolve_media(&mut s, tx);
+        }
+        ServerMessage::SoundPlayed {
+            channel_id,
+            user_pubkey,
+            sound_id,
+        } => {
+            let name = s
+                .channels
+                .iter()
+                .find(|c| c.id == channel_id)
+                .and_then(|c| s.guild_sounds.get(&c.guild_id))
+                .and_then(|list| list.iter().find(|x| x.id == sound_id))
+                .map(|x| x.name.clone());
+            if let Some(name) = name {
+                s.recent_sounds
+                    .insert(user_pubkey, (name, std::time::Instant::now()));
+            }
+        }
         ServerMessage::EmojiBlobs { blobs } => {
-            // Only emoji reach the disk cache: they are small, shared by a
-            // whole guild and asked for on every connect. A message picture
-            // is none of those.
-            let emoji = emoji_addresses(&s);
+            // Only emoji and sounds reach the disk cache: they are shared by a
+            // whole guild and asked for again on every connect. A message
+            // picture is neither.
+            let mut shared = emoji_addresses(&s);
+            shared.extend(sound_addresses(&s));
             for blob in blobs {
-                if !blob.data_url.is_empty() && emoji.contains(&blob.image) {
+                if !blob.data_url.is_empty() && shared.contains(&blob.image) {
                     crate::emoji::store_cached(&blob.image, &blob.data_url);
                 }
                 s.emoji_requested.remove(&blob.image);

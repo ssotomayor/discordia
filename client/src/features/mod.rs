@@ -20,6 +20,7 @@ pub mod profiles;
 pub mod roles;
 pub mod screenshare;
 pub mod settings_dialog;
+pub mod soundboard;
 pub mod sounds;
 pub mod topology;
 pub mod voice;

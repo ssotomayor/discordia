@@ -933,6 +933,7 @@ fn VoiceOccupant(
                     "{name}"
                     if is_self { " (you)" }
                 }
+                crate::features::soundboard::SoundChip { pubkey: pubkey.clone() }
                 if remote_deafened {
                     span { class: "text-[9px] text-[var(--text-dim)] uppercase tracking-wider", "deafened" }
                 } else if remote_muted {
@@ -1143,6 +1144,7 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
     let v_for_hang = voice.clone();
     let g_for_share = gateway.clone();
     let voice_channel = self_voice.channel_id;
+    let soundboard_open = state.read().soundboard_open;
 
     // The trigger lives in the title bar; this panel only owns the device
     // signals the popover needs, so the flag travels through AppState.
@@ -1280,6 +1282,23 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                                             }
                                                         },
                             dangerous_inner_html: crate::features::icons::SCREEN,
+                        }
+                        button {
+                            class: if soundboard_open {
+                                "[&>svg]:pointer-events-none flex-1 h-9 flex items-center justify-center rounded-lg border transition-colors border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)]"
+                            } else {
+                                "[&>svg]:pointer-events-none flex-1 h-9 flex items-center justify-center rounded-lg border transition-colors border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--text)] hover:border-[var(--border-strong)]"
+                            },
+                            id: "dxf-soundboard-toggle",
+                            title: "Soundboard",
+                            onclick: move |e: MouseEvent| {
+                                let at = e.client_coordinates();
+                                let inside = e.element_coordinates();
+                                let mut s = state.write();
+                                s.soundboard_anchor = (at.x, at.y - inside.y);
+                                s.soundboard_open = !s.soundboard_open;
+                            },
+                            dangerous_inner_html: crate::features::icons::SOUNDBOARD,
                         }
                         button {
                             class: "shrink-0 h-9 px-3 flex items-center gap-1.5 rounded-lg border text-[11.5px] font-semibold text-[var(--danger)] transition-colors",
