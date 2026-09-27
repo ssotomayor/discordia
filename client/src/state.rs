@@ -71,7 +71,10 @@ pub enum ConnectionHealth {
 impl ConnectionHealth {
     pub fn dot(self, is_self: bool) -> Option<(&'static str, &'static str)> {
         match (self, is_self) {
-            (Self::Excellent | Self::Good, _) => None,
+            (Self::Excellent | Self::Good, false) => Some(("var(--success)", "Good connection")),
+            (Self::Excellent | Self::Good, true) => {
+                Some(("var(--success)", "Your connection is good"))
+            }
             (Self::Poor, false) => {
                 Some(("var(--warn)", "Weak connection — their audio may drop out"))
             }
@@ -542,6 +545,16 @@ impl AppState {
             .get(&guild_id)
             .map(|v| v.as_slice())
             .unwrap_or(&[])
+    }
+
+    /// The call the server has us in. It leads `voice.channel_id`, which waits
+    /// for a token to be minted, so keys for the new call are not refused.
+    pub fn server_voice_channel(&self) -> Option<Id> {
+        let me = self.self_user.as_ref()?;
+        self.voice_states
+            .iter()
+            .find(|v| v.user_pubkey == me.pubkey)?
+            .channel_id
     }
 
     /// The guild of the voice channel we are in, whose sounds the board offers.

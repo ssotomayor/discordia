@@ -471,3 +471,55 @@ async fn a_category_is_a_separator_nobody_can_join_or_post_to() {
 
     handle.abort();
 }
+
+#[tokio::test]
+async fn a_media_key_only_travels_between_two_people_in_that_call() {
+    let (url, handle) = spawn_gateway().await;
+    let sender_id = BotIdentity::generate();
+    let mut sender = connect_user(&url, &sender_id, "Sender").await;
+    let (guild_id, voice) = guild_with_voice(&mut sender, "Keys").await;
+    let peer_id = BotIdentity::generate();
+    let peer_key = peer_id.pubkey().to_string();
+    let mut peer = connect_user(&url, &peer_id, "Peer").await;
+    join_guild(&mut peer, guild_id).await;
+
+    sender
+        .send(&ClientMessage::JoinVoice { channel_id: voice })
+        .await
+        .unwrap();
+    let share = |to: &str| ClientMessage::ShareMediaKey {
+        channel_id: voice,
+        to: to.to_string(),
+        epoch: 1,
+        blob: "sealed".into(),
+    };
+    sender.send(&share(&peer_key)).await.unwrap();
+    let outside = async {
+        loop {
+            if let Some(ServerMessage::MediaKey { .. }) = peer.next_event().await {
+                return;
+            }
+        }
+    };
+    assert!(
+        tokio::time::timeout(Duration::from_millis(500), outside)
+            .await
+            .is_err(),
+        "someone outside the call is never handed its key"
+    );
+
+    peer.send(&ClientMessage::JoinVoice { channel_id: voice })
+        .await
+        .unwrap();
+    next_state_of(&mut sender, &peer_key).await;
+    sender.send(&share(&peer_key)).await.unwrap();
+    loop {
+        if let ServerMessage::MediaKey { from, epoch, .. } = next_timeout(&mut peer).await {
+            assert_eq!(from, sender_id.pubkey());
+            assert_eq!(epoch, 1);
+            break;
+        }
+    }
+
+    handle.abort();
+}

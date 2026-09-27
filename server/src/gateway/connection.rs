@@ -1105,11 +1105,13 @@ pub async fn handle_connection(
                             tracing::warn!(%channel_id, "media key for a channel with no guild");
                             continue;
                         };
-                        let members = ctx.state.guild_member_pubkeys(guild_id);
-                        if !members.contains(&u.pubkey) || !members.contains(&to) {
-                            tracing::warn!(
+                        // Both in that call: a key is useless anywhere else, and a
+                        // hidden channel's key must not reach someone outside it.
+                        let in_call = |pk: &str| ctx.state.voice_channel_of(pk) == Some(channel_id);
+                        if !in_call(&u.pubkey) || !in_call(&to) {
+                            tracing::debug!(
                                 from = %u.pubkey, %to, %guild_id,
-                                "refusing to route a media key: sender or recipient is not a guild member"
+                                "not routing a media key: sender or recipient is not in that call"
                             );
                             continue;
                         }

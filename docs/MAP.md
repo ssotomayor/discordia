@@ -17,14 +17,14 @@ name instead.
 
 | File | Lines |
 |---|---|
-| `client/src/features/voice.rs` | 3061 |
+| `client/src/features/voice.rs` | 3065 |
 | `server/src/state/mod.rs` | 2973 |
 | `server/tests/owner_controls.rs` | 3036 |
-| `server/src/gateway/connection.rs` | 2678 |
+| `server/src/gateway/connection.rs` | 2680 |
 | `client/src/features/channels.rs` | 1727 |
 | `client/src/features/screenshare.rs` | 1639 |
 | `protocol/src/lib.rs` | 1928 |
-| `client/src/state.rs` | 1778 |
+| `client/src/state.rs` | 1791 |
 | `client/src/update.rs` | 1226 |
 | `client/src/net.rs` | 1344 |
 | `client/src/features/chat.rs` | 1053 |

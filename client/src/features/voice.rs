@@ -275,9 +275,13 @@ async fn service_loop(
                 if let Some(prev) = session.take() {
                     prev.shutdown(state).await;
                 }
-                // A join answered while the room was closing is already under way;
-                // wiping now would take its channel and its screen token with it.
-                if state.peek().voice.phase != VoicePhase::Connecting {
+                // A newer call is already under way once the server has us in one or a
+                // token is minting; wiping now would take its key, channel and screen token.
+                let newer_call = {
+                    let s = state.peek();
+                    s.voice.phase == VoicePhase::Connecting || s.server_voice_channel().is_some()
+                };
+                if !newer_call {
                     state.write().end_voice_locally();
                 }
                 tokio::spawn(async {

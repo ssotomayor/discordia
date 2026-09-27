@@ -82,14 +82,6 @@ pub fn spawn_gateway(
     gateway_tx
 }
 
-fn supersedes(have: Option<u32>, epoch: u32, from: &str, me: Option<&str>) -> bool {
-    match (have, me) {
-        (None, _) => true,
-        (Some(have), Some(mine)) if epoch == have => from < mine,
-        (Some(have), _) => epoch > have,
-    }
-}
-
 /// Off this machine every connection is QUIC — encrypted end to end and
 /// authenticated by the key in the share string or the directory entry. A
 /// plain socket is allowed only to loopback, or over TLS through a proxy.
@@ -1090,26 +1082,49 @@ fn apply(
             epoch,
             blob,
         } => {
-            let identity = s.identity.clone();
-            let Some(identity) = identity else { return };
-            let me = s.self_user.as_ref().map(|u| u.pubkey.clone());
-            let have = s.media_keys.get(&channel_id).copied();
-            if !supersedes(have.map(|(e, _)| e), epoch, &from, me.as_deref()) {
-                tracing::debug!(%from, epoch, "ignoring a media key that does not supersede ours");
+            let Some(identity) = s.identity.clone() else {
+                return;
+            };
+            // The call the server has us in, not the one we are still leaving:
+            // the key in use is global, so a late one for another call replaces ours.
+            if s.server_voice_channel() != Some(channel_id) {
+                tracing::debug!(%from, epoch, "ignoring a media key for a call we are not in");
                 return;
             }
-            match crate::mediakey::open(&blob, &from, epoch, &identity) {
-                Ok(key) => {
-                    if have == Some((epoch, key)) {
-                        tracing::trace!(%from, epoch, "already running this key");
-                        return;
-                    }
+            let key = match crate::mediakey::open(&blob, &from, epoch, &identity) {
+                Ok(key) => key,
+                Err(e) => {
+                    tracing::warn!(%from, epoch, error = %e, "could not open a media key");
+                    return;
+                }
+            };
+            let held = s.media_keys.get(&channel_id).copied();
+            match crate::mediakey::judge(held, (epoch, key)) {
+                crate::mediakey::Verdict::Keep => {
+                    tracing::trace!(%from, epoch, "already running this key");
+                }
+                crate::mediakey::Verdict::Adopt => {
                     tracing::info!(%from, epoch, "media key accepted");
                     s.media_keys.insert(channel_id, (epoch, key));
                     s.media_undecryptable = false;
                     crate::e2ee::apply_key(&key, epoch);
                 }
-                Err(e) => tracing::warn!(%from, epoch, error = %e, "could not open a media key"),
+                crate::mediakey::Verdict::Answer => {
+                    let Some(ours) = held else { return };
+                    tracing::info!(%from, epoch, ours = ours.0, "answering a losing media key with ours");
+                    match crate::mediakey::seal(&ours.1, &from, ours.0, &identity) {
+                        Ok(blob) => {
+                            let _ = tx.send(ClientMessage::ShareMediaKey {
+                                channel_id,
+                                to: from.clone(),
+                                epoch: ours.0,
+                                blob,
+                            });
+                            crate::mediakey::note_sent(channel_id, &from, ours);
+                        }
+                        Err(e) => tracing::warn!(%from, error = %e, "could not seal our media key"),
+                    }
+                }
             }
         }
         ServerMessage::VoiceStateUpdate(vs) => {
@@ -1209,21 +1224,6 @@ fn apply(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn an_equal_epoch_is_broken_by_pubkey_so_both_sides_converge() {
-        let mine = Some("bbbb");
-
-        assert!(supersedes(None, 1, "cccc", mine));
-
-        assert!(supersedes(Some(1), 1, "aaaa", mine));
-        assert!(!supersedes(Some(1), 1, "cccc", mine));
-
-        assert!(supersedes(Some(1), 2, "cccc", mine));
-        assert!(!supersedes(Some(2), 1, "aaaa", mine));
-
-        assert!(!supersedes(Some(3), 3, "bbbb", mine));
-    }
 
     #[test]
     fn the_quic_handshake_presents_a_loopback_host() {
