@@ -458,7 +458,7 @@ window.dxScreen = window.dxScreen || (function () {
     try { surface = (vt.getSettings() || {}).displaySurface || ''; } catch (e) {}
     const useNative = nativeMode === 'always' || (nativeMode === 'monitor' && surface === 'monitor');
     vt.addEventListener('ended', function () { notifyShareEnded(); });
-    try { vt.contentHint = quality.hint || 'detail'; } catch (e) {}
+    try { vt.contentHint = quality.hint || 'motion'; } catch (e) {}
     try {
       await vt.applyConstraints({
         width: { ideal: wantW }, height: { ideal: wantH }, frameRate: { ideal: wantFps },
@@ -1643,6 +1643,10 @@ mod js_escaping_tests {
         assert!(
             js.contains("videoCodec: 'h264'"),
             "screen shares request H.264 encoding"
+        );
+        assert!(
+            js.contains("vt.contentHint = quality.hint || 'motion'"),
+            "screen shares default to motion encoding"
         );
     }
 }
