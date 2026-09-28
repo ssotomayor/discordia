@@ -119,6 +119,28 @@ pub enum TrackStats {
     },
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScreenShareStats {
+    pub outbound: bool,
+    pub capture_width: Option<u32>,
+    pub capture_height: Option<u32>,
+    pub capture_fps: Option<f64>,
+    pub encoded_width: Option<u32>,
+    pub encoded_height: Option<u32>,
+    pub encoded_fps: Option<f64>,
+    pub bitrate_kbps: Option<u32>,
+    pub target_bitrate_kbps: Option<u32>,
+    pub codec: Option<String>,
+    pub codec_implementation: Option<String>,
+    pub power_efficient: Option<bool>,
+    pub quality_limitation_reason: Option<String>,
+    pub frames: Option<u64>,
+    pub packets: Option<u64>,
+    pub packets_lost: Option<i64>,
+    pub jitter_ms: Option<f64>,
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VoiceSession {
     pub phase: VoicePhase,
@@ -336,6 +358,8 @@ pub struct AppState {
     pub voice_bitrate_kbps: u32,
     pub voice_quality: HashMap<String, ConnectionHealth>,
     pub voice_stats: HashMap<String, TrackStats>,
+    pub screen_share_stats: Option<ScreenShareStats>,
+    pub screen_share_in_stats: Option<ScreenShareStats>,
     pub user_volumes: HashMap<String, u32>,
     pub user_muted: HashSet<String>,
     pub stream_volumes: HashMap<String, u32>,
@@ -452,6 +476,8 @@ impl AppState {
             voice_bitrate_kbps: 48,
             voice_quality: HashMap::new(),
             voice_stats: HashMap::new(),
+            screen_share_stats: None,
+            screen_share_in_stats: None,
             user_volumes: HashMap::new(),
             user_muted: HashSet::new(),
             stream_volumes: HashMap::new(),

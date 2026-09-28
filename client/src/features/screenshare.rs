@@ -14,6 +14,15 @@ window.dxScreen = window.dxScreen || (function () {
   let reconnectTimer = null;
   let reconnectAttempt = 0;
   let localShareAudio = null;
+  let localShareVideoTrack = null;
+  let screenCaptureTrack = null;
+  let remoteShareVideoTrack = null;
+  let screenStatsEnabled = false;
+  let screenStatsTimer = null;
+  let screenStatsInFlight = false;
+  let remoteStatsInFlight = false;
+  let previousScreenSample = null;
+  let previousRemoteSample = null;
   let e2eeKey = null;
   let e2eeWorker = null;
   let e2eeWorkerUrl = null;
@@ -144,6 +153,9 @@ window.dxScreen = window.dxScreen || (function () {
     try { window.postMessage({ __dxf: kind, detail: String(detail || '') }, '*'); } catch (e) {}
   }
   function clearRemoteTracks() {
+    remoteShareVideoTrack = null;
+    previousRemoteSample = null;
+    post('screen-stats-in', { active: false });
     for (const k in tracks) delete tracks[k];
     for (const k in audioTracks) delete audioTracks[k];
     detachAudio();
@@ -270,6 +282,11 @@ window.dxScreen = window.dxScreen || (function () {
       if (track.kind !== 'video') return;
       const kind = kindOf(pub, track);
       tracks[trackKey(participant.identity, kind)] = track;
+      if (kind === 'screen') {
+        remoteShareVideoTrack = track;
+        previousRemoteSample = null;
+        if (screenStatsEnabled) pollRemoteScreenStats();
+      }
       reattach(participant.identity, kind);
     });
     thisRoom.on(lk.RoomEvent.TrackUnsubscribed, function (track, pub, participant) {
@@ -281,6 +298,11 @@ window.dxScreen = window.dxScreen || (function () {
       }
       if (track.kind !== 'video') return;
       const kind = kindOf(pub, track);
+      if (kind === 'screen' && remoteShareVideoTrack === track) {
+        remoteShareVideoTrack = null;
+        previousRemoteSample = null;
+        post('screen-stats-in', { active: false });
+      }
       delete tracks[trackKey(participant.identity, kind)];
       reattach(participant.identity, kind);
     });
@@ -292,6 +314,12 @@ window.dxScreen = window.dxScreen || (function () {
     });
     thisRoom.on(lk.RoomEvent.LocalTrackUnpublished, function (pub) {
       if (!pub.track || pub.track.kind !== 'video') return;
+      if (pub.track === localShareVideoTrack) {
+        localShareVideoTrack = null;
+        screenCaptureTrack = null;
+        previousScreenSample = null;
+        post('screen-stats', { active: false });
+      }
       const kind = kindOf(pub, pub.track);
       delete tracks[trackKey(thisRoom.localParticipant.identity, kind)];
       reattach(thisRoom.localParticipant.identity, kind);
@@ -334,6 +362,115 @@ window.dxScreen = window.dxScreen || (function () {
   }
   function notifyShareEnded() {
     try { window.postMessage({ __dxf: 'screen-share-ended' }, '*'); } catch (e) { console.warn('[dxScreen] notifyShareEnded failed', e); }
+  }
+  async function pollScreenStats() {
+    if (!screenStatsEnabled || screenStatsInFlight) return;
+    if (!localShareVideoTrack || !screenCaptureTrack) {
+      post('screen-stats', { active: false });
+      return;
+    }
+    screenStatsInFlight = true;
+    try {
+      const stats = await localShareVideoTrack.getRTCStatsReport();
+      if (!screenStatsEnabled || !stats) return;
+      let outbound = null;
+      stats.forEach(function (entry) {
+        if (entry.type === 'outbound-rtp') outbound = entry;
+      });
+      if (!outbound) return;
+      const timestamp = outbound.timestamp;
+      const bytesSent = outbound.bytesSent;
+      const bitrateKbps = previousScreenSample && timestamp > previousScreenSample.timestamp && bytesSent >= previousScreenSample.bytesSent
+        ? Math.round((bytesSent - previousScreenSample.bytesSent) * 8 / (timestamp - previousScreenSample.timestamp))
+        : null;
+      previousScreenSample = { timestamp: timestamp, bytesSent: bytesSent };
+      const capture = (function () { try { return screenCaptureTrack.getSettings(); } catch (e) { return {}; } })();
+      const codec = outbound.codecId ? stats.get(outbound.codecId) : null;
+      const remote = outbound.remoteId ? stats.get(outbound.remoteId) : null;
+      post('screen-stats', {
+        active: true,
+        captureWidth: capture.width || null,
+        captureHeight: capture.height || null,
+        captureFps: capture.frameRate || null,
+        encodedWidth: outbound.frameWidth || null,
+        encodedHeight: outbound.frameHeight || null,
+        encodedFps: outbound.framesPerSecond || null,
+        bitrateKbps: bitrateKbps,
+        targetBitrateKbps: Number.isFinite(outbound.targetBitrate) ? Math.round(outbound.targetBitrate / 1000) : null,
+        codec: codec && codec.mimeType || null,
+        codecImplementation: outbound.encoderImplementation || null,
+        powerEfficient: typeof outbound.powerEfficientEncoder === 'boolean' ? outbound.powerEfficientEncoder : null,
+        qualityLimitationReason: outbound.qualityLimitationReason || null,
+        frames: Number.isFinite(outbound.framesEncoded) ? outbound.framesEncoded : null,
+        packets: Number.isFinite(outbound.packetsSent) ? outbound.packetsSent : null,
+        packetsLost: remote && Number.isFinite(remote.packetsLost) ? remote.packetsLost : null,
+        jitterMs: remote && Number.isFinite(remote.jitter) ? remote.jitter * 1000 : null,
+      });
+    } catch (e) {
+      if (screenStatsEnabled) post('screen-stats', { active: true, error: String((e && e.message) || e) });
+    } finally {
+      screenStatsInFlight = false;
+    }
+  }
+  async function pollRemoteScreenStats() {
+    if (!screenStatsEnabled || remoteStatsInFlight) return;
+    if (!remoteShareVideoTrack) {
+      post('screen-stats-in', { active: false });
+      return;
+    }
+    remoteStatsInFlight = true;
+    try {
+      const stats = await remoteShareVideoTrack.getRTCStatsReport();
+      if (!screenStatsEnabled || !stats) return;
+      let inbound = null;
+      stats.forEach(function (entry) {
+        if (entry.type === 'inbound-rtp' && entry.kind === 'video') inbound = entry;
+      });
+      if (!inbound) return;
+      const timestamp = inbound.timestamp;
+      const bytesReceived = inbound.bytesReceived;
+      const bitrateKbps = previousRemoteSample && timestamp > previousRemoteSample.timestamp && bytesReceived >= previousRemoteSample.bytesReceived
+        ? Math.round((bytesReceived - previousRemoteSample.bytesReceived) * 8 / (timestamp - previousRemoteSample.timestamp))
+        : null;
+      previousRemoteSample = { timestamp: timestamp, bytesReceived: bytesReceived };
+      const codec = inbound.codecId ? stats.get(inbound.codecId) : null;
+      post('screen-stats-in', {
+        active: true,
+        encodedWidth: inbound.frameWidth || null,
+        encodedHeight: inbound.frameHeight || null,
+        encodedFps: inbound.framesPerSecond || null,
+        bitrateKbps: bitrateKbps,
+        codec: codec && codec.mimeType || null,
+        codecImplementation: inbound.decoderImplementation || null,
+        powerEfficient: typeof inbound.powerEfficientDecoder === 'boolean' ? inbound.powerEfficientDecoder : null,
+        frames: Number.isFinite(inbound.framesDecoded) ? inbound.framesDecoded : null,
+        packets: Number.isFinite(inbound.packetsReceived) ? inbound.packetsReceived : null,
+        packetsLost: Number.isFinite(inbound.packetsLost) ? inbound.packetsLost : null,
+        jitterMs: Number.isFinite(inbound.jitter) ? inbound.jitter * 1000 : null,
+      });
+    } catch (e) {
+      if (screenStatsEnabled) post('screen-stats-in', { active: true, error: String((e && e.message) || e) });
+    } finally {
+      remoteStatsInFlight = false;
+    }
+  }
+  function setStatsEnabled(enabled) {
+    screenStatsEnabled = !!enabled;
+    if (screenStatsTimer) clearInterval(screenStatsTimer);
+    screenStatsTimer = null;
+    previousScreenSample = null;
+    previousRemoteSample = null;
+    if (!screenStatsEnabled) {
+      post('screen-stats', { active: false });
+      post('screen-stats-in', { active: false });
+      return;
+    }
+    pollScreenStats();
+    pollRemoteScreenStats();
+    screenStatsTimer = setInterval(function () {
+      pollScreenStats();
+      pollRemoteScreenStats();
+    }, 1000);
   }
   function attach(identity, cid, kind, tries) {
     kind = kind || 'screen';
@@ -467,13 +604,17 @@ window.dxScreen = window.dxScreen || (function () {
     const settings = (function () { try { return vt.getSettings(); } catch (e) { return {}; } })();
     console.log('[dxScreen] capturing', settings.width + 'x' + settings.height, '@', settings.frameRate, 'fps');
     try {
-      await room.localParticipant.publishTrack(vt, {
+      const publication = await room.localParticipant.publishTrack(vt, {
         source: lk.Track.Source.ScreenShare,
         screenShareEncoding: { maxBitrate: quality.bitrate || 6000000, maxFramerate: wantFps },
         videoCodec: 'h264',
         degradationPreference: quality.degradation || 'balanced',
         simulcast: false,
       });
+      localShareVideoTrack = publication.track;
+      screenCaptureTrack = vt;
+      previousScreenSample = null;
+      pollScreenStats();
       const at = stream.getAudioTracks()[0];
       if (useNative && at) {
         try { at.stop(); } catch (e2) {}
@@ -689,7 +830,7 @@ window.dxScreen = window.dxScreen || (function () {
     clearRemoteTracks();
     Object.keys(attached).forEach(detach);
   }
-  return { connect: connect, attach: attach, detach: detach, requestAndStartShare: requestAndStartShare, stopShare: stopShare, disconnect: disconnect, setStreamVolume: setStreamVolume, setSink: setSink, setNativeStreamAudio: setNativeStreamAudio, startCamera: startCamera, stopCamera: stopCamera, listCameras: listCameras, attachLocalCamera: attachLocalCamera, setE2eeKey: setE2eeKey };
+  return { connect: connect, attach: attach, detach: detach, requestAndStartShare: requestAndStartShare, stopShare: stopShare, disconnect: disconnect, setStreamVolume: setStreamVolume, setSink: setSink, setNativeStreamAudio: setNativeStreamAudio, setStatsEnabled: setStatsEnabled, startCamera: startCamera, stopCamera: stopCamera, listCameras: listCameras, attachLocalCamera: attachLocalCamera, setE2eeKey: setE2eeKey };
 })();
 "#;
 
@@ -758,6 +899,10 @@ pub fn share_js(on: bool, quality: &str, audio: bool) -> String {
         "{SCREEN_JS}\nwindow.dxScreen.requestAndStartShare({{width:{w},height:{h},fps:{fps},\
          bitrate:{bitrate},hint:{hint},degradation:{degradation},audio:{audio},nativeAudio:{mode}}});"
     )
+}
+
+pub(crate) fn screen_stats_js(enabled: bool) -> String {
+    format!("{SCREEN_JS}\nwindow.dxScreen.setStatsEnabled({enabled});")
 }
 
 pub(crate) fn attach_js(identity: &str, container: &str, kind: &str) -> String {
@@ -911,7 +1056,7 @@ pub fn ScreenShareBridge() -> Element {
               window.__dxfShareEndWired = true;
               window.addEventListener('message', function (e) {
                 var d = e.data;
-                if (d && (d.__dxf === 'screen-share-ended' || d.__dxf === 'share-started' || d.__dxf === 'share-audio' || d.__dxf === 'share-unavailable' || d.__dxf === 'share-echo-risk' || d.__dxf === 'stream-audio' || d.__dxf === 'screen-room-error' || d.__dxf === 'screen-room-reconnecting' || d.__dxf === 'screen-track-timeout' || d.__dxf === 'e2ee-error' || d.__dxf === 'e2ee-undecryptable') && window.__dxfShareSink) {
+                if (d && (d.__dxf === 'screen-share-ended' || d.__dxf === 'share-started' || d.__dxf === 'share-audio' || d.__dxf === 'share-unavailable' || d.__dxf === 'share-echo-risk' || d.__dxf === 'stream-audio' || d.__dxf === 'screen-stats' || d.__dxf === 'screen-stats-in' || d.__dxf === 'screen-room-error' || d.__dxf === 'screen-room-reconnecting' || d.__dxf === 'screen-track-timeout' || d.__dxf === 'e2ee-error' || d.__dxf === 'e2ee-undecryptable') && window.__dxfShareSink) {
                   window.__dxfShareSink(d);
                 }
               });
@@ -995,6 +1140,50 @@ pub fn ScreenShareBridge() -> Element {
                                 "Connected to the stream room, but no video arrived. Make sure the sharer is running the latest Discordia build and restart the share."
                                     .into(),
                             );
+                    }
+                    Some("screen-stats") | Some("screen-stats-in") => {
+                        let outbound =
+                            msg.get("__dxf").and_then(Value::as_str) == Some("screen-stats");
+                        let screen_stats = if msg.get("active").and_then(Value::as_bool)
+                            == Some(true)
+                        {
+                            let u32_field = |key| {
+                                msg.get(key)
+                                    .and_then(Value::as_u64)
+                                    .and_then(|v| u32::try_from(v).ok())
+                            };
+                            let u64_field = |key| msg.get(key).and_then(Value::as_u64);
+                            let text_field =
+                                |key| msg.get(key).and_then(Value::as_str).map(str::to_owned);
+                            Some(crate::state::ScreenShareStats {
+                                outbound,
+                                capture_width: u32_field("captureWidth"),
+                                capture_height: u32_field("captureHeight"),
+                                capture_fps: msg.get("captureFps").and_then(Value::as_f64),
+                                encoded_width: u32_field("encodedWidth"),
+                                encoded_height: u32_field("encodedHeight"),
+                                encoded_fps: msg.get("encodedFps").and_then(Value::as_f64),
+                                bitrate_kbps: u32_field("bitrateKbps"),
+                                target_bitrate_kbps: u32_field("targetBitrateKbps"),
+                                codec: text_field("codec"),
+                                codec_implementation: text_field("codecImplementation"),
+                                power_efficient: msg.get("powerEfficient").and_then(Value::as_bool),
+                                quality_limitation_reason: text_field("qualityLimitationReason"),
+                                frames: u64_field("frames"),
+                                packets: u64_field("packets"),
+                                packets_lost: msg.get("packetsLost").and_then(Value::as_i64),
+                                jitter_ms: msg.get("jitterMs").and_then(Value::as_f64),
+                                error: text_field("error"),
+                            })
+                        } else {
+                            None
+                        };
+                        let mut s = state.write();
+                        if outbound {
+                            s.screen_share_stats = screen_stats;
+                        } else {
+                            s.screen_share_in_stats = screen_stats;
+                        }
                     }
                     Some("e2ee-undecryptable") => {
                         let detail = msg
@@ -1576,7 +1765,7 @@ pub fn ScreenWatchWindow() -> Element {
 
 #[cfg(test)]
 mod js_escaping_tests {
-    use super::{attach_js, js_str, share_js};
+    use super::{attach_js, js_str, screen_stats_js, share_js};
 
     #[test]
     fn a_quote_in_a_server_string_cannot_close_the_literal() {
@@ -1647,6 +1836,20 @@ mod js_escaping_tests {
         assert!(
             js.contains("vt.contentHint = quality.hint || 'motion'"),
             "screen shares default to motion encoding"
+        );
+        assert!(
+            js.contains("localShareVideoTrack.getRTCStatsReport()")
+                && js.contains("powerEfficientEncoder: typeof outbound.powerEfficientEncoder"),
+            "screen-share diagnostics read sender stats including encoder efficiency"
+        );
+        assert!(
+            js.contains("remoteShareVideoTrack.getRTCStatsReport()")
+                && js.contains("entry.type === 'inbound-rtp'"),
+            "screen-share diagnostics read received video stats"
+        );
+        assert!(
+            screen_stats_js(true).ends_with("window.dxScreen.setStatsEnabled(true);"),
+            "diagnostics can enable sender stats polling"
         );
     }
 }

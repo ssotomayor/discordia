@@ -940,11 +940,13 @@ pub(crate) fn ConnectionStats() -> Element {
 
     use_hook(|| {
         voice.send(VoiceCmd::SetStatsPolling { enabled: true });
+        let _ = document::eval(&crate::features::screenshare::screen_stats_js(true));
     });
     {
         let voice = voice.clone();
         use_drop(move || {
             voice.send(VoiceCmd::SetStatsPolling { enabled: false });
+            let _ = document::eval(&crate::features::screenshare::screen_stats_js(false));
         });
     }
 
@@ -956,6 +958,14 @@ pub(crate) fn ConnectionStats() -> Element {
             .collect()
     };
     rows.sort_by(|a, b| a.0.cmp(&b.0));
+    let (screen_stats, screen_stats_in, native_screen_share) = {
+        let s = state.read();
+        (
+            s.screen_share_stats.clone(),
+            s.screen_share_in_stats.clone(),
+            s.screen_sharing && crate::sysvideo::supported(),
+        )
+    };
 
     rsx! {
         div { class: "mt-1 border-t border-[var(--border)] pt-1.5",
@@ -1000,6 +1010,137 @@ pub(crate) fn ConnectionStats() -> Element {
                         },
                     }
                 }
+            }
+            ScreenShareStatsRow {
+                stats: screen_stats,
+                direction: "outbound",
+                native_screen_share,
+            }
+            ScreenShareStatsRow {
+                stats: screen_stats_in,
+                direction: "inbound",
+                native_screen_share: false,
+            }
+        }
+    }
+}
+
+#[component]
+fn ScreenShareStatsRow(
+    stats: Option<crate::state::ScreenShareStats>,
+    direction: &'static str,
+    native_screen_share: bool,
+) -> Element {
+    let Some(stats) = stats else {
+        return rsx! {
+            div { class: "mt-1 border-t border-[var(--border)] pt-1.5 text-[10px] text-[var(--text-dim)]",
+                span { class: "text-[var(--text-muted)]", "Screen share {direction}: " }
+                if direction == "outbound" && native_screen_share {
+                    "Native capture stats are not available here."
+                } else if direction == "inbound" {
+                    "Waiting for a remote screen share."
+                } else {
+                    "Waiting for a local WebView screen share."
+                }
+            }
+        };
+    };
+
+    let capture_size = match (stats.capture_width, stats.capture_height) {
+        (Some(width), Some(height)) => format!("{width}x{height}"),
+        _ => "—".into(),
+    };
+    let capture_fps = stats
+        .capture_fps
+        .map(|v| format!("{v:.0}"))
+        .unwrap_or_else(|| "—".into());
+    let encoded_size = match (stats.encoded_width, stats.encoded_height) {
+        (Some(width), Some(height)) => format!("{width}x{height}"),
+        _ => "—".into(),
+    };
+    let encoded_fps = stats
+        .encoded_fps
+        .map(|v| format!("{v:.0}"))
+        .unwrap_or_else(|| "—".into());
+    let codec = stats.codec.as_deref().unwrap_or("—");
+    let implementation = stats
+        .codec_implementation
+        .as_deref()
+        .unwrap_or("not reported");
+    let power_efficient = match stats.power_efficient {
+        Some(true) => "yes",
+        Some(false) => "no",
+        None => "not reported",
+    };
+    let limitation = stats
+        .quality_limitation_reason
+        .as_deref()
+        .unwrap_or("not reported");
+    let frames = stats
+        .frames
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "—".into());
+    let packets = stats
+        .packets
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "—".into());
+    let lost = stats
+        .packets_lost
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "—".into());
+    let bitrate = rate_or_dash(
+        stats.bitrate_kbps,
+        if stats.outbound {
+            "kbit/s out"
+        } else {
+            "kbit/s in"
+        },
+    );
+    let codec_path_label = format!(
+        "{} {implementation}",
+        if stats.outbound { "encoder" } else { "decoder" }
+    );
+    let efficiency_label = format!("power-efficient {power_efficient}");
+    let frames_label = format!(
+        "{frames} frames {}",
+        if stats.outbound { "encoded" } else { "decoded" }
+    );
+    let packets_label = format!(
+        "{packets} packets {} / {lost} lost",
+        if stats.outbound { "sent" } else { "received" }
+    );
+    let capture_label = format!("capture {capture_size} @ {capture_fps} fps");
+    let encoded_label = format!(
+        "{} {encoded_size} @ {encoded_fps} fps",
+        if stats.outbound {
+            "encoded"
+        } else {
+            "received"
+        }
+    );
+    let target_bitrate = stats
+        .target_bitrate_kbps
+        .map(|target| format!("target {target} kbit/s"));
+    let jitter = stats.jitter_ms.map(|v| format!("{v:.1} ms jitter"));
+
+    rsx! {
+        div { class: "mt-1 border-t border-[var(--border)] pt-1.5 text-[10px] font-mono",
+            div { class: "text-[var(--text-muted)] mb-0.5", "Screen share {direction}" }
+            div { class: "flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[var(--text-dim)]",
+                if stats.outbound { span { "{capture_label}" } }
+                span { "{encoded_label}" }
+                span { "{codec}" }
+                span { "{bitrate}" }
+                if let Some(target) = target_bitrate { span { "{target}" } }
+                span { "{codec_path_label}" }
+                span { "{efficiency_label}" }
+                if stats.outbound { span { "limit {limitation}" } }
+                span { "{frames_label}" }
+                span { "{packets_label}" }
+                if let Some(jitter) = jitter { span { "{jitter}" } }
+            }
+            if let Some(error) = stats.error.as_deref() {
+                div { class: "text-[var(--warn)] mt-0.5", "Stats error: {error}" }
             }
         }
     }
