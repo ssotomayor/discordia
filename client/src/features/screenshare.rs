@@ -469,7 +469,8 @@ window.dxScreen = window.dxScreen || (function () {
     try {
       await room.localParticipant.publishTrack(vt, {
         source: lk.Track.Source.ScreenShare,
-        videoEncoding: { maxBitrate: quality.bitrate || 6000000, maxFramerate: wantFps },
+        screenShareEncoding: { maxBitrate: quality.bitrate || 6000000, maxFramerate: wantFps },
+        videoCodec: 'h264',
         degradationPreference: quality.degradation || 'balanced',
         simulcast: false,
       });
@@ -1634,6 +1635,14 @@ mod js_escaping_tests {
         assert!(
             !js.contains("hint:'"),
             "no hand-built single-quoted literals remain in share_js"
+        );
+        assert!(
+          js.contains("screenShareEncoding: { maxBitrate: quality.bitrate || 6000000, maxFramerate: wantFps }"),
+          "screen shares use the SDK's screen-share encoding option"
+        );
+        assert!(
+            js.contains("videoCodec: 'h264'"),
+            "screen shares request H.264 encoding"
         );
     }
 }
