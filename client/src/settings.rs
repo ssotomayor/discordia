@@ -123,7 +123,7 @@ fn default_publish_global_level() -> bool {
 }
 
 pub fn default_screenshare_quality() -> String {
-    "balanced".into()
+    "smooth".into()
 }
 
 fn default_screenshare_audio() -> bool {
@@ -374,6 +374,11 @@ pub fn save(settings: &ClientSettings) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn screen_sharing_defaults_to_the_game_friendly_preset() {
+        assert_eq!(default_screenshare_quality(), "smooth");
+    }
 
     fn file(settings: serde_json::Value) -> String {
         serde_json::json!({ "version": FILE_VERSION, "settings": settings }).to_string()
