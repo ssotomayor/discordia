@@ -1839,7 +1839,7 @@ mod js_escaping_tests {
         );
         assert!(
             js.contains("localShareVideoTrack.getRTCStatsReport()")
-            && js.contains("powerEfficient: typeof outbound.powerEfficientEncoder"),
+                && js.contains("powerEfficient: typeof outbound.powerEfficientEncoder"),
             "screen-share diagnostics read sender stats including encoder efficiency"
         );
         assert!(
