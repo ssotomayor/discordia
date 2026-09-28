@@ -21,7 +21,7 @@ name instead.
 | `server/src/state/mod.rs` | 2983 |
 | `server/tests/owner_controls.rs` | 3036 |
 | `server/src/gateway/connection.rs` | 2790 |
-| `client/src/features/channels.rs` | 1727 |
+| `client/src/features/channels.rs` | 1822 |
 | `client/src/features/screenshare.rs` | 1639 |
 | `protocol/src/lib.rs` | 2500 |
 | `client/src/state.rs` | 1832 |

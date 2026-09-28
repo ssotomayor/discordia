@@ -64,6 +64,43 @@ fn send_reorder(gw: &GatewayTx, group: &[Channel], moved: Id, target: Id) {
     });
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Edge {
+    Before,
+    After,
+}
+
+/// Where `moved` will sit if dropped on `target`, as `reorder_positions`
+/// places it: a row takes the target's slot, so it lands past it going down.
+fn drop_edge(guild: &[Channel], moved: Id, target: Id) -> Option<Edge> {
+    let from = guild.iter().position(|c| c.id == moved)?;
+    let to = guild.iter().position(|c| c.id == target)?;
+    if from == to || !guild[from].kind.same_list(guild[to].kind) {
+        return None;
+    }
+    Some(if from < to { Edge::After } else { Edge::Before })
+}
+
+/// Both `top` and `bottom` always set: a style that drops a property keeps the
+/// old one (trap 31), and the bar would stretch across the row.
+#[component]
+fn DropLine(edge: Edge) -> Element {
+    let side = match edge {
+        Edge::Before => "top:-3px; bottom:auto;",
+        Edge::After => "top:auto; bottom:-3px;",
+    };
+    rsx! {
+        span {
+            class: "pointer-events-none absolute z-10",
+            style: "{side} left:2px; right:2px; height:2px; border-radius:2px; background-color: var(--accent); box-shadow: 0 0 6px var(--accent);",
+            span {
+                class: "absolute",
+                style: "left:-3px; top:-2px; width:6px; height:6px; border-radius:9999px; background-color: var(--accent);",
+            }
+        }
+    }
+}
+
 #[derive(Clone, PartialEq)]
 struct ChanMenu {
     channel: Channel,
@@ -169,6 +206,7 @@ pub fn ChannelsColumn() -> Element {
     let mut dm_confirming = use_signal::<Option<Id>>(|| None);
     let mut show_create = use_signal(|| false);
     let mut dragging = use_signal::<Option<Id>>(|| None);
+    let mut drop_at = use_signal::<Option<(Id, Edge)>>(|| None);
 
     let banner = if dm_mode { None } else { guild_banner };
 
@@ -295,6 +333,27 @@ pub fn ChannelsColumn() -> Element {
                 }
             } else {
             div { class: "flex-1 overflow-y-auto px-2 py-3 space-y-3",
+                // Rows only aim; the drop lands here, so letting go in the gap
+                // between two rows still goes where the line shows.
+                ondragover: move |e: Event<DragData>| {
+                    if dragging().is_some() && drop_at.peek().is_some() {
+                        e.prevent_default();
+                    }
+                },
+                ondrop: {
+                    let gateway = gateway.clone();
+                    let order = guild_order.clone();
+                    move |e: Event<DragData>| {
+                        e.prevent_default();
+                        let moved = dragging();
+                        let at = drop_at();
+                        dragging.set(None);
+                        drop_at.set(None);
+                        if let (Some(moved), Some((target, _))) = (moved, at) {
+                            send_reorder(&gateway, &order, moved, target);
+                        }
+                    }
+                },
                 if !text_channels.is_empty() {
                     div {
                         div { class: SECTION_LABEL, "Text" }
@@ -310,28 +369,29 @@ pub fn ChannelsColumn() -> Element {
                                 };
                                 let g2 = gateway.clone();
                                 let ctx_ch = ch.clone();
-                                let g_drop = gateway.clone();
                                 let drop_group = guild_order.clone();
+                                let line = drop_at().filter(|(id, _)| *id == cid).map(|(_, edge)| edge);
+                                let dim = if dragging() == Some(cid) { "opacity-40" } else { "" };
                                 rsx! {
                                     button {
                                         key: "{cid}",
-                                        class: "relative w-full h-8 flex items-center gap-2 px-2.5 rounded-lg text-left text-[13.5px] transition-colors {cls}",
+                                        class: "relative w-full h-8 flex items-center gap-2 px-2.5 rounded-lg text-left text-[13.5px] transition-colors {cls} {dim}",
                                         draggable: can_manage_channels,
                                         ondragstart: move |_| dragging.set(Some(cid)),
                                         ondragover: move |e: Event<DragData>| {
-                                            if dragging().is_some() {
+                                            let Some(moved) = dragging() else { return };
+                                            let next = drop_edge(&drop_group, moved, cid).map(|edge| (cid, edge));
+                                            if next.is_some() {
                                                 e.prevent_default();
                                             }
-                                        },
-                                        ondrop: move |e: Event<DragData>| {
-                                            e.prevent_default();
-                                            let moved = dragging();
-                                            dragging.set(None);
-                                            if let Some(moved) = moved {
-                                                send_reorder(&g_drop, &drop_group, moved, cid);
+                                            if *drop_at.peek() != next {
+                                                drop_at.set(next);
                                             }
                                         },
-                                        ondragend: move |_| dragging.set(None),
+                                        ondragend: move |_| {
+                                            dragging.set(None);
+                                            drop_at.set(None);
+                                        },
                                         onclick: move |_| select_text_channel(&mut state, &g2, cid),
                                         oncontextmenu: move |e: MouseEvent| {
                                             e.prevent_default();
@@ -343,6 +403,9 @@ pub fn ChannelsColumn() -> Element {
                                                 mode: ChanMenuMode::Menu,
                                             }));
                                         },
+                                        if let Some(edge) = line {
+                                            DropLine { edge }
+                                        }
                                         if active {
                                             span {
                                                 class: "absolute",
@@ -381,30 +444,31 @@ pub fn ChannelsColumn() -> Element {
                                     .cloned()
                                     .collect();
                                 let ctx_ch = ch.clone();
-                                let g_drop = gateway.clone();
                                 let drop_group = guild_order.clone();
+                                let line = drop_at().filter(|(id, _)| *id == cid).map(|(_, edge)| edge);
+                                let dim = if dragging() == Some(cid) { "opacity-40" } else { "" };
                                 if ch.kind == ChannelKind::Category {
                                     let menu_ch = ch.clone();
                                     rsx! {
                                         div {
                                             key: "{cid}",
-                                            class: "mt-2.5 mb-0.5 px-2 flex items-center gap-2 select-none",
+                                            class: "relative mt-2.5 mb-0.5 px-2 flex items-center gap-2 select-none {dim}",
                                             draggable: can_manage_channels,
                                             ondragstart: move |_| dragging.set(Some(cid)),
                                             ondragover: move |e: Event<DragData>| {
-                                                if dragging().is_some() {
+                                                let Some(moved) = dragging() else { return };
+                                                let next = drop_edge(&drop_group, moved, cid).map(|edge| (cid, edge));
+                                                if next.is_some() {
                                                     e.prevent_default();
                                                 }
-                                            },
-                                            ondrop: move |e: Event<DragData>| {
-                                                e.prevent_default();
-                                                let moved = dragging();
-                                                dragging.set(None);
-                                                if let Some(moved) = moved {
-                                                    send_reorder(&g_drop, &drop_group, moved, cid);
+                                                if *drop_at.peek() != next {
+                                                    drop_at.set(next);
                                                 }
                                             },
-                                            ondragend: move |_| dragging.set(None),
+                                            ondragend: move |_| {
+                                                dragging.set(None);
+                                                drop_at.set(None);
+                                            },
                                             oncontextmenu: move |e: MouseEvent| {
                                                 if !can_manage_channels {
                                                     return;
@@ -418,6 +482,9 @@ pub fn ChannelsColumn() -> Element {
                                                     mode: ChanMenuMode::Menu,
                                                 }));
                                             },
+                                            if let Some(edge) = line {
+                                                DropLine { edge }
+                                            }
                                             span { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-dim)] truncate", "{ch.name}" }
                                             div { class: "flex-1 h-px bg-[var(--border)]" }
                                         }
@@ -426,22 +493,23 @@ pub fn ChannelsColumn() -> Element {
                                 rsx! {
                                     div {
                                         key: "{cid}",
+                                        class: "relative {dim}",
                                         draggable: can_manage_channels,
                                         ondragstart: move |_| dragging.set(Some(cid)),
                                         ondragover: move |e: Event<DragData>| {
-                                            if dragging().is_some() {
+                                            let Some(moved) = dragging() else { return };
+                                            let next = drop_edge(&drop_group, moved, cid).map(|edge| (cid, edge));
+                                            if next.is_some() {
                                                 e.prevent_default();
                                             }
-                                        },
-                                        ondrop: move |e: Event<DragData>| {
-                                            e.prevent_default();
-                                            let moved = dragging();
-                                            dragging.set(None);
-                                            if let Some(moved) = moved {
-                                                send_reorder(&g_drop, &drop_group, moved, cid);
+                                            if *drop_at.peek() != next {
+                                                drop_at.set(next);
                                             }
                                         },
-                                        ondragend: move |_| dragging.set(None),
+                                        ondragend: move |_| {
+                                            dragging.set(None);
+                                            drop_at.set(None);
+                                        },
                                         // Muting is the only item a plain member gets and it means
                                         // nothing on a voice channel, so without this the menu
                                         // opens empty for them.
@@ -458,6 +526,9 @@ pub fn ChannelsColumn() -> Element {
                                                 mode: ChanMenuMode::Menu,
                                             }));
                                         },
+                                        if let Some(edge) = line {
+                                            DropLine { edge }
+                                        }
                                         VoiceChannelRow {
                                             channel: ch.clone(),
                                             connected: in_this,
@@ -1614,6 +1685,43 @@ mod tests {
         ];
         assert!(reorder_positions(&guild, guild[0].id, guild[1].id).is_empty());
         assert!(reorder_positions(&guild, guild[1].id, guild[0].id).is_empty());
+    }
+
+    #[test]
+    fn the_drop_line_sits_where_the_row_will_land() {
+        let g = group(&[("a", 0), ("b", 1), ("c", 2), ("d", 3)]);
+        for from in 0..g.len() {
+            for to in 0..g.len() {
+                let edge = drop_edge(&g, g[from].id, g[to].id);
+                if from == to {
+                    assert_eq!(edge, None);
+                    continue;
+                }
+                let order = applied(&g, &reorder_positions(&g, g[from].id, g[to].id));
+                let moved = order.iter().position(|n| *n == g[from].name).unwrap();
+                let target = order.iter().position(|n| *n == g[to].name).unwrap();
+                let expected = if moved < target {
+                    Edge::Before
+                } else {
+                    Edge::After
+                };
+                assert_eq!(edge, Some(expected), "{} onto {}", g[from].name, g[to].name);
+            }
+        }
+    }
+
+    #[test]
+    fn no_line_is_drawn_across_kinds() {
+        let guild = vec![
+            kinded("general", 0, ChannelKind::Text),
+            kinded("Lobby", 1, ChannelKind::Voice),
+            kinded("Games", 2, ChannelKind::Category),
+        ];
+        assert_eq!(drop_edge(&guild, guild[0].id, guild[1].id), None);
+        assert_eq!(
+            drop_edge(&guild, guild[2].id, guild[1].id),
+            Some(Edge::Before)
+        );
     }
 
     #[test]
