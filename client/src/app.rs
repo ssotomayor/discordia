@@ -8,6 +8,34 @@ use crate::session::{self, SavedSession};
 use crate::state::{SessionMode, SessionParams};
 use url::Url;
 
+#[cfg(target_os = "windows")]
+static TRAY_QUIT_RECEIVER: std::sync::OnceLock<
+    std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<()>>>,
+> = std::sync::OnceLock::new();
+
+#[cfg(target_os = "windows")]
+pub fn init_tray_quit_bridge() {
+    let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+    if TRAY_QUIT_RECEIVER
+        .set(std::sync::Mutex::new(Some(receiver)))
+        .is_err()
+    {
+        tracing::warn!("Tray quit bridge was already initialized");
+        return;
+    }
+
+    dioxus::desktop::trayicon::menu::MenuEvent::set_event_handler(Some(
+        move |event: dioxus::desktop::trayicon::menu::MenuEvent| {
+            if event.id.0.as_str() == "discordia-quit" {
+                tracing::info!("Received exit request from tray menu");
+                if sender.send(()).is_err() {
+                    tracing::warn!("Tray quit request could not reach the app");
+                }
+            }
+        },
+    ));
+}
+
 const DISCORDIA_LOGO_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="Discordia">
   <defs>
     <linearGradient id="dxfYellowGrad" x1="250" y1="325" x2="565" y2="760" gradientUnits="userSpaceOnUse">
@@ -519,6 +547,79 @@ fn background_pattern_class(pattern: &str) -> &'static str {
 
 #[component]
 pub fn App() -> Element {
+    #[cfg(target_os = "windows")]
+    {
+        use dioxus::desktop::{
+            WindowCloseBehaviour,
+            muda::{Menu, MenuItem},
+            trayicon::TrayIconBuilder,
+        };
+
+        let tray_window = dioxus::desktop::use_window();
+        let mut tray_quit_receiver = {
+            TRAY_QUIT_RECEIVER
+                .get()
+                .and_then(|receiver| receiver.lock().ok()?.take())
+        };
+        let tray_quit_available = tray_quit_receiver.is_some();
+        let tray_quit_window = tray_window.clone();
+        use_future(move || {
+            let receiver = tray_quit_receiver.take();
+            let tray_window = tray_quit_window.clone();
+            async move {
+                if let Some(mut receiver) = receiver {
+                    if receiver.recv().await.is_some() {
+                        tray_window.set_close_behavior(WindowCloseBehaviour::WindowCloses);
+                        tray_window.close();
+                    }
+                }
+            }
+        });
+
+        let tray_icon = use_hook(|| {
+            let menu = Menu::new();
+            let exit = MenuItem::with_id("discordia-quit", "Salir", true, None);
+            if let Err(error) = menu.append(&exit) {
+                tracing::warn!("Could not create tray menu: {error}");
+                return None;
+            }
+
+            let builder = TrayIconBuilder::new()
+                .with_menu(Box::new(menu))
+                .with_menu_on_left_click(false);
+            let icon = image::load_from_memory(include_bytes!("../assets/icon-1024.png"))
+                .ok()
+                .map(|image| {
+                    let image = image
+                        .resize(32, 32, image::imageops::FilterType::Lanczos3)
+                        .to_rgba8();
+                    let (width, height) = image.dimensions();
+                    dioxus::desktop::trayicon::Icon::from_rgba(image.into_raw(), width, height)
+                });
+            let builder = match icon {
+                Some(Ok(icon)) => builder.with_icon(icon),
+                Some(Err(error)) => {
+                    tracing::warn!("Could not load tray icon: {error}");
+                    builder
+                }
+                None => builder,
+            };
+
+            match builder.build() {
+                Ok(icon) => Some(icon),
+                Err(error) => {
+                    tracing::warn!("Could not create tray icon: {error}");
+                    None
+                }
+            }
+        });
+        tray_window.set_close_behavior(if tray_icon.is_some() && tray_quit_available {
+            WindowCloseBehaviour::WindowHides
+        } else {
+            WindowCloseBehaviour::WindowCloses
+        });
+    }
+
     let mut identity = use_signal(|| Identity::load().ok().flatten());
     let mut session = use_signal(|| None::<SessionParams>);
     let mut error = use_signal(|| None::<String>);
