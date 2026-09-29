@@ -13,6 +13,10 @@ static TRAY_QUIT_RECEIVER: std::sync::OnceLock<
     std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<()>>>,
 > = std::sync::OnceLock::new();
 #[cfg(target_os = "windows")]
+static TRAY_RESTORE_RECEIVER: std::sync::OnceLock<
+    std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<()>>>,
+> = std::sync::OnceLock::new();
+#[cfg(target_os = "windows")]
 static TRAY_QUIT_AVAILABLE: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
@@ -20,12 +24,21 @@ static TRAY_QUIT_AVAILABLE: std::sync::atomic::AtomicBool =
 pub fn init_tray_quit_bridge() {
     TRAY_QUIT_AVAILABLE.store(true, std::sync::atomic::Ordering::SeqCst);
 
-    let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+    let (quit_sender, quit_receiver) = tokio::sync::mpsc::unbounded_channel();
+    let (restore_sender, restore_receiver) = tokio::sync::mpsc::unbounded_channel();
+
     if TRAY_QUIT_RECEIVER
-        .set(std::sync::Mutex::new(Some(receiver)))
+        .set(std::sync::Mutex::new(Some(quit_receiver)))
         .is_err()
     {
         tracing::warn!("Tray quit bridge was already initialized");
+        return;
+    }
+    if TRAY_RESTORE_RECEIVER
+        .set(std::sync::Mutex::new(Some(restore_receiver)))
+        .is_err()
+    {
+        tracing::warn!("Tray restore bridge was already initialized");
         return;
     }
 
@@ -33,8 +46,18 @@ pub fn init_tray_quit_bridge() {
         move |event: dioxus::desktop::trayicon::menu::MenuEvent| {
             if event.id.0.as_str() == "discordia-quit" {
                 tracing::info!("Received exit request from tray menu");
-                if sender.send(()).is_err() {
+                if quit_sender.send(()).is_err() {
                     tracing::warn!("Tray quit request could not reach the app");
+                }
+            }
+        },
+    ));
+    dioxus::desktop::trayicon::TrayIconEvent::set_event_handler(Some(
+        move |event: dioxus::desktop::trayicon::TrayIconEvent| {
+            if matches!(event, dioxus::desktop::trayicon::TrayIconEvent::Click { .. }) {
+                tracing::info!("Received restore request from tray icon");
+                if restore_sender.send(()).is_err() {
+                    tracing::warn!("Tray restore request could not reach the app");
                 }
             }
         },
@@ -588,6 +611,23 @@ pub fn App() -> Element {
                     if receiver.recv().await.is_some() {
                         tray_window.set_close_behavior(WindowCloseBehaviour::WindowCloses);
                         tray_window.close();
+                    }
+                }
+            }
+        });
+
+        let tray_restore_window = tray_window.clone();
+        use_future(move || {
+            let receiver = TRAY_RESTORE_RECEIVER
+                .get()
+                .and_then(|receiver| receiver.lock().ok())
+                .and_then(|mut receiver| receiver.take());
+            let tray_window = tray_restore_window.clone();
+            async move {
+                if let Some(mut receiver) = receiver {
+                    if receiver.recv().await.is_some() {
+                        tray_window.set_close_behavior(WindowCloseBehaviour::WindowHides);
+                        tray_window.show();
                     }
                 }
             }
