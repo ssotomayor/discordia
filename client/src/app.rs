@@ -12,9 +12,14 @@ use url::Url;
 static TRAY_QUIT_RECEIVER: std::sync::OnceLock<
     std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<()>>>,
 > = std::sync::OnceLock::new();
+#[cfg(target_os = "windows")]
+static TRAY_QUIT_AVAILABLE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 #[cfg(target_os = "windows")]
 pub fn init_tray_quit_bridge() {
+    TRAY_QUIT_AVAILABLE.store(true, std::sync::atomic::Ordering::SeqCst);
+
     let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
     if TRAY_QUIT_RECEIVER
         .set(std::sync::Mutex::new(Some(receiver)))
@@ -545,6 +550,20 @@ fn background_pattern_class(pattern: &str) -> &'static str {
     }
 }
 
+#[cfg(target_os = "windows")]
+fn window_close_behavior(
+    tray_icon_available: bool,
+    tray_quit_available: bool,
+) -> dioxus::desktop::WindowCloseBehaviour {
+    use dioxus::desktop::WindowCloseBehaviour;
+
+    if tray_icon_available && tray_quit_available {
+        WindowCloseBehaviour::WindowHides
+    } else {
+        WindowCloseBehaviour::WindowCloses
+    }
+}
+
 #[component]
 pub fn App() -> Element {
     #[cfg(target_os = "windows")]
@@ -556,15 +575,13 @@ pub fn App() -> Element {
         };
 
         let tray_window = dioxus::desktop::use_window();
-        let mut tray_quit_receiver = {
-            TRAY_QUIT_RECEIVER
-                .get()
-                .and_then(|receiver| receiver.lock().ok()?.take())
-        };
-        let tray_quit_available = tray_quit_receiver.is_some();
+        let tray_quit_available = TRAY_QUIT_AVAILABLE.load(std::sync::atomic::Ordering::SeqCst);
         let tray_quit_window = tray_window.clone();
         use_future(move || {
-            let receiver = tray_quit_receiver.take();
+            let receiver = TRAY_QUIT_RECEIVER
+                .get()
+                .and_then(|receiver| receiver.lock().ok())
+                .and_then(|mut receiver| receiver.take());
             let tray_window = tray_quit_window.clone();
             async move {
                 if let Some(mut receiver) = receiver {
@@ -613,11 +630,10 @@ pub fn App() -> Element {
                 }
             }
         });
-        tray_window.set_close_behavior(if tray_icon.is_some() && tray_quit_available {
-            WindowCloseBehaviour::WindowHides
-        } else {
-            WindowCloseBehaviour::WindowCloses
-        });
+        tray_window.set_close_behavior(window_close_behavior(
+            tray_icon.is_some(),
+            tray_quit_available,
+        ));
     }
 
     let mut identity = use_signal(|| Identity::load().ok().flatten());
@@ -773,7 +789,25 @@ fn AppHead() -> Element {
 
 #[cfg(test)]
 mod tests {
-    use super::openable;
+    use super::{openable, window_close_behavior};
+
+    #[test]
+    fn tray_close_behavior_hides_window_when_tray_support_is_ready() {
+        let behavior = window_close_behavior(true, true);
+        assert!(matches!(
+            behavior,
+            dioxus::desktop::WindowCloseBehaviour::WindowHides
+        ));
+    }
+
+    #[test]
+    fn tray_close_behavior_closes_window_when_tray_support_is_missing() {
+        let behavior = window_close_behavior(false, true);
+        assert!(matches!(
+            behavior,
+            dioxus::desktop::WindowCloseBehaviour::WindowCloses
+        ));
+    }
 
     #[test]
     fn rejects_non_web_schemes() {
