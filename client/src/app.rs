@@ -627,7 +627,7 @@ pub fn App() -> Element {
                 if let Some(mut receiver) = receiver {
                     if receiver.recv().await.is_some() {
                         tray_window.set_close_behavior(WindowCloseBehaviour::WindowHides);
-                        tray_window.show();
+                        tray_window.set_visible(true);
                     }
                 }
             }
@@ -829,8 +829,12 @@ fn AppHead() -> Element {
 
 #[cfg(test)]
 mod tests {
-    use super::{openable, window_close_behavior};
+    use super::openable;
 
+    #[cfg(target_os = "windows")]
+    use super::window_close_behavior;
+
+    #[cfg(target_os = "windows")]
     #[test]
     fn tray_close_behavior_hides_window_when_tray_support_is_ready() {
         let behavior = window_close_behavior(true, true);
@@ -840,6 +844,7 @@ mod tests {
         ));
     }
 
+    #[cfg(target_os = "windows")]
     #[test]
     fn tray_close_behavior_closes_window_when_tray_support_is_missing() {
         let behavior = window_close_behavior(false, true);
