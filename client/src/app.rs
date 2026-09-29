@@ -670,10 +670,13 @@ pub fn App() -> Element {
                 }
             }
         });
-        tray_window.set_close_behavior(window_close_behavior(
-            tray_icon.is_some(),
-            tray_quit_available,
-        ));
+
+        use_effect(move || {
+            tray_window.set_close_behavior(window_close_behavior(
+                tray_icon.is_some(),
+                tray_quit_available,
+            ));
+        });
     }
 
     let mut identity = use_signal(|| Identity::load().ok().flatten());
