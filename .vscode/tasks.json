@@ -8,6 +8,150 @@
 			"isBackground": false,
 			"problemMatcher": [],
 			"group": "test"
+		},
+		{
+			"label": "Inspect PR 202 CI",
+			"type": "shell",
+			"command": "gh pr checks 202 --repo ssotomayor/discordia; gh pr view 202 --repo ssotomayor/discordia --json headRefOid,headRefName,statusCheckRollup",
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Check local repo state",
+			"type": "shell",
+			"command": "git status --short; git log -1 --oneline; git remote -v",
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Reproduce CI formatting failure",
+			"type": "shell",
+			"command": "cargo fmt --all --check",
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Verify CI format check",
+			"type": "shell",
+			"command": "cargo fmt --all --check",
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Run Windows client clippy",
+			"type": "shell",
+			"command": "cargo clippy -p dioxusfun --all-targets -- -D warnings",
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Recheck Windows client clippy",
+			"type": "shell",
+			"command": "cargo clippy -p dioxusfun --all-targets -- -D warnings",
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Run Windows client tests",
+			"type": "shell",
+			"command": "cargo test -p dioxusfun",
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Verify CI format and release clippy",
+			"type": "shell",
+			"command": "cargo fmt --all --check; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; $env:RUSTFLAGS='-C target-feature=+crt-static -C debug-assertions=off'; cargo clippy -p dioxusfun --all-targets -- -D warnings",
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Inspect local tray event API",
+			"type": "shell",
+			"command": "Get-ChildItem \"$env:USERPROFILE\\.cargo\\registry\\src\" -Directory | ForEach-Object { Get-ChildItem $_.FullName -Directory -Filter 'tray-icon-*' } | ForEach-Object { Get-ChildItem $_.FullName -Recurse -Filter '*.rs' | Select-String -Pattern 'pub enum TrayIconEvent|pub enum MouseButton|enum MouseButton' -Context 0,14 } | Select-Object -First 80",
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Confirm tray type re-export",
+			"type": "shell",
+			"command": "Get-ChildItem \"$env:USERPROFILE\\.cargo\\registry\\src\" -Recurse -Filter '*.rs' | Where-Object { $_.FullName -match 'dioxus-desktop-0\\.7\\.10' } | Select-String -Pattern 'trayicon|pub use tray_icon' | Select-Object -First 35 Path,LineNumber,Line",
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Validate left-click restore filter",
+			"type": "shell",
+			"command": "cargo clippy -p dioxusfun --all-targets -- -D warnings",
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Final Windows client tests",
+			"type": "shell",
+			"command": "cargo test -p dioxusfun",
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Final formatting check",
+			"type": "shell",
+			"command": "cargo fmt --all --check",
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Verify release-profile clippy",
+			"type": "shell",
+			"command": "$env:RUSTFLAGS='-C target-feature=+crt-static -C debug-assertions=off'; cargo clippy -p dioxusfun --all-targets -- -D warnings",
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Run skipped server clippy checks",
+			"type": "shell",
+			"command": "cargo clippy -p dioxusfun-protocol -p dioxusfun-server -p dioxusfun-bot -p dioxusfun-rendezvous --all-targets -- -D warnings",
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Run skipped server tests",
+			"type": "shell",
+			"command": "cargo test -p dioxusfun-protocol -p dioxusfun-server -p dioxusfun-bot -p dioxusfun-rendezvous",
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Review final working tree",
+			"type": "shell",
+			"command": "git status --short; git diff -- client/src/app.rs",
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Verify tray label change",
+			"type": "shell",
+			"command": "cargo test -p dioxusfun tray_close_behavior -- --nocapture; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; cargo fmt --all --check",
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
 		}
 	]
 }

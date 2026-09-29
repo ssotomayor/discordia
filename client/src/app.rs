@@ -54,7 +54,13 @@ pub fn init_tray_quit_bridge() {
     ));
     dioxus::desktop::trayicon::TrayIconEvent::set_event_handler(Some(
         move |event: dioxus::desktop::trayicon::TrayIconEvent| {
-            if matches!(event, dioxus::desktop::trayicon::TrayIconEvent::Click { .. }) {
+            if matches!(
+                event,
+                dioxus::desktop::trayicon::TrayIconEvent::Click {
+                    button: dioxus::desktop::trayicon::MouseButton::Left,
+                    ..
+                }
+            ) {
                 tracing::info!("Received restore request from tray icon");
                 if restore_sender.send(()).is_err() {
                     tracing::warn!("Tray restore request could not reach the app");
@@ -607,11 +613,11 @@ pub fn App() -> Element {
                 .and_then(|mut receiver| receiver.take());
             let tray_window = tray_quit_window.clone();
             async move {
-                if let Some(mut receiver) = receiver {
-                    if receiver.recv().await.is_some() {
-                        tray_window.set_close_behavior(WindowCloseBehaviour::WindowCloses);
-                        tray_window.close();
-                    }
+                if let Some(mut receiver) = receiver
+                    && receiver.recv().await.is_some()
+                {
+                    tray_window.set_close_behavior(WindowCloseBehaviour::WindowCloses);
+                    tray_window.close();
                 }
             }
         });
@@ -624,18 +630,18 @@ pub fn App() -> Element {
                 .and_then(|mut receiver| receiver.take());
             let tray_window = tray_restore_window.clone();
             async move {
-                if let Some(mut receiver) = receiver {
-                    if receiver.recv().await.is_some() {
-                        tray_window.set_close_behavior(WindowCloseBehaviour::WindowHides);
-                        tray_window.set_visible(true);
-                    }
+                if let Some(mut receiver) = receiver
+                    && receiver.recv().await.is_some()
+                {
+                    tray_window.set_close_behavior(WindowCloseBehaviour::WindowHides);
+                    tray_window.set_visible(true);
                 }
             }
         });
 
         let tray_icon = use_hook(|| {
             let menu = Menu::new();
-            let exit = MenuItem::with_id("discordia-quit", "Salir", true, None);
+            let exit = MenuItem::with_id("discordia-quit", "Exit", true, None);
             if let Err(error) = menu.append(&exit) {
                 tracing::warn!("Could not create tray menu: {error}");
                 return None;
