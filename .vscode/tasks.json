@@ -1,0 +1,13 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Verify tray regression",
+			"type": "shell",
+			"command": "cargo test -p dioxusfun tray_close_behavior -- --nocapture",
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		}
+	]
+}
