@@ -160,6 +160,9 @@ fn default_filter() -> tracing_subscriber::EnvFilter {
 fn main() {
     init_logging();
 
+    #[cfg(target_os = "windows")]
+    app::init_tray_quit_bridge();
+
     update::sweep_outgoing();
 
     #[cfg(target_os = "windows")]
