@@ -630,11 +630,11 @@ pub fn App() -> Element {
                 .and_then(|mut receiver| receiver.take());
             let tray_window = tray_restore_window.clone();
             async move {
-                if let Some(mut receiver) = receiver
-                    && receiver.recv().await.is_some()
-                {
-                    tray_window.set_close_behavior(WindowCloseBehaviour::WindowHides);
-                    tray_window.set_visible(true);
+                if let Some(mut receiver) = receiver {
+                    while let Some(()) = receiver.recv().await {
+                        tray_window.set_close_behavior(WindowCloseBehaviour::WindowHides);
+                        tray_window.set_visible(true);
+                    }
                 }
             }
         });
