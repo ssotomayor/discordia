@@ -34,6 +34,9 @@
 #include "media/engine/simulcast_encoder_adapter.h"
 #include "rtc_base/logging.h"
 #include "rust/cxx.h"
+#ifdef WEBRTC_WIN
+#include "windows/mf_encoder_factory.h"
+#endif
 #if defined(RTC_USE_LIBAOM_AV1_ENCODER)
 #include "api/video_codecs/video_encoder_factory_template_libaom_av1_adapter.h"
 #endif
@@ -69,6 +72,7 @@ constexpr char kPreferredHwEncoderEnv[] = "LIVEKIT_PREFERRED_HW_ENCODER";
 enum class PreferredHwEncoder {
   kNvenc,
   kVaapi,
+  kMediaFoundation,
 };
 
 struct PreferredHwEncoderConfig {
@@ -89,10 +93,13 @@ PreferredHwEncoderConfig GetPreferredHwEncoderConfig() {
   if (preferred_encoder_view == "vaapi") {
     return {PreferredHwEncoder::kVaapi, true};
   }
+  if (preferred_encoder_view == "mediafoundation") {
+    return {PreferredHwEncoder::kMediaFoundation, true};
+  }
 
   RTC_LOG(LS_WARNING) << "Ignoring invalid LIVEKIT_PREFERRED_HW_ENCODER=\""
                       << preferred_encoder
-                      << "\"; expected \"nvenc\" or \"vaapi\".";
+                      << "\"; expected \"nvenc\", \"vaapi\" or \"mediafoundation\".";
   return {};
 }
 
@@ -283,6 +290,17 @@ void AddVaapiFactory(
 #endif
 }
 
+void AddWindowsMfFactory(std::vector<VideoEncoderBackendFactory>& factories) {
+#ifdef WEBRTC_WIN
+  if (webrtc::WindowsMfEncoderFactory::IsSupported()) {
+    AddBackendFactory(factories, VideoEncoderBackend::Hardware,
+                      std::make_unique<webrtc::WindowsMfEncoderFactory>());
+  }
+#else
+  (void)factories;
+#endif
+}
+
 }  // namespace
 
 using Factory = webrtc::VideoEncoderFactoryTemplate<
@@ -303,6 +321,9 @@ rust::Vec<VideoEncoderBackend> video_encoder_backend_list() {
 
   bool has_hardware_backend = false;
   bool hardware_backend_listed = false;
+#ifdef WEBRTC_WIN
+  has_hardware_backend = webrtc::WindowsMfEncoderFactory::IsSupported();
+#endif
 
 #ifdef __APPLE__
   backends.push_back(VideoEncoderBackend::VideoToolbox);
@@ -366,12 +387,18 @@ VideoEncoderFactory::InternalFactory::InternalFactory() {
 
   const PreferredHwEncoderConfig preferred_hw_encoder =
       GetPreferredHwEncoderConfig();
+  if (preferred_hw_encoder.encoder == PreferredHwEncoder::kMediaFoundation) {
+    AddWindowsMfFactory(factories_);
+  }
   if (preferred_hw_encoder.encoder == PreferredHwEncoder::kVaapi) {
     AddVaapiFactory(factories_, preferred_hw_encoder.explicitly_set);
     AddNvencFactory(factories_, false);
   } else {
     AddNvencFactory(factories_, preferred_hw_encoder.explicitly_set);
     AddVaapiFactory(factories_, false);
+  }
+  if (preferred_hw_encoder.encoder != PreferredHwEncoder::kMediaFoundation) {
+    AddWindowsMfFactory(factories_);
   }
 }
 

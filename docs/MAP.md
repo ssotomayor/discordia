@@ -17,12 +17,12 @@ name instead.
 
 | File | Lines |
 |---|---|
-| `client/src/features/voice.rs` | 3593 |
+| `client/src/features/voice.rs` | 3613 |
 | `server/src/state/mod.rs` | 2983 |
 | `server/tests/owner_controls.rs` | 3036 |
 | `server/src/gateway/connection.rs` | 2790 |
 | `client/src/features/channels.rs` | 1967 |
-| `client/src/features/screenshare.rs` | 2171 |
+| `client/src/features/screenshare.rs` | 2172 |
 | `protocol/src/lib.rs` | 2500 |
 | `client/src/state.rs` | 1860 |
 | `client/src/update.rs` | 1226 |
@@ -105,6 +105,7 @@ repeated here.
 | Native screen-share FPS | `client/src/sysvideo/windows.rs`, `client/src/features/voice.rs`, `client/src/features/screenshare.rs` | `FramePacer` keeps deadlines across callback jitter; `ScreenVideoRoom` samples per-capture `metrics::Metrics` and encoder stats once per second; capture size/FPS, processing ms/frame and encoding ms/frame identify separate bottlenecks. `ScreenSelfPreview` shows CPU/GPU for known encoder implementations; unreported or unknown implementations remain unclassified |
 | Native screen-share quality | `client/src/features/voice.rs`, `client/src/features/screenshare.rs` | `screen_video_options` applies saved Automatic/GPU/CPU encoding; GPU requires H.264, available hardware and stops on a detected software fallback. `Settings::priority` preserves motion/detail/balanced tradeoffs. `native_screen_codecs_reach_a_real_decoder` starts a bundled SFU (ignored; `DISCORDIA_TEST_REQUIRE_NVENC=1` verifies hardware); `compare_screen_conversion_cost` compares Windows downscaling paths (ignored) |
 | Windows NVENC build | `vendor/webrtc-sys/PATCHES.md`, `.github/actions/setup-windows-nvenc/action.yml`, `client/build.rs` | Cargo patches webrtc-sys 0.3.39 locally; CUDA_PATH headers/import library enable NVENC, CUDA is delay-loaded at runtime. Windows CI/release jobs install build dependencies; drivers remain optional in Automatic/CPU mode |
+| Windows AMD/other hardware encoders | `vendor/webrtc-sys/src/windows/mf_encoder_factory.cpp`, `vendor/webrtc-sys/src/video_encoder_factory.cpp` | Automatic prefers NVENC then hardware-only Media Foundation MFTs; binds the matching D3D11 adapter, handles asynchronous input/output with bounded queues, and falls back to software on failure. Preview identifies the driver encoder. `DISCORDIA_TEST_REQUIRE_MF=1` verifies MFT encoding in the real SFU test |
 | Windows screen downscaling | `client/src/sysvideo/windows.rs` | `BgraConverter` reuses full-size I420 scratch storage when downscaling; only the scaled buffer reaches WebRTC. Keeps row stride and source aspect ratio. `resizing_bgra_ignores_row_padding_and_preserves_colors` guards channel order and window size changes |
 | Screen preview measurements | `client/src/features/screenshare.rs` | `ScreenSelfPreview` shows selected resolution/FPS and actual sending/capture FPS; `ScreenWatchTile` polls `previewStats` per identity for actual received resolution/FPS independently of the connection stats panel |
 | Everything else | beside the code | the suite stays headless and green |

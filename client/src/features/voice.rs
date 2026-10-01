@@ -1308,12 +1308,13 @@ impl ScreenVideoRoom {
                 }) else {
                     continue;
                 };
-                if settings.encoder == crate::sysvideo::Encoder::Gpu
-                    && matches!(
-                        outbound.outbound.encoder_implementation.as_str(),
-                        "OpenH264" | "libvpx"
-                    )
-                {
+                if settings.encoder == crate::sysvideo::Encoder::Gpu && {
+                    let implementation = outbound
+                        .outbound
+                        .encoder_implementation
+                        .to_ascii_lowercase();
+                    implementation.contains("openh264") || implementation.contains("libvpx")
+                } {
                     if encoder_fatal
                         .send(format!(
                             "{} encoding failed. Choose Automatic or CPU.",
@@ -3106,6 +3107,13 @@ mod tests {
             VideoEncoderBackend::list_available().into_iter().collect();
         eprintln!("Available video encoders: {available_backends:?}");
         let require_nvenc = std::env::var_os("DISCORDIA_TEST_REQUIRE_NVENC").is_some();
+        let require_mf = std::env::var_os("DISCORDIA_TEST_REQUIRE_MF").is_some();
+        if require_mf {
+            let _subscriber = tracing_subscriber::fmt()
+                .with_env_filter("libwebrtc=debug,webrtc_sys=debug,livekit=warn")
+                .with_test_writer()
+                .try_init();
+        }
         if require_nvenc {
             assert!(available_backends.contains(&VideoEncoderBackend::Nvenc));
         }
@@ -3227,6 +3235,18 @@ mod tests {
                 })
                 .expect("outbound video");
             let stats = native_screen_stats(outbound, &report, 60.0, None);
+            if require_mf
+                && codec == crate::sysvideo::Codec::H264
+                && encoder != crate::sysvideo::Encoder::Cpu
+            {
+                assert!(
+                    stats
+                        .codec_implementation
+                        .as_deref()
+                        .is_some_and(|name| name.starts_with("Media Foundation H264 Encoder"))
+                );
+                assert_eq!(stats.power_efficient, Some(true));
+            }
             if require_nvenc
                 && codec == crate::sysvideo::Codec::H264
                 && encoder != crate::sysvideo::Encoder::Cpu

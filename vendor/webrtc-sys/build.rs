@@ -137,6 +137,11 @@ fn main() {
     println!("cargo:rustc-link-lib=static=webrtc");
     match target_os.as_str() {
         "windows" => {
+            builder.file("src/windows/mf_encoder_factory.cpp");
+            println!("cargo:rustc-link-lib=dylib=mfplat");
+            println!("cargo:rustc-link-lib=dylib=mfuuid");
+            println!("cargo:rustc-link-lib=dylib=oleaut32");
+            println!("cargo:rustc-link-lib=dylib=delayimp");
             if let Some(cuda_root) = env::var_os("CUDA_PATH").map(PathBuf::from) {
                 let cuda_include = cuda_root.join("include");
                 let cuda_lib = cuda_root.join("lib/x64");
@@ -157,7 +162,6 @@ fn main() {
                         .define("USE_NVIDIA_VIDEO_CODEC", "1");
                     println!("cargo:rustc-link-search=native={}", cuda_lib.display());
                     println!("cargo:rustc-link-lib=dylib=cuda");
-                    println!("cargo:rustc-link-lib=dylib=delayimp");
                 }
             }
             println!("cargo:rustc-link-lib=dylib=msdmo");

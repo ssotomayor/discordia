@@ -1615,6 +1615,7 @@ fn screen_encoder_label(implementation: Option<&str>) -> String {
     if normalized.contains("openh264") || normalized.contains("libvpx") {
         format!("CPU · {name}")
     } else if normalized.starts_with("nvidia ")
+        || normalized.starts_with("media foundation h264 encoder")
         || normalized.starts_with("vaapi ")
         || normalized.starts_with("jetson mmapi ")
         || normalized.contains("videotoolbox")
