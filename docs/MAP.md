@@ -58,6 +58,8 @@ that direction says a file is safe to open when it is not.
 | The settings dialog | `client/src/features/settings_dialog.rs` | `SETTINGS_TABS` + `SettingsTab`. Mounted at the *workspace root*, never inside a grid panel — a raised panel carries a `z-index`, and that traps `position: fixed` children (trap 22). `AppState::audio_settings` opens it |
 | Where this session's data goes | `client/src/features/topology.rs` | `TopologyDialog` — per-leg, per-session; opened from the transport chip |
 | Panel arrangements | `client/src/features/workspace.rs` | `LAYOUT_TEMPLATES` + `LayoutButton`; `persist_layout` writes both the cell and free snapshots |
+| Watching several screen shares | `client/src/features/screenshare.rs` | `ScreenWatchWindow` renders a keyed `ScreenWatchTile` per pubkey in `AppState::screen_viewing`; each owns its video attachment and window, with independent webview and native audio gains. `QUALITY_PRESETS` feeds both capture paths, up to 4K30 |
+| Selecting a screen share | `client/src/features/screenshare.rs` | `ScreenSourcePicker` mounts `ScreenShareDialog`; `ScreenSourceTile` loads an in-memory PNG through `sysvideo::thumbnail`, at most two native captures at once, refreshed on request. Source, resolution, FPS and audio are drafts until Share. `sysvideo/windows.rs` uses Windows Graphics Capture, `sysvideo/macos.rs` ScreenCaptureKit; `selected_capture_settings` feeds the native LiveKit publisher |
 | Keys on this machine | `client/src/identity.rs` | `detected` / `sign_in` / `forget`; one file per key under `identities_dir()` (default `config_dir()/identities/`, `identities-dir` overrides), `identity.json` names the active one |
 | Keys at rest | `client/src/keyvault.rs` | NIP-49 `ncryptsec` under a random passphrase; `backend()` picks keychain or `vault.key` once and `vault.backend` remembers (trap 23) |
 | Choosing the keys folder | `client/src/features/identity_setup.rs` | `FolderSettings` — the cog on the setup screen; `DetectedIdentities` rescans on every render, `rev` forces one |
@@ -98,7 +100,12 @@ repeated here.
 | Wire, end to end | `server/tests/*.rs` | spawn a real gateway, drive it through the bot SDK; copy a helper block |
 | Partial failure | `server/tests/voice.rs` | `ScriptedMinter` answers per request — the delegation seam doubles as a fault injector |
 | Platform paths | `client/tests/live_sfu.rs`, `#[ignore]`d unit tests | need an SFU, an audio device or a screen grant — hence ignored, not optional |
+| Windows native screen capture | `client/src/sysvideo/windows.rs` | ignored `selected_windows_and_monitors_feed_livekit_and_stop` needs an interactive desktop; validates selected sources, video handoff, dimensions and teardown |
+| A received screen share at half size and 3 FPS | `client/src/features/voice.rs` | `screen_video_options` disables native simulcast; LiveKit's default lower screen-share layer halves the dimensions and caps FPS at 3, which adaptive viewers can select |
+| Native screen-share FPS | `client/src/sysvideo/windows.rs`, `client/src/features/voice.rs` | `FramePacer` keeps deadlines across callback jitter; `ScreenVideoRoom` samples native capture and track stats once per second, cancels on shutdown; `native_screen_stats` separates capture FPS from encoder FPS and quality limitation |
+| Screen preview measurements | `client/src/features/screenshare.rs` | `ScreenSelfPreview` shows selected resolution/FPS and actual sending/capture FPS; `ScreenWatchTile` polls `previewStats` per identity for actual received resolution/FPS independently of the connection stats panel |
 | Everything else | beside the code | the suite stays headless and green |
+| Screen-share webview lifecycle | `client/tests/screenshare_bridge.cjs` | `node client/tests/screenshare_bridge.cjs`; simultaneous video/audio, independent volume, teardown and native-audio switching |
 
 ## Architecture
 

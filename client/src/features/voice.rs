@@ -7,7 +7,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use dioxus::core::Task;
 use dioxus::prelude::*;
 use futures_util::StreamExt;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use livekit::options::VideoEncoding;
 use livekit::options::{AudioEncoding, TrackPublishOptions};
 use livekit::prelude::*;
@@ -19,11 +19,11 @@ use livekit::webrtc::prelude::RtcAudioSource;
 use livekit::webrtc::stats::RtcStats;
 #[cfg(target_os = "macos")]
 use livekit::webrtc::video_frame::native::NativeBuffer;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use livekit::webrtc::video_frame::{VideoFrame, VideoRotation};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use livekit::webrtc::video_source::native::NativeVideoSource;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use livekit::webrtc::video_source::{RtcVideoSource, VideoResolution};
 use parking_lot::Mutex;
 use rubato::{FftFixedIn, Resampler};
@@ -992,7 +992,7 @@ impl ActiveVoice {
             return Ok(());
         };
         if let Some(existing) = &self.screen_video
-            && existing.key == (url.clone(), token.clone(), target)
+            && existing.key == (url.clone(), token.clone(), target, settings)
         {
             return Ok(());
         }
@@ -1002,12 +1002,12 @@ impl ActiveVoice {
         if !crate::sysvideo::supported() {
             return Err("screen capture isn't implemented on this platform".into());
         }
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         {
             let r = ScreenVideoRoom::connect(&url, &token, target, settings, state).await?;
             self.screen_video = Some(r);
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
         {
             let _ = (url, token, target, settings, state);
         }
@@ -1107,13 +1107,38 @@ impl ActiveVoice {
 
 struct ScreenVideoRoom {
     room: Arc<Room>,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    stats_task: Task,
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    fatal_task: Task,
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    state: Signal<AppState>,
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     _capture: crate::sysvideo::Capture,
-    key: (String, String, crate::sysvideo::Target),
+    key: (
+        String,
+        String,
+        crate::sysvideo::Target,
+        crate::sysvideo::Settings,
+    ),
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn screen_video_options(settings: crate::sysvideo::Settings) -> TrackPublishOptions {
+    TrackPublishOptions {
+        source: TrackSource::Screenshare,
+        // LiveKit's default lower screen-share layer halves resolution and caps it at 3 FPS.
+        simulcast: false,
+        video_encoding: Some(VideoEncoding {
+            max_framerate: settings.fps as f64,
+            max_bitrate: settings.max_bitrate,
+        }),
+        ..Default::default()
+    }
 }
 
 impl ScreenVideoRoom {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     async fn connect(
         url: &str,
         token: &str,
@@ -1143,18 +1168,19 @@ impl ScreenVideoRoom {
         let publication = room
             .local_participant()
             .publish_track(
-                LocalTrack::Video(track),
-                TrackPublishOptions {
-                    source: TrackSource::Screenshare,
-                    video_encoding: Some(VideoEncoding {
-                        max_framerate: settings.fps as f64,
-                        max_bitrate: settings.max_bitrate,
-                    }),
-                    ..Default::default()
-                },
+                LocalTrack::Video(track.clone()),
+                screen_video_options(settings),
             )
-            .await
-            .map_err(|e| format!("publishing the video track failed ({e})"))?;
+            .await;
+        let publication = match publication {
+            Ok(publication) => publication,
+            Err(error) => {
+                if let Err(e) = room.close().await {
+                    eprintln!("[screen] failed publication room cleanup: {e}");
+                }
+                return Err(format!("publishing the video track failed ({error})"));
+            }
+        };
         eprintln!(
             "[voice] screen video published sid={} identity={} target={:?} {}x{}@{}",
             publication.sid(),
@@ -1166,57 +1192,178 @@ impl ScreenVideoRoom {
         );
 
         let (fatal_tx, mut fatal_rx) = unbounded_channel::<String>();
-        {
+        let capture_epoch = state.read().voice_session_epoch;
+        let fatal_task = {
             let mut state = state;
             dioxus::prelude::spawn(async move {
                 if let Some(e) = fatal_rx.recv().await {
                     eprintln!("[voice] screen capture died mid-share: {e}");
                     let mut s = state.write();
+                    if s.voice_session_epoch != capture_epoch
+                        || s.screen_share_target != Some(target)
+                    {
+                        return;
+                    }
                     s.screen_sharing = false;
                     s.screen_share_target = None;
                     s.error_toast =
                         Some(format!("Your screen stopped being shared: {e}. Try again."));
                 }
-            });
-        }
+            })
+        };
 
-        let capture = crate::sysvideo::start(
-            target,
-            settings,
-            Box::new(move |frame: crate::sysvideo::Frame| {
-                let buffer = unsafe {
-                    NativeBuffer::from_cv_pixel_buffer(frame.into_consumable_pixel_buffer())
-                };
-                source.capture_frame(&VideoFrame {
-                    rotation: VideoRotation::VideoRotation0,
-                    timestamp_us: std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_micros() as i64)
-                        .unwrap_or(0),
-                    frame_metadata: None,
-                    buffer,
-                });
-            }),
-            fatal_tx,
-        )?;
+        let sink: crate::sysvideo::FrameSink = Box::new(move |frame: crate::sysvideo::Frame| {
+            #[cfg(target_os = "macos")]
+            // SAFETY: LiveKit takes ownership of the retained CVPixelBuffer reference.
+            let buffer =
+                unsafe { NativeBuffer::from_cv_pixel_buffer(frame.into_consumable_pixel_buffer()) };
+            #[cfg(target_os = "windows")]
+            let buffer = frame.buffer;
+            source.capture_frame(&VideoFrame {
+                rotation: VideoRotation::VideoRotation0,
+                timestamp_us: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_micros() as i64)
+                    .unwrap_or(0),
+                frame_metadata: None,
+                buffer,
+            });
+        });
+        #[cfg(target_os = "macos")]
+        let capture = crate::sysvideo::start(target, settings, sink, fatal_tx);
+        #[cfg(target_os = "windows")]
+        let capture = tokio::task::spawn_blocking(move || {
+            crate::sysvideo::start(target, settings, sink, fatal_tx)
+        })
+        .await
+        .unwrap_or_else(|e| Err(format!("capture worker failed: {e}")));
+        let capture = match capture {
+            Ok(capture) => capture,
+            Err(error) => {
+                fatal_task.cancel();
+                if let Err(e) = room.close().await {
+                    eprintln!("[screen] failed capture room cleanup: {e}");
+                }
+                return Err(error);
+            }
+        };
 
         tokio::spawn(async move { while events.recv().await.is_some() {} });
 
+        let mut stats_state = state;
+        let stats_task = dioxus::prelude::spawn(async move {
+            let mut previous = None;
+            let mut capture_count = crate::sysvideo::frames_captured();
+            let mut sampled = Instant::now();
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                let now = Instant::now();
+                let count = crate::sysvideo::frames_captured();
+                let capture_fps = count.saturating_sub(capture_count) as f64
+                    / now.duration_since(sampled).as_secs_f64();
+                capture_count = count;
+                sampled = now;
+                let Ok(report) = track.get_stats().await else {
+                    continue;
+                };
+                let Some(outbound) = report.iter().find_map(|entry| match entry {
+                    RtcStats::OutboundRtp(o) if o.stream.kind == "video" => Some(o),
+                    _ => None,
+                }) else {
+                    continue;
+                };
+                let rates = outbound_rates(
+                    previous,
+                    outbound.sent.packets_sent,
+                    outbound.sent.bytes_sent,
+                    now,
+                );
+                previous = Some((outbound.sent.packets_sent, outbound.sent.bytes_sent, now));
+                let mut s = stats_state.write();
+                if s.voice_session_epoch != capture_epoch
+                    || s.screen_share_target != Some(target)
+                    || !s.screen_sharing
+                {
+                    break;
+                }
+                s.screen_share_stats = Some(native_screen_stats(
+                    outbound,
+                    &report,
+                    capture_fps,
+                    rates.map(|(_, rate)| rate),
+                ));
+            }
+        });
+
         Ok(Self {
             room,
+            stats_task,
+            fatal_task,
+            state,
             _capture: capture,
-            key: (url.to_string(), token.to_string(), target),
+            key: (url.to_string(), token.to_string(), target, settings),
         })
     }
 
     async fn shutdown(self) {
-        #[cfg(target_os = "macos")]
-        drop(self._capture);
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        {
+            self.stats_task.cancel();
+            self.fatal_task.cancel();
+            let mut state = self.state;
+            state.write().screen_share_stats = None;
+            drop(self._capture);
+        }
         match tokio::time::timeout(ROOM_CLOSE_TIMEOUT, self.room.close()).await {
             Ok(Ok(())) => {}
             Ok(Err(e)) => eprintln!("[voice] screen video room close failed: {e}"),
             Err(_) => eprintln!("[voice] screen video room close timed out, dropping anyway"),
         }
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn native_screen_stats(
+    o: &livekit::webrtc::stats::OutboundRtpStats,
+    report: &[RtcStats],
+    capture_fps: f64,
+    bitrate_kbps: Option<u32>,
+) -> crate::state::ScreenShareStats {
+    use livekit::webrtc::stats::QualityLimitationReason;
+    let codec = report.iter().find_map(|entry| match entry {
+        RtcStats::Codec(c) if c.rtc.id == o.stream.codec_id => Some(c.codec.mime_type.clone()),
+        _ => None,
+    });
+    let encoder = (!o.outbound.encoder_implementation.is_empty())
+        .then(|| o.outbound.encoder_implementation.clone());
+    crate::state::ScreenShareStats {
+        outbound: true,
+        capture_width: None,
+        capture_height: None,
+        capture_fps: Some(capture_fps),
+        encoded_width: (o.outbound.frame_width > 0).then_some(o.outbound.frame_width),
+        encoded_height: (o.outbound.frame_height > 0).then_some(o.outbound.frame_height),
+        encoded_fps: Some(o.outbound.frames_per_second),
+        bitrate_kbps,
+        target_bitrate_kbps: (o.outbound.target_bitrate > 0.0)
+            .then_some((o.outbound.target_bitrate / 1000.0).round() as u32),
+        codec,
+        power_efficient: encoder.as_ref().map(|_| o.outbound.power_efficient_encoder),
+        codec_implementation: encoder,
+        quality_limitation_reason: Some(
+            match o.outbound.quality_limitation_reason {
+                QualityLimitationReason::None => "none",
+                QualityLimitationReason::Cpu => "cpu",
+                QualityLimitationReason::Bandwidth => "bandwidth",
+                QualityLimitationReason::Other => "other",
+            }
+            .into(),
+        ),
+        frames: Some(o.outbound.frames_encoded as u64),
+        packets: Some(o.sent.packets_sent),
+        packets_lost: None,
+        jitter_ms: None,
+        error: None,
     }
 }
 
@@ -2767,6 +2914,53 @@ async fn consume_remote_track(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[test]
+    fn native_screen_stats_separate_capture_from_cpu_limited_encoding() {
+        use livekit::webrtc::stats::{CodecStats, OutboundRtpStats, QualityLimitationReason};
+        let mut outbound = OutboundRtpStats::default();
+        outbound.stream.codec_id = "video-codec".into();
+        outbound.outbound.frame_width = 1920;
+        outbound.outbound.frame_height = 1080;
+        outbound.outbound.frames_per_second = 9.0;
+        outbound.outbound.quality_limitation_reason = QualityLimitationReason::Cpu;
+        outbound.outbound.encoder_implementation = "libvpx".into();
+        let mut codec = CodecStats::default();
+        codec.rtc.id = "video-codec".into();
+        codec.codec.mime_type = "video/VP8".into();
+        let stats = native_screen_stats(&outbound, &[RtcStats::Codec(codec)], 60.0, Some(3602));
+        assert_eq!(stats.capture_fps, Some(60.0));
+        assert_eq!(stats.encoded_fps, Some(9.0));
+        assert_eq!(stats.encoded_width, Some(1920));
+        assert_eq!(stats.quality_limitation_reason.as_deref(), Some("cpu"));
+        assert_eq!(stats.codec.as_deref(), Some("video/VP8"));
+        assert_eq!(stats.bitrate_kbps, Some(3602));
+        let absent = native_screen_stats(&OutboundRtpStats::default(), &[], 0.0, None);
+        assert_eq!(absent.encoded_width, None);
+        assert_eq!(absent.codec_implementation, None);
+        assert_eq!(absent.power_efficient, None);
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[test]
+    fn screen_share_negotiates_full_resolution_without_a_three_fps_layer() {
+        let settings = crate::sysvideo::Settings {
+            width: 1920,
+            height: 1080,
+            fps: 60,
+            max_bitrate: 18_000_000,
+        };
+        let encodings = livekit::options::compute_video_encodings(
+            settings.width,
+            settings.height,
+            &screen_video_options(settings),
+        );
+        assert_eq!(encodings.len(), 1);
+        assert_eq!(encodings[0].scale_resolution_down_by, Some(1.0));
+        assert_eq!(encodings[0].max_framerate, Some(60.0));
+        assert_eq!(encodings[0].max_bitrate, Some(18_000_000));
+    }
 
     /// One person talking has to arrive at the level they were sent at. The
     /// per-track curve this replaced took up to 1.4 dB off that case for a sum

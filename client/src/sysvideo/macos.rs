@@ -21,6 +21,7 @@ const CONTENT_TIMEOUT: Duration = Duration::from_secs(20);
 struct TapState {
     sink: FrameSink,
     fatal: UnboundedSender<String>,
+    count_frames: bool,
 }
 
 define_class!(
@@ -70,12 +71,15 @@ impl Tap {
         }
 
         (self.ivars().sink)(Frame { buffer });
-        super::FRAMES_CAPTURED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if self.ivars().count_frames {
+            super::FRAMES_CAPTURED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
     }
 }
 
 pub struct MacVideoCapture {
     stream: Retained<SCStream>,
+    tap: Retained<Tap>,
 }
 
 impl MacVideoCapture {
@@ -84,6 +88,7 @@ impl MacVideoCapture {
         settings: Settings,
         sink: FrameSink,
         fatal: UnboundedSender<String>,
+        count_frames: bool,
     ) -> Result<Self, String> {
         let filter = content_filter(target)?;
 
@@ -101,7 +106,11 @@ impl MacVideoCapture {
             config.setShowsCursor(true);
             config.setQueueDepth(3);
 
-            let tap = Tap::alloc().set_ivars(TapState { sink, fatal });
+            let tap = Tap::alloc().set_ivars(TapState {
+                sink,
+                fatal,
+                count_frames,
+            });
             let tap: Retained<Tap> = msg_send![super(tap), init];
             let output = ProtocolObject::from_ref(&*tap);
             let delegate = ProtocolObject::from_ref(&*tap);
@@ -122,8 +131,6 @@ impl MacVideoCapture {
                 )
                 .map_err(|e| format!("add screen output: {e}"))?;
 
-            std::mem::forget(tap);
-
             let (done_tx, done_rx) = std_mpsc::channel();
             let handler = RcBlock::new(move |err: *mut NSError| {
                 let msg = if err.is_null() {
@@ -140,7 +147,7 @@ impl MacVideoCapture {
                 Err(_) => return Err("timed out starting screen capture".into()),
             }
 
-            Ok(Self { stream })
+            Ok(Self { stream, tap })
         }
     }
 }
@@ -148,7 +155,17 @@ impl MacVideoCapture {
 impl Drop for MacVideoCapture {
     fn drop(&mut self) {
         unsafe {
-            self.stream.stopCaptureWithCompletionHandler(None);
+            let tap = self.tap.clone();
+            let stopped = RcBlock::new(move |error: *mut NSError| {
+                let _retain_delegate = &tap;
+                if !error.is_null() {
+                    eprintln!(
+                        "[screen] capture shutdown: {}",
+                        (*error).localizedDescription()
+                    );
+                }
+            });
+            self.stream.stopCaptureWithCompletionHandler(Some(&stopped));
         }
     }
 }

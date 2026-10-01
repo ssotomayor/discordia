@@ -738,9 +738,6 @@
   .max-w-40 {
     max-width: calc(var(--spacing) * 40);
   }
-  .max-w-\[7rem\] {
-    max-width: 7rem;
-  }
   .max-w-\[40\%\] {
     max-width: 40%;
   }
@@ -975,6 +972,12 @@
       margin-block-start: calc(calc(var(--spacing) * 5) * var(--tw-space-y-reverse));
       margin-block-end: calc(calc(var(--spacing) * 5) * calc(1 - var(--tw-space-y-reverse)));
     }
+  }
+  .gap-x-2 {
+    column-gap: calc(var(--spacing) * 2);
+  }
+  .gap-y-0\.5 {
+    row-gap: calc(var(--spacing) * 0.5);
   }
   .self-center {
     align-self: center;
@@ -1803,13 +1806,6 @@
     &:hover {
       @media (hover: hover) {
         border-color: var(--edge);
-      }
-    }
-  }
-  .hover\:bg-\[var\(--accent-soft\)\] {
-    &:hover {
-      @media (hover: hover) {
-        background-color: var(--accent-soft);
       }
     }
   }

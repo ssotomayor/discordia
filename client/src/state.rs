@@ -332,7 +332,7 @@ pub struct AppState {
     pub screen_sharing: bool,
     pub screen_native_audio: bool,
     pub screen_shares: HashMap<Id, Vec<String>>,
-    pub screen_viewing: Option<String>,
+    pub screen_viewing: HashSet<String>,
     pub replying_to: Option<ReplyDraft>,
     pub screen_capture_available: bool,
 
@@ -452,7 +452,7 @@ impl AppState {
             screen_sharing: false,
             screen_native_audio: false,
             screen_shares: HashMap::new(),
-            screen_viewing: None,
+            screen_viewing: HashSet::new(),
             replying_to: None,
             screen_capture_available: false,
             camera_on: false,
@@ -524,7 +524,7 @@ impl AppState {
         self.screen_video_token = None;
         self.screen_share_target = None;
         self.screen_sharing = false;
-        self.screen_viewing = None;
+        self.screen_viewing.clear();
         self.camera_on = false;
         self.camera_starting = false;
         self.cameras_watching.clear();

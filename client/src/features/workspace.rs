@@ -649,18 +649,18 @@ fn VoiceSounds() -> Element {
     });
 
     let viewing = use_memo(move || state.read().screen_viewing.clone());
-    let mut last_viewing = use_signal(|| None::<String>);
+    let mut last_viewing = use_signal(std::collections::HashSet::<String>::new);
     use_effect(move || {
         let now = viewing();
         if now == *last_viewing.peek() {
             return;
         }
-        let was_watching = last_viewing.peek().is_some();
+        let was_watching = !last_viewing.peek().is_empty();
         last_viewing.set(now.clone());
-        match now {
-            Some(_) => sfx("watch-start"),
-            None if was_watching => sfx("watch-stop"),
-            None => {}
+        if !now.is_empty() {
+            sfx("watch-start");
+        } else if was_watching {
+            sfx("watch-stop");
         }
     });
 

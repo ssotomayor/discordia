@@ -68,6 +68,8 @@ pub struct ClientSettings {
     pub layout_free: Vec<(String, [f64; 4])>,
     #[serde(default = "default_screenshare_quality")]
     pub screenshare_quality: String,
+    #[serde(default)]
+    pub screenshare_fps: Option<u32>,
     #[serde(default = "default_screenshare_audio")]
     pub screenshare_audio: bool,
     #[serde(default = "default_sfx_volume")]
@@ -199,6 +201,7 @@ impl Default for ClientSettings {
             layout_cells: Vec::new(),
             layout_free: Vec::new(),
             screenshare_quality: default_screenshare_quality(),
+            screenshare_fps: None,
             screenshare_audio: default_screenshare_audio(),
             sfx_volume: default_sfx_volume(),
             soundboard_volume: default_soundboard_volume(),

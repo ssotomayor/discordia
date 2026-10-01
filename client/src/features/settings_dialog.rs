@@ -582,6 +582,7 @@ pub fn SettingsDialog() -> Element {
                                 onchange: move |e| {
                                     let mut next = settings.read().clone();
                                     next.screenshare_quality = e.value();
+                                    next.screenshare_fps = None;
                                     settings.set(next.clone());
                                     crate::settings::save(&next);
                                 },
