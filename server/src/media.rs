@@ -158,11 +158,18 @@ impl MediaStore {
                 report.freed_bytes += size;
             }
         }
-        let _ = self
-            .used
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |u| {
-                Some(u.saturating_sub(report.freed_bytes))
-            });
+        let mut used = self.used.load(Ordering::Relaxed);
+        loop {
+            match self.used.compare_exchange_weak(
+                used,
+                used.saturating_sub(report.freed_bytes),
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(current) => used = current,
+            }
+        }
         report
     }
 

@@ -923,6 +923,14 @@ fn selected_capture_settings(
     capture
 }
 
+fn picker_quality(saved: &str) -> String {
+    if QUALITY_PRESETS.iter().any(|(id, _, _)| *id == saved) {
+        saved.to_owned()
+    } else {
+        "balanced".into()
+    }
+}
+
 pub(crate) fn js_str(s: &str) -> String {
     serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into())
 }
@@ -1339,15 +1347,7 @@ fn ScreenShareDialog(result: Result<Vec<crate::sysvideo::Source>, String>) -> El
     let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let mut target = use_signal(|| None::<crate::sysvideo::Target>);
     let mut preview_revision = use_signal(|| 0_u64);
-    let mut quality = use_signal(move || {
-        match settings.read().screenshare_quality.as_str() {
-            "720" => "720",
-            "ultra" => "ultra",
-            "4k" => "4k",
-            _ => "balanced",
-        }
-        .to_string()
-    });
+    let mut quality = use_signal(move || picker_quality(&settings.read().screenshare_quality));
     let mut fps = use_signal(move || selected_capture_settings(&settings.read()).fps);
     let mut audio =
         use_signal(move || settings.read().screenshare_audio && crate::sysaudio::supported());
@@ -1421,7 +1421,7 @@ fn ScreenShareDialog(result: Result<Vec<crate::sysvideo::Source>, String>) -> El
                         class: "w-full bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)] rounded px-2 py-1 text-sm",
                         onchange: move |e| quality.set(e.value()),
                         for (id, label) in [("720", "720p"), ("balanced", "1080p"), ("ultra", "1440p"), ("4k", "4K")] {
-                            option { value: "{id}", selected: quality() == id, "{label}" }
+                            option { value: "{id}", selected: native_settings(&quality()).width == native_settings(id).width, "{label}" }
                         }
                     }
                     label { r#for: "share-fps", class: "text-xs text-[var(--text-muted)]", "Frames per second" }
@@ -1957,6 +1957,25 @@ fn ScreenWatchTile(pubkey: String, index: usize) -> Element {
 #[cfg(test)]
 mod js_escaping_tests {
     use super::{attach_js, js_str, screen_stats_js, share_js};
+
+    #[test]
+    fn opening_the_picker_preserves_every_saved_quality_preset() {
+        for (preset, _, _) in super::QUALITY_PRESETS {
+            let saved = crate::settings::ClientSettings {
+                screenshare_quality: (*preset).into(),
+                ..Default::default()
+            };
+            let before = super::selected_capture_settings(&saved);
+            let draft = crate::settings::ClientSettings {
+                screenshare_quality: super::picker_quality(&saved.screenshare_quality),
+                screenshare_fps: Some(before.fps),
+                ..saved.clone()
+            };
+            assert_eq!(draft.screenshare_quality, saved.screenshare_quality);
+            assert_eq!(super::selected_capture_settings(&draft), before);
+        }
+        assert_eq!(super::picker_quality("unknown"), "balanced");
+    }
 
     #[test]
     fn fps_selection_preserves_resolution_and_scales_the_upload_budget() {
