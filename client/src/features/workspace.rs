@@ -924,11 +924,7 @@ fn HostBanner() -> Element {
                     class: "w-6 h-6 shrink-0 flex items-center justify-center rounded text-[var(--text-dim)] hover:text-[var(--accent)] transition-colors",
                     title: if copied() { "Copied" } else { "Copy the invite code" },
                     onclick: move |_| {
-                        let js = crate::features::screenshare::js_str(&code);
-                        let _ = document::eval(&format!(
-                            "navigator.clipboard && navigator.clipboard.writeText({js});"
-                        ));
-                        copied.set(true);
+                        copied.set(crate::clipboard::copy_text(&code));
                     },
                     span {
                         class: "block w-3.5 h-3.5",
@@ -942,11 +938,7 @@ fn HostBanner() -> Element {
                     class: "pl-2 inline-flex items-center gap-1 text-[10.5px] text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors border-l border-[var(--border)]",
                     title: "Copy the quic:// address friends type to reach this machine directly. It carries the key their connection is checked against, so nothing on the way can read or pose as you.",
                     onclick: move |_| {
-                        let js = crate::features::screenshare::js_str(&share);
-                        let _ = document::eval(&format!(
-                            "navigator.clipboard && navigator.clipboard.writeText({js});"
-                        ));
-                        copied_share.set(true);
+                        copied_share.set(crate::clipboard::copy_text(&share));
                     },
                     span { class: "block w-3.5 h-3.5", dangerous_inner_html: crate::features::icons::COPY }
                     if copied_share() { "address copied" } else { "copy address" }

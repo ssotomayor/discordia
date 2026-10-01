@@ -126,6 +126,7 @@ window.dxScreen = window.dxScreen || (function () {
     el.muted = true; el.autoplay = true; el.playsInline = true;
     el.style.width = '100%'; el.style.height = '100%'; el.style.background = '#000';
     el.style.objectFit = 'contain';
+    if (kind === 'camera' && cid === 'camera-self') el.style.transform = 'scaleX(-1)';
     c.appendChild(el);
     attached[cid] = { identity: identity, kind: kind, track: track, el: el };
   }
@@ -134,7 +135,7 @@ window.dxScreen = window.dxScreen || (function () {
     return id.endsWith(VIDEO_SUFFIX) ? id.slice(0, -VIDEO_SUFFIX.length) : id;
   }
   function videoTrackFor(id, kind) {
-    if (kind === 'camera') return tracks[trackKey(id, 'camera')];
+    if (kind === 'camera') return tracks[trackKey(id, 'camera')] || tracks[trackKey(id + VIDEO_SUFFIX, 'camera')];
     return tracks[trackKey(id, 'screen')] || tracks[trackKey(id + VIDEO_SUFFIX, 'screen')];
   }
   function reattach(identity, kind) {

@@ -41,7 +41,7 @@ rand = "0.8"
 
 base64 = "0.22"
 
-image = { version = "0.25", default-features = false, features = ["png"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 
 deep_filter = { git = "https://github.com/Rikorose/DeepFilterNet.git", rev = "d375b2d", default-features = false, features = ["tract", "default-model"] }
 # Pinned: DeepFilterNet asks for ^0.21.4 and the model does not load at all on
@@ -77,6 +77,7 @@ scrypt = { version = "0.11", default-features = false }
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 zeroize = "1"
 rfd = { version = "0.17", default-features = false }
+arboard = { version = "3", default-features = false }
 
 [features]
 default = ["desktop"]

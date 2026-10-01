@@ -237,10 +237,6 @@ pub fn SettingsDialog() -> Element {
                                         let mut next = settings.read().clone();
                                         next.sfx_volume = val;
                                         settings.set(next);
-                                        let v = val as f32 / 100.0;
-                                        let _ = document::eval(&format!(
-                                            "window.dxSfx && window.dxSfx.setVolume({v});"
-                                        ));
                                     },
                                     onchange: persist_settings,
                                 }

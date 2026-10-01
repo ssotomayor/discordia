@@ -32,6 +32,12 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use crate::protocol::Id;
 use crate::state::{AppState, ConnectionHealth, TrackStats, VoicePhase};
 
+#[cfg(target_os = "windows")]
+#[path = "voice_camera.rs"]
+mod camera;
+#[cfg(target_os = "windows")]
+use camera::CameraPublisher;
+
 pub(crate) const SAMPLE_RATE: u32 = 48_000;
 const CHANNELS: u32 = 1;
 const FRAME_MS: u32 = 10;
@@ -182,6 +188,13 @@ pub enum VoiceCmd {
         room: Option<(String, String)>,
         target: crate::sysvideo::Target,
         settings: crate::sysvideo::Settings,
+    },
+    #[cfg(target_os = "windows")]
+    SetCamera {
+        room: Option<(String, String)>,
+        device: Option<String>,
+        settings: Signal<crate::settings::ClientSettings>,
+        gateway: crate::state::GatewayTx,
     },
     SetStreamVolume {
         pubkey: String,
@@ -439,6 +452,31 @@ async fn service_loop(
                     eprintln!("[voice] SetScreenVideo ignored — no voice session");
                 }
             }
+            #[cfg(target_os = "windows")]
+            VoiceCmd::SetCamera {
+                room,
+                device,
+                settings,
+                gateway,
+            } => {
+                let epoch = state.read().voice_session_epoch;
+                let was_on = state.read().camera_on;
+                if let Some(active) = session.as_mut()
+                    && let Err(e) = active
+                        .set_camera(room, device, state, settings, gateway.clone())
+                        .await
+                {
+                    let mut s = state.write();
+                    if s.voice_session_epoch == epoch && (s.camera_on || s.camera_starting) {
+                        s.camera_on = false;
+                        s.camera_starting = false;
+                        s.error_toast = Some(format!("Couldn't start your camera: {e}"));
+                        if was_on {
+                            gateway.send(crate::protocol::ClientMessage::SetCamera { on: false });
+                        }
+                    }
+                }
+            }
             VoiceCmd::SetStreamVolume { pubkey, gain } => {
                 let gain = gain.clamp(0.0, 2.0);
                 crate::dlog!(
@@ -522,7 +560,7 @@ struct ActiveVoice {
     system_audio: Option<SystemAudioTrack>,
     soundboard: Option<SoundboardTrack>,
     screen_audio: Option<ScreenAudioRoom>,
-    screen_video: Option<ScreenVideoRoom>,
+    screen_video: Option<NativeVideoRoom>,
     mixer: PlaybackHandle,
     self_pubkey: Option<String>,
     meter_task: Task,
@@ -977,6 +1015,35 @@ impl ActiveVoice {
         })
     }
 
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    async fn video_room(&mut self, key: (String, String)) -> Result<&mut NativeVideoRoom, String> {
+        if self
+            .screen_video
+            .as_ref()
+            .is_some_and(|room| room.key != key)
+            && let Some(room) = self.screen_video.take()
+        {
+            room.shutdown().await;
+        }
+        if self.screen_video.is_none() {
+            self.screen_video = Some(NativeVideoRoom::connect(key).await?);
+        }
+        self.screen_video
+            .as_mut()
+            .ok_or_else(|| "native video room was closed".into())
+    }
+
+    async fn close_unused_video_room(&mut self) {
+        if self
+            .screen_video
+            .as_ref()
+            .is_some_and(NativeVideoRoom::is_empty)
+            && let Some(room) = self.screen_video.take()
+        {
+            room.shutdown().await;
+        }
+    }
+
     async fn set_screen_video(
         &mut self,
         room: Option<(String, String)>,
@@ -984,32 +1051,79 @@ impl ActiveVoice {
         settings: crate::sysvideo::Settings,
         state: Signal<AppState>,
     ) -> Result<(), String> {
-        let Some((url, token)) = room else {
-            if let Some(prev) = self.screen_video.take() {
-                prev.shutdown().await;
-                crate::dlog!("voice screen video stopped (capture dropped)");
+        let Some(key) = room else {
+            if let Some(room) = self.screen_video.as_mut()
+                && let Some(screen) = room.screen.take()
+            {
+                screen.shutdown().await;
             }
+            self.close_unused_video_room().await;
             return Ok(());
         };
-        if let Some(existing) = &self.screen_video
-            && existing.key == (url.clone(), token.clone(), target, settings)
-        {
-            return Ok(());
-        }
-        if let Some(prev) = self.screen_video.take() {
-            prev.shutdown().await;
-        }
         if !crate::sysvideo::supported() {
             return Err("screen capture isn't implemented on this platform".into());
         }
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         {
-            let r = ScreenVideoRoom::connect(&url, &token, target, settings, state).await?;
-            self.screen_video = Some(r);
+            let room = self.video_room(key).await?;
+            if room
+                .screen
+                .as_ref()
+                .is_some_and(|screen| screen.key == (target, settings))
+            {
+                return Ok(());
+            }
+            if let Some(screen) = room.screen.take() {
+                screen.shutdown().await;
+            }
+            match ScreenVideoRoom::connect(room.room.clone(), target, settings, state).await {
+                Ok(screen) => room.screen = Some(screen),
+                Err(e) => {
+                    self.close_unused_video_room().await;
+                    return Err(e);
+                }
+            }
         }
         #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        let _ = (key, target, settings, state);
+        Ok(())
+    }
+
+    #[cfg(target_os = "windows")]
+    async fn set_camera(
+        &mut self,
+        room: Option<(String, String)>,
+        device: Option<String>,
+        state: Signal<AppState>,
+        settings: Signal<crate::settings::ClientSettings>,
+        gateway: crate::state::GatewayTx,
+    ) -> Result<(), String> {
+        let Some(key) = room else {
+            if let Some(room) = self.screen_video.as_mut()
+                && let Some(camera) = room.camera.take()
+            {
+                camera.shutdown().await;
+            }
+            self.close_unused_video_room().await;
+            return Ok(());
+        };
+        let room = self.video_room(key).await?;
+        if room
+            .camera
+            .as_ref()
+            .is_some_and(|camera| camera.key == device)
         {
-            let _ = (url, token, target, settings, state);
+            return Ok(());
+        }
+        if let Some(camera) = room.camera.take() {
+            camera.shutdown().await;
+        }
+        match CameraPublisher::connect(room.room.clone(), device, state, settings, gateway).await {
+            Ok(camera) => room.camera = Some(camera),
+            Err(e) => {
+                self.close_unused_video_room().await;
+                return Err(e);
+            }
         }
         Ok(())
     }
@@ -1105,8 +1219,62 @@ impl ActiveVoice {
     }
 }
 
+struct NativeVideoRoom {
+    room: Arc<Room>,
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    key: (String, String),
+    screen: Option<ScreenVideoRoom>,
+    #[cfg(target_os = "windows")]
+    camera: Option<CameraPublisher>,
+}
+
+impl NativeVideoRoom {
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    async fn connect(key: (String, String)) -> Result<Self, String> {
+        let mut options = RoomOptions::default();
+        options.auto_subscribe = false;
+        options.encryption = crate::e2ee::room_options();
+        let (room, mut events) = Room::connect(&key.0, &key.1, options)
+            .await
+            .map_err(|e| format!("livekit connect: {e}"))?;
+        let room = Arc::new(room);
+        crate::e2ee::register_room(&room, crate::e2ee::RoomKind::Screen);
+        tokio::spawn(async move { while events.recv().await.is_some() {} });
+        Ok(Self {
+            room,
+            key,
+            screen: None,
+            #[cfg(target_os = "windows")]
+            camera: None,
+        })
+    }
+    fn is_empty(&self) -> bool {
+        #[cfg(target_os = "windows")]
+        if self.camera.is_some() {
+            return false;
+        }
+        self.screen.is_none()
+    }
+    async fn shutdown(self) {
+        if let Some(screen) = self.screen {
+            screen.shutdown().await;
+        }
+        #[cfg(target_os = "windows")]
+        if let Some(camera) = self.camera {
+            camera.shutdown().await;
+        }
+        match tokio::time::timeout(ROOM_CLOSE_TIMEOUT, self.room.close()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => eprintln!("[video] room close failed: {e}"),
+            Err(_) => eprintln!("[video] room close timed out"),
+        }
+    }
+}
+
 struct ScreenVideoRoom {
     room: Arc<Room>,
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    sid: TrackSid,
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     stats_task: Task,
     #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -1115,12 +1283,8 @@ struct ScreenVideoRoom {
     state: Signal<AppState>,
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     _capture: crate::sysvideo::Capture,
-    key: (
-        String,
-        String,
-        crate::sysvideo::Target,
-        crate::sysvideo::Settings,
-    ),
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    key: (crate::sysvideo::Target, crate::sysvideo::Settings),
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -1155,8 +1319,7 @@ fn screen_video_options(settings: crate::sysvideo::Settings) -> TrackPublishOpti
 impl ScreenVideoRoom {
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     async fn connect(
-        url: &str,
-        token: &str,
+        room: Arc<Room>,
         target: crate::sysvideo::Target,
         settings: crate::sysvideo::Settings,
         state: Signal<AppState>,
@@ -1178,15 +1341,6 @@ impl ScreenVideoRoom {
                 ));
             }
         }
-        let mut options = RoomOptions::default();
-        options.auto_subscribe = false;
-        options.encryption = crate::e2ee::room_options();
-        let (room, mut events) = Room::connect(url, token, options)
-            .await
-            .map_err(|e| format!("livekit connect: {e}"))?;
-        let room = Arc::new(room);
-        crate::e2ee::register_room(&room, crate::e2ee::RoomKind::Screen);
-
         let source = NativeVideoSource::new(
             VideoResolution {
                 width: settings.width,
@@ -1207,9 +1361,6 @@ impl ScreenVideoRoom {
         let publication = match publication {
             Ok(publication) => publication,
             Err(error) => {
-                if let Err(e) = room.close().await {
-                    eprintln!("[screen] failed publication room cleanup: {e}");
-                }
                 return Err(format!("publishing the video track failed ({error})"));
             }
         };
@@ -1274,14 +1425,16 @@ impl ScreenVideoRoom {
             Ok(capture) => capture,
             Err(error) => {
                 fatal_task.cancel();
-                if let Err(e) = room.close().await {
-                    eprintln!("[screen] failed capture room cleanup: {e}");
+                if let Err(e) = room
+                    .local_participant()
+                    .unpublish_track(&publication.sid())
+                    .await
+                {
+                    eprintln!("[screen] failed capture publication cleanup: {e}");
                 }
                 return Err(error);
             }
         };
-
-        tokio::spawn(async move { while events.recv().await.is_some() {} });
 
         let mut stats_state = state;
         let capture_metrics = capture.metrics();
@@ -1369,7 +1522,8 @@ impl ScreenVideoRoom {
             fatal_task,
             state,
             _capture: capture,
-            key: (url.to_string(), token.to_string(), target, settings),
+            sid: publication.sid(),
+            key: (target, settings),
         })
     }
 
@@ -1380,13 +1534,23 @@ impl ScreenVideoRoom {
             self.fatal_task.cancel();
             let mut state = self.state;
             state.write().screen_share_stats = None;
+            #[cfg(target_os = "windows")]
+            if let Err(e) = tokio::task::spawn_blocking(move || drop(self._capture)).await {
+                eprintln!("[screen] capture stop failed: {e}");
+            }
+            #[cfg(target_os = "macos")]
             drop(self._capture);
+            if let Err(e) = self
+                .room
+                .local_participant()
+                .unpublish_track(&self.sid)
+                .await
+            {
+                eprintln!("[screen] unpublish failed: {e}");
+            }
         }
-        match tokio::time::timeout(ROOM_CLOSE_TIMEOUT, self.room.close()).await {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => eprintln!("[voice] screen video room close failed: {e}"),
-            Err(_) => eprintln!("[voice] screen video room close timed out, dropping anyway"),
-        }
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        let _ = self.room;
     }
 }
 
@@ -2118,7 +2282,7 @@ fn outbound_rates(
 
 /// The default handle when the chosen name is the default device's, and only
 /// otherwise a handle found by name: cpal 0.15 leaks the latter's stream (trap 24).
-fn pick_device(
+pub(crate) fn pick_device(
     selected: Option<&str>,
     default: Option<cpal::Device>,
     all: Option<impl Iterator<Item = cpal::Device>>,
@@ -3107,8 +3271,9 @@ mod tests {
             VideoEncoderBackend::list_available().into_iter().collect();
         eprintln!("Available video encoders: {available_backends:?}");
         let require_nvenc = std::env::var_os("DISCORDIA_TEST_REQUIRE_NVENC").is_some();
+        let verify_nvenc_rates = std::env::var_os("DISCORDIA_TEST_NVENC_RATES").is_some();
         let require_mf = std::env::var_os("DISCORDIA_TEST_REQUIRE_MF").is_some();
-        if require_mf {
+        if require_mf || verify_nvenc_rates {
             let _subscriber = tracing_subscriber::fmt()
                 .with_env_filter("libwebrtc=debug,webrtc_sys=debug,livekit=warn")
                 .with_test_writer()
@@ -3146,6 +3311,12 @@ mod tests {
             (crate::sysvideo::Codec::Vp8, crate::sysvideo::Encoder::Auto),
             (crate::sysvideo::Codec::H264, crate::sysvideo::Encoder::Cpu),
         ] {
+            if verify_nvenc_rates
+                && (codec != crate::sysvideo::Codec::H264
+                    || encoder != crate::sysvideo::Encoder::Auto)
+            {
+                continue;
+            }
             let name = format!("screen-{}", uuid::Uuid::new_v4());
             let token = |identity| {
                 AccessToken::with_api_key(&credentials.key, &credentials.secret)
@@ -3190,6 +3361,12 @@ mod tests {
             let mut settings = crate::features::screenshare::native_settings("smooth");
             settings.codec = codec;
             settings.encoder = encoder;
+            if verify_nvenc_rates {
+                settings.width = 1280;
+                settings.height = 720;
+                settings.fps = 30;
+                settings.max_bitrate = 8_000_000;
+            }
             let source = NativeVideoSource::new(
                 VideoResolution {
                     width: settings.width,
@@ -3212,11 +3389,23 @@ mod tests {
             let mut interval =
                 tokio::time::interval(Duration::from_secs_f64(1.0 / settings.fps as f64));
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            for index in 0..300 {
+            let mut last_bytes = None;
+            let mut measured_bps = 0.0;
+            for index in 0..if verify_nvenc_rates { 450 } else { 300 } {
                 interval.tick().await;
                 let mut buffer = I420Buffer::new(settings.width, settings.height);
                 let (y, u, v) = buffer.data_mut();
-                y.fill((16 + index % 200) as u8);
+                if verify_nvenc_rates {
+                    let mut noise = index as u32 + 1;
+                    for pixel in y.iter_mut() {
+                        noise ^= noise << 13;
+                        noise ^= noise >> 17;
+                        noise ^= noise << 5;
+                        *pixel = 16 + (noise % 220) as u8;
+                    }
+                } else {
+                    y.fill((16 + index % 200) as u8);
+                }
                 u.fill(128);
                 v.fill(128);
                 source.capture_frame(&VideoFrame {
@@ -3225,6 +3414,26 @@ mod tests {
                     frame_metadata: None,
                     buffer,
                 });
+                if verify_nvenc_rates && index % 60 == 59 {
+                    let report = track.get_stats().await.expect("rate stats");
+                    let outbound = report
+                        .iter()
+                        .find_map(|entry| match entry {
+                            RtcStats::OutboundRtp(o) if o.stream.kind == "video" => Some(o),
+                            _ => None,
+                        })
+                        .expect("outbound rate");
+                    let now = Instant::now();
+                    if let Some((bytes, sampled)) = last_bytes {
+                        measured_bps = (outbound.sent.bytes_sent - bytes) as f64 * 8.0
+                            / now.duration_since(sampled).as_secs_f64();
+                        eprintln!(
+                            "NVENC motion actual={measured_bps:.0} target={:.0} bps",
+                            outbound.outbound.target_bitrate
+                        );
+                    }
+                    last_bytes = Some((outbound.sent.bytes_sent, now));
+                }
             }
             let report = track.get_stats().await.expect("video stats");
             let outbound = report
@@ -3235,6 +3444,17 @@ mod tests {
                 })
                 .expect("outbound video");
             let stats = native_screen_stats(outbound, &report, 60.0, None);
+            if verify_nvenc_rates {
+                assert!(
+                    outbound.outbound.target_bitrate > 2_000_000.0,
+                    "test must exercise an increased budget"
+                );
+                assert!(
+                    measured_bps > outbound.outbound.target_bitrate * 0.65,
+                    "NVENC must apply WebRTC budget increases: actual={measured_bps} target={}",
+                    outbound.outbound.target_bitrate
+                );
+            }
             if require_mf
                 && codec == crate::sysvideo::Codec::H264
                 && encoder != crate::sysvideo::Encoder::Cpu

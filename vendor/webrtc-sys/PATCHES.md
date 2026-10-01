@@ -8,7 +8,7 @@ Source: [LiveKit Rust SDK](https://github.com/livekit/rust-sdks), crates.io rele
 | `src/nvidia/nvidia_encoder_factory.cpp` | Load and probe the Windows NVENC driver DLL. |
 | `src/nvidia/NvCodec/include/Utils/Logger.h` | Use Winsock 2 to match WebRTC's Windows headers. |
 | `src/video_decoder_factory.cpp` | Keep Windows decoding on the existing software path; Linux NVDEC is unchanged. |
-| `src/nvidia/h264_encoder_impl.{cpp,h}` | Initialize NVENC configuration/profile; allow the encoder to select a higher H.264 send level when SDP negotiates level asymmetry. |
+| `src/nvidia/h264_encoder_impl.{cpp,h}` | Initialize NVENC configuration/profile; allow higher H.264 send levels under SDP level asymmetry; apply WebRTC bitrate/FPS changes through NVENC reconfiguration before encoding. |
 | `src/windows/mf_encoder_factory.{cpp,h}` | Enumerate hardware H.264 MFTs, bind the matching Direct3D adapter, encode asynchronously with bounded queues and expose the driver encoder name. |
 | `src/video_encoder_factory.cpp` | Prefer NVENC, then Windows Media Foundation hardware encoders; expose runtime hardware availability. |
 

@@ -1,4 +1,5 @@
 use dioxus::prelude::*;
+#[cfg(not(target_os = "windows"))]
 use serde_json::Value;
 
 use crate::features::screenshare::{Drag, SCREEN_JS, attach_js, detach_js};
@@ -22,6 +23,7 @@ fn stop_camera_js() -> String {
     format!("{SCREEN_JS}\nwindow.dxScreen.stopCamera();")
 }
 
+#[cfg(not(target_os = "windows"))]
 pub fn list_cameras_js() -> String {
     format!("{SCREEN_JS}\nwindow.dxScreen.listCameras();")
 }
@@ -69,7 +71,9 @@ pub fn toggle_camera(
             w.camera_starting = false;
             was
         };
-        let _ = document::eval(&stop_camera_js());
+        if !crate::syscamera::supported() {
+            let _ = document::eval(&stop_camera_js());
+        }
         if was {
             gateway.send(ClientMessage::SetCamera { on: false });
         }
@@ -85,6 +89,9 @@ pub fn toggle_camera(
         )
     };
     state.write().camera_starting = true;
+    if crate::syscamera::supported() {
+        return;
+    }
     let _ = document::eval(&start_camera_js(
         device.as_deref(),
         CAM_W,
@@ -96,6 +103,72 @@ pub fn toggle_camera(
 
 #[component]
 pub fn CameraBridge() -> Element {
+    #[cfg(target_os = "windows")]
+    return rsx! { NativeCameraBridge {} };
+    #[cfg(not(target_os = "windows"))]
+    rsx! { BrowserCameraBridge {} }
+}
+
+pub fn refresh_cameras(state: Signal<crate::state::AppState>) {
+    #[cfg(target_os = "windows")]
+    spawn(async move {
+        let mut state = state;
+        match tokio::task::spawn_blocking(crate::syscamera::devices).await {
+            Ok(Ok(devices)) => state.write().available_cameras = devices,
+            result => eprintln!("[camera] device enumeration failed: {result:?}"),
+        }
+    });
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = state;
+        let _ = document::eval(&list_cameras_js());
+    }
+}
+
+#[cfg(target_os = "windows")]
+#[component]
+fn NativeCameraBridge() -> Element {
+    let mut state = use_app_state();
+    let settings = use_context::<Signal<crate::settings::ClientSettings>>();
+    let voice = crate::features::voice::use_voice_tx();
+    let gateway = use_gateway();
+    use_hook(|| refresh_cameras(state));
+    use_effect(move || {
+        state.write().camera_capture_available = true;
+    });
+    #[allow(clippy::type_complexity)]
+    let mut last = use_signal(|| None::<(u64, Option<(String, String)>, Option<String>)>);
+    use_effect(move || {
+        let s = state.read();
+        let cfg = settings.read();
+        let wanted = s.camera_on || s.camera_starting;
+        let room = (wanted && s.voice.channel_id.is_some())
+            .then(|| s.screen_video_token.clone())
+            .flatten();
+        let device = resolve_device(
+            &s.available_cameras,
+            cfg.camera_device_id.as_deref(),
+            cfg.camera_device_label.as_deref(),
+        );
+        let now = (s.voice_session_epoch, room, device);
+        drop(cfg);
+        drop(s);
+        if last.peek().as_ref() != Some(&now) {
+            voice.send(crate::features::voice::VoiceCmd::SetCamera {
+                room: now.1.clone(),
+                device: now.2.clone(),
+                settings,
+                gateway: gateway.clone(),
+            });
+            last.set(Some(now));
+        }
+    });
+    rsx! { Fragment {} }
+}
+
+#[cfg(not(target_os = "windows"))]
+#[component]
+fn BrowserCameraBridge() -> Element {
     let mut state = use_app_state();
     let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let gateway = use_gateway();
@@ -275,7 +348,15 @@ pub fn CameraSelfPreview() -> Element {
         let v = on();
         if v != *last.peek() {
             if v {
-                let _ = document::eval(&attach_local_camera_js("camera-self"));
+                if crate::syscamera::supported() {
+                    if let Some(user) = state.peek().self_user.as_ref() {
+                        let _ = document::eval(&attach_js(&user.pubkey, "camera-self", "camera"));
+                    }
+                } else {
+                    let _ = document::eval(&attach_local_camera_js("camera-self"));
+                }
+            } else if crate::syscamera::supported() {
+                let _ = document::eval(&detach_js("camera-self"));
             }
             last.set(v);
         }

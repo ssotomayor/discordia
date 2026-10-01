@@ -17,19 +17,19 @@ name instead.
 
 | File | Lines |
 |---|---|
-| `client/src/features/voice.rs` | 3613 |
+| `client/src/features/voice.rs` | 3833 |
 | `server/src/state/mod.rs` | 2983 |
 | `server/tests/owner_controls.rs` | 3036 |
 | `server/src/gateway/connection.rs` | 2790 |
 | `client/src/features/channels.rs` | 1967 |
-| `client/src/features/screenshare.rs` | 2172 |
+| `client/src/features/screenshare.rs` | 2173 |
 | `protocol/src/lib.rs` | 2500 |
 | `client/src/state.rs` | 1860 |
 | `client/src/update.rs` | 1226 |
 | `client/src/net.rs` | 1374 |
 | `client/src/features/chat.rs` | 1057 |
 | `server/src/store.rs` | 1041 |
-| `client/src/features/guild_settings.rs` | 1138 |
+| `client/src/features/guild_settings.rs` | 1132 |
 | `client/src/identity.rs` | 1029 |
 | `client/src/features/discord_import.rs` | 1127 |
 
@@ -48,7 +48,7 @@ that direction says a file is safe to open when it is not.
 | Server state mutation + permissions | `server/src/state/mod.rs` | methods on `AppState`; all async, all write through `persist(…)` |
 | Client state + advisory `can()` | `client/src/state.rs` | `AppState`, `use_app_state`, `use_gateway` |
 | DMs end to end | `client/src/nostr/service.rs` | `spawn_nostr`; `conversation_id` is the Uuid derivation |
-| Voice, capture, mixing | `client/src/features/voice.rs` | the largest file in the tree — grep `ScreenAudioRoom`, `ScreenVideoRoom`, `forward_mic` |
+| Voice, capture, mixing | `client/src/features/voice.rs` | the largest file in the tree — grep `ScreenAudioRoom`, `NativeVideoRoom`, `ScreenVideoRoom`, `forward_mic` |
 | The first screen | `client/src/features/home.rs` | `HomeView`; the connect form is `connect::ConnectForm` |
 | Public servers on a globe | `client/src/features/globe.rs` | `Globe` — a canvas driven by `assets/globe.js` (dots, drag, pins, the land mask); `connect::BrowseTab` feeds it `/discover`, and the Create tab reuses it in `pick` mode to place a host's own pin, pre-placed by `tzgeo::guess` from the machine's timezone |
 | Experience, and the two numbers it makes | `server/src/state/mod.rs` | `award_xp` — amount, cooldown, channels and rank names all come from the guild's `Leveling`. The cross-server sum is the client's: `client/src/xp_ledger.rs` adds it up, `nostr/xp.rs` signs and paces it (`Publisher`), `features/leveling.rs` joins the two |
@@ -60,6 +60,10 @@ that direction says a file is safe to open when it is not.
 | Panel arrangements | `client/src/features/workspace.rs` | `LAYOUT_TEMPLATES` + `LayoutButton`; `persist_layout` writes both the cell and free snapshots |
 | Watching several screen shares | `client/src/features/screenshare.rs` | `ScreenWatchWindow` renders a keyed `ScreenWatchTile` per pubkey in `AppState::screen_viewing`; each owns its video attachment and window, with independent webview and native audio gains. `QUALITY_PRESETS` feeds both capture paths, up to 4K30 |
 | Selecting a screen share | `client/src/features/screenshare.rs` | `ScreenSourcePicker` mounts `ScreenShareDialog`; `ScreenSourceTile` loads an in-memory PNG through `sysvideo::thumbnail`, at most two native captures at once, refreshed on request. Source, resolution, FPS and audio are drafts until Share. `sysvideo/windows.rs` uses Windows Graphics Capture without borders where supported, `sysvideo/macos.rs` ScreenCaptureKit; `selected_capture_settings` feeds the native LiveKit publisher |
+| Cropping avatars and banners | `client/src/image_edit.rs`, `client/src/features/image_editor.rs` | Native PNG/JPEG/GIF/WebP decoding, EXIF orientation, bounded PNG preview and crop/export run through `spawn_blocking`; the WebView draws the preview and drag/zoom controls. Avatars preserve PNG alpha; JPEG banners flatten on white. Invalid input stays in the editor with an error |
+| Copying keys and invites | `client/src/clipboard.rs` | `copy_text` writes to the native system clipboard through arboard; a thread-local owner keeps X11 contents available. Copy buttons report success only after the native write succeeds |
+| Notification and UI sounds | `client/src/native_sounds.rs`, `client/src/features/sounds.rs` | Rust synthesizes/caches all 15 tones; a bounded worker owns CPAL output on the selected device, mixes overlapping sounds and closes/pauses after 1.5 s idle. `MessageSounds` tracks DM/channel ticks and volume/output settings on home and workspace; audio callbacks neither allocate nor block |
+| Camera capture and publication | `client/src/syscamera.rs`, `client/src/features/voice_camera.rs`, `client/src/features/camera.rs` | Windows camera enumeration/capture uses WebRTC through a small C++ bridge; Rust owns the COM worker, validated I420 copies, first-frame/stall checks and publication. `NativeVideoRoom` shares `#video` with the screen, stopping tracks independently; the WebView renders previews/viewers. macOS/Linux retain browser camera capture |
 | Keys on this machine | `client/src/identity.rs` | `detected` / `sign_in` / `forget`; one file per key under `identities_dir()` (default `config_dir()/identities/`, `identities-dir` overrides), `identity.json` names the active one |
 | Keys at rest | `client/src/keyvault.rs` | NIP-49 `ncryptsec` under a random passphrase; `backend()` picks keychain or `vault.key` once and `vault.backend` remembers (trap 23) |
 | Choosing the keys folder | `client/src/features/identity_setup.rs` | `FolderSettings` — the cog on the setup screen; `DetectedIdentities` rescans on every render, `rev` forces one |
@@ -105,6 +109,7 @@ repeated here.
 | Native screen-share FPS | `client/src/sysvideo/windows.rs`, `client/src/features/voice.rs`, `client/src/features/screenshare.rs` | `FramePacer` keeps deadlines across callback jitter; `ScreenVideoRoom` samples per-capture `metrics::Metrics` and encoder stats once per second; capture size/FPS, processing ms/frame and encoding ms/frame identify separate bottlenecks. `ScreenSelfPreview` shows CPU/GPU for known encoder implementations; unreported or unknown implementations remain unclassified |
 | Native screen-share quality | `client/src/features/voice.rs`, `client/src/features/screenshare.rs` | `screen_video_options` applies saved Automatic/GPU/CPU encoding; GPU requires H.264, available hardware and stops on a detected software fallback. `Settings::priority` preserves motion/detail/balanced tradeoffs. `native_screen_codecs_reach_a_real_decoder` starts a bundled SFU (ignored; `DISCORDIA_TEST_REQUIRE_NVENC=1` verifies hardware); `compare_screen_conversion_cost` compares Windows downscaling paths (ignored) |
 | Windows NVENC build | `vendor/webrtc-sys/PATCHES.md`, `.github/actions/setup-windows-nvenc/action.yml`, `client/build.rs` | Cargo patches webrtc-sys 0.3.39 locally; CUDA_PATH headers/import library enable NVENC, CUDA is delay-loaded at runtime. Windows CI/release jobs install build dependencies; drivers remain optional in Automatic/CPU mode |
+| NVENC bitrate adaptation | `vendor/webrtc-sys/src/nvidia/h264_encoder_impl.cpp`, `client/src/features/voice.rs` | `SetRates` budgets reach NVENC through `Reconfigure` before the next frame; successful changes update bitrate, VBV and FPS together. `DISCORDIA_TEST_REQUIRE_NVENC=1 DISCORDIA_TEST_NVENC_RATES=1` enables the real-SFU motion test, which checks sent bitrate follows an increased target and video decodes |
 | Windows AMD/other hardware encoders | `vendor/webrtc-sys/src/windows/mf_encoder_factory.cpp`, `vendor/webrtc-sys/src/video_encoder_factory.cpp` | Automatic prefers NVENC then hardware-only Media Foundation MFTs; binds the matching D3D11 adapter, handles asynchronous input/output with bounded queues, and falls back to software on failure. Preview identifies the driver encoder. `DISCORDIA_TEST_REQUIRE_MF=1` verifies MFT encoding in the real SFU test |
 | Windows screen downscaling | `client/src/sysvideo/windows.rs` | `BgraConverter` reuses full-size I420 scratch storage when downscaling; only the scaled buffer reaches WebRTC. Keeps row stride and source aspect ratio. `resizing_bgra_ignores_row_padding_and_preserves_colors` guards channel order and window size changes |
 | Screen preview measurements | `client/src/features/screenshare.rs` | `ScreenSelfPreview` shows selected resolution/FPS and actual sending/capture FPS; `ScreenWatchTile` polls `previewStats` per identity for actual received resolution/FPS independently of the connection stats panel |
