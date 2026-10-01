@@ -328,6 +328,31 @@ int32_t NvidiaH264EncoderImpl::Encode(
   }
 
   try {
+    // WebRTC's updated budget must reach NVENC, not just our bookkeeping.
+    if (nv_encode_config_.rcParams.averageBitRate != configuration_.target_bps ||
+        nv_initialize_params_.frameRateNum != codec_.maxFramerate) {
+      NV_ENC_CONFIG config = nv_encode_config_;
+      config.rcParams.averageBitRate = configuration_.target_bps;
+      config.rcParams.maxBitRate = configuration_.target_bps;
+      config.rcParams.vbvBufferSize = static_cast<uint32_t>(
+          uint64_t(configuration_.target_bps) * 5 / codec_.maxFramerate);
+      config.rcParams.vbvInitialDelay = config.rcParams.vbvBufferSize;
+      NV_ENC_RECONFIGURE_PARAMS reconfigure{};
+      reconfigure.version = NV_ENC_RECONFIGURE_PARAMS_VER;
+      reconfigure.reInitEncodeParams = nv_initialize_params_;
+      reconfigure.reInitEncodeParams.encodeConfig = &config;
+      reconfigure.reInitEncodeParams.frameRateNum = codec_.maxFramerate;
+      if (!encoder_->Reconfigure(&reconfigure)) {
+        RTC_LOG(LS_ERROR) << "NVENC bitrate reconfiguration failed";
+        return WEBRTC_VIDEO_CODEC_ENCODER_FAILURE;
+      }
+      nv_encode_config_ = config;
+      nv_initialize_params_ = reconfigure.reInitEncodeParams;
+      nv_initialize_params_.encodeConfig = &nv_encode_config_;
+      RTC_LOG(LS_INFO) << "NVIDIA H264 NVENC rate applied: target_bps="
+                       << configuration_.target_bps << " fps="
+                       << codec_.maxFramerate;
+    }
     const NvEncInputFrame* nv_enc_input_frame = encoder_->GetNextInputFrame();
 
     if (cu_memory_type_ == CU_MEMORYTYPE_DEVICE) {
@@ -438,7 +463,7 @@ void NvidiaH264EncoderImpl::SetRates(
   }
 
   codec_.maxFramerate = static_cast<uint32_t>(parameters.framerate_fps);
-  codec_.maxBitrate = parameters.bitrate.GetSpatialLayerSum(0);
+  codec_.maxBitrate = parameters.bitrate.GetSpatialLayerSum(0) / 1000;
 
   configuration_.target_bps = parameters.bitrate.GetSpatialLayerSum(0);
   configuration_.max_frame_rate = parameters.framerate_fps;

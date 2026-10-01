@@ -3,6 +3,7 @@
 mod agc;
 mod app;
 mod audio_diag;
+mod clipboard;
 mod denoise;
 mod e2ee;
 #[macro_use]
@@ -11,8 +12,10 @@ mod emoji;
 mod features;
 mod host;
 mod identity;
+mod image_edit;
 mod keyvault;
 mod mediakey;
+mod native_sounds;
 mod net;
 mod nostr;
 mod portmap;
@@ -27,6 +30,7 @@ mod settings;
 mod sound_decode;
 mod state;
 mod sysaudio;
+mod syscamera;
 mod sysvideo;
 mod tzgeo;
 mod update;

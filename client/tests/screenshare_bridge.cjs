@@ -57,6 +57,24 @@ assert.equal(bridge.testAudioTracks.bob.elements.length, 2);
 assert.equal(bridge.testAudioTracks.bob.volume, 0.8);
 console.log('Multiple streams retain independent video, audio, volume and teardown.');
 
+containers.set('camera-self', element());
+containers.set('screen-self', element());
+const nativeCamera = bridge.testTracks['self#video|camera'] = track();
+const nativeScreen = bridge.testTracks['self#video|screen'] = track();
+bridge.attach('self', 'camera-self', 'camera');
+bridge.attach('self', 'screen-self', 'screen');
+assert.equal(nativeCamera.elements.length, 1);
+assert.equal(nativeCamera.elements[0].style.transform, 'scaleX(-1)');
+assert.equal(nativeScreen.elements.length, 1);
+bridge.detach('camera-self');
+assert.equal(nativeCamera.detached.length, 1);
+assert.equal(nativeScreen.detached.length, 0);
+bridge.attach('self', 'camera-self', 'camera');
+bridge.detach('screen-self');
+assert.equal(nativeCamera.detached.length, 1);
+assert.equal(nativeScreen.detached.length, 1);
+console.log('Native camera and screen share one identity and detach independently.');
+
 (async function () {
   bridge.testTracks['alice|screen'].getRTCStatsReport = async () => new Map([
     ['a', { type: 'inbound-rtp', kind: 'audio', framesPerSecond: 99 }],

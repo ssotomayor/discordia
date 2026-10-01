@@ -522,13 +522,7 @@ pub fn GuildSettingsDialog(
                                             class: "rounded px-2 py-1 text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors",
                                             onclick: move |_| {
                                                 if let Some(code) = invite() {
-                                                    let code =
-                                                        crate::features::screenshare::js_str(&code);
-                                                    let js = format!(
-                                                        "navigator.clipboard && navigator.clipboard.writeText({code});"
-                                                    );
-                                                    let _ = document::eval(&js);
-                                                    copied.set(true);
+                                                    copied.set(crate::clipboard::copy_text(&code));
                                                 }
                                             },
                                             if copied() { "Copied!" } else { "Copy" }

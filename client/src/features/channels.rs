@@ -1457,7 +1457,7 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
         use_effect(move || {
             if show_audio_settings() {
                 v_audio.send(crate::features::voice::VoiceCmd::ListDevices);
-                let _ = document::eval(&crate::features::camera::list_cameras_js());
+                crate::features::camera::refresh_cameras(state);
             }
         });
     }
