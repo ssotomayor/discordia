@@ -1122,12 +1122,18 @@ fn ScreenShareStatsRow(
         .target_bitrate_kbps
         .map(|target| format!("target {target} kbit/s"));
     let jitter = stats.jitter_ms.map(|v| format!("{v:.1} ms jitter"));
+    let processing = stats
+        .capture_processing_ms
+        .map(|v| format!("capture processing {v:.1} ms/frame"));
+    let encoding = stats.encode_ms.map(|v| format!("encode {v:.1} ms/frame"));
 
     rsx! {
         div { class: "mt-1 border-t border-[var(--border)] pt-1.5 text-[10px] font-mono",
             div { class: "text-[var(--text-muted)] mb-0.5", "Screen share {direction}" }
             div { class: "flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[var(--text-dim)]",
                 if stats.outbound { span { "{capture_label}" } }
+                if let Some(processing) = processing { span { "{processing}" } }
+                if let Some(encoding) = encoding { span { "{encoding}" } }
                 span { "{encoded_label}" }
                 span { "{codec}" }
                 span { "{bitrate}" }

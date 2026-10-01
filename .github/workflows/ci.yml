@@ -102,6 +102,7 @@ jobs:
       LIVEKIT_BUNDLE_SKIP: "1"
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-windows-nvenc
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -198,6 +199,7 @@ jobs:
       DISCORDIA_VERSION: v0.1.0-pre.${{ github.run_number }}
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-windows-nvenc
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: cargo-bins/cargo-binstall@main

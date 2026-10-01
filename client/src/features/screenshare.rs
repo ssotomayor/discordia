@@ -903,12 +903,19 @@ fn native_audio_mode() -> &'static str {
 }
 
 pub fn native_settings(quality: &str) -> crate::sysvideo::Settings {
-    let (width, height, fps, bitrate, _hint, _degradation) = quality_preset(quality);
+    let (width, height, fps, bitrate, _hint, degradation) = quality_preset(quality);
     crate::sysvideo::Settings {
         width,
         height,
         fps,
         max_bitrate: bitrate as u64,
+        priority: match degradation {
+            "maintain-framerate" => crate::sysvideo::Priority::Motion,
+            "maintain-resolution" => crate::sysvideo::Priority::Detail,
+            _ => crate::sysvideo::Priority::Balanced,
+        },
+        codec: crate::sysvideo::Codec::default(),
+        encoder: crate::sysvideo::Encoder::Auto,
     }
 }
 
@@ -916,9 +923,14 @@ fn selected_capture_settings(
     settings: &crate::settings::ClientSettings,
 ) -> crate::sysvideo::Settings {
     let mut capture = native_settings(&settings.screenshare_quality);
+    capture.codec = settings.screenshare_codec;
+    capture.encoder = settings.screenshare_encoder;
     if let Some(fps @ (15 | 30 | 60)) = settings.screenshare_fps {
         capture.max_bitrate = capture.max_bitrate * fps as u64 / capture.fps.max(1) as u64;
         capture.fps = fps;
+    }
+    if capture.fps == 60 && capture.priority == crate::sysvideo::Priority::Balanced {
+        capture.priority = crate::sysvideo::Priority::Motion;
     }
     capture
 }
@@ -1231,6 +1243,8 @@ pub fn ScreenShareBridge() -> Element {
                                 capture_width: u32_field("captureWidth"),
                                 capture_height: u32_field("captureHeight"),
                                 capture_fps: msg.get("captureFps").and_then(Value::as_f64),
+                                capture_processing_ms: None,
+                                encode_ms: None,
                                 encoded_width: u32_field("encodedWidth"),
                                 encoded_height: u32_field("encodedHeight"),
                                 encoded_fps: msg.get("encodedFps").and_then(Value::as_f64),
@@ -1347,6 +1361,8 @@ fn ScreenShareDialog(result: Result<Vec<crate::sysvideo::Source>, String>) -> El
     let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let mut target = use_signal(|| None::<crate::sysvideo::Target>);
     let mut preview_revision = use_signal(|| 0_u64);
+    let mut codec = use_signal(move || settings.read().screenshare_codec);
+    let mut encoder = use_signal(move || settings.read().screenshare_encoder);
     let mut quality = use_signal(move || picker_quality(&settings.read().screenshare_quality));
     let mut fps = use_signal(move || selected_capture_settings(&settings.read()).fps);
     let mut audio =
@@ -1433,6 +1449,35 @@ fn ScreenShareDialog(result: Result<Vec<crate::sysvideo::Source>, String>) -> El
                             option { value: "{value}", selected: fps() == value, "{value} FPS" }
                         }
                     }
+                    label { r#for: "share-codec", class: "text-xs text-[var(--text-muted)]", "Video codec" }
+                    select {
+                        id: "share-codec",
+                        class: "w-full bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)] rounded px-2 py-1 text-sm",
+                        onchange: move |e| codec.set(if e.value() == "vp8" { crate::sysvideo::Codec::Vp8 } else { crate::sysvideo::Codec::H264 }),
+                        option { value: "h264", selected: codec() == crate::sysvideo::Codec::H264, "H.264" }
+                        option { value: "vp8", selected: codec() == crate::sysvideo::Codec::Vp8, disabled: encoder() == crate::sysvideo::Encoder::Gpu, "VP8 — compatibility" }
+                    }
+                    label { r#for: "share-encoder", class: "text-xs text-[var(--text-muted)]", "Video encoding" }
+                    select {
+                        id: "share-encoder",
+                        class: "w-full bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)] rounded px-2 py-1 text-sm",
+                        onchange: move |e| {
+                            let selected = match e.value().as_str() {
+                                "gpu" => crate::sysvideo::Encoder::Gpu,
+                                "cpu" => crate::sysvideo::Encoder::Cpu,
+                                _ => crate::sysvideo::Encoder::Auto,
+                            };
+                            if selected == crate::sysvideo::Encoder::Gpu {
+                                codec.set(crate::sysvideo::Codec::H264);
+                            }
+                            encoder.set(selected);
+                        },
+                        option { value: "auto", selected: encoder() == crate::sysvideo::Encoder::Auto, "Automatic — prefer {crate::sysvideo::hardware_encoder_label()}" }
+                        option { value: "gpu", selected: encoder() == crate::sysvideo::Encoder::Gpu,
+                            if cfg!(target_os = "macos") { "Hardware" } else { "GPU — hardware" }
+                        }
+                        option { value: "cpu", selected: encoder() == crate::sysvideo::Encoder::Cpu, "CPU — software" }
+                    }
                     label { class: "flex items-center gap-2 cursor-pointer select-none",
                         input { r#type: "checkbox", checked: audio(), disabled: !crate::sysaudio::supported(),
                             onchange: move |e| audio.set(e.checked()),
@@ -1463,6 +1508,8 @@ fn ScreenShareDialog(result: Result<Vec<crate::sysvideo::Source>, String>) -> El
                                 let mut next = settings.read().clone();
                                 next.screenshare_quality = quality();
                                 next.screenshare_fps = Some(fps());
+                                next.screenshare_codec = codec();
+                                next.screenshare_encoder = encoder();
                                 next.screenshare_audio = audio();
                                 settings.set(next.clone());
                                 crate::settings::save(&next);
@@ -1557,6 +1604,27 @@ pub fn open_screen_picker(mut state: Signal<crate::state::AppState>) {
     });
 }
 
+fn screen_encoder_label(implementation: Option<&str>) -> String {
+    let Some(name) = implementation
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    else {
+        return "Encoder: unknown".into();
+    };
+    let normalized = name.to_ascii_lowercase();
+    if normalized.contains("openh264") || normalized.contains("libvpx") {
+        format!("CPU · {name}")
+    } else if normalized.starts_with("nvidia ")
+        || normalized.starts_with("vaapi ")
+        || normalized.starts_with("jetson mmapi ")
+        || normalized.contains("videotoolbox")
+    {
+        format!("{} · {name}", crate::sysvideo::hardware_encoder_label())
+    } else {
+        format!("Encoder: {name}")
+    }
+}
+
 #[component]
 pub fn ScreenSelfPreview() -> Element {
     let mut state = use_app_state();
@@ -1583,12 +1651,13 @@ pub fn ScreenSelfPreview() -> Element {
         Some(crate::sysvideo::Target::WindowsWindow(_)) => "Sharing one window",
         None => "Sharing your screen",
     });
-    let mut frames = use_signal(|| 0_u64);
-    use_future(move || async move {
-        loop {
-            frames.set(crate::sysvideo::frames_captured());
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        }
+    let frames = use_memo(move || {
+        state
+            .read()
+            .screen_share_stats
+            .as_ref()
+            .and_then(|stats| stats.capture_width)
+            .unwrap_or(0)
     });
 
     let mut last = use_signal(|| false);
@@ -1617,11 +1686,13 @@ pub fn ScreenSelfPreview() -> Element {
         .as_ref()
         .map(|stats| {
             format!(
-                "Sending: {}×{} · {:.0} FPS · capture {:.0} FPS",
+                "Sending: {}×{} · {:.0} FPS · capture {:.0} FPS · {} · {}",
                 stats.encoded_width.map_or("—".into(), |v| v.to_string()),
                 stats.encoded_height.map_or("—".into(), |v| v.to_string()),
                 stats.encoded_fps.unwrap_or(0.0),
-                stats.capture_fps.unwrap_or(0.0)
+                stats.capture_fps.unwrap_or(0.0),
+                stats.codec.as_deref().unwrap_or("—"),
+                screen_encoder_label(stats.codec_implementation.as_deref())
             )
         })
         .unwrap_or_else(|| "Waiting for stream measurements…".into());
@@ -1992,6 +2063,24 @@ mod js_escaping_tests {
         assert_eq!(capture.max_bitrate, 64_000_000);
         settings.screenshare_fps = Some(0);
         assert_eq!(super::selected_capture_settings(&settings).fps, 30);
+    }
+
+    #[test]
+    fn native_sixty_fps_selection_prioritizes_motion_and_preserves_codec() {
+        let mut settings = crate::settings::ClientSettings {
+            screenshare_quality: "balanced".into(),
+            screenshare_fps: Some(60),
+            screenshare_codec: crate::sysvideo::Codec::Vp8,
+            ..Default::default()
+        };
+        let capture = super::selected_capture_settings(&settings);
+        assert_eq!(capture.priority, crate::sysvideo::Priority::Motion);
+        assert_eq!(capture.codec, crate::sysvideo::Codec::Vp8);
+        settings.screenshare_quality = "crisp".into();
+        assert_eq!(
+            super::selected_capture_settings(&settings).priority,
+            crate::sysvideo::Priority::Detail
+        );
     }
 
     #[test]

@@ -1,10 +1,11 @@
+#[cfg(test)]
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-use livekit::webrtc::video_frame::I420Buffer;
+use livekit::webrtc::video_frame::{I420Buffer, VideoBuffer};
 use windows_capture::capture::{CaptureControl, Context, GraphicsCaptureApiHandler};
 use windows_capture::frame::Frame as CapturedFrame;
-use windows_capture::graphics_capture_api::InternalCaptureControl;
+use windows_capture::graphics_capture_api::{GraphicsCaptureApi, InternalCaptureControl};
 use windows_capture::monitor::Monitor;
 use windows_capture::settings::{
     ColorFormat, CursorCaptureSettings, DirtyRegionSettings, DrawBorderSettings,
@@ -53,11 +54,80 @@ struct Flags {
     fatal: tokio::sync::mpsc::UnboundedSender<String>,
     settings: Settings,
     count_frames: bool,
+    metrics: std::sync::Arc<super::metrics::Metrics>,
 }
 
 struct Handler {
     flags: Flags,
     pacer: FramePacer,
+    converter: BgraConverter,
+}
+
+#[derive(Default)]
+struct BgraConverter {
+    scratch: Option<I420Buffer>,
+}
+
+impl BgraConverter {
+    fn convert(
+        &mut self,
+        pixels: &mut [u8],
+        stride: u32,
+        width: u32,
+        height: u32,
+        settings: Settings,
+    ) -> Result<I420Buffer, String> {
+        if width == 0
+            || height == 0
+            || stride < width.saturating_mul(4)
+            || !stride.is_multiple_of(4)
+            || pixels.len() < stride as usize * height as usize
+        {
+            return Err("Invalid captured pixel buffer".into());
+        }
+        let (out_width, out_height) = super::fit_resolution(width, height, settings);
+        let resize = (width, height) != (out_width, out_height);
+        let mut direct = (!resize).then(|| I420Buffer::new(width, height));
+        let buffer = if resize {
+            if self
+                .scratch
+                .as_ref()
+                .is_none_or(|buffer| buffer.width() != width || buffer.height() != height)
+            {
+                self.scratch = Some(I420Buffer::new(width, height));
+            }
+            let Some(scratch) = self.scratch.as_mut() else {
+                return Err("Missing screen conversion buffer".into());
+            };
+            scratch
+        } else {
+            self.scratch = None;
+            let Some(buffer) = direct.as_mut() else {
+                return Err("Missing screen output buffer".into());
+            };
+            buffer
+        };
+        let (sy, su, sv) = buffer.strides();
+        let (y, u, v) = buffer.data_mut();
+        livekit::webrtc::native::yuv_helper::argb_to_i420(
+            pixels,
+            stride,
+            y,
+            sy,
+            u,
+            su,
+            v,
+            sv,
+            width as i32,
+            height as i32,
+        );
+        if resize {
+            // Only the scaled buffer reaches WebRTC; the full-size scratch remains exclusively ours.
+            Ok(buffer.scale(out_width as i32, out_height as i32))
+        } else {
+            direct.ok_or_else(|| "Missing screen output buffer".into())
+        }
+    }
 }
 
 struct FramePacer {
@@ -98,6 +168,7 @@ impl GraphicsCaptureApiHandler for Handler {
     fn new(ctx: Context<Flags>) -> Result<Self, String> {
         Ok(Self {
             pacer: FramePacer::new(ctx.flags.settings.fps),
+            converter: BgraConverter::default(),
             flags: ctx.flags,
         })
     }
@@ -134,7 +205,8 @@ impl GraphicsCaptureApiHandler for Handler {
 }
 
 impl Handler {
-    fn deliver(&self, frame: &mut CapturedFrame<'_>) -> Result<(), String> {
+    fn deliver(&mut self, frame: &mut CapturedFrame<'_>) -> Result<(), String> {
+        let started = Instant::now();
         let width = frame.width();
         let height = frame.height();
         if width == 0 || height == 0 {
@@ -142,28 +214,19 @@ impl Handler {
         }
         let mut mapped = frame.buffer().map_err(|e| e.to_string())?;
         let stride = mapped.row_pitch();
-        let mut buffer = I420Buffer::new(width, height);
-        let (sy, su, sv) = buffer.strides();
-        let (y, u, v) = buffer.data_mut();
-        livekit::webrtc::native::yuv_helper::argb_to_i420(
+        let buffer = self.converter.convert(
             mapped.as_raw_buffer(),
             stride,
-            y,
-            sy,
-            u,
-            su,
-            v,
-            sv,
-            width as i32,
-            height as i32,
-        );
+            width,
+            height,
+            self.flags.settings,
+        )?;
         let (out_width, out_height) = super::fit_resolution(width, height, self.flags.settings);
-        if (width, height) != (out_width, out_height) {
-            buffer = buffer.scale(out_width as i32, out_height as i32);
-        }
         (self.flags.sink)(Frame { buffer });
         if self.flags.count_frames {
-            super::FRAMES_CAPTURED.fetch_add(1, Ordering::Relaxed);
+            self.flags
+                .metrics
+                .record(out_width, out_height, started.elapsed());
         }
         Ok(())
     }
@@ -171,6 +234,7 @@ impl Handler {
 
 pub struct WinVideoCapture {
     control: Option<CaptureControl<Handler, String>>,
+    pub(super) metrics: std::sync::Arc<super::metrics::Metrics>,
 }
 
 impl WinVideoCapture {
@@ -187,11 +251,13 @@ impl WinVideoCapture {
         fatal: tokio::sync::mpsc::UnboundedSender<String>,
         count_frames: bool,
     ) -> Result<Self, String> {
+        let metrics = std::sync::Arc::new(super::metrics::Metrics::default());
         let flags = Flags {
             sink,
             fatal,
             settings,
             count_frames,
+            metrics: metrics.clone(),
         };
         let control = match target {
             Target::WindowsMonitor(handle) => Handler::start_free_threaded(capture_settings(
@@ -207,6 +273,7 @@ impl WinVideoCapture {
         .map_err(|e| e.to_string())?;
         Ok(Self {
             control: Some(control),
+            metrics,
         })
     }
 }
@@ -215,10 +282,15 @@ fn capture_settings<T: TryInto<windows_capture::settings::GraphicsCaptureItemTyp
     item: T,
     flags: Flags,
 ) -> CaptureSettings<Flags, T> {
+    let border = if GraphicsCaptureApi::is_border_settings_supported().unwrap_or(false) {
+        DrawBorderSettings::WithoutBorder
+    } else {
+        DrawBorderSettings::Default
+    };
     CaptureSettings::new(
         item,
         CursorCaptureSettings::Default,
-        DrawBorderSettings::Default,
+        border,
         SecondaryWindowSettings::Default,
         MinimumUpdateIntervalSettings::Default,
         DirtyRegionSettings::Default,
@@ -250,6 +322,109 @@ mod tests {
     use livekit::webrtc::video_source::native::NativeVideoSource;
 
     use super::*;
+
+    #[test]
+    fn resizing_bgra_ignores_row_padding_and_preserves_colors() {
+        use livekit::webrtc::video_frame::VideoFormatType;
+        use livekit::webrtc::video_frame::native::VideoFrameBufferExt;
+        let mut converter = BgraConverter::default();
+        let settings = Settings {
+            width: 4,
+            height: 2,
+            fps: 60,
+            max_bitrate: 16_000_000,
+            priority: super::super::Priority::Motion,
+            codec: super::super::Codec::H264,
+            encoder: super::super::Encoder::Auto,
+        };
+        for width in [8, 12, 4] {
+            let stride = width * 4 + 16;
+            let mut pixels = vec![0; stride as usize * 4];
+            for row in pixels.chunks_exact_mut(stride as usize) {
+                for pixel in row.as_chunks_mut::<4>().0 {
+                    pixel.copy_from_slice(&[0, 255, 0, 255]);
+                }
+                for pixel in row[..width as usize * 4].as_chunks_mut::<4>().0 {
+                    pixel.copy_from_slice(&[0, 0, 255, 255]);
+                }
+            }
+            let buffer = converter
+                .convert(&mut pixels, stride, width, 4, settings)
+                .expect("convert padded image");
+            let mut rgb = vec![0; (buffer.width() * buffer.height() * 4) as usize];
+            buffer.to_argb(
+                VideoFormatType::ABGR,
+                &mut rgb,
+                buffer.width() * 4,
+                buffer.width() as i32,
+                buffer.height() as i32,
+            );
+            for pixel in rgb.as_chunks::<4>().0 {
+                assert!(
+                    pixel[0] > 240 && pixel[1] < 15 && pixel[2] < 15,
+                    "{pixel:?}"
+                );
+            }
+            assert!(buffer.width() <= 4 && buffer.height() <= 2);
+        }
+        assert!(converter.convert(&mut [0; 4], 4, 8, 4, settings).is_err());
+    }
+
+    #[test]
+    #[ignore = "manual screen conversion performance comparison"]
+    fn compare_screen_conversion_cost() {
+        let (width, height) = (3840, 2160);
+        let mut pixels = [40, 100, 200, 255].repeat((width * height) as usize);
+        let settings = Settings {
+            width: 1920,
+            height: 1080,
+            fps: 60,
+            max_bitrate: 16_000_000,
+            priority: super::super::Priority::Motion,
+            codec: super::super::Codec::H264,
+            encoder: super::super::Encoder::Auto,
+        };
+        let mut converter = BgraConverter::default();
+        for _ in 0..3 {
+            std::hint::black_box(
+                converter
+                    .convert(&mut pixels, width * 4, width, height, settings)
+                    .expect("convert"),
+            );
+        }
+        let started = Instant::now();
+        for _ in 0..30 {
+            let mut full = I420Buffer::new(width, height);
+            let (sy, su, sv) = full.strides();
+            let (y, u, v) = full.data_mut();
+            livekit::webrtc::native::yuv_helper::argb_to_i420(
+                &pixels,
+                width * 4,
+                y,
+                sy,
+                u,
+                su,
+                v,
+                sv,
+                width as i32,
+                height as i32,
+            );
+            std::hint::black_box(full.scale(1920, 1080));
+        }
+        let before = started.elapsed().as_secs_f64() * 1000.0 / 30.0;
+        let started = Instant::now();
+        for _ in 0..30 {
+            std::hint::black_box(
+                converter
+                    .convert(&mut pixels, width * 4, width, height, settings)
+                    .expect("convert"),
+            );
+        }
+        let after = started.elapsed().as_secs_f64() * 1000.0 / 30.0;
+        eprintln!(
+            "4K to 1080p: allocate I420 then scale {before:.2} ms/frame; reuse I420 then scale {after:.2} ms/frame"
+        );
+    }
 
     #[test]
     fn frame_pacer_preserves_display_cadence_with_jitter() {
@@ -300,6 +475,9 @@ mod tests {
                     height: 360,
                     fps: 15,
                     max_bitrate: 1_000_000,
+                    priority: super::super::Priority::Balanced,
+                    codec: super::super::Codec::H264,
+                    encoder: super::super::Encoder::Auto,
                 },
                 Box::new(move |frame| {
                     assert!(frame.buffer.width() <= 640 && frame.buffer.height() <= 360);
@@ -321,6 +499,7 @@ mod tests {
                 count.load(Ordering::Relaxed) > 0,
                 "no video reached LiveKit"
             );
+            let metrics = capture.metrics.clone();
             drop(capture);
             tokio::time::sleep(Duration::from_millis(500)).await;
             let stopped = count.load(Ordering::Relaxed);
@@ -330,7 +509,7 @@ mod tests {
                 stopped,
                 "capture continued after drop"
             );
-            let before = super::super::frames_captured();
+            let before = metrics.snapshot().frames;
             let preview = super::super::thumbnail(target)
                 .await
                 .expect("native thumbnail");
@@ -346,7 +525,7 @@ mod tests {
             assert!(image.width() > 0 && image.width() <= 320);
             assert!(image.height() > 0 && image.height() <= 180);
             assert_eq!(
-                super::super::frames_captured(),
+                metrics.snapshot().frames,
                 before,
                 "previews polluted stream diagnostics"
             );

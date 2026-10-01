@@ -1,0 +1,14 @@
+name: Windows NVENC build dependencies
+description: Install the CUDA headers and import library needed to compile Windows NVENC.
+runs:
+  using: composite
+  steps:
+    - uses: Jimver/cuda-toolkit@v0.2.36
+      with:
+        cuda: '12.4.1'
+        method: network
+        sub-packages: '["nvcc", "cudart"]'
+    - shell: pwsh
+      run: |
+        if (-not (Test-Path "$env:CUDA_PATH/include/cuda.h")) { throw 'CUDA driver headers are missing' }
+        if (-not (Test-Path "$env:CUDA_PATH/lib/x64/cuda.lib")) { throw 'CUDA driver import library is missing' }
