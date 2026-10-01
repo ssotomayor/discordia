@@ -56,7 +56,9 @@ builds from source, needs `go`). `LIVEKIT_BUNDLE_SKIP=1` opts out.
 Windows x64 NVENC builds need the CUDA Toolkit driver headers and `cuda.lib`,
 with `CUDA_PATH` pointing to the toolkit root (tested with 12.4).
 CI installs these dependencies; end users only need a compatible NVIDIA driver.
-Without the build dependencies, screen sharing uses software encoding.
+Windows also discovers hardware H.264 encoders through Media Foundation,
+including AMD driver encoders, without extra build dependencies. Automatic
+prefers NVENC, then a Windows hardware encoder, with software as fallback.
 The share dialog selects Automatic (GPU preferred), GPU, or CPU; GPU requires
 H.264 and reports unavailable hardware or a detected software fallback.
 
@@ -65,6 +67,10 @@ $env:DISCORDIA_TEST_REQUIRE_NVENC = '1'
 $env:DISCORDIA_LIVEKIT_PORT = '17880'
 cargo test -p dioxusfun --bin Discordia native_screen_codecs_reach_a_real_decoder -- --ignored --nocapture
 ```
+
+To validate an AMD hardware encoder with that test, replace
+`DISCORDIA_TEST_REQUIRE_NVENC` with `DISCORDIA_TEST_REQUIRE_MF=1`, set
+`LIVEKIT_PREFERRED_HW_ENCODER=mediafoundation` and `DISCORDIA_MF_ENCODER_FILTER=AMD`.
 
 `devcontainer up --workspace-folder .` builds a Linux container that can do all
 of the above except run the client — `docs/OPS.md`.

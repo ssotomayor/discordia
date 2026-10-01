@@ -9,5 +9,12 @@ Source: [LiveKit Rust SDK](https://github.com/livekit/rust-sdks), crates.io rele
 | `src/nvidia/NvCodec/include/Utils/Logger.h` | Use Winsock 2 to match WebRTC's Windows headers. |
 | `src/video_decoder_factory.cpp` | Keep Windows decoding on the existing software path; Linux NVDEC is unchanged. |
 | `src/nvidia/h264_encoder_impl.{cpp,h}` | Initialize NVENC configuration/profile; allow the encoder to select a higher H.264 send level when SDP negotiates level asymmetry. |
+| `src/windows/mf_encoder_factory.{cpp,h}` | Enumerate hardware H.264 MFTs, bind the matching Direct3D adapter, encode asynchronously with bounded queues and expose the driver encoder name. |
+| `src/video_encoder_factory.cpp` | Prefer NVENC, then Windows Media Foundation hardware encoders; expose runtime hardware availability. |
 
-`client/build.rs` delay-loads `nvcuda.dll` so binaries also start without an NVIDIA driver. Missing CUDA build dependencies omit NVENC; unavailable runtime hardware falls back in Automatic mode. Explicit GPU mode reports unavailable hardware or a detected software fallback.
+`client/build.rs` delay-loads CUDA and Media Foundation so unavailable optional runtimes do not prevent startup. Missing CUDA build dependencies omit NVENC; Windows hardware MFTs remain available without CUDA. Media Foundation falls back through WebRTC's software wrapper on initialization/encoding failure. Explicit GPU mode stops on a detected software fallback.
+
+| Diagnostic environment variable | Purpose |
+|---|---|
+| `LIVEKIT_PREFERRED_HW_ENCODER=mediafoundation` | Prefer Windows hardware MFTs over NVENC. |
+| `DISCORDIA_MF_ENCODER_FILTER=AMD` | Restrict MFT enumeration to names containing this case-sensitive string; normal operation enumerates all vendors. |

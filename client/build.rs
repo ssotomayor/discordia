@@ -27,6 +27,7 @@ fn grow_windows_main_stack() {
             println!("cargo::rustc-link-arg-bins=/STACK:8388608");
             // Optional CUDA must not prevent startup on machines without an NVIDIA driver.
             println!("cargo::rustc-link-arg=/DELAYLOAD:nvcuda.dll");
+            println!("cargo::rustc-link-arg=/DELAYLOAD:mfplat.dll");
         }
         Ok("gnu") => println!("cargo::rustc-link-arg-bins=-Wl,--stack,8388608"),
         _ => {}
