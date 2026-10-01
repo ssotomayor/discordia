@@ -7,9 +7,9 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use dioxus::core::Task;
 use dioxus::prelude::*;
 use futures_util::StreamExt;
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-use livekit::options::VideoEncoding;
 use livekit::options::{AudioEncoding, TrackPublishOptions};
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+use livekit::options::{DegradationPreference, VideoCodec, VideoEncoderBackend, VideoEncoding};
 use livekit::prelude::*;
 use livekit::webrtc::audio_frame::AudioFrame;
 use livekit::webrtc::audio_source::AudioSourceOptions;
@@ -1127,6 +1127,21 @@ struct ScreenVideoRoom {
 fn screen_video_options(settings: crate::sysvideo::Settings) -> TrackPublishOptions {
     TrackPublishOptions {
         source: TrackSource::Screenshare,
+        video_codec: match settings.codec {
+            crate::sysvideo::Codec::H264 => VideoCodec::H264,
+            crate::sysvideo::Codec::Vp8 => VideoCodec::VP8,
+        },
+        video_encoder: match settings.encoder {
+            crate::sysvideo::Encoder::Auto | crate::sysvideo::Encoder::Gpu => {
+                VideoEncoderBackend::Hardware
+            }
+            crate::sysvideo::Encoder::Cpu => VideoEncoderBackend::Software,
+        },
+        degradation_preference: Some(match settings.priority {
+            crate::sysvideo::Priority::Motion => DegradationPreference::MaintainFramerate,
+            crate::sysvideo::Priority::Detail => DegradationPreference::MaintainResolution,
+            crate::sysvideo::Priority::Balanced => DegradationPreference::Balanced,
+        }),
         // LiveKit's default lower screen-share layer halves resolution and caps it at 3 FPS.
         simulcast: false,
         video_encoding: Some(VideoEncoding {
@@ -1146,6 +1161,23 @@ impl ScreenVideoRoom {
         settings: crate::sysvideo::Settings,
         state: Signal<AppState>,
     ) -> Result<Self, String> {
+        if settings.encoder == crate::sysvideo::Encoder::Gpu {
+            if settings.codec != crate::sysvideo::Codec::H264 {
+                return Err(format!(
+                    "{} screen sharing requires H.264",
+                    crate::sysvideo::hardware_encoder_label()
+                ));
+            }
+            if !VideoEncoderBackend::list_available()
+                .into_iter()
+                .any(|backend| backend == VideoEncoderBackend::Hardware)
+            {
+                return Err(format!(
+                    "{} encoding is unavailable. Choose Automatic or CPU.",
+                    crate::sysvideo::hardware_encoder_label()
+                ));
+            }
+        }
         let mut options = RoomOptions::default();
         options.auto_subscribe = false;
         options.encryption = crate::e2ee::room_options();
@@ -1192,6 +1224,7 @@ impl ScreenVideoRoom {
         );
 
         let (fatal_tx, mut fatal_rx) = unbounded_channel::<String>();
+        let encoder_fatal = fatal_tx.clone();
         let capture_epoch = state.read().voice_session_epoch;
         let fatal_task = {
             let mut state = state;
@@ -1251,17 +1284,20 @@ impl ScreenVideoRoom {
         tokio::spawn(async move { while events.recv().await.is_some() {} });
 
         let mut stats_state = state;
+        let capture_metrics = capture.metrics();
         let stats_task = dioxus::prelude::spawn(async move {
             let mut previous = None;
-            let mut capture_count = crate::sysvideo::frames_captured();
+            let mut capture_previous = capture_metrics.snapshot();
+            let mut encode_previous = None;
             let mut sampled = Instant::now();
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                 let now = Instant::now();
-                let count = crate::sysvideo::frames_captured();
-                let capture_fps = count.saturating_sub(capture_count) as f64
+                let captured = capture_metrics.snapshot();
+                let capture_fps = captured.frames.saturating_sub(capture_previous.frames) as f64
                     / now.duration_since(sampled).as_secs_f64();
-                capture_count = count;
+                let capture_processing_ms = captured.processing_ms_since(capture_previous);
+                capture_previous = captured;
                 sampled = now;
                 let Ok(report) = track.get_stats().await else {
                     continue;
@@ -1272,6 +1308,23 @@ impl ScreenVideoRoom {
                 }) else {
                     continue;
                 };
+                if settings.encoder == crate::sysvideo::Encoder::Gpu
+                    && matches!(
+                        outbound.outbound.encoder_implementation.as_str(),
+                        "OpenH264" | "libvpx"
+                    )
+                {
+                    if encoder_fatal
+                        .send(format!(
+                            "{} encoding failed. Choose Automatic or CPU.",
+                            crate::sysvideo::hardware_encoder_label()
+                        ))
+                        .is_err()
+                    {
+                        eprintln!("[screen] encoder failure after session teardown");
+                    }
+                    break;
+                }
                 let rates = outbound_rates(
                     previous,
                     outbound.sent.packets_sent,
@@ -1279,6 +1332,15 @@ impl ScreenVideoRoom {
                     now,
                 );
                 previous = Some((outbound.sent.packets_sent, outbound.sent.bytes_sent, now));
+                let encode_ms = screen_encode_ms(
+                    encode_previous,
+                    outbound.outbound.frames_encoded,
+                    outbound.outbound.total_encode_time,
+                );
+                encode_previous = Some((
+                    outbound.outbound.frames_encoded,
+                    outbound.outbound.total_encode_time,
+                ));
                 let mut s = stats_state.write();
                 if s.voice_session_epoch != capture_epoch
                     || s.screen_share_target != Some(target)
@@ -1286,12 +1348,17 @@ impl ScreenVideoRoom {
                 {
                     break;
                 }
-                s.screen_share_stats = Some(native_screen_stats(
+                let mut stats = native_screen_stats(
                     outbound,
                     &report,
                     capture_fps,
                     rates.map(|(_, rate)| rate),
-                ));
+                );
+                stats.capture_width = (captured.width > 0).then_some(captured.width);
+                stats.capture_height = (captured.height > 0).then_some(captured.height);
+                stats.capture_processing_ms = capture_processing_ms;
+                stats.encode_ms = encode_ms;
+                s.screen_share_stats = Some(stats);
             }
         });
 
@@ -1341,6 +1408,8 @@ fn native_screen_stats(
         capture_width: None,
         capture_height: None,
         capture_fps: Some(capture_fps),
+        capture_processing_ms: None,
+        encode_ms: None,
         encoded_width: (o.outbound.frame_width > 0).then_some(o.outbound.frame_width),
         encoded_height: (o.outbound.frame_height > 0).then_some(o.outbound.frame_height),
         encoded_fps: Some(o.outbound.frames_per_second),
@@ -1365,6 +1434,14 @@ fn native_screen_stats(
         jitter_ms: None,
         error: None,
     }
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn screen_encode_ms(previous: Option<(u32, f64)>, frames: u32, seconds: f64) -> Option<f64> {
+    let (before_frames, before_seconds) = previous?;
+    let count = frames.checked_sub(before_frames)?;
+    let elapsed = seconds - before_seconds;
+    (count > 0 && elapsed.is_finite() && elapsed >= 0.0).then(|| elapsed * 1000.0 / count as f64)
 }
 
 struct ScreenAudioRoom {
@@ -2950,6 +3027,9 @@ mod tests {
             height: 1080,
             fps: 60,
             max_bitrate: 18_000_000,
+            priority: crate::sysvideo::Priority::Motion,
+            codec: crate::sysvideo::Codec::H264,
+            encoder: crate::sysvideo::Encoder::Auto,
         };
         let encodings = livekit::options::compute_video_encodings(
             settings.width,
@@ -2960,6 +3040,234 @@ mod tests {
         assert_eq!(encodings[0].scale_resolution_down_by, Some(1.0));
         assert_eq!(encodings[0].max_framerate, Some(60.0));
         assert_eq!(encodings[0].max_bitrate, Some(18_000_000));
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[test]
+    fn native_screen_publisher_preserves_codec_and_content_priority() {
+        use crate::sysvideo::{Codec, Priority};
+        for (preset, priority) in [
+            ("smooth", DegradationPreference::MaintainFramerate),
+            ("crisp", DegradationPreference::MaintainResolution),
+            ("balanced", DegradationPreference::Balanced),
+        ] {
+            let settings = crate::features::screenshare::native_settings(preset);
+            let options = screen_video_options(settings);
+            assert_eq!(options.video_codec, VideoCodec::H264);
+            assert_eq!(options.video_encoder, VideoEncoderBackend::Hardware);
+            assert_eq!(options.degradation_preference, Some(priority));
+            assert!(!options.simulcast);
+        }
+        let mut settings = crate::features::screenshare::native_settings("smooth");
+        settings.codec = Codec::Vp8;
+        settings.priority = Priority::Detail;
+        let options = screen_video_options(settings);
+        assert_eq!(options.video_codec, VideoCodec::VP8);
+        settings.encoder = crate::sysvideo::Encoder::Cpu;
+        assert_eq!(
+            screen_video_options(settings).video_encoder,
+            VideoEncoderBackend::Software
+        );
+        settings.encoder = crate::sysvideo::Encoder::Gpu;
+        assert_eq!(
+            screen_video_options(settings).video_encoder,
+            VideoEncoderBackend::Hardware
+        );
+        assert_eq!(
+            options.degradation_preference,
+            Some(DegradationPreference::MaintainResolution)
+        );
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[test]
+    fn encoder_timing_uses_new_frames_and_handles_counter_resets() {
+        assert_eq!(
+            screen_encode_ms(Some((100, 1.0)), 160, 1.3).map(|v| v.round()),
+            Some(5.0)
+        );
+        assert_eq!(screen_encode_ms(None, 160, 1.3), None);
+        assert_eq!(screen_encode_ms(Some((160, 1.3)), 160, 1.3), None);
+        assert_eq!(screen_encode_ms(Some((160, 1.3)), 1, 0.1), None);
+        assert_eq!(screen_encode_ms(Some((100, 1.0)), 160, f64::NAN), None);
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "starts a bundled SFU; needs local media ports and a native encoder"]
+    async fn native_screen_codecs_reach_a_real_decoder() {
+        use dioxusfun_server::livekit_bundle::{Credentials, ports, spawn_livekit};
+        use livekit::webrtc::video_frame::I420Buffer;
+        use livekit::webrtc::video_stream::native::NativeVideoStream;
+        use livekit_api::access_token::{AccessToken, VideoGrants};
+        use std::time::Duration;
+
+        let available_backends: Vec<_> =
+            VideoEncoderBackend::list_available().into_iter().collect();
+        eprintln!("Available video encoders: {available_backends:?}");
+        let require_nvenc = std::env::var_os("DISCORDIA_TEST_REQUIRE_NVENC").is_some();
+        if require_nvenc {
+            assert!(available_backends.contains(&VideoEncoderBackend::Nvenc));
+        }
+
+        let data_dir =
+            std::env::temp_dir().join(format!("discordia-video-test-{}", uuid::Uuid::new_v4()));
+        let credentials = Credentials::generate();
+        let _sfu = spawn_livekit(
+            Some("127.0.0.1".parse().expect("loopback")),
+            &credentials,
+            &data_dir,
+        )
+        .await
+        .expect("start SFU");
+        let url = format!("ws://127.0.0.1:{}", ports().ws);
+        let encrypted_options = || {
+            let provider = livekit::e2ee::key_provider::KeyProvider::with_shared_key(
+                livekit::e2ee::key_provider::KeyProviderOptions::default(),
+                vec![7; crate::mediakey::KEY_LEN],
+            );
+            let mut options = RoomOptions::default();
+            options.encryption = Some(livekit::e2ee::E2eeOptions {
+                encryption_type: livekit::e2ee::EncryptionType::Gcm,
+                key_provider: provider,
+            });
+            options
+        };
+        for (codec, encoder) in [
+            (crate::sysvideo::Codec::H264, crate::sysvideo::Encoder::Auto),
+            (crate::sysvideo::Codec::Vp8, crate::sysvideo::Encoder::Auto),
+            (crate::sysvideo::Codec::H264, crate::sysvideo::Encoder::Cpu),
+        ] {
+            let name = format!("screen-{}", uuid::Uuid::new_v4());
+            let token = |identity| {
+                AccessToken::with_api_key(&credentials.key, &credentials.secret)
+                    .with_identity(identity)
+                    .with_grants(VideoGrants {
+                        room_join: true,
+                        room: name.clone(),
+                        can_publish: true,
+                        can_subscribe: true,
+                        ..Default::default()
+                    })
+                    .to_jwt()
+                    .expect("token")
+            };
+            let (publisher, mut publisher_events) =
+                Room::connect(&url, &token("publisher"), encrypted_options())
+                    .await
+                    .expect("publisher");
+            let (listener, mut listener_events) =
+                Room::connect(&url, &token("listener"), encrypted_options())
+                    .await
+                    .expect("listener");
+            let events =
+                tokio::spawn(async move { while publisher_events.recv().await.is_some() {} });
+            let received = Arc::new(AtomicU64::new(0));
+            let decoded = received.clone();
+            let reader = tokio::spawn(async move {
+                while let Some(event) = listener_events.recv().await {
+                    if let RoomEvent::TrackSubscribed {
+                        track: RemoteTrack::Video(video),
+                        ..
+                    } = event
+                    {
+                        let mut stream = NativeVideoStream::new(video.rtc_track());
+                        while let Some(frame) = stream.next().await {
+                            assert!(frame.buffer.width() > 0 && frame.buffer.height() > 0);
+                            decoded.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                }
+            });
+            let mut settings = crate::features::screenshare::native_settings("smooth");
+            settings.codec = codec;
+            settings.encoder = encoder;
+            let source = NativeVideoSource::new(
+                VideoResolution {
+                    width: settings.width,
+                    height: settings.height,
+                },
+                true,
+            );
+            let track = LocalVideoTrack::create_video_track(
+                "screen",
+                RtcVideoSource::Native(source.clone()),
+            );
+            publisher
+                .local_participant()
+                .publish_track(
+                    LocalTrack::Video(track.clone()),
+                    screen_video_options(settings),
+                )
+                .await
+                .expect("publish video");
+            let mut interval =
+                tokio::time::interval(Duration::from_secs_f64(1.0 / settings.fps as f64));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            for index in 0..300 {
+                interval.tick().await;
+                let mut buffer = I420Buffer::new(settings.width, settings.height);
+                let (y, u, v) = buffer.data_mut();
+                y.fill((16 + index % 200) as u8);
+                u.fill(128);
+                v.fill(128);
+                source.capture_frame(&VideoFrame {
+                    rotation: VideoRotation::VideoRotation0,
+                    timestamp_us: 0,
+                    frame_metadata: None,
+                    buffer,
+                });
+            }
+            let report = track.get_stats().await.expect("video stats");
+            let outbound = report
+                .iter()
+                .find_map(|entry| match entry {
+                    RtcStats::OutboundRtp(o) if o.stream.kind == "video" => Some(o),
+                    _ => None,
+                })
+                .expect("outbound video");
+            let stats = native_screen_stats(outbound, &report, 60.0, None);
+            if require_nvenc
+                && codec == crate::sysvideo::Codec::H264
+                && encoder != crate::sysvideo::Encoder::Cpu
+            {
+                assert_eq!(
+                    stats.codec_implementation.as_deref(),
+                    Some("NVIDIA H264 Encoder")
+                );
+                assert_eq!(stats.power_efficient, Some(true));
+            }
+            if encoder == crate::sysvideo::Encoder::Cpu {
+                assert_eq!(stats.codec_implementation.as_deref(), Some("OpenH264"));
+                assert_eq!(stats.power_efficient, Some(false));
+            }
+            eprintln!(
+                "{codec:?}/{encoder:?}: codec={:?}, encoder={:?}, efficient={:?}, {}x{} @ {} FPS; {} decoded frames",
+                stats.codec,
+                stats.codec_implementation,
+                stats.power_efficient,
+                stats.encoded_width.unwrap_or(0),
+                stats.encoded_height.unwrap_or(0),
+                stats.encoded_fps.unwrap_or(0.0),
+                received.load(Ordering::Relaxed)
+            );
+            assert!(
+                received.load(Ordering::Relaxed) > 0,
+                "no video reached the decoder"
+            );
+            assert!(outbound.outbound.frames_encoded > 0);
+            assert_eq!(
+                stats.codec.as_deref(),
+                Some(match codec {
+                    crate::sysvideo::Codec::H264 => "video/H264",
+                    crate::sysvideo::Codec::Vp8 => "video/VP8",
+                })
+            );
+            listener.close().await.expect("close listener");
+            publisher.close().await.expect("close publisher");
+            reader.abort();
+            events.abort();
+        }
     }
 
     /// One person talking has to arrive at the level they were sent at. The

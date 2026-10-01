@@ -70,6 +70,10 @@ pub struct ClientSettings {
     pub screenshare_quality: String,
     #[serde(default)]
     pub screenshare_fps: Option<u32>,
+    #[serde(default)]
+    pub screenshare_codec: crate::sysvideo::Codec,
+    #[serde(default)]
+    pub screenshare_encoder: crate::sysvideo::Encoder,
     #[serde(default = "default_screenshare_audio")]
     pub screenshare_audio: bool,
     #[serde(default = "default_sfx_volume")]
@@ -202,6 +206,8 @@ impl Default for ClientSettings {
             layout_free: Vec::new(),
             screenshare_quality: default_screenshare_quality(),
             screenshare_fps: None,
+            screenshare_codec: crate::sysvideo::Codec::default(),
+            screenshare_encoder: crate::sysvideo::Encoder::default(),
             screenshare_audio: default_screenshare_audio(),
             sfx_volume: default_sfx_volume(),
             soundboard_volume: default_soundboard_volume(),
@@ -409,9 +415,13 @@ mod tests {
     fn a_file_written_before_a_field_existed_still_loads() {
         let mut old = serde_json::to_value(ClientSettings::default()).unwrap();
         old.as_object_mut().unwrap().remove("user_volumes");
+        old.as_object_mut().unwrap().remove("screenshare_codec");
+        old.as_object_mut().unwrap().remove("screenshare_encoder");
         old["auto_gain_control"] = false.into();
         let loaded = parse(&file(old)).expect("loads");
         assert!(!loaded.auto_gain_control);
         assert!(loaded.user_volumes.is_empty());
+        assert_eq!(loaded.screenshare_codec, crate::sysvideo::Codec::H264);
+        assert_eq!(loaded.screenshare_encoder, crate::sysvideo::Encoder::Auto);
     }
 }

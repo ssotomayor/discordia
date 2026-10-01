@@ -17,14 +17,14 @@ name instead.
 
 | File | Lines |
 |---|---|
-| `client/src/features/voice.rs` | 3065 |
+| `client/src/features/voice.rs` | 3593 |
 | `server/src/state/mod.rs` | 2983 |
 | `server/tests/owner_controls.rs` | 3036 |
 | `server/src/gateway/connection.rs` | 2790 |
-| `client/src/features/channels.rs` | 1822 |
-| `client/src/features/screenshare.rs` | 1639 |
+| `client/src/features/channels.rs` | 1967 |
+| `client/src/features/screenshare.rs` | 2171 |
 | `protocol/src/lib.rs` | 2500 |
-| `client/src/state.rs` | 1832 |
+| `client/src/state.rs` | 1860 |
 | `client/src/update.rs` | 1226 |
 | `client/src/net.rs` | 1374 |
 | `client/src/features/chat.rs` | 1057 |
@@ -59,7 +59,7 @@ that direction says a file is safe to open when it is not.
 | Where this session's data goes | `client/src/features/topology.rs` | `TopologyDialog` — per-leg, per-session; opened from the transport chip |
 | Panel arrangements | `client/src/features/workspace.rs` | `LAYOUT_TEMPLATES` + `LayoutButton`; `persist_layout` writes both the cell and free snapshots |
 | Watching several screen shares | `client/src/features/screenshare.rs` | `ScreenWatchWindow` renders a keyed `ScreenWatchTile` per pubkey in `AppState::screen_viewing`; each owns its video attachment and window, with independent webview and native audio gains. `QUALITY_PRESETS` feeds both capture paths, up to 4K30 |
-| Selecting a screen share | `client/src/features/screenshare.rs` | `ScreenSourcePicker` mounts `ScreenShareDialog`; `ScreenSourceTile` loads an in-memory PNG through `sysvideo::thumbnail`, at most two native captures at once, refreshed on request. Source, resolution, FPS and audio are drafts until Share. `sysvideo/windows.rs` uses Windows Graphics Capture, `sysvideo/macos.rs` ScreenCaptureKit; `selected_capture_settings` feeds the native LiveKit publisher |
+| Selecting a screen share | `client/src/features/screenshare.rs` | `ScreenSourcePicker` mounts `ScreenShareDialog`; `ScreenSourceTile` loads an in-memory PNG through `sysvideo::thumbnail`, at most two native captures at once, refreshed on request. Source, resolution, FPS and audio are drafts until Share. `sysvideo/windows.rs` uses Windows Graphics Capture without borders where supported, `sysvideo/macos.rs` ScreenCaptureKit; `selected_capture_settings` feeds the native LiveKit publisher |
 | Keys on this machine | `client/src/identity.rs` | `detected` / `sign_in` / `forget`; one file per key under `identities_dir()` (default `config_dir()/identities/`, `identities-dir` overrides), `identity.json` names the active one |
 | Keys at rest | `client/src/keyvault.rs` | NIP-49 `ncryptsec` under a random passphrase; `backend()` picks keychain or `vault.key` once and `vault.backend` remembers (trap 23) |
 | Choosing the keys folder | `client/src/features/identity_setup.rs` | `FolderSettings` — the cog on the setup screen; `DetectedIdentities` rescans on every render, `rev` forces one |
@@ -102,7 +102,10 @@ repeated here.
 | Platform paths | `client/tests/live_sfu.rs`, `#[ignore]`d unit tests | need an SFU, an audio device or a screen grant — hence ignored, not optional |
 | Windows native screen capture | `client/src/sysvideo/windows.rs` | ignored `selected_windows_and_monitors_feed_livekit_and_stop` needs an interactive desktop; validates selected sources, video handoff, dimensions and teardown |
 | A received screen share at half size and 3 FPS | `client/src/features/voice.rs` | `screen_video_options` disables native simulcast; LiveKit's default lower screen-share layer halves the dimensions and caps FPS at 3, which adaptive viewers can select |
-| Native screen-share FPS | `client/src/sysvideo/windows.rs`, `client/src/features/voice.rs` | `FramePacer` keeps deadlines across callback jitter; `ScreenVideoRoom` samples native capture and track stats once per second, cancels on shutdown; `native_screen_stats` separates capture FPS from encoder FPS and quality limitation |
+| Native screen-share FPS | `client/src/sysvideo/windows.rs`, `client/src/features/voice.rs`, `client/src/features/screenshare.rs` | `FramePacer` keeps deadlines across callback jitter; `ScreenVideoRoom` samples per-capture `metrics::Metrics` and encoder stats once per second; capture size/FPS, processing ms/frame and encoding ms/frame identify separate bottlenecks. `ScreenSelfPreview` shows CPU/GPU for known encoder implementations; unreported or unknown implementations remain unclassified |
+| Native screen-share quality | `client/src/features/voice.rs`, `client/src/features/screenshare.rs` | `screen_video_options` applies saved Automatic/GPU/CPU encoding; GPU requires H.264, available hardware and stops on a detected software fallback. `Settings::priority` preserves motion/detail/balanced tradeoffs. `native_screen_codecs_reach_a_real_decoder` starts a bundled SFU (ignored; `DISCORDIA_TEST_REQUIRE_NVENC=1` verifies hardware); `compare_screen_conversion_cost` compares Windows downscaling paths (ignored) |
+| Windows NVENC build | `vendor/webrtc-sys/PATCHES.md`, `.github/actions/setup-windows-nvenc/action.yml`, `client/build.rs` | Cargo patches webrtc-sys 0.3.39 locally; CUDA_PATH headers/import library enable NVENC, CUDA is delay-loaded at runtime. Windows CI/release jobs install build dependencies; drivers remain optional in Automatic/CPU mode |
+| Windows screen downscaling | `client/src/sysvideo/windows.rs` | `BgraConverter` reuses full-size I420 scratch storage when downscaling; only the scaled buffer reaches WebRTC. Keeps row stride and source aspect ratio. `resizing_bgra_ignores_row_padding_and_preserves_colors` guards channel order and window size changes |
 | Screen preview measurements | `client/src/features/screenshare.rs` | `ScreenSelfPreview` shows selected resolution/FPS and actual sending/capture FPS; `ScreenWatchTile` polls `previewStats` per identity for actual received resolution/FPS independently of the connection stats panel |
 | Everything else | beside the code | the suite stays headless and green |
 | Screen-share webview lifecycle | `client/tests/screenshare_bridge.cjs` | `node client/tests/screenshare_bridge.cjs`; simultaneous video/audio, independent volume, teardown and native-audio switching |

@@ -1,5 +1,7 @@
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
+pub(crate) mod metrics;
 #[cfg(target_os = "windows")]
 mod windows;
 
@@ -36,12 +38,52 @@ pub struct Capture {
     _inner: windows::WinVideoCapture,
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+impl Capture {
+    pub(crate) fn metrics(&self) -> std::sync::Arc<metrics::Metrics> {
+        self._inner.metrics.clone()
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Settings {
     pub width: u32,
     pub height: u32,
     pub fps: u32,
     pub max_bitrate: u64,
+    pub priority: Priority,
+    pub codec: Codec,
+    pub encoder: Encoder,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum Encoder {
+    #[default]
+    Auto,
+    Gpu,
+    Cpu,
+}
+
+pub fn hardware_encoder_label() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "Hardware"
+    } else {
+        "GPU"
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum Codec {
+    #[default]
+    H264,
+    Vp8,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Priority {
+    Motion,
+    Detail,
+    Balanced,
 }
 
 #[cfg(any(target_os = "windows", test))]
@@ -65,6 +107,9 @@ mod resolution_tests {
             height: 1080,
             fps: 60,
             max_bitrate: 16_000_000,
+            priority: super::Priority::Motion,
+            codec: super::Codec::H264,
+            encoder: crate::sysvideo::Encoder::Auto,
         };
         assert_eq!(super::fit_resolution(3440, 1440, settings), (1920, 802));
         assert_eq!(super::fit_resolution(1080, 1920, settings), (606, 1080));
@@ -160,6 +205,9 @@ fn capture_thumbnail(target: Target) -> Result<String, String> {
         height: 180,
         fps: 1,
         max_bitrate: 0,
+        priority: Priority::Detail,
+        codec: Codec::H264,
+        encoder: crate::sysvideo::Encoder::Auto,
     };
     let (fatal, _failures) = tokio::sync::mpsc::unbounded_channel();
     #[cfg(target_os = "windows")]
@@ -241,17 +289,9 @@ pub fn start(
     sink: FrameSink,
     fatal: tokio::sync::mpsc::UnboundedSender<String>,
 ) -> Result<Capture, String> {
-    FRAMES_CAPTURED.store(0, std::sync::atomic::Ordering::Relaxed);
     Ok(Capture {
         _inner: windows::WinVideoCapture::start(target, settings, sink, fatal, true)?,
     })
-}
-
-pub(crate) static FRAMES_CAPTURED: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
-
-pub fn frames_captured() -> u64 {
-    FRAMES_CAPTURED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 #[cfg(target_os = "macos")]
@@ -261,7 +301,6 @@ pub fn start(
     sink: FrameSink,
     fatal: tokio::sync::mpsc::UnboundedSender<String>,
 ) -> Result<Capture, String> {
-    FRAMES_CAPTURED.store(0, std::sync::atomic::Ordering::Relaxed);
     Ok(Capture {
         _inner: macos::MacVideoCapture::start(target, settings, sink, fatal, true)?,
     })
@@ -303,6 +342,9 @@ mod tests {
                 height: 720,
                 fps: 30,
                 max_bitrate: 4_000_000,
+                priority: super::Priority::Balanced,
+                codec: super::Codec::H264,
+                encoder: crate::sysvideo::Encoder::Auto,
             },
             Box::new(move |frame: super::Frame| {
                 let buffer = unsafe {

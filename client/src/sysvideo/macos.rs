@@ -22,6 +22,7 @@ struct TapState {
     sink: FrameSink,
     fatal: UnboundedSender<String>,
     count_frames: bool,
+    metrics: std::sync::Arc<super::metrics::Metrics>,
 }
 
 define_class!(
@@ -60,6 +61,7 @@ define_class!(
 
 impl Tap {
     fn handle_frame(&self, sample: &CMSampleBuffer) {
+        let started = std::time::Instant::now();
         let Some(buffer) = (unsafe { sample.image_buffer() }) else {
             return;
         };
@@ -70,9 +72,13 @@ impl Tap {
             return;
         }
 
+        let width = objc2_core_video::CVPixelBufferGetWidth(&buffer) as u32;
+        let height = objc2_core_video::CVPixelBufferGetHeight(&buffer) as u32;
         (self.ivars().sink)(Frame { buffer });
         if self.ivars().count_frames {
-            super::FRAMES_CAPTURED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.ivars()
+                .metrics
+                .record(width, height, started.elapsed());
         }
     }
 }
@@ -80,6 +86,7 @@ impl Tap {
 pub struct MacVideoCapture {
     stream: Retained<SCStream>,
     tap: Retained<Tap>,
+    pub(super) metrics: std::sync::Arc<super::metrics::Metrics>,
 }
 
 impl MacVideoCapture {
@@ -106,10 +113,12 @@ impl MacVideoCapture {
             config.setShowsCursor(true);
             config.setQueueDepth(3);
 
+            let metrics = std::sync::Arc::new(super::metrics::Metrics::default());
             let tap = Tap::alloc().set_ivars(TapState {
                 sink,
                 fatal,
                 count_frames,
+                metrics: metrics.clone(),
             });
             let tap: Retained<Tap> = msg_send![super(tap), init];
             let output = ProtocolObject::from_ref(&*tap);
@@ -147,7 +156,11 @@ impl MacVideoCapture {
                 Err(_) => return Err("timed out starting screen capture".into()),
             }
 
-            Ok(Self { stream, tap })
+            Ok(Self {
+                stream,
+                tap,
+                metrics,
+            })
         }
     }
 }

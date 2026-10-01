@@ -53,6 +53,19 @@ cargo fmt --all
 First run is slow: `server/` fetches or builds `livekit-server` once (macOS
 builds from source, needs `go`). `LIVEKIT_BUNDLE_SKIP=1` opts out.
 
+Windows x64 NVENC builds need the CUDA Toolkit driver headers and `cuda.lib`,
+with `CUDA_PATH` pointing to the toolkit root (tested with 12.4).
+CI installs these dependencies; end users only need a compatible NVIDIA driver.
+Without the build dependencies, screen sharing uses software encoding.
+The share dialog selects Automatic (GPU preferred), GPU, or CPU; GPU requires
+H.264 and reports unavailable hardware or a detected software fallback.
+
+```powershell
+$env:DISCORDIA_TEST_REQUIRE_NVENC = '1'
+$env:DISCORDIA_LIVEKIT_PORT = '17880'
+cargo test -p dioxusfun --bin Discordia native_screen_codecs_reach_a_real_decoder -- --ignored --nocapture
+```
+
 `devcontainer up --workspace-folder .` builds a Linux container that can do all
 of the above except run the client — `docs/OPS.md`.
 

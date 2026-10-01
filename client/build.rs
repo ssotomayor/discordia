@@ -23,7 +23,11 @@ fn grow_windows_main_stack() {
         return;
     }
     match std::env::var("CARGO_CFG_TARGET_ENV").as_deref() {
-        Ok("msvc") => println!("cargo::rustc-link-arg-bins=/STACK:8388608"),
+        Ok("msvc") => {
+            println!("cargo::rustc-link-arg-bins=/STACK:8388608");
+            // Optional CUDA must not prevent startup on machines without an NVIDIA driver.
+            println!("cargo::rustc-link-arg=/DELAYLOAD:nvcuda.dll");
+        }
         Ok("gnu") => println!("cargo::rustc-link-arg-bins=-Wl,--stack,8388608"),
         _ => {}
     }
