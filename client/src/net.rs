@@ -689,7 +689,7 @@ fn apply(
             s.emoji_requested.clear();
             resolve_media(&mut s, tx);
             s.screen_shares = std::collections::HashMap::new();
-            s.screen_viewing = None;
+            s.screen_viewing.clear();
             s.status = ConnectionStatus::Ready;
 
             if let Some(first) = s.guilds.first().map(|g| g.id) {
@@ -1078,11 +1078,9 @@ fn apply(
             } else {
                 s.screen_shares.insert(channel_id, sharers);
             }
-            if let Some(pk) = s.screen_viewing.clone()
-                && !s.screen_shares.values().any(|v| v.contains(&pk))
-            {
-                s.screen_viewing = None;
-            }
+            let active: std::collections::HashSet<String> =
+                s.screen_shares.values().flatten().cloned().collect();
+            s.screen_viewing.retain(|pk| active.contains(pk));
         }
         ServerMessage::MemberJoin(member) => {
             let exists = s
@@ -1190,10 +1188,10 @@ fn apply(
                 }
             }
 
-            if s.screen_viewing.as_deref() == Some(vs.user_pubkey.as_str())
+            if s.screen_viewing.contains(&vs.user_pubkey)
                 && (!vs.screen_sharing || vs.channel_id.is_none())
             {
-                s.screen_viewing = None;
+                s.screen_viewing.remove(&vs.user_pubkey);
             }
 
             if is_self {

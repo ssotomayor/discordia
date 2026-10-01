@@ -62,52 +62,53 @@ window.dxScreen = window.dxScreen || (function () {
     try { pub.setSubscribed(!nativeStreamAudio); } catch (e) { console.warn('[dxScreen] audio subscribe toggle failed', e); }
   }
   function attachWatched() {
-    const c = document.getElementById('screenshare-viewer');
-    const id = c && c.getAttribute('data-identity');
-    if (id) attachAudio(id);
+    Object.keys(attached).forEach(function (cid) {
+      if (cid.startsWith('screenshare-viewer-')) attachAudio(attached[cid].identity);
+    });
   }
-  let audioEl = null;
-  let audioIdentity = null;
-  let pendingGain = 1;
+  const audioElements = {};
+  const audioGains = {};
   let sinkLabel = null;
   function applySink() {
-    if (!sinkLabel) return;
-    try {
-      navigator.mediaDevices.enumerateDevices().then(function (devs) {
-        const m = devs.find(function (d) { return d.kind === 'audiooutput' && d.label === sinkLabel; });
-        if (!m) return;
-        const t = audioIdentity ? audioTracks[audioIdentity] : null;
-        if (t && typeof t.setSinkId === 'function') t.setSinkId(m.deviceId).catch(function () {});
-      }).catch(function () {});
-    } catch (e) {}
+    if (!sinkLabel || !navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
+    navigator.mediaDevices.enumerateDevices().then(function (devs) {
+      const device = devs.find(function (d) { return d.kind === 'audiooutput' && d.label === sinkLabel; });
+      if (!device) return;
+      Object.keys(audioElements).forEach(function (identity) {
+        const t = audioTracks[identity];
+        if (t && typeof t.setSinkId === 'function') t.setSinkId(device.deviceId).catch(function () {});
+      });
+    }).catch(function () {});
   }
   function setSink(label) { sinkLabel = label || null; applySink(); }
-  function setStreamVolume(v) {
-    pendingGain = Math.max(0, Math.min(1, v));
-    const t = audioIdentity ? audioTracks[audioIdentity] : null;
-    if (t) { try { t.setVolume(pendingGain); } catch (e) {} }
+  function setStreamVolume(v, identity) {
+    if (!identity) return;
+    audioGains[identity] = Math.max(0, Math.min(1, v));
+    const t = audioTracks[identity];
+    if (t) { try { t.setVolume(audioGains[identity]); } catch (e) {} }
   }
-  function detachAudio() {
-    const t = audioIdentity ? audioTracks[audioIdentity] : null;
-    if (t) { try { t.detach(); } catch (e) {} }
-    if (audioEl) { try { audioEl.remove(); } catch (e) {} audioEl = null; }
-    audioIdentity = null;
+  function detachAudio(identity) {
+    const identities = identity ? [identity] : Object.keys(audioElements);
+    identities.forEach(function (id) {
+      const el = audioElements[id];
+      const t = audioTracks[id];
+      if (t && el) { try { t.detach(el); } catch (e) {} }
+      if (el) el.remove();
+      delete audioElements[id];
+    });
   }
   function attachAudio(identity) {
-    if (audioIdentity === identity && audioEl) return;
-    detachAudio();
+    if (audioElements[identity]) return;
     const t = audioTracks[identity];
     if (!t) { report(identity, false); return; }
     try {
-      audioEl = t.attach();
-      audioEl.style.display = 'none';
-      document.body.appendChild(audioEl);
-      audioIdentity = identity;
-      t.setVolume(pendingGain);
+      const el = t.attach();
+      el.style.display = 'none';
+      document.body.appendChild(el);
+      audioElements[identity] = el;
+      t.setVolume(audioGains[identity] === undefined ? 0 : audioGains[identity]);
       applySink();
-      if (room && room.canPlaybackAudio === false) {
-        room.startAudio().catch(function (e) { console.warn('[dxScreen] startAudio blocked', e); });
-      }
+      if (room && room.canPlaybackAudio === false) room.startAudio().catch(function () {});
       report(identity, true);
     } catch (e) {
       console.warn('[dxScreen] stream audio attach failed', e);
@@ -156,9 +157,9 @@ window.dxScreen = window.dxScreen || (function () {
     remoteShareVideoTrack = null;
     previousRemoteSample = null;
     post('screen-stats-in', { active: false });
+    detachAudio();
     for (const k in tracks) delete tracks[k];
     for (const k in audioTracks) delete audioTracks[k];
-    detachAudio();
     Object.keys(attached).forEach(function (cid) {
       const a = attached[cid];
       if (a && a.track && a.el) { try { a.track.detach(a.el); } catch (e) {} }
@@ -275,8 +276,7 @@ window.dxScreen = window.dxScreen || (function () {
       if (track.kind === 'audio') {
         audioTracks[participant.identity] = track;
         if (nativeStreamAudio) return;
-        const c = document.getElementById('screenshare-viewer');
-        if (c && c.getAttribute('data-identity') === participant.identity) attachAudio(participant.identity);
+        attachWatched();
         return;
       }
       if (track.kind !== 'video') return;
@@ -291,7 +291,7 @@ window.dxScreen = window.dxScreen || (function () {
     });
     thisRoom.on(lk.RoomEvent.TrackUnsubscribed, function (track, pub, participant) {
       if (track.kind === 'audio') {
-        if (audioIdentity === participant.identity) detachAudio();
+        detachAudio(participant.identity);
         delete audioTracks[participant.identity];
         if (!nativeStreamAudio) report(participant.identity, false);
         return;
@@ -479,8 +479,10 @@ window.dxScreen = window.dxScreen || (function () {
       if ((tries || 0) < 20) setTimeout(function () { attach(identity, cid, kind, (tries || 0) + 1); }, 50);
       return;
     }
+    const previous = attached[cid];
+    if (previous && previous.identity !== identity) detach(cid);
     c.setAttribute('data-identity', identity);
-    attached[cid] = { identity: identity, kind: kind, track: null, el: null };
+    if (!attached[cid]) attached[cid] = { identity: identity, kind: kind, track: null, el: null };
     const t = videoTrackFor(identity, kind);
     if (t) attachInto(t, c, cid, identity, kind); else c.querySelectorAll('video').forEach(function (e) { e.remove(); });
     if (!t && kind === 'screen') {
@@ -491,16 +493,30 @@ window.dxScreen = window.dxScreen || (function () {
         }
       }, 10000);
     }
-    if (cid === 'screenshare-viewer' && !nativeStreamAudio) attachAudio(identity);
+    if (cid.startsWith('screenshare-viewer-') && !nativeStreamAudio) attachAudio(identity);
   }
   function detach(cid) {
     const a = attached[cid];
     if (a && a.track && a.el) { try { a.track.detach(a.el); } catch (e) {} }
     delete attached[cid];
+    if (cid.startsWith('screenshare-viewer-') && a) detachAudio(a.identity);
     const c = document.getElementById(cid); if (!c) return;
     c.removeAttribute('data-identity');
     c.querySelectorAll('video').forEach(function (e) { e.remove(); });
-    if (cid === 'screenshare-viewer') detachAudio();
+  }
+  async function previewStats(identity) {
+    const track = videoTrackFor(identity, 'screen');
+    if (!track) return null;
+    try {
+      const report = await track.getRTCStatsReport();
+      let result = null;
+      if (report) report.forEach(function (entry) {
+        if (entry.type === 'inbound-rtp' && entry.kind === 'video') {
+          result = { width: entry.frameWidth || null, height: entry.frameHeight || null, fps: Number.isFinite(entry.framesPerSecond) ? entry.framesPerSecond : null };
+        }
+      });
+      return result;
+    } catch (e) { return null; }
   }
   async function startShare() {
     if (!room) { console.warn('[dxScreen] not connected yet'); return; }
@@ -830,14 +846,24 @@ window.dxScreen = window.dxScreen || (function () {
     clearRemoteTracks();
     Object.keys(attached).forEach(detach);
   }
-  return { connect: connect, attach: attach, detach: detach, requestAndStartShare: requestAndStartShare, stopShare: stopShare, disconnect: disconnect, setStreamVolume: setStreamVolume, setSink: setSink, setNativeStreamAudio: setNativeStreamAudio, setStatsEnabled: setStatsEnabled, startCamera: startCamera, stopCamera: stopCamera, listCameras: listCameras, attachLocalCamera: attachLocalCamera, setE2eeKey: setE2eeKey };
+  return { connect: connect, attach: attach, detach: detach, previewStats: previewStats, requestAndStartShare: requestAndStartShare, stopShare: stopShare, disconnect: disconnect, setStreamVolume: setStreamVolume, setSink: setSink, setNativeStreamAudio: setNativeStreamAudio, setStatsEnabled: setStatsEnabled, startCamera: startCamera, stopCamera: stopCamera, listCameras: listCameras, attachLocalCamera: attachLocalCamera, setE2eeKey: setE2eeKey };
 })();
 "#;
 
 pub const QUALITY_PRESETS: &[(&str, &str, &str)] = &[
     (
+        "720",
+        "720p — 30 FPS",
+        "Lower upload and processing requirements",
+    ),
+    (
+        "4k",
+        "4K — 2160p30",
+        "Maximum detail; needs very strong upload",
+    ),
+    (
         "smooth",
-        "Smooth — 720p60",
+        "Smooth — 1080p60",
         "Video and animation: stays fluid, softens when busy",
     ),
     (
@@ -852,16 +878,18 @@ pub const QUALITY_PRESETS: &[(&str, &str, &str)] = &[
     ),
     (
         "ultra",
-        "Ultra — 1440p30",
+        "Ultra — 1440p60",
         "High detail; needs strong upload",
     ),
 ];
 
 fn quality_preset(id: &str) -> (u32, u32, u32, u32, &'static str, &'static str) {
     match id {
-        "smooth" => (1280, 720, 60, 6_000_000, "motion", "maintain-framerate"),
+        "720" => (1280, 720, 30, 4_000_000, "motion", "balanced"),
+        "4k" => (3840, 2160, 30, 32_000_000, "detail", "maintain-resolution"),
+        "smooth" => (1920, 1080, 60, 16_000_000, "motion", "maintain-framerate"),
         "crisp" => (1920, 1080, 15, 6_000_000, "detail", "maintain-resolution"),
-        "ultra" => (2560, 1440, 30, 14_000_000, "detail", "balanced"),
+        "ultra" => (2560, 1440, 60, 24_000_000, "detail", "balanced"),
         _ => (1920, 1080, 30, 9_000_000, "motion", "balanced"),
     }
 }
@@ -882,6 +910,17 @@ pub fn native_settings(quality: &str) -> crate::sysvideo::Settings {
         fps,
         max_bitrate: bitrate as u64,
     }
+}
+
+fn selected_capture_settings(
+    settings: &crate::settings::ClientSettings,
+) -> crate::sysvideo::Settings {
+    let mut capture = native_settings(&settings.screenshare_quality);
+    if let Some(fps @ (15 | 30 | 60)) = settings.screenshare_fps {
+        capture.max_bitrate = capture.max_bitrate * fps as u64 / capture.fps.max(1) as u64;
+        capture.fps = fps;
+    }
+    capture
 }
 
 pub(crate) fn js_str(s: &str) -> String {
@@ -915,10 +954,6 @@ pub(crate) fn detach_js(container: &str) -> String {
     format!("{SCREEN_JS}\nwindow.dxScreen.detach({container});")
 }
 
-fn stream_volume_js(gain: f32) -> String {
-    format!("{SCREEN_JS}\nwindow.dxScreen.setStreamVolume({gain});")
-}
-
 pub fn stream_sink_js(device: Option<&str>) -> String {
     let arg = serde_json::to_string(&device).unwrap_or_else(|_| "null".into());
     format!("{SCREEN_JS}\nwindow.dxScreen.setSink({arg});")
@@ -929,6 +964,25 @@ pub fn ScreenShareBridge() -> Element {
     let state = use_app_state();
     let gateway = use_gateway();
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
+    let sharing = use_memo(move || {
+        let s = state.read();
+        (s.screen_sharing, s.voice.channel_id)
+    });
+    let mut shared_channel = use_signal(|| None::<crate::protocol::Id>);
+    let gateway_for_capture = gateway.clone();
+    use_effect(move || {
+        let (active, channel) = sharing();
+        let previous = *shared_channel.peek();
+        if active {
+            shared_channel.set(channel);
+        } else if let Some(channel_id) = previous {
+            gateway_for_capture.send(ClientMessage::SetScreenShare {
+                channel_id,
+                sharing: false,
+            });
+            shared_channel.set(None);
+        }
+    });
     let token = use_memo(move || state.read().screen_token.clone());
     let mut last = use_signal(|| None::<(String, String)>);
 
@@ -973,6 +1027,7 @@ pub fn ScreenShareBridge() -> Element {
             bool,
             Option<(String, String)>,
             Option<crate::sysvideo::Target>,
+            crate::sysvideo::Settings,
         )>
     });
     use_effect(move || {
@@ -997,9 +1052,17 @@ pub fn ScreenShareBridge() -> Element {
             _ => None,
         };
         drop(s);
-        let quality = settings.read().screenshare_quality.clone();
+        let capture_settings = selected_capture_settings(&settings.read());
 
-        let now = (epoch, want, publish_system, joined, want_video, target);
+        let now = (
+            epoch,
+            want,
+            publish_system,
+            joined,
+            want_video,
+            target,
+            capture_settings,
+        );
         if last_sent.peek().as_ref() != Some(&now) {
             voice_screen_audio.send(VoiceCmd::SetScreenAudio {
                 room: now.1.clone(),
@@ -1011,7 +1074,7 @@ pub fn ScreenShareBridge() -> Element {
             voice_screen_audio.send(VoiceCmd::SetScreenVideo {
                 room: now.4.clone(),
                 target: target.unwrap_or(crate::sysvideo::Target::Display(0)),
-                settings: native_settings(&quality),
+                settings: capture_settings,
             });
             last_sent.set(Some(now));
         }
@@ -1180,7 +1243,9 @@ pub fn ScreenShareBridge() -> Element {
                         };
                         let mut s = state.write();
                         if outbound {
-                            s.screen_share_stats = screen_stats;
+                            if !(crate::sysvideo::supported() && s.screen_sharing) {
+                                s.screen_share_stats = screen_stats;
+                            }
                         } else {
                             s.screen_share_in_stats = screen_stats;
                         }
@@ -1259,110 +1324,192 @@ pub fn ScreenShareBridge() -> Element {
 
 #[component]
 pub fn ScreenSourcePicker() -> Element {
+    let state = use_app_state();
+    let picker = use_memo(move || state.read().screen_picker.clone());
+    match picker() {
+        Some(result) => rsx! { ScreenShareDialog { result } },
+        None => rsx! {},
+    }
+}
+
+#[component]
+fn ScreenShareDialog(result: Result<Vec<crate::sysvideo::Source>, String>) -> Element {
     let mut state = use_app_state();
     let gateway = use_gateway();
-    let settings = use_context::<Signal<crate::settings::ClientSettings>>();
-    let picker = use_memo(move || state.read().screen_picker.clone());
-    let Some(result) = picker() else {
-        return rsx! {};
-    };
-
+    let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
+    let mut target = use_signal(|| None::<crate::sysvideo::Target>);
+    let mut preview_revision = use_signal(|| 0_u64);
+    let mut quality = use_signal(move || {
+        match settings.read().screenshare_quality.as_str() {
+            "720" => "720",
+            "ultra" => "ultra",
+            "4k" => "4k",
+            _ => "balanced",
+        }
+        .to_string()
+    });
+    let mut fps = use_signal(move || selected_capture_settings(&settings.read()).fps);
+    let mut audio =
+        use_signal(move || settings.read().screenshare_audio && crate::sysaudio::supported());
     let close = move |_| {
         state.write().screen_picker = None;
     };
+    let sources = result.as_ref().ok().cloned().unwrap_or_default();
+    let selected_source = sources
+        .iter()
+        .find(|source| Some(source.target) == target())
+        .cloned();
+    let can_share = selected_source.is_some() && state.read().voice.channel_id.is_some();
 
     rsx! {
         div {
             class: "dxf-backdrop-in fixed inset-0 z-50 flex items-center justify-center bg-black/50",
             onclick: close,
             div {
-                class: "dxf-modal-in w-[30rem] max-h-[80vh] flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl overflow-hidden",
+                class: "dxf-modal-in max-h-[80vh] flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl overflow-hidden",
+                style: "width: min(52rem, calc(100vw - 2rem));",
                 onclick: move |e| e.stop_propagation(),
                 div { class: "px-4 py-3 border-b border-[var(--border)] flex items-center",
                     h3 { class: "text-sm font-medium text-[var(--accent)] flex-1", "Share your screen" }
-                    button {
-                        class: "text-[var(--text-dim)] hover:text-[var(--text)] text-lg leading-none",
-                        onclick: close,
-                        "✕"
+                    button { class: "text-xs text-[var(--text-dim)] hover:text-[var(--text)] mr-2",
+                        onclick: move |_| preview_revision += 1,
+                        "Refresh previews"
+                    }
+                    button { class: "text-[var(--text-dim)] hover:text-[var(--text)] text-lg leading-none",
+                        onclick: close, "✕"
                     }
                 }
-                match result {
-                    Err(e) => rsx! {
-                        div { class: "p-4 space-y-2",
-                            div { class: "text-xs text-[var(--danger)]", "{e}" }
-                            div { class: "text-[11px] text-[var(--text-muted)] leading-relaxed",
-                                "Screen sharing needs the Screen Recording permission. Grant it in \
-                                 System Settings › Privacy & Security › Screen & System Audio \
-                                 Recording, then quit and reopen Discordia — macOS only re-reads it \
-                                 on launch. If macOS offers to \"Quit & Reopen\" and Discordia does \
-                                 not come back, that is Gatekeeper refusing the relaunch, not a \
-                                 failed grant: just launch it again yourself."
+                div { class: "flex-1 overflow-y-auto p-3 space-y-3",
+                    if let Err(error) = &result {
+                        div { class: "text-xs text-[var(--danger)]", "{error}" }
+                        if cfg!(target_os = "macos") {
+                            p { class: "text-xs text-[var(--text-muted)]",
+                                "Allow Screen Recording in System Settings › Privacy & Security, then reopen Discordia."
                             }
                         }
-                    },
-                    Ok(sources) if sources.is_empty() => rsx! {
-                        div { class: "p-4 text-xs text-[var(--text-muted)]", "Looking for screens…" }
-                    },
-                    Ok(sources) => {
-                        let (surfaces, windows): (Vec<_>, Vec<_>) =
-                            sources.into_iter().partition(|s| s.app.is_none());
-                        rsx! {
-                            div { class: "flex-1 overflow-y-auto p-3 space-y-3",
-                                if !surfaces.is_empty() {
-                                    div {
-                                        div { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-1.5",
-                                            "Screens & apps"
-                                        }
-                                        div { class: "space-y-1",
-                                            for s in surfaces.into_iter() {
-                                                {
-                                                    let target = s.target;
-                                                    let g = gateway.clone();
-                                                    let dims = (s.width > 0).then(|| format!("{}×{}", s.width, s.height));
-                                                    rsx! {
-                                                        button {
-                                                            key: "{s.title}",
-                                                            class: "w-full text-left px-2 py-1.5 rounded border border-[var(--border)] hover:border-[var(--accent)] hover:bg-[var(--accent-soft)] transition-colors flex items-baseline gap-2",
-                                                            onclick: move |_| choose_source(state, g.clone(), settings, target),
-                                                            span { class: "text-xs text-[var(--text)] flex-1 truncate", "{s.title}" }
-                                                            if let Some(d) = dims {
-                                                                span { class: "text-[10px] text-[var(--text-dim)] font-mono shrink-0", "{d}" }
-                                                            }
-                                                        }
-                                                    }
-                                                }
+                    } else if sources.is_empty() {
+                        div { class: "text-xs text-[var(--text-muted)]", "No screens or windows available yet." }
+                    }
+                    for (heading, windows) in [("Screens & apps", false), ("Windows", true)] {
+                        if sources.iter().any(|source| source.app.is_some() == windows) {
+                            div { class: "space-y-1",
+                                div { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-1.5", "{heading}" }
+                                div { style: "display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px;",
+                                for source in sources.iter().filter(|source| source.app.is_some() == windows) {
+                                    {
+                                        let selected = target() == Some(source.target);
+                                        let source_target = source.target;
+                                        let source_key = format!("{:?}-{}", source.target, preview_revision());
+                                        rsx! {
+                                            ScreenSourceTile {
+                                                key: "{source_key}",
+                                                source: source.clone(),
+                                                selected,
+                                                onselect: move |_| target.set(Some(source_target)),
                                             }
                                         }
                                     }
-                                }
-                                if !windows.is_empty() {
-                                    div {
-                                        div { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-1.5",
-                                            "Windows"
-                                        }
-                                        div { class: "space-y-1",
-                                            for s in windows.into_iter() {
-                                                {
-                                                    let target = s.target;
-                                                    let g = gateway.clone();
-                                                    let app = s.app.clone().unwrap_or_default();
-                                                    rsx! {
-                                                        button {
-                                                            key: "{app}/{s.title}",
-                                                            class: "w-full text-left px-2 py-1.5 rounded border border-[var(--border)] hover:border-[var(--accent)] hover:bg-[var(--accent-soft)] transition-colors flex items-baseline gap-2",
-                                                            onclick: move |_| choose_source(state, g.clone(), settings, target),
-                                                            span { class: "text-[10px] text-[var(--accent)] shrink-0 max-w-[7rem] truncate", "{app}" }
-                                                            span { class: "text-xs text-[var(--text)] flex-1 truncate", "{s.title}" }
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
+                                } }
                             }
                         }
                     }
+                }
+                div { class: "px-4 py-3 border-b border-[var(--border)] space-y-3",
+                    label { r#for: "share-quality", class: "text-xs text-[var(--text-muted)]", "Resolution" }
+                    select {
+                        id: "share-quality",
+                        class: "w-full bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)] rounded px-2 py-1 text-sm",
+                        onchange: move |e| quality.set(e.value()),
+                        for (id, label) in [("720", "720p"), ("balanced", "1080p"), ("ultra", "1440p"), ("4k", "4K")] {
+                            option { value: "{id}", selected: quality() == id, "{label}" }
+                        }
+                    }
+                    label { r#for: "share-fps", class: "text-xs text-[var(--text-muted)]", "Frames per second" }
+                    select {
+                        id: "share-fps",
+                        class: "w-full bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)] rounded px-2 py-1 text-sm",
+                        onchange: move |e| { if let Ok(value @ (15 | 30 | 60)) = e.value().parse::<u32>() { fps.set(value); } },
+                        for value in [15, 30, 60] {
+                            option { value: "{value}", selected: fps() == value, "{value} FPS" }
+                        }
+                    }
+                    label { class: "flex items-center gap-2 cursor-pointer select-none",
+                        input { r#type: "checkbox", checked: audio(), disabled: !crate::sysaudio::supported(),
+                            onchange: move |e| audio.set(e.checked()),
+                        }
+                        span { class: "text-xs text-[var(--text-muted)]", "Share system audio" }
+                    }
+                    if cfg!(target_os = "windows") && audio() {
+                        p { class: "text-[10px] text-[var(--text-dim)]",
+                            "Audio includes other applications playing on your computer."
+                        }
+                    }
+                    p { class: "text-[10px] text-[var(--text-dim)]",
+                        "Higher resolution and FPS require more upload bandwidth."
+                    }
+                }
+                div { class: "px-4 py-3 flex items-center gap-2",
+                    span { class: "text-xs text-[var(--text-muted)] flex-1 truncate",
+                        if let Some(source) = selected_source { "{source.title}" } else { "Select a screen or window" }
+                    }
+                    button { class: "px-3 py-2 rounded border border-[var(--border)] text-[var(--text-muted)] text-sm",
+                        onclick: close, "Cancel"
+                    }
+                    button {
+                        class: "px-3 py-2 rounded border border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)] text-sm disabled:opacity-40",
+                        disabled: !can_share,
+                        onclick: move |_| {
+                            if let Some(chosen) = target() {
+                                let mut next = settings.read().clone();
+                                next.screenshare_quality = quality();
+                                next.screenshare_fps = Some(fps());
+                                next.screenshare_audio = audio();
+                                settings.set(next.clone());
+                                crate::settings::save(&next);
+                                choose_source(state, gateway.clone(), settings, chosen);
+                            }
+                        },
+                        "Share"
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn ScreenSourceTile(
+    source: crate::sysvideo::Source,
+    selected: bool,
+    onselect: EventHandler<()>,
+) -> Element {
+    let target = source.target;
+    let preview = use_resource(move || async move { crate::sysvideo::thumbnail(target).await });
+    let image = preview.read().clone();
+    rsx! {
+        button {
+            class: "w-full text-left rounded border overflow-hidden transition-colors",
+            style: if selected { "border-color: var(--accent); background-color: var(--accent-soft);" } else { "border-color: var(--border);" },
+            aria_pressed: selected,
+            title: "{source.title}",
+            onclick: move |_| onselect.call(()),
+            div {
+                style: "aspect-ratio: 16 / 9; background-color: #000; display: flex; align-items: center; justify-content: center;",
+                match image {
+                    Some(Ok(data)) => rsx! { img { src: data, alt: "Preview of {source.title}",
+                        style: "width: 100%; height: 100%; object-fit: contain;",
+                    } },
+                    Some(Err(_)) => rsx! { span { class: "text-xs text-[var(--text-dim)]", "Preview unavailable" } },
+                    None => rsx! { span { class: "text-xs text-[var(--text-dim)]", "Loading preview…" } },
+                }
+            }
+            div { class: "px-2 py-1.5",
+                if let Some(app) = &source.app {
+                    div { class: "text-[10px] text-[var(--accent)] truncate", "{app}" }
+                }
+                div { class: "text-xs text-[var(--text)] truncate", "{source.title}" }
+                if source.width > 0 {
+                    div { class: "text-[10px] text-[var(--text-dim)] font-mono", "{source.width}×{source.height}" }
                 }
             }
         }
@@ -1397,6 +1544,9 @@ fn choose_source(
 
 pub fn open_screen_picker(mut state: Signal<crate::state::AppState>) {
     state.write().screen_picker = Some(Ok(Vec::new()));
+    if !crate::sysvideo::supported() {
+        return;
+    }
     dioxus::prelude::spawn(async move {
         let found = tokio::task::spawn_blocking(crate::sysvideo::sources)
             .await
@@ -1411,6 +1561,7 @@ pub fn open_screen_picker(mut state: Signal<crate::state::AppState>) {
 pub fn ScreenSelfPreview() -> Element {
     let mut state = use_app_state();
     let gateway = use_gateway();
+    let settings = use_context::<Signal<crate::settings::ClientSettings>>();
 
     let mut px = use_signal(|| 968.0_f64);
     let mut py = use_signal(|| 56.0_f64);
@@ -1426,6 +1577,10 @@ pub fn ScreenSelfPreview() -> Element {
         Some(crate::sysvideo::Target::Display(_)) => "Sharing your screen",
         Some(crate::sysvideo::Target::Window(_)) => "Sharing one window",
         Some(crate::sysvideo::Target::Application(_)) => "Sharing an app",
+        #[cfg(target_os = "windows")]
+        Some(crate::sysvideo::Target::WindowsMonitor(_)) => "Sharing your screen",
+        #[cfg(target_os = "windows")]
+        Some(crate::sysvideo::Target::WindowsWindow(_)) => "Sharing one window",
         None => "Sharing your screen",
     });
     let mut frames = use_signal(|| 0_u64);
@@ -1450,6 +1605,26 @@ pub fn ScreenSelfPreview() -> Element {
     if !sharing() {
         return rsx! { Fragment {} };
     }
+
+    let configured = selected_capture_settings(&settings.read());
+    let requested_label = format!(
+        "Selected: {}×{} · {} FPS",
+        configured.width, configured.height, configured.fps
+    );
+    let actual_label = state
+        .read()
+        .screen_share_stats
+        .as_ref()
+        .map(|stats| {
+            format!(
+                "Sending: {}×{} · {:.0} FPS · capture {:.0} FPS",
+                stats.encoded_width.map_or("—".into(), |v| v.to_string()),
+                stats.encoded_height.map_or("—".into(), |v| v.to_string()),
+                stats.encoded_fps.unwrap_or(0.0),
+                stats.capture_fps.unwrap_or(0.0)
+            )
+        })
+        .unwrap_or_else(|| "Waiting for stream measurements…".into());
 
     rsx! {
         if drag().is_some() {
@@ -1479,7 +1654,7 @@ pub fn ScreenSelfPreview() -> Element {
                     drag.set(Some(Drag::Move { dx: c.x - px(), dy: c.y - py() }));
                 },
                 span { class: "w-2 h-2 rounded-full shrink-0", style: "background: var(--danger);" }
-                span { class: "text-[11px] text-[var(--text)] truncate flex-1", "Sharing your screen" }
+                span { class: "text-[11px] text-[var(--text)] truncate flex-1", "{requested_label}" }
                 button {
                     class: "text-[9px] uppercase tracking-wider text-[var(--danger)] hover:text-[var(--accent-strong)] font-semibold",
                     onmousedown: move |e| {
@@ -1502,14 +1677,18 @@ pub fn ScreenSelfPreview() -> Element {
                 }
             }
             div {
-                id: "screenshare-self",
-                class: "relative flex-1 min-h-0 bg-black flex items-center justify-center text-[var(--text-dim)] text-[10px]",
-                "Starting…"
+                class: "relative flex-1 min-h-0 bg-black",
+                div {
+                    id: "screenshare-self",
+                    style: "width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;",
+                    class: "text-[var(--text-dim)] text-[10px]",
+                    "Starting…"
+                }
                 if native_capture {
                     div {
                         class: "absolute left-2 bottom-2 px-1.5 py-0.5 rounded bg-black/70 text-[9px] pointer-events-none",
                         if frames() > 0 {
-                            span { class: "text-[var(--up)]", "{share_label} · {frames()} frames sent" }
+                            span { class: "text-[var(--up)]", "{actual_label}" }
                         } else {
                             span { class: "text-[var(--warn)]", "{share_label} · waiting for first frame…" }
                         }
@@ -1537,37 +1716,8 @@ pub(crate) enum Drag {
 
 #[component]
 pub fn ScreenWatchWindow() -> Element {
-    let mut state = use_app_state();
+    let state = use_app_state();
     let viewing = use_memo(move || state.read().screen_viewing.clone());
-
-    let mut last = use_signal(|| None::<String>);
-    use_effect(move || {
-        let v = viewing();
-        if v != *last.peek() {
-            match &v {
-                Some(pk) => {
-                    let s = state.read();
-                    let gain = if s.voice.deafened {
-                        0.0
-                    } else {
-                        s.stream_gain_of(pk)
-                    };
-                    let js = format!(
-                        "{}\n{}",
-                        stream_volume_js(gain),
-                        attach_js(pk, "screenshare-viewer", "screen"),
-                    );
-                    drop(s);
-                    let _ = document::eval(&js);
-                }
-                None => {
-                    crate::dlog!("watch detach (viewer closed)");
-                    let _ = document::eval(&detach_js("screenshare-viewer"));
-                }
-            }
-            last.set(v);
-        }
-    });
 
     let watching = use_memo(move || state.read().screen_viewing.clone());
     let stream_levels = use_memo(move || {
@@ -1581,15 +1731,16 @@ pub fn ScreenWatchWindow() -> Element {
         let _ = stream_levels();
         let s = state.read();
         let mut seen: Vec<String> = s.screen_shares.values().flatten().cloned().collect();
-        if let Some(w) = watched.clone()
-            && !seen.contains(&w)
-        {
-            seen.push(w);
-        }
+        seen.extend(watched.iter().cloned());
+        seen.sort();
+        seen.dedup();
+        seen.extend(last_gains.peek().iter().map(|(pk, _)| pk.clone()));
+        seen.sort();
+        seen.dedup();
         let mut desired: Vec<(String, f32)> = seen
             .into_iter()
             .map(|pk| {
-                let gain = if Some(&pk) == watched.as_ref() {
+                let gain = if watched.contains(&pk) {
                     s.stream_gain_of(&pk)
                 } else {
                     0.0
@@ -1604,7 +1755,7 @@ pub fn ScreenWatchWindow() -> Element {
         }
         crate::dlog!(
             "watch gains changed watched={:?} gains={:?}",
-            watched.as_ref().map(|w| &w[..w.len().min(8)]),
+            watched,
             desired
                 .iter()
                 .map(|(p, g)| (&p[..p.len().min(8)], g))
@@ -1624,28 +1775,74 @@ pub fn ScreenWatchWindow() -> Element {
         let _ = document::eval(&stream_sink_js(output_device().as_deref()));
     });
 
-    let deafened = use_memo(move || state.read().voice.deafened);
-    let watched_gain = use_memo(move || {
-        let s = state.read();
-        s.screen_viewing
-            .as_ref()
-            .map(|pk| s.stream_gain_of(pk))
-            .unwrap_or(0.0)
-    });
-    use_effect(move || {
-        let gain = if deafened() { 0.0 } else { watched_gain() };
-        let _ = document::eval(&stream_volume_js(gain));
-    });
+    let mut watched: Vec<String> = viewing().into_iter().collect();
+    watched.sort();
+    rsx! {
+        for (index, pk) in watched.into_iter().enumerate() {
+            ScreenWatchTile { key: "{pk}", pubkey: pk, index }
+        }
+    }
+}
 
-    let mut x = use_signal(|| 160.0_f64);
-    let mut y = use_signal(|| 90.0_f64);
+#[component]
+fn ScreenWatchTile(pubkey: String, index: usize) -> Element {
+    let mut state = use_app_state();
+    let pk = pubkey;
+    let container = format!("screenshare-viewer-{pk}");
+    let stats_pk = pk.clone();
+    let mut received_label = use_signal(|| "Waiting for stream measurements…".to_owned());
+    use_future(move || {
+        let identity = js_str(&stats_pk);
+        async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                let mut eval = document::eval(&format!(
+                    "{SCREEN_JS}\ndioxus.send(await window.dxScreen.previewStats({identity}));"
+                ));
+                if let Ok(value) = eval.recv::<Value>().await {
+                    let label = match (
+                        value["width"].as_u64(),
+                        value["height"].as_u64(),
+                        value["fps"].as_f64(),
+                    ) {
+                        (Some(width), Some(height), Some(fps)) => {
+                            format!("Received: {width}×{height} · {fps:.0} FPS")
+                        }
+                        _ => "Waiting for stream measurements…".into(),
+                    };
+                    received_label.set(label);
+                }
+            }
+        }
+    });
+    let attach_pk = pk.clone();
+    let attach_container = container.clone();
+    use_effect(move || {
+        let _ = document::eval(&attach_js(&attach_pk, &attach_container, "screen"));
+    });
+    let detach_container = container.clone();
+    use_drop(move || {
+        let _ = document::eval(&detach_js(&detach_container));
+    });
+    let gain_pk = pk.clone();
+    use_effect(move || {
+        let s = state.read();
+        let gain = if s.voice.deafened {
+            0.0
+        } else {
+            s.stream_gain_of(&gain_pk)
+        };
+        let _ = document::eval(&format!(
+            "{SCREEN_JS}\nwindow.dxScreen.setStreamVolume({gain},{});",
+            js_str(&gain_pk)
+        ));
+    });
+    let mut x = use_signal(move || 160.0_f64 + (index % 4) as f64 * 48.0);
+    let mut y = use_signal(move || 90.0_f64 + (index % 4) as f64 * 48.0);
     let mut w = use_signal(|| 880.0_f64);
     let mut h = use_signal(|| 540.0_f64);
     let mut drag = use_signal(|| None::<Drag>);
 
-    let Some(pk) = viewing() else {
-        return rsx! { Fragment {} };
-    };
     let name = state.read().display_name(&pk);
 
     let stream_volume = state.read().stream_volumes.get(&pk).copied().unwrap_or(100);
@@ -1653,11 +1850,6 @@ pub fn ScreenWatchWindow() -> Element {
     let has_audio = state.read().stream_has_audio.contains(&pk);
     let pk_vol = pk.clone();
     let pk_mute = pk.clone();
-    let apply_stream = move |vol: u32, muted: bool| {
-        let gain = if muted { 0.0 } else { vol as f32 / 100.0 };
-        let _ = document::eval(&stream_volume_js(gain));
-    };
-    let apply_from_slider = apply_stream;
 
     rsx! {
         if drag().is_some() {
@@ -1714,7 +1906,6 @@ pub fn ScreenWatchWindow() -> Element {
                                 let mut s = state.write();
                                 if now { s.stream_muted.insert(pk_mute.clone()); } else { s.stream_muted.remove(&pk_mute); }
                             }
-                            apply_stream(stream_volume, now);
                         },
                         dangerous_inner_html: if stream_muted {
                             crate::features::icons::SPEAKER_OFF
@@ -1733,7 +1924,6 @@ pub fn ScreenWatchWindow() -> Element {
                         oninput: move |e| {
                             let val: u32 = e.value().parse().unwrap_or(100).clamp(0, 200);
                             state.write().stream_volumes.insert(pk_vol.clone(), val);
-                            apply_from_slider(val, stream_muted);
                         },
                     }
                     span { class: "text-[10px] text-[var(--text-dim)] w-8 text-right", "{stream_volume}%" }
@@ -1741,15 +1931,16 @@ pub fn ScreenWatchWindow() -> Element {
                 button {
                     class: "text-[var(--text-dim)] hover:text-[var(--text)] text-lg leading-none",
                     onmousedown: move |e| e.stop_propagation(),
-                    onclick: move |_| state.write().screen_viewing = None,
+                    onclick: move |_| { state.write().screen_viewing.remove(&pk); },
                     "✕"
                 }
             }
             div {
-                id: "screenshare-viewer",
+                id: "{container}",
                 class: "flex-1 min-h-0 bg-black flex items-center justify-center text-[var(--text-dim)] text-sm",
                 "Connecting to stream…"
             }
+            div { class: "px-3 py-1 text-[10px] text-[var(--text-dim)] shrink-0", "{received_label}" }
             div {
                 class: "absolute bottom-0 right-0 w-4 h-4 cursor-nwse-resize",
                 style: "background: linear-gradient(135deg, transparent 0 50%, var(--border-strong) 50% 100%);",
@@ -1766,6 +1957,23 @@ pub fn ScreenWatchWindow() -> Element {
 #[cfg(test)]
 mod js_escaping_tests {
     use super::{attach_js, js_str, screen_stats_js, share_js};
+
+    #[test]
+    fn fps_selection_preserves_resolution_and_scales_the_upload_budget() {
+        let mut settings = crate::settings::ClientSettings {
+            screenshare_quality: "4k".into(),
+            screenshare_fps: Some(60),
+            ..Default::default()
+        };
+        let capture = super::selected_capture_settings(&settings);
+        assert_eq!(
+            (capture.width, capture.height, capture.fps),
+            (3840, 2160, 60)
+        );
+        assert_eq!(capture.max_bitrate, 64_000_000);
+        settings.screenshare_fps = Some(0);
+        assert_eq!(super::selected_capture_settings(&settings).fps, 30);
+    }
 
     #[test]
     fn a_quote_in_a_server_string_cannot_close_the_literal() {

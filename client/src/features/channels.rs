@@ -1036,7 +1036,7 @@ fn ScreenShareStatsRow(
             div { class: "mt-1 border-t border-[var(--border)] pt-1.5 text-[10px] text-[var(--text-dim)]",
                 span { class: "text-[var(--text-muted)]", "Screen share {direction}: " }
                 if direction == "outbound" && native_screen_share {
-                    "Native capture stats are not available here."
+                    "Waiting for native capture stats."
                 } else if direction == "inbound" {
                     "Waiting for a remote screen share."
                 } else {
@@ -1207,7 +1207,7 @@ fn VoiceOccupant(
     let pk_mute = pubkey.clone();
     let pk_watch = pubkey.clone();
     let pk_camera = pubkey.clone();
-    let is_watching_screen = state.read().screen_viewing.as_deref() == Some(pubkey.as_str());
+    let is_watching_screen = state.read().screen_viewing.contains(&pubkey);
     let is_watching_camera = state.read().cameras_watching.contains(&pubkey);
 
     rsx! {
@@ -1269,11 +1269,9 @@ fn VoiceOccupant(
                         onclick: move |_| {
                             if can_watch {
                                 let mut s = state.write();
-                                s.screen_viewing = if s.screen_viewing.as_deref() == Some(pk_watch.as_str()) {
-                                    None
-                                } else {
-                                    Some(pk_watch.clone())
-                                };
+                                if !s.screen_viewing.remove(&pk_watch) {
+                                    s.screen_viewing.insert(pk_watch.clone());
+                                }
                             }
                         },
                         dangerous_inner_html: crate::features::icons::SCREEN,
@@ -1565,8 +1563,6 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                     }
                                 }
 
-                                                            let q = settings.read().screenshare_quality.clone();
-                                                            let a = settings.read().screenshare_audio;
                                                             if native_capture {
                                                                 if now && state.peek().screen_video_token.is_none() {
                                                                     state.write().error_toast = Some(
@@ -1581,7 +1577,9 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                                                     s.screen_share_target = None;
                                                                 }
                                                             } else if now {
-                                                                let _ = document::eval(&crate::features::screenshare::share_js(true, &q, a));
+                                                                let quality = settings.read().screenshare_quality.clone();
+                                                                let audio = settings.read().screenshare_audio;
+                                                                let _ = document::eval(&crate::features::screenshare::share_js(true, &quality, audio));
                                                             } else {
                                                                 let _ = document::eval(&crate::features::screenshare::share_js(false, "", true));
                                                             }

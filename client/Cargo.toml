@@ -81,6 +81,7 @@ name = "Discordia"
 path = "src/main.rs"
 
 [target.'cfg(target_os = "windows")'.dependencies]
+windows-capture = "2.0.1"
 windows = { version = "0.61", features = [
     "Wdk_System_SystemServices",
     "Win32_Foundation",

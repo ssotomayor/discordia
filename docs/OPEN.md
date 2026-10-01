@@ -27,7 +27,7 @@ and the decisions taken deliberately.
 
 ## Accepted trade-offs — recorded, not tracked
 
-- Windows captures the screen in the webview. WebView2 is Chromium; `getDisplayMedia` works.
+- Windows uses Windows Graphics Capture through Rust; system audio excludes Discordia but includes other applications.
 - Stream audio is subscribed on publication, not on watch.
 - Every Windows activation leaks its 12-byte blob, deliberately.
 - The Windows blob's lifetime rule is an observation, not a contract.
