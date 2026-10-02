@@ -208,11 +208,11 @@ int32_t NvidiaH264EncoderImpl::InitEncode(
   nv_initialize_params_.encodeConfig = &nv_encode_config_;
 
   GUID encodeGuid = NV_ENC_CODEC_H264_GUID;
-  GUID presetGuid = NV_ENC_PRESET_P4_GUID;
+  GUID presetGuid = NV_ENC_PRESET_P5_GUID;
 
   encoder_->CreateDefaultEncoderParams(&nv_initialize_params_, encodeGuid,
                                        presetGuid,
-                                       NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY);
+                                       NV_ENC_TUNING_INFO_LOW_LATENCY);
 
   nv_initialize_params_.frameRateNum =
       static_cast<uint32_t>(configuration_.max_frame_rate);
@@ -227,7 +227,12 @@ int32_t NvidiaH264EncoderImpl::InitEncode(
       NVENC_INFINITE_GOPLENGTH;
   nv_encode_config_.rcParams.version = NV_ENC_RC_PARAMS_VER;
   nv_encode_config_.rcParams.rateControlMode = NV_ENC_PARAMS_RC_CBR;
+  nv_encode_config_.rcParams.multiPass = NV_ENC_TWO_PASS_QUARTER_RESOLUTION;
+  nv_encode_config_.rcParams.enableAQ = 1;
+  nv_encode_config_.rcParams.aqStrength = 8;
+  nv_encode_config_.rcParams.enableLookahead = 0;
   nv_encode_config_.rcParams.averageBitRate = configuration_.target_bps;
+  nv_encode_config_.rcParams.maxBitRate = configuration_.target_bps;
   nv_encode_config_.rcParams.vbvBufferSize =
       (nv_encode_config_.rcParams.averageBitRate *
        nv_initialize_params_.frameRateDen /

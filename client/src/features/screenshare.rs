@@ -17,6 +17,8 @@ window.dxScreen = window.dxScreen || (function () {
   let localShareVideoTrack = null;
   let screenCaptureTrack = null;
   let remoteShareVideoTrack = null;
+  let selfPreviewIdentity = null;
+  let selfPreviewEnabled = true;
   let screenStatsEnabled = false;
   let screenStatsTimer = null;
   let screenStatsInFlight = false;
@@ -133,6 +135,25 @@ window.dxScreen = window.dxScreen || (function () {
   const VIDEO_SUFFIX = '#video';
   function baseIdentity(id) {
     return id.endsWith(VIDEO_SUFFIX) ? id.slice(0, -VIDEO_SUFFIX.length) : id;
+  }
+  function applySelfPreviewSubscription(pub, participant, previousIdentity) {
+    if (!pub || !participant || pub.kind !== 'video' || kindOf(pub, pub.track) !== 'screen') return;
+    const identity = baseIdentity(participant.identity);
+    if (identity !== selfPreviewIdentity && identity !== previousIdentity) return;
+    try { pub.setSubscribed(identity === selfPreviewIdentity ? selfPreviewEnabled : true); }
+    catch (e) { console.warn('[dxScreen] self preview subscribe toggle failed', e); }
+  }
+  function setSelfPreview(identity, enabled) {
+    const previousIdentity = selfPreviewIdentity;
+    selfPreviewIdentity = identity;
+    selfPreviewEnabled = !!enabled;
+    if (!selfPreviewEnabled || !identity) detach('screenshare-self');
+    if (room && room.remoteParticipants) room.remoteParticipants.forEach(function (participant) {
+      participant.trackPublications.forEach(function (pub) {
+        applySelfPreviewSubscription(pub, participant, previousIdentity);
+      });
+    });
+    if (selfPreviewEnabled && identity) attach(identity, 'screenshare-self', 'screen');
   }
   function videoTrackFor(id, kind) {
     if (kind === 'camera') return tracks[trackKey(id, 'camera')] || tracks[trackKey(id + VIDEO_SUFFIX, 'camera')];
@@ -270,8 +291,9 @@ window.dxScreen = window.dxScreen || (function () {
     thisRoom.on(lk.RoomEvent.ConnectionStateChanged, function (st) {
       console.log('[dxScreen] connection state', st);
     });
-    thisRoom.on(lk.RoomEvent.TrackPublished, function (pub) {
+    thisRoom.on(lk.RoomEvent.TrackPublished, function (pub, participant) {
       applyAudioSubscription(pub);
+      applySelfPreviewSubscription(pub, participant);
     });
     thisRoom.on(lk.RoomEvent.TrackSubscribed, function (track, pub, participant) {
       if (track.kind === 'audio') {
@@ -337,6 +359,11 @@ window.dxScreen = window.dxScreen || (function () {
       return;
     }
     applyAudioSubscriptions();
+    if (room && room.remoteParticipants) room.remoteParticipants.forEach(function (participant) {
+      participant.trackPublications.forEach(function (pub) {
+        applySelfPreviewSubscription(pub, participant);
+      });
+    });
     if (localCameraTrack && localCameraTrack.readyState !== 'ended') {
       try {
         await thisRoom.localParticipant.publishTrack(localCameraTrack, cameraPublishOpts(lastCameraOpts));
@@ -421,8 +448,9 @@ window.dxScreen = window.dxScreen || (function () {
     }
     remoteStatsInFlight = true;
     try {
-      const stats = await remoteShareVideoTrack.getRTCStatsReport();
-      if (!screenStatsEnabled || !stats) return;
+      const track = remoteShareVideoTrack;
+      const stats = await track.getRTCStatsReport();
+      if (!screenStatsEnabled || !stats || track !== remoteShareVideoTrack) return;
       let inbound = null;
       stats.forEach(function (entry) {
         if (entry.type === 'inbound-rtp' && entry.kind === 'video') inbound = entry;
@@ -437,6 +465,13 @@ window.dxScreen = window.dxScreen || (function () {
       const codec = inbound.codecId ? stats.get(inbound.codecId) : null;
       post('screen-stats-in', {
         active: true,
+        trackSid: track.sid || null,
+        freezeCount: Number.isFinite(inbound.freezeCount) ? inbound.freezeCount : null,
+        freezeDurationSeconds: Number.isFinite(inbound.totalFreezesDuration) ? inbound.totalFreezesDuration : null,
+        framesDropped: Number.isFinite(inbound.framesDropped) ? inbound.framesDropped : null,
+        nackCount: Number.isFinite(inbound.nackCount) ? inbound.nackCount : null,
+        pliCount: Number.isFinite(inbound.pliCount) ? inbound.pliCount : null,
+        keyFramesDecoded: Number.isFinite(inbound.keyFramesDecoded) ? inbound.keyFramesDecoded : null,
         encodedWidth: inbound.frameWidth || null,
         encodedHeight: inbound.frameHeight || null,
         encodedFps: inbound.framesPerSecond || null,
@@ -474,6 +509,7 @@ window.dxScreen = window.dxScreen || (function () {
     }, 1000);
   }
   function attach(identity, cid, kind, tries) {
+    if (cid === 'screenshare-self' && !selfPreviewEnabled) return;
     kind = kind || 'screen';
     const c = document.getElementById(cid);
     if (!c) {
@@ -847,7 +883,7 @@ window.dxScreen = window.dxScreen || (function () {
     clearRemoteTracks();
     Object.keys(attached).forEach(detach);
   }
-  return { connect: connect, attach: attach, detach: detach, previewStats: previewStats, requestAndStartShare: requestAndStartShare, stopShare: stopShare, disconnect: disconnect, setStreamVolume: setStreamVolume, setSink: setSink, setNativeStreamAudio: setNativeStreamAudio, setStatsEnabled: setStatsEnabled, startCamera: startCamera, stopCamera: stopCamera, listCameras: listCameras, attachLocalCamera: attachLocalCamera, setE2eeKey: setE2eeKey };
+  return { connect: connect, setSelfPreview: setSelfPreview, attach: attach, detach: detach, previewStats: previewStats, requestAndStartShare: requestAndStartShare, stopShare: stopShare, disconnect: disconnect, setStreamVolume: setStreamVolume, setSink: setSink, setNativeStreamAudio: setNativeStreamAudio, setStatsEnabled: setStatsEnabled, startCamera: startCamera, stopCamera: stopCamera, listCameras: listCameras, attachLocalCamera: attachLocalCamera, setE2eeKey: setE2eeKey };
 })();
 "#;
 
@@ -1285,6 +1321,23 @@ pub fn ScreenShareBridge() -> Element {
                         } else {
                             None
                         };
+                        tracing::debug!(
+                            ?screen_stats,
+                            track_sid = msg.get("trackSid").and_then(serde_json::Value::as_str),
+                            freeze_count =
+                                msg.get("freezeCount").and_then(serde_json::Value::as_u64),
+                            freeze_duration_secs = msg
+                                .get("freezeDurationSeconds")
+                                .and_then(serde_json::Value::as_f64),
+                            frames_dropped =
+                                msg.get("framesDropped").and_then(serde_json::Value::as_u64),
+                            nack_count = msg.get("nackCount").and_then(serde_json::Value::as_u64),
+                            pli_count = msg.get("pliCount").and_then(serde_json::Value::as_u64),
+                            key_frames_decoded = msg
+                                .get("keyFramesDecoded")
+                                .and_then(serde_json::Value::as_u64),
+                            "webview screen share stats"
+                        );
                         let mut s = state.write();
                         if outbound {
                             if !(crate::sysvideo::supported() && s.screen_sharing) {
@@ -1683,15 +1736,58 @@ pub fn ScreenSelfPreview() -> Element {
             .unwrap_or(0)
     });
 
-    let mut last = use_signal(|| false);
-    use_effect(move || {
-        let sh = sharing();
-        if sh != *last.peek() {
-            if sh && let Some(pk) = self_pk() {
-                let _ = document::eval(&attach_js(&pk, "screenshare-self", "screen"));
+    let window = dioxus::desktop::use_window();
+    let mut preview_active = use_signal(|| {
+        window.window.is_focused() && window.window.is_visible() && !window.window.is_minimized()
+    });
+    let window_id = window.window.id();
+    dioxus::desktop::use_wry_event_handler(move |event, _| {
+        use dioxus::desktop::tao::event::{Event, WindowEvent};
+        if let Event::WindowEvent {
+            window_id: id,
+            event,
+            ..
+        } = event
+            && *id == window_id
+        {
+            let active = match event {
+                WindowEvent::Focused(focused) => {
+                    Some(*focused && window.window.is_visible() && !window.window.is_minimized())
+                }
+                WindowEvent::Resized(_) => Some(
+                    window.window.is_focused()
+                        && window.window.is_visible()
+                        && !window.window.is_minimized(),
+                ),
+                _ => None,
+            };
+            if let Some(active) = active
+                && active != *preview_active.peek()
+            {
+                preview_active.set(active);
             }
-            last.set(sh);
         }
+    });
+    use_effect(move || {
+        let identity = if sharing() { self_pk() } else { None };
+        let enabled = preview_active();
+        tracing::debug!(
+            enabled,
+            sharing = identity.is_some(),
+            "self screen preview state"
+        );
+        if !enabled {
+            drag.set(None);
+        }
+        let _ = document::eval(&format!(
+            "{SCREEN_JS}\nwindow.dxScreen.setSelfPreview({},{enabled});",
+            serde_json::to_string(&identity).unwrap_or_else(|_| "null".into()),
+        ));
+    });
+    use_drop(|| {
+        let _ = document::eval(&format!(
+            "{SCREEN_JS}\nwindow.dxScreen.setSelfPreview(null,true);"
+        ));
     });
 
     if !sharing() {
@@ -1778,6 +1874,12 @@ pub fn ScreenSelfPreview() -> Element {
                     class: "text-[var(--text-dim)] text-[10px]",
                     "Starting…"
                 }
+                if !preview_active() {
+                    div {
+                        class: "absolute inset-0 flex items-center justify-center bg-black text-[var(--text-dim)] text-[10px]",
+                        "Preview paused while the app is in the background"
+                    }
+                }
                 if native_capture {
                     div {
                         class: "absolute left-2 bottom-2 px-1.5 py-0.5 rounded bg-black/70 text-[9px] pointer-events-none",
@@ -1812,6 +1914,46 @@ pub(crate) enum Drag {
 pub fn ScreenWatchWindow() -> Element {
     let state = use_app_state();
     let viewing = use_memo(move || state.read().screen_viewing.clone());
+    let mut fullscreen = use_signal::<Option<String>>(|| None);
+    let mut was_fullscreen = use_signal(|| false);
+    let window = dioxus::desktop::use_window();
+    let original_fullscreen = use_hook({
+        let window = window.clone();
+        move || window.window.fullscreen()
+    });
+    let fullscreen_window = window.clone();
+    let restore_fullscreen = original_fullscreen.clone();
+    use_effect(move || {
+        let active = fullscreen().is_some();
+        if active != *was_fullscreen.peek() {
+            fullscreen_window.window.set_fullscreen(if active {
+                Some(dioxus::desktop::tao::window::Fullscreen::Borderless(None))
+            } else {
+                restore_fullscreen.clone()
+            });
+            was_fullscreen.set(active);
+        }
+    });
+    let window_id = window.window.id();
+    dioxus::desktop::use_wry_event_handler(move |event, _| {
+        use dioxus::desktop::tao::event::{ElementState, Event, WindowEvent};
+        if let Event::WindowEvent {
+            window_id: id,
+            event: WindowEvent::KeyboardInput { event, .. },
+            ..
+        } = event
+            && *id == window_id
+            && event.state == ElementState::Pressed
+            && event.logical_key == dioxus::desktop::tao::keyboard::Key::Escape
+        {
+            fullscreen.set(None);
+        }
+    });
+    use_drop(move || {
+        if *was_fullscreen.peek() {
+            window.window.set_fullscreen(original_fullscreen);
+        }
+    });
 
     let watching = use_memo(move || state.read().screen_viewing.clone());
     let stream_levels = use_memo(move || {
@@ -1873,13 +2015,17 @@ pub fn ScreenWatchWindow() -> Element {
     watched.sort();
     rsx! {
         for (index, pk) in watched.into_iter().enumerate() {
-            ScreenWatchTile { key: "{pk}", pubkey: pk, index }
+            ScreenWatchTile { key: "{pk}", pubkey: pk, index, fullscreen }
         }
     }
 }
 
 #[component]
-fn ScreenWatchTile(pubkey: String, index: usize) -> Element {
+fn ScreenWatchTile(
+    pubkey: String,
+    index: usize,
+    mut fullscreen: Signal<Option<String>>,
+) -> Element {
     let mut state = use_app_state();
     let pk = pubkey;
     let container = format!("screenshare-viewer-{pk}");
@@ -1915,7 +2061,11 @@ fn ScreenWatchTile(pubkey: String, index: usize) -> Element {
         let _ = document::eval(&attach_js(&attach_pk, &attach_container, "screen"));
     });
     let detach_container = container.clone();
+    let detach_pk = pk.clone();
     use_drop(move || {
+        if fullscreen.peek().as_ref() == Some(&detach_pk) {
+            fullscreen.set(None);
+        }
         let _ = document::eval(&detach_js(&detach_container));
     });
     let gain_pk = pk.clone();
@@ -1936,6 +2086,16 @@ fn ScreenWatchTile(pubkey: String, index: usize) -> Element {
     let mut w = use_signal(|| 880.0_f64);
     let mut h = use_signal(|| 540.0_f64);
     let mut drag = use_signal(|| None::<Drag>);
+    let mut maximized = use_signal(|| false);
+    let is_fullscreen = fullscreen().as_ref() == Some(&pk);
+    let expanded = maximized() || is_fullscreen;
+    let layout = if is_fullscreen {
+        "left:0;top:0;width:100vw;height:100vh;z-index:60;border-radius:0;".into()
+    } else if maximized() {
+        "left:12px;top:12px;width:calc(100vw - 24px);height:calc(100vh - 24px);z-index:50;".into()
+    } else {
+        format!("left:{x}px;top:{y}px;width:{w}px;height:{h}px;")
+    };
 
     let name = state.read().display_name(&pk);
 
@@ -1944,6 +2104,7 @@ fn ScreenWatchTile(pubkey: String, index: usize) -> Element {
     let has_audio = state.read().stream_has_audio.contains(&pk);
     let pk_vol = pk.clone();
     let pk_mute = pk.clone();
+    let pk_fullscreen = pk.clone();
 
     rsx! {
         if drag().is_some() {
@@ -1965,19 +2126,58 @@ fn ScreenWatchTile(pubkey: String, index: usize) -> Element {
         }
         div {
             class: "fixed z-40 flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-2xl overflow-hidden dxf-modal-in",
-            style: "left: {x}px; top: {y}px; width: {w}px; height: {h}px;",
+            style: "{layout}",
             div {
                 class: "h-9 px-3 flex items-center gap-2 border-b border-[var(--border)] shrink-0 cursor-move select-none",
                 onmousedown: move |e| {
+                    if expanded { return; }
                     let c = e.client_coordinates();
                     drag.set(Some(Drag::Move { dx: c.x - x(), dy: c.y - y() }));
                 },
                 span { class: "w-2.5 h-2.5 rounded-full shrink-0", style: "background: var(--danger);" }
-                span { class: "text-sm text-[var(--text)] font-medium truncate", "{name}'s screen" }
+                span { class: "min-w-0 flex-1 text-sm text-[var(--text)] font-medium truncate", "{name}'s screen" }
                 span { class: "text-[10px] uppercase tracking-wider text-[var(--danger)] font-semibold", "Live" }
-                div { class: "flex-1" }
+                button {
+                    r#type: "button",
+                    class: "w-7 h-7 flex items-center justify-center rounded text-[var(--text-dim)] hover:text-[var(--text)]",
+                    title: if maximized() { "Restore window" } else { "Expand within app" },
+                    aria_label: if maximized() { "Restore window" } else { "Expand within app" },
+                    disabled: is_fullscreen,
+                    onmousedown: move |e| e.stop_propagation(),
+                    onclick: move |_| { drag.set(None); maximized.toggle(); },
+                    "▣"
+                }
+                button {
+                    r#type: "button",
+                    class: "w-7 h-7 flex items-center justify-center rounded text-[var(--text-dim)] hover:text-[var(--text)]",
+                    title: if is_fullscreen { "Exit full screen (Esc)" } else { "Full screen" },
+                    aria_label: if is_fullscreen { "Exit full screen" } else { "Full screen" },
+                    onmousedown: move |e| e.stop_propagation(),
+                    onclick: move |_| {
+                        drag.set(None);
+                        fullscreen.set(if is_fullscreen { None } else { Some(pk_fullscreen.clone()) });
+                    },
+                    if is_fullscreen { "⤡" } else { "⤢" }
+                }
+                button {
+                    class: "text-[var(--text-dim)] hover:text-[var(--text)] text-lg leading-none",
+                    onmousedown: move |e| e.stop_propagation(),
+                    title: "Stop watching",
+                    aria_label: "Stop watching",
+                    onclick: move |_| { state.write().screen_viewing.remove(&pk); },
+                    "✕"
+                }
+            }
+            div {
+                id: "{container}",
+                class: "flex-1 min-h-0 bg-black flex items-center justify-center text-[var(--text-dim)] text-sm",
+                "Connecting to stream…"
+            }
+            div {
+                class: "px-3 py-1 flex flex-wrap items-center justify-between gap-2 shrink-0",
+                span { class: "text-[10px] text-[var(--text-dim)]", "{received_label}" }
                 div {
-                    class: "flex items-center gap-1.5 mr-2",
+                    class: "flex items-center gap-1.5",
                     onmousedown: move |e| e.stop_propagation(),
                     if !has_audio {
                         span {
@@ -2022,20 +2222,8 @@ fn ScreenWatchTile(pubkey: String, index: usize) -> Element {
                     }
                     span { class: "text-[10px] text-[var(--text-dim)] w-8 text-right", "{stream_volume}%" }
                 }
-                button {
-                    class: "text-[var(--text-dim)] hover:text-[var(--text)] text-lg leading-none",
-                    onmousedown: move |e| e.stop_propagation(),
-                    onclick: move |_| { state.write().screen_viewing.remove(&pk); },
-                    "✕"
-                }
             }
-            div {
-                id: "{container}",
-                class: "flex-1 min-h-0 bg-black flex items-center justify-center text-[var(--text-dim)] text-sm",
-                "Connecting to stream…"
-            }
-            div { class: "px-3 py-1 text-[10px] text-[var(--text-dim)] shrink-0", "{received_label}" }
-            div {
+            if !expanded { div {
                 class: "absolute bottom-0 right-0 w-4 h-4 cursor-nwse-resize",
                 style: "background: linear-gradient(135deg, transparent 0 50%, var(--border-strong) 50% 100%);",
                 onmousedown: move |e| {
@@ -2043,7 +2231,7 @@ fn ScreenWatchTile(pubkey: String, index: usize) -> Element {
                     let c = e.client_coordinates();
                     drag.set(Some(Drag::Resize { px: c.x, py: c.y, w0: w(), h0: h() }));
                 },
-            }
+            } }
         }
     }
 }
@@ -2209,8 +2397,7 @@ mod js_escaping_tests {
             "screen-share diagnostics read sender stats including encoder efficiency"
         );
         assert!(
-            js.contains("remoteShareVideoTrack.getRTCStatsReport()")
-                && js.contains("entry.type === 'inbound-rtp'"),
+            js.contains("track.getRTCStatsReport()") && js.contains("entry.type === 'inbound-rtp'"),
             "screen-share diagnostics read received video stats"
         );
         assert!(

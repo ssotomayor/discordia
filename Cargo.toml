@@ -1,10 +1,11 @@
 [workspace]
 resolver = "2"
 members = ["client", "server", "rendezvous", "grid-layout", "protocol", "bot-sdk"]
-exclude = ["vendor/webrtc-sys"]
+exclude = ["vendor/webrtc-sys", "vendor/livekit"]
 
 [patch.crates-io]
 webrtc-sys = { path = "vendor/webrtc-sys" }
+livekit = { path = "vendor/livekit" }
 
 [workspace.dependencies]
 dioxusfun-server = { path = "server" }

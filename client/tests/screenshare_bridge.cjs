@@ -5,7 +5,7 @@ const path = require('node:path');
 
 const source = fs.readFileSync(path.join(__dirname, '../src/features/screenshare.rs'), 'utf8');
 let script = source.split('const SCREEN_JS: &str = r#"')[1].split('"#;')[0];
-script = script.replace('return { connect: connect', 'return { testClearTracks: clearRemoteTracks, testAudioTracks: audioTracks, testTracks: tracks, connect: connect');
+script = script.replace('return { connect: connect', 'return { testClearTracks: clearRemoteTracks, testAudioTracks: audioTracks, testTracks: tracks, testSetRoom(r) { room = r; }, testSetRemoteTrack(t) { remoteShareVideoTrack = t; screenStatsEnabled = true; }, testPollRemoteStats: pollRemoteScreenStats, connect: connect');
 const containers = new Map();
 function element() {
   return {
@@ -18,7 +18,8 @@ function element() {
     remove() { this.removed = true; },
   };
 }
-const context = { window: { postMessage() {} }, document: {
+const messages = [];
+const context = { window: { postMessage(message) { messages.push(message); } }, document: {
   body: element(), getElementById(id) { return containers.get(id); },
 }, console, setTimeout() {}, clearTimeout() {}, navigator: {} };
 vm.runInNewContext(script, context);
@@ -91,4 +92,50 @@ console.log('Native camera and screen share one identity and detach independentl
   bridge.testClearTracks();
   assert.equal(bobAudio.detached.length, 2);
   console.log('Preview measurements belong to each stream and preserve actual FPS.');
+
+  const selfScreen = track();
+  bridge.testTracks['self#video|screen'] = selfScreen;
+  containers.set('screenshare-self', element());
+  const subscriptions = [];
+  const ownPublication = { kind: 'video', source: 'screen_share', setSubscribed(value) { subscriptions.push(value); } };
+  const untouchedPublication = { kind: 'video', source: 'camera', setSubscribed() { assert.fail('camera subscription changed'); } };
+  const otherPublication = { kind: 'video', source: 'screen_share', setSubscribed() { assert.fail('other viewer subscription changed'); } };
+  bridge.testSetRoom({ remoteParticipants: new Map([
+    ['self#video', { identity: 'self#video', trackPublications: new Map([['screen', ownPublication], ['camera', untouchedPublication]]) }],
+    ['bob#video', { identity: 'bob#video', trackPublications: new Map([['screen', otherPublication]]) }],
+  ]) });
+  bridge.setSelfPreview('self', true);
+  assert.equal(selfScreen.elements.length, 1);
+  bridge.setSelfPreview('self', false);
+  assert.equal(selfScreen.detached.length, 1);
+  bridge.attach('self', 'screenshare-self', 'screen');
+  assert.equal(selfScreen.elements.length, 1);
+  bridge.setSelfPreview('self', true);
+  assert.equal(selfScreen.elements.length, 2);
+  assert.deepEqual(subscriptions, [true, false, true]);
+  console.log('Background preview unsubscribes only the native self screen and resumes independently.');
+
+  let finishOldReport;
+  const oldTrack = { sid: 'old', getRTCStatsReport() { return new Promise(resolve => { finishOldReport = resolve; }); } };
+  const videoReport = new Map([
+    ['v', { type: 'inbound-rtp', kind: 'video', framesDecoded: 12, freezeCount: 2, totalFreezesDuration: 1.5, framesDropped: 3, nackCount: 4, pliCount: 5, keyFramesDecoded: 6 }],
+  ]);
+  const newTrack = { sid: 'new', async getRTCStatsReport() { return videoReport; } };
+  bridge.testSetRemoteTrack(oldTrack);
+  const pending = bridge.testPollRemoteStats();
+  bridge.testSetRemoteTrack(newTrack);
+  const before = messages.length;
+  finishOldReport(videoReport);
+  await pending;
+  assert.equal(messages.length, before);
+  await bridge.testPollRemoteStats();
+  const diagnostic = messages.at(-1);
+  assert.equal(diagnostic.trackSid, 'new');
+  assert.equal(diagnostic.freezeCount, 2);
+  assert.equal(diagnostic.freezeDurationSeconds, 1.5);
+  assert.equal(diagnostic.framesDropped, 3);
+  assert.equal(diagnostic.nackCount, 4);
+  assert.equal(diagnostic.pliCount, 5);
+  assert.equal(diagnostic.keyFramesDecoded, 6);
+  console.log('Freeze diagnostics identify the received track and discard stale asynchronous reports.');
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -15,6 +15,9 @@ mod host;
 mod identity;
 mod image_edit;
 mod keyvault;
+#[cfg(test)]
+#[path = "../../vendor/livekit/src/rtc_engine/start_bitrate.rs"]
+mod livekit_start_bitrate_tests;
 mod mediakey;
 mod native_sounds;
 mod net;
