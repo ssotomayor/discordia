@@ -1,8 +1,8 @@
 use dioxus::prelude::*;
-use serde_json::{Value, json};
+use rand::Rng;
 
 use crate::protocol::{ClientMessage, Id};
-use crate::state::{AppState, GatewayTx, use_app_state, use_gateway};
+use crate::state::{GatewayTx, use_app_state, use_gateway};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Capability {
@@ -26,7 +26,6 @@ pub struct ActivityDef {
     pub name: &'static str,
     pub icon: &'static str,
     pub caps: &'static [Capability],
-    pub html: &'static str,
 }
 
 pub const ACTIVITIES: &[ActivityDef] = &[ActivityDef {
@@ -38,56 +37,15 @@ pub const ACTIVITIES: &[ActivityDef] = &[ActivityDef {
         Capability::ChannelRead,
         Capability::MessageSend,
     ],
-    html: DICE_HTML,
 }];
 
 #[component]
 pub fn ActivityHost() -> Element {
     let state = use_app_state();
-    let gateway = use_gateway();
 
     let mut picker_open = use_signal(|| false);
     let mut consenting = use_signal(|| None::<usize>);
     let mut launched = use_signal(|| None::<Launched>);
-
-    use_future(move || {
-        let gateway = gateway.clone();
-        async move {
-            let mut eval = document::eval(BRIDGE_JS);
-            loop {
-                let Ok(msg) = eval.recv::<Value>().await else {
-                    break;
-                };
-                let open = *launched.peek();
-                let def = open.as_ref().and_then(|l| ACTIVITIES.get(l.idx));
-                let req_id = msg.get("reqId").cloned().unwrap_or(Value::Null);
-                let method = msg.get("method").and_then(|m| m.as_str()).unwrap_or("");
-                let params = msg.get("params").cloned().unwrap_or(Value::Null);
-
-                let (ok, payload) = match def {
-                    Some(def) => handle_rpc(
-                        method,
-                        &params,
-                        def,
-                        open.as_ref().and_then(|l| l.channel),
-                        &state,
-                        &gateway,
-                    ),
-                    None => (false, json!("no activity is open")),
-                };
-                let reply = if ok {
-                    json!({ "__dxf_reply": req_id, "ok": true, "data": payload })
-                } else {
-                    json!({ "__dxf_reply": req_id, "ok": false, "error": payload })
-                };
-                let _ = document::eval(&format!(
-                    "var f=document.getElementById('dxf-activity-frame');\
-                 if(f&&f.contentWindow){{f.contentWindow.postMessage({}, '*');}}",
-                    reply
-                ));
-            }
-        }
-    });
 
     rsx! {
         button {
@@ -148,7 +106,7 @@ pub fn ActivityHost() -> Element {
 
         if let Some(idx) = launched().map(|l| l.idx) {
             if let Some(def) = ACTIVITIES.get(idx) {
-                ActivityWindow { def_idx: idx, name: def.name, icon: def.icon, html: def.html,
+                ActivityWindow { name: def.name, icon: def.icon, channel: launched().and_then(|l| l.channel),
                     on_close: move |_| launched.set(None),
                 }
             }
@@ -181,7 +139,7 @@ fn ConsentPanel(
                 }
             }
             div { class: "text-[10px] text-[var(--text-dim)] mb-2",
-                "Runs sandboxed in your client. It can't read your other channels, files, or keys."
+                "Runs locally in your client using the permissions listed above."
             }
             div { class: "flex gap-2",
                 button {
@@ -207,13 +165,11 @@ enum Drag {
 
 #[component]
 fn ActivityWindow(
-    def_idx: usize,
     name: &'static str,
     icon: &'static str,
-    html: &'static str,
+    channel: Option<Id>,
     on_close: EventHandler<()>,
 ) -> Element {
-    let _ = def_idx;
     let mut x = use_signal(|| 220.0_f64);
     let mut y = use_signal(|| 120.0_f64);
     let mut w = use_signal(|| 420.0_f64);
@@ -249,7 +205,7 @@ fn ActivityWindow(
                 },
                 span { class: "text-sm", "{icon}" }
                 span { class: "text-sm text-[var(--text)] font-medium truncate flex-1", "{name}" }
-                span { class: "text-[9px] uppercase tracking-wider text-[var(--text-dim)]", "Sandboxed" }
+                span { class: "text-[9px] uppercase tracking-wider text-[var(--text-dim)]", "Local" }
                 button {
                     class: "text-[var(--text-dim)] hover:text-[var(--text)] text-lg leading-none ml-1",
                     onmousedown: move |e| e.stop_propagation(),
@@ -257,12 +213,7 @@ fn ActivityWindow(
                     "✕"
                 }
             }
-            iframe {
-                id: "dxf-activity-frame",
-                class: "flex-1 min-h-0 w-full bg-white border-0",
-                "sandbox": "allow-scripts",
-                "srcdoc": "{html}",
-            }
+            DicePanel { channel }
             div {
                 class: "absolute bottom-0 right-0 w-4 h-4 cursor-nwse-resize",
                 style: "background: linear-gradient(135deg, transparent 0 50%, var(--border-strong) 50% 100%);",
@@ -282,156 +233,112 @@ struct Launched {
     channel: Option<Id>,
 }
 
-fn handle_rpc(
-    method: &str,
-    params: &Value,
-    def: &ActivityDef,
-    bound_channel: Option<Id>,
-    state: &Signal<AppState>,
-    gateway: &GatewayTx,
-) -> (bool, Value) {
-    let has = |c: Capability| def.caps.contains(&c);
-    match method {
-        "user.get" if has(Capability::UserRead) => {
-            let s = state.read();
-            match &s.self_user {
-                Some(u) => (true, json!({ "pubkey": u.pubkey, "username": u.username })),
-                None => (false, json!("not connected")),
-            }
-        }
-        "channel.get" if has(Capability::ChannelRead) => {
-            let s = state.read();
-            let cid = bound_channel;
-            let name = cid.and_then(|id| {
-                s.channels
-                    .iter()
-                    .find(|c| c.id == id)
-                    .map(|c| c.name.clone())
-            });
-            (
-                true,
-                json!({ "id": cid.map(|i| i.to_string()), "name": name }),
-            )
-        }
-        "message.send" if has(Capability::MessageSend) => {
-            let content = params
-                .get("content")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .trim()
-                .to_string();
-            if content.is_empty() {
-                return (false, json!("content is empty"));
-            }
-            let cid = bound_channel;
-            match cid {
-                Some(channel_id) => {
-                    gateway.send(ClientMessage::SendMessage {
-                        channel_id,
-                        content,
-                        image: None,
-                        reply_to: None,
-                    });
-                    (true, json!({ "sent": true }))
+#[component]
+fn DicePanel(channel: Option<Id>) -> Element {
+    let state = use_app_state();
+    let gateway = use_gateway();
+    let mut last = use_signal(|| None::<u8>);
+    let mut rolling = use_signal(|| false);
+    let mut shared = use_signal(|| false);
+    let mut generation = use_signal(|| 0_u64);
+    let mut error = use_signal(|| None::<String>);
+    let snapshot = state.read();
+    let username = snapshot
+        .self_user
+        .as_ref()
+        .map(|u| snapshot.display_name(&u.pubkey));
+    let channel_name = channel.and_then(|id| {
+        snapshot
+            .channels
+            .iter()
+            .find(|c| c.id == id)
+            .map(|c| c.name.clone())
+    });
+    drop(snapshot);
+    let face = last()
+        .map(|n| ["⚀", "⚁", "⚂", "⚃", "⚄", "⚅"][usize::from(n - 1)])
+        .unwrap_or("🎲");
+    rsx! {
+        div { class: "flex-1 min-h-0 flex flex-col items-center justify-center gap-4",
+            if let Some(name) = username { div { class: "text-sm text-[var(--text-muted)]", "Hi, {name}" } }
+            div { style: if rolling() { "font-size:84px;transform:rotate(20deg) scale(1.1);transition:transform .15s;" } else { "font-size:84px;transition:transform .15s;" }, "{face}" }
+            div { class: "flex gap-2",
+                button { class: "rounded border border-[var(--border)] px-3 py-2 text-[var(--accent)]", disabled: rolling(),
+                    onclick: move |_| {
+                        let value = rand::thread_rng().gen_range(1..=6);
+                        rolling.set(true);
+                        shared.set(false);
+                        generation += 1;
+                        error.set(None);
+                        spawn(async move {
+                            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                            last.set(Some(value));
+                            rolling.set(false);
+                        });
+                    }, "Roll"
                 }
-                None => (false, json!("no channel is open")),
+                button { class: "rounded border border-[var(--border)] px-3 py-2 text-[var(--accent)]", disabled: rolling() || last().is_none() || shared() || channel.is_none(),
+                    onclick: move |_| {
+                        if let (Some(channel_id), Some(value)) = (channel, last()) {
+                            let content = format!("🎲 rolled a {value}!");
+                            match send_dice(&gateway, channel_id, content) {
+                                Ok(()) => {
+                                    shared.set(true);
+                                    generation += 1;
+                                    let request = generation();
+                                    spawn(async move {
+                                        tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+                                        if generation() == request { shared.set(false); }
+                                    });
+                                },
+                                Err(message) => error.set(Some(message)),
+                            }
+                        }
+                    },
+                    if shared() { "Shared!" } else { "Share to chat" }
+                }
             }
+            if let Some(name) = channel_name { div { class: "text-xs text-[var(--text-muted)]", "shares go to #{name}" } }
+            if let Some(message) = error() { div { class: "text-xs text-[var(--danger)]", "{message}" } }
         }
-        _ => (false, json!("permission denied or unknown method")),
     }
 }
 
-const BRIDGE_JS: &str = r#"
-window.__dxfActivitySink = function (m) { try { dioxus.send(m); } catch (err) {} };
-if (!window.__dxfActivityWired) {
-  window.__dxfActivityWired = true;
-  window.addEventListener('message', function (e) {
-    var f = document.getElementById('dxf-activity-frame');
-    if (!f || e.source !== f.contentWindow) return;
-    var d = e.data;
-    if (!d || d.__dxf !== true) return;
-    if (window.__dxfActivitySink) window.__dxfActivitySink(d);
-  });
+fn send_dice(gateway: &GatewayTx, channel_id: Id, content: String) -> Result<(), String> {
+    gateway
+        .0
+        .send(ClientMessage::SendMessage {
+            channel_id,
+            content,
+            image: None,
+            reply_to: None,
+        })
+        .map_err(|_| "The connection is closed".to_string())
 }
-"#;
 
-const DICE_HTML: &str = r##"<!doctype html><html><head><meta charset="utf-8"><style>
-  body { margin:0; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
-    background:#15110d; color:#e8e2da; height:100vh; display:flex; flex-direction:column;
-    align-items:center; justify-content:center; gap:18px; }
-  .die { font-size:84px; line-height:1; user-select:none; transition:transform .15s ease; }
-  .die.rolling { transform:rotate(20deg) scale(1.1); }
-  button { font:inherit; padding:8px 16px; border-radius:8px; border:1px solid #5a4634;
-    background:transparent; color:#e0a06a; cursor:pointer; transition:all .15s ease; }
-  button:hover { border-color:#e0a06a; }
-  button:disabled { opacity:.4; cursor:default; }
-  .who { font-size:13px; color:#9a8c7c; min-height:18px; }
-  .row { display:flex; gap:10px; }
-</style></head><body>
-  <div class="who" id="who">…</div>
-  <div class="die" id="die">🎲</div>
-  <div class="row">
-    <button id="roll">Roll</button>
-    <button id="share" disabled>Share to chat</button>
-  </div>
-  <div class="who" id="where"></div>
-  <script>
-    const dxf = (function () {
-      let n = 0; const pending = {};
-      window.addEventListener('message', function (e) {
-        const d = e.data;
-        if (!d || d.__dxf_reply === undefined) return;
-        const p = pending[d.__dxf_reply]; if (!p) return;
-        delete pending[d.__dxf_reply];
-        d.ok ? p.resolve(d.data) : p.reject(d.error);
-      });
-      function call(method, params) {
-        return new Promise(function (resolve, reject) {
-          const reqId = ++n; pending[reqId] = { resolve: resolve, reject: reject };
-          parent.postMessage({ __dxf: true, reqId: reqId, method: method, params: params || {} }, '*');
-        });
-      }
-      return {
-        getUser: function () { return call('user.get'); },
-        getChannel: function () { return call('channel.get'); },
-        sendMessage: function (content) { return call('message.send', { content: content }); }
-      };
-    })();
-
-    const dieEl = document.getElementById('die');
-    const rollBtn = document.getElementById('roll');
-    const shareBtn = document.getElementById('share');
-    const whoEl = document.getElementById('who');
-    const whereEl = document.getElementById('where');
-    const faces = ['⚀','⚁','⚂','⚃','⚄','⚅'];
-    let last = 0;
-
-    dxf.getUser().then(function (u) { whoEl.textContent = 'Hi, ' + u.username; })
-       .catch(function () { whoEl.textContent = ''; });
-
-    function showWhere() {
-      dxf.getChannel()
-         .then(function (c) { whereEl.textContent = c && c.name ? 'shares go to #' + c.name : ''; })
-         .catch(function () { whereEl.textContent = ''; });
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn a_roll_uses_its_bound_channel_and_reports_a_closed_connection() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let gateway = GatewayTx(tx);
+        let channel = Id::new_v4();
+        send_dice(&gateway, channel, "🎲 rolled a 6!".into()).unwrap();
+        match rx.try_recv().unwrap() {
+            ClientMessage::SendMessage {
+                channel_id,
+                content,
+                image,
+                reply_to,
+            } => {
+                assert_eq!(channel_id, channel);
+                assert_eq!(content, "🎲 rolled a 6!");
+                assert!(image.is_none() && reply_to.is_none());
+            }
+            message => panic!("unexpected message: {message:?}"),
+        }
+        drop(rx);
+        assert!(send_dice(&gateway, channel, "🎲 rolled a 1!".into()).is_err());
     }
-    showWhere();
-
-    rollBtn.addEventListener('click', function () {
-      dieEl.classList.add('rolling');
-      last = 1 + Math.floor(Math.random() * 6);
-      setTimeout(function () {
-        dieEl.textContent = faces[last - 1];
-        dieEl.classList.remove('rolling');
-        shareBtn.disabled = false;
-      }, 150);
-    });
-
-    shareBtn.addEventListener('click', function () {
-      if (!last) return;
-      shareBtn.disabled = true;
-      dxf.sendMessage('🎲 rolled a ' + last + '!')
-         .then(function () { showWhere(); shareBtn.textContent = 'Shared!'; setTimeout(function(){ shareBtn.textContent='Share to chat'; shareBtn.disabled=false; }, 1200); })
-         .catch(function (err) { shareBtn.textContent = 'Denied'; });
-    });
-  </script>
-</body></html>"##;
+}

@@ -1906,6 +1906,11 @@ pub async fn handle_connection(
         .unregister_conn(conn_id, user.as_ref().map(|u| u.pubkey.as_str()));
 
     if let Some(u) = user {
+        // Another socket of this key may own the call and its screen share.
+        if ctx.state.has_sessions(&u.pubkey) {
+            tracing::info!(user = ?u.username, "a session closed; others remain");
+            return;
+        }
         let was_sharing = sharing_in(&ctx.state, &u.pubkey);
         let was_in = ctx.state.voice_channel_of(&u.pubkey);
         if let Some(cleared) = ctx.state.clear_voice(&u.pubkey) {

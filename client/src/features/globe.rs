@@ -44,13 +44,33 @@ pub fn Globe(
                             on_pick.call(code.to_string());
                         }
                     }
-                    Some("globe-place") => {
-                        let lat = msg.get("lat").and_then(|v| v.as_f64());
-                        let lon = msg.get("lon").and_then(|v| v.as_f64());
-                        if let (Some(lat), Some(lon)) = (lat, lon)
-                            && let Some(p) = (GeoPoint { lat, lon }).coarse()
+                    Some("globe-place") if pick() => {
+                        if let Ok(request) = serde_json::from_value::<
+                            super::globe_geometry::PlaceRequest,
+                        >(msg.clone())
+                            && let Some(point) = request.point()
                         {
-                            on_place.call(p);
+                            on_place.call(point);
+                        }
+                    }
+                    Some("globe-resize") => {
+                        if let Some(radius) = msg.get("radius").and_then(|v| v.as_f64()) {
+                            match tokio::task::spawn_blocking(move || {
+                                super::globe_geometry::dots(radius)
+                            })
+                            .await
+                            {
+                                Ok(dots) => {
+                                    if let Ok(json) = serde_json::to_string(&dots) {
+                                        let _ = document::eval(&format!(
+                                            "window.dxGlobe && window.dxGlobe.setDots({id:?}, {radius}, {json});"
+                                        ));
+                                    }
+                                }
+                                Err(error) => {
+                                    tracing::warn!(%error, "Globe geometry worker failed")
+                                }
+                            }
                         }
                     }
                     _ => {}
@@ -63,7 +83,11 @@ pub fn Globe(
     // fire in either order relative to `onmounted`.
     let id_pins = id.clone();
     use_effect(move || {
-        let json = serde_json::to_string(&pins()).unwrap_or_else(|_| "[]".into());
+        let prepared: Vec<_> = pins().into_iter().filter_map(|pin| {
+            let (u, focus) = super::globe_geometry::coordinates(GeoPoint { lat: pin.lat, lon: pin.lon })?;
+            Some(serde_json::json!({ "code": pin.code, "label": pin.label, "fresh": pin.fresh, "u": u, "focus": focus }))
+        }).collect();
+        let json = serde_json::to_string(&prepared).unwrap_or_else(|_| "[]".into());
         let _ = document::eval(&format!(
             "{GLOBE_JS}\nwindow.dxGlobe.setPins({id_pins:?}, {json});"
         ));
@@ -84,12 +108,13 @@ pub fn Globe(
     });
     let id_place = id.clone();
     use_effect(move || {
-        let (lat, lon) = match place() {
-            Some(p) => (p.lat.to_string(), p.lon.to_string()),
-            None => ("null".to_string(), "null".to_string()),
-        };
+        let prepared = place().and_then(|point| {
+            let (u, focus) = super::globe_geometry::coordinates(point)?;
+            Some(serde_json::json!({ "u": u, "focus": focus }))
+        });
+        let json = serde_json::to_string(&prepared).unwrap_or_else(|_| "null".into());
         let _ = document::eval(&format!(
-            "{GLOBE_JS}\nwindow.dxGlobe.setPlace({id_place:?}, {lat}, {lon});"
+            "{GLOBE_JS}\nwindow.dxGlobe.setPlace({id_place:?}, {json});"
         ));
     });
 

@@ -375,7 +375,7 @@ pub struct AppState {
     pub soundboard_anchor: (f64, f64),
     /// Who pressed what, for the few seconds a voice row shows it.
     pub recent_sounds: HashMap<String, (String, std::time::Instant)>,
-    pub stream_has_audio: HashSet<String>,
+    pub stream_has_audio: crate::stream_audio::Presence,
     pub media_undecryptable: bool,
     pub pending_rekey: bool,
     pub identity: Option<crate::identity::Identity>,
@@ -489,7 +489,7 @@ impl AppState {
             soundboard_adjusting: false,
             soundboard_anchor: (0.0, 0.0),
             recent_sounds: HashMap::new(),
-            stream_has_audio: HashSet::new(),
+            stream_has_audio: crate::stream_audio::Presence::default(),
             media_undecryptable: false,
             pending_rekey: false,
             identity: None,

@@ -815,3 +815,42 @@ async fn the_join_bundle_does_not_disclose_other_guilds() {
         "joining {joined_guild} disclosed voice presence in {elsewhere}: {voice_states:?}"
     );
 }
+
+#[tokio::test]
+async fn closing_a_secondary_session_preserves_the_other_sessions_call_and_share() {
+    let (url, _handle) = spawn_gateway(local_signing()).await;
+    let owner_id = BotIdentity::generate();
+    let member_id = BotIdentity::generate();
+    let mut owner = connect_user(&url, &owner_id, "owner").await;
+    let (guild_id, channel_id) = voice_channel(&mut owner).await;
+    let mut member = connect_user(&url, &member_id, "member").await;
+    join_guild(&mut member, guild_id).await;
+    let _ = join_voice(&mut member, channel_id).await;
+    member
+        .send(&ClientMessage::SetScreenShare {
+            channel_id,
+            sharing: true,
+        })
+        .await
+        .unwrap();
+    let secondary = connect_user(&url, &member_id, "member").await;
+    let _ = drain_quiet(&mut owner).await;
+    drop(secondary);
+    let updates = drain_quiet(&mut owner).await;
+    assert!(!updates.iter().any(|message| matches!(message,
+        ServerMessage::VoiceStateUpdate(state) if state.user_pubkey == member_id.pubkey() && state.channel_id.is_none()
+    )), "closing an idle session must not remove the active session from voice: {updates:?}");
+    member
+        .send(&ClientMessage::SetVoiceMute {
+            muted: true,
+            deafened: false,
+        })
+        .await
+        .unwrap();
+    let state = next_voice_state(&mut owner, member_id.pubkey()).await;
+    assert_eq!(state.channel_id, Some(channel_id));
+    assert!(state.screen_sharing && state.muted);
+    drop(member);
+    let state = next_voice_state(&mut owner, member_id.pubkey()).await;
+    assert!(state.channel_id.is_none() && !state.screen_sharing);
+}
