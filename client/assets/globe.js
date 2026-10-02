@@ -113,7 +113,7 @@ if (!window.dxGlobe) {
         ctx.fill();
       }
 
-      var pulse = 0.5 + 0.5 * Math.sin(now / 600);
+      var pulse = reduceMotion ? 0.5 : 0.5 + 0.5 * Math.sin(now / 600);
       var hoverTip = null, selTip = null;
       for (var p = 0; p < g.pins.length; p++) {
         var pin = g.pins[p];
@@ -152,10 +152,17 @@ if (!window.dxGlobe) {
       ctx.globalAlpha = 1;
     }
 
+    function requestDraw(g) {
+      if (!g.alive || document.hidden || g.raf !== null) return;
+      if (g.idleTimer !== null) { clearTimeout(g.idleTimer); g.idleTimer = null; }
+      g.raf = requestAnimationFrame(function (t) { step(g, t); });
+    }
+
     function step(g, now) {
-      if (!g.alive) return;
+      g.raf = null;
+      if (!g.alive || document.hidden) return;
       resize(g);
-      if ((g.frame++ % 30) === 0) colors(g);
+      if (g.paletteDirty || (g.frame++ % 30) === 0) { colors(g); g.paletteDirty = false; }
       var dt = Math.min(64, now - (g.last || now)); g.last = now;
 
       if (g.target) {
@@ -171,18 +178,26 @@ if (!window.dxGlobe) {
       g.pitch = Math.max(-1.25, Math.min(1.25, g.pitch));
       g.yaw = wrap(g.yaw);
       draw(g, now);
-      g.raf = requestAnimationFrame(function (t) { step(g, t); });
+      var idleEligible = !g.dragging && !g.hover && !g.selected && !g.place;
+      var spinning = !reduceMotion && idleEligible && now - g.touched > 2500;
+      var pulsing = !reduceMotion && (g.place || g.selected || g.pins.some(function (p) { return p.fresh; }));
+      if (g.target || (!g.dragging && g.vel) || spinning || pulsing) requestDraw(g);
+      else if (!reduceMotion && idleEligible) {
+        g.idleTimer = setTimeout(function () { g.idleTimer = null; requestDraw(g); }, Math.max(1, 2501 - (now - g.touched)));
+      }
     }
 
     function wire(g) {
       var c = g.canvas;
-      c.addEventListener('pointerdown', function (e) {
+      function listen(name, handler) { c.addEventListener(name, handler); g.listeners.push([name, handler]); }
+      listen('pointerdown', function (e) {
         g.dragging = true; g.moved = 0; g.target = null; g.vel = 0;
         g.px = e.clientX; g.py = e.clientY; g.touched = performance.now();
         c.setPointerCapture(e.pointerId);
         c.style.cursor = 'grabbing';
+        requestDraw(g);
       });
-      c.addEventListener('pointermove', function (e) {
+      listen('pointermove', function (e) {
         var rect = c.getBoundingClientRect();
         var sx = e.clientX - rect.left, sy = e.clientY - rect.top;
         if (g.dragging) {
@@ -192,15 +207,17 @@ if (!window.dxGlobe) {
           g.yaw += dx / g.r; g.pitch += dy / g.r;
           g.vel = dx / g.r * 0.6;
           g.touched = performance.now();
+          requestDraw(g);
           return;
         }
         var hit = pinAt(g, sx, sy);
-        if (hit !== g.hover) { g.hover = hit; g.touched = performance.now(); }
+        if (hit !== g.hover) { g.hover = hit; g.touched = performance.now(); requestDraw(g); }
         c.style.cursor = hit ? 'pointer' : (g.pick ? 'crosshair' : 'grab');
       });
       var end = function (e) {
         if (!g.dragging) return;
         g.dragging = false;
+        requestDraw(g);
         c.style.cursor = g.pick ? 'crosshair' : 'grab';
         g.touched = performance.now();
         if (g.moved > 4) return;
@@ -213,9 +230,9 @@ if (!window.dxGlobe) {
             radius: g.r, yaw: g.yaw, pitch: g.pitch });
         }
       };
-      c.addEventListener('pointerup', end);
-      c.addEventListener('pointercancel', function () { g.dragging = false; });
-      c.addEventListener('pointerleave', function () { if (!g.dragging) g.hover = null; });
+      listen('pointerup', end);
+      listen('pointercancel', function () { g.dragging = false; requestDraw(g); });
+      listen('pointerleave', function () { if (!g.dragging) { g.hover = null; requestDraw(g); } });
     }
 
     function get(id) { return instances[id]; }
@@ -236,6 +253,7 @@ if (!window.dxGlobe) {
     function focusOn(g, target) {
       g.target = target;
       g.touched = performance.now();
+      requestDraw(g);
     }
 
     return {
@@ -244,23 +262,39 @@ if (!window.dxGlobe) {
         if (!canvas || instances[id]) return;
         var g = {
           id: id, canvas: canvas, ctx: canvas.getContext('2d'), sink: sink,
-          alive: true, frame: 0, dots: [], pins: [], selected: null, place: null, pick: false,
+          alive: true, listeners: [], frame: 0, raf: null, idleTimer: null, paletteDirty: true, dots: [], pins: [], selected: null, place: null, pick: false,
           yaw: -1.2, pitch: 0.35, vel: 0, target: null, dragging: false, hover: null,
           touched: 0, w: 0, h: 0, dpr: 0, r: 0, cx: 0, cy: 0, col: {}
         };
         instances[id] = g;
         wire(g);
+        g.invalidate = function () { g.paletteDirty = true; requestDraw(g); };
+        g.visibility = function () {
+          if (document.hidden) {
+            if (g.raf !== null) cancelAnimationFrame(g.raf);
+            if (g.idleTimer !== null) clearTimeout(g.idleTimer);
+            g.raf = null; g.idleTimer = null; g.last = 0;
+          } else g.invalidate();
+        };
+        document.addEventListener('visibilitychange', g.visibility);
+        window.addEventListener('resize', g.invalidate);
+        if (typeof ResizeObserver !== 'undefined') { g.resizeObserver = new ResizeObserver(g.invalidate); g.resizeObserver.observe(canvas); }
+        if (typeof MutationObserver !== 'undefined') {
+          g.themeObserver = new MutationObserver(g.invalidate);
+          g.themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['style', 'class'], subtree: true });
+        }
         colors(g);
         var p = pending[id]; delete pending[id];
         if (p) { if (p.pins) applyPins(g, p.pins); if (p.selected !== undefined) g.selected = p.selected; if (p.pick !== undefined) g.pick = p.pick; if (p.place !== undefined) g.place = p.place; }
         if (g.place) focusOn(g, g.place.focus);
         else if (g.selected) focusSelected(g);
-        g.raf = requestAnimationFrame(function (t) { step(g, t); });
+        requestDraw(g);
       },
       setPins: function (id, pins) {
         var g = get(id);
         if (!g) { (pending[id] = pending[id] || {}).pins = pins; return; }
         applyPins(g, pins);
+        requestDraw(g);
       },
       setSelected: function (id, code) {
         var g = get(id);
@@ -268,29 +302,38 @@ if (!window.dxGlobe) {
         if (code === g.selected) return;
         g.selected = code;
         focusSelected(g);
+        requestDraw(g);
       },
       setPick: function (id, pick) {
         var g = get(id);
         if (!g) { (pending[id] = pending[id] || {}).pick = pick; return; }
         g.pick = pick;
         g.canvas.style.cursor = pick ? 'crosshair' : 'grab';
+        requestDraw(g);
       },
       setDots: function (id, radius, dots) {
         var g = get(id);
-        if (g && g.r === radius) g.dots = dots;
+        if (g && g.r === radius) { g.dots = dots; requestDraw(g); }
       },
       setPlace: function (id, place) {
         var g = get(id);
         if (!g) { (pending[id] = pending[id] || {}).place = place; return; }
         g.place = place;
         if (place) focusOn(g, place.focus);
+        requestDraw(g);
       },
       destroy: function (id) {
         var g = get(id);
         delete pending[id];
         if (!g) return;
         g.alive = false;
-        if (g.raf) cancelAnimationFrame(g.raf);
+        if (g.raf !== null) cancelAnimationFrame(g.raf);
+        if (g.idleTimer !== null) clearTimeout(g.idleTimer);
+        if (g.resizeObserver) g.resizeObserver.disconnect();
+        if (g.themeObserver) g.themeObserver.disconnect();
+        g.listeners.forEach(function (entry) { g.canvas.removeEventListener(entry[0], entry[1]); });
+        document.removeEventListener('visibilitychange', g.visibility);
+        window.removeEventListener('resize', g.invalidate);
         delete instances[id];
       }
     };

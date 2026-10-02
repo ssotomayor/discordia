@@ -21,6 +21,13 @@ const SCROLL_JS: &str = r#"
 return (async function () {
   if (window.__dxfChatScrollOff) window.__dxfChatScrollOff();
   let node = null, channel = null, sequence = 0, alive = true, wake = null;
+  let frame = null, observer = null, anchor = null;
+  const observed = new Set();
+  const queueMeasure = () => {
+    if (!alive || frame !== null) return;
+    frame = requestAnimationFrame(() => { frame = null; measure('resize', channel); });
+  };
+  if (typeof ResizeObserver !== 'undefined') observer = new ResizeObserver(queueMeasure);
   const measure = (mode, cid) => {
     if (!alive) return;
     const el = document.getElementById('dxf-chat-scroll');
@@ -29,16 +36,39 @@ return (async function () {
       if (node) node.removeEventListener('scroll', onScroll);
       node = el;
       node.addEventListener('scroll', onScroll, { passive: true });
+      if (observer) { observer.disconnect(); observed.clear(); observer.observe(node); }
     }
+    if (channel !== cid) anchor = null;
     channel = cid;
+    const pages = el.querySelectorAll ? Array.from(el.querySelectorAll('[data-chat-page]')) : [];
+    for (const old of observed) {
+      if (!pages.includes(old)) { if (observer) observer.unobserve(old); observed.delete(old); }
+    }
+    const rect = el.getBoundingClientRect ? el.getBoundingClientRect() : { top: 0 };
+    const measured = pages.map(page => {
+      if (observer && !observed.has(page)) { observer.observe(page); observed.add(page); }
+      const bounds = page.getBoundingClientRect();
+      return { id: page.dataset.chatPage, top: bounds.top - rect.top, height: bounds.height };
+    });
+    const rows = el.querySelectorAll ? Array.from(el.querySelectorAll('[data-chat-row]')) : [];
+    const candidates = rows.length ? rows : pages;
+    const key = row => row.dataset.chatRow || row.dataset.chatPage;
+    const oldAnchor = anchor && candidates.find(row => key(row) === anchor.id);
+    const anchorShift = mode !== 'scroll' && oldAnchor
+      ? oldAnchor.getBoundingClientRect().top - rect.top - anchor.offset : null;
+    const first = candidates.find(row => row.getBoundingClientRect().bottom > rect.top);
+    anchor = first ? { id: key(first), offset: first.getBoundingClientRect().top - rect.top } : null;
     dioxus.send({ mode, channel, sequence: ++sequence, height: el.scrollHeight,
-      top: el.scrollTop, viewport: el.clientHeight });
+      top: el.scrollTop, viewport: el.clientHeight, pages: measured, anchor_shift: anchorShift });
   };
   const onScroll = () => measure('scroll', channel);
   window.__dxfChatScrollMeasure = measure;
   const off = () => {
     alive = false;
     if (wake) wake(null);
+    if (frame !== null) cancelAnimationFrame(frame);
+    if (observer) observer.disconnect();
+    observed.clear();
     if (node) node.removeEventListener('scroll', onScroll);
     window.__dxfChatScrollMeasure = null;
     window.__dxfChatScrollOff = null;
@@ -120,18 +150,6 @@ pub fn ChatView() -> Element {
     let dm = selected_channel.and_then(|cid| snapshot.dm_of(cid).cloned());
     let channel_meta =
         selected_channel.and_then(|cid| snapshot.channels.iter().find(|c| c.id == cid).cloned());
-    let mut messages: Vec<Message> = selected_channel
-        .and_then(|cid| snapshot.messages.get(&cid).cloned())
-        .unwrap_or_default();
-    // A DM author's stored username is a placeholder — the Nostr side has no
-    // name to store — so it is resolved here. Guild rows keep the server's
-    // copy: it is authoritative, and a member who left should keep the name
-    // they posted under.
-    if dm.is_some() {
-        for m in &mut messages {
-            m.author.username = snapshot.display_name(&m.author.pubkey);
-        }
-    }
     let typers = selected_channel
         .map(|cid| snapshot.typers_in(cid))
         .unwrap_or_default();
@@ -170,24 +188,35 @@ pub fn ChatView() -> Element {
             s.command_notes.len(),
         )
     });
+    let mut page_states =
+        use_signal(std::collections::HashMap::<Id, super::chat_scroll::PageState>::new);
     let mut scroll_ready = use_signal(|| false);
+    let mut virtual_enabled = use_signal(|| true);
     let mut scroll_mounted = use_signal(|| 0_u64);
     use_future(move || async move {
         let mut eval = document::eval(SCROLL_JS);
         if eval.recv::<bool>().await.is_err() {
+            virtual_enabled.set(false);
             return;
         }
         scroll_ready.set(true);
         let mut policy = super::chat_scroll::ScrollState::default();
+        let mut page_channel = None;
         while let Ok(sample) = eval.recv::<super::chat_scroll::ScrollSample>().await {
             if sample.channel != state.peek().selected_channel {
                 continue;
+            }
+            let next_pages = super::chat_scroll::page_states(&sample.pages, sample.viewport);
+            if page_channel != sample.channel || *page_states.peek() != next_pages {
+                page_channel = sample.channel;
+                page_states.set(next_pages);
             }
             let command = policy.update(sample);
             if eval.send(command).is_err() {
                 break;
             }
         }
+        virtual_enabled.set(false);
     });
     use_drop(|| {
         let _ = document::eval("window.__dxfChatScrollOff && window.__dxfChatScrollOff();");
@@ -216,7 +245,24 @@ pub fn ChatView() -> Element {
             "window.__dxfChatScrollMeasure && window.__dxfChatScrollMeasure({mode:?}, {channel});"
         ));
     });
+    use_effect(move || {
+        let _ = page_states.read();
+        if !scroll_ready() {
+            return;
+        }
+        let channel =
+            serde_json::to_string(&state.peek().selected_channel).unwrap_or_else(|_| "null".into());
+        let _ = document::eval(&format!(
+            "window.__dxfChatScrollMeasure && window.__dxfChatScrollMeasure('resize', {channel});"
+        ));
+    });
 
+    let history = state.read();
+    let messages = selected_channel
+        .and_then(|cid| history.messages.get(&cid))
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let pages = page_states.read();
     rsx! {
         div { id: "{drop_id}", class: "relative flex flex-col h-full min-h-0",
             ondragover: move |event: DragEvent| {
@@ -263,7 +309,7 @@ pub fn ChatView() -> Element {
 
             NoDrag {
                 div { id: "dxf-chat-scroll",
-                onmounted: move |_| scroll_mounted += 1, class: "flex-1 overflow-y-auto px-4 py-4 min-h-0",
+                style: "overflow-anchor: none;", onmounted: move |_| scroll_mounted += 1, class: "flex-1 overflow-y-auto px-4 py-4 min-h-0",
                     if messages.is_empty() && selected_channel.is_some() {
                         div { class: "h-full flex items-center justify-center text-[var(--text-dim)] text-xs",
                             if is_dm { "No messages yet. Say hi 👋" } else { "No messages yet." }
@@ -294,26 +340,15 @@ pub fn ChatView() -> Element {
                                 }
                             }
                         }
-                        for (i, msg) in messages.iter().enumerate() {
+                        for start in (0..messages.len()).step_by(PAGE_SIZE) {
                             {
-                                let new_day = i == 0 || day_of(&messages[i - 1]) != day_of(msg);
-                                // A day break ends a group: the header carries the
-                                // date the bare timestamp cannot.
-                                let grouped = !new_day && i > 0 && groups_with(&messages[i - 1], msg);
-                                let day = new_day.then(|| day_label(day_of(msg)));
+                                let end = (start + PAGE_SIZE).min(messages.len());
+                                let id = messages[start].id;
+                                let page = pages.get(&id);
+                                let active = !virtual_enabled() || page.map(|p| p.active).unwrap_or(end + PAGE_SIZE >= messages.len());
+                                let height = page.map(|p| p.height).unwrap_or((end - start) as f64 * 80.0);
                                 rsx! {
-                                    Fragment { key: "{msg.id}",
-                                        if let Some(day) = day {
-                                            div {
-                                                class: "flex items-center gap-3",
-                                                style: "margin: 0.85rem 0 0.6rem;",
-                                                div { class: "flex-1", style: "height:1px; background: var(--border);" }
-                                                span { class: "text-[10px] uppercase tracking-wider text-[var(--text-dim)]", "{day}" }
-                                                div { class: "flex-1", style: "height:1px; background: var(--border);" }
-                                            }
-                                        }
-                                        MessageRow { message: msg.clone(), grouped }
-                                    }
+                                    MessagePage { key: "{id}", id, channel_id: messages[start].channel_id, start, end, active, height, is_dm }
                                 }
                             }
                         }
@@ -331,6 +366,65 @@ pub fn ChatView() -> Element {
 
                 for channel_id in selected_channel {
                     Composer { key: "{channel_id}", channel_id, composer_label: composer_label.clone(), dropped_file }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn MessagePage(
+    id: Id,
+    channel_id: Id,
+    start: usize,
+    end: usize,
+    active: bool,
+    height: f64,
+    is_dm: bool,
+) -> Element {
+    let state = use_app_state();
+    if !active {
+        return rsx! {
+            div { "data-chat-page": "{id}", style: "display: flow-root; height: {height}px;" }
+        };
+    }
+    let snapshot = state.read();
+    let messages = snapshot
+        .messages
+        .get(&channel_id)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let start = start.min(messages.len());
+    let end = end.min(messages.len()).max(start);
+    let style = if active {
+        "display: flow-root; height: auto;".to_string()
+    } else {
+        format!("display: flow-root; height: {height}px;")
+    };
+    rsx! {
+        div { "data-chat-page": "{id}", style,
+            if active {
+                for i in start..end {
+                    {
+                        let msg = &messages[i];
+                        let new_day = i == 0 || day_of(&messages[i - 1]) != day_of(msg);
+                        let grouped = !new_day && i > 0 && groups_with(&messages[i - 1], msg);
+                        let day = new_day.then(|| day_label(day_of(msg)));
+                        let mut message = msg.clone();
+                        if is_dm { message.author.username = snapshot.display_name(&message.author.pubkey); }
+                        rsx! {
+                            div { key: "{msg.id}", "data-chat-row": "{msg.id}", style: "display: flow-root;",
+                                if let Some(day) = day {
+                                    div { class: "flex items-center gap-3", style: "margin: 0.85rem 0 0.6rem;",
+                                        div { class: "flex-1", style: "height:1px; background: var(--border);" }
+                                        span { class: "text-[10px] uppercase tracking-wider text-[var(--text-dim)]", "{day}" }
+                                        div { class: "flex-1", style: "height:1px; background: var(--border);" }
+                                    }
+                                }
+                                MessageRow { message, grouped }
+                            }
+                        }
+                    }
                 }
             }
         }
