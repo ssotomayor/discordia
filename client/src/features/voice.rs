@@ -898,6 +898,12 @@ impl ActiveVoice {
         }
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Vec<f32>>();
         let (fatal_tx, mut fatal_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        #[cfg(target_os = "windows")]
+        let capture =
+            tokio::task::spawn_blocking(move || crate::sysaudio::start(tx, fatal_tx, target))
+                .await
+                .map_err(|e| format!("screen-audio capture worker failed: {e}"))??;
+        #[cfg(not(target_os = "windows"))]
         let capture = crate::sysaudio::start(tx, fatal_tx, target)?;
         {
             let mut state = state;
@@ -1458,6 +1464,16 @@ impl ScreenVideoRoom {
                 let capture_fps = captured.frames.saturating_sub(capture_previous.frames) as f64
                     / now.duration_since(sampled).as_secs_f64();
                 let capture_processing_ms = captured.processing_ms_since(capture_previous);
+                let capture_callbacks_fps = captured
+                    .callbacks
+                    .saturating_sub(capture_previous.callbacks)
+                    as f64
+                    / now.duration_since(sampled).as_secs_f64();
+                let capture_paced_out = captured
+                    .paced_out
+                    .saturating_sub(capture_previous.paced_out);
+                let capture_readback_ms = captured.readback_ms_since(capture_previous);
+                let capture_conversion_ms = captured.conversion_ms_since(capture_previous);
                 capture_previous = captured;
                 sampled = now;
                 let Ok(report) = track.get_stats().await else {
@@ -1522,6 +1538,11 @@ impl ScreenVideoRoom {
                 stats.encode_ms = encode_ms;
                 tracing::debug!(
                     max_bitrate_bps = settings.max_bitrate,
+                    capture_callbacks_fps,
+                    capture_paced_out,
+                    capture_largest_gap_ms = captured.largest_gap_us as f64 / 1000.0,
+                    capture_readback_ms,
+                    capture_conversion_ms,
                     track_sid = %stats_sid,
                     key_frames_encoded = outbound.outbound.key_frames_encoded,
                     nack_count = outbound.outbound.nack_count,

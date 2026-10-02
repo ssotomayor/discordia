@@ -61,6 +61,7 @@ struct Handler {
     flags: Flags,
     pacer: FramePacer,
     converter: BgraConverter,
+    previous_callback: Option<Instant>,
 }
 
 #[derive(Default)]
@@ -169,6 +170,7 @@ impl GraphicsCaptureApiHandler for Handler {
         Ok(Self {
             pacer: FramePacer::new(ctx.flags.settings.fps),
             converter: BgraConverter::default(),
+            previous_callback: None,
             flags: ctx.flags,
         })
     }
@@ -179,7 +181,16 @@ impl GraphicsCaptureApiHandler for Handler {
         control: InternalCaptureControl,
     ) -> Result<(), String> {
         let now = Instant::now();
-        if !self.pacer.accept(now) {
+        let accepted = self.pacer.accept(now);
+        if self.flags.count_frames {
+            self.flags.metrics.callback(
+                self.previous_callback
+                    .map_or(Duration::ZERO, |previous| now.duration_since(previous)),
+                !accepted,
+            );
+            self.previous_callback = Some(now);
+        }
+        if !accepted {
             return Ok(());
         }
         if let Err(e) = self.deliver(frame) {
@@ -213,6 +224,7 @@ impl Handler {
             return Ok(());
         }
         let mut mapped = frame.buffer().map_err(|e| e.to_string())?;
+        let mapped_at = Instant::now();
         let stride = mapped.row_pitch();
         let buffer = self.converter.convert(
             mapped.as_raw_buffer(),
@@ -221,12 +233,19 @@ impl Handler {
             height,
             self.flags.settings,
         )?;
+        let converted_at = Instant::now();
+        // WebRTC must not retain the mapped staging texture while accepting the converted frame.
+        drop(mapped);
         let (out_width, out_height) = super::fit_resolution(width, height, self.flags.settings);
         (self.flags.sink)(Frame { buffer });
         if self.flags.count_frames {
-            self.flags
-                .metrics
-                .record(out_width, out_height, started.elapsed());
+            self.flags.metrics.record_windows(
+                out_width,
+                out_height,
+                started.elapsed(),
+                mapped_at.duration_since(started),
+                converted_at.duration_since(mapped_at),
+            );
         }
         Ok(())
     }

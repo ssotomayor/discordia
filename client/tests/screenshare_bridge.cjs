@@ -6,6 +6,9 @@ const path = require('node:path');
 const source = fs.readFileSync(path.join(__dirname, '../src/features/screenshare.rs'), 'utf8');
 let script = source.split('const SCREEN_JS: &str = r#"')[1].split('"#;')[0];
 script = script.replace('return { connect: connect', 'return { testClearTracks: clearRemoteTracks, testAudioTracks: audioTracks, testTracks: tracks, testSetRoom(r) { room = r; }, testSetRemoteTrack(t) { remoteShareVideoTrack = t; screenStatsEnabled = true; }, testPollRemoteStats: pollRemoteScreenStats, connect: connect');
+const unsubscribe = script.match(/thisRoom\.on\(lk\.RoomEvent\.TrackUnsubscribed, (function \(track, pub, participant\) \{[\s\S]*?\n    \})\);/)[1];
+const subscribe = script.match(/thisRoom\.on\(lk\.RoomEvent\.TrackSubscribed, (function \(track, pub, participant\) \{[\s\S]*?\n    \})\);/)[1];
+script = script.replace('return { testClearTracks:', 'return { testSubscribe: function(thisRoom) { return ' + subscribe + '; }, testUnsubscribe: function(thisRoom) { return ' + unsubscribe + '; }, testClearTracks:');
 const containers = new Map();
 function element() {
   return {
@@ -60,6 +63,37 @@ bridge.setNativeStreamAudio(false);
 assert.equal(bridge.testAudioTracks.bob.elements.length, 2);
 assert.equal(bridge.testAudioTracks.bob.volume, 0.8);
 console.log('Multiple streams retain independent video, audio, volume and teardown.');
+
+const activeRoom = {};
+bridge.testSetRoom(activeRoom);
+const unsubscribeActive = bridge.testUnsubscribe(activeRoom);
+const currentVideo = Object.assign(track(), { kind: 'video' });
+const staleVideo = Object.assign(track(), { kind: 'video' });
+let currentAudio = Object.assign(track(), { kind: 'audio' });
+const staleAudio = Object.assign(track(), { kind: 'audio' });
+containers.set('screenshare-viewer-carol', element());
+bridge.testTracks['carol#video|screen'] = currentVideo;
+bridge.testAudioTracks.carol = currentAudio;
+bridge.attach('carol', 'screenshare-viewer-carol', 'screen');
+bridge.testSubscribe({})(staleVideo, { source: 'screen_share' }, { identity: 'carol#video' });
+assert.equal(bridge.testTracks['carol#video|screen'], currentVideo, 'an old room cannot replace active tracks');
+const replacementAudio = Object.assign(track(), { kind: 'audio' });
+bridge.testSubscribe(activeRoom)(replacementAudio, {}, { identity: 'carol#video' });
+assert.equal(currentAudio.detached.length, 1);
+assert.equal(replacementAudio.elements.length, 1, 'replacement audio attaches to the viewer');
+currentAudio = replacementAudio;
+unsubscribeActive(staleVideo, { source: 'screen_share' }, { identity: 'carol#video' });
+assert.equal(bridge.testTracks['carol#video|screen'], currentVideo, 'a late unsubscribe must preserve the replacement video');
+unsubscribeActive(staleAudio, {}, { identity: 'carol#video' });
+assert.equal(bridge.testAudioTracks.carol, currentAudio, 'a late unsubscribe must preserve replacement audio');
+bridge.testUnsubscribe({})(currentVideo, { source: 'screen_share' }, { identity: 'carol#video' });
+assert.equal(bridge.testTracks['carol#video|screen'], currentVideo, 'an old room cannot remove tracks belonging to the active room');
+unsubscribeActive(currentVideo, { source: 'screen_share' }, { identity: 'carol#video' });
+assert.equal(bridge.testTracks['carol#video|screen'], undefined, 'the current track still detaches normally');
+unsubscribeActive(currentAudio, {}, { identity: 'carol#video' });
+assert.equal(bridge.testAudioTracks.carol, undefined);
+console.log('Late unsubscribe events preserve replacement tracks and ignore old rooms.');
+
 
 containers.set('camera-self', element());
 containers.set('screen-self', element());
