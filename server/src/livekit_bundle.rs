@@ -8,10 +8,10 @@ use rand::RngCore;
 use sha2::{Digest, Sha256};
 use tokio::process::{Child, Command};
 
-#[cfg(target_os = "windows")]
-const LIVEKIT_BIN: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/livekit-server.exe"));
-#[cfg(not(target_os = "windows"))]
-const LIVEKIT_BIN: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/livekit-server"));
+const LIVEKIT_BIN: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/livekit-server.gz"));
+const LIVEKIT_SHA256: &[u8; 32] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/livekit-server.sha256"));
+const LIVEKIT_SIZE: &str = include_str!(concat!(env!("OUT_DIR"), "/livekit-server.size"));
 
 const LIVEKIT_DIGEST: &str = include_str!(concat!(env!("OUT_DIR"), "/livekit-server.sha"));
 
@@ -154,8 +154,13 @@ fn private_dir(dir: &Path) -> io::Result<()> {
     fs::create_dir_all(dir)
 }
 
-fn write_executable(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    use std::io::Write;
+fn write_executable(
+    path: &Path,
+    compressed: &[u8],
+    size: u64,
+    digest: &[u8; 32],
+) -> io::Result<()> {
+    use std::io::Read;
     let mut opts = fs::OpenOptions::new();
     opts.write(true).create_new(true);
     #[cfg(unix)]
@@ -163,7 +168,17 @@ fn write_executable(path: &Path, bytes: &[u8]) -> io::Result<()> {
         use std::os::unix::fs::OpenOptionsExt;
         opts.mode(0o755);
     }
-    opts.open(path)?.write_all(bytes)
+    let mut file = opts.open(path)?;
+    let decoder = flate2::read::GzDecoder::new(compressed);
+    let written = io::copy(&mut decoder.take(size.saturating_add(1)), &mut file)?;
+    drop(file);
+    if written != size || file_digest(path)? != *digest {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "bundled livekit integrity check failed",
+        ));
+    }
+    Ok(())
 }
 
 fn file_digest(path: &Path) -> io::Result<[u8; 32]> {
@@ -173,15 +188,25 @@ fn file_digest(path: &Path) -> io::Result<[u8; 32]> {
 }
 
 // Whatever sits under the name gets executed, so the name alone is not proof of what it is.
-fn ensure_binary(dir: &Path, name: &str, bytes: &[u8]) -> io::Result<PathBuf> {
+fn ensure_binary(
+    dir: &Path,
+    name: &str,
+    compressed: &[u8],
+    expected: &[u8; 32],
+    size: u64,
+) -> io::Result<PathBuf> {
     let path = dir.join(name);
-    let expected: [u8; 32] = Sha256::digest(bytes).into();
-    if file_digest(&path).ok() == Some(expected) {
+    if fs::metadata(&path).is_ok_and(|m| m.len() == size)
+        && file_digest(&path).ok().as_ref() == Some(expected)
+    {
         return Ok(path);
     }
     let tmp = dir.join(format!("{name}.tmp"));
     let _ = fs::remove_file(&tmp);
-    write_executable(&tmp, bytes)?;
+    if let Err(error) = write_executable(&tmp, compressed, size, expected) {
+        let _ = fs::remove_file(&tmp);
+        return Err(error);
+    }
     fs::rename(&tmp, &path)?;
     Ok(path)
 }
@@ -292,6 +317,10 @@ pub async fn spawn_livekit(
     if LIVEKIT_BIN.is_empty() {
         return Err("livekit-server binary not bundled in this build".into());
     }
+    let bundle_size = LIVEKIT_SIZE
+        .trim()
+        .parse::<u64>()
+        .map_err(|e| format!("invalid bundled livekit size: {e}"))?;
 
     let dir = data_dir.join("livekit");
     let bin_name = format!(
@@ -307,7 +336,7 @@ pub async fn spawn_livekit(
             private_dir(&dir).map_err(|e| format!("livekit dir {}: {e}", dir.display()))?;
             reclaim_orphan(&dir);
             sweep_stale(&dir, &bin_name);
-            let path = ensure_binary(&dir, &bin_name, LIVEKIT_BIN)
+            let path = ensure_binary(&dir, &bin_name, LIVEKIT_BIN, LIVEKIT_SHA256, bundle_size)
                 .map_err(|e| format!("write livekit binary: {e}"))?;
             let _ = fs::remove_file(&config_path);
             write_private(&config_path, config)
@@ -414,6 +443,96 @@ async fn wait_for_ready(child: &mut Child, port: u16, timeout: Duration) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn compress(bytes: &[u8]) -> Vec<u8> {
+        use std::io::Write;
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(bytes).unwrap();
+        encoder.finish().unwrap()
+    }
+
+    #[test]
+    fn corrupt_compressed_payloads_never_replace_or_leave_a_partial_executable() {
+        let dir = scratch("corrupt-bundle");
+        private_dir(&dir).unwrap();
+        let payload = b"original executable";
+        let compressed = compress(payload);
+        let digest: [u8; 32] = Sha256::digest(payload).into();
+        let name = "livekit-server-test";
+        let old = b"previous binary";
+        let size = payload.len() as u64;
+        let mut damaged = compressed.clone();
+        let last = damaged.len() - 1;
+        damaged[last] ^= 1;
+        for (bytes, hash, expected_size) in [
+            (&damaged[..], digest, size),
+            (&compressed[..compressed.len() / 2], digest, size),
+            (&compressed[..], [0; 32], size),
+            (&compressed[..], digest, size - 1),
+            (&compressed[..], digest, size + 1),
+        ] {
+            fs::write(dir.join(name), old).unwrap();
+            assert!(ensure_binary(&dir, name, bytes, &hash, expected_size).is_err());
+            assert_eq!(fs::read(dir.join(name)).unwrap(), old);
+            assert!(!dir.join(format!("{name}.tmp")).exists());
+        }
+        let path = ensure_binary(&dir, name, &compressed, &digest, size).unwrap();
+        // A valid cached binary needs no decompression on subsequent launches.
+        assert_eq!(
+            ensure_binary(&dir, name, b"invalid gzip", &digest, size).unwrap(),
+            path
+        );
+        assert_eq!(fs::read(path).unwrap(), payload);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn embedded_bundle_extracts_verified_original_bytes() {
+        if LIVEKIT_BIN.is_empty() {
+            return;
+        }
+        let dir = scratch("real-bundle");
+        private_dir(&dir).unwrap();
+        let size = LIVEKIT_SIZE.trim().parse().unwrap();
+        let path = ensure_binary(
+            &dir,
+            "livekit-server-test",
+            LIVEKIT_BIN,
+            LIVEKIT_SHA256,
+            size,
+        )
+        .unwrap();
+        assert_eq!(fs::metadata(&path).unwrap().len(), size);
+        assert_eq!(file_digest(&path).unwrap(), *LIVEKIT_SHA256);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    #[ignore = "executes the real bundled server; requires a full bundle and process access"]
+    fn extracted_bundle_executes_the_real_server() {
+        assert!(!LIVEKIT_BIN.is_empty());
+        let dir = scratch("run-bundle");
+        private_dir(&dir).unwrap();
+        let name = format!("livekit-server-test{LIVEKIT_BIN_EXT}");
+        let path = ensure_binary(
+            &dir,
+            &name,
+            LIVEKIT_BIN,
+            LIVEKIT_SHA256,
+            LIVEKIT_SIZE.trim().parse().unwrap(),
+        )
+        .unwrap();
+        let result = std::process::Command::new(path)
+            .arg("--version")
+            .output()
+            .unwrap();
+        fs::remove_dir_all(dir).unwrap();
+        assert!(result.status.success(), "{result:?}");
+        assert!(
+            String::from_utf8_lossy(&result.stdout).contains("livekit"),
+            "{result:?}"
+        );
+    }
 
     fn scratch(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("dioxusfun-{tag}-{}", std::process::id()));
@@ -543,9 +662,12 @@ mod tests {
         private_dir(&dir).expect("private dir");
         let name = "livekit-server-cafebabe";
         let payload = b"#!/bin/sh\nexit 0\n";
+        let compressed = compress(payload);
+        let digest: [u8; 32] = Sha256::digest(payload).into();
 
         fs::write(dir.join(name), b"not the bundle").expect("plant");
-        let path = ensure_binary(&dir, name, payload).expect("replace");
+        let path =
+            ensure_binary(&dir, name, &compressed, &digest, payload.len() as u64).expect("replace");
         assert_eq!(path, dir.join(name));
         assert_eq!(fs::read(&path).expect("read back"), payload);
         assert!(!dir.join(format!("{name}.tmp")).exists());
@@ -556,7 +678,7 @@ mod tests {
             let meta = fs::metadata(&path).expect("meta");
             assert_ne!(meta.permissions().mode() & 0o111, 0, "must be executable");
             let inode = meta.ino();
-            ensure_binary(&dir, name, payload).expect("reuse");
+            ensure_binary(&dir, name, &compressed, &digest, payload.len() as u64).expect("reuse");
             assert_eq!(
                 fs::metadata(&path).expect("meta").ino(),
                 inode,
@@ -567,7 +689,8 @@ mod tests {
         }
 
         let _ = fs::remove_file(&path);
-        let fresh = ensure_binary(&dir, name, payload).expect("fresh");
+        let fresh =
+            ensure_binary(&dir, name, &compressed, &digest, payload.len() as u64).expect("fresh");
         assert_eq!(fs::read(fresh).expect("read back"), payload);
 
         let _ = fs::remove_dir_all(dir.parent().expect("parent"));

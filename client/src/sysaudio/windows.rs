@@ -164,7 +164,7 @@ pub struct WinCapture {
 impl WinCapture {
     pub fn start(
         target: Target,
-        tx: UnboundedSender<Vec<f32>>,
+        tx: crate::audio_queue::AudioSender<f32>,
         fatal: UnboundedSender<String>,
     ) -> Result<Self, String> {
         let target = loopback_target(target)?;
@@ -215,7 +215,7 @@ impl Drop for WinCapture {
 
 fn run(
     target: LoopbackTarget,
-    tx: UnboundedSender<Vec<f32>>,
+    tx: crate::audio_queue::AudioSender<f32>,
     fatal: UnboundedSender<String>,
     shutdown: SendHandle,
     ready: std_mpsc::Sender<Result<(), String>>,
@@ -414,7 +414,7 @@ fn init(client: &IAudioClient, bits: u16, tag: u16) -> Result<(), HRESULT> {
 
 fn pump(
     started: Started,
-    tx: UnboundedSender<Vec<f32>>,
+    tx: crate::audio_queue::AudioSender<f32>,
     shutdown: SendHandle,
 ) -> Result<(), String> {
     let mut cutter = FrameCutter::new(tx);
@@ -587,7 +587,7 @@ mod tests {
         );
         assert!(super::loopback_target(crate::sysvideo::Target::WindowsWindow(0)).is_err());
         assert!(super::loopback_target(crate::sysvideo::Target::Display(0)).is_err());
-        let (tx, _) = unbounded_channel();
+        let (tx, _) = crate::audio_queue::channel();
         let (fatal, _) = unbounded_channel();
         assert!(crate::sysaudio::start(tx, fatal, None).is_err());
     }
@@ -633,7 +633,7 @@ mod tests {
             crate::sysaudio::os_build_label()
         );
 
-        let (tx, mut rx) = unbounded_channel::<Vec<f32>>();
+        let (tx, mut rx) = crate::audio_queue::channel::<f32>();
         let (fatal_tx, mut fatal_rx) = unbounded_channel::<String>();
         let capture = crate::sysaudio::start(
             tx,
@@ -659,8 +659,8 @@ mod tests {
             match tokio::time::timeout(Duration::from_millis(500), rx.recv()).await {
                 Ok(Some(frame)) => {
                     frames += 1;
-                    samples += frame.len();
-                    for s in frame {
+                    samples += frame.samples.len();
+                    for s in frame.samples {
                         peak = peak.max(s.abs());
                     }
                     if peak > 0.01 && frames > 20 {

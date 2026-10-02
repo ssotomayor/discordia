@@ -205,7 +205,7 @@ pub struct MacCapture {
 impl MacCapture {
     pub fn start(
         target: Target,
-        tx: UnboundedSender<Vec<f32>>,
+        tx: crate::audio_queue::AudioSender<f32>,
         fatal: UnboundedSender<String>,
     ) -> Result<Self, String> {
         let filter = crate::sysvideo::content_filter(target)?;
