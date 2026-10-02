@@ -54,6 +54,20 @@ peer's IP, and a proxy makes every host the same peer.
 Guild migration: `cargo run -p dioxusfun-server -- export --guild <uuid> f.json`
 then `import f.json` on the target. Fresh ids, pubkeys preserved.
 
+## Published names
+
+| Situation | Rendezvous behavior |
+|---|---|
+| App disconnects or stops answering | Removes the live listing and voice grants; retains the name reservation |
+| Coordinator restarts | Reloads reservations from disk; hosts register again |
+| Same identity reopens a name | Accepted once the earlier session has ended; hexadecimal key casing is ignored |
+| Same identity still connected | `currently in use by another session` |
+| Another identity requests a reserved name | `already taken — reserved by a different identity` |
+| Owner sends signed `ReleaseName` | Removes the reservation only after the live session has ended |
+
+Name-handling fixes require updating the rendezvous service; updating only the
+desktop client does not change the remote registry.
+
 ## Reachability
 
 Every connection that leaves the machine is QUIC, authenticated by the key in

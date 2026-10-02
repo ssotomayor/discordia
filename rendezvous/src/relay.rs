@@ -190,33 +190,6 @@ pub async fn handle_host_control(
                 send_err(&mut tx, &format!("name ownership rejected: {e}")).await;
                 return;
             }
-            match registry.claim_name(&slug, pubkey) {
-                Ok(()) => {}
-                Err(ClaimError::Taken) => {
-                    send_err(&mut tx, &format!("the name '{slug}' is already taken")).await;
-                    return;
-                }
-                Err(ClaimError::LiveElsewhere) => {
-                    send_err(
-                        &mut tx,
-                        &format!("'{slug}' is currently in use by another session"),
-                    )
-                    .await;
-                    return;
-                }
-                Err(ClaimError::OwnerLimit) => {
-                    send_err(
-                        &mut tx,
-                        "this key already holds its share of names — release one first",
-                    )
-                    .await;
-                    return;
-                }
-                Err(ClaimError::Full) => {
-                    send_err(&mut tx, "this rendezvous is not taking new names").await;
-                    return;
-                }
-            }
             (slug, Some(raw.clone()))
         }
         None => match claim_anonymous_shortcode(&registry).await {
@@ -227,8 +200,6 @@ pub async fn handle_host_control(
             }
         },
     };
-    tracing::info!(%shortcode, host = ?display_name, public = publish_public, "host registered");
-
     let host_entry = HostEntry {
         name: display_name,
         description,
@@ -238,10 +209,27 @@ pub async fn handle_host_control(
         location,
         last_seen_ms: Default::default(),
     };
-    let Some(entry) = registry.try_claim(&shortcode, host_entry) else {
-        send_err(&mut tx, "shortcode collision").await;
-        return;
+    let owner = name.as_ref().and(pubkey.as_deref());
+    let entry = match registry.claim_host(&shortcode, owner, host_entry) {
+        Ok(entry) => entry,
+        Err(error) => {
+            let message = match error {
+                ClaimError::Taken => format!(
+                    "the name '{shortcode}' is already taken — reserved by a different identity"
+                ),
+                ClaimError::LiveElsewhere => {
+                    format!("'{shortcode}' is currently in use by another session")
+                }
+                ClaimError::OwnerLimit => {
+                    "this key already holds its share of names — release one first".to_string()
+                }
+                ClaimError::Full => "this rendezvous is not taking new names".to_string(),
+            };
+            send_err(&mut tx, &message).await;
+            return;
+        }
     };
+    tracing::info!(%shortcode, host = ?entry.name, public = publish_public, "host registered");
 
     let voice_token_grant = cfg
         .livekit_api_secret

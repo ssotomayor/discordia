@@ -1515,52 +1515,62 @@ fn ScreenShareDialog(result: Result<Vec<crate::sysvideo::Source>, String>) -> El
                     }
                 }
                 div { class: "px-4 py-3 border-b border-[var(--border)] space-y-3",
-                    label { r#for: "share-quality", class: "text-xs text-[var(--text-muted)]", "Resolution" }
-                    select {
-                        id: "share-quality",
-                        class: "w-full bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)] rounded px-2 py-1 text-sm",
-                        onchange: move |e| quality.set(e.value()),
-                        for (id, label) in [("720", "720p"), ("balanced", "1080p"), ("ultra", "1440p"), ("4k", "4K")] {
-                            option { value: "{id}", selected: native_settings(&quality()).width == native_settings(id).width, "{label}" }
-                        }
-                    }
-                    label { r#for: "share-fps", class: "text-xs text-[var(--text-muted)]", "Frames per second" }
-                    select {
-                        id: "share-fps",
-                        class: "w-full bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)] rounded px-2 py-1 text-sm",
-                        onchange: move |e| { if let Ok(value @ (15 | 30 | 60)) = e.value().parse::<u32>() { fps.set(value); } },
-                        for value in [15, 30, 60] {
-                            option { value: "{value}", selected: fps() == value, "{value} FPS" }
-                        }
-                    }
-                    label { r#for: "share-codec", class: "text-xs text-[var(--text-muted)]", "Video codec" }
-                    select {
-                        id: "share-codec",
-                        class: "w-full bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)] rounded px-2 py-1 text-sm",
-                        onchange: move |e| codec.set(if e.value() == "vp8" { crate::sysvideo::Codec::Vp8 } else { crate::sysvideo::Codec::H264 }),
-                        option { value: "h264", selected: codec() == crate::sysvideo::Codec::H264, "H.264" }
-                        option { value: "vp8", selected: codec() == crate::sysvideo::Codec::Vp8, disabled: encoder() == crate::sysvideo::Encoder::Gpu, "VP8 — compatibility" }
-                    }
-                    label { r#for: "share-encoder", class: "text-xs text-[var(--text-muted)]", "Video encoding" }
-                    select {
-                        id: "share-encoder",
-                        class: "w-full bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)] rounded px-2 py-1 text-sm",
-                        onchange: move |e| {
-                            let selected = match e.value().as_str() {
-                                "gpu" => crate::sysvideo::Encoder::Gpu,
-                                "cpu" => crate::sysvideo::Encoder::Cpu,
-                                _ => crate::sysvideo::Encoder::Auto,
-                            };
-                            if selected == crate::sysvideo::Encoder::Gpu {
-                                codec.set(crate::sysvideo::Codec::H264);
+                    div { style: "display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px;",
+                        div { class: "min-w-0 space-y-1",
+                            label { r#for: "share-quality", class: "text-xs text-[var(--text-muted)]", "Resolution" }
+                            select {
+                                id: "share-quality",
+                                class: "w-full bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)] rounded px-2 py-1 text-sm",
+                                onchange: move |e| quality.set(e.value()),
+                                for (id, label) in [("720", "720p"), ("balanced", "1080p"), ("ultra", "1440p"), ("4k", "4K")] {
+                                    option { value: "{id}", selected: native_settings(&quality()).width == native_settings(id).width, "{label}" }
+                                }
                             }
-                            encoder.set(selected);
-                        },
-                        option { value: "auto", selected: encoder() == crate::sysvideo::Encoder::Auto, "Automatic — prefer {crate::sysvideo::hardware_encoder_label()}" }
-                        option { value: "gpu", selected: encoder() == crate::sysvideo::Encoder::Gpu,
-                            if cfg!(target_os = "macos") { "Hardware" } else { "GPU — hardware" }
                         }
-                        option { value: "cpu", selected: encoder() == crate::sysvideo::Encoder::Cpu, "CPU — software" }
+                        div { class: "min-w-0 space-y-1",
+                            label { r#for: "share-fps", class: "text-xs text-[var(--text-muted)]", "Frames per second" }
+                            select {
+                                id: "share-fps",
+                                class: "w-full bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)] rounded px-2 py-1 text-sm",
+                                onchange: move |e| { if let Ok(value @ (15 | 30 | 60)) = e.value().parse::<u32>() { fps.set(value); } },
+                                for value in [15, 30, 60] {
+                                    option { value: "{value}", selected: fps() == value, "{value} FPS" }
+                                }
+                            }
+                        }
+                        div { class: "min-w-0 space-y-1",
+                            label { r#for: "share-codec", class: "text-xs text-[var(--text-muted)]", "Video codec" }
+                            select {
+                                id: "share-codec",
+                                class: "w-full bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)] rounded px-2 py-1 text-sm",
+                                onchange: move |e| codec.set(if e.value() == "vp8" { crate::sysvideo::Codec::Vp8 } else { crate::sysvideo::Codec::H264 }),
+                                option { value: "h264", selected: codec() == crate::sysvideo::Codec::H264, "H.264" }
+                                option { value: "vp8", selected: codec() == crate::sysvideo::Codec::Vp8, disabled: encoder() == crate::sysvideo::Encoder::Gpu, "VP8 — compatibility" }
+                            }
+                        }
+                        div { class: "min-w-0 space-y-1",
+                            label { r#for: "share-encoder", class: "text-xs text-[var(--text-muted)]", "Video encoding" }
+                            select {
+                                id: "share-encoder",
+                                class: "w-full bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)] rounded px-2 py-1 text-sm",
+                                onchange: move |e| {
+                                    let selected = match e.value().as_str() {
+                                        "gpu" => crate::sysvideo::Encoder::Gpu,
+                                        "cpu" => crate::sysvideo::Encoder::Cpu,
+                                        _ => crate::sysvideo::Encoder::Auto,
+                                    };
+                                    if selected == crate::sysvideo::Encoder::Gpu {
+                                        codec.set(crate::sysvideo::Codec::H264);
+                                    }
+                                    encoder.set(selected);
+                                },
+                                option { value: "auto", selected: encoder() == crate::sysvideo::Encoder::Auto, "Automatic — prefer {crate::sysvideo::hardware_encoder_label()}" }
+                                option { value: "gpu", selected: encoder() == crate::sysvideo::Encoder::Gpu,
+                                    if cfg!(target_os = "macos") { "Hardware" } else { "GPU — hardware" }
+                                }
+                                option { value: "cpu", selected: encoder() == crate::sysvideo::Encoder::Cpu, "CPU — software" }
+                            }
+                        }
                     }
                     label { class: "flex items-center gap-2 cursor-pointer select-none",
                         input { r#type: "checkbox", checked: audio(), disabled: !crate::sysaudio::supported(),

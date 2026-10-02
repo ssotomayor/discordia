@@ -5,7 +5,8 @@ edition = "2024"
 repository = "https://github.com/ssotomayor/discordia"
 
 [dependencies]
-dioxus = "0.7"
+dioxus = { workspace = true }
+dioxus-desktop = { version = "=0.7.10", default-features = false, optional = true }
 tokio-tungstenite = { workspace = true }
 url = "2"
 
@@ -13,7 +14,6 @@ livekit = "=0.7.53"
 # Later SDK dependency patches changed APIs without a semver break; keep the compatible set.
 libwebrtc = "=0.3.42"
 webrtc-sys = "=0.3.39"
-webrtc-sys-build = "=0.3.18"
 livekit-common = "=0.1.0"
 livekit-data-stream = "=0.1.0"
 livekit-protocol = "=0.7.10"
@@ -81,7 +81,8 @@ arboard = { version = "3", default-features = false, features = ["image-data"] }
 
 [features]
 default = ["desktop"]
-desktop = ["dioxus/desktop"]
+desktop = ["dioxus/desktop", "dep:dioxus-desktop"]
+devtools = ["dioxus/devtools", "dioxus-desktop?/devtools"]
 mobile = ["dioxus/mobile"]
 web = ["dioxus/web"]
 
@@ -126,5 +127,8 @@ coreaudio-sys = "0.2"
 ignored = ["deep_filter", "tract-core", "tract-onnx", "tract-pulse", "tract-hir", "libwebrtc", "webrtc-sys", "webrtc-sys-build", "livekit-common", "livekit-data-stream", "livekit-protocol", "livekit-datatrack"]
 
 [dev-dependencies]
-livekit-api = { version = "0.4", default-features = false, features = ["access-token"] }
+livekit-api = { workspace = true }
 uuid = { workspace = true }
+
+[build-dependencies]
+webrtc-sys-build = "=0.3.18"

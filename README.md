@@ -31,7 +31,7 @@ data is centralised with its operator by design.
 
 ```bash
 cargo install dioxus-cli
-dx serve --package dioxusfun     # then: Create a server → Launch
+dx serve --package dioxusfun --features devtools     # then: Create a server → Launch
 ```
 
 That spawns a gateway and a bundled LiveKit in-process — you are the operator of
@@ -49,6 +49,10 @@ cargo test -p dioxusfun -- --ignored    # platform paths (SFU, audio device, scr
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
 ```
+
+Add `--features devtools` to client builds for Dioxus hot reload and developer
+tools. Normal builds retain application logging and the Diagnostics panel.
+Desktop dependency patches are recorded in `vendor/dioxus-desktop/PATCHES.md`.
 
 First run is slow: `server/` fetches or builds `livekit-server` once (macOS
 builds from source, needs `go`). `LIVEKIT_BUNDLE_SKIP=1` opts out.
