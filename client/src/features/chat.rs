@@ -1,4 +1,4 @@
-use base64::Engine as _;
+use dioxus::html::HasFileData;
 use dioxus::prelude::*;
 use dioxus_grid_layout::NoDrag;
 use serde_json::Value;
@@ -14,8 +14,6 @@ const EMOJIS: &[&str] = &[
 ];
 
 const QUICK_REACTIONS: &[&str] = &["👍", "❤️", "😂", "🎉", "🔥", "👀", "🙏", "✅"];
-
-const MAX_IMAGE_BYTES: usize = 2_000_000;
 
 const GROUP_WINDOW_SECS: i64 = 300;
 
@@ -51,86 +49,58 @@ fn chat_scroll_js(mode: &str) -> String {
     )
 }
 
-const DROP_JS: &str = r#"
+const PASTE_JS: &str = r#"
 (function () {
-  window.__dxfDropSink = function (m) { try { dioxus.send(m); } catch (e) {} };
-  if (window.__dxfDropWired) return;
-  window.__dxfDropWired = true;
-
-  function sink(m) { if (window.__dxfDropSink) window.__dxfDropSink(m); }
-  function isFileDrag(e) {
-    var t = e.dataTransfer && e.dataTransfer.types;
-    return !!t && Array.prototype.indexOf.call(t, 'Files') >= 0;
-  }
-  function inZone(e) {
-    var t = e.target;
-    return !!(t && t.closest && t.closest('#dxf-chat-drop'));
-  }
-
-  var depth = 0;
-  document.addEventListener('dragover', function (e) { e.preventDefault(); }, false);
-  document.addEventListener('dragenter', function (e) {
-    e.preventDefault();
-    if (!isFileDrag(e)) return;
-    depth++;
-    if (inZone(e)) sink({ k: 'over', v: true });
-  }, false);
-  document.addEventListener('dragleave', function (e) {
-    if (!isFileDrag(e)) return;
-    depth = Math.max(0, depth - 1);
-    if (depth === 0) sink({ k: 'over', v: false });
-  }, false);
-  function readImage(f, typeChecked) {
-    if (!typeChecked && f.type && f.type.indexOf('image/') !== 0) {
-      sink({ k: 'err', v: "That's not an image." });
-      return;
-    }
-    if (f.size > $MAX) {
-      sink({ k: 'err', v: 'Image too large (max 2 MB).' });
-      return;
-    }
-    var r = new FileReader();
-    r.onload = function () {
-      var url = String(r.result);
-      if (url.indexOf('data:image/') !== 0) url = url.replace(/^data:[^;]*;/, 'data:image/png;');
-      sink({ k: 'file', v: url });
-    };
-    r.onerror = function () { sink({ k: 'err', v: "Couldn't read that file." }); };
-    r.readAsDataURL(f);
-  }
-
-  document.addEventListener('drop', function (e) {
-    e.preventDefault();
-    depth = 0;
-    sink({ k: 'over', v: false });
-    if (!inZone(e)) return;
-    var f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
-    if (!f) return;
-    readImage(f);
-  }, false);
-
+  window.__dxfPasteSink = function () { try { dioxus.send({k: 'paste'}); } catch (_) {} };
+  if (window.__dxfPasteWired) return;
+  window.__dxfPasteWired = true;
   document.addEventListener('paste', function (e) {
-    if (!inZone(e)) return;
+    if (!e.target.closest || !e.target.closest('#dxf-chat-drop')) return;
     var items = (e.clipboardData && e.clipboardData.items) || [];
-    var f = null;
     for (var i = 0; i < items.length; i++) {
-      if (items[i].kind === 'file' && items[i].type && items[i].type.indexOf('image/') === 0) {
-        f = items[i].getAsFile();
-        break;
+      if (items[i].kind === 'file' && items[i].type.indexOf('image/') === 0) {
+        e.preventDefault();
+        window.__dxfPasteSink();
+        return;
       }
     }
-    if (!f) return;
-    e.preventDefault();
-    readImage(f, true);
-  }, false);
+  });
 })();
 "#;
+
+fn load_attachment(
+    path: Option<std::path::PathBuf>,
+    mut pending: Signal<Option<String>>,
+    mut error: Signal<Option<String>>,
+    mut generation: Signal<u64>,
+) {
+    let request = generation.peek().wrapping_add(1);
+    generation.set(request);
+    spawn(async move {
+        let result = tokio::task::spawn_blocking(move || match path {
+            Some(path) => crate::chat_image::read_file(&path),
+            None => crate::chat_image::read_clipboard(),
+        })
+        .await;
+        if *generation.peek() != request {
+            return;
+        }
+        match result.unwrap_or_else(|e| Err(format!("Couldn't load that image: {e}"))) {
+            Ok(url) => {
+                error.set(None);
+                pending.set(Some(url));
+            }
+            Err(message) => error.set(Some(message)),
+        }
+    });
+}
 
 #[component]
 pub fn ChatView() -> Element {
     let state = use_app_state();
     let gateway = use_gateway();
-    let drag_over = use_signal(|| false);
+    let mut drag_over = use_signal(|| false);
+    let mut dropped_file = use_signal::<Option<std::path::PathBuf>>(|| None);
 
     let snapshot = state.read();
     let selected_channel = snapshot.selected_channel;
@@ -207,6 +177,19 @@ pub fn ChatView() -> Element {
 
     rsx! {
         div { id: "{drop_id}", class: "relative flex flex-col h-full min-h-0",
+            ondragover: move |event: DragEvent| {
+                event.prevent_default();
+                if drop_id == "dxf-chat-drop" { drag_over.set(true); }
+            },
+            ondragleave: move |_| drag_over.set(false),
+            ondrop: move |event: DragEvent| {
+                event.prevent_default();
+                drag_over.set(false);
+                if drop_id == "dxf-chat-drop"
+                    && let Some(file) = event.files().into_iter().next() {
+                    dropped_file.set(Some(file.path()));
+                }
+            },
 
             if drag_over() {
                 div {
@@ -303,8 +286,8 @@ pub fn ChatView() -> Element {
                     }
                 }
 
-                if let Some(channel_id) = selected_channel {
-                    Composer { channel_id, composer_label, drag_over }
+                for channel_id in selected_channel {
+                    Composer { key: "{channel_id}", channel_id, composer_label: composer_label.clone(), dropped_file }
                 }
             }
         }
@@ -766,7 +749,11 @@ fn is_url(w: &str) -> bool {
 }
 
 #[component]
-fn Composer(channel_id: Id, composer_label: String, drag_over: Signal<bool>) -> Element {
+fn Composer(
+    channel_id: Id,
+    composer_label: String,
+    mut dropped_file: Signal<Option<std::path::PathBuf>>,
+) -> Element {
     let mut state = use_app_state();
     let replying_to = use_memo(move || {
         state
@@ -777,29 +764,25 @@ fn Composer(channel_id: Id, composer_label: String, drag_over: Signal<bool>) -> 
     });
     let mut draft = use_signal(String::new);
     let mut pending_image = use_signal::<Option<String>>(|| None);
-    let mut attach_err = use_signal::<Option<String>>(|| None);
+    let attach_err = use_signal::<Option<String>>(|| None);
     let mut show_emoji = use_signal(|| false);
     let mut last_typing = use_signal::<Option<std::time::Instant>>(|| None);
     let gateway = use_gateway();
     let gateway_submit = gateway.clone();
     let nostr_submit = use_context::<crate::nostr::service::NostrTx>();
 
-    let mut drag_over = drag_over;
+    let mut generation = use_signal(|| 0_u64);
+    use_effect(move || {
+        if let Some(path) = dropped_file() {
+            dropped_file.set(None);
+            load_attachment(Some(path), pending_image, attach_err, generation);
+        }
+    });
     use_future(move || async move {
-        let js = DROP_JS.replace("$MAX", &MAX_IMAGE_BYTES.to_string());
-        let mut eval = document::eval(&js);
+        let mut eval = document::eval(PASTE_JS);
         while let Ok(msg) = eval.recv::<Value>().await {
-            let v = msg.get("v");
-            match msg.get("k").and_then(|k| k.as_str()) {
-                Some("over") => drag_over.set(v.and_then(|v| v.as_bool()).unwrap_or(false)),
-                Some("file") => {
-                    if let Some(url) = v.and_then(|v| v.as_str()) {
-                        attach_err.set(None);
-                        pending_image.set(Some(url.to_string()));
-                    }
-                }
-                Some("err") => attach_err.set(v.and_then(|v| v.as_str()).map(str::to_string)),
-                _ => {}
+            if msg.get("k").and_then(Value::as_str) == Some("paste") {
+                load_attachment(None, pending_image, attach_err, generation);
             }
         }
     });
@@ -874,6 +857,7 @@ fn Composer(channel_id: Id, composer_label: String, drag_over: Signal<bool>) -> 
             });
         }
         draft.set(String::new());
+        generation.with_mut(|n| *n = n.wrapping_add(1));
         pending_image.set(None);
         show_emoji.set(false);
         if reply_to.is_some() {
@@ -969,7 +953,7 @@ fn Composer(channel_id: Id, composer_label: String, drag_over: Signal<bool>) -> 
                     button {
                         r#type: "button",
                         class: "text-[10px] uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--danger)] transition-colors",
-                        onclick: move |_| pending_image.set(None),
+                        onclick: move |_| { generation.with_mut(|n| *n = n.wrapping_add(1)); pending_image.set(None); },
                         "Remove"
                     }
                 }
@@ -991,29 +975,9 @@ fn Composer(channel_id: Id, composer_label: String, drag_over: Signal<bool>) -> 
                             accept: "image/*",
                             class: "hidden",
                             onchange: move |evt: FormEvent| {
-                                let files = evt.files();
-                                let mut pending = pending_image;
-                                let mut err = attach_err;
-                                spawn(async move {
-                                    let Some(file) = files.into_iter().next() else { return };
-                                    match file.read_bytes().await {
-                                        Ok(bytes) => {
-                                            if bytes.len() > MAX_IMAGE_BYTES {
-                                                err.set(Some("Image too large (max 2 MB).".into()));
-                                                return;
-                                            }
-                                            let mime = file
-                                                .content_type()
-                                                .filter(|m| m.starts_with("image/"))
-                                                .unwrap_or_else(|| "image/png".to_string());
-                                            let b64 = base64::engine::general_purpose::STANDARD
-                                                .encode(&bytes);
-                                            err.set(None);
-                                            pending.set(Some(format!("data:{mime};base64,{b64}")));
-                                        }
-                                        Err(_) => err.set(Some("Couldn't read that file.".into())),
-                                    }
-                                });
+                                if let Some(file) = evt.files().into_iter().next() {
+                                    load_attachment(Some(file.path()), pending_image, attach_err, generation);
+                                }
                             },
                         }
                     }

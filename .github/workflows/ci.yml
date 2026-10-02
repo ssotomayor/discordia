@@ -91,8 +91,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - name: Screen-share bridge tests
-        run: node client/tests/screenshare_bridge.cjs
+      - name: WebView bridge tests
+        run: |
+          node client/tests/screenshare_bridge.cjs
+          node client/tests/chat_attachment_bridge.cjs
 
   windows-build:
     name: client compiles (windows)

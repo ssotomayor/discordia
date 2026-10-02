@@ -3,6 +3,7 @@
 mod agc;
 mod app;
 mod audio_diag;
+mod chat_image;
 mod clipboard;
 mod denoise;
 mod e2ee;

@@ -885,13 +885,34 @@ pub const QUALITY_PRESETS: &[(&str, &str, &str)] = &[
 ];
 
 fn quality_preset(id: &str) -> (u32, u32, u32, u32, &'static str, &'static str) {
-    match id {
-        "720" => (1280, 720, 30, 4_000_000, "motion", "balanced"),
-        "4k" => (3840, 2160, 30, 32_000_000, "detail", "maintain-resolution"),
-        "smooth" => (1920, 1080, 60, 16_000_000, "motion", "maintain-framerate"),
-        "crisp" => (1920, 1080, 15, 6_000_000, "detail", "maintain-resolution"),
-        "ultra" => (2560, 1440, 60, 24_000_000, "detail", "balanced"),
-        _ => (1920, 1080, 30, 9_000_000, "motion", "balanced"),
+    let (width, height, fps, hint, degradation) = match id {
+        "720" => (1280, 720, 30, "motion", "balanced"),
+        "4k" => (3840, 2160, 30, "detail", "maintain-resolution"),
+        "smooth" => (1920, 1080, 60, "motion", "maintain-framerate"),
+        "crisp" => (1920, 1080, 15, "detail", "maintain-resolution"),
+        "ultra" => (2560, 1440, 60, "detail", "balanced"),
+        _ => (1920, 1080, 30, "motion", "balanced"),
+    };
+    (
+        width,
+        height,
+        fps,
+        upload_budget(height, fps),
+        hint,
+        degradation,
+    )
+}
+
+fn upload_budget(height: u32, fps: u32) -> u32 {
+    match (height, fps) {
+        (720, 60) => 5_000_000,
+        (720, _) => 3_000_000,
+        (1440, 60) => 20_000_000,
+        (1440, _) => 12_000_000,
+        (2160, 60) => 40_000_000,
+        (2160, _) => 30_000_000,
+        (_, 60) => 10_000_000,
+        _ => 6_000_000,
     }
 }
 
@@ -927,9 +948,9 @@ fn selected_capture_settings(
     capture.codec = settings.screenshare_codec;
     capture.encoder = settings.screenshare_encoder;
     if let Some(fps @ (15 | 30 | 60)) = settings.screenshare_fps {
-        capture.max_bitrate = capture.max_bitrate * fps as u64 / capture.fps.max(1) as u64;
         capture.fps = fps;
     }
+    capture.max_bitrate = u64::from(upload_budget(capture.height, capture.fps));
     if capture.fps == 60 && capture.priority == crate::sysvideo::Priority::Balanced {
         capture.priority = crate::sysvideo::Priority::Motion;
     }
@@ -2051,7 +2072,34 @@ mod js_escaping_tests {
     }
 
     #[test]
-    fn fps_selection_preserves_resolution_and_scales_the_upload_budget() {
+    fn fps_selection_preserves_resolution_and_selects_the_upload_budget() {
+        for (quality, height, budget_30, budget_60) in [
+            ("720", 720, 3_000_000, 5_000_000),
+            ("balanced", 1080, 6_000_000, 10_000_000),
+            ("ultra", 1440, 12_000_000, 20_000_000),
+            ("4k", 2160, 30_000_000, 40_000_000),
+        ] {
+            for (fps, budget) in [(15, budget_30), (30, budget_30), (60, budget_60)] {
+                let settings = crate::settings::ClientSettings {
+                    screenshare_quality: quality.into(),
+                    screenshare_fps: Some(fps),
+                    ..Default::default()
+                };
+                let capture = super::selected_capture_settings(&settings);
+                assert_eq!(
+                    (capture.height, capture.fps, capture.max_bitrate),
+                    (height, fps, budget)
+                );
+            }
+            let defaults = super::native_settings(quality);
+            let js = super::share_js(true, quality, false);
+            assert!(
+                js.lines()
+                    .last()
+                    .unwrap()
+                    .contains(&format!("bitrate:{}", defaults.max_bitrate))
+            );
+        }
         let mut settings = crate::settings::ClientSettings {
             screenshare_quality: "4k".into(),
             screenshare_fps: Some(60),
@@ -2062,7 +2110,7 @@ mod js_escaping_tests {
             (capture.width, capture.height, capture.fps),
             (3840, 2160, 60)
         );
-        assert_eq!(capture.max_bitrate, 64_000_000);
+        assert_eq!(capture.max_bitrate, 40_000_000);
         settings.screenshare_fps = Some(0);
         assert_eq!(super::selected_capture_settings(&settings).fps, 30);
     }

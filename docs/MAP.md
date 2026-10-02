@@ -22,12 +22,12 @@ name instead.
 | `server/tests/owner_controls.rs` | 3036 |
 | `server/src/gateway/connection.rs` | 2790 |
 | `client/src/features/channels.rs` | 1967 |
-| `client/src/features/screenshare.rs` | 2173 |
+| `client/src/features/screenshare.rs` | 2221 |
 | `protocol/src/lib.rs` | 2500 |
 | `client/src/state.rs` | 1860 |
 | `client/src/update.rs` | 1226 |
 | `client/src/net.rs` | 1374 |
-| `client/src/features/chat.rs` | 1057 |
+| `client/src/features/chat.rs` | 1021 |
 | `server/src/store.rs` | 1041 |
 | `client/src/features/guild_settings.rs` | 1132 |
 | `client/src/identity.rs` | 1029 |
@@ -62,6 +62,7 @@ that direction says a file is safe to open when it is not.
 | Selecting a screen share | `client/src/features/screenshare.rs` | `ScreenSourcePicker` mounts `ScreenShareDialog`; `ScreenSourceTile` loads an in-memory PNG through `sysvideo::thumbnail`, at most two native captures at once, refreshed on request. Source, resolution, FPS and audio are drafts until Share. `sysvideo/windows.rs` uses Windows Graphics Capture without borders where supported, `sysvideo/macos.rs` ScreenCaptureKit; `selected_capture_settings` feeds the native LiveKit publisher |
 | Cropping avatars and banners | `client/src/image_edit.rs`, `client/src/features/image_editor.rs` | Native PNG/JPEG/GIF/WebP decoding, EXIF orientation, bounded PNG preview and crop/export run through `spawn_blocking`; the WebView draws the preview and drag/zoom controls. Avatars preserve PNG alpha; JPEG banners flatten on white. Invalid input stays in the editor with an error |
 | Copying keys and invites | `client/src/clipboard.rs` | `copy_text` writes to the native system clipboard through arboard; a thread-local owner keeps X11 contents available. Copy buttons report success only after the native write succeeds |
+| Attaching chat images | `client/src/chat_image.rs`, `client/src/features/chat.rs` | Native clipboard RGBA becomes bounded PNG; Dioxus drop/file-picker events provide paths for bounded Rust reads and content validation. Workers prepare data URLs under the 2 MB upload cap; keyed composers and request generations discard stale loads. The WebView only signals image paste and displays previews |
 | Notification and UI sounds | `client/src/native_sounds.rs`, `client/src/features/sounds.rs` | Rust synthesizes/caches all 15 tones; a bounded worker owns CPAL output on the selected device, mixes overlapping sounds and closes/pauses after 1.5 s idle. `MessageSounds` tracks DM/channel ticks and volume/output settings on home and workspace; audio callbacks neither allocate nor block |
 | Camera capture and publication | `client/src/syscamera.rs`, `client/src/features/voice_camera.rs`, `client/src/features/camera.rs` | Windows camera enumeration/capture uses WebRTC through a small C++ bridge; Rust owns the COM worker, validated I420 copies, first-frame/stall checks and publication. `NativeVideoRoom` shares `#video` with the screen, stopping tracks independently; the WebView renders previews/viewers. macOS/Linux retain browser camera capture |
 | Keys on this machine | `client/src/identity.rs` | `detected` / `sign_in` / `forget`; one file per key under `identities_dir()` (default `config_dir()/identities/`, `identities-dir` overrides), `identity.json` names the active one |
@@ -107,7 +108,7 @@ repeated here.
 | Windows native screen capture | `client/src/sysvideo/windows.rs` | ignored `selected_windows_and_monitors_feed_livekit_and_stop` needs an interactive desktop; validates selected sources, video handoff, dimensions and teardown |
 | A received screen share at half size and 3 FPS | `client/src/features/voice.rs` | `screen_video_options` disables native simulcast; LiveKit's default lower screen-share layer halves the dimensions and caps FPS at 3, which adaptive viewers can select |
 | Native screen-share FPS | `client/src/sysvideo/windows.rs`, `client/src/features/voice.rs`, `client/src/features/screenshare.rs` | `FramePacer` keeps deadlines across callback jitter; `ScreenVideoRoom` samples per-capture `metrics::Metrics` and encoder stats once per second; capture size/FPS, processing ms/frame and encoding ms/frame identify separate bottlenecks. `ScreenSelfPreview` shows CPU/GPU for known encoder implementations; unreported or unknown implementations remain unclassified |
-| Native screen-share quality | `client/src/features/voice.rs`, `client/src/features/screenshare.rs` | `screen_video_options` applies saved Automatic/GPU/CPU encoding; GPU requires H.264, available hardware and stops on a detected software fallback. `Settings::priority` preserves motion/detail/balanced tradeoffs. `native_screen_codecs_reach_a_real_decoder` starts a bundled SFU (ignored; `DISCORDIA_TEST_REQUIRE_NVENC=1` verifies hardware); `compare_screen_conversion_cost` compares Windows downscaling paths (ignored) |
+| Native screen-share quality | `client/src/features/voice.rs`, `client/src/features/screenshare.rs` | `upload_budget` sets adaptive caps by resolution/FPS: 720p 3/5, 1080p 6/10, 1440p 12/20, 4K 30/40 Mbps at 30/60 FPS; 15 FPS retains the 30 FPS detail budget. `screen_video_options` applies saved Automatic/GPU/CPU encoding; GPU requires H.264, hardware and no software fallback. `Settings::priority` preserves motion/detail/balanced tradeoffs. `native_screen_codecs_reach_a_real_decoder` starts a bundled SFU (ignored; `DISCORDIA_TEST_REQUIRE_NVENC=1` verifies hardware); `compare_screen_conversion_cost` compares Windows downscaling paths (ignored) |
 | Windows NVENC build | `vendor/webrtc-sys/PATCHES.md`, `.github/actions/setup-windows-nvenc/action.yml`, `client/build.rs` | Cargo patches webrtc-sys 0.3.39 locally; CUDA_PATH headers/import library enable NVENC, CUDA is delay-loaded at runtime. Windows CI/release jobs install build dependencies; drivers remain optional in Automatic/CPU mode |
 | NVENC bitrate adaptation | `vendor/webrtc-sys/src/nvidia/h264_encoder_impl.cpp`, `client/src/features/voice.rs` | `SetRates` budgets reach NVENC through `Reconfigure` before the next frame; successful changes update bitrate, VBV and FPS together. `DISCORDIA_TEST_REQUIRE_NVENC=1 DISCORDIA_TEST_NVENC_RATES=1` enables the real-SFU motion test, which checks sent bitrate follows an increased target and video decodes |
 | Windows AMD/other hardware encoders | `vendor/webrtc-sys/src/windows/mf_encoder_factory.cpp`, `vendor/webrtc-sys/src/video_encoder_factory.cpp` | Automatic prefers NVENC then hardware-only Media Foundation MFTs; binds the matching D3D11 adapter, handles asynchronous input/output with bounded queues, and falls back to software on failure. Preview identifies the driver encoder. `DISCORDIA_TEST_REQUIRE_MF=1` verifies MFT encoding in the real SFU test |
@@ -115,6 +116,7 @@ repeated here.
 | Screen preview measurements | `client/src/features/screenshare.rs` | `ScreenSelfPreview` shows selected resolution/FPS and actual sending/capture FPS; `ScreenWatchTile` polls `previewStats` per identity for actual received resolution/FPS independently of the connection stats panel |
 | Everything else | beside the code | the suite stays headless and green |
 | Screen-share webview lifecycle | `client/tests/screenshare_bridge.cjs` | `node client/tests/screenshare_bridge.cjs`; simultaneous video/audio, independent volume, teardown and native-audio switching |
+| Chat image paste bridge | `client/tests/chat_attachment_bridge.cjs` | `node client/tests/chat_attachment_bridge.cjs`; only image paste in the chat is intercepted, remounts reuse one listener, no image bytes cross the event bridge |
 
 ## Architecture
 
