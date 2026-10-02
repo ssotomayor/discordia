@@ -1312,6 +1312,11 @@ fn screen_video_options(settings: crate::sysvideo::Settings) -> TrackPublishOpti
             max_framerate: settings.fps as f64,
             max_bitrate: settings.max_bitrate,
         }),
+        video_start_bitrate: Some(
+            (settings.max_bitrate / 2)
+                .clamp(1_000_000, 4_000_000)
+                .min(settings.max_bitrate),
+        ),
         ..Default::default()
     }
 }
@@ -1438,6 +1443,7 @@ impl ScreenVideoRoom {
 
         let mut stats_state = state;
         let capture_metrics = capture.metrics();
+        let stats_sid = publication.sid();
         let stats_task = dioxus::prelude::spawn(async move {
             let mut previous = None;
             let mut capture_previous = capture_metrics.snapshot();
@@ -1512,6 +1518,16 @@ impl ScreenVideoRoom {
                 stats.capture_height = (captured.height > 0).then_some(captured.height);
                 stats.capture_processing_ms = capture_processing_ms;
                 stats.encode_ms = encode_ms;
+                tracing::debug!(
+                    max_bitrate_bps = settings.max_bitrate,
+                    track_sid = %stats_sid,
+                    key_frames_encoded = outbound.outbound.key_frames_encoded,
+                    nack_count = outbound.outbound.nack_count,
+                    pli_count = outbound.outbound.pli_count,
+                    retransmitted_packets = outbound.outbound.retransmitted_packets_sent,
+                    ?stats,
+                    "native screen share stats"
+                );
                 s.screen_share_stats = Some(stats);
             }
         });
@@ -3272,8 +3288,17 @@ mod tests {
         eprintln!("Available video encoders: {available_backends:?}");
         let require_nvenc = std::env::var_os("DISCORDIA_TEST_REQUIRE_NVENC").is_some();
         let verify_nvenc_rates = std::env::var_os("DISCORDIA_TEST_NVENC_RATES").is_some();
+        let verify_1440p = std::env::var_os("DISCORDIA_TEST_NVENC_1440P").is_some();
+        let legacy_start = std::env::var_os("DISCORDIA_TEST_LEGACY_START").is_some();
+        assert!(!verify_1440p || verify_nvenc_rates);
         let require_mf = std::env::var_os("DISCORDIA_TEST_REQUIRE_MF").is_some();
-        if require_mf || verify_nvenc_rates {
+        let modern_codec = std::env::var("DISCORDIA_TEST_MODERN_CODEC").ok();
+        assert!(
+            modern_codec
+                .as_deref()
+                .is_none_or(|codec| matches!(codec, "av1" | "h265"))
+        );
+        if require_mf || verify_nvenc_rates || modern_codec.is_some() {
             let _subscriber = tracing_subscriber::fmt()
                 .with_env_filter("libwebrtc=debug,webrtc_sys=debug,livekit=warn")
                 .with_test_writer()
@@ -3295,6 +3320,9 @@ mod tests {
         .expect("start SFU");
         let url = format!("ws://127.0.0.1:{}", ports().ws);
         let encrypted_options = || {
+            if std::env::var_os("DISCORDIA_TEST_MODERN_NO_E2EE").is_some() {
+                return RoomOptions::default();
+            }
             let provider = livekit::e2ee::key_provider::KeyProvider::with_shared_key(
                 livekit::e2ee::key_provider::KeyProviderOptions::default(),
                 vec![7; crate::mediakey::KEY_LEN],
@@ -3311,7 +3339,7 @@ mod tests {
             (crate::sysvideo::Codec::Vp8, crate::sysvideo::Encoder::Auto),
             (crate::sysvideo::Codec::H264, crate::sysvideo::Encoder::Cpu),
         ] {
-            if verify_nvenc_rates
+            if (verify_nvenc_rates || modern_codec.is_some())
                 && (codec != crate::sysvideo::Codec::H264
                     || encoder != crate::sysvideo::Encoder::Auto)
             {
@@ -3366,6 +3394,17 @@ mod tests {
                 settings.height = 720;
                 settings.fps = 30;
                 settings.max_bitrate = 8_000_000;
+                if verify_1440p {
+                    settings.width = 2560;
+                    settings.height = 1440;
+                    settings.max_bitrate = 12_000_000;
+                }
+            }
+            if modern_codec.is_some() {
+                settings.width = 640;
+                settings.height = 360;
+                settings.fps = 30;
+                settings.max_bitrate = 1_000_000;
             }
             let source = NativeVideoSource::new(
                 VideoResolution {
@@ -3378,12 +3417,26 @@ mod tests {
                 "screen",
                 RtcVideoSource::Native(source.clone()),
             );
+            let mut publish_options = screen_video_options(settings);
+            if legacy_start {
+                publish_options.video_start_bitrate = None;
+            }
+            match modern_codec.as_deref() {
+                Some("av1") => {
+                    publish_options.video_codec = VideoCodec::AV1;
+                    publish_options.video_encoder = VideoEncoderBackend::Software;
+                }
+                Some("h265") => {
+                    publish_options.video_codec = VideoCodec::H265;
+                    publish_options.video_encoder = VideoEncoderBackend::Hardware;
+                }
+                _ => {}
+            }
+            let requested_codec = publish_options.video_codec;
+            let requested_encoder = publish_options.video_encoder;
             publisher
                 .local_participant()
-                .publish_track(
-                    LocalTrack::Video(track.clone()),
-                    screen_video_options(settings),
-                )
+                .publish_track(LocalTrack::Video(track.clone()), publish_options)
                 .await
                 .expect("publish video");
             let mut interval =
@@ -3391,17 +3444,28 @@ mod tests {
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             let mut last_bytes = None;
             let mut measured_bps = 0.0;
-            for index in 0..if verify_nvenc_rates { 450 } else { 300 } {
+            let frame_count = if verify_1440p {
+                900
+            } else if verify_nvenc_rates {
+                450
+            } else {
+                300
+            };
+            let mut noise_tile = vec![0; 65_536];
+            for index in 0..frame_count {
                 interval.tick().await;
                 let mut buffer = I420Buffer::new(settings.width, settings.height);
                 let (y, u, v) = buffer.data_mut();
                 if verify_nvenc_rates {
                     let mut noise = index as u32 + 1;
-                    for pixel in y.iter_mut() {
+                    for pixel in noise_tile.iter_mut() {
                         noise ^= noise << 13;
                         noise ^= noise >> 17;
                         noise ^= noise << 5;
                         *pixel = 16 + (noise % 220) as u8;
+                    }
+                    for chunk in y.chunks_mut(noise_tile.len()) {
+                        chunk.copy_from_slice(&noise_tile[..chunk.len()]);
                     }
                 } else {
                     y.fill((16 + index % 200) as u8);
@@ -3423,13 +3487,27 @@ mod tests {
                             _ => None,
                         })
                         .expect("outbound rate");
+                    if index == 59 {
+                        eprintln!(
+                            "NVENC startup legacy={legacy_start} target={:.0} bps",
+                            outbound.outbound.target_bitrate
+                        );
+                        if verify_1440p && !legacy_start {
+                            assert!(
+                                outbound.outbound.target_bitrate > 1_500_000.0,
+                                "startup hint must reach WebRTC allocation"
+                            );
+                        }
+                    }
                     let now = Instant::now();
                     if let Some((bytes, sampled)) = last_bytes {
                         measured_bps = (outbound.sent.bytes_sent - bytes) as f64 * 8.0
                             / now.duration_since(sampled).as_secs_f64();
                         eprintln!(
-                            "NVENC motion actual={measured_bps:.0} target={:.0} bps",
-                            outbound.outbound.target_bitrate
+                            "NVENC motion frame={} actual={measured_bps:.0} target={:.0} cap={} bps",
+                            index + 1,
+                            outbound.outbound.target_bitrate,
+                            settings.max_bitrate,
                         );
                     }
                     last_bytes = Some((outbound.sent.bytes_sent, now));
@@ -3445,6 +3523,23 @@ mod tests {
                 .expect("outbound video");
             let stats = native_screen_stats(outbound, &report, 60.0, None);
             if verify_nvenc_rates {
+                if verify_1440p {
+                    assert_eq!(stats.encoded_width, Some(2560));
+                    assert_eq!(stats.encoded_height, Some(1440));
+                    assert!(stats.encoded_fps.is_some_and(|fps| fps >= 25.0));
+                    if !legacy_start {
+                        assert!(
+                            outbound.outbound.target_bitrate >= settings.max_bitrate as f64 * 0.9,
+                            "loopback must reach the 1440p30 budget: {}",
+                            outbound.outbound.target_bitrate
+                        );
+                    }
+                }
+                assert!(
+                    outbound.outbound.key_frames_encoded <= 8,
+                    "bitrate changes must not continuously force keyframes: {}",
+                    outbound.outbound.key_frames_encoded
+                );
                 assert!(
                     outbound.outbound.target_bitrate > 2_000_000.0,
                     "test must exercise an increased budget"
@@ -3482,14 +3577,17 @@ mod tests {
                 assert_eq!(stats.power_efficient, Some(false));
             }
             eprintln!(
-                "{codec:?}/{encoder:?}: codec={:?}, encoder={:?}, efficient={:?}, {}x{} @ {} FPS; {} decoded frames",
+                "{requested_codec:?}/{requested_encoder:?}: codec={:?}, encoder={:?}, efficient={:?}, {}x{} @ {} FPS; {} decoded frames; {} keyframes; {:.2} ms/encode",
                 stats.codec,
                 stats.codec_implementation,
                 stats.power_efficient,
                 stats.encoded_width.unwrap_or(0),
                 stats.encoded_height.unwrap_or(0),
                 stats.encoded_fps.unwrap_or(0.0),
-                received.load(Ordering::Relaxed)
+                received.load(Ordering::Relaxed),
+                outbound.outbound.key_frames_encoded,
+                outbound.outbound.total_encode_time * 1000.0
+                    / f64::from(outbound.outbound.frames_encoded.max(1)),
             );
             assert!(
                 received.load(Ordering::Relaxed) > 0,
@@ -3498,9 +3596,13 @@ mod tests {
             assert!(outbound.outbound.frames_encoded > 0);
             assert_eq!(
                 stats.codec.as_deref(),
-                Some(match codec {
-                    crate::sysvideo::Codec::H264 => "video/H264",
-                    crate::sysvideo::Codec::Vp8 => "video/VP8",
+                Some(match modern_codec.as_deref() {
+                    Some("av1") => "video/AV1",
+                    Some("h265") => "video/H265",
+                    _ => match codec {
+                        crate::sysvideo::Codec::H264 => "video/H264",
+                        crate::sysvideo::Codec::Vp8 => "video/VP8",
+                    },
                 })
             );
             listener.close().await.expect("close listener");

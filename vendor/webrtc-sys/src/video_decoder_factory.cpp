@@ -16,7 +16,6 @@
 
 #include "livekit/video_decoder_factory.h"
 
-#include <modules/video_coding/codecs/av1/av1_svc_config.h>
 #include "api/environment/environment.h"
 #include "api/video_codecs/av1_profile.h"
 #include "api/video_codecs/sdp_video_format.h"
@@ -27,9 +26,11 @@
 #include "modules/video_coding/codecs/vp9/include/vp9.h"
 #include "rtc_base/logging.h"
 
-#if defined(RTC_DAV1D_IN_INTERNAL_DECODER_FACTORY)
-#include "modules/video_coding/codecs/av1/dav1d_decoder.h"  // nogncheck
+// The pinned Windows library includes dav1d but omits its define from webrtc.ninja.
+#if defined(RTC_DAV1D_IN_INTERNAL_DECODER_FACTORY) || defined(WEBRTC_WIN)
+#include "modules/video_coding/codecs/av1/dav1d_decoder.h"
 #endif
+
 
 #ifdef WEBRTC_ANDROID
 #include "livekit/android.h"
@@ -75,9 +76,9 @@ std::vector<webrtc::SdpVideoFormat> VideoDecoderFactory::GetSupportedFormats()
        webrtc::SupportedH264DecoderCodecs())
     formats.push_back(h264_format);
 
-  formats.push_back(webrtc::SdpVideoFormat(
-      webrtc::SdpVideoFormat::AV1Profile0(),
-      webrtc::LibaomAv1EncoderSupportedScalabilityModes()));
+#if defined(RTC_DAV1D_IN_INTERNAL_DECODER_FACTORY) || defined(WEBRTC_WIN)
+  formats.push_back(webrtc::SdpVideoFormat::AV1Profile0());
+#endif
   return formats;
 }
 
@@ -135,10 +136,9 @@ std::unique_ptr<webrtc::VideoDecoder> VideoDecoderFactory::Create(
     return webrtc::H264Decoder::Create();
 
 
-#if defined(RTC_DAV1D_IN_INTERNAL_DECODER_FACTORY)
-  if (absl::EqualsIgnoreCase(format.name, webrtc::kAv1CodecName)) {
-    return webrtc::CreateDav1dDecoder();
-  }
+#if defined(RTC_DAV1D_IN_INTERNAL_DECODER_FACTORY) || defined(WEBRTC_WIN)
+  if (absl::EqualsIgnoreCase(format.name, webrtc::kAv1CodecName))
+    return webrtc::CreateDav1dDecoder(env);
 #endif
 
 
