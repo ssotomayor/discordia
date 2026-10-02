@@ -149,3 +149,13 @@ devcontainer up --workspace-folder . --remove-existing-container   # after editi
 
 DMs are in none of these rows: they are Nostr gift wraps on relays, and a relay
 learns only that somebody messaged you.
+
+## Release profile comparison
+
+| Command | Scope |
+|---|---|
+| `cargo test -p dioxusfun-protocol --release` | Existing release baseline |
+| `cargo test -p dioxusfun-protocol --profile release-lto` | Optional thin-LTO candidate; same optimization level and panic behavior |
+| `cargo build -p dioxusfun --profile release-lto` | Full-client candidate build, not measured in this iteration |
+
+The protocol test executable on Windows was 2,562,048 bytes with release and 2,538,496 with release-lto. Both ran all 59 tests successfully. This does not establish a client-wide speed or size improvement; release automation continues using its existing profile. [Cargo profile settings](https://doc.rust-lang.org/cargo/reference/profiles.html).

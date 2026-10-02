@@ -826,8 +826,8 @@ impl AppState {
         if held.iter().any(|m| m.id == message.id) {
             return false;
         }
-        held.push(message);
-        held.sort_by_key(|m| m.created_at);
+        let index = held.partition_point(|m| m.created_at <= message.created_at);
+        held.insert(index, message);
         true
     }
 
@@ -872,14 +872,41 @@ impl AppState {
     pub fn merge_history(&mut self, channel_id: Id, page: Vec<Message>) {
         let held = self.messages.entry(channel_id).or_default();
         let mut seen: HashSet<Id> = held.iter().map(|m| m.id).collect();
+        let mut incoming = Vec::with_capacity(page.len());
         for m in page {
             // Recorded as we go rather than sampled once: a page that repeats
             // an id would otherwise be believed twice.
             if seen.insert(m.id) {
-                held.push(m);
+                incoming.push(m);
             }
         }
-        held.sort_by_key(|m| m.created_at);
+        if incoming.is_empty() {
+            return;
+        }
+        incoming.sort_by_key(|m| m.created_at);
+        if held
+            .last()
+            .zip(incoming.first())
+            .is_none_or(|(last, first)| last.created_at <= first.created_at)
+        {
+            held.extend(incoming);
+            return;
+        }
+        let mut merged = Vec::with_capacity(held.len() + incoming.len());
+        let mut old = std::mem::take(held).into_iter().peekable();
+        for message in incoming {
+            while old
+                .peek()
+                .is_some_and(|m| m.created_at <= message.created_at)
+            {
+                if let Some(previous) = old.next() {
+                    merged.push(previous);
+                }
+            }
+            merged.push(message);
+        }
+        merged.extend(old);
+        *held = merged;
     }
 
     /// Only this channel's own flag, for the menu that toggles it: `is_muted`
@@ -1476,6 +1503,36 @@ mod tests {
         s.merge_history(cid, vec![at(twice, cid, 100), at(twice, cid, 100)]);
 
         assert_eq!(s.messages[&cid].len(), 1);
+    }
+
+    #[test]
+    fn history_merge_preserves_existing_edits_and_equal_timestamp_order() {
+        let mut s = AppState::empty();
+        let cid = Id::new_v4();
+        let existing = Id::new_v4();
+        let newest = Id::new_v4();
+        let same_time = Id::new_v4();
+        let oldest = Id::new_v4();
+        let mut edited = at(existing, cid, 200);
+        edited.content = "edited locally".into();
+        s.insert_message(cid, edited);
+        s.insert_message(cid, at(newest, cid, 400));
+        s.merge_history(
+            cid,
+            vec![
+                at(same_time, cid, 200),
+                at(oldest, cid, 100),
+                at(existing, cid, 200),
+            ],
+        );
+        assert_eq!(
+            s.messages[&cid].iter().map(|m| m.id).collect::<Vec<_>>(),
+            vec![oldest, existing, same_time, newest]
+        );
+        assert_eq!(s.messages[&cid][1].content, "edited locally");
+        let tail = Id::new_v4();
+        s.merge_history(cid, vec![at(tail, cid, 500)]);
+        assert_eq!(s.messages[&cid].last().unwrap().id, tail);
     }
 
     fn text_channel(s: &mut AppState, guild_id: Id) -> Id {

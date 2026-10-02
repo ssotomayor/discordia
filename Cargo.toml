@@ -88,3 +88,8 @@ opt-level = 3
 
 [profile.dev.package.salsa20]
 opt-level = 3
+
+[profile.release-lto]
+inherits = "release"
+lto = "thin"
+strip = "debuginfo"
