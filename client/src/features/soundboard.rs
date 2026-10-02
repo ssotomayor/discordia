@@ -39,28 +39,6 @@ pub fn SoundboardPanel() -> Element {
     }
 }
 
-/// Registered on the document, not on a backdrop: nothing behind the popover
-/// may be blocked. The toggle is exempt, or its own click would reopen it.
-const DISMISS_JS: &str = r#"
-(function () {
-  if (window.__dxfSoundboardOff) window.__dxfSoundboardOff();
-  const done = () => { window.__dxfSoundboardOff(); dioxus.send(true); };
-  const onDown = (e) => {
-    const t = e.target;
-    if (t && t.closest && (t.closest('#dxf-soundboard') || t.closest('#dxf-soundboard-toggle'))) return;
-    done();
-  };
-  const onKey = (e) => { if (e.key === 'Escape') done(); };
-  document.addEventListener('mousedown', onDown, true);
-  document.addEventListener('keydown', onKey, true);
-  window.__dxfSoundboardOff = () => {
-    document.removeEventListener('mousedown', onDown, true);
-    document.removeEventListener('keydown', onKey, true);
-    window.__dxfSoundboardOff = null;
-  };
-})();
-"#;
-
 const POPOVER_W: f64 = 280.0;
 
 #[component]
@@ -73,18 +51,6 @@ fn SoundboardPopover(guild_id: Id) -> Element {
         let gw = gateway.clone();
         use_effect(move || crate::net::resolve_media(&mut state.write(), &gw.0));
     }
-    use_hook(move || {
-        let mut dismissed = document::eval(DISMISS_JS);
-        spawn(async move {
-            if dismissed.recv::<bool>().await.is_ok() {
-                state.write().soundboard_open = false;
-            }
-        });
-    });
-    use_drop(|| {
-        let _ = document::eval("window.__dxfSoundboardOff && window.__dxfSoundboardOff();");
-    });
-
     let sounds = use_memo(move || state.read().sounds_of(guild_id).to_vec());
     let can_manage = state.read().can(guild_id, Permission::ManageGuild);
     let adjusting = state.read().soundboard_adjusting;
@@ -114,6 +80,7 @@ fn SoundboardPopover(guild_id: Id) -> Element {
     rsx! {
         div {
             id: "dxf-soundboard",
+            onpointerdown: move |e| e.stop_propagation(),
             class: "fixed z-[70] max-h-[50vh] flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl overflow-hidden",
             style: "{style}",
             oncontextmenu: move |e: MouseEvent| {

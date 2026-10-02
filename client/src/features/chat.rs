@@ -17,37 +17,50 @@ const QUICK_REACTIONS: &[&str] = &["👍", "❤️", "😂", "🎉", "🔥", "�
 
 const GROUP_WINDOW_SECS: i64 = 300;
 
-fn chat_scroll_js(mode: &str) -> String {
-    let mode = crate::features::screenshare::js_str(mode);
-    format!(
-        r#"
-(function() {{
-  var el = document.getElementById('dxf-chat-scroll');
-  if (!el) return;
-  if (!el._dxfWired) {{
-    el._dxfWired = true;
-    el._dxfStick = true;
-    el._dxfPrevHeight = el.scrollHeight;
-    el.addEventListener('scroll', function() {{
-      var gap = el.scrollHeight - el.scrollTop - el.clientHeight;
-      el._dxfStick = gap <= 40;
-    }}, {{ passive: true }});
-  }}
-  var mode = {mode};
-  if (mode === 'channel') {{
-    el.scrollTop = el.scrollHeight;
-    el._dxfStick = true;
-  }} else if (mode === 'prepend') {{
-    var grew = el.scrollHeight - el._dxfPrevHeight;
-    if (grew > 0) {{ el.scrollTop = el.scrollTop + grew; }}
-  }} else if (el._dxfStick) {{
-    el.scrollTop = el.scrollHeight;
-  }}
-  el._dxfPrevHeight = el.scrollHeight;
-}})();
-"#
-    )
-}
+const SCROLL_JS: &str = r#"
+return (async function () {
+  if (window.__dxfChatScrollOff) window.__dxfChatScrollOff();
+  let node = null, channel = null, sequence = 0, alive = true, wake = null;
+  const measure = (mode, cid) => {
+    if (!alive) return;
+    const el = document.getElementById('dxf-chat-scroll');
+    if (!el) return;
+    if (node !== el) {
+      if (node) node.removeEventListener('scroll', onScroll);
+      node = el;
+      node.addEventListener('scroll', onScroll, { passive: true });
+    }
+    channel = cid;
+    dioxus.send({ mode, channel, sequence: ++sequence, height: el.scrollHeight,
+      top: el.scrollTop, viewport: el.clientHeight });
+  };
+  const onScroll = () => measure('scroll', channel);
+  window.__dxfChatScrollMeasure = measure;
+  const off = () => {
+    alive = false;
+    if (wake) wake(null);
+    if (node) node.removeEventListener('scroll', onScroll);
+    window.__dxfChatScrollMeasure = null;
+    window.__dxfChatScrollOff = null;
+  };
+  window.__dxfChatScrollOff = off;
+  dioxus.send(true);
+  try {
+    while (alive) {
+      const command = await new Promise(resolve => {
+        wake = resolve;
+        dioxus.recv().then(resolve, () => resolve(null));
+      });
+      wake = null;
+      if (!alive || command === null) break;
+      if (command.sequence === sequence && node === document.getElementById('dxf-chat-scroll')
+          && command.channel === channel && command.top !== null) node.scrollTop = command.top;
+    }
+  } finally {
+    if (window.__dxfChatScrollOff === off) off();
+  }
+})();
+"#;
 
 const PASTE_JS: &str = r#"
 (function () {
@@ -157,9 +170,35 @@ pub fn ChatView() -> Element {
             s.command_notes.len(),
         )
     });
+    let mut scroll_ready = use_signal(|| false);
+    let mut scroll_mounted = use_signal(|| 0_u64);
+    use_future(move || async move {
+        let mut eval = document::eval(SCROLL_JS);
+        if eval.recv::<bool>().await.is_err() {
+            return;
+        }
+        scroll_ready.set(true);
+        let mut policy = super::chat_scroll::ScrollState::default();
+        while let Ok(sample) = eval.recv::<super::chat_scroll::ScrollSample>().await {
+            if sample.channel != state.peek().selected_channel {
+                continue;
+            }
+            let command = policy.update(sample);
+            if eval.send(command).is_err() {
+                break;
+            }
+        }
+    });
+    use_drop(|| {
+        let _ = document::eval("window.__dxfChatScrollOff && window.__dxfChatScrollOff();");
+    });
     let mut prev_key = use_signal(|| (None::<Id>, None::<Id>));
     use_effect(move || {
         let (cid, first, _last, _notes) = scroll_key();
+        let _ = scroll_mounted();
+        if !scroll_ready() {
+            return;
+        }
         let (prev_cid, prev_first) = *prev_key.peek();
         let channel_changed = cid != prev_cid;
         let prepended = !channel_changed && prev_first.is_some() && first != prev_first;
@@ -172,7 +211,10 @@ pub fn ChatView() -> Element {
         } else {
             "append"
         };
-        let _ = document::eval(&chat_scroll_js(mode));
+        let channel = serde_json::to_string(&cid).unwrap_or_else(|_| "null".into());
+        let _ = document::eval(&format!(
+            "window.__dxfChatScrollMeasure && window.__dxfChatScrollMeasure({mode:?}, {channel});"
+        ));
     });
 
     rsx! {
@@ -220,7 +262,8 @@ pub fn ChatView() -> Element {
             }
 
             NoDrag {
-                div { id: "dxf-chat-scroll", class: "flex-1 overflow-y-auto px-4 py-4 min-h-0",
+                div { id: "dxf-chat-scroll",
+                onmounted: move |_| scroll_mounted += 1, class: "flex-1 overflow-y-auto px-4 py-4 min-h-0",
                     if messages.is_empty() && selected_channel.is_some() {
                         div { class: "h-full flex items-center justify-center text-[var(--text-dim)] text-xs",
                             if is_dm { "No messages yet. Say hi 👋" } else { "No messages yet." }

@@ -95,6 +95,7 @@ jobs:
         run: |
           node client/tests/screenshare_bridge.cjs
           node client/tests/chat_attachment_bridge.cjs
+          node client/tests/native_ui_bridges.cjs
 
   windows-build:
     name: client compiles (windows)

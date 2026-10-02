@@ -85,11 +85,13 @@ window.dxScreen = window.dxScreen || (function () {
   function setSink(label) { sinkLabel = label || null; applySink(); }
   function setStreamVolume(v, identity) {
     if (!identity) return;
+    identity = baseIdentity(identity);
     audioGains[identity] = Math.max(0, Math.min(1, v));
     const t = audioTracks[identity];
     if (t) { try { t.setVolume(audioGains[identity]); } catch (e) {} }
   }
   function detachAudio(identity) {
+    if (identity) identity = baseIdentity(identity);
     const identities = identity ? [identity] : Object.keys(audioElements);
     identities.forEach(function (id) {
       const el = audioElements[id];
@@ -100,6 +102,7 @@ window.dxScreen = window.dxScreen || (function () {
     });
   }
   function attachAudio(identity) {
+    identity = baseIdentity(identity);
     if (audioElements[identity]) return;
     const t = audioTracks[identity];
     if (!t) { report(identity, false); return; }
@@ -134,7 +137,7 @@ window.dxScreen = window.dxScreen || (function () {
   }
   const VIDEO_SUFFIX = '#video';
   function baseIdentity(id) {
-    return id.endsWith(VIDEO_SUFFIX) ? id.slice(0, -VIDEO_SUFFIX.length) : id;
+    return id.endsWith(VIDEO_SUFFIX) ? id.slice(0, -VIDEO_SUFFIX.length) : (id.endsWith('#audio') ? id.slice(0, -6) : id);
   }
   function applySelfPreviewSubscription(pub, participant, previousIdentity) {
     if (!pub || !participant || pub.kind !== 'video' || kindOf(pub, pub.track) !== 'screen') return;
@@ -297,7 +300,7 @@ window.dxScreen = window.dxScreen || (function () {
     });
     thisRoom.on(lk.RoomEvent.TrackSubscribed, function (track, pub, participant) {
       if (track.kind === 'audio') {
-        audioTracks[participant.identity] = track;
+        audioTracks[baseIdentity(participant.identity)] = track;
         if (nativeStreamAudio) return;
         attachWatched();
         return;
@@ -314,8 +317,8 @@ window.dxScreen = window.dxScreen || (function () {
     });
     thisRoom.on(lk.RoomEvent.TrackUnsubscribed, function (track, pub, participant) {
       if (track.kind === 'audio') {
-        detachAudio(participant.identity);
-        delete audioTracks[participant.identity];
+        detachAudio(baseIdentity(participant.identity));
+        delete audioTracks[baseIdentity(participant.identity)];
         if (!nativeStreamAudio) report(participant.identity, false);
         return;
       }
@@ -1403,11 +1406,11 @@ pub fn ScreenShareBridge() -> Element {
                                 &id[..id.len().min(8)]
                             );
                             let mut s = state.write();
-                            if present {
-                                s.stream_has_audio.insert(id.to_string());
-                            } else {
-                                s.stream_has_audio.remove(id);
-                            }
+                            s.stream_has_audio.set(
+                                crate::stream_audio::Source::WebView,
+                                id,
+                                present,
+                            );
                         }
                     }
                     _ => {}
@@ -2182,7 +2185,7 @@ fn ScreenWatchTile(
                     if !has_audio {
                         span {
                             class: "text-[10px] text-[var(--text-dim)] italic",
-                            title: "The sharer's platform didn't provide system audio for this stream, so there is nothing to play.",
+                            title: "No stream audio track has been detected yet.",
                             "no stream audio"
                         }
                     }

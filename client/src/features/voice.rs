@@ -644,17 +644,17 @@ impl ActiveVoice {
                     let mut s = state.write();
                     match ev {
                         StreamAudio::Present(id) => {
-                            s.stream_has_audio.insert(id);
+                            s.stream_has_audio
+                                .set(crate::stream_audio::Source::Voice, &id, true);
                         }
                         StreamAudio::Gone(id) => {
-                            s.stream_has_audio.remove(&id);
+                            s.stream_has_audio
+                                .set(crate::stream_audio::Source::Voice, &id, false);
                         }
                         StreamAudio::RoomGone => {
-                            s.stream_has_audio.clear();
-                            crate::dlog!(
-                                "voice screen_audio RoomGone -> joined=false (playback back to webview)"
-                            );
-                            s.screen_audio_joined = false;
+                            s.stream_has_audio
+                                .clear_source(crate::stream_audio::Source::Voice);
+                            crate::dlog!("voice stream audio cleared");
                         }
                     }
                 }
@@ -1137,7 +1137,8 @@ impl ActiveVoice {
             if let Some(prev) = self.screen_audio.take() {
                 prev.shutdown().await;
                 let mut s = state.write();
-                s.stream_has_audio.clear();
+                s.stream_has_audio
+                    .clear_source(crate::stream_audio::Source::Screen);
                 s.screen_audio_joined = false;
                 eprintln!("[voice] screen audio room left");
             }
@@ -1152,7 +1153,8 @@ impl ActiveVoice {
                     prev.shutdown().await;
                 }
                 let mut s = state.write();
-                s.stream_has_audio.clear();
+                s.stream_has_audio
+                    .clear_source(crate::stream_audio::Source::Screen);
                 s.screen_audio_joined = false;
                 drop(s);
                 eprintln!("[voice] screen audio room stale, rejoining");
@@ -1671,13 +1673,16 @@ impl ScreenAudioRoom {
                     let mut s = state.write();
                     match ev {
                         StreamAudio::Present(id) => {
-                            s.stream_has_audio.insert(id);
+                            s.stream_has_audio
+                                .set(crate::stream_audio::Source::Screen, &id, true);
                         }
                         StreamAudio::Gone(id) => {
-                            s.stream_has_audio.remove(&id);
+                            s.stream_has_audio
+                                .set(crate::stream_audio::Source::Screen, &id, false);
                         }
                         StreamAudio::RoomGone => {
-                            s.stream_has_audio.clear();
+                            s.stream_has_audio
+                                .clear_source(crate::stream_audio::Source::Screen);
                             crate::dlog!(
                                 "voice screen_audio RoomGone -> joined=false (playback back to webview)"
                             );
@@ -1782,7 +1787,8 @@ impl ScreenAudioRoom {
 }
 
 fn wanted(source: &TrackSource, publisher: &str, self_pubkey: &str) -> bool {
-    *source == TrackSource::ScreenshareAudio && publisher != self_pubkey
+    *source == TrackSource::ScreenshareAudio
+        && crate::stream_audio::identity(publisher) != self_pubkey
 }
 
 fn denoise_gate_loop(
@@ -2804,7 +2810,10 @@ fn track_gain(
     let voice = gains.get(identity).copied().unwrap_or(1.0);
     match kind {
         TrackKind::Voice => voice,
-        TrackKind::Stream => stream_gains.get(identity).copied().unwrap_or(0.0),
+        TrackKind::Stream => stream_gains
+            .get(crate::stream_audio::identity(identity))
+            .copied()
+            .unwrap_or(0.0),
         TrackKind::Soundboard if voice == 0.0 => 0.0,
         TrackKind::Soundboard => soundboard_pct.min(100) as f32 / 100.0,
     }
@@ -3642,6 +3651,26 @@ mod tests {
             track_gain(TrackKind::Soundboard, "x", &gains, &streams, 900),
             1.0
         );
+    }
+
+    #[test]
+    fn native_stream_publishers_use_the_viewers_volume_and_mute() {
+        let gains = HashMap::new();
+        let mut streams = HashMap::from([("alice".to_string(), 0.35)]);
+        assert_eq!(
+            track_gain(TrackKind::Stream, "alice#video", &gains, &streams, 100),
+            0.35
+        );
+        streams.insert("alice".into(), 0.0);
+        assert_eq!(
+            track_gain(TrackKind::Stream, "alice#video", &gains, &streams, 100),
+            0.0
+        );
+        assert!(!wanted(
+            &TrackSource::ScreenshareAudio,
+            "alice#video",
+            "alice"
+        ));
     }
 
     #[test]

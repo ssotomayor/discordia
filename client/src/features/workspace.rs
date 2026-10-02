@@ -269,7 +269,7 @@ fn ConnectingOverlay(target: String) -> Element {
 
 #[component]
 pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>) -> Element {
-    let state = use_signal(AppState::empty);
+    let mut state = use_signal(AppState::empty);
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let leaving = use_signal(|| None::<Leaving>);
 
@@ -472,6 +472,14 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
     rsx! {
         div { class: "h-full w-full flex flex-col bg-[var(--bg)] p-2 gap-2 {mac_top_pad}",
             style: "{guild_accent_style}",
+            onpointerdown: move |_| {
+                if state.peek().soundboard_open { state.write().soundboard_open = false; }
+            },
+            onkeydown: move |e| {
+                if e.key() == Key::Escape && state.peek().soundboard_open {
+                    state.write().soundboard_open = false;
+                }
+            },
             VoiceSounds {}
             crate::features::sounds::MessageSounds {}
             VoiceSpeakingBridge {}

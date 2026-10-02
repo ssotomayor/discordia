@@ -33,6 +33,7 @@ mod session;
 mod settings;
 mod sound_decode;
 mod state;
+mod stream_audio;
 mod sysaudio;
 mod syscamera;
 mod sysvideo;

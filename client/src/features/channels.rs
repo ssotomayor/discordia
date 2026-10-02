@@ -1599,6 +1599,7 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                 "[&>svg]:pointer-events-none flex-1 h-9 flex items-center justify-center rounded-lg border transition-colors border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--text)] hover:border-[var(--border-strong)]"
                             },
                             id: "dxf-soundboard-toggle",
+                            onpointerdown: move |e| e.stop_propagation(),
                             title: "Soundboard — right-click for its volume",
                             onclick: move |e: MouseEvent| {
                                 let at = e.client_coordinates();
