@@ -673,7 +673,21 @@ pub fn SettingsDialog() -> Element {
                                     span { class: "text-[13px] text-[var(--text)] flex-1", "Detect running games" }
                                 }
                                 p { class: "mt-1 ml-5 mb-3 text-[11px] text-[var(--text-dim)]",
-                                    "Walks the process list every 15 seconds and matches it against a short built-in list. Only a match is ever sent — never the list of what is running."
+                                    if cfg!(windows) {
+                                        "Detects running games every 15 seconds using local Steam, Epic and Ubisoft installations and a built-in list. Only the detected game's name is shared."
+                                    } else {
+                                        "Detects running games every 15 seconds using local Steam installations and a built-in list. Only the detected game's name is shared."
+                                    }
+                                }
+                                if settings.read().detect_games {
+                                    p { class: "mt-1 mb-3 text-xs text-[var(--text-muted)]",
+                                        {
+                                            let s = state.read();
+                                            s.self_user.as_ref().and_then(|user| s.activity_of(&user.pubkey))
+                                                .map(crate::features::profiles::activity_line)
+                                                .unwrap_or_else(|| "No game detected yet. Open a game and wait up to 15 seconds.".into())
+                                        }
+                                    }
                                 }
                                 label { class: "flex items-center gap-2 cursor-pointer select-none",
                                     input {
@@ -692,6 +706,7 @@ pub fn SettingsDialog() -> Element {
                                 p { class: "mt-1 ml-5 text-[11px] text-[var(--text-dim)]",
                                     "Listens on the sockets a game already looks for, so anything shipping Rich Presence reports here with no extra work. Whichever of us starts first takes the socket, so a running Discord will stop seeing your games — or we will see none. Restart the app after changing this."
                                 }
+                                GameDetectionOverrides {}
                             }
                         }
                         }
@@ -717,6 +732,72 @@ pub fn SettingsDialog() -> Element {
                         }
                         }
                     }
+            }
+        }
+    }
+}
+
+#[component]
+fn GameDetectionOverrides() -> Element {
+    let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
+    let mut executable = use_signal(String::new);
+    let mut title = use_signal(String::new);
+    let mut error = use_signal(|| None::<String>);
+    let games = settings.read().detect_extra.clone();
+    rsx! {
+        div { class: "mt-4",
+            h4 { class: "text-[13px] text-[var(--text)]", "Additional games" }
+            p { class: "mt-1 mb-2 text-[11px] text-[var(--text-dim)]",
+                "For games the automatic detector misses, add the executable name shown in Task Manager → Details and the name to display."
+            }
+            div { class: "flex flex-wrap gap-2",
+                input {
+                    class: "min-w-0 flex-1 rounded border border-[var(--border)] bg-[var(--bg)] px-2 py-1 text-xs",
+                    placeholder: "Executable, e.g. game.exe", value: "{executable}", maxlength: 240,
+                    oninput: move |e| executable.set(e.value()),
+                }
+                input {
+                    class: "min-w-0 flex-1 rounded border border-[var(--border)] bg-[var(--bg)] px-2 py-1 text-xs",
+                    placeholder: "Game name", value: "{title}", maxlength: 80,
+                    oninput: move |e| title.set(e.value()),
+                }
+                button {
+                    class: "rounded border border-[var(--border)] px-2 py-1 text-xs hover:text-[var(--accent)] disabled:opacity-40",
+                    disabled: executable.read().trim().is_empty() || title.read().trim().is_empty(),
+                    onclick: move |_| {
+                        let mut next = settings.read().clone();
+                        let result = crate::presence::detect::set_override(&mut next.detect_extra, &executable.read(), &title.read());
+                        match result {
+                            Ok(()) => {
+                                crate::settings::save(&next);
+                                settings.set(next);
+                                executable.set(String::new());
+                                title.set(String::new());
+                                error.set(None);
+                            }
+                            Err(message) => error.set(Some(message.into())),
+                        }
+                    },
+                    "Add game"
+                }
+            }
+            if let Some(message) = error() {
+                p { class: "mt-1 text-xs text-[var(--danger)]", "{message}" }
+            }
+            for (exe, name) in games {
+                div { key: "{exe}", class: "mt-2 flex items-center gap-2 text-xs",
+                    span { class: "min-w-0 flex-1 truncate", "{name} · {exe}" }
+                    button {
+                        class: "text-[var(--text-muted)] hover:text-[var(--danger)]",
+                        onclick: move |_| {
+                            let mut next = settings.read().clone();
+                            next.detect_extra.retain(|(key, _)| key != &exe);
+                            crate::settings::save(&next);
+                            settings.set(next);
+                        },
+                        "Remove"
+                    }
+                }
             }
         }
     }

@@ -25,6 +25,18 @@ window.dxScreen = window.dxScreen || (function () {
   let remoteStatsInFlight = false;
   let previousScreenSample = null;
   let previousRemoteSample = null;
+  const videoReports = new WeakMap();
+  function videoStatsReport(track) {
+    const now = Date.now();
+    const sample = videoReports.get(track);
+    if (sample && (sample.pending || (now >= sample.at && now - sample.at < 500))) return sample.report;
+    const next = { at: now, pending: true, report: null };
+    next.report = Promise.resolve().then(function () { return track.getRTCStatsReport(); }).finally(function () {
+      next.pending = false;
+    });
+    videoReports.set(track, next);
+    return next.report;
+  }
   let e2eeKey = null;
   let e2eeWorker = null;
   let e2eeWorkerUrl = null;
@@ -458,7 +470,7 @@ window.dxScreen = window.dxScreen || (function () {
     remoteStatsInFlight = true;
     try {
       const track = remoteShareVideoTrack;
-      const stats = await track.getRTCStatsReport();
+      const stats = await videoStatsReport(track);
       if (!screenStatsEnabled || !stats || track !== remoteShareVideoTrack) return;
       let inbound = null;
       stats.forEach(function (entry) {
@@ -554,7 +566,7 @@ window.dxScreen = window.dxScreen || (function () {
     const track = videoTrackFor(identity, 'screen');
     if (!track) return null;
     try {
-      const report = await track.getRTCStatsReport();
+      const report = await videoStatsReport(track);
       let result = null;
       if (report) report.forEach(function (entry) {
         if (entry.type === 'inbound-rtp' && entry.kind === 'video') {
@@ -1016,34 +1028,34 @@ pub(crate) fn js_str(s: &str) -> String {
 
 pub fn share_js(on: bool, quality: &str, audio: bool) -> String {
     if !on {
-        return format!("{SCREEN_JS}\nwindow.dxScreen.stopShare();");
+        return "window.dxScreen.stopShare();".into();
     }
     let (w, h, fps, bitrate, hint, degradation) = quality_preset(quality);
     let mode = native_audio_mode();
     let (hint, degradation, mode) = (js_str(hint), js_str(degradation), js_str(mode));
     format!(
-        "{SCREEN_JS}\nwindow.dxScreen.requestAndStartShare({{width:{w},height:{h},fps:{fps},\
+        "window.dxScreen.requestAndStartShare({{width:{w},height:{h},fps:{fps},\
          bitrate:{bitrate},hint:{hint},degradation:{degradation},audio:{audio},nativeAudio:{mode}}});"
     )
 }
 
 pub(crate) fn screen_stats_js(enabled: bool) -> String {
-    format!("{SCREEN_JS}\nwindow.dxScreen.setStatsEnabled({enabled});")
+    format!("window.dxScreen.setStatsEnabled({enabled});")
 }
 
 pub(crate) fn attach_js(identity: &str, container: &str, kind: &str) -> String {
     let (identity, container, kind) = (js_str(identity), js_str(container), js_str(kind));
-    format!("{SCREEN_JS}\nwindow.dxScreen.attach({identity},{container},{kind});")
+    format!("window.dxScreen.attach({identity},{container},{kind});")
 }
 
 pub(crate) fn detach_js(container: &str) -> String {
     let container = js_str(container);
-    format!("{SCREEN_JS}\nwindow.dxScreen.detach({container});")
+    format!("window.dxScreen.detach({container});")
 }
 
 pub fn stream_sink_js(device: Option<&str>) -> String {
     let arg = serde_json::to_string(&device).unwrap_or_else(|_| "null".into());
-    format!("{SCREEN_JS}\nwindow.dxScreen.setSink({arg});")
+    format!("window.dxScreen.setSink({arg});")
 }
 
 #[component]
@@ -1084,11 +1096,11 @@ pub fn ScreenShareBridge() -> Element {
                         .unwrap_or_else(|| "null".into());
                     let encrypt = crate::e2ee::enabled();
                     let _ = document::eval(&format!(
-                        "{SCREEN_JS}\nwindow.dxScreen.connect({url},{tok},{key},{encrypt});"
+                        "window.dxScreen.connect({url},{tok},{key},{encrypt});"
                     ));
                 }
                 None => {
-                    let _ = document::eval(&format!("{SCREEN_JS}\nwindow.dxScreen.disconnect();"));
+                    let _ = document::eval("window.dxScreen.disconnect();");
                 }
             }
             last.set(t);
@@ -1099,9 +1111,7 @@ pub fn ScreenShareBridge() -> Element {
     use_effect(move || {
         let on = native_audio_live();
         crate::dlog!("screen setNativeStreamAudio({on})");
-        let _ = document::eval(&format!(
-            "{SCREEN_JS}\nwindow.dxScreen.setNativeStreamAudio({on});"
-        ));
+        let _ = document::eval(&format!("window.dxScreen.setNativeStreamAudio({on});"));
     });
 
     let voice_screen_audio = use_voice_tx();
@@ -1822,7 +1832,7 @@ pub fn ScreenSelfPreview() -> Element {
                 "self screen preview state"
             );
             let _ = document::eval(&format!(
-                "{SCREEN_JS}\nwindow.dxScreen.setSelfPreview({},{enabled});",
+                "window.dxScreen.setSelfPreview({},{enabled});",
                 serde_json::to_string(identity).unwrap_or_else(|_| "null".into()),
             ));
             applied_preview.set(Some(desired));
@@ -1832,9 +1842,7 @@ pub fn ScreenSelfPreview() -> Element {
         if let Some(task) = preview_task.write().take() {
             task.cancel();
         }
-        let _ = document::eval(&format!(
-            "{SCREEN_JS}\nwindow.dxScreen.setSelfPreview(null,true);"
-        ));
+        let _ = document::eval("window.dxScreen.setSelfPreview(null,true);");
     });
 
     if !sharing() {
@@ -2094,13 +2102,18 @@ fn ScreenWatchTile(
     let container = format!("screenshare-viewer-{pk}");
     let stats_pk = pk.clone();
     let mut received_label = use_signal(|| "Waiting for stream measurements…".to_owned());
+    let window = dioxus::desktop::use_window();
     use_future(move || {
         let identity = js_str(&stats_pk);
+        let window = window.clone();
         async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                if !window.window.is_visible() || window.window.is_minimized() {
+                    continue;
+                }
                 let mut eval = document::eval(&format!(
-                    "{SCREEN_JS}\ndioxus.send(await window.dxScreen.previewStats({identity}));"
+                    "dioxus.send(await window.dxScreen.previewStats({identity}));"
                 ));
                 if let Ok(value) = eval.recv::<Value>().await {
                     let label = match (
@@ -2113,7 +2126,9 @@ fn ScreenWatchTile(
                         }
                         _ => "Waiting for stream measurements…".into(),
                     };
-                    received_label.set(label);
+                    if label != *received_label.peek() {
+                        received_label.set(label);
+                    }
                 }
             }
         }
@@ -2140,7 +2155,7 @@ fn ScreenWatchTile(
             s.stream_gain_of(&gain_pk)
         };
         let _ = document::eval(&format!(
-            "{SCREEN_JS}\nwindow.dxScreen.setStreamVolume({gain},{});",
+            "window.dxScreen.setStreamVolume({gain},{});",
             js_str(&gain_pk)
         ));
     });
@@ -2473,6 +2488,12 @@ mod js_escaping_tests {
             !js.contains("hint:'"),
             "no hand-built single-quoted literals remain in share_js"
         );
+        assert!(
+            js.len() < 512,
+            "share command should not include the bridge"
+        );
+        assert!(screen_stats_js(true).len() < 128);
+        let js = super::SCREEN_JS;
         assert!(
           js.contains("screenShareEncoding: { maxBitrate: quality.bitrate || 6000000, maxFramerate: wantFps }"),
           "screen shares use the SDK's screen-share encoding option"

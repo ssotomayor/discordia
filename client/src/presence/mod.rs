@@ -5,10 +5,10 @@
 //! and `client_version` in `Identify` (trap 12). Lying costs nobody anything.
 
 pub mod detect;
+mod installed;
 pub mod ipc;
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use dioxus::prelude::*;
 
@@ -18,6 +18,51 @@ use crate::state::use_gateway;
 /// How often the process table is walked. Long, because the scan is the whole
 /// cost of the feature and nobody notices a game showing up ten seconds late.
 const SCAN_EVERY: std::time::Duration = std::time::Duration::from_secs(15);
+
+struct ScanWorker {
+    _stop: std::sync::mpsc::Sender<()>,
+    extra: Arc<parking_lot::Mutex<Vec<(String, String)>>>,
+}
+
+fn scan_until_stopped(
+    tx: tokio::sync::mpsc::UnboundedSender<(Source, Option<Activity>)>,
+    stop: std::sync::mpsc::Receiver<()>,
+    mut scan: impl FnMut() -> Option<Activity>,
+) {
+    loop {
+        if stop.try_recv() != Err(std::sync::mpsc::TryRecvError::Empty) {
+            break;
+        }
+        if tx.send((Source::Detected, scan())).is_err() {
+            return;
+        }
+        if stop.recv_timeout(SCAN_EVERY) != Err(std::sync::mpsc::RecvTimeoutError::Timeout) {
+            break;
+        }
+    }
+    if tx.send((Source::Detected, None)).is_err() {
+        tracing::debug!("presence session already closed");
+    }
+}
+
+impl ScanWorker {
+    fn start(
+        tx: tokio::sync::mpsc::UnboundedSender<(Source, Option<Activity>)>,
+        extra: Vec<(String, String)>,
+    ) -> Self {
+        let (stop, stopped) = std::sync::mpsc::channel();
+        let extra = Arc::new(parking_lot::Mutex::new(extra));
+        let latest = extra.clone();
+        std::thread::spawn(move || {
+            let mut detector = detect::Detector::new(&latest.lock());
+            scan_until_stopped(tx, stopped, || {
+                detector.update_extra(&latest.lock());
+                detector.scan()
+            });
+        });
+        Self { _stop: stop, extra }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Source {
@@ -107,34 +152,23 @@ pub fn PresenceService() -> Element {
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(Source, Option<Activity>)>();
             let mut merge = Merge::default();
             let mut published: Option<Activity> = None;
-            let mut scanning: Option<Arc<AtomicBool>> = None;
+            let mut scanning: Option<ScanWorker> = None;
+            let mut rpc_tasks = tokio::task::JoinSet::new();
             let mut listening = false;
 
             loop {
                 let cfg = config_rx.borrow().clone();
 
                 if cfg.share && cfg.detect && scanning.is_none() {
-                    let run = Arc::new(AtomicBool::new(true));
-                    scanning = Some(run.clone());
-                    let tx = tx.clone();
-                    let extra = cfg.extra.clone();
-                    // Its own thread, not a task: the scan is blocking and long
-                    // enough to be felt on the runtime that carries the audio.
-                    std::thread::spawn(move || {
-                        let mut detector = detect::Detector::new(&extra);
-                        while run.load(Ordering::Relaxed) {
-                            if tx.send((Source::Detected, detector.scan())).is_err() {
-                                return;
-                            }
-                            std::thread::sleep(SCAN_EVERY);
-                        }
-                        let _ = tx.send((Source::Detected, None));
-                    });
+                    scanning = Some(ScanWorker::start(tx.clone(), cfg.extra.clone()));
                 }
-                if let Some(run) = &scanning
-                    && !(cfg.share && cfg.detect)
-                {
-                    run.store(false, Ordering::Relaxed);
+                if let Some(worker) = &scanning {
+                    let mut extra = worker.extra.lock();
+                    if *extra != cfg.extra {
+                        extra.clone_from(&cfg.extra);
+                    }
+                }
+                if !(cfg.share && cfg.detect) {
                     scanning = None;
                 }
 
@@ -144,9 +178,9 @@ pub fn PresenceService() -> Element {
                 if cfg.share && !listening {
                     listening = true;
                     let (rpc_tx, mut rpc_rx) = tokio::sync::mpsc::unbounded_channel();
-                    tokio::spawn(ipc::listen(ipc::socket_names(cfg.discord_socket), rpc_tx));
+                    rpc_tasks.spawn(ipc::listen(ipc::socket_names(cfg.discord_socket), rpc_tx));
                     let tx = tx.clone();
-                    tokio::spawn(async move {
+                    rpc_tasks.spawn(async move {
                         while let Some(update) = rpc_rx.recv().await {
                             if tx.send((Source::Rpc, update.activity)).is_err() {
                                 return;
@@ -183,6 +217,38 @@ pub fn PresenceService() -> Element {
 mod tests {
     use super::*;
     use crate::protocol::ActivityKind;
+
+    #[test]
+    fn ending_a_session_wakes_the_scanner_without_waiting_for_the_next_scan() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (stop, stopped) = std::sync::mpsc::channel();
+        let worker = ScanWorker {
+            _stop: stop,
+            extra: Arc::default(),
+        };
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            scan_until_stopped(tx, stopped, || named("Factorio"));
+            done_tx.send(()).expect("test completion receiver");
+        });
+        assert_eq!(rx.blocking_recv().unwrap().1, named("Factorio"));
+        drop(worker);
+        done_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("scanner must wake when its owner is dropped");
+        thread.join().unwrap();
+        assert_eq!(rx.blocking_recv(), Some((Source::Detected, None)));
+        assert!(rx.blocking_recv().is_none());
+    }
+
+    #[test]
+    fn a_cancelled_scanner_does_not_start_another_process_scan() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (stop, stopped) = std::sync::mpsc::channel::<()>();
+        drop(stop);
+        scan_until_stopped(tx, stopped, || panic!("cancelled scan ran"));
+        assert_eq!(rx.blocking_recv(), Some((Source::Detected, None)));
+    }
 
     fn named(name: &str) -> Option<Activity> {
         Some(Activity {

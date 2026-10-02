@@ -188,8 +188,7 @@ pub fn apply_key(key: &[u8; crate::mediakey::KEY_LEN], epoch: u32) {
         );
     }
     let js = format!(
-        "{}\nwindow.dxScreen.setE2eeKey({});",
-        crate::features::screenshare::SCREEN_JS,
+        "window.dxScreen.setE2eeKey({});",
         serde_json::to_string(&hex_key).unwrap_or_else(|_| "null".into())
     );
     let _ = dioxus::document::eval(&js);
