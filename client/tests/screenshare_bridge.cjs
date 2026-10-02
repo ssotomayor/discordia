@@ -5,7 +5,7 @@ const path = require('node:path');
 
 const source = fs.readFileSync(path.join(__dirname, '../src/features/screenshare.rs'), 'utf8');
 let script = source.split('const SCREEN_JS: &str = r#"')[1].split('"#;')[0];
-script = script.replace('return { connect: connect', 'return { testClearTracks: clearRemoteTracks, testAudioTracks: audioTracks, testTracks: tracks, testSetRoom(r) { room = r; }, testSetRemoteTrack(t) { remoteShareVideoTrack = t; screenStatsEnabled = true; }, testPollRemoteStats: pollRemoteScreenStats, connect: connect');
+script = script.replace('return { connect: connect', 'return { testClearTracks: clearRemoteTracks, testAudioTracks: audioTracks, testTracks: tracks, testSetRoom(r) { room = r; }, testSetRemoteTrack(t) { remoteShareVideoTrack = t; screenStatsEnabled = true; }, testPollRemoteStats: pollRemoteScreenStats, testSetLocalTrack(t) { localShareVideoTrack = t; screenCaptureTrack = { getSettings() { return { width: 1920, height: 1080, frameRate: 60 }; } }; screenStatsEnabled = true; }, testPollLocalStats: pollScreenStats, connect: connect');
 const unsubscribe = script.match(/thisRoom\.on\(lk\.RoomEvent\.TrackUnsubscribed, (function \(track, pub, participant\) \{[\s\S]*?\n    \})\);/)[1];
 const subscribe = script.match(/thisRoom\.on\(lk\.RoomEvent\.TrackSubscribed, (function \(track, pub, participant\) \{[\s\S]*?\n    \})\);/)[1];
 script = script.replace('return { testClearTracks:', 'return { testSubscribe: function(thisRoom) { return ' + subscribe + '; }, testUnsubscribe: function(thisRoom) { return ' + unsubscribe + '; }, testClearTracks:');
@@ -24,7 +24,7 @@ function element() {
 const messages = [];
 const context = { window: { postMessage(message) { messages.push(message); } }, document: {
   body: element(), getElementById(id) { return containers.get(id); },
-}, console, setTimeout() {}, clearTimeout() {}, navigator: {} };
+}, console, setTimeout() {}, clearTimeout() {}, setInterval() { return 1; }, clearInterval() {}, navigator: {} };
 vm.runInNewContext(script, context);
 const bridge = context.window.dxScreen;
 function track() {
@@ -165,7 +165,7 @@ console.log('Native camera and screen share one identity and detach independentl
   let finishOldReport;
   const oldTrack = { sid: 'old', getRTCStatsReport() { return new Promise(resolve => { finishOldReport = resolve; }); } };
   const videoReport = new Map([
-    ['v', { type: 'inbound-rtp', kind: 'video', framesDecoded: 12, freezeCount: 2, totalFreezesDuration: 1.5, framesDropped: 3, nackCount: 4, pliCount: 5, keyFramesDecoded: 6 }],
+    ['v', { type: 'inbound-rtp', kind: 'video', id: 'video-rtp', timestamp: 2000, bytesReceived: 1000000, framesPerSecond: 0, jitter: 0.014, framesDecoded: 12, freezeCount: 2, totalFreezesDuration: 1.5, framesDropped: 3, nackCount: 4, pliCount: 5, keyFramesDecoded: 6 }],
   ]);
   const newTrack = { sid: 'new', async getRTCStatsReport() { return videoReport; } };
   bridge.testSetRemoteTrack(oldTrack);
@@ -185,5 +185,34 @@ console.log('Native camera and screen share one identity and detach independentl
   assert.equal(diagnostic.nackCount, 4);
   assert.equal(diagnostic.pliCount, 5);
   assert.equal(diagnostic.keyFramesDecoded, 6);
+  assert.equal(diagnostic.timestampMs, 2000);
+  assert.equal(diagnostic.bytes, 1000000);
+  assert.equal(diagnostic.jitterSeconds, 0.014);
+  assert.equal(diagnostic.encodedFps, 0);
+  assert.equal('bitrateKbps' in diagnostic, false);
+  const previousKey = diagnostic.sampleKey;
+  bridge.setStatsEnabled(false);
+  bridge.setStatsEnabled(true);
+  await bridge.testPollRemoteStats();
+  await Promise.resolve();
+  await Promise.resolve();
+  const newSession = messages.findLast(m => m.sampleKey && m.__dxf === 'screen-stats-in');
+  assert.notEqual(newSession.sampleKey, previousKey);
+  const outgoing = { async getRTCStatsReport() { return new Map([
+    ['v', { id: 'out-video', type: 'outbound-rtp', timestamp: 4000, bytesSent: 500000,
+      framesEncoded: 60, framesPerSecond: 60, targetBitrate: 8000000, remoteId: 'r' }],
+    ['r', { jitter: 0.002, packetsLost: -1 }],
+  ]); } };
+  bridge.testSetLocalTrack(outgoing);
+  await bridge.testPollLocalStats();
+  const sent = messages.at(-1);
+  assert.equal(sent.__dxf, 'screen-stats');
+  assert.equal(sent.bytes, 500000);
+  assert.equal(sent.timestampMs, 4000);
+  assert.equal(sent.targetBitrate, 8000000);
+  assert.equal(sent.jitterSeconds, 0.002);
+  assert.equal(sent.packetsLost, -1);
+  assert.notEqual(sent.sampleKey, newSession.sampleKey);
+  console.log('Statistics transfer raw counters and isolate tracks and diagnostic sessions.');
   console.log('Freeze diagnostics identify the received track and discard stale asynchronous reports.');
 })().catch(error => { console.error(error); process.exitCode = 1; });

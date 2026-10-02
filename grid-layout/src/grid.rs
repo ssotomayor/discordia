@@ -147,12 +147,10 @@ fn DragOverlay() -> Element {
             onpointermove: move |evt| {
                 let (cx, cy) = (evt.client_coordinates().x, evt.client_coordinates().y);
 
-                let (kind, item_id, dx, dy, projected) = {
+                let (kind, item_id, projected) = {
                     let Some(state) = drag.read().clone() else { return };
-                    let dx = cx - state.pointer_start_x;
-                    let dy = cy - state.pointer_start_y;
                     let projected = state.project(cx, cy);
-                    (state.kind, state.item_id, dx, dy, projected)
+                    (state.kind, state.item_id, projected)
                 };
 
                 drag.with_mut(|d| {
@@ -185,14 +183,6 @@ fn DragOverlay() -> Element {
 
                 match kind {
                     InteractionKind::Drag => {
-                        let js = format!(
-                            "var el=document.querySelector('[data-id=\"{}\"]');\
-                             if(el){{el.style.transform='translate({:.2}px,{:.2}px)';\
-                             el.style.zIndex='1000';}}",
-                            item_id, dx, dy,
-                        );
-                        let _ = document::eval(&js);
-
                         if let Some(store) = store {
                             let pinned = ctx.pinned_ids.read().clone();
                             settle_layout(store, &item_id, projected, &pinned);
@@ -265,13 +255,6 @@ fn commit_and_clear(
         }
         return;
     }
-    let js = format!(
-        "var el=document.querySelector('[data-id=\"{}\"]');\
-         if(el){{el.style.transform='';el.style.zIndex='';}}",
-        state.item_id,
-    );
-    let _ = document::eval(&js);
-
     if matches!(state.kind, InteractionKind::Drag)
         && let Some(mut s) = store
     {

@@ -39,16 +39,23 @@ pub fn GridItem(
     }
 
     let pos = resolve_pos(&id, ctx, GridPosition { x, y, w, h });
+    let drag_id = id.clone();
+    let snap_style = use_memo(move || match ctx.filter(|c| !c.is_free()) {
+        Some(c) => snap_drag_style(&drag_id, c.drag.read().as_ref()),
+        None => String::new(),
+    });
 
     let cell_style = match ctx.filter(|c| c.is_free()) {
         Some(c) => free_style(&id, c, pos),
-        None => format!(
-            "grid-column: {col} / span {w}; grid-row: {row} / span {h}; position: relative;",
-            col = pos.x + 1,
-            row = pos.y + 1,
-            w = pos.w,
-            h = pos.h,
-        ),
+        None => {
+            format!(
+                "grid-column: {col} / span {w}; grid-row: {row} / span {h}; position: relative;",
+                col = pos.x + 1,
+                row = pos.y + 1,
+                w = pos.w,
+                h = pos.h,
+            ) + &snap_style()
+        }
     };
     let pinned_class = if pinned { " grid-item-pinned" } else { "" };
     let editable = ctx.map(|c| *c.editable.read()).unwrap_or(false);
@@ -195,6 +202,17 @@ pub fn GridItem(
                 }
             }
         }
+    }
+}
+
+fn snap_drag_style(id: &str, interaction: Option<&Interaction>) -> String {
+    match interaction.filter(|s| s.item_id == id && s.kind == InteractionKind::Drag) {
+        Some(s) => format!(
+            " transform: translate({:.2}px,{:.2}px); z-index: 1000;",
+            s.pointer_current_x - s.pointer_start_x,
+            s.pointer_current_y - s.pointer_start_y,
+        ),
+        None => " transform: none; z-index: auto;".into(),
     }
 }
 

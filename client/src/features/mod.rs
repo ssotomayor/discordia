@@ -22,6 +22,7 @@ pub mod leveling;
 pub mod members;
 pub mod profiles;
 pub mod roles;
+mod screen_stats;
 pub mod screenshare;
 pub mod settings_dialog;
 pub mod soundboard;
