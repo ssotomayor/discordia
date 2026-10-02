@@ -1,6 +1,6 @@
 use std::env;
 use std::fs;
-use std::io::{Cursor, Read};
+use std::io::{Cursor, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -8,24 +8,36 @@ const DEFAULT_VERSION: &str = "1.12.0";
 
 const DIGEST_NAME: &str = "livekit-server.sha";
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-env-changed=LIVEKIT_BUNDLE_VERSION");
     println!("cargo:rerun-if-env-changed=LIVEKIT_BUNDLE_SKIP");
-
-    let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
-    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap();
+    let out_dir = PathBuf::from(env::var("OUT_DIR")?);
+    let target_os = env::var("CARGO_CFG_TARGET_OS")?;
     let bin_name = if target_os == "windows" {
         "livekit-server.exe"
     } else {
         "livekit-server"
     };
     let bin_path = out_dir.join(bin_name);
-
     ensure_binary(&out_dir, &target_os, &bin_path);
-
-    let bytes = fs::read(&bin_path).expect("read the bundled livekit binary back");
-    fs::write(out_dir.join(DIGEST_NAME), short_digest(&bytes)).expect("write the livekit digest");
+    let bytes = fs::read(&bin_path)?;
+    fs::write(out_dir.join(DIGEST_NAME), short_digest(&bytes))?;
+    use sha2::{Digest, Sha256};
+    fs::write(
+        out_dir.join("livekit-server.sha256"),
+        Sha256::digest(&bytes),
+    )?;
+    fs::write(out_dir.join("livekit-server.size"), bytes.len().to_string())?;
+    let compressed = if bytes.is_empty() {
+        Vec::new()
+    } else {
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::new(6));
+        encoder.write_all(&bytes)?;
+        encoder.finish()?
+    };
+    fs::write(out_dir.join("livekit-server.gz"), compressed)?;
+    Ok(())
 }
 
 fn short_digest(bytes: &[u8]) -> String {

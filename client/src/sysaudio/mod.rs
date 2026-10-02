@@ -74,7 +74,7 @@ pub fn supported() -> bool {
 }
 
 pub fn start(
-    tx: UnboundedSender<Vec<f32>>,
+    tx: crate::audio_queue::AudioSender<f32>,
     fatal: UnboundedSender<String>,
     target: Option<crate::sysvideo::Target>,
 ) -> Result<Capture, String> {

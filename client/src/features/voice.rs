@@ -608,8 +608,8 @@ impl ActiveVoice {
         );
         crate::e2ee::place_new_voice_publication(&room);
 
-        let (frame_tx, frame_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<f32>>();
-        let (gated_tx, gated_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<i16>>();
+        let (frame_tx, frame_rx) = crate::audio_queue::channel::<f32>();
+        let (gated_tx, gated_rx) = crate::audio_queue::channel::<i16>();
         let meter = Arc::new(MicMeter::default());
         let start_muted = state.peek().voice.muted;
         let muted = Arc::new(AtomicBool::new(start_muted));
@@ -896,7 +896,7 @@ impl ActiveVoice {
         if !crate::sysaudio::supported() {
             return Ok(());
         }
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Vec<f32>>();
+        let (tx, rx) = crate::audio_queue::channel::<f32>();
         let (fatal_tx, mut fatal_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         #[cfg(target_os = "windows")]
         let capture =
@@ -1813,8 +1813,8 @@ fn wanted(source: &TrackSource, publisher: &str, self_pubkey: &str) -> bool {
 }
 
 fn denoise_gate_loop(
-    mut frame_rx: UnboundedReceiver<Vec<f32>>,
-    out_tx: UnboundedSender<Vec<i16>>,
+    mut frame_rx: crate::audio_queue::AudioReceiver<f32>,
+    out_tx: crate::audio_queue::AudioSender<i16>,
     controls: AudioControls,
     meter: Arc<MicMeter>,
     muted: Arc<AtomicBool>,
@@ -1826,7 +1826,12 @@ fn denoise_gate_loop(
     let mut gate = GateState::default();
     let mut gated = 0u64;
 
-    while let Some(mut samples) = frame_rx.blocking_recv() {
+    while let Some(packet) = frame_rx.blocking_recv() {
+        if !packet.is_fresh() {
+            gate.silence();
+            continue;
+        }
+        let mut samples = packet.samples;
         let gain_pct = controls.mic_gain_pct.load(Ordering::Relaxed);
         if gain_pct != 100 {
             let g = gain_pct as f32 / 100.0;
@@ -1921,11 +1926,12 @@ fn denoise_gate_loop(
         }
         stats.passed.fetch_add(1, Ordering::Relaxed);
 
-        let data: Vec<i16> = samples
-            .iter()
-            .map(|s| (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16)
-            .collect();
-        if out_tx.send(data).is_err() {
+        let data = samples.map(|s| (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16);
+        let packet = crate::audio_queue::Frame {
+            samples: data,
+            captured: packet.captured,
+        };
+        if packet.is_fresh() && crate::audio_queue::offer(&out_tx, packet).is_err() {
             break;
         }
     }
@@ -2102,14 +2108,16 @@ async fn soundboard_loop(
     mixer.remove_track(local);
 }
 
-async fn publish_pcm(mut rx: UnboundedReceiver<Vec<f32>>, source: NativeAudioSource) {
-    while let Some(samples) = rx.recv().await {
-        let data: Vec<i16> = samples
-            .iter()
-            .map(|s| (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16)
-            .collect();
+async fn publish_pcm(mut rx: crate::audio_queue::AudioReceiver<f32>, source: NativeAudioSource) {
+    while let Some(packet) = rx.recv().await {
+        if !packet.is_fresh() {
+            continue;
+        }
+        let data = packet
+            .samples
+            .map(|s| (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16);
         let frame = AudioFrame {
-            data: data.into(),
+            data: std::borrow::Cow::Borrowed(&data),
             sample_rate: SAMPLE_RATE,
             num_channels: CHANNELS,
             samples_per_channel: FRAME_SAMPLES as u32,
@@ -2124,11 +2132,14 @@ fn peak_fixed(samples: &[f32]) -> i32 {
     (samples.iter().fold(0.0f32, |m, s| m.max(s.abs())) * 1_000.0) as i32
 }
 
-async fn publish_loop(mut rx: UnboundedReceiver<Vec<i16>>, source: NativeAudioSource) {
+async fn publish_loop(mut rx: crate::audio_queue::AudioReceiver<i16>, source: NativeAudioSource) {
     let mut sent = 0u64;
-    while let Some(data) = rx.recv().await {
+    while let Some(packet) = rx.recv().await {
+        if !packet.is_fresh() {
+            continue;
+        }
         let frame = AudioFrame {
-            data: data.into(),
+            data: std::borrow::Cow::Borrowed(&packet.samples),
             sample_rate: SAMPLE_RATE,
             num_channels: CHANNELS,
             samples_per_channel: FRAME_SAMPLES as u32,
@@ -2362,7 +2373,7 @@ enum MicBackend {
 
 impl MicCapture {
     fn start(
-        frame_tx: tokio::sync::mpsc::UnboundedSender<Vec<f32>>,
+        frame_tx: crate::audio_queue::AudioSender<f32>,
         mut state: Signal<AppState>,
         muted: Arc<AtomicBool>,
         gate_stats: Arc<GateStats>,
@@ -2388,7 +2399,7 @@ impl MicCapture {
 
     #[cfg(target_os = "windows")]
     fn maybe_raw(
-        frame_tx: &tokio::sync::mpsc::UnboundedSender<Vec<f32>>,
+        frame_tx: &crate::audio_queue::AudioSender<f32>,
         mut state: Signal<AppState>,
         selected: &Option<String>,
         raw_peak: &Arc<AtomicI32>,
@@ -2450,7 +2461,7 @@ impl MicCapture {
 
     #[cfg(not(target_os = "windows"))]
     fn maybe_raw(
-        _frame_tx: &tokio::sync::mpsc::UnboundedSender<Vec<f32>>,
+        _frame_tx: &crate::audio_queue::AudioSender<f32>,
         _state: Signal<AppState>,
         _selected: &Option<String>,
         _raw_peak: &Arc<AtomicI32>,
@@ -2460,7 +2471,7 @@ impl MicCapture {
     }
 
     fn start_cpal(
-        frame_tx: &tokio::sync::mpsc::UnboundedSender<Vec<f32>>,
+        frame_tx: &crate::audio_queue::AudioSender<f32>,
         selected: Option<String>,
         raw_peak: &Arc<AtomicI32>,
         frames_pushed: &Arc<AtomicU64>,
@@ -2643,7 +2654,7 @@ impl Drop for MicCapture {
 }
 
 fn forward_mic(
-    frame_tx: &tokio::sync::mpsc::UnboundedSender<Vec<f32>>,
+    frame_tx: &crate::audio_queue::AudioSender<f32>,
     samples: &[f32],
     device_channels: u32,
     accum: &Arc<Mutex<Vec<f32>>>,
@@ -2673,11 +2684,14 @@ fn forward_mic(
 
     let mut pushed = 0usize;
     while buf.len() >= FRAME_SAMPLES {
-        let chunk: Vec<f32> = buf.drain(..FRAME_SAMPLES).collect();
-        if frame_tx.send(chunk).is_err() {
-            break;
+        let mut samples = [0.0; FRAME_SAMPLES];
+        samples.copy_from_slice(&buf[..FRAME_SAMPLES]);
+        buf.drain(..FRAME_SAMPLES);
+        match crate::audio_queue::offer(frame_tx, crate::audio_queue::Frame::new(samples)) {
+            Ok(true) => pushed += 1,
+            Ok(false) => {}
+            Err(()) => break,
         }
-        pushed += 1;
     }
     pushed
 }
@@ -3202,6 +3216,47 @@ async fn consume_remote_track(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn microphone_overload_drains_input_and_keeps_new_audio_after_recovery() {
+        let (tx, mut rx) = crate::audio_queue::channel();
+        let accum = Arc::new(Mutex::new(Vec::with_capacity(FRAME_SAMPLES * 2)));
+        let resampler = Arc::new(Mutex::new(None));
+        let mut mono = Vec::new();
+        let mut resampled = Vec::new();
+        let stereo: Vec<_> = (0..FRAME_SAMPLES).flat_map(|_| [0.75, 0.25]).collect();
+        let mut accepted = 0;
+        for _ in 0..100 {
+            accepted += forward_mic(
+                &tx,
+                &stereo,
+                2,
+                &accum,
+                &resampler,
+                &mut mono,
+                &mut resampled,
+            );
+            assert!(accum.lock().is_empty());
+        }
+        assert_eq!(accepted, rx.len());
+        assert!(accepted < 100);
+        while let Ok(packet) = rx.try_recv() {
+            assert_eq!(packet.samples, [0.5; FRAME_SAMPLES]);
+        }
+        assert_eq!(
+            forward_mic(
+                &tx,
+                &[0.25; FRAME_SAMPLES],
+                1,
+                &accum,
+                &resampler,
+                &mut mono,
+                &mut resampled
+            ),
+            1
+        );
+        assert_eq!(rx.try_recv().unwrap().samples, [0.25; FRAME_SAMPLES]);
+    }
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     #[test]

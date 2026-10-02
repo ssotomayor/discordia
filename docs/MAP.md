@@ -17,7 +17,7 @@ name instead.
 
 | File | Lines |
 |---|---|
-| `client/src/features/voice.rs` | 3985 |
+| `client/src/features/voice.rs` | 4040 |
 | `server/src/state/mod.rs` | 2983 |
 | `server/tests/owner_controls.rs` | 3036 |
 | `server/src/gateway/connection.rs` | 2795 |
@@ -71,6 +71,8 @@ that direction says a file is safe to open when it is not.
 | Choosing the keys folder | `client/src/features/identity_setup.rs` | `FolderSettings` — the cog on the setup screen; `DetectedIdentities` rescans on every render, `rev` forces one |
 | Bringing a Discord server over | `client/src/features/discord_import.rs` | `read_plan` fetches with a bot token, `flatten_channels`/`plan_roles` map, `run_import` replays `CreateGuild`→`SetGuildProfile`→`CreateChannel`→`CreateRole`→`CreateGuildEmoji` one write per 450 ms; opened from the rail via `GuildDialog::ImportDiscord` |
 | A device that stays busy after voice | `client/src/features/voice.rs` | `pick_device`, and the `Drop` impls of `MicCapture` / `PlaybackMixer` (trap 24); `client/src/audio_diag.rs` prints CoreAudio's view in debug builds |
+| Capture audio queues | `client/src/audio_queue.rs`, `client/src/sysaudio/frames.rs`, `client/src/features/voice.rs` | Mic/DSP and system-audio publication use fixed 480-sample blocks, eight-frame bounded queues and nonblocking offers; blocks older than 100 ms are discarded before DSP/publication. `FrameCutter` reuses a fixed partial block and counts dropped blocks for the Windows silence clock. SDK/network buffers are separate |
+| Bundled voice server size and integrity | `server/build.rs`, `server/src/livekit_bundle.rs` | Build compresses the SFU as gzip and emits original size/full SHA-256. `ensure_binary` reuses a verified cached executable or streams bounded decompression into a temporary file, checking size/hash before rename, inside `spawn_blocking`. `LIVEKIT_BUNDLE_SKIP` remains an empty bundle |
 | Bisecting audio without the app | `client/examples/bt_probe.rs` | `cpal`, `livekit`, `room` modes; `room` spawns the bundled LiveKit on loopback |
 | Which accent wins, and where | `client/src/features/workspace.rs` | `guild_accent_to_apply` — the guild's is written on a descendant of the app root, so it beats the personal one unless it is not written at all |
 | Native dice activity | `client/src/features/activities.rs` | `DicePanel` — Rust RNG, Dioxus state and async animation timers; sharing stays bound to the launch channel and reports a closed gateway. No iframe or JavaScript RPC |
