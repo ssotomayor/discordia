@@ -4,7 +4,37 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname, '../src/features/screenshare.rs'), 'utf8');
-const script = source.split('const SCREEN_JS: &str = r#"')[1].split('"#;')[0];
+const script = source.split('const SCREEN_JS: &str = r#"')[1].split('"#;')[0]
+  .replace('return { connect: connect', 'return { testTracks: tracks, testAudioTracks: audioTracks, connect: connect');
+
+function element(kind) {
+  return {
+    kind, style: {}, children: [], attributes: {},
+    appendChild(child) { child.parent = this; this.children.push(child); },
+    querySelectorAll(selector) { return this.children.filter(child => child.kind === selector); },
+    setAttribute(key, value) { this.attributes[key] = value; },
+    getAttribute(key) { return this.attributes[key]; },
+    removeAttribute(key) { delete this.attributes[key]; },
+    remove() { this.removed = true; if (this.parent) this.parent.children = this.parent.children.filter(child => child !== this); },
+  };
+}
+
+function media(f, room, identity) {
+  const container = element('div');
+  const id = `screenshare-viewer-${identity}`;
+  f.containers.set(id, container);
+  const track = kind => ({ kind, elements: [], detached: [],
+    attach() { const el = element(kind); this.elements.push(el); return el; },
+    detach(el) { this.detached.push(el); }, setVolume() {},
+  });
+  const video = track('video'), audio = track('audio');
+  room.emit('TrackSubscribed', video, { source: 'screen_share' }, { identity });
+  room.emit('TrackSubscribed', audio, { source: 'screen_share' }, { identity });
+  f.bridge.attach(identity, id, 'screen');
+  assert.equal(container.children.length, 1);
+  assert.equal(audio.elements.length, 1);
+  return { video, audio, container };
+}
 
 function deferred() {
   let resolve, reject;
@@ -14,6 +44,7 @@ function deferred() {
 
 function fixture({ encrypted = false, constructorFailure = false } = {}) {
   const messages = [], rooms = [], timers = [], workers = [];
+  const containers = new Map(), body = element('body');
   class Room {
     constructor() {
       if (constructorFailure) throw new Error('SDK initialization failed');
@@ -32,14 +63,14 @@ function fixture({ encrypted = false, constructorFailure = false } = {}) {
     connect() { return this.join.promise; }
     setE2EEEnabled() { return this.keySetup.promise; }
     disconnect() { this.disconnects++; return this.leave ? this.leave.promise : Promise.resolve(); }
-    emit(name, value) { this.handlers.get(name)?.(value); }
+    emit(name, ...values) { this.handlers.get(name)?.(...values); }
   }
   const RoomEvent = Object.fromEntries(['EncryptionError', 'Disconnected', 'ConnectionStateChanged',
     'TrackPublished', 'TrackSubscribed', 'TrackUnsubscribed', 'LocalTrackPublished', 'LocalTrackUnpublished']
     .map(name => [name, name]));
   const context = {
     window: { LivekitClient: { Room, RoomEvent }, postMessage(m) { messages.push(m); } },
-    document: { body: {}, getElementById() { return null; } },
+    document: { body, getElementById(id) { return containers.get(id) || null; } },
     navigator: { mediaDevices: { addEventListener() {} } },
     setTimeout(fn, ms) { timers.push({ fn, ms }); }, clearTimeout() {},
     console: { log() {}, warn() {}, error() {} },
@@ -56,12 +87,45 @@ function fixture({ encrypted = false, constructorFailure = false } = {}) {
     };
   }
   vm.runInNewContext(script, context);
-  return { bridge: context.window.dxScreen, rooms, messages, timers, workers };
+  return { bridge: context.window.dxScreen, rooms, messages, timers, workers, containers, body };
 }
 
 async function settle() { for (let i = 0; i < 20; i++) await Promise.resolve(); }
 
 (async () => {
+  for (const explicitLeave of [false, true]) {
+    const f = fixture();
+    const a = f.bridge.connect('wss://a', 'a-token', null, false, 20);
+    await settle();
+    f.rooms[0].join.resolve();
+    await a;
+    const old = media(f, f.rooms[0], 'old');
+    f.rooms[0].leave = deferred();
+    const b = explicitLeave ? f.bridge.disconnect() : f.bridge.connect('wss://b', 'b-token', null, false, 21);
+    await settle();
+    assert.equal(f.rooms[0].disconnects, 1);
+    const c = f.bridge.connect('wss://c', 'c-token', null, false, 22);
+    await settle();
+    f.rooms[1].join.resolve();
+    await c;
+    assert.equal('old|screen' in f.bridge.testTracks, false, 'A tracks must be cleared even when B is superseded during teardown');
+    assert.equal('old' in f.bridge.testAudioTracks, false);
+    assert.equal(old.container.children.length, 0);
+    assert.equal(old.video.detached.length, 1);
+    assert.equal(old.audio.detached.length, 1);
+    assert.equal(old.audio.elements[0].removed, true);
+    const active = media(f, f.rooms[1], 'active');
+    f.rooms[0].leave.resolve();
+    await b;
+    assert.equal(f.bridge.testTracks['active|screen'], active.video);
+    assert.equal(f.bridge.testAudioTracks.active, active.audio);
+    assert.equal(active.container.children.length, 1);
+    assert.equal(active.video.detached.length, 0);
+    assert.equal(active.audio.detached.length, 0);
+    assert.equal(active.audio.elements[0].removed, undefined);
+    assert.equal(f.rooms.length, 2, 'the superseded B connection must not join');
+  }
+  console.log('Overlapping room changes clear old video/audio before teardown and preserve replacement media.');
   {
     const f = fixture();
     const pending = f.bridge.connect('wss://test', 'token', null, false, 1);

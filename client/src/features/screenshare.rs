@@ -223,9 +223,9 @@ window.dxScreen = window.dxScreen || (function () {
       try { await previous.localParticipant.setScreenShareEnabled(false); } catch (e) {}
       if (!current()) return;
       room = null;
+      clearRemoteTracks();
       try { await previous.disconnect(); } catch (e) {}
       if (!current()) return;
-      clearRemoteTracks();
     }
     if (!(await ensureLib(current))) {
       if (!current()) return;
@@ -903,14 +903,14 @@ window.dxScreen = window.dxScreen || (function () {
     const audioStopped = stopLocalShareAudio();
     const cameraStopped = stopCamera();
     room = null;
+    clearRemoteTracks();
+    Object.keys(attached).forEach(detach);
     await Promise.all([audioStopped, cameraStopped]);
     if (previous) { try { await previous.disconnect(); } catch (e) {} }
     if (connectionRequest !== request) return;
     connectionRequest = null;
     dropE2eeWorker();
     e2eeProvider = null;
-    clearRemoteTracks();
-    Object.keys(attached).forEach(detach);
   }
   return { connect: connect, setSelfPreview: setSelfPreview, attach: attach, detach: detach, previewStats: previewStats, requestAndStartShare: requestAndStartShare, stopShare: stopShare, disconnect: disconnect, setStreamVolume: setStreamVolume, setSink: setSink, setNativeStreamAudio: setNativeStreamAudio, setStatsEnabled: setStatsEnabled, startCamera: startCamera, stopCamera: stopCamera, listCameras: listCameras, attachLocalCamera: attachLocalCamera, setE2eeKey: setE2eeKey };
 })();
