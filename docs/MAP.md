@@ -22,7 +22,7 @@ name instead.
 | `server/tests/owner_controls.rs` | 3036 |
 | `server/src/gateway/connection.rs` | 2795 |
 | `client/src/features/channels.rs` | 1968 |
-| `client/src/features/screenshare.rs` | 2484 |
+| `client/src/features/screenshare.rs` | 2535 |
 | `protocol/src/lib.rs` | 2500 |
 | `client/src/state.rs` | 1917 |
 | `client/src/update.rs` | 1226 |
@@ -130,9 +130,10 @@ repeated here.
 | Stream audio presence | `client/src/stream_audio.rs`, `client/src/features/voice.rs`, `client/src/features/screenshare.rs` | `Presence` unions voice-room, screen-room and WebView audio independently; clearing one source preserves the others. Native publisher suffixes share the viewer's volume/mute key |
 | Screen preview measurements | `client/src/features/screenshare.rs` | `AppHead` installs `SCREEN_JS` once; commands send only arguments. `previewStats` shares recent/in-flight reports with Diagnostics; `ScreenWatchTile` skips minimized/hidden windows and unchanged labels |
 | WebView screen statistics | `client/src/features/screen_stats.rs`, `client/src/features/screenshare.rs` | `WebViewStats` computes bitrate, FPS fallback and units from raw browser counters; separate inbound/outbound baselines reset on inactivity, track/report/session changes and invalid samples. Browser FPS takes precedence, including zero; native publisher metrics remain in `voice.rs` |
+| WebView video connections | `client/src/features/video_lifecycle.rs`, `client/src/features/screenshare.rs` | Rust owns target changes and cancellable retries (1.5-15 s), deduplicates failures and ignores old attempt generations; encryption setup failures block retries. `SCREEN_JS` executes SDK operations and reports status, protecting replacement rooms from late joins/teardown. SDK internal reconnect and DOM attachment stay in the WebView |
 | Client media cache | `client/src/media_cache.rs`, `client/src/net.rs` | `MediaCache` queues misses on lookup, shares payloads across state clones and limits data URLs to 128 MiB/2048 entries using LRU. `Updates::ready` wakes the socket only for demand/completions; its retry tick scans pending requests only. A bounded disk worker loads/stores emoji and sounds without blocking the socket |
 | Everything else | beside the code | the suite stays headless and green |
-| Screen-share webview lifecycle | `client/tests/screenshare_bridge.cjs` | `node client/tests/screenshare_bridge.cjs`; simultaneous video/audio, independent volume, teardown, native-audio switching and stale track/room events |
+| Screen-share webview lifecycle | `client/tests/screenshare_bridge.cjs` | `node client/tests/screenshare_bridge.cjs`; simultaneous video/audio, independent volume, teardown, native-audio switching and stale track/room events; includes `video_lifecycle_bridge.cjs` for connection failure/cancellation, overlapping teardown and encryption guards |
 | Native UI bridges | `client/tests/native_ui_bridges.cjs` | `node client/tests/native_ui_bridges.cjs`; scroll races/remount/cleanup and globe geometry handoff, pending setters and teardown |
 | Chat image paste bridge | `client/tests/chat_attachment_bridge.cjs` | `node client/tests/chat_attachment_bridge.cjs`; only image paste in the chat is intercepted, remounts reuse one listener, no image bytes cross the event bridge |
 

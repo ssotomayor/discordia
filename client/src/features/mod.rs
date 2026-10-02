@@ -28,5 +28,6 @@ pub mod settings_dialog;
 pub mod soundboard;
 pub mod sounds;
 pub mod topology;
+mod video_lifecycle;
 pub mod voice;
 pub mod workspace;

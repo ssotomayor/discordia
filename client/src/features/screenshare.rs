@@ -10,9 +10,7 @@ use crate::state::{use_app_state, use_gateway};
 pub(crate) const SCREEN_JS: &str = r#"
 window.dxScreen = window.dxScreen || (function () {
   let room = null;
-  let desiredRoom = null;
-  let reconnectTimer = null;
-  let reconnectAttempt = 0;
+  let connectionRequest = null;
   let localShareAudio = null;
   let localShareVideoTrack = null;
   let screenCaptureTrack = null;
@@ -191,7 +189,7 @@ window.dxScreen = window.dxScreen || (function () {
       else c.querySelectorAll('video').forEach(function (e) { e.remove(); });
     });
   }
-  async function ensureLib() { for (let i = 0; i < 100 && !LK(); i++) { await new Promise(function (r) { setTimeout(r, 100); }); } return !!LK(); }
+  async function ensureLib(current) { for (let i = 0; i < 100 && !LK() && (!current || current()); i++) { await new Promise(function (r) { setTimeout(r, 100); }); } return !!LK(); }
   function reportRoomProblem(kind, detail) {
     try { window.postMessage({ __dxf: kind, detail: String(detail || '') }, '*'); } catch (e) {}
   }
@@ -209,38 +207,34 @@ window.dxScreen = window.dxScreen || (function () {
       if (a) { a.track = null; a.el = null; }
     });
   }
-  function scheduleReconnect() {
-    if (!desiredRoom || reconnectTimer) return;
-    const delay = Math.min(1500 * Math.pow(2, reconnectAttempt), 15000);
-    reconnectAttempt++;
-    reconnectTimer = setTimeout(function () {
-      reconnectTimer = null;
-      if (desiredRoom && !room) connect(desiredRoom.url, desiredRoom.token, desiredRoom.key, desiredRoom.e2ee);
-    }, delay);
-  }
-  async function connect(url, token, key, encrypt) {
+  async function connect(url, token, key, encrypt, generation) {
+    const request = { generation: generation };
+    connectionRequest = request;
+    const current = () => connectionRequest === request;
+    const reportState = (status) => { if (current()) post('screen-room-state', { generation: generation, status: status }); };
     e2eeKey = key || null;
     e2eeOn = !!encrypt;
-    const same = desiredRoom && desiredRoom.url === url && desiredRoom.token === token;
-    desiredRoom = { url: url, token: token, key: key || null, e2ee: e2eeOn };
     if (room) {
-      if (same) return;
-      // A different room is a different call: nothing published follows the
-      // move. A reconnect to the same room comes back through the null-room path.
-      await stopLocalShareAudio();
-      await stopCamera();
-      try { await room.localParticipant.setScreenShareEnabled(false); } catch (e) {}
       const previous = room;
+      await stopLocalShareAudio();
+      if (!current()) return;
+      await stopCamera();
+      if (!current()) return;
+      try { await previous.localParticipant.setScreenShareEnabled(false); } catch (e) {}
+      if (!current()) return;
       room = null;
       try { await previous.disconnect(); } catch (e) {}
+      if (!current()) return;
       clearRemoteTracks();
     }
-    if (!(await ensureLib())) {
+    if (!(await ensureLib(current))) {
+      if (!current()) return;
       console.warn('[dxScreen] livekit lib not loaded');
       reportRoomProblem('screen-room-error', 'LiveKit did not load');
-      scheduleReconnect();
+      reportState('retry');
       return;
     }
+    if (!current()) return;
     const lk = LK();
     const opts = { adaptiveStream: true, dynacast: true };
     dropE2eeWorker();
@@ -270,12 +264,21 @@ window.dxScreen = window.dxScreen || (function () {
         e2eeProvider = null;
         console.error('[dxScreen] could not set up e2ee; not joining', failure);
         post('e2ee-error', { detail: failure });
+        reportState('blocked');
         return;
       }
     }
-    const thisRoom = new lk.Room(opts);
+    let thisRoom;
+    try { thisRoom = new lk.Room(opts); } catch (e) {
+      dropE2eeWorker();
+      e2eeProvider = null;
+      reportRoomProblem('screen-room-error', e && e.message ? e.message : e);
+      reportState('retry');
+      return;
+    }
     room = thisRoom;
     thisRoom.on(lk.RoomEvent.EncryptionError, function (err) {
+      if (!current() || room !== thisRoom) return;
       console.error('[dxScreen] encryption error', err);
       post('e2ee-undecryptable', { detail: String((err && err.message) || err) });
     });
@@ -288,29 +291,33 @@ window.dxScreen = window.dxScreen || (function () {
           await thisRoom.setE2EEEnabled(false);
         }
       } catch (e) {
+        if (!current()) { try { await thisRoom.disconnect(); } catch (ignored) {} return; }
         room = null;
+        try { await thisRoom.disconnect(); } catch (ignored) {}
+        if (!current()) return;
         dropE2eeWorker();
         e2eeProvider = null;
         console.error('[dxScreen] enabling e2ee failed; not joining', e);
         post('e2ee-error', { detail: String((e && e.message) || e) });
+        reportState('blocked');
         return;
       }
     }
+    if (!current()) { try { await thisRoom.disconnect(); } catch (e) {} return; }
     thisRoom.on(lk.RoomEvent.Disconnected, function (reason) {
       console.warn('[dxScreen] room disconnected', reason);
-      if (room !== thisRoom) return;
+      if (!current() || room !== thisRoom) return;
       room = null;
       stopLocalShareAudio();
       clearRemoteTracks();
-      if (desiredRoom) {
-        reportRoomProblem('screen-room-reconnecting', reason || 'disconnected');
-        scheduleReconnect();
-      }
+      reportRoomProblem('screen-room-reconnecting', reason || 'disconnected');
+      reportState('retry');
     });
     thisRoom.on(lk.RoomEvent.ConnectionStateChanged, function (st) {
       console.log('[dxScreen] connection state', st);
     });
     thisRoom.on(lk.RoomEvent.TrackPublished, function (pub, participant) {
+      if (room !== thisRoom) return;
       applyAudioSubscription(pub);
       applySelfPreviewSubscription(pub, participant);
     });
@@ -353,12 +360,14 @@ window.dxScreen = window.dxScreen || (function () {
       reattach(participant.identity, kind);
     });
     thisRoom.on(lk.RoomEvent.LocalTrackPublished, function (pub) {
+      if (room !== thisRoom) return;
       if (!pub.track || pub.track.kind !== 'video') return;
       const kind = kindOf(pub, pub.track);
       tracks[trackKey(thisRoom.localParticipant.identity, kind)] = pub.track;
       reattach(thisRoom.localParticipant.identity, kind);
     });
     thisRoom.on(lk.RoomEvent.LocalTrackUnpublished, function (pub) {
+      if (room !== thisRoom) return;
       if (!pub.track || pub.track.kind !== 'video') return;
       if (pub.track === localShareVideoTrack) {
         localShareVideoTrack = null;
@@ -372,12 +381,16 @@ window.dxScreen = window.dxScreen || (function () {
     });
     try {
       await thisRoom.connect(url, token);
-      reconnectAttempt = 0;
+      if (!current() || room !== thisRoom) { try { await thisRoom.disconnect(); } catch (e) {} return; }
+      reportState('connected');
     } catch (e) {
+      if (!current()) { try { await thisRoom.disconnect(); } catch (ignored) {} return; }
       console.warn('[dxScreen] connect failed', e);
       if (room === thisRoom) room = null;
+      try { await thisRoom.disconnect(); } catch (ignored) {}
+      if (!current()) return;
       reportRoomProblem('screen-room-error', e && e.message ? e.message : e);
-      scheduleReconnect();
+      reportState('retry');
       return;
     }
     applyAudioSubscriptions();
@@ -851,7 +864,6 @@ window.dxScreen = window.dxScreen || (function () {
   }
   async function setE2eeKey(key) {
     e2eeKey = key || null;
-    if (desiredRoom) desiredRoom.key = e2eeKey;
     if (!e2eeKey || !e2eeProvider) return;
     try {
       postRawKey(e2eeKey);
@@ -885,14 +897,16 @@ window.dxScreen = window.dxScreen || (function () {
   } catch (e) {}
 
   async function disconnect() {
-    desiredRoom = null;
-    reconnectAttempt = 0;
-    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
-    await stopLocalShareAudio();
-    await stopCamera();
+    const request = {};
+    connectionRequest = request;
     const previous = room;
+    const audioStopped = stopLocalShareAudio();
+    const cameraStopped = stopCamera();
     room = null;
+    await Promise.all([audioStopped, cameraStopped]);
     if (previous) { try { await previous.disconnect(); } catch (e) {} }
+    if (connectionRequest !== request) return;
+    connectionRequest = null;
     dropE2eeWorker();
     e2eeProvider = null;
     clearRemoteTracks();
@@ -1076,30 +1090,58 @@ pub fn ScreenShareBridge() -> Element {
             shared_channel.set(None);
         }
     });
-    let token = use_memo(move || state.read().screen_token.clone());
-    let mut last = use_signal(|| None::<(String, String)>);
-
+    let lifecycle = use_hook(|| {
+        let (targets, target_rx) =
+            tokio::sync::watch::channel(None::<super::video_lifecycle::Target>);
+        let (events, event_rx) =
+            tokio::sync::mpsc::unbounded_channel::<super::video_lifecycle::Event>();
+        (
+            targets,
+            target_rx,
+            events,
+            std::rc::Rc::new(std::cell::RefCell::new(Some(event_rx))),
+        )
+    });
+    let token = use_memo(move || {
+        let s = state.read();
+        s.screen_token
+            .as_ref()
+            .map(|(url, token)| super::video_lifecycle::Target {
+                url: url.clone(),
+                token: token.clone(),
+                voice_epoch: s.voice_session_epoch,
+            })
+    });
+    let targets = lifecycle.0.clone();
     use_effect(move || {
-        let t = token();
-        if t != *last.peek() {
-            match &t {
-                Some((url, tok)) => {
-                    let (url, tok) = (js_str(url), js_str(tok));
-                    let key = crate::e2ee::current_key()
-                        .map(|k| js_str(&k))
-                        .unwrap_or_else(|| "null".into());
-                    let encrypt = crate::e2ee::enabled();
-                    let _ = document::eval(&format!(
-                        "window.dxScreen.connect({url},{tok},{key},{encrypt});"
-                    ));
-                }
-                None => {
-                    let _ = document::eval("window.dxScreen.disconnect();");
-                }
+        targets.send_replace(token());
+    });
+    let target_rx = lifecycle.1.clone();
+    let event_rx = lifecycle.3.clone();
+    use_future(move || {
+        let targets = target_rx.clone();
+        let events = event_rx.borrow_mut().take();
+        async move {
+            if let Some(events) = events {
+                super::video_lifecycle::run(targets, events, |action| {
+                    let js = match action {
+                        super::video_lifecycle::Action::Connect { target, generation } => {
+                            let (url, token) = (js_str(&target.url), js_str(&target.token));
+                            let key = crate::e2ee::current_key().map(|k| js_str(&k)).unwrap_or_else(|| "null".into());
+                            let encrypt = crate::e2ee::enabled();
+                            format!("window.dxScreen.connect({url},{token},{key},{encrypt},{generation});")
+                        }
+                        super::video_lifecycle::Action::Disconnect => "window.dxScreen.disconnect();".into(),
+                    };
+                    let _ = document::eval(&js);
+                }).await;
             }
-            last.set(t);
         }
     });
+    use_drop(move || {
+        let _ = document::eval("window.dxScreen.disconnect();");
+    });
+    let lifecycle_events = lifecycle.2.clone();
 
     let native_audio_live = use_memo(move || state.read().screen_audio_joined);
     use_effect(move || {
@@ -1203,6 +1245,7 @@ pub fn ScreenShareBridge() -> Element {
     use_future(move || {
         let mut state = state;
         let gateway = gateway_end.clone();
+        let lifecycle_events = lifecycle_events.clone();
         async move {
             let bridge_js = r#"
             window.__dxfShareSink = function (m) { try { dioxus.send(m); } catch (err) {} };
@@ -1210,7 +1253,7 @@ pub fn ScreenShareBridge() -> Element {
               window.__dxfShareEndWired = true;
               window.addEventListener('message', function (e) {
                 var d = e.data;
-                if (d && (d.__dxf === 'screen-share-ended' || d.__dxf === 'share-started' || d.__dxf === 'share-audio' || d.__dxf === 'share-unavailable' || d.__dxf === 'share-echo-risk' || d.__dxf === 'stream-audio' || d.__dxf === 'screen-stats' || d.__dxf === 'screen-stats-in' || d.__dxf === 'screen-room-error' || d.__dxf === 'screen-room-reconnecting' || d.__dxf === 'screen-track-timeout' || d.__dxf === 'e2ee-error' || d.__dxf === 'e2ee-undecryptable') && window.__dxfShareSink) {
+                if (d && (d.__dxf === 'screen-share-ended' || d.__dxf === 'share-started' || d.__dxf === 'share-audio' || d.__dxf === 'share-unavailable' || d.__dxf === 'share-echo-risk' || d.__dxf === 'stream-audio' || d.__dxf === 'screen-stats' || d.__dxf === 'screen-stats-in' || d.__dxf === 'screen-room-state' || d.__dxf === 'screen-room-error' || d.__dxf === 'screen-room-reconnecting' || d.__dxf === 'screen-track-timeout' || d.__dxf === 'e2ee-error' || d.__dxf === 'e2ee-undecryptable') && window.__dxfShareSink) {
                   window.__dxfShareSink(d);
                 }
               });
@@ -1220,6 +1263,14 @@ pub fn ScreenShareBridge() -> Element {
             let mut stats = super::screen_stats::WebViewStats::default();
             while let Ok(msg) = eval.recv::<Value>().await {
                 match msg.get("__dxf").and_then(|v| v.as_str()) {
+                    Some("screen-room-state") => {
+                        if let Ok(event) =
+                            serde_json::from_value::<super::video_lifecycle::Event>(msg.clone())
+                            && lifecycle_events.send(event).is_err()
+                        {
+                            tracing::debug!("video lifecycle owner stopped");
+                        }
+                    }
                     Some("share-started") => {
                         let cid = state.read().voice.channel_id;
                         {

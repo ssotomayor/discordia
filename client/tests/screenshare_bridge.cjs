@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const path = require('node:path');
+require('./video_lifecycle_bridge.cjs');
 
 const source = fs.readFileSync(path.join(__dirname, '../src/features/screenshare.rs'), 'utf8');
 let script = source.split('const SCREEN_JS: &str = r#"')[1].split('"#;')[0];
