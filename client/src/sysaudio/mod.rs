@@ -87,14 +87,24 @@ pub fn start(
     }
     #[cfg(target_os = "windows")]
     {
-        let _ = target;
+        let target = target.ok_or_else(|| "no screen-share target was selected".to_string())?;
         Ok(Capture {
-            _inner: self::windows::WinCapture::start(tx, fatal)?,
+            _inner: self::windows::WinCapture::start(target, tx, fatal)?,
         })
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         let _ = (tx, fatal, target);
         Err("system audio capture isn't implemented on this platform yet".into())
+    }
+}
+
+pub fn captures_application(target: Option<crate::sysvideo::Target>) -> bool {
+    use crate::sysvideo::Target;
+    match target {
+        Some(Target::Window(_) | Target::Application(_)) => true,
+        #[cfg(target_os = "windows")]
+        Some(Target::WindowsWindow(_)) => true,
+        _ => false,
     }
 }

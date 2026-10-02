@@ -299,8 +299,11 @@ window.dxScreen = window.dxScreen || (function () {
       applySelfPreviewSubscription(pub, participant);
     });
     thisRoom.on(lk.RoomEvent.TrackSubscribed, function (track, pub, participant) {
+      if (room !== thisRoom) return;
       if (track.kind === 'audio') {
-        audioTracks[baseIdentity(participant.identity)] = track;
+        const identity = baseIdentity(participant.identity);
+        if (audioTracks[identity] !== track) detachAudio(identity);
+        audioTracks[identity] = track;
         if (nativeStreamAudio) return;
         attachWatched();
         return;
@@ -316,7 +319,9 @@ window.dxScreen = window.dxScreen || (function () {
       reattach(participant.identity, kind);
     });
     thisRoom.on(lk.RoomEvent.TrackUnsubscribed, function (track, pub, participant) {
+      if (room !== thisRoom) return;
       if (track.kind === 'audio') {
+        if (audioTracks[baseIdentity(participant.identity)] !== track) return;
         detachAudio(baseIdentity(participant.identity));
         delete audioTracks[baseIdentity(participant.identity)];
         if (!nativeStreamAudio) report(participant.identity, false);
@@ -324,6 +329,7 @@ window.dxScreen = window.dxScreen || (function () {
       }
       if (track.kind !== 'video') return;
       const kind = kindOf(pub, track);
+      if (tracks[trackKey(participant.identity, kind)] !== track) return;
       if (kind === 'screen' && remoteShareVideoTrack === track) {
         remoteShareVideoTrack = null;
         previousRemoteSample = null;
@@ -1560,11 +1566,18 @@ fn ScreenShareDialog(result: Result<Vec<crate::sysvideo::Source>, String>) -> El
                         input { r#type: "checkbox", checked: audio(), disabled: !crate::sysaudio::supported(),
                             onchange: move |e| audio.set(e.checked()),
                         }
-                        span { class: "text-xs text-[var(--text-muted)]", "Share system audio" }
+                        span { class: "text-xs text-[var(--text-muted)]",
+                            if crate::sysaudio::captures_application(target()) { "Share application audio" }
+                            else { "Share computer audio" }
+                        }
                     }
-                    if cfg!(target_os = "windows") && audio() {
+                    if audio() {
                         p { class: "text-[10px] text-[var(--text-dim)]",
-                            "Audio includes other applications playing on your computer."
+                            if crate::sysaudio::captures_application(target()) {
+                                "Shares audio from the selected application. Other windows or tabs of that application may be included. Discordia audio is excluded."
+                            } else {
+                                "Shares computer audio from other applications. Discordia audio is excluded."
+                            }
                         }
                     }
                     p { class: "text-[10px] text-[var(--text-dim)]",
@@ -1771,23 +1784,44 @@ pub fn ScreenSelfPreview() -> Element {
             }
         }
     });
+    let mut preview_task = use_signal(|| None::<dioxus::core::Task>);
+    let mut applied_preview = use_signal(|| None::<(Option<String>, bool)>);
     use_effect(move || {
         let identity = if sharing() { self_pk() } else { None };
         let enabled = preview_active();
-        tracing::debug!(
-            enabled,
-            sharing = identity.is_some(),
-            "self screen preview state"
-        );
         if !enabled {
             drag.set(None);
         }
-        let _ = document::eval(&format!(
-            "{SCREEN_JS}\nwindow.dxScreen.setSelfPreview({},{enabled});",
-            serde_json::to_string(&identity).unwrap_or_else(|_| "null".into()),
-        ));
+        if let Some(task) = preview_task.write().take() {
+            task.cancel();
+        }
+        let desired = (identity, enabled);
+        let previous = applied_preview.peek().clone();
+        let Some(delay) = preview_subscription_delay(previous.as_ref(), &desired) else {
+            return;
+        };
+        preview_task.set(Some(spawn(async move {
+            // Brief focus changes must not resubscribe the preview and request another key frame.
+            if !delay.is_zero() {
+                tokio::time::sleep(delay).await;
+            }
+            let (identity, enabled) = &desired;
+            tracing::debug!(
+                enabled,
+                sharing = identity.is_some(),
+                "self screen preview state"
+            );
+            let _ = document::eval(&format!(
+                "{SCREEN_JS}\nwindow.dxScreen.setSelfPreview({},{enabled});",
+                serde_json::to_string(identity).unwrap_or_else(|_| "null".into()),
+            ));
+            applied_preview.set(Some(desired));
+        })));
     });
-    use_drop(|| {
+    use_drop(move || {
+        if let Some(task) = preview_task.write().take() {
+            task.cancel();
+        }
         let _ = document::eval(&format!(
             "{SCREEN_JS}\nwindow.dxScreen.setSelfPreview(null,true);"
         ));
@@ -1905,6 +1939,22 @@ pub fn ScreenSelfPreview() -> Element {
             }
         }
     }
+}
+
+fn preview_subscription_delay(
+    applied: Option<&(Option<String>, bool)>,
+    desired: &(Option<String>, bool),
+) -> Option<std::time::Duration> {
+    if applied == Some(desired) {
+        return None;
+    }
+    Some(
+        if applied.is_some_and(|(identity, _)| identity.is_some() && identity == &desired.0) {
+            std::time::Duration::from_secs(1)
+        } else {
+            std::time::Duration::ZERO
+        },
+    )
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -2242,6 +2292,37 @@ fn ScreenWatchTile(
 #[cfg(test)]
 mod js_escaping_tests {
     use super::{attach_js, js_str, screen_stats_js, share_js};
+
+    #[test]
+    fn brief_focus_changes_do_not_cycle_the_preview_subscription() {
+        use std::time::Duration;
+        let visible = (Some("self".into()), true);
+        let hidden = (Some("self".into()), false);
+        assert_eq!(
+            super::preview_subscription_delay(None, &visible),
+            Some(Duration::ZERO)
+        );
+        assert_eq!(
+            super::preview_subscription_delay(Some(&visible), &hidden),
+            Some(Duration::from_secs(1))
+        );
+        assert_eq!(
+            super::preview_subscription_delay(Some(&visible), &visible),
+            None
+        );
+        assert_eq!(
+            super::preview_subscription_delay(Some(&hidden), &visible),
+            Some(Duration::from_secs(1))
+        );
+        assert_eq!(
+            super::preview_subscription_delay(Some(&visible), &(None, true)),
+            Some(Duration::ZERO)
+        );
+        assert_eq!(
+            super::preview_subscription_delay(Some(&hidden), &(Some("other".into()), true)),
+            Some(Duration::ZERO)
+        );
+    }
 
     #[test]
     fn opening_the_picker_preserves_every_saved_quality_preset() {
