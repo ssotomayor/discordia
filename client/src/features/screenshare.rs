@@ -23,8 +23,13 @@ window.dxScreen = window.dxScreen || (function () {
   let screenStatsTimer = null;
   let screenStatsInFlight = false;
   let remoteStatsInFlight = false;
-  let previousScreenSample = null;
-  let previousRemoteSample = null;
+  let statsEpoch = 0;
+  let nextStatsTrackId = 0;
+  const statsTrackIds = new WeakMap();
+  function statsSampleKey(track, entry) {
+    if (!statsTrackIds.has(track)) statsTrackIds.set(track, ++nextStatsTrackId);
+    return statsEpoch + '/' + statsTrackIds.get(track) + '/' + (entry.id || 'video');
+  }
   const videoReports = new WeakMap();
   function videoStatsReport(track) {
     const now = Date.now();
@@ -192,7 +197,6 @@ window.dxScreen = window.dxScreen || (function () {
   }
   function clearRemoteTracks() {
     remoteShareVideoTrack = null;
-    previousRemoteSample = null;
     post('screen-stats-in', { active: false });
     detachAudio();
     for (const k in tracks) delete tracks[k];
@@ -325,7 +329,6 @@ window.dxScreen = window.dxScreen || (function () {
       tracks[trackKey(participant.identity, kind)] = track;
       if (kind === 'screen') {
         remoteShareVideoTrack = track;
-        previousRemoteSample = null;
         if (screenStatsEnabled) pollRemoteScreenStats();
       }
       reattach(participant.identity, kind);
@@ -344,7 +347,6 @@ window.dxScreen = window.dxScreen || (function () {
       if (tracks[trackKey(participant.identity, kind)] !== track) return;
       if (kind === 'screen' && remoteShareVideoTrack === track) {
         remoteShareVideoTrack = null;
-        previousRemoteSample = null;
         post('screen-stats-in', { active: false });
       }
       delete tracks[trackKey(participant.identity, kind)];
@@ -361,7 +363,6 @@ window.dxScreen = window.dxScreen || (function () {
       if (pub.track === localShareVideoTrack) {
         localShareVideoTrack = null;
         screenCaptureTrack = null;
-        previousScreenSample = null;
         post('screen-stats', { active: false });
       }
       const kind = kindOf(pub, pub.track);
@@ -420,19 +421,15 @@ window.dxScreen = window.dxScreen || (function () {
     }
     screenStatsInFlight = true;
     try {
-      const stats = await localShareVideoTrack.getRTCStatsReport();
-      if (!screenStatsEnabled || !stats) return;
+      const track = localShareVideoTrack;
+      const epoch = statsEpoch;
+      const stats = await track.getRTCStatsReport();
+      if (!screenStatsEnabled || !stats || track !== localShareVideoTrack || epoch !== statsEpoch) return;
       let outbound = null;
       stats.forEach(function (entry) {
         if (entry.type === 'outbound-rtp') outbound = entry;
       });
       if (!outbound) return;
-      const timestamp = outbound.timestamp;
-      const bytesSent = outbound.bytesSent;
-      const bitrateKbps = previousScreenSample && timestamp > previousScreenSample.timestamp && bytesSent >= previousScreenSample.bytesSent
-        ? Math.round((bytesSent - previousScreenSample.bytesSent) * 8 / (timestamp - previousScreenSample.timestamp))
-        : null;
-      previousScreenSample = { timestamp: timestamp, bytesSent: bytesSent };
       const capture = (function () { try { return screenCaptureTrack.getSettings(); } catch (e) { return {}; } })();
       const codec = outbound.codecId ? stats.get(outbound.codecId) : null;
       const remote = outbound.remoteId ? stats.get(outbound.remoteId) : null;
@@ -443,9 +440,11 @@ window.dxScreen = window.dxScreen || (function () {
         captureFps: capture.frameRate || null,
         encodedWidth: outbound.frameWidth || null,
         encodedHeight: outbound.frameHeight || null,
-        encodedFps: outbound.framesPerSecond || null,
-        bitrateKbps: bitrateKbps,
-        targetBitrateKbps: Number.isFinite(outbound.targetBitrate) ? Math.round(outbound.targetBitrate / 1000) : null,
+        encodedFps: outbound.framesPerSecond,
+        sampleKey: statsSampleKey(track, outbound),
+        timestampMs: outbound.timestamp,
+        bytes: outbound.bytesSent,
+        targetBitrate: outbound.targetBitrate,
         codec: codec && codec.mimeType || null,
         codecImplementation: outbound.encoderImplementation || null,
         powerEfficient: typeof outbound.powerEfficientEncoder === 'boolean' ? outbound.powerEfficientEncoder : null,
@@ -453,7 +452,7 @@ window.dxScreen = window.dxScreen || (function () {
         frames: Number.isFinite(outbound.framesEncoded) ? outbound.framesEncoded : null,
         packets: Number.isFinite(outbound.packetsSent) ? outbound.packetsSent : null,
         packetsLost: remote && Number.isFinite(remote.packetsLost) ? remote.packetsLost : null,
-        jitterMs: remote && Number.isFinite(remote.jitter) ? remote.jitter * 1000 : null,
+        jitterSeconds: remote && remote.jitter,
       });
     } catch (e) {
       if (screenStatsEnabled) post('screen-stats', { active: true, error: String((e && e.message) || e) });
@@ -470,19 +469,14 @@ window.dxScreen = window.dxScreen || (function () {
     remoteStatsInFlight = true;
     try {
       const track = remoteShareVideoTrack;
+      const epoch = statsEpoch;
       const stats = await videoStatsReport(track);
-      if (!screenStatsEnabled || !stats || track !== remoteShareVideoTrack) return;
+      if (!screenStatsEnabled || !stats || track !== remoteShareVideoTrack || epoch !== statsEpoch) return;
       let inbound = null;
       stats.forEach(function (entry) {
         if (entry.type === 'inbound-rtp' && entry.kind === 'video') inbound = entry;
       });
       if (!inbound) return;
-      const timestamp = inbound.timestamp;
-      const bytesReceived = inbound.bytesReceived;
-      const bitrateKbps = previousRemoteSample && timestamp > previousRemoteSample.timestamp && bytesReceived >= previousRemoteSample.bytesReceived
-        ? Math.round((bytesReceived - previousRemoteSample.bytesReceived) * 8 / (timestamp - previousRemoteSample.timestamp))
-        : null;
-      previousRemoteSample = { timestamp: timestamp, bytesReceived: bytesReceived };
       const codec = inbound.codecId ? stats.get(inbound.codecId) : null;
       post('screen-stats-in', {
         active: true,
@@ -495,15 +489,17 @@ window.dxScreen = window.dxScreen || (function () {
         keyFramesDecoded: Number.isFinite(inbound.keyFramesDecoded) ? inbound.keyFramesDecoded : null,
         encodedWidth: inbound.frameWidth || null,
         encodedHeight: inbound.frameHeight || null,
-        encodedFps: inbound.framesPerSecond || null,
-        bitrateKbps: bitrateKbps,
+        encodedFps: inbound.framesPerSecond,
+        sampleKey: statsSampleKey(track, inbound),
+        timestampMs: inbound.timestamp,
+        bytes: inbound.bytesReceived,
         codec: codec && codec.mimeType || null,
         codecImplementation: inbound.decoderImplementation || null,
         powerEfficient: typeof inbound.powerEfficientDecoder === 'boolean' ? inbound.powerEfficientDecoder : null,
         frames: Number.isFinite(inbound.framesDecoded) ? inbound.framesDecoded : null,
         packets: Number.isFinite(inbound.packetsReceived) ? inbound.packetsReceived : null,
         packetsLost: Number.isFinite(inbound.packetsLost) ? inbound.packetsLost : null,
-        jitterMs: Number.isFinite(inbound.jitter) ? inbound.jitter * 1000 : null,
+        jitterSeconds: inbound.jitter,
       });
     } catch (e) {
       if (screenStatsEnabled) post('screen-stats-in', { active: true, error: String((e && e.message) || e) });
@@ -513,10 +509,9 @@ window.dxScreen = window.dxScreen || (function () {
   }
   function setStatsEnabled(enabled) {
     screenStatsEnabled = !!enabled;
+    statsEpoch++;
     if (screenStatsTimer) clearInterval(screenStatsTimer);
     screenStatsTimer = null;
-    previousScreenSample = null;
-    previousRemoteSample = null;
     if (!screenStatsEnabled) {
       post('screen-stats', { active: false });
       post('screen-stats-in', { active: false });
@@ -687,7 +682,6 @@ window.dxScreen = window.dxScreen || (function () {
       });
       localShareVideoTrack = publication.track;
       screenCaptureTrack = vt;
-      previousScreenSample = null;
       pollScreenStats();
       const at = stream.getAudioTracks()[0];
       if (useNative && at) {
@@ -1223,6 +1217,7 @@ pub fn ScreenShareBridge() -> Element {
             }
             "#;
             let mut eval = document::eval(bridge_js);
+            let mut stats = super::screen_stats::WebViewStats::default();
             while let Ok(msg) = eval.recv::<Value>().await {
                 match msg.get("__dxf").and_then(|v| v.as_str()) {
                     Some("share-started") => {
@@ -1304,42 +1299,7 @@ pub fn ScreenShareBridge() -> Element {
                     Some("screen-stats") | Some("screen-stats-in") => {
                         let outbound =
                             msg.get("__dxf").and_then(Value::as_str) == Some("screen-stats");
-                        let screen_stats = if msg.get("active").and_then(Value::as_bool)
-                            == Some(true)
-                        {
-                            let u32_field = |key| {
-                                msg.get(key)
-                                    .and_then(Value::as_u64)
-                                    .and_then(|v| u32::try_from(v).ok())
-                            };
-                            let u64_field = |key| msg.get(key).and_then(Value::as_u64);
-                            let text_field =
-                                |key| msg.get(key).and_then(Value::as_str).map(str::to_owned);
-                            Some(crate::state::ScreenShareStats {
-                                outbound,
-                                capture_width: u32_field("captureWidth"),
-                                capture_height: u32_field("captureHeight"),
-                                capture_fps: msg.get("captureFps").and_then(Value::as_f64),
-                                capture_processing_ms: None,
-                                encode_ms: None,
-                                encoded_width: u32_field("encodedWidth"),
-                                encoded_height: u32_field("encodedHeight"),
-                                encoded_fps: msg.get("encodedFps").and_then(Value::as_f64),
-                                bitrate_kbps: u32_field("bitrateKbps"),
-                                target_bitrate_kbps: u32_field("targetBitrateKbps"),
-                                codec: text_field("codec"),
-                                codec_implementation: text_field("codecImplementation"),
-                                power_efficient: msg.get("powerEfficient").and_then(Value::as_bool),
-                                quality_limitation_reason: text_field("qualityLimitationReason"),
-                                frames: u64_field("frames"),
-                                packets: u64_field("packets"),
-                                packets_lost: msg.get("packetsLost").and_then(Value::as_i64),
-                                jitter_ms: msg.get("jitterMs").and_then(Value::as_f64),
-                                error: text_field("error"),
-                            })
-                        } else {
-                            None
-                        };
+                        let screen_stats = stats.update(&msg, outbound);
                         tracing::debug!(
                             ?screen_stats,
                             track_sid = msg.get("trackSid").and_then(serde_json::Value::as_str),
@@ -2507,7 +2467,8 @@ mod js_escaping_tests {
             "screen shares default to motion encoding"
         );
         assert!(
-            js.contains("localShareVideoTrack.getRTCStatsReport()")
+            js.contains("const track = localShareVideoTrack;")
+                && js.contains("await track.getRTCStatsReport()")
                 && js.contains("powerEfficient: typeof outbound.powerEfficientEncoder"),
             "screen-share diagnostics read sender stats including encoder efficiency"
         );
