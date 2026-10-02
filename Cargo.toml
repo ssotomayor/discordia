@@ -1,17 +1,19 @@
 [workspace]
 resolver = "2"
 members = ["client", "server", "rendezvous", "grid-layout", "protocol", "bot-sdk"]
-exclude = ["vendor/webrtc-sys", "vendor/livekit"]
+exclude = ["vendor/webrtc-sys", "vendor/livekit", "vendor/dioxus-desktop"]
 
 [patch.crates-io]
 webrtc-sys = { path = "vendor/webrtc-sys" }
 livekit = { path = "vendor/livekit" }
+dioxus-desktop = { path = "vendor/dioxus-desktop" }
 
 [workspace.dependencies]
 dioxusfun-server = { path = "server" }
 dioxusfun-protocol = { path = "protocol" }
 
-dioxus = "0.7"
+dioxus = { version = "0.7", default-features = false, features = ["launch", "lib"] }
+livekit-api = { version = "0.5", default-features = false, features = ["access-token"] }
 axum = { version = "0.7", features = ["ws"] }
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 tokio = { version = "1" }

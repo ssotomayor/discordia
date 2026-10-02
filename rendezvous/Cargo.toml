@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 rand = "0.8"
-livekit-api = { version = "0.4", default-features = false, features = ["access-token"] }
+livekit-api = { workspace = true }
 secp256k1 = { workspace = true }
 sha2 = "0.10"
 hex = { workspace = true }

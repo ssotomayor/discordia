@@ -186,6 +186,80 @@ async fn bad_signature_is_rejected() {
     assert_eq!(reply["op"], "error", "got {reply}");
 }
 
+async fn wait_until_unregistered(registry: &Registry, name: &str) {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while registry.hosts.contains_key(name) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("host cleanup");
+}
+
+#[tokio::test]
+async fn an_owner_reopens_its_name_after_disconnect_with_a_fresh_challenge() {
+    let (base, registry) = spawn_with(Config::default()).await;
+    let (secret, owner) = identity(41);
+    let (mut first, nonce) = connect_control(&base).await;
+    let signature = sign(&secret, &nonce, &owner, "Recko");
+    send_register(&mut first, "Recko", &owner, &signature).await;
+    assert_eq!(next_json(&mut first).await["op"], "registered");
+
+    let (mut duplicate, nonce) = connect_control(&base).await;
+    let signature = sign(&secret, &nonce, &owner, "recko");
+    send_register(&mut duplicate, "recko", &owner, &signature).await;
+    let reply = next_json(&mut duplicate).await;
+    assert_eq!(reply["op"], "error");
+    assert!(
+        reply["d"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("another session")
+    );
+
+    first.close(None).await.unwrap();
+    wait_until_unregistered(&registry, "recko").await;
+    assert_eq!(
+        registry.reservation_owner("recko").as_deref(),
+        Some(owner.as_str())
+    );
+
+    let (mut reopened, nonce) = connect_control(&base).await;
+    let signature = sign(&secret, &nonce, &owner, "RECKO");
+    send_register(&mut reopened, "RECKO", &owner, &signature).await;
+    let reply = next_json(&mut reopened).await;
+    assert_eq!(reply["op"], "registered", "{reply}");
+    assert_eq!(reply["d"]["shortcode"], "recko");
+}
+
+#[tokio::test]
+async fn hexadecimal_key_casing_does_not_change_name_ownership() {
+    let (base, registry) = spawn_with(Config::default()).await;
+    let (secret, owner) = identity(42);
+    let (mut first, nonce) = connect_control(&base).await;
+    let signature = sign(&secret, &nonce, &owner, "same-key");
+    send_register(&mut first, "same-key", &owner, &signature).await;
+    assert_eq!(next_json(&mut first).await["op"], "registered");
+    first.close(None).await.unwrap();
+    wait_until_unregistered(&registry, "same-key").await;
+
+    let uppercase = owner.to_ascii_uppercase();
+    let (mut reopened, nonce) = connect_control(&base).await;
+    let signature = sign(&secret, &nonce, &uppercase, "same-key");
+    send_register(&mut reopened, "same-key", &uppercase, &signature).await;
+    let reply = next_json(&mut reopened).await;
+    assert_eq!(reply["op"], "registered", "{reply}");
+    reopened.close(None).await.unwrap();
+    wait_until_unregistered(&registry, "same-key").await;
+
+    let (mut release, nonce) = connect_control(&base).await;
+    let signature = sign(&secret, &nonce, &uppercase, "same-key");
+    assert_eq!(
+        send_release(&mut release, "same-key", &uppercase, &signature).await["op"],
+        "released"
+    );
+}
+
 #[tokio::test]
 async fn a_second_key_cannot_take_a_claimed_name() {
     let base = spawn().await;

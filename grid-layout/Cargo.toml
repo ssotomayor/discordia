@@ -13,4 +13,4 @@ dioxus = { workspace = true }
 serde = { workspace = true }
 
 [dev-dependencies]
-dioxus = { version = "0.7", features = ["desktop"] }
+dioxus = { workspace = true, features = ["desktop"] }

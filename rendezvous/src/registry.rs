@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 
-use dashmap::DashMap;
+use dashmap::{DashMap, mapref::entry::Entry};
 use dioxusfun_protocol::rendezvous::{DiscoverEntry, GeoPoint};
 use serde::{Deserialize, Serialize};
 
@@ -83,7 +83,8 @@ pub struct Registry {
     pub hosts: DashMap<String, Arc<HostEntry>>,
     reservations: DashMap<String, Reservation>,
     store_path: Option<PathBuf>,
-    persist_lock: std::sync::Mutex<()>,
+    // Ownership, quotas and live-session changes must not race with persistence.
+    registration_lock: std::sync::Mutex<()>,
     caps: ReservationCaps,
     /// Here and not on `AppCtx` because the server's tests build that by
     /// struct literal.
@@ -142,7 +143,7 @@ impl Registry {
             voice_grants: DashMap::new(),
             reservations,
             store_path,
-            persist_lock: std::sync::Mutex::new(()),
+            registration_lock: std::sync::Mutex::new(()),
             caps: ReservationCaps::default(),
             limits: Limits::default(),
         }
@@ -157,10 +158,6 @@ impl Registry {
         let Some(path) = self.store_path.as_ref() else {
             return;
         };
-        let _one_writer = self
-            .persist_lock
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let list: Vec<Reservation> = self
             .reservations
             .iter()
@@ -189,7 +186,18 @@ impl Registry {
     }
 
     pub fn claim_name(&self, slug: &str, owner: &str) -> Result<(), ClaimError> {
-        let already_mine = self.reservations.get(slug).map(|r| r.owner_pubkey == owner);
+        let _registration = self
+            .registration_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.claim_name_locked(slug, owner)
+    }
+
+    fn claim_name_locked(&self, slug: &str, owner: &str) -> Result<(), ClaimError> {
+        let already_mine = self
+            .reservations
+            .get(slug)
+            .map(|r| r.owner_pubkey.eq_ignore_ascii_case(owner));
         if already_mine == Some(false) {
             return Err(ClaimError::Taken);
         }
@@ -205,7 +213,7 @@ impl Registry {
         let owned = self
             .reservations
             .iter()
-            .filter(|r| r.owner_pubkey == owner)
+            .filter(|r| r.owner_pubkey.eq_ignore_ascii_case(owner))
             .count();
         if owned >= self.caps.per_owner {
             return Err(ClaimError::OwnerLimit);
@@ -214,7 +222,7 @@ impl Registry {
             slug.to_string(),
             Reservation {
                 slug: slug.to_string(),
-                owner_pubkey: owner.to_string(),
+                owner_pubkey: owner.to_ascii_lowercase(),
             },
         );
         self.persist();
@@ -222,8 +230,12 @@ impl Registry {
     }
 
     pub fn release_name(&self, slug: &str, owner: &str) -> Result<(), ReleaseError> {
+        let _registration = self
+            .registration_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         match self.reservations.get(slug) {
-            Some(r) if r.owner_pubkey == owner => {}
+            Some(r) if r.owner_pubkey.eq_ignore_ascii_case(owner) => {}
             _ => return Err(ReleaseError::NotYours),
         }
         if self.hosts.contains_key(slug) {
@@ -249,17 +261,37 @@ impl Registry {
         self.voice_grants.get(grant).map(|s| s.clone())
     }
 
-    pub fn try_claim(&self, shortcode: &str, entry: HostEntry) -> Option<Arc<HostEntry>> {
-        if self.hosts.contains_key(shortcode) {
-            return None;
+    pub fn claim_host(
+        &self,
+        shortcode: &str,
+        owner: Option<&str>,
+        entry: HostEntry,
+    ) -> Result<Arc<HostEntry>, ClaimError> {
+        let _registration = self
+            .registration_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(owner) = owner {
+            self.claim_name_locked(shortcode, owner)?;
+        } else if self.reservations.contains_key(shortcode) {
+            return Err(ClaimError::Taken);
         }
         entry.touch();
         let entry = Arc::new(entry);
-        self.hosts.insert(shortcode.to_string(), entry.clone());
-        Some(entry)
+        match self.hosts.entry(shortcode.to_string()) {
+            Entry::Vacant(slot) => {
+                slot.insert(entry.clone());
+                Ok(entry)
+            }
+            Entry::Occupied(_) => Err(ClaimError::LiveElsewhere),
+        }
     }
 
     pub fn release(&self, shortcode: &str) {
+        let _registration = self
+            .registration_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         self.hosts.remove(shortcode);
         self.voice_grants.retain(|_, sc| sc != shortcode);
     }
@@ -302,6 +334,116 @@ fn entry_for(shortcode: &str, host: &HostEntry) -> DiscoverEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn host_entry() -> HostEntry {
+        HostEntry {
+            name: Some("test".to_string()),
+            description: None,
+            public: false,
+            transport_key: None,
+            transport_addrs: Vec::new(),
+            location: None,
+            last_seen_ms: AtomicI64::new(0),
+        }
+    }
+
+    #[test]
+    fn simultaneous_registrations_keep_one_owner_and_one_session() {
+        let registry = Registry::new();
+        let barrier = std::sync::Barrier::new(16);
+        let outcomes = std::thread::scope(|scope| {
+            let jobs: Vec<_> = (0..16)
+                .map(|index| {
+                    let registry = &registry;
+                    let barrier = &barrier;
+                    scope.spawn(move || {
+                        let owner = format!("{index:064x}");
+                        barrier.wait();
+                        let result = registry.claim_host("same-name", Some(&owner), host_entry());
+                        (owner, result)
+                    })
+                })
+                .collect();
+            jobs.into_iter()
+                .map(|job| job.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        let winners: Vec<_> = outcomes
+            .iter()
+            .filter(|(_, result)| result.is_ok())
+            .collect();
+        assert_eq!(winners.len(), 1);
+        let (owner, result) = winners[0];
+        assert_eq!(
+            registry.reservation_owner("same-name").as_deref(),
+            Some(owner.as_str())
+        );
+        assert!(Arc::ptr_eq(
+            registry.hosts.get("same-name").unwrap().value(),
+            result.as_ref().unwrap()
+        ));
+        assert_eq!(registry.hosts.len(), 1);
+        for (_, result) in outcomes.iter().filter(|(_, result)| result.is_err()) {
+            assert!(matches!(result, Err(ClaimError::Taken)));
+        }
+    }
+
+    #[test]
+    fn concurrent_claims_cannot_exceed_the_owner_quota() {
+        let registry = Registry::new().with_caps(ReservationCaps {
+            per_owner: 3,
+            total: 100,
+        });
+        let barrier = std::sync::Barrier::new(16);
+        let successes = std::thread::scope(|scope| {
+            let jobs: Vec<_> = (0..16)
+                .map(|index| {
+                    let registry = &registry;
+                    let barrier = &barrier;
+                    scope.spawn(move || {
+                        barrier.wait();
+                        registry
+                            .claim_host(&format!("name-{index}"), Some("owner"), host_entry())
+                            .is_ok()
+                    })
+                })
+                .collect();
+            jobs.into_iter()
+                .map(|job| job.join().unwrap())
+                .filter(|success| *success)
+                .count()
+        });
+        assert_eq!(successes, 3);
+        assert_eq!(registry.reservations.len(), 3);
+    }
+
+    #[test]
+    fn stored_uppercase_keys_reclaim_and_release_as_the_same_identity() {
+        let path = tmp();
+        let uppercase = "AB".repeat(32);
+        let lowercase = uppercase.to_ascii_lowercase();
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&vec![Reservation {
+                slug: "legacy".to_string(),
+                owner_pubkey: uppercase,
+            }])
+            .unwrap(),
+        )
+        .unwrap();
+        let registry = Registry::load(path.clone()).with_caps(ReservationCaps {
+            per_owner: 1,
+            total: 100,
+        });
+        assert!(registry.claim_name("legacy", &lowercase).is_ok());
+        assert_eq!(
+            registry.claim_name("second", &lowercase),
+            Err(ClaimError::OwnerLimit)
+        );
+        assert!(registry.release_name("legacy", &lowercase).is_ok());
+        assert!(registry.claim_name("second", &lowercase).is_ok());
+        std::fs::remove_file(path).unwrap();
+    }
 
     fn tmp() -> PathBuf {
         std::env::temp_dir().join(format!("rzv-res-{}.json", uuid::Uuid::new_v4()))
