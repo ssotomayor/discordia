@@ -389,7 +389,7 @@ pub struct AppState {
     pub command_notes: Vec<CommandNote>,
     pub guild_emojis: HashMap<Id, Vec<crate::protocol::GuildEmoji>>,
     pub guild_sounds: HashMap<Id, Vec<crate::protocol::GuildSound>>,
-    pub emoji_images: HashMap<String, String>,
+    pub emoji_images: crate::media_cache::MediaCache,
     /// Address → when it was last asked for. A request the server dropped,
     /// throttled or cut for size is asked again once this is old enough.
     pub emoji_requested: HashMap<String, std::time::Instant>,
@@ -501,7 +501,7 @@ impl AppState {
             command_notes: Vec::new(),
             guild_emojis: HashMap::new(),
             guild_sounds: HashMap::new(),
-            emoji_images: HashMap::new(),
+            emoji_images: Default::default(),
             emoji_requested: HashMap::new(),
             roles: HashMap::new(),
             bans: HashMap::new(),

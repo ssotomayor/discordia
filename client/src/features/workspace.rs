@@ -397,10 +397,7 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
         };
         let voice_tx = leave_voice.clone();
         spawn(async move {
-            let stop_webview = document::eval(&format!(
-                "{}\n{STOP_WEBVIEW_MEDIA_JS}",
-                crate::features::screenshare::SCREEN_JS
-            ));
+            let stop_webview = document::eval(STOP_WEBVIEW_MEDIA_JS);
             let (done_tx, done_rx) = tokio::sync::oneshot::channel();
             let _ = voice_tx.send(crate::features::voice::VoiceCmd::Disconnect {
                 done: Some(done_tx),

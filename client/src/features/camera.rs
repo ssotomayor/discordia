@@ -2,7 +2,7 @@ use dioxus::prelude::*;
 #[cfg(not(target_os = "windows"))]
 use serde_json::Value;
 
-use crate::features::screenshare::{Drag, SCREEN_JS, attach_js, detach_js};
+use crate::features::screenshare::{Drag, attach_js, detach_js};
 use crate::protocol::ClientMessage;
 use crate::state::{CameraDevice, use_app_state, use_gateway};
 
@@ -14,23 +14,23 @@ const CAM_BITRATE: u32 = 1_200_000;
 fn start_camera_js(device_id: Option<&str>, w: u32, h: u32, fps: u32, bitrate: u32) -> String {
     let dev = serde_json::to_string(&device_id).unwrap_or_else(|_| "null".into());
     format!(
-        "{SCREEN_JS}\nwindow.dxScreen.startCamera({{deviceId:{dev},width:{w},height:{h},\
+        "window.dxScreen.startCamera({{deviceId:{dev},width:{w},height:{h},\
          fps:{fps},bitrate:{bitrate}}});"
     )
 }
 
 fn stop_camera_js() -> String {
-    format!("{SCREEN_JS}\nwindow.dxScreen.stopCamera();")
+    "window.dxScreen.stopCamera();".into()
 }
 
 #[cfg(not(target_os = "windows"))]
 pub fn list_cameras_js() -> String {
-    format!("{SCREEN_JS}\nwindow.dxScreen.listCameras();")
+    "window.dxScreen.listCameras();".into()
 }
 
 fn attach_local_camera_js(container: &str) -> String {
     let container = crate::features::screenshare::js_str(container);
-    format!("{SCREEN_JS}\nwindow.dxScreen.attachLocalCamera({container});")
+    format!("window.dxScreen.attachLocalCamera({container});")
 }
 
 /// The label fallback is not belt-and-braces: a deviceId is origin-salted and

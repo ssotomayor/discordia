@@ -170,19 +170,36 @@ pub async fn listen(names: Vec<String>, tx: UnboundedSender<RpcActivity>) {
         let path = dir.join(&name);
         // A path left by a crash binds nothing and refuses everything, so the
         // stale file is removed before the slot is judged taken.
-        if std::os::unix::net::UnixStream::connect(&path).is_err() {
-            let _ = std::fs::remove_file(&path);
+        if tokio::net::UnixStream::connect(&path).await.is_err()
+            && let Err(error) = tokio::fs::remove_file(&path).await
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::debug!(%error, "could not remove stale presence socket");
         }
         let Ok(listener) = UnixListener::bind(&path) else {
             continue;
         };
         tracing::info!(socket = %path.display(), "rich presence socket listening");
-        let tx = tx.clone();
-        tokio::spawn(async move {
-            while let Ok((stream, _)) = listener.accept().await {
-                tokio::spawn(serve(stream, tx.clone()));
+        let mut clients = tokio::task::JoinSet::new();
+        loop {
+            tokio::select! {
+                _ = tx.closed() => break,
+                result = clients.join_next(), if !clients.is_empty() => {
+                    if let Some(Err(error)) = result {
+                        tracing::debug!(%error, "presence client task ended");
+                    }
+                }
+                accepted = listener.accept() => {
+                    match accepted {
+                        Ok((stream, _)) => { clients.spawn(serve(stream, tx.clone())); }
+                        Err(error) => {
+                            tracing::debug!(%error, "presence listener ended");
+                            break;
+                        }
+                    }
+                }
             }
-        });
+        }
         return;
     }
     tracing::warn!("no free rich presence socket; another client holds them all");
@@ -206,23 +223,34 @@ pub async fn listen(names: Vec<String>, tx: UnboundedSender<RpcActivity>) {
             continue;
         };
         tracing::info!(pipe = %path, "rich presence pipe listening");
-        let tx = tx.clone();
-        tokio::spawn(async move {
-            let mut server = first;
-            loop {
-                if server.connect().await.is_err() {
-                    break;
+        let mut clients = tokio::task::JoinSet::new();
+        let mut server = first;
+        loop {
+            tokio::select! {
+                _ = tx.closed() => break,
+                result = clients.join_next(), if !clients.is_empty() => {
+                    if let Some(Err(error)) = result {
+                        tracing::debug!(%error, "presence client task ended");
+                    }
                 }
-                // The next instance has to exist before this one is handed off,
-                // or the pipe name disappears between two games connecting.
-                let next = match ServerOptions::new().create(&path) {
-                    Ok(next) => next,
-                    Err(_) => break,
-                };
-                let connected = std::mem::replace(&mut server, next);
-                tokio::spawn(serve(connected, tx.clone()));
+                connected = server.connect() => {
+                    if let Err(error) = connected {
+                        tracing::debug!(%error, "presence listener ended");
+                        break;
+                    }
+                    // The pipe name must survive between two games connecting.
+                    let next = match ServerOptions::new().create(&path) {
+                        Ok(next) => next,
+                        Err(error) => {
+                            tracing::debug!(%error, "presence pipe creation failed");
+                            break;
+                        }
+                    };
+                    let connected = std::mem::replace(&mut server, next);
+                    clients.spawn(serve(connected, tx.clone()));
+                }
             }
-        });
+        }
         return;
     }
     tracing::warn!("no free rich presence pipe; another client holds them all");
@@ -231,6 +259,77 @@ pub async fn listen(names: Vec<String>, tx: UnboundedSender<RpcActivity>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn closing_presence_releases_the_same_pipe_and_connected_games() {
+        assert_pipe_cleanup(false).await;
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn cancelling_the_session_releases_the_same_pipe_and_connected_games() {
+        assert_pipe_cleanup(true).await;
+    }
+
+    #[cfg(windows)]
+    async fn assert_pipe_cleanup(cancel_session: bool) {
+        use std::time::Duration;
+        use tokio::net::windows::named_pipe::ClientOptions;
+
+        let name = format!("discordia-presence-test-{}", uuid::Uuid::new_v4());
+        let path = format!(r"\\.\pipe\{name}");
+        for _ in 0..3 {
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+            let listener = tokio::spawn(listen(vec![name.clone()], tx));
+            let mut game = tokio::time::timeout(Duration::from_secs(3), async {
+                loop {
+                    match ClientOptions::new().open(&path) {
+                        Ok(game) => break game,
+                        Err(_) => tokio::time::sleep(Duration::from_millis(10)).await,
+                    }
+                }
+            })
+            .await
+            .expect("listener should bind the same name again");
+            tokio::time::timeout(Duration::from_secs(3), async {
+                write_frame(&mut game, OP_HANDSHAKE, &json!({ "v": 1 }))
+                    .await
+                    .expect("game handshake write");
+                let mut header = [0; 8];
+                game.read_exact(&mut header).await.expect("ready header");
+                let len = u32::from_le_bytes(header[4..8].try_into().unwrap());
+                let mut body = vec![0; len as usize];
+                game.read_exact(&mut body).await.expect("ready body");
+                assert_eq!(
+                    serde_json::from_slice::<Value>(&body).unwrap()["evt"],
+                    "READY"
+                );
+            })
+            .await
+            .expect("game should be accepted before the session ends");
+            if cancel_session {
+                listener.abort();
+                let error = tokio::time::timeout(Duration::from_secs(3), listener)
+                    .await
+                    .expect("listener should cancel promptly")
+                    .expect_err("listener should have been cancelled");
+                assert!(error.is_cancelled());
+                drop(rx);
+            } else {
+                drop(rx);
+                tokio::time::timeout(Duration::from_secs(3), listener)
+                    .await
+                    .expect("listener should notice session closure")
+                    .expect("listener should not panic");
+            }
+            let mut byte = [0];
+            let read = tokio::time::timeout(Duration::from_secs(3), game.read(&mut byte))
+                .await
+                .expect("connected game should be disconnected");
+            assert!(matches!(read, Ok(0) | Err(_)), "game connection survived");
+        }
+    }
 
     #[test]
     fn a_seconds_timestamp_is_scaled_and_a_millis_one_is_left_alone() {

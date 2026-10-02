@@ -831,6 +831,7 @@ fn AppHead() -> Element {
                     .unwrap_or_else(|_| "null".into())
             )}
         }
+        document::Script { {crate::features::screenshare::SCREEN_JS} }
         document::Style { {font_face_css()} }
         document::Style { {BASE_CSS} }
     }

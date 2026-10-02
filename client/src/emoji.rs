@@ -64,7 +64,11 @@ fn safe_name(image: &str) -> Option<&str> {
 
 pub fn load_cached(image: &str) -> Option<String> {
     let name = safe_name(image)?;
-    std::fs::read_to_string(cache_dir().join(name)).ok()
+    let path = cache_dir().join(name);
+    if std::fs::metadata(&path).ok()?.len() > 8 * 1024 * 1024 {
+        return None;
+    }
+    std::fs::read_to_string(path).ok()
 }
 
 pub fn store_cached(image: &str, data_url: &str) {

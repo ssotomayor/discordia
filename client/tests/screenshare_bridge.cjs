@@ -114,15 +114,25 @@ assert.equal(nativeScreen.detached.length, 1);
 console.log('Native camera and screen share one identity and detach independently.');
 
 (async function () {
-  bridge.testTracks['alice|screen'].getRTCStatsReport = async () => new Map([
+  context.window.testTime = vm.runInNewContext('Date.now()', context);
+  vm.runInNewContext('Date.now = () => window.testTime', context);
+  let samples = 0;
+  bridge.testTracks['alice|screen'].getRTCStatsReport = async () => {
+    samples++;
+    return new Map([
     ['a', { type: 'inbound-rtp', kind: 'audio', framesPerSecond: 99 }],
     ['v', { type: 'inbound-rtp', kind: 'video', frameWidth: 1920, frameHeight: 1080, framesPerSecond: 9 }],
-  ]);
+    ]);
+  };
   bridge.testTracks['bob|screen'].getRTCStatsReport = async () => new Map([
     ['v', { type: 'inbound-rtp', kind: 'video', frameWidth: 1280, frameHeight: 720, framesPerSecond: 30 }],
   ]);
   assert.equal((await bridge.previewStats('alice')).fps, 9);
   assert.equal((await bridge.previewStats('alice')).width, 1920);
+  assert.equal(samples, 1, 'concurrent UI and Diagnostics must reuse recent measurements');
+  context.window.testTime += 600;
+  await Promise.all([bridge.previewStats('alice'), bridge.previewStats('alice')]);
+  assert.equal(samples, 2, 'expired samples should refresh once for concurrent requests');
   assert.equal((await bridge.previewStats('bob')).fps, 30);
   assert.equal(await bridge.previewStats('missing'), null);
   const bobAudio = bridge.testAudioTracks.bob;
@@ -160,6 +170,7 @@ console.log('Native camera and screen share one identity and detach independentl
   const newTrack = { sid: 'new', async getRTCStatsReport() { return videoReport; } };
   bridge.testSetRemoteTrack(oldTrack);
   const pending = bridge.testPollRemoteStats();
+  await Promise.resolve();
   bridge.testSetRemoteTrack(newTrack);
   const before = messages.length;
   finishOldReport(videoReport);

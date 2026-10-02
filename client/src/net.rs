@@ -433,6 +433,7 @@ where
     let watch = Arc::new(ArmWatch::default());
     let dog = watchdog(watch.clone(), "session".into());
     let mut media_tick = tokio::time::interval(MEDIA_TICK);
+    let media_updates = state.peek().emoji_images.updates();
     loop {
         watch.finish("session");
         tokio::select! {
@@ -459,8 +460,17 @@ where
             }
             _ = media_tick.tick() => {
                 watch.begin("media tick");
-                let mut s = state.write();
-                resolve_media(&mut s, tx);
+                if state.peek().emoji_images.has_work()
+                    || state.peek().emoji_requested.values().any(|asked| asked.elapsed() >= MEDIA_RETRY_AFTER)
+                {
+                    resolve_media(&mut state.write(), tx);
+                }
+            }
+            _ = media_updates.ready.notified() => {
+                watch.begin("media requested");
+                if state.peek().emoji_images.has_work() {
+                    resolve_media(&mut state.write(), tx);
+                }
             }
             inbound = ws_rx.next() => {
                 let Some(frame) = inbound else { break };
@@ -532,83 +542,33 @@ fn media_address(raw: &str) -> Option<String> {
 const MEDIA_RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(8);
 const MEDIA_TICK: std::time::Duration = std::time::Duration::from_secs(3);
 
-/// Every picture the server named and has not yet handed over. Emoji are
-/// small and disk-cached, so they go in big batches; everything else can be
-/// a full 3 MB, and the server's per-answer budget trims what does not fit.
 pub(crate) fn resolve_media(s: &mut AppState, tx: &UnboundedSender<ClientMessage>) {
-    const EMOJI_PER_REQUEST: usize = 16;
-    const IMAGES_PER_REQUEST: usize = 8;
-    const SOUNDS_PER_REQUEST: usize = 8;
-
     let now = std::time::Instant::now();
-    let in_flight = |s: &AppState, address: &str| {
+    let (loaded, mut wanted) = s.emoji_images.take_work();
+    for (address, data) in loaded {
+        s.emoji_requested.remove(&address);
+        s.emoji_images.insert(address, data);
+    }
+    wanted.extend(
         s.emoji_requested
-            .get(address)
-            .is_some_and(|asked| now.duration_since(*asked) < MEDIA_RETRY_AFTER)
-    };
-
-    let mut emoji: Vec<String> = Vec::new();
-    for image in emoji_addresses(s) {
-        if s.emoji_images.contains_key(&image) || in_flight(s, &image) {
-            continue;
-        }
-        if let Some(data_url) = crate::emoji::load_cached(&image) {
-            s.emoji_images.insert(image, data_url);
-            continue;
-        }
-        s.emoji_requested.insert(image.clone(), now);
-        emoji.push(image);
-    }
-
-    let mut sounds: Vec<String> = Vec::new();
-    for address in sound_addresses(s) {
-        if s.emoji_images.contains_key(&address) || in_flight(s, &address) {
-            continue;
-        }
-        if let Some(data_url) = crate::emoji::load_cached(&address) {
-            s.emoji_images.insert(address, data_url);
-            continue;
-        }
+            .iter()
+            .filter(|(_, asked)| now.duration_since(**asked) >= MEDIA_RETRY_AFTER)
+            .map(|(address, _)| address.clone()),
+    );
+    wanted.sort_unstable();
+    wanted.dedup();
+    wanted.retain(|address| {
+        !s.emoji_images.contains_key(address)
+            && !s
+                .emoji_requested
+                .get(address)
+                .is_some_and(|asked| now.duration_since(*asked) < MEDIA_RETRY_AFTER)
+    });
+    for address in &wanted {
         s.emoji_requested.insert(address.clone(), now);
-        sounds.push(address);
     }
-
-    let mut images: Vec<String> = Vec::new();
-    let named = s
-        .profiles
-        .values()
-        .flat_map(|p| [p.avatar.as_deref(), p.banner.as_deref()])
-        .chain(
-            s.guilds
-                .iter()
-                .flat_map(|g| [g.icon_image.as_deref(), g.banner.as_deref()]),
-        )
-        .chain(s.messages.values().flatten().map(|m| m.image.as_deref()))
-        .flatten()
-        .filter_map(media_address)
-        .collect::<Vec<_>>();
-    for address in named {
-        if s.emoji_images.contains_key(&address) || in_flight(s, &address) {
-            continue;
-        }
-        s.emoji_requested.insert(address.clone(), now);
-        images.push(address);
-    }
-
-    for chunk in emoji.chunks(EMOJI_PER_REQUEST) {
-        let _ = tx.send(ClientMessage::FetchEmoji {
-            images: chunk.to_vec(),
-        });
-    }
-    for chunk in images.chunks(IMAGES_PER_REQUEST) {
-        let _ = tx.send(ClientMessage::FetchEmoji {
-            images: chunk.to_vec(),
-        });
-    }
-    for chunk in sounds.chunks(SOUNDS_PER_REQUEST) {
-        let _ = tx.send(ClientMessage::FetchEmoji {
-            images: chunk.to_vec(),
-        });
+    for chunk in wanted.chunks(8) {
+        crate::media_cache::load(chunk.to_vec(), tx, &s.emoji_images);
     }
 }
 
@@ -946,7 +906,7 @@ fn apply(
             shared.extend(sound_addresses(&s));
             for blob in blobs {
                 if !blob.data_url.is_empty() && shared.contains(&blob.image) {
-                    crate::emoji::store_cached(&blob.image, &blob.data_url);
+                    crate::media_cache::store(&blob.image, &blob.data_url);
                 }
                 s.emoji_requested.remove(&blob.image);
                 s.emoji_images.insert(blob.image, blob.data_url);
@@ -1300,8 +1260,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_picture_the_server_never_answered_is_asked_for_again() {
+    #[tokio::test]
+    async fn a_picture_the_server_never_answered_is_asked_for_again() {
         let (tx, mut rx) = unbounded_channel::<ClientMessage>();
         let mut s = AppState::empty();
         let channel = Id::new_v4();
@@ -1324,8 +1284,14 @@ mod tests {
         let address = format!("{}.png", "b".repeat(64));
 
         resolve_media(&mut s, &tx);
-        match rx.try_recv() {
-            Ok(ClientMessage::FetchEmoji { images }) => {
+        assert!(
+            rx.try_recv().is_err(),
+            "unviewed pictures should not be fetched"
+        );
+        assert!(s.media_src(&format!("media:{address}")).is_none());
+        resolve_media(&mut s, &tx);
+        match tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv()).await {
+            Ok(Some(ClientMessage::FetchEmoji { images })) => {
                 assert_eq!(images, std::slice::from_ref(&address))
             }
             other => panic!("expected one fetch, got {other:?}"),
@@ -1339,7 +1305,10 @@ mod tests {
         );
         resolve_media(&mut s, &tx);
         assert!(
-            matches!(rx.try_recv(), Ok(ClientMessage::FetchEmoji { .. })),
+            matches!(
+                tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv()).await,
+                Ok(Some(ClientMessage::FetchEmoji { .. }))
+            ),
             "an old unanswered request is repeated"
         );
 

@@ -22,11 +22,11 @@ name instead.
 | `server/tests/owner_controls.rs` | 3036 |
 | `server/src/gateway/connection.rs` | 2795 |
 | `client/src/features/channels.rs` | 1968 |
-| `client/src/features/screenshare.rs` | 2492 |
+| `client/src/features/screenshare.rs` | 2523 |
 | `protocol/src/lib.rs` | 2500 |
 | `client/src/state.rs` | 1860 |
 | `client/src/update.rs` | 1226 |
-| `client/src/net.rs` | 1374 |
+| `client/src/net.rs` | 1341 |
 | `client/src/features/chat.rs` | 1064 |
 | `server/src/store.rs` | 1041 |
 | `client/src/features/guild_settings.rs` | 1132 |
@@ -53,7 +53,8 @@ that direction says a file is safe to open when it is not.
 | Public servers on a globe | `client/src/features/globe.rs` | `Globe` — `globe_geometry.rs` generates land dots from `assets/globe-land.bin` and converts geographic coordinates; `assets/globe.js` draws Canvas, projects each frame and handles pointer input; `connect::BrowseTab` feeds it `/discover`, and the Create tab reuses it in `pick` mode to place a host's own pin, pre-placed by `tzgeo::guess` from the machine's timezone |
 | Experience, and the two numbers it makes | `server/src/state/mod.rs` | `award_xp` — amount, cooldown, channels and rank names all come from the guild's `Leveling`. The cross-server sum is the client's: `client/src/xp_ledger.rs` adds it up, `nostr/xp.rs` signs and paces it (`Publisher`), `features/leveling.rs` joins the two |
 | What a guild calls its ranks, and who may say | `client/src/features/guild_leveling.rs` | `LevelingEditor` — the draft is the settings dialog's, so it saves with everything else |
-| What someone is playing, and who says so | `client/src/presence/mod.rs` | `PresenceService` merges the two producers; `detect.rs` walks the process table, `ipc.rs` speaks Discord's local RPC frames |
+| What someone is playing, and who says so | `client/src/presence/mod.rs` | `PresenceService` owns RPC tasks and `ScanWorker`; `detect.rs` scans every 15 s and observes custom-game edits without restarting. `installed.rs` caches Steam manifests (all platforms), Epic manifests and Ubisoft registry entries (Windows), refreshing every 5 min; helpers/tools are excluded. `ipc.rs::listen` owns connected games. Session teardown cancels listeners and wakes the scanner |
+| Registering additional games | `client/src/features/settings_dialog.rs` | Activity tab shows the published activity and `GameDetectionOverrides`; executable/name pairs persist in `detect_extra`, override the fallback catalogue and update an enabled detector on its next scan |
 | Guild settings, and what its one Save writes | `client/src/features/guild_settings.rs` | `GuildSettingsDialog` — every field is a draft signal; `save_all` sends only the messages whose values moved. `GuildTab` only chooses which drafts are on screen, so one Save covers every tab. Tabs follow permissions: the guild menu's Roles entry opens it on `GuildTab::Roles` (`roles::RolesEditor`, which saves per role) for someone with Manage roles alone. The member-list order is a `Leveling` field but is chosen on the Roles tab and saves at once; `AppState::members_of` sorts by it and `members::group_by_top_role` draws a heading per role. A role's `position` only orders display — `ReorderRoles` grants nothing |
 | The settings dialog | `client/src/features/settings_dialog.rs` | `SETTINGS_TABS` + `SettingsTab`. Mounted at the *workspace root*, never inside a grid panel — a raised panel carries a `z-index`, and that traps `position: fixed` children (trap 22). `AppState::audio_settings` opens it |
 | Where this session's data goes | `client/src/features/topology.rs` | `TopologyDialog` — per-leg, per-session; opened from the transport chip |
@@ -122,7 +123,8 @@ repeated here.
 | Windows screen downscaling | `client/src/sysvideo/windows.rs` | `BgraConverter` reuses full-size I420 scratch storage when downscaling; only the scaled buffer reaches WebRTC. Keeps row stride and source aspect ratio. `resizing_bgra_ignores_row_padding_and_preserves_colors` guards channel order and window size changes |
 | Screen-share audio scope | `client/src/sysaudio/mod.rs`, `client/src/sysaudio/windows.rs`, `client/src/sysaudio/macos.rs` | Windows monitor capture excludes the Discordia process tree; window capture includes only its owner process tree and rejects roots overlapping Discordia. Missing/invalid targets fail without system-audio fallback; WASAPI startup runs through `spawn_blocking`. macOS uses the selected ScreenCaptureKit filter with `excludesCurrentProcessAudio`; audio is application-scoped, so sibling windows/tabs may be included. Picker labels explain both scopes |
 | Stream audio presence | `client/src/stream_audio.rs`, `client/src/features/voice.rs`, `client/src/features/screenshare.rs` | `Presence` unions voice-room, screen-room and WebView audio independently; clearing one source preserves the others. Native publisher suffixes share the viewer's volume/mute key |
-| Screen preview measurements | `client/src/features/screenshare.rs` | `ScreenSelfPreview` shows selected resolution/FPS and actual sending/capture FPS; `ScreenWatchTile` polls `previewStats` per identity for actual received resolution/FPS independently of the connection stats panel |
+| Screen preview measurements | `client/src/features/screenshare.rs` | `AppHead` installs `SCREEN_JS` once; commands send only arguments. `previewStats` shares recent/in-flight reports with Diagnostics; `ScreenWatchTile` skips minimized/hidden windows and unchanged labels |
+| Client media cache | `client/src/media_cache.rs`, `client/src/net.rs` | `MediaCache` queues misses on lookup, shares payloads across state clones and limits data URLs to 128 MiB/2048 entries using LRU. `Updates::ready` wakes the socket only for demand/completions; its retry tick scans pending requests only. A bounded disk worker loads/stores emoji and sounds without blocking the socket |
 | Everything else | beside the code | the suite stays headless and green |
 | Screen-share webview lifecycle | `client/tests/screenshare_bridge.cjs` | `node client/tests/screenshare_bridge.cjs`; simultaneous video/audio, independent volume, teardown, native-audio switching and stale track/room events |
 | Native UI bridges | `client/tests/native_ui_bridges.cjs` | `node client/tests/native_ui_bridges.cjs`; scroll races/remount/cleanup and globe geometry handoff, pending setters and teardown |
