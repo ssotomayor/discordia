@@ -22,6 +22,16 @@ pub fn wrap(
     rumor: &Rumor,
     now: i64,
 ) -> Result<Event, String> {
+    wrap_with_expiration(sender_secret, recipient_pubkey, rumor, now, None)
+}
+
+pub fn wrap_with_expiration(
+    sender_secret: &SecretKey,
+    recipient_pubkey: &str,
+    rumor: &Rumor,
+    now: i64,
+    expires_at: Option<i64>,
+) -> Result<Event, String> {
     let seal_key = nip44::conversation_key(sender_secret, recipient_pubkey)?;
     let rumor_json = serde_json::to_string(rumor).map_err(|e| format!("encode rumor: {e}"))?;
     let sealed = nip44::encrypt(&seal_key, &rumor_json)?;
@@ -31,11 +41,15 @@ pub fn wrap(
     let wrap_key = nip44::conversation_key(&ephemeral, recipient_pubkey)?;
     let seal_json = serde_json::to_string(&seal).map_err(|e| format!("encode seal: {e}"))?;
     let wrapped = nip44::encrypt(&wrap_key, &seal_json)?;
+    let mut tags = vec![vec!["p".to_string(), recipient_pubkey.to_string()]];
+    if let Some(expires_at) = expires_at {
+        tags.push(vec!["expiration".into(), expires_at.to_string()]);
+    }
     Ok(event::sign_with(
         &ephemeral,
         fuzzed(now),
         KIND_GIFT_WRAP,
-        vec![vec!["p".to_string(), recipient_pubkey.to_string()]],
+        tags,
         wrapped,
     ))
 }

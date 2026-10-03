@@ -293,6 +293,9 @@ pub fn ChatView() -> Element {
                 // wrapped key costs nothing you could not read from the list.
                 span { class: "dxf-display min-w-0 truncate text-[16px] font-bold tracking-tight text-[var(--text)]", "{header_name}" }
                 if is_dm {
+                    if let Some(dm) = &dm {
+                        crate::features::dm_call::CallButton { peer: dm.other_pubkey.clone() }
+                    }
                     span {
                         class: "shrink-0 whitespace-nowrap text-[10px] px-1.5 py-0.5 rounded border border-[var(--border)] text-[var(--text-dim)]",
                         title: "End-to-end encrypted and sent over Nostr relays, not through this server. The relays cannot read it and cannot see who sent it. Your conversation follows your key to any server.",

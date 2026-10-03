@@ -607,6 +607,7 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
             crate::features::camera::CameraGridWindow {}
             crate::features::profiles::ProfileCard {}
             crate::features::chat::ImageViewer {}
+            crate::features::dm_call::CallPanel {}
             if status == ConnectionStatus::Connecting {
                 ConnectingOverlay { target: connecting_target(&params.mode) }
             }
@@ -706,7 +707,7 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
 }
 
 #[component]
-fn ErrorToast() -> Element {
+pub(crate) fn ErrorToast() -> Element {
     let mut state = use_app_state();
     let message = use_memo(move || state.read().error_toast.clone());
 

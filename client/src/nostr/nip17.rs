@@ -55,6 +55,10 @@ pub fn open_chat(
     gift: &Event,
 ) -> Result<ChatMessage, String> {
     let rumor = nip59::unwrap(our_secret, gift)?;
+    open_rumor(our_pubkey, &rumor)
+}
+
+pub fn open_rumor(our_pubkey: &str, rumor: &Rumor) -> Result<ChatMessage, String> {
     if rumor.kind != KIND_CHAT {
         return Err(format!("not a chat message (kind {})", rumor.kind));
     }
@@ -67,7 +71,7 @@ pub fn open_chat(
     } else {
         rumor.pubkey.clone()
     };
-    if rumor.pubkey != our_pubkey && recipient_of(&rumor) != Some(our_pubkey.to_string()) {
+    if rumor.pubkey != our_pubkey && recipient_of(rumor) != Some(our_pubkey.to_string()) {
         return Err("this message is not part of a conversation we are in".into());
     }
     let reply_to = rumor

@@ -292,6 +292,7 @@ pub struct AppState {
     pub muted_guilds: HashSet<Id>,
     pub nostr_event_ids: HashMap<Id, String>,
     pub dm_delivery: HashMap<Id, crate::nostr::delivery::Delivery>,
+    pub dm_call: Option<crate::features::dm_call::CallView>,
     pub contacts: crate::nostr::nip02::ContactList,
     pub nostr_relays_up: std::collections::HashSet<String>,
     /// Names peers published for themselves (kind 0), by pubkey, each with the
@@ -439,6 +440,7 @@ impl AppState {
             muted_guilds: HashSet::new(),
             nostr_event_ids: HashMap::new(),
             dm_delivery: HashMap::new(),
+            dm_call: None,
             contacts: Default::default(),
             nostr_relays_up: std::collections::HashSet::new(),
             nostr_names: HashMap::new(),

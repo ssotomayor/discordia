@@ -26,10 +26,32 @@ pub fn HomeView(
         s.dm_clock_offset = settings.read().dm_clock_offset.iter().cloned().collect();
         s.muted_channels = settings.read().muted_channels.iter().copied().collect();
         s.muted_guilds = settings.read().muted_guilds.iter().copied().collect();
+        let saved = settings.read();
+        s.mic_sensitivity = saved.mic_sensitivity.clamp(1, 1000);
+        s.mic_volume = saved.mic_volume.min(200);
+        s.auto_gain_control = saved.auto_gain_control;
+        s.noise_cancellation = saved.noise_cancellation;
+        s.bypass_system_audio_processing =
+            saved.bypass_system_audio_processing && crate::rawmic::supported();
+        s.denoise_atten_lim_db = saved.denoise_atten_lim_db.clamp(
+            crate::features::voice::DENOISE_ATTEN_LIM_DB_MIN,
+            crate::features::voice::DENOISE_ATTEN_LIM_DB_MAX,
+        );
+        s.selected_input_device = saved.selected_input_device.clone();
+        s.selected_output_device = saved.selected_output_device.clone();
+        s.user_volumes = saved.user_volumes.iter().cloned().collect();
+        s.user_muted = saved.user_muted.iter().cloned().collect();
+        s.stream_volumes = saved.stream_volumes.iter().cloned().collect();
+        s.stream_muted = saved.stream_muted.iter().cloned().collect();
+        s.voice_bitrate_kbps = match saved.voice_bitrate_kbps {
+            24 => 24,
+            _ => 48,
+        };
         s
     });
     crate::state::use_dm_read_persistence(state);
     crate::state::use_dm_clock_persistence(state);
+    crate::state::use_volume_persistence(state);
 
     let nostr_tx = use_hook(|| {
         let relays = {
@@ -83,6 +105,8 @@ pub fn HomeView(
         div { class: "h-full w-full flex flex-col bg-[var(--bg)] {mac_top_pad}",
             crate::features::sounds::MessageSounds {}
             crate::features::chat::ImageViewer {}
+            crate::features::dm_call::CallPanel {}
+            crate::features::workspace::ErrorToast {}
             crate::features::profiles::ProfileCard {}
             TopBar { identity: identity.clone(), social, on_rename, on_sign_out }
             div { class: "flex-1 flex min-h-0",
@@ -102,7 +126,12 @@ pub fn HomeView(
                             identity: identity.clone(),
                             error,
                             last_session,
-                            on_connect,
+                            on_connect: move |params| {
+                                if state.peek().dm_call.is_some() {
+                                    let mut app = state;
+                                    app.write().error_toast = Some("End your DM call before connecting to a server.".into());
+                                } else { on_connect.call(params); }
+                            },
                         }
                     }
                 }

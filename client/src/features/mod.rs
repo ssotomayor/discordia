@@ -8,6 +8,7 @@ pub mod chat;
 mod chat_scroll;
 pub mod connect;
 pub mod discord_import;
+pub mod dm_call;
 pub mod globe;
 mod globe_geometry;
 pub mod guild_leveling;
