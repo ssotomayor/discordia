@@ -39,7 +39,7 @@ pub const DEFAULT_RELAYS: &[&str] = &[
     "wss://relay.damus.io",
     "wss://nos.lol",
     "wss://relay.primal.net",
-    "wss://relay.nostr.band",
+    "wss://nostr.mom",
 ];
 
 /// How long to wait before redialling, and the ceiling it backs off to.
@@ -253,8 +253,13 @@ async fn run_relay(
     // Only the newest subscription per id matters; publishes are dropped rather
     // than queued to avoid stale delivery.
     loop {
-        match tokio_tungstenite::connect_async(&url).await {
-            Ok((stream, _)) => {
+        match tokio::time::timeout(
+            Duration::from_secs(10),
+            tokio_tungstenite::connect_async(&url),
+        )
+        .await
+        {
+            Ok(Ok((stream, _))) => {
                 backoff = RECONNECT_MIN;
                 let _ = out.send(RelayEvent::Connected(url.clone()));
                 let why = serve(&url, stream, &mut cmds, &out, &seen, &subs).await;
@@ -263,10 +268,16 @@ async fn run_relay(
                     why,
                 });
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 let _ = out.send(RelayEvent::Disconnected {
                     relay: url.clone(),
                     why: e.to_string(),
+                });
+            }
+            Err(_) => {
+                let _ = out.send(RelayEvent::Disconnected {
+                    relay: url.clone(),
+                    why: "connection timed out after 10 seconds".into(),
                 });
             }
         }

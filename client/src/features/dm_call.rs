@@ -707,17 +707,39 @@ mod tests;
 #[component]
 pub fn CallAlert() -> Element {
     let state = use_app_state();
-    let incoming = use_memo(move || {
-        state
-            .read()
-            .dm_call
-            .as_ref()
-            .is_some_and(|call| call.phase == Phase::Incoming)
-    });
+    let phase = use_memo(move || state.read().dm_call.as_ref().map(|call| call.phase));
+    let mut ringing = use_signal(|| None::<Task>);
+    let mut previous = use_signal(|| None::<Phase>);
     use_effect(move || {
-        if incoming() {
-            super::sounds::sfx("dm");
+        let current = phase();
+        if let Some(task) = ringing.write().take() {
+            task.cancel();
         }
+        crate::native_sounds::call_ring(None);
+        let tone = match current {
+            Some(Phase::Incoming) => Some("call-incoming"),
+            Some(Phase::Ringing) => Some("call-outgoing"),
+            _ => None,
+        };
+        if let Some(tone) = tone {
+            ringing.set(Some(spawn(async move {
+                loop {
+                    crate::native_sounds::call_ring(Some(tone));
+                    tokio::time::sleep(Duration::from_secs(3)).await;
+                }
+            })));
+        } else if current == Some(Phase::Connected) && *previous.peek() == Some(Phase::Connecting) {
+            super::sounds::sfx("call-connected");
+        } else if current.is_none() && previous.peek().is_some() {
+            super::sounds::sfx("call-ended");
+        }
+        previous.set(current);
+    });
+    use_drop(move || {
+        if let Some(task) = ringing.peek().as_ref() {
+            task.cancel();
+        }
+        crate::native_sounds::call_ring(None);
     });
     rsx! {}
 }
