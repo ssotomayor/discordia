@@ -8,6 +8,7 @@ mod chat_image;
 mod clipboard;
 mod denoise;
 mod e2ee;
+mod echo;
 #[macro_use]
 mod devlog;
 mod emoji;

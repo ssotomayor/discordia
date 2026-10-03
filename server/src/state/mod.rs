@@ -22,6 +22,13 @@ fn persist(res: Result<(), sqlx::Error>, what: &str) {
     }
 }
 
+fn durable(res: Result<(), sqlx::Error>, what: &str) -> Result<(), String> {
+    res.map_err(|e| {
+        tracing::error!(error = %e, what, "durable write failed");
+        "The server could not save this change. Please try again.".to_string()
+    })
+}
+
 const CONN_QUEUE_CAP: usize = 1024;
 /// Sockets, not people: a client at rest holds one. Past these, a new socket
 /// is told so and closed before it costs a queue or a Schnorr verification.
@@ -100,8 +107,10 @@ pub struct AppState {
     conns: DashMap<u64, Conn>,
     conns_by_ip: DashMap<std::net::IpAddr, u32>,
     conn_ids_by_pubkey: DashMap<String, std::collections::HashSet<u64>>,
+    session_revisions: DashMap<String, u64>,
     next_conn_id: AtomicU64,
     upload_budget: DashMap<String, (std::time::Instant, u64)>,
+    durable_writes: tokio::sync::Mutex<()>,
 }
 
 impl AppState {
@@ -138,8 +147,10 @@ impl AppState {
             conns: DashMap::new(),
             conns_by_ip: DashMap::new(),
             conn_ids_by_pubkey: DashMap::new(),
+            session_revisions: DashMap::new(),
             next_conn_id: AtomicU64::new(1),
             upload_budget: DashMap::new(),
+            durable_writes: tokio::sync::Mutex::new(()),
         };
 
         let mut loaded = state.store.load_all().await?;
@@ -220,12 +231,12 @@ impl AppState {
 
         state.detach_inline_images().await;
         if fresh {
-            state.seed_lobby().await;
+            state.seed_lobby().await?;
         }
         Ok(state)
     }
 
-    async fn seed_lobby(&self) {
+    async fn seed_lobby(&self) -> Result<(), sqlx::Error> {
         let lobby = Guild {
             id: Uuid::new_v4(),
             name: "Lobby".into(),
@@ -264,15 +275,16 @@ impl AppState {
             position: 1,
             access: None,
         };
-        persist(self.store.upsert_guild(&lobby).await, "seed guild");
-        persist(self.store.upsert_channel(&general).await, "seed channel");
-        persist(self.store.upsert_channel(&voice).await, "seed channel");
+        self.store
+            .create_guild(&lobby, &[general.clone(), voice.clone()], &[], None)
+            .await?;
         self.channels_by_guild
             .insert(lobby.id, vec![general.id, voice.id]);
         for ch in [general, voice] {
             self.channels.insert(ch.id, ch);
         }
         self.guilds.insert(lobby.id, lobby);
+        Ok(())
     }
 
     pub fn register_conn(
@@ -306,6 +318,7 @@ impl AppState {
             ));
         }
         set.insert(conn_id);
+        self.bump_session_revision(pubkey);
         Ok(())
     }
 
@@ -330,9 +343,19 @@ impl AppState {
             .is_some_and(|set| !set.is_empty())
     }
 
+    fn bump_session_revision(&self, pubkey: &str) {
+        let revision = self.next_conn_id.fetch_add(1, Ordering::Relaxed);
+        self.session_revisions.insert(pubkey.to_string(), revision);
+    }
+
+    pub fn session_revision(&self, pubkey: &str) -> u64 {
+        self.session_revisions.get(pubkey).map(|r| *r).unwrap_or(0)
+    }
+
     pub fn unregister_conn(&self, conn_id: u64, pubkey: Option<&str>) {
         self.drop_conn(conn_id);
         if let Some(pk) = pubkey {
+            self.bump_session_revision(pk);
             let now_empty = if let Some(mut set) = self.conn_ids_by_pubkey.get_mut(pk) {
                 set.remove(&conn_id);
                 set.is_empty()
@@ -387,9 +410,11 @@ impl AppState {
         self.route(conn_id, msg);
     }
 
-    pub async fn remember_user(&self, user: &User) {
+    pub async fn remember_user(&self, user: &User) -> Result<(), String> {
+        let _write = self.durable_writes.lock().await;
+        durable(self.store.upsert_user(user).await, "user")?;
         self.users.insert(user.pubkey.clone(), user.clone());
-        persist(self.store.upsert_user(user).await, "user");
+        Ok(())
     }
 
     pub async fn set_profile(
@@ -400,7 +425,8 @@ impl AppState {
         bio: Option<String>,
         status: Option<String>,
         custom_status: Option<String>,
-    ) -> Profile {
+    ) -> Result<Profile, String> {
+        let _write = self.durable_writes.lock().await;
         let profile = Profile {
             pubkey: pubkey.to_string(),
             avatar,
@@ -409,9 +435,9 @@ impl AppState {
             status,
             custom_status,
         };
+        durable(self.store.upsert_profile(&profile).await, "profile")?;
         self.profiles.insert(pubkey.to_string(), profile.clone());
-        persist(self.store.upsert_profile(&profile).await, "profile");
-        profile
+        Ok(profile)
     }
 
     pub fn xp_of(&self, guild_id: Id, pubkey: &str) -> u64 {
@@ -460,6 +486,7 @@ impl AppState {
         pubkey: &str,
         action: crate::protocol::XpAction,
     ) -> Option<Member> {
+        let _write = self.durable_writes.lock().await;
         let rules = self.leveling_of(guild_id);
         if !rules.enabled {
             return None;
@@ -482,16 +509,16 @@ impl AppState {
         if !self.xp_off_cooldown(guild_id, pubkey, cooldown) {
             return None;
         }
-        let new_xp = {
-            let guild = self.xp.entry(guild_id).or_default();
-            let mut e = guild.entry(pubkey.to_string()).or_insert(0);
-            *e = e.saturating_add(amount as u64);
-            *e
-        };
-        persist(
+        let new_xp = self.xp_of(guild_id, pubkey).saturating_add(amount as u64);
+        durable(
             self.store.upsert_guild_xp(guild_id, pubkey, new_xp).await,
             "xp",
-        );
+        )
+        .ok()?;
+        self.xp
+            .entry(guild_id)
+            .or_default()
+            .insert(pubkey.to_string(), new_xp);
         let member = self
             .members
             .get(&guild_id)
@@ -505,17 +532,20 @@ impl AppState {
         leveling: crate::protocol::Leveling,
         by_pubkey: &str,
     ) -> Result<Guild, String> {
+        let _write = self.durable_writes.lock().await;
         self.require_permission(guild_id, by_pubkey, Permission::ManageGuild)?;
         let leveling = crate::protocol::sanitize_leveling(leveling);
         let updated = {
             let mut guild = self
                 .guilds
-                .get_mut(&guild_id)
+                .get(&guild_id)
+                .map(|v| v.clone())
                 .ok_or_else(|| "unknown guild".to_string())?;
             guild.leveling = leveling;
             guild.clone()
         };
-        persist(self.store.upsert_guild(&updated).await, "guild leveling");
+        durable(self.store.upsert_guild(&updated).await, "guild leveling")?;
+        self.guilds.insert(guild_id, updated.clone());
         Ok(updated)
     }
 
@@ -631,16 +661,19 @@ impl AppState {
         accent: Option<String>,
         by_pubkey: &str,
     ) -> Result<Guild, String> {
+        let _write = self.durable_writes.lock().await;
         self.require_permission(guild_id, by_pubkey, Permission::ManageGuild)?;
         let updated = {
             let mut guild = self
                 .guilds
-                .get_mut(&guild_id)
+                .get(&guild_id)
+                .map(|v| v.clone())
                 .ok_or_else(|| "unknown guild".to_string())?;
             guild.accent = accent;
             guild.clone()
         };
-        persist(self.store.upsert_guild(&updated).await, "guild accent");
+        durable(self.store.upsert_guild(&updated).await, "guild accent")?;
+        self.guilds.insert(guild_id, updated.clone());
         Ok(updated)
     }
 
@@ -751,6 +784,7 @@ impl AppState {
         template: Option<&str>,
         creator: &User,
     ) -> Result<(Guild, Vec<Channel>, Member, Vec<Role>), String> {
+        let _write = self.durable_writes.lock().await;
         let owned = self
             .guilds
             .iter()
@@ -806,6 +840,20 @@ impl AppState {
             });
         }
 
+        let member = Member {
+            user: creator.clone(),
+            guild_id: gid,
+            online: true,
+            bot: false,
+            roles: Vec::new(),
+            xp: 0,
+        };
+        durable(
+            self.store
+                .create_guild(&guild, &channels, &roles, Some(&member))
+                .await,
+            "guild create",
+        )?;
         self.guilds.insert(gid, guild.clone());
         self.channels_by_guild
             .insert(gid, channels.iter().map(|c| c.id).collect());
@@ -816,32 +864,15 @@ impl AppState {
             self.roles.insert(gid, roles.clone());
         }
 
-        let member = Member {
-            user: creator.clone(),
-            guild_id: gid,
-            online: true,
-            bot: false,
-            roles: Vec::new(),
-            xp: 0,
-        };
         self.members
             .entry(gid)
             .or_default()
             .insert(creator.pubkey.clone(), member.clone());
 
-        persist(self.store.upsert_guild(&guild).await, "guild create");
-        for ch in &channels {
-            persist(self.store.upsert_channel(ch).await, "channel create");
-        }
-        for r in &roles {
-            persist(self.store.upsert_role(r).await, "role create");
-        }
-        persist(self.store.upsert_member(&member).await, "member create");
-
         Ok((guild, channels, member, roles))
     }
 
-    pub async fn snapshot_for(&self, user: &User) -> ServerMessage {
+    pub async fn snapshot_for(&self, user: &User) -> Result<ServerMessage, String> {
         let system_guilds: Vec<Id> = self
             .guilds
             .iter()
@@ -849,7 +880,7 @@ impl AppState {
             .map(|g| g.id)
             .collect();
         for gid in system_guilds {
-            self.add_member(gid, user).await;
+            self.add_member(gid, user).await?;
         }
 
         let my_guild_ids: Vec<Id> = self
@@ -904,7 +935,7 @@ impl AppState {
         let activities = self.activities_of(&seen);
         let bot_commands = self.commands_for_guilds(&my_guild_ids);
 
-        ServerMessage::Ready {
+        Ok(ServerMessage::Ready {
             user: user.clone(),
             guilds,
             channels,
@@ -918,7 +949,7 @@ impl AppState {
             activities,
             bot_commands,
             operator: self.operators.contains(&user.pubkey),
-        }
+        })
     }
 
     pub fn roles_for_guilds(&self, guild_ids: &[Id]) -> Vec<crate::protocol::Role> {
@@ -982,29 +1013,29 @@ impl AppState {
         permissions: Vec<Permission>,
         by_pubkey: &str,
     ) -> Result<Role, String> {
+        let _write = self.durable_writes.lock().await;
         let permissions = unique(permissions);
         self.authorize_role_touch(guild_id, by_pubkey, &[&permissions])?;
         let (name, color) = Self::sanitize_role(name, color)?;
         let role = {
-            let mut roles = self.roles.entry(guild_id).or_default();
+            let roles = self.guild_roles(guild_id);
             if roles.len() >= Self::MAX_ROLES_PER_GUILD {
                 return Err("role limit reached for this guild".into());
             }
             // Past the highest, not the count: after a deletion the count is
             // a position some role still holds.
             let position = roles.iter().map(|r| r.position + 1).max().unwrap_or(0);
-            let role = Role {
+            Role {
                 id: Uuid::new_v4(),
                 guild_id,
                 name,
                 color,
                 permissions,
                 position,
-            };
-            roles.push(role.clone());
-            role
+            }
         };
-        persist(self.store.upsert_role(&role).await, "role create");
+        durable(self.store.upsert_role(&role).await, "role create")?;
+        self.roles.entry(guild_id).or_default().push(role.clone());
         Ok(role)
     }
 
@@ -1017,6 +1048,7 @@ impl AppState {
         permissions: Vec<Permission>,
         by_pubkey: &str,
     ) -> Result<Role, String> {
+        let _write = self.durable_writes.lock().await;
         let permissions = unique(permissions);
         let current = self
             .roles
@@ -1030,17 +1062,23 @@ impl AppState {
         self.authorize_role_touch(guild_id, by_pubkey, &[&current, &permissions])?;
         let (name, color) = Self::sanitize_role(name, color)?;
         let updated = {
-            let mut roles = self.roles.get_mut(&guild_id).ok_or("unknown role")?;
-            let role = roles
-                .iter_mut()
+            let roles = self.roles.get(&guild_id).ok_or("unknown role")?;
+            let mut role = roles
+                .iter()
                 .find(|r| r.id == role_id)
+                .cloned()
                 .ok_or("unknown role")?;
             role.name = name;
             role.color = color;
             role.permissions = permissions;
             role.clone()
         };
-        persist(self.store.upsert_role(&updated).await, "role update");
+        durable(self.store.upsert_role(&updated).await, "role update")?;
+        if let Some(mut roles) = self.roles.get_mut(&guild_id)
+            && let Some(role) = roles.iter_mut().find(|r| r.id == role_id)
+        {
+            *role = updated.clone();
+        }
         Ok(updated)
     }
 
@@ -1052,11 +1090,13 @@ impl AppState {
         order: &[Id],
         by_pubkey: &str,
     ) -> Result<Vec<Role>, String> {
+        let _write = self.durable_writes.lock().await;
         self.require_permission(guild_id, by_pubkey, Permission::ManageRoles)?;
         let changed = {
             let mut roles = self
                 .roles
-                .get_mut(&guild_id)
+                .get(&guild_id)
+                .map(|r| r.clone())
                 .ok_or("this guild has no roles")?;
             let mut wanted: Vec<Id> = order.to_vec();
             wanted.sort_unstable();
@@ -1074,11 +1114,16 @@ impl AppState {
                     changed.push(role.clone());
                 }
             }
-            roles.sort_by_key(|r| r.position);
             changed
         };
-        for role in &changed {
-            persist(self.store.upsert_role(role).await, "role position");
+        durable(self.store.reorder_roles(&changed).await, "role position")?;
+        if let Some(mut roles) = self.roles.get_mut(&guild_id) {
+            for updated in changed {
+                if let Some(role) = roles.iter_mut().find(|r| r.id == updated.id) {
+                    role.position = updated.position;
+                }
+            }
+            roles.sort_by_key(|r| r.position);
         }
         Ok(self.guild_roles(guild_id))
     }
@@ -1101,13 +1146,18 @@ impl AppState {
         image: String,
         by_pubkey: &str,
     ) -> Result<GuildEmoji, String> {
+        let _write = self.durable_writes.lock().await;
         self.require_permission(guild_id, by_pubkey, Permission::ManageEmojis)?;
         let shortcode = shortcode.trim().trim_matches(':').to_ascii_lowercase();
         if !valid_shortcode(&shortcode) {
             return Err("shortcode must be 2-32 chars of a-z, 0-9 or _".into());
         }
         let emoji = {
-            let mut list = self.emojis.entry(guild_id).or_default();
+            let list = self
+                .emojis
+                .get(&guild_id)
+                .map(|l| l.clone())
+                .unwrap_or_default();
             if list.len() >= MAX_EMOJIS_PER_GUILD {
                 return Err(format!(
                     "emoji limit reached ({MAX_EMOJIS_PER_GUILD} per guild)"
@@ -1116,18 +1166,17 @@ impl AppState {
             if list.iter().any(|e| e.shortcode == shortcode) {
                 return Err(format!(":{shortcode}: already exists in this guild"));
             }
-            let emoji = GuildEmoji {
+            GuildEmoji {
                 id: Uuid::new_v4(),
                 guild_id,
                 shortcode,
                 image,
                 added_by: by_pubkey.to_string(),
                 created_ms: chrono::Utc::now().timestamp_millis(),
-            };
-            list.push(emoji.clone());
-            emoji
+            }
         };
-        persist(self.store.upsert_emoji(&emoji).await, "emoji create");
+        durable(self.store.upsert_emoji(&emoji).await, "emoji create")?;
+        self.emojis.entry(guild_id).or_default().push(emoji.clone());
         Ok(emoji)
     }
 
@@ -1138,27 +1187,38 @@ impl AppState {
         shortcode: &str,
         by_pubkey: &str,
     ) -> Result<GuildEmoji, String> {
+        let _write = self.durable_writes.lock().await;
         self.require_permission(guild_id, by_pubkey, Permission::ManageEmojis)?;
         let shortcode = shortcode.trim().trim_matches(':').to_ascii_lowercase();
         if !valid_shortcode(&shortcode) {
             return Err("shortcode must be 2-32 chars of a-z, 0-9 or _".into());
         }
         let updated = {
-            let mut list = self.emojis.get_mut(&guild_id).ok_or("unknown emoji")?;
+            let list = self
+                .emojis
+                .get(&guild_id)
+                .map(|v| v.clone())
+                .ok_or("unknown emoji")?;
             if list
                 .iter()
                 .any(|e| e.shortcode == shortcode && e.id != emoji_id)
             {
                 return Err(format!(":{shortcode}: already exists in this guild"));
             }
-            let e = list
-                .iter_mut()
+            let mut e = list
+                .iter()
                 .find(|e| e.id == emoji_id)
+                .cloned()
                 .ok_or("unknown emoji")?;
             e.shortcode = shortcode;
             e.clone()
         };
-        persist(self.store.upsert_emoji(&updated).await, "emoji rename");
+        durable(self.store.upsert_emoji(&updated).await, "emoji rename")?;
+        if let Some(mut list) = self.emojis.get_mut(&guild_id)
+            && let Some(item) = list.iter_mut().find(|item| item.id == updated.id)
+        {
+            *item = updated.clone();
+        }
         Ok(updated)
     }
 
@@ -1168,17 +1228,19 @@ impl AppState {
         emoji_id: Id,
         by_pubkey: &str,
     ) -> Result<(), String> {
+        let _write = self.durable_writes.lock().await;
         self.require_permission(guild_id, by_pubkey, Permission::ManageEmojis)?;
-        let existed = {
-            let mut list = self.emojis.get_mut(&guild_id).ok_or("unknown emoji")?;
-            let before = list.len();
-            list.retain(|e| e.id != emoji_id);
-            before != list.len()
-        };
+        let existed = self
+            .emojis
+            .get(&guild_id)
+            .is_some_and(|list| list.iter().any(|item| item.id == emoji_id));
         if !existed {
             return Err("unknown emoji".into());
         }
-        persist(self.store.delete_emoji(emoji_id).await, "emoji delete");
+        durable(self.store.delete_emoji(emoji_id).await, "emoji delete")?;
+        if let Some(mut list) = self.emojis.get_mut(&guild_id) {
+            list.retain(|item| item.id != emoji_id);
+        }
         Ok(())
     }
 
@@ -1208,10 +1270,15 @@ impl AppState {
         audio: String,
         by_pubkey: &str,
     ) -> Result<GuildSound, String> {
+        let _write = self.durable_writes.lock().await;
         self.require_permission(guild_id, by_pubkey, Permission::ManageGuild)?;
         let name = crate::protocol::sound_name(name)?;
         let sound = {
-            let mut list = self.sounds.entry(guild_id).or_default();
+            let list = self
+                .sounds
+                .get(&guild_id)
+                .map(|l| l.clone())
+                .unwrap_or_default();
             if list.len() >= MAX_SOUNDS_PER_GUILD {
                 return Err(format!(
                     "sound limit reached ({MAX_SOUNDS_PER_GUILD} per guild)"
@@ -1220,18 +1287,17 @@ impl AppState {
             if list.iter().any(|s| s.name.eq_ignore_ascii_case(&name)) {
                 return Err(format!("a sound called \"{name}\" already exists"));
             }
-            let sound = GuildSound {
+            GuildSound {
                 id: Uuid::new_v4(),
                 guild_id,
                 name,
                 audio,
                 added_by: by_pubkey.to_string(),
                 created_ms: chrono::Utc::now().timestamp_millis(),
-            };
-            list.push(sound.clone());
-            sound
+            }
         };
-        persist(self.store.upsert_sound(&sound).await, "sound create");
+        durable(self.store.upsert_sound(&sound).await, "sound create")?;
+        self.sounds.entry(guild_id).or_default().push(sound.clone());
         Ok(sound)
     }
 
@@ -1242,24 +1308,35 @@ impl AppState {
         name: &str,
         by_pubkey: &str,
     ) -> Result<GuildSound, String> {
+        let _write = self.durable_writes.lock().await;
         self.require_permission(guild_id, by_pubkey, Permission::ManageGuild)?;
         let name = crate::protocol::sound_name(name)?;
         let updated = {
-            let mut list = self.sounds.get_mut(&guild_id).ok_or("unknown sound")?;
+            let list = self
+                .sounds
+                .get(&guild_id)
+                .map(|v| v.clone())
+                .ok_or("unknown sound")?;
             if list
                 .iter()
                 .any(|s| s.name.eq_ignore_ascii_case(&name) && s.id != sound_id)
             {
                 return Err(format!("a sound called \"{name}\" already exists"));
             }
-            let s = list
-                .iter_mut()
+            let mut s = list
+                .iter()
                 .find(|s| s.id == sound_id)
+                .cloned()
                 .ok_or("unknown sound")?;
             s.name = name;
             s.clone()
         };
-        persist(self.store.upsert_sound(&updated).await, "sound rename");
+        durable(self.store.upsert_sound(&updated).await, "sound rename")?;
+        if let Some(mut list) = self.sounds.get_mut(&guild_id)
+            && let Some(item) = list.iter_mut().find(|item| item.id == updated.id)
+        {
+            *item = updated.clone();
+        }
         Ok(updated)
     }
 
@@ -1269,17 +1346,19 @@ impl AppState {
         sound_id: Id,
         by_pubkey: &str,
     ) -> Result<(), String> {
+        let _write = self.durable_writes.lock().await;
         self.require_permission(guild_id, by_pubkey, Permission::ManageGuild)?;
-        let existed = {
-            let mut list = self.sounds.get_mut(&guild_id).ok_or("unknown sound")?;
-            let before = list.len();
-            list.retain(|s| s.id != sound_id);
-            before != list.len()
-        };
+        let existed = self
+            .sounds
+            .get(&guild_id)
+            .is_some_and(|list| list.iter().any(|item| item.id == sound_id));
         if !existed {
             return Err("unknown sound".into());
         }
-        persist(self.store.delete_sound(sound_id).await, "sound delete");
+        durable(self.store.delete_sound(sound_id).await, "sound delete")?;
+        if let Some(mut list) = self.sounds.get_mut(&guild_id) {
+            list.retain(|item| item.id != sound_id);
+        }
         Ok(())
     }
 
@@ -1289,6 +1368,7 @@ impl AppState {
         role_id: Id,
         by_pubkey: &str,
     ) -> Result<Vec<Member>, String> {
+        let _write = self.durable_writes.lock().await;
         let current = self
             .roles
             .get(&guild_id)
@@ -1299,21 +1379,31 @@ impl AppState {
             })
             .ok_or_else(|| "unknown role".to_string())?;
         self.authorize_role_touch(guild_id, by_pubkey, &[&current])?;
-        if let Some(mut roles) = self.roles.get_mut(&guild_id) {
-            roles.retain(|r| r.id != role_id);
-        }
         let mut changed = Vec::new();
         if let Some(guild_members) = self.members.get(&guild_id) {
-            for mut m in guild_members.iter_mut() {
+            for member in guild_members.iter() {
+                let mut m = member.clone();
                 if m.roles.contains(&role_id) {
                     m.roles.retain(|r| *r != role_id);
                     changed.push(self.stamp_xp(m.clone()));
                 }
             }
         }
-        persist(self.store.delete_role(role_id).await, "role delete");
-        for m in &changed {
-            persist(self.store.upsert_member(m).await, "member role strip");
+        durable(
+            self.store
+                .delete_role_and_assignments(role_id, &changed)
+                .await,
+            "role delete",
+        )?;
+        if let Some(mut roles) = self.roles.get_mut(&guild_id) {
+            roles.retain(|r| r.id != role_id);
+        }
+        if let Some(members) = self.members.get(&guild_id) {
+            for updated in &changed {
+                if let Some(mut member) = members.get_mut(&updated.user.pubkey) {
+                    member.roles = updated.roles.clone();
+                }
+            }
         }
         Ok(changed)
     }
@@ -1326,6 +1416,7 @@ impl AppState {
         assign: bool,
         by_pubkey: &str,
     ) -> Result<Member, String> {
+        let _write = self.durable_writes.lock().await;
         let role_perms = self
             .roles
             .get(&guild_id)
@@ -1342,7 +1433,8 @@ impl AppState {
                 .get(&guild_id)
                 .ok_or_else(|| "unknown guild".to_string())?;
             let mut member = guild_members
-                .get_mut(target_pubkey)
+                .get(target_pubkey)
+                .map(|m| m.clone())
                 .ok_or_else(|| "that user isn't a member of this guild".to_string())?;
             if member.bot {
                 return Err("roles don't apply to bots — edit the install's grants instead".into());
@@ -1356,33 +1448,50 @@ impl AppState {
             }
             member.clone()
         };
-        persist(self.store.upsert_member(&updated).await, "member role");
+        durable(self.store.upsert_member(&updated).await, "member role")?;
+        if let Some(members) = self.members.get(&guild_id)
+            && let Some(mut member) = members.get_mut(target_pubkey)
+        {
+            member.roles = updated.roles.clone();
+        }
         Ok(self.stamp_xp(updated))
     }
 
-    pub async fn add_member(&self, guild_id: Id, user: &User) -> Member {
-        let (member, is_new) = {
-            let guild_members = self.members.entry(guild_id).or_default();
-            if let Some(mut existing) = guild_members.get_mut(&user.pubkey) {
-                existing.online = true;
-                (existing.clone(), false)
-            } else {
-                let member = Member {
-                    user: user.clone(),
-                    guild_id,
-                    online: true,
-                    bot: false,
-                    roles: Vec::new(),
-                    xp: 0,
-                };
-                guild_members.insert(user.pubkey.clone(), member.clone());
-                (member, true)
-            }
-        };
-        if is_new {
-            persist(self.store.upsert_member(&member).await, "member add");
+    pub async fn add_member(&self, guild_id: Id, user: &User) -> Result<Member, String> {
+        let _write = self.durable_writes.lock().await;
+        self.save_member(guild_id, user, None).await
+    }
+
+    async fn save_member(
+        &self,
+        guild_id: Id,
+        user: &User,
+        invite: Option<&str>,
+    ) -> Result<Member, String> {
+        let mut member = self
+            .members
+            .get(&guild_id)
+            .and_then(|members| members.get(&user.pubkey).map(|m| m.clone()))
+            .unwrap_or_else(|| Member {
+                user: user.clone(),
+                guild_id,
+                online: true,
+                bot: false,
+                roles: Vec::new(),
+                xp: 0,
+            });
+        member.online = true;
+        durable(self.store.admit_member(&member, invite).await, "member add")?;
+        self.members
+            .entry(guild_id)
+            .or_default()
+            .insert(user.pubkey.clone(), member.clone());
+        if let Some(code) = invite
+            && let Some(mut entry) = self.invites.get_mut(code)
+        {
+            entry.uses += 1;
         }
-        self.stamp_xp(member)
+        Ok(self.stamp_xp(member))
     }
 
     pub fn guild_member_pubkeys(&self, guild_id: Id) -> Vec<String> {
@@ -1448,6 +1557,7 @@ impl AppState {
         guild_id: Id,
         user: &User,
     ) -> Result<(Guild, Vec<Channel>, Vec<Member>, Vec<Role>), String> {
+        let _write = self.durable_writes.lock().await;
         let guild = self
             .guilds
             .get(&guild_id)
@@ -1461,6 +1571,7 @@ impl AppState {
         {
             return Err("this guild is invite-only".into());
         }
+        self.save_member(guild_id, user, None).await?;
         Ok(self.admit_member(guild, user).await)
     }
 
@@ -1469,16 +1580,16 @@ impl AppState {
         code: &str,
         user: &User,
     ) -> Result<(Guild, Vec<Channel>, Vec<Member>, Vec<Role>), String> {
+        let _write = self.durable_writes.lock().await;
         let code = code.trim();
         let guild_id = {
-            let mut entry = self
+            let entry = self
                 .invites
-                .get_mut(code)
+                .get(code)
                 .ok_or_else(|| "unknown or expired invite code".to_string())?;
             if !entry.is_live(now_ms()) {
                 return Err("unknown or expired invite code".into());
             }
-            entry.uses += 1;
             entry.guild_id
         };
         let guild = self
@@ -1487,22 +1598,18 @@ impl AppState {
             .map(|g| g.clone())
             .ok_or_else(|| "unknown or expired invite code".to_string())?;
         if self.is_banned(guild_id, &user.pubkey) {
-            if let Some(mut entry) = self.invites.get_mut(code) {
-                entry.uses = entry.uses.saturating_sub(1);
-            }
             return Err("you are banned from this guild".into());
         }
-        persist(self.store.bump_invite_uses(code).await, "invite uses");
+        self.save_member(guild_id, user, Some(code)).await?;
         Ok(self.admit_member(guild, user).await)
     }
 
     async fn admit_member(
         &self,
         guild: Guild,
-        user: &User,
+        _user: &User,
     ) -> (Guild, Vec<Channel>, Vec<Member>, Vec<Role>) {
         let guild_id = guild.id;
-        self.add_member(guild_id, user).await;
         let channels: Vec<Channel> = self
             .channels
             .iter()
@@ -1524,16 +1631,19 @@ impl AppState {
         visibility: crate::protocol::GuildVisibility,
         by_pubkey: &str,
     ) -> Result<Guild, String> {
+        let _write = self.durable_writes.lock().await;
         self.require_permission(guild_id, by_pubkey, Permission::ManageGuild)?;
         let updated = {
             let mut guild = self
                 .guilds
-                .get_mut(&guild_id)
+                .get(&guild_id)
+                .map(|v| v.clone())
                 .ok_or_else(|| "unknown guild".to_string())?;
             guild.visibility = visibility;
             guild.clone()
         };
-        persist(self.store.upsert_guild(&updated).await, "guild visibility");
+        durable(self.store.upsert_guild(&updated).await, "guild visibility")?;
+        self.guilds.insert(guild_id, updated.clone());
         Ok(updated)
     }
 
@@ -1545,6 +1655,7 @@ impl AppState {
         max_uses: Option<u32>,
         by_pubkey: &str,
     ) -> Result<Invite, String> {
+        let _write = self.durable_writes.lock().await;
         if self
             .require_permission(guild_id, by_pubkey, Permission::CreateInvite)
             .is_err()
@@ -1557,9 +1668,6 @@ impl AppState {
             && invite.is_live(now_ms())
         {
             return Ok(invite.clone());
-        }
-        if let Some((_, old)) = self.invite_by_guild.remove(&guild_id) {
-            self.invites.remove(&old);
         }
         let code = loop {
             let candidate = random_invite_code();
@@ -1575,9 +1683,7 @@ impl AppState {
             uses: 0,
             created_by: by_pubkey.to_string(),
         };
-        self.invites.insert(code.clone(), invite.clone());
-        self.invite_by_guild.insert(guild_id, code.clone());
-        persist(
+        durable(
             self.store
                 .set_invite(
                     guild_id,
@@ -1588,7 +1694,13 @@ impl AppState {
                 )
                 .await,
             "invite",
-        );
+        )?;
+        if let Some((_, old)) = self.invite_by_guild.remove(&guild_id) {
+            self.invites.remove(&old);
+        }
+        self.invites.insert(code.clone(), invite.clone());
+        self.invite_by_guild.insert(guild_id, code.clone());
+
         Ok(invite)
     }
 
@@ -1650,16 +1762,17 @@ impl AppState {
         target_pubkey: &str,
         by_pubkey: &str,
     ) -> Result<Option<VoiceState>, String> {
+        let _write = self.durable_writes.lock().await;
         self.require_permission(guild_id, by_pubkey, Permission::KickMembers)?;
         self.validate_moderation_target(guild_id, target_pubkey, by_pubkey)?;
         if !self.is_guild_member(guild_id, target_pubkey) {
             return Err("that user isn't a member of this guild".into());
         }
-        let cleared = self.remove_membership(guild_id, target_pubkey);
-        persist(
+        durable(
             self.store.delete_member(guild_id, target_pubkey).await,
             "member kick",
-        );
+        )?;
+        let cleared = self.remove_membership(guild_id, target_pubkey);
         Ok(cleared)
     }
 
@@ -1691,23 +1804,18 @@ impl AppState {
         target_pubkey: &str,
         by_pubkey: &str,
     ) -> Result<Option<VoiceState>, String> {
+        let _write = self.durable_writes.lock().await;
         self.require_permission(guild_id, by_pubkey, Permission::BanMembers)?;
         self.validate_moderation_target(guild_id, target_pubkey, by_pubkey)?;
-        // Ban row before the member removal: a crash in between must not restart
-        // into a removed-but-unbanned member.
-        persist(
-            self.store.insert_ban(guild_id, target_pubkey).await,
-            "ban insert",
-        );
+        durable(
+            self.store.ban_member(guild_id, target_pubkey).await,
+            "member ban",
+        )?;
         self.bans
             .entry(guild_id)
             .or_default()
             .insert(target_pubkey.to_string());
         let cleared = self.remove_membership(guild_id, target_pubkey);
-        persist(
-            self.store.delete_member(guild_id, target_pubkey).await,
-            "member ban-remove",
-        );
         Ok(cleared)
     }
 
@@ -1717,17 +1825,21 @@ impl AppState {
         target_pubkey: &str,
         by_pubkey: &str,
     ) -> Result<(), String> {
+        let _write = self.durable_writes.lock().await;
         self.require_permission(guild_id, by_pubkey, Permission::BanMembers)?;
         let removed = self
             .bans
-            .get_mut(&guild_id)
-            .map(|mut b| b.remove(target_pubkey))
+            .get(&guild_id)
+            .map(|b| b.contains(target_pubkey))
             .unwrap_or(false);
         if removed {
-            persist(
+            durable(
                 self.store.delete_ban(guild_id, target_pubkey).await,
                 "unban",
-            );
+            )?;
+            if let Some(mut bans) = self.bans.get_mut(&guild_id) {
+                bans.remove(target_pubkey);
+            }
             Ok(())
         } else {
             Err("that user isn't banned here".into())
@@ -1748,6 +1860,7 @@ impl AppState {
         guild_id: Id,
         pubkey: &str,
     ) -> Result<Option<VoiceState>, String> {
+        let _write = self.durable_writes.lock().await;
         let owner = self
             .guilds
             .get(&guild_id)
@@ -1762,11 +1875,11 @@ impl AppState {
         if !self.is_guild_member(guild_id, pubkey) {
             return Err("you're not a member of this guild".into());
         }
-        let cleared = self.remove_membership(guild_id, pubkey);
-        persist(
+        durable(
             self.store.delete_member(guild_id, pubkey).await,
             "member leave",
-        );
+        )?;
+        let cleared = self.remove_membership(guild_id, pubkey);
         Ok(cleared)
     }
 
@@ -1778,6 +1891,7 @@ impl AppState {
         topic: Option<String>,
         by_pubkey: &str,
     ) -> Result<Channel, String> {
+        let _write = self.durable_writes.lock().await;
         self.require_permission(guild_id, by_pubkey, Permission::ManageChannels)?;
         let name = sanitize_channel_name(name)?;
         let next_pos = self
@@ -1800,12 +1914,12 @@ impl AppState {
             position: next_pos,
             access: None,
         };
+        durable(self.store.upsert_channel(&channel).await, "channel create")?;
         self.channels.insert(channel.id, channel.clone());
         self.channels_by_guild
             .entry(guild_id)
             .or_default()
             .push(channel.id);
-        persist(self.store.upsert_channel(&channel).await, "channel create");
         Ok(channel)
     }
 
@@ -1815,6 +1929,7 @@ impl AppState {
         positions: &[(Id, u32)],
         by_pubkey: &str,
     ) -> Result<Vec<Channel>, String> {
+        let _write = self.durable_writes.lock().await;
         self.require_permission(guild_id, by_pubkey, Permission::ManageChannels)?;
         for (id, _) in positions {
             if self.channel_guild(*id) != Some(guild_id) {
@@ -1823,7 +1938,7 @@ impl AppState {
         }
         let mut updated = Vec::with_capacity(positions.len());
         for (id, position) in positions {
-            let Some(mut entry) = self.channels.get_mut(id) else {
+            let Some(mut entry) = self.channels.get(id).map(|c| c.clone()) else {
                 continue;
             };
             if entry.position == *position {
@@ -1832,8 +1947,12 @@ impl AppState {
             entry.position = *position;
             updated.push(entry.clone());
         }
+        durable(
+            self.store.reorder_channels(&updated).await,
+            "channel position",
+        )?;
         for channel in &updated {
-            persist(self.store.upsert_channel(channel).await, "channel position");
+            self.channels.insert(channel.id, channel.clone());
         }
         Ok(updated)
     }
@@ -1849,6 +1968,7 @@ impl AppState {
         slowmode_secs: u32,
         by_pubkey: &str,
     ) -> Result<Channel, String> {
+        let _write = self.durable_writes.lock().await;
         let guild_id = self
             .channel_guild(channel_id)
             .ok_or_else(|| "unknown channel".to_string())?;
@@ -1857,7 +1977,8 @@ impl AppState {
         let updated = {
             let mut channel = self
                 .channels
-                .get_mut(&channel_id)
+                .get(&channel_id)
+                .map(|v| v.clone())
                 .ok_or_else(|| "unknown channel".to_string())?;
             channel.name = name;
             channel.topic = topic
@@ -1869,7 +1990,8 @@ impl AppState {
             channel.position = position;
             channel.clone()
         };
-        persist(self.store.upsert_channel(&updated).await, "channel update");
+        durable(self.store.upsert_channel(&updated).await, "channel update")?;
+        self.channels.insert(channel_id, updated.clone());
         Ok(updated)
     }
 
@@ -1878,6 +2000,7 @@ impl AppState {
         channel_id: Id,
         by_pubkey: &str,
     ) -> Result<(Id, Vec<VoiceState>), String> {
+        let _write = self.durable_writes.lock().await;
         let (guild_id, kind) = self
             .channels
             .get(&channel_id)
@@ -1896,6 +2019,10 @@ impl AppState {
                 return Err("a guild needs at least one text channel".into());
             }
         }
+        durable(
+            self.store.delete_channel(channel_id).await,
+            "channel delete",
+        )?;
         let occupants: Vec<String> = self
             .voice_states
             .iter()
@@ -1910,10 +2037,6 @@ impl AppState {
         if let Some(mut ids) = self.channels_by_guild.get_mut(&guild_id) {
             ids.retain(|c| *c != channel_id);
         }
-        persist(
-            self.store.delete_channel(channel_id).await,
-            "channel delete",
-        );
         Ok((guild_id, cleared))
     }
 
@@ -1923,6 +2046,7 @@ impl AppState {
         new_owner_pubkey: &str,
         by_pubkey: &str,
     ) -> Result<Guild, String> {
+        let _write = self.durable_writes.lock().await;
         let owner = self
             .guilds
             .get(&guild_id)
@@ -1951,15 +2075,17 @@ impl AppState {
         let updated = {
             let mut guild = self
                 .guilds
-                .get_mut(&guild_id)
+                .get(&guild_id)
+                .map(|g| g.clone())
                 .ok_or_else(|| "unknown guild".to_string())?;
             guild.owner_pubkey = new_owner_pubkey.to_string();
             guild.clone()
         };
-        persist(
+        durable(
             self.store.upsert_guild(&updated).await,
             "ownership transfer",
-        );
+        )?;
+        self.guilds.insert(guild_id, updated.clone());
         Ok(updated)
     }
 
@@ -1972,6 +2098,7 @@ impl AppState {
         banner: Option<String>,
         by_pubkey: &str,
     ) -> Result<Guild, String> {
+        let _write = self.durable_writes.lock().await;
         self.require_permission(guild_id, by_pubkey, Permission::ManageGuild)?;
         let icon_image = icon_image
             .map(|i| self.image_reference(by_pubkey, &i))
@@ -1987,7 +2114,8 @@ impl AppState {
         let updated = {
             let mut guild = self
                 .guilds
-                .get_mut(&guild_id)
+                .get(&guild_id)
+                .map(|v| v.clone())
                 .ok_or_else(|| "unknown guild".to_string())?;
             if let Some(name) = name {
                 guild.name = name;
@@ -1997,7 +2125,8 @@ impl AppState {
             guild.banner = banner;
             guild.clone()
         };
-        persist(self.store.upsert_guild(&updated).await, "guild profile");
+        durable(self.store.upsert_guild(&updated).await, "guild profile")?;
+        self.guilds.insert(guild_id, updated.clone());
         Ok(updated)
     }
 
@@ -2019,17 +2148,20 @@ impl AppState {
         days: Option<u32>,
         by_pubkey: &str,
     ) -> Result<Guild, String> {
+        let _write = self.durable_writes.lock().await;
         self.require_permission(guild_id, by_pubkey, Permission::ManageGuild)?;
         let days = days.map(|d| d.clamp(1, 3650));
         let updated = {
             let mut guild = self
                 .guilds
-                .get_mut(&guild_id)
+                .get(&guild_id)
+                .map(|v| v.clone())
                 .ok_or_else(|| "unknown guild".to_string())?;
             guild.retention_days = days;
             guild.clone()
         };
-        persist(self.store.upsert_guild(&updated).await, "guild retention");
+        durable(self.store.upsert_guild(&updated).await, "guild retention")?;
+        self.guilds.insert(guild_id, updated.clone());
         Ok(updated)
     }
 
@@ -2040,17 +2172,20 @@ impl AppState {
         rules: Option<String>,
         by_pubkey: &str,
     ) -> Result<Guild, String> {
+        let _write = self.durable_writes.lock().await;
         self.require_permission(guild_id, by_pubkey, Permission::ManageGuild)?;
         let updated = {
             let mut guild = self
                 .guilds
-                .get_mut(&guild_id)
+                .get(&guild_id)
+                .map(|v| v.clone())
                 .ok_or_else(|| "unknown guild".to_string())?;
             guild.join_gate = gate;
             guild.rules = rules.map(|r| crate::protocol::sanitize_paragraph(&r, 4000));
             guild.clone()
         };
-        persist(self.store.upsert_guild(&updated).await, "join gate");
+        durable(self.store.upsert_guild(&updated).await, "join gate")?;
+        self.guilds.insert(guild_id, updated.clone());
         self.audit(
             guild_id,
             by_pubkey,
@@ -2076,15 +2211,18 @@ impl AppState {
     }
 
     async fn set_panic_flag(&self, guild_id: Id, on: bool) -> Result<Guild, String> {
+        let _write = self.durable_writes.lock().await;
         let updated = {
             let mut guild = self
                 .guilds
-                .get_mut(&guild_id)
+                .get(&guild_id)
+                .map(|v| v.clone())
                 .ok_or_else(|| "unknown guild".to_string())?;
             guild.panic_mode = on;
             guild.clone()
         };
-        persist(self.store.upsert_guild(&updated).await, "panic mode");
+        durable(self.store.upsert_guild(&updated).await, "panic mode")?;
+        self.guilds.insert(guild_id, updated.clone());
         Ok(updated)
     }
 
@@ -2231,6 +2369,7 @@ impl AppState {
     }
 
     pub async fn delete_guild(&self, guild_id: Id, by_pubkey: &str) -> Result<(), String> {
+        let _write = self.durable_writes.lock().await;
         let owner = self
             .guilds
             .get(&guild_id)
@@ -2239,6 +2378,7 @@ impl AppState {
         if owner.is_empty() || owner != by_pubkey {
             return Err("only the owner can delete this guild".into());
         }
+        durable(self.store.delete_guild(guild_id).await, "guild delete")?;
         self.guilds.remove(&guild_id);
         self.members.remove(&guild_id);
         self.roles.remove(&guild_id);
@@ -2252,7 +2392,6 @@ impl AppState {
                 self.channels.remove(&cid);
             }
         }
-        persist(self.store.delete_guild(guild_id).await, "guild delete");
         Ok(())
     }
 
@@ -2298,9 +2437,8 @@ impl AppState {
             Some(id) => self.store.reply_ref(channel_id, id).await.unwrap_or(None),
             None => None,
         };
-        Ok(self
-            .append_message(channel_id, author, content, image, reply_ref)
-            .await)
+        self.append_message(channel_id, author, content, image, reply_ref)
+            .await
     }
 
     /// One rule for every picture a client may hand the server. A data URL is
@@ -2419,7 +2557,7 @@ impl AppState {
         content: String,
         image: Option<String>,
         reply_to: Option<ReplyRef>,
-    ) -> Message {
+    ) -> Result<Message, String> {
         let message = Message {
             id: Uuid::new_v4(),
             channel_id,
@@ -2430,19 +2568,20 @@ impl AppState {
             reply_to,
             created_at: chrono::Utc::now(),
         };
-        persist(self.store.insert_message(&message).await, "message insert");
-        message
+        durable(self.store.insert_message(&message).await, "message insert")?;
+        Ok(message)
     }
 
-    pub async fn rename_user(&self, pubkey: &str, username: &str) -> Vec<Member> {
-        if let Some(mut u) = self.users.get_mut(pubkey) {
-            u.username = username.to_string();
-        }
+    pub async fn rename_user(&self, pubkey: &str, username: &str) -> Result<Vec<Member>, String> {
+        let _write = self.durable_writes.lock().await;
         let user = User {
             pubkey: pubkey.to_string(),
             username: username.to_string(),
         };
-        persist(self.store.upsert_user(&user).await, "user rename");
+        durable(self.store.rename_user(&user).await, "user rename")?;
+        if let Some(mut u) = self.users.get_mut(pubkey) {
+            u.username = username.to_string();
+        }
 
         let mut changed = Vec::new();
         for entry in self.members.iter() {
@@ -2455,10 +2594,7 @@ impl AppState {
             m.user.username = username.to_string();
             changed.push(m.clone());
         }
-        for m in &changed {
-            persist(self.store.upsert_member(m).await, "member rename");
-        }
-        changed
+        Ok(changed)
     }
 
     pub fn mark_offline(&self, user_pubkey: &str) -> Vec<(Id, String)> {
@@ -2588,6 +2724,7 @@ impl AppState {
         access: Option<crate::protocol::ChannelAccess>,
         by_pubkey: &str,
     ) -> Result<Channel, String> {
+        let _write = self.durable_writes.lock().await;
         let channel = self.channel(channel_id).ok_or("unknown channel")?;
         self.require_permission(channel.guild_id, by_pubkey, Permission::ManageChannels)?;
         if channel.kind != crate::protocol::ChannelKind::Voice {
@@ -2597,12 +2734,14 @@ impl AppState {
         let updated = {
             let mut entry = self
                 .channels
-                .get_mut(&channel_id)
+                .get(&channel_id)
+                .map(|c| c.clone())
                 .ok_or("unknown channel")?;
             entry.access = access;
             entry.clone()
         };
-        persist(self.store.upsert_channel(&updated).await, "channel access");
+        durable(self.store.upsert_channel(&updated).await, "channel access")?;
+        self.channels.insert(channel_id, updated.clone());
         Ok(updated)
     }
 
@@ -2660,6 +2799,7 @@ impl AppState {
         intents: Vec<Intent>,
         by_pubkey: &str,
     ) -> Result<(BotInstall, Member), String> {
+        let _write = self.durable_writes.lock().await;
         self.require_permission(guild_id, by_pubkey, Permission::ManageGuild)?;
         if bot_pubkey.trim().is_empty() {
             return Err("bot pubkey is required".into());
@@ -2687,19 +2827,14 @@ impl AppState {
             permissions: unique(permissions),
             intents: unique(intents),
         };
-        self.bot_installs
-            .entry(bot_pubkey.to_string())
-            .or_default()
-            .insert(guild_id, install.clone());
-
         let member = {
             let guild_members = self.members.entry(guild_id).or_default();
-            if let Some(mut existing) = guild_members.get_mut(bot_pubkey) {
+            if let Some(mut existing) = guild_members.get(bot_pubkey).map(|m| m.clone()) {
                 existing.bot = true;
                 existing.user.username = name;
                 existing.clone()
             } else {
-                let member = Member {
+                Member {
                     user: User {
                         pubkey: bot_pubkey.to_string(),
                         username: name,
@@ -2709,13 +2844,22 @@ impl AppState {
                     bot: true,
                     roles: Vec::new(),
                     xp: 0,
-                };
-                guild_members.insert(bot_pubkey.to_string(), member.clone());
-                member
+                }
             }
         };
-        persist(self.store.upsert_bot_install(&install).await, "bot install");
-        persist(self.store.upsert_member(&member).await, "bot member");
+        durable(
+            self.store.install_bot(&install, &member).await,
+            "bot install",
+        )?;
+        self.bot_installs
+            .entry(bot_pubkey.to_string())
+            .or_default()
+            .insert(guild_id, install.clone());
+
+        self.members
+            .entry(guild_id)
+            .or_default()
+            .insert(bot_pubkey.to_string(), member.clone());
         Ok((install, member))
     }
 
@@ -2725,7 +2869,12 @@ impl AppState {
         bot_pubkey: &str,
         by_pubkey: &str,
     ) -> Result<(), String> {
+        let _write = self.durable_writes.lock().await;
         self.require_permission(guild_id, by_pubkey, Permission::ManageGuild)?;
+        durable(
+            self.store.uninstall_bot(guild_id, bot_pubkey).await,
+            "bot uninstall",
+        )?;
         let now_empty = if let Some(g) = self.bot_installs.get(bot_pubkey) {
             g.remove(&guild_id);
             g.is_empty()
@@ -2738,14 +2887,6 @@ impl AppState {
         if let Some(gm) = self.members.get(&guild_id) {
             gm.remove(bot_pubkey);
         }
-        persist(
-            self.store.delete_bot_install(guild_id, bot_pubkey).await,
-            "bot uninstall",
-        );
-        persist(
-            self.store.delete_member(guild_id, bot_pubkey).await,
-            "bot member remove",
-        );
         Ok(())
     }
 

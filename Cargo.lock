@@ -2396,6 +2396,7 @@ name = "dioxusfun"
 version = "0.1.0"
 dependencies = [
  "arboard",
+ "axum 0.7.9",
  "base64 0.22.1",
  "bech32",
  "bip39",
@@ -2410,6 +2411,7 @@ dependencies = [
  "dioxus-desktop",
  "dioxus-grid-layout",
  "dioxusfun-protocol",
+ "dioxusfun-rendezvous",
  "dioxusfun-server",
  "dirs 5.0.1",
  "dispatch2",

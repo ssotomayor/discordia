@@ -4,6 +4,13 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct VoiceEvictRequest {
+    pub grant: String,
+    pub channel_id: crate::Id,
+    pub pubkey: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "op", content = "d", rename_all = "snake_case")]
 pub enum HostToRendezvous {
     ReleaseName {

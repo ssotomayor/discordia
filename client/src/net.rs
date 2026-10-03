@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use dioxusfun_server::watchdog::{ArmWatch, op_of, watchdog};
@@ -266,57 +265,105 @@ async fn dial_quic(key: &str, addrs: &[String]) -> Result<(Socket, bool), String
 async fn run(
     params: SessionParams,
     tx: &UnboundedSender<ClientMessage>,
-    rx: UnboundedReceiver<ClientMessage>,
+    mut rx: UnboundedReceiver<ClientMessage>,
     mut state: Signal<AppState>,
     voice_tx: &UnboundedSender<VoiceCmd>,
 ) -> Result<(), String> {
     let (dial, mut host_handle) =
         resolve_session(params.mode.clone(), params.identity.clone(), &mut state).await?;
-    let host_updates = host_handle.as_mut().and_then(|h| h.updates.take());
+    let mut host_updates = host_handle.as_mut().and_then(|h| h.updates.take());
+    let mut failures = 0u32;
+    loop {
+        let outcome = match connect_gateway(&dial).await {
+            Ok((socket, transport, origin)) => {
+                {
+                    let mut s = state.write();
+                    s.transport = transport;
+                    s.server_origin = Some(origin.clone());
+                }
+                let links = Links {
+                    tx,
+                    rx: &mut rx,
+                    voice_tx,
+                    host_updates: &mut host_updates,
+                };
+                match socket {
+                    Socket::Tcp(ws) => run_session(*ws, params.clone(), origin, state, links).await,
+                    Socket::Quic(ws, _guard) => {
+                        run_session(*ws, params.clone(), origin, state, links).await
+                    }
+                }
+            }
+            Err(error) => Err(error),
+        };
+        if state.peek().status == ConnectionStatus::Connecting {
+            return outcome;
+        }
+        if state.peek().status == ConnectionStatus::Ready {
+            failures = 0;
+        }
+        let reason = outcome.err().unwrap_or_else(|| "connection closed".into());
+        state.write().status = ConnectionStatus::Reconnecting;
+        tracing::warn!(%reason, "gateway lost; reconnecting in place");
+        let delay = reconnect_delay(failures);
+        failures = failures.saturating_add(1);
+        let until = tokio::time::Instant::now() + delay;
+        loop {
+            tokio::select! {
+                _ = tokio::time::sleep_until(until) => break,
+                command = rx.recv() => {
+                    let Some(command) = command else { return Ok(()); };
+                    if matches!(command, ClientMessage::SendMessage { .. }) {
+                        state.write().error_toast = Some("Not sent: the server is reconnecting. Please try again.".into());
+                    }
+                }
+                update = async {
+                    match host_updates.as_mut() {
+                        Some(updates) => updates.recv().await,
+                        None => std::future::pending().await,
+                    }
+                } => match update {
+                    Some(update) => apply_host_update(&mut state.write(), update),
+                    None => host_updates = None,
+                }
+            }
+        }
+        while rx.try_recv().is_ok() {}
+    }
+}
 
-    let (ws_stream, transport, origin) = match dial {
+fn reconnect_delay(failures: u32) -> std::time::Duration {
+    std::time::Duration::from_secs((1u64 << failures.min(4)).min(15))
+}
+
+async fn connect_gateway(dial: &Dial) -> Result<(Socket, Transport, String), String> {
+    match dial {
         Dial::Socket {
             url,
             origin,
             transport,
         } => {
-            eprintln!("[dioxusfun] connecting to {url}");
-            let (ws, _) = tokio_tungstenite::connect_async(&url)
+            let (ws, _) = tokio::time::timeout(QUIC_ATTEMPT, tokio_tungstenite::connect_async(url))
                 .await
+                .map_err(|_| "gateway connection timed out".to_string())?
                 .map_err(|e| format!("connect failed: {e}"))?;
-            (Socket::Tcp(Box::new(ws)), transport, origin)
+            Ok((Socket::Tcp(Box::new(ws)), *transport, origin.clone()))
         }
         Dial::Quic { key, addrs } => {
-            eprintln!("[dioxusfun] dialling {key} at {addrs:?}");
-            let (socket, relayed) = tokio::time::timeout(QUIC_ATTEMPT, dial_quic(&key, &addrs))
+            let (socket, relayed) = tokio::time::timeout(QUIC_ATTEMPT, dial_quic(key, addrs))
                 .await
                 .map_err(|_| format!("no answer from the host within {QUIC_ATTEMPT:?}"))??;
-            let transport = if relayed {
-                Transport::QuicRelayed
-            } else {
-                Transport::Quic
-            };
-            (socket, transport, crate::protocol::quic_origin(&key))
+            Ok((
+                socket,
+                if relayed {
+                    Transport::QuicRelayed
+                } else {
+                    Transport::Quic
+                },
+                crate::protocol::quic_origin(key),
+            ))
         }
-    };
-    {
-        let mut s = state.write();
-        s.transport = transport;
-        s.server_origin = Some(origin.clone());
     }
-
-    let links = Links {
-        tx,
-        rx,
-        voice_tx,
-        host_updates,
-    };
-    let outcome = match ws_stream {
-        Socket::Tcp(ws) => run_session(*ws, params, origin, state, links).await,
-        Socket::Quic(ws, _guard) => run_session(*ws, params, origin, state, links).await,
-    };
-    drop(host_handle);
-    outcome
 }
 
 fn apply_host_update(s: &mut AppState, update: crate::rendezvous::HostUpdate) {
@@ -346,9 +393,17 @@ enum Socket {
 /// The channels a session talks over, apart from the socket itself.
 struct Links<'a> {
     tx: &'a UnboundedSender<ClientMessage>,
-    rx: UnboundedReceiver<ClientMessage>,
+    rx: &'a mut UnboundedReceiver<ClientMessage>,
     voice_tx: &'a UnboundedSender<VoiceCmd>,
-    host_updates: Option<UnboundedReceiver<crate::rendezvous::HostUpdate>>,
+    host_updates: &'a mut Option<UnboundedReceiver<crate::rendezvous::HostUpdate>>,
+}
+
+struct SessionWatchdog(tokio::task::JoinHandle<()>);
+
+impl Drop for SessionWatchdog {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 async fn run_session<S>(
@@ -363,32 +418,47 @@ where
 {
     let Links {
         tx,
-        mut rx,
+        rx,
         voice_tx,
-        mut host_updates,
+        host_updates,
     } = links;
     state.write().identity = Some(params.identity.clone());
     let (mut ws_tx, mut ws_rx) = ws_stream.split();
 
-    let nonce = loop {
-        let Some(frame) = ws_rx.next().await else {
-            return Err("server closed before Hello".into());
-        };
-        let frame = frame.map_err(|e| format!("recv: {e}"))?;
-        let text = match frame {
-            WsMessage::Text(t) => t.to_string(),
-            WsMessage::Close(_) => return Err("server closed before Hello".into()),
-            _ => continue,
-        };
-        let parsed: ServerMessage = serde_json::from_str(&text)
-            .map_err(|e| format!("bad server frame before Hello: {e}"))?;
-        match parsed {
-            ServerMessage::Hello { nonce } => break nonce,
-            other => return Err(format!("expected Hello, got {other:?}")),
+    let nonce = tokio::time::timeout(crate::protocol::GATEWAY_HEARTBEAT_TIMEOUT, async {
+        loop {
+            let Some(frame) = ws_rx.next().await else {
+                return Err("server closed before Hello".into());
+            };
+            let frame = frame.map_err(|e| format!("recv: {e}"))?;
+            let text = match frame {
+                WsMessage::Text(t) => t.to_string(),
+                WsMessage::Close(_) => return Err("server closed before Hello".into()),
+                _ => continue,
+            };
+            let parsed: ServerMessage = serde_json::from_str(&text)
+                .map_err(|e| format!("bad server frame before Hello: {e}"))?;
+            match parsed {
+                ServerMessage::Hello { nonce } => break Ok::<_, String>(nonce),
+                other => return Err(format!("expected Hello, got {other:?}")),
+            }
         }
-    };
+    })
+    .await
+    .map_err(|_| "server did not send Hello before the deadline".to_string())??;
 
-    let username = crate::protocol::canonical_username(&params.username);
+    let username = crate::protocol::canonical_username(&if state.peek().status
+        == ConnectionStatus::Reconnecting
+    {
+        state
+            .peek()
+            .self_user
+            .as_ref()
+            .map(|user| user.username.clone())
+            .unwrap_or_else(|| params.username.clone())
+    } else {
+        params.username.clone()
+    });
     let pubkey = params.identity.pubkey.clone();
     let to_sign = crate::protocol::identify_payload(&nonce, &origin, &pubkey, &username);
     let signature = params.identity.sign_hex(&to_sign);
@@ -402,10 +472,7 @@ where
         client_version: crate::version::VERSION.to_string(),
     };
     let json = serde_json::to_string(&identify).map_err(|e| e.to_string())?;
-    ws_tx
-        .send(WsMessage::Text(json))
-        .await
-        .map_err(|e| format!("send identify: {e}"))?;
+    gateway_send(&mut ws_tx, WsMessage::Text(json)).await?;
 
     // A link saved by an older build would be refused now and take the whole
     // profile with it, so it is dropped here rather than sent.
@@ -426,17 +493,33 @@ where
             custom_status: local.custom_status,
         };
         if let Ok(json) = serde_json::to_string(&set_profile) {
-            let _ = ws_tx.send(WsMessage::Text(json)).await;
+            gateway_send(&mut ws_tx, WsMessage::Text(json)).await?;
         }
     }
 
     let watch = Arc::new(ArmWatch::default());
-    let dog = watchdog(watch.clone(), "session".into());
+    let _dog = SessionWatchdog(watchdog(watch.clone(), "session".into()));
     let mut media_tick = tokio::time::interval(MEDIA_TICK);
+    let mut heartbeat = tokio::time::interval(crate::protocol::GATEWAY_HEARTBEAT_INTERVAL);
+    let mut last_received = tokio::time::Instant::now();
+    let ready_deadline = last_received + crate::protocol::GATEWAY_HEARTBEAT_TIMEOUT;
+    let mut ready = false;
     let media_updates = state.peek().emoji_images.updates();
     loop {
         watch.finish("session");
         tokio::select! {
+            _ = heartbeat.tick() => {
+                if !ready && tokio::time::Instant::now() >= ready_deadline {
+                    return Err("the host did not accept the session before the deadline".into());
+                }
+                if last_received.elapsed() >= crate::protocol::GATEWAY_HEARTBEAT_TIMEOUT {
+                    return Err("the host stopped answering heartbeat probes".into());
+                }
+                tokio::time::timeout(crate::protocol::GATEWAY_HEARTBEAT_INTERVAL,
+                    ws_tx.send(WsMessage::Ping(Vec::new()))).await
+                    .map_err(|_| "gateway heartbeat send timed out".to_string())?
+                    .map_err(|e| format!("gateway heartbeat: {e}"))?;
+            }
             update = async {
                 match host_updates.as_mut() {
                     Some(rx) => rx.recv().await,
@@ -446,17 +529,19 @@ where
                 watch.begin("host update");
                 match update {
                     Some(u) => apply_host_update(&mut state.write(), u),
-                    None => host_updates = None,
+                    None => *host_updates = None,
                 }
             }
             outbound = rx.recv() => {
                 let Some(msg) = outbound else { break };
+                if !ready {
+                    state.write().error_toast = Some("The server is reconnecting. Please try this action again once connected.".into());
+                    continue;
+                }
                 let json = serde_json::to_string(&msg).map_err(|e| e.to_string())?;
                 tracing::debug!(op = op_of(&json), "→ gateway");
                 watch.begin(format!("send {}", op_of(&json)));
-                if let Err(e) = ws_tx.send(WsMessage::Text(json)).await {
-                    return Err(format!("send: {e}"));
-                }
+                gateway_send(&mut ws_tx, WsMessage::Text(json)).await?;
             }
             _ = media_tick.tick() => {
                 watch.begin("media tick");
@@ -475,8 +560,13 @@ where
             inbound = ws_rx.next() => {
                 let Some(frame) = inbound else { break };
                 let frame = frame.map_err(|e| format!("recv: {e}"))?;
+                last_received = tokio::time::Instant::now();
                 let text = match frame {
                     WsMessage::Text(t) => t.to_string(),
+                    WsMessage::Ping(payload) => {
+                        gateway_send(&mut ws_tx, WsMessage::Pong(payload)).await?;
+                        continue;
+                    }
                     // A host that stops on purpose says so in the close frame;
                     // "connection closed" would be true and useless.
                     WsMessage::Close(Some(f)) if !f.reason.is_empty() => {
@@ -494,15 +584,32 @@ where
                         continue;
                     }
                 };
+                if matches!(parsed, ServerMessage::Ready { .. }) {
+                    while rx.try_recv().is_ok() {}
+                    ready = true;
+                }
                 apply(&mut state, parsed, tx, voice_tx);
             }
         }
     }
-    dog.abort();
     watch.finish("session");
     tracing::info!("session loop ended");
 
     Ok(())
+}
+
+async fn gateway_send<S>(sink: &mut S, frame: WsMessage) -> Result<(), String>
+where
+    S: futures_util::Sink<WsMessage> + Unpin,
+    S::Error: std::fmt::Display,
+{
+    tokio::time::timeout(
+        crate::protocol::GATEWAY_HEARTBEAT_INTERVAL,
+        sink.send(frame),
+    )
+    .await
+    .map_err(|_| "gateway send timed out".to_string())?
+    .map_err(|error| format!("gateway send: {error}"))
 }
 
 /// Stable, so roles written before positions were kept apart stay in the
@@ -595,13 +702,21 @@ fn apply(
             bot_commands,
             operator,
         } => {
+            let recovering = s.status == ConnectionStatus::Reconnecting;
+            let selected_guild = s.selected_guild;
+            let selected_channel = s.selected_channel;
+            let selected_dm =
+                recovering && s.dm_mode && selected_channel.is_some_and(|id| s.dm_of(id).is_some());
+            let local_channel = s.voice.channel_id;
             s.self_user = Some(user);
             s.is_operator = operator;
             s.guilds = guilds;
             s.channels = channels;
             s.members = members;
             s.voice_states = voice_states;
-            s.dm_mode = false;
+            if !recovering {
+                s.dm_mode = false;
+            }
             s.catalog = catalog;
             s.profiles = profiles
                 .into_iter()
@@ -643,18 +758,64 @@ fn apply(
                 .map(|set| (set.bot_pubkey, set.commands))
                 .collect();
             s.command_notes.clear();
-            s.messages = BTreeMap::new();
+            let dm_channels: std::collections::HashSet<_> =
+                s.dms.iter().map(|dm| dm.channel_id).collect();
+            s.messages.retain(|id, _| dm_channels.contains(id));
             // A request the last session never got an answer to would
             // otherwise stay "in flight" forever.
             s.emoji_requested.clear();
             resolve_media(&mut s, tx);
-            s.screen_shares = std::collections::HashMap::new();
-            s.screen_viewing.clear();
+            let mut shares = std::collections::HashMap::<Id, Vec<String>>::new();
+            for vs in &s.voice_states {
+                if vs.screen_sharing
+                    && let Some(channel) = vs.channel_id
+                {
+                    shares
+                        .entry(channel)
+                        .or_default()
+                        .push(vs.user_pubkey.clone());
+                }
+            }
+            s.screen_shares = shares;
+            if !recovering {
+                s.screen_viewing.clear();
+            }
+            let server_channel = s.server_voice_channel();
+            if recovering
+                && let Some(channel) = local_channel
+                && server_channel != Some(channel)
+            {
+                let guild = s
+                    .channels
+                    .iter()
+                    .find(|c| c.id == channel)
+                    .map(|c| c.guild_id);
+                let _ = voice_tx.send(VoiceCmd::Disconnect { done: None });
+                s.end_voice_locally();
+                if guild.is_some() && server_channel.is_none() {
+                    let _ = tx.send(ClientMessage::JoinVoice {
+                        channel_id: channel,
+                    });
+                }
+            }
             s.status = ConnectionStatus::Ready;
 
-            if let Some(first) = s.guilds.first().map(|g| g.id) {
+            let chosen = selected_guild
+                .filter(|id| recovering && s.guilds.iter().any(|g| g.id == *id))
+                .or_else(|| s.guilds.first().map(|g| g.id));
+            if selected_dm {
+                s.selected_guild = chosen;
+                s.selected_channel = selected_channel;
+            } else if let Some(first) = chosen {
                 s.selected_guild = Some(first);
-                let chan = s.default_channel_of(first);
+                let chan = selected_channel
+                    .filter(|id| {
+                        recovering
+                            && s.channels
+                                .iter()
+                                .any(|c| c.id == *id && c.guild_id == first)
+                    })
+                    .or_else(|| s.default_channel_of(first));
                 s.selected_channel = chan;
                 if let Some(channel_id) = chan {
                     let _ = tx.send(ClientMessage::FetchMessages {
@@ -1212,6 +1373,91 @@ fn apply(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reconnect_wait_is_bounded_and_starts_with_a_short_retry() {
+        assert_eq!(reconnect_delay(0).as_secs(), 1);
+        assert_eq!(reconnect_delay(1).as_secs(), 2);
+        assert_eq!(reconnect_delay(2).as_secs(), 4);
+        assert_eq!(reconnect_delay(3).as_secs(), 8);
+        assert_eq!(reconnect_delay(4).as_secs(), 15);
+        assert_eq!(reconnect_delay(u32::MAX).as_secs(), 15);
+    }
+
+    #[tokio::test]
+    async fn ready_after_reconnect_preserves_selected_dm_history_and_delivery_state() {
+        fn harness() -> Element {
+            let mut state = use_signal(AppState::empty);
+            use_hook(move || {
+                let channel = Id::new_v4();
+                let message_id = Id::new_v4();
+                let user = crate::protocol::User {
+                    pubkey: "ab".repeat(32),
+                    username: "Alice".into(),
+                };
+                {
+                    let mut s = state.write();
+                    s.status = ConnectionStatus::Reconnecting;
+                    s.dm_mode = true;
+                    s.selected_channel = Some(channel);
+                    s.dms.push(crate::state::DmInfo {
+                        channel_id: channel,
+                        other_pubkey: "cd".repeat(32),
+                    });
+                    s.messages.insert(
+                        channel,
+                        vec![crate::protocol::Message {
+                            id: message_id,
+                            channel_id: channel,
+                            author: user.clone(),
+                            content: "Keep this message".into(),
+                            image: None,
+                            reactions: vec![],
+                            reply_to: None,
+                            created_at: chrono::Utc::now(),
+                        }],
+                    );
+                    s.dm_delivery
+                        .insert(message_id, crate::nostr::delivery::Delivery::Pending);
+                }
+                let (tx, mut commands) = unbounded_channel();
+                let (voice_tx, _voice_rx) = unbounded_channel();
+                apply(
+                    &mut state,
+                    ServerMessage::Ready {
+                        user,
+                        guilds: vec![],
+                        channels: vec![],
+                        members: vec![],
+                        voice_states: vec![],
+                        catalog: vec![],
+                        profiles: vec![],
+                        roles: vec![],
+                        emojis: vec![],
+                        sounds: vec![],
+                        activities: vec![],
+                        bot_commands: vec![],
+                        operator: false,
+                    },
+                    &tx,
+                    &voice_tx,
+                );
+                let s = state.peek();
+                assert_eq!(s.status, ConnectionStatus::Ready);
+                assert!(s.dm_mode);
+                assert_eq!(s.selected_channel, Some(channel));
+                assert_eq!(s.messages[&channel][0].id, message_id);
+                assert_eq!(
+                    s.dm_delivery[&message_id],
+                    crate::nostr::delivery::Delivery::Pending
+                );
+                assert!(commands.try_recv().is_err());
+            });
+            rsx! {}
+        }
+        let mut dom = VirtualDom::new(harness);
+        dom.rebuild_in_place();
+    }
 
     #[test]
     fn the_quic_handshake_presents_a_loopback_host() {
