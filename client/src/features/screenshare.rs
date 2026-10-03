@@ -505,20 +505,32 @@ window.dxScreen = window.dxScreen || (function () {
   async function pollRemoteScreenStats() {
     if (!screenStatsEnabled || remoteStatsInFlight) return;
     if (!remoteShareVideoTrack) {
+      for (const key of Object.keys(tracks)) {
+        const track = tracks[key];
+        if (key.endsWith('|screen') && track !== localShareVideoTrack && typeof track.getRTCStatsReport === 'function') {
+          remoteShareVideoTrack = track;
+          break;
+        }
+      }
+    }
+    if (!remoteShareVideoTrack) {
       post('screen-stats-in', { active: false });
       return;
     }
     remoteStatsInFlight = true;
+    const track = remoteShareVideoTrack;
+    const epoch = statsEpoch;
     try {
-      const track = remoteShareVideoTrack;
-      const epoch = statsEpoch;
       const stats = await videoStatsReport(track);
-      if (!screenStatsEnabled || !stats || track !== remoteShareVideoTrack || epoch !== statsEpoch) return;
+      if (!screenStatsEnabled || track !== remoteShareVideoTrack || epoch !== statsEpoch) return;
       let inbound = null;
-      stats.forEach(function (entry) {
-        if (entry.type === 'inbound-rtp' && entry.kind === 'video') inbound = entry;
+      if (stats) stats.forEach(function (entry) {
+        if (entry.type === 'inbound-rtp' && (entry.kind === 'video' || entry.mediaType === 'video')) inbound = entry;
       });
-      if (!inbound) return;
+      if (!inbound) {
+        post('screen-stats-in', { active: true, trackSid: track.sid || null, error: 'Video is subscribed; waiting for receiver statistics.' });
+        return;
+      }
       const codec = inbound.codecId ? stats.get(inbound.codecId) : null;
       post('screen-stats-in', {
         active: true,
@@ -544,13 +556,16 @@ window.dxScreen = window.dxScreen || (function () {
         jitterSeconds: inbound.jitter,
       });
     } catch (e) {
-      if (screenStatsEnabled) post('screen-stats-in', { active: true, error: String((e && e.message) || e) });
+      if (screenStatsEnabled && track === remoteShareVideoTrack && epoch === statsEpoch) {
+        post('screen-stats-in', { active: true, trackSid: track.sid || null, error: String((e && e.message) || e) });
+      }
     } finally {
       remoteStatsInFlight = false;
     }
   }
   function setStatsEnabled(enabled) {
     screenStatsEnabled = !!enabled;
+    window.__dxfScreenStatsEnabled = screenStatsEnabled;
     statsEpoch++;
     if (screenStatsTimer) clearInterval(screenStatsTimer);
     screenStatsTimer = null;
@@ -606,7 +621,7 @@ window.dxScreen = window.dxScreen || (function () {
       const report = await videoStatsReport(track);
       let result = null;
       if (report) report.forEach(function (entry) {
-        if (entry.type === 'inbound-rtp' && entry.kind === 'video') {
+        if (entry.type === 'inbound-rtp' && (entry.kind === 'video' || entry.mediaType === 'video')) {
           result = { width: entry.frameWidth || null, height: entry.frameHeight || null, fps: Number.isFinite(entry.framesPerSecond) ? entry.framesPerSecond : null };
         }
       });
@@ -941,6 +956,7 @@ window.dxScreen = window.dxScreen || (function () {
     dropE2eeWorker();
     e2eeProvider = null;
   }
+  if (window.__dxfScreenStatsEnabled) setStatsEnabled(true);
   return { connect: connect, setViewerTargets: setViewerTargets, setDetachedScreens: setDetachedScreens, setSelfPreview: setSelfPreview, attach: attach, detach: detach, previewStats: previewStats, requestAndStartShare: requestAndStartShare, stopShare: stopShare, disconnect: disconnect, setStreamVolume: setStreamVolume, setSink: setSink, setNativeStreamAudio: setNativeStreamAudio, setStatsEnabled: setStatsEnabled, startCamera: startCamera, stopCamera: stopCamera, listCameras: listCameras, attachLocalCamera: attachLocalCamera, setE2eeKey: setE2eeKey };
 })();
 "#;
@@ -1077,7 +1093,7 @@ pub fn share_js(on: bool, quality: &str, audio: bool) -> String {
 }
 
 pub(crate) fn screen_stats_js(enabled: bool) -> String {
-    format!("window.dxScreen.setStatsEnabled({enabled});")
+    format!("window.__dxfScreenStatsEnabled={enabled};window.dxScreen?.setStatsEnabled({enabled});")
 }
 
 pub(crate) fn attach_js(identity: &str, container: &str, kind: &str) -> String {
@@ -2736,7 +2752,7 @@ mod js_escaping_tests {
             "screen-share diagnostics read received video stats"
         );
         assert!(
-            screen_stats_js(true).ends_with("window.dxScreen.setStatsEnabled(true);"),
+            screen_stats_js(true).ends_with("window.dxScreen?.setStatsEnabled(true);"),
             "diagnostics can enable sender stats polling"
         );
     }

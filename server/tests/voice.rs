@@ -978,8 +978,10 @@ async fn heartbeat_closes_a_session_that_stops_reading_probes() {
     let (url, _handle) = spawn_gateway(local_signing()).await;
     let identity = BotIdentity::generate();
     let mut idle = connect_user(&url, &identity, "idle").await;
+    // Reading flushes automatic pongs, so wait past the server's next deadline check.
     tokio::time::sleep(
-        dioxusfun_server::protocol::GATEWAY_HEARTBEAT_TIMEOUT + Duration::from_secs(4),
+        dioxusfun_server::protocol::GATEWAY_HEARTBEAT_TIMEOUT
+            + 2 * dioxusfun_server::protocol::GATEWAY_HEARTBEAT_INTERVAL,
     )
     .await;
     tokio::time::timeout(Duration::from_secs(3), async {
