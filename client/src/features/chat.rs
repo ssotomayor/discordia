@@ -800,6 +800,8 @@ pub fn ImageViewer() -> Element {
 #[component]
 fn EmojiText(text: String, guild_id: Option<Id>) -> Element {
     let state = use_app_state();
+    let settings = use_context::<Signal<crate::settings::ClientSettings>>();
+    let emoji_scale = f64::from(settings.read().emoji_size_percent.clamp(50, 250)) / 100.0;
     let parts: Vec<(String, Option<String>)> = {
         let s = state.read();
         crate::emoji::split_shortcodes(&text)
@@ -824,11 +826,24 @@ fn EmojiText(text: String, guild_id: Option<Id>) -> Element {
                         src: "{url}",
                         alt: ":{body}:",
                         title: ":{body}:",
-                        style: "height:1.4em;width:auto;display:inline-block;vertical-align:-0.3em;",
+                        style: "height:calc(1.4em * {emoji_scale});width:auto;display:inline-block;vertical-align:-0.3em;",
                     }
                 },
                 Some(_) => rsx! { ":{body}:" },
-                None => rsx! { "{body}" },
+                None => rsx! { UnicodeEmojiText { text: body, scale: emoji_scale } },
+            }
+        }
+    }
+}
+
+#[component]
+fn UnicodeEmojiText(text: String, scale: f64) -> Element {
+    rsx! {
+        for (part, emoji) in crate::emoji::unicode_parts(&text) {
+            if emoji {
+                span { style: "font-size:calc(1em * {scale});", "{part}" }
+            } else {
+                "{part}"
             }
         }
     }
@@ -874,13 +889,8 @@ fn MessageContent(content: String, channel_id: Id) -> Element {
                                         "{trailing}"
                                     }
                                 }
-                            } else if crate::emoji::has_shortcode(&w) {
-                                rsx! {
-                                    span {
-                                        EmojiText { text: w.clone(), guild_id }
-                                        "{trailing}"
-                                    }
-                                }
+                            } else if crate::emoji::needs_rendering(&w) {
+                                rsx! { span { EmojiText { text: w.clone(), guild_id } "{trailing}" } }
                             } else {
                                 rsx! { span { "{w}{trailing}" } }
                             }

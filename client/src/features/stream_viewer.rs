@@ -20,6 +20,7 @@ struct Snapshot {
     key: Option<String>,
     encrypted: bool,
     theme: String,
+    text_size_percent: u16,
     streams: Vec<Stream>,
 }
 
@@ -95,6 +96,7 @@ pub(super) fn use_popouts(mut state: Signal<AppState>) -> Popouts {
             key: crate::e2ee::current_key(),
             encrypted: crate::e2ee::enabled(),
             theme: settings.read().theme.clone(),
+            text_size_percent: settings.read().text_size_percent,
             streams,
         })
     });
@@ -430,6 +432,7 @@ fn PopoutWindow(props: PopoutWindowProps) -> Element {
         return rsx! { crate::app::AppHead {} };
     };
     let theme = crate::app::theme_vars(&snapshot.theme);
+    let size_css = crate::ui_size::text_css(snapshot.text_size_percent);
     let visible_count = if focused().is_some() {
         1
     } else {
@@ -443,7 +446,8 @@ fn PopoutWindow(props: PopoutWindowProps) -> Element {
     let pin_window = window.clone();
     rsx! {
         crate::app::AppHead {}
-        div { class: "h-full flex flex-col bg-[var(--bg)] text-[var(--text)]", style: "{theme}",
+        style { "{size_css}" }
+        div { class: "dxf-ui h-full flex flex-col bg-[var(--bg)] text-[var(--text)]", style: "{theme}",
             div { class: "flex items-center flex-wrap gap-2 px-3 py-2 border-b border-[var(--border)] shrink-0",
                 span { class: "flex-1 text-sm font-medium", "Streams · {snapshot.streams.len()}" }
                 span { class: "text-xs text-[var(--text-muted)]", "{status}" }

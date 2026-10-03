@@ -2463,6 +2463,7 @@ dependencies = [
  "tract-hir",
  "tract-onnx",
  "tract-pulse",
+ "unicode-segmentation",
  "url",
  "uuid",
  "webrtc-sys",

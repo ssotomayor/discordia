@@ -41,6 +41,7 @@ mod sysaudio;
 mod syscamera;
 mod sysvideo;
 mod tzgeo;
+mod ui_size;
 mod update;
 mod version;
 #[cfg(target_os = "windows")]

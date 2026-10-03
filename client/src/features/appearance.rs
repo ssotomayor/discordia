@@ -79,6 +79,32 @@ pub fn AppearanceButton() -> Element {
                     onclick: move |e| e.stop_propagation(),
                     h3 { class: "text-sm font-medium text-[var(--accent)] mb-3", "Appearance" }
 
+                    for (label, emoji) in [("Text size", false), ("Chat emoji size", true)] {
+                        {
+                            let size = if emoji { current.emoji_size_percent.clamp(50, 250) } else { current.text_size_percent.clamp(80, 140) };
+                            rsx! {
+                                label { class: "flex items-center gap-2 mb-3 text-xs",
+                                    span { class: "flex-1", "{label}" }
+                                    input {
+                                        r#type: "range", min: if emoji { "50" } else { "80" },
+                                        max: if emoji { "250" } else { "140" }, step: "10", value: "{size}",
+                                        class: "w-24 accent-[var(--accent)]",
+                                        oninput: move |e| {
+                                            if let Ok(value) = e.value().parse::<u16>() {
+                                                update(&move |s| if emoji { s.emoji_size_percent = value.clamp(50, 250); } else { s.text_size_percent = value.clamp(80, 140); });
+                                            }
+                                        },
+                                    }
+                                    span { "{size}%" }
+                                }
+                            }
+                        }
+                    }
+                    button { class: "text-xs text-[var(--accent)] mb-4",
+                        onclick: move |_| update(&|s| { s.text_size_percent = 100; s.emoji_size_percent = 100; }),
+                        "Reset sizes"
+                    }
+
                     div { class: "text-[10px] uppercase tracking-wider text-[var(--text-muted)] mb-1.5", "Theme" }
                     div { class: "grid grid-cols-5 gap-2 mb-4",
                         for theme in THEMES.iter() {
