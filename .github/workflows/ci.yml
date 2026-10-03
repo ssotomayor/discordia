@@ -119,6 +119,9 @@ jobs:
         run: cargo clippy -p dioxusfun --all-targets -- -D warnings
       - name: Tests (client, Windows-only code)
         run: cargo test -p dioxusfun
+      - name: Hardware encoder queue and timing regressions
+        shell: pwsh
+        run: ./scripts/test-mf-encoder.ps1
 
   macos-build:
     name: client compiles (macos)

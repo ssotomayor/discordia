@@ -3439,13 +3439,15 @@ mod tests {
         let legacy_start = std::env::var_os("DISCORDIA_TEST_LEGACY_START").is_some();
         assert!(!verify_1440p || verify_nvenc_rates);
         let require_mf = std::env::var_os("DISCORDIA_TEST_REQUIRE_MF").is_some();
+        let verify_mf_fallback = std::env::var_os("DISCORDIA_TEST_MF_FALLBACK").is_some();
+        assert!(!require_mf || !verify_mf_fallback);
         let modern_codec = std::env::var("DISCORDIA_TEST_MODERN_CODEC").ok();
         assert!(
             modern_codec
                 .as_deref()
                 .is_none_or(|codec| matches!(codec, "av1" | "h265"))
         );
-        if require_mf || verify_nvenc_rates || modern_codec.is_some() {
+        if require_mf || verify_mf_fallback || verify_nvenc_rates || modern_codec.is_some() {
             let _subscriber = tracing_subscriber::fmt()
                 .with_env_filter("libwebrtc=debug,webrtc_sys=debug,livekit=warn")
                 .with_test_writer()
@@ -3486,7 +3488,7 @@ mod tests {
             (crate::sysvideo::Codec::Vp8, crate::sysvideo::Encoder::Auto),
             (crate::sysvideo::Codec::H264, crate::sysvideo::Encoder::Cpu),
         ] {
-            if (verify_nvenc_rates || modern_codec.is_some())
+            if (verify_nvenc_rates || verify_mf_fallback || modern_codec.is_some())
                 && (codec != crate::sysvideo::Codec::H264
                     || encoder != crate::sysvideo::Encoder::Auto)
             {
@@ -3669,6 +3671,12 @@ mod tests {
                 })
                 .expect("outbound video");
             let stats = native_screen_stats(outbound, &report, 60.0, None);
+            if verify_mf_fallback {
+                assert_eq!(stats.codec_implementation.as_deref(), Some("OpenH264"));
+                assert_eq!(stats.power_efficient, Some(false));
+                assert!(received.load(Ordering::Relaxed) >= frame_count * 4 / 5);
+                assert!(outbound.outbound.key_frames_encoded <= 8);
+            }
             if verify_nvenc_rates {
                 if verify_1440p {
                     assert_eq!(stats.encoded_width, Some(2560));

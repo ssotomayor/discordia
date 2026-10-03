@@ -425,6 +425,7 @@ fn main() {
     for entry in glob::glob("./include/**/*.h").unwrap() {
         println!("cargo:rerun-if-changed={}", entry.unwrap().display());
     }
+    println!("cargo:rerun-if-changed=src/windows/realtime_encoder.h");
 
     if target_os.as_str() == "android" {
         copy_libwebrtc_jar(&PathBuf::from(Path::new(&webrtc_dir)));

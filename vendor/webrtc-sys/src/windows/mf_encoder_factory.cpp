@@ -1,4 +1,5 @@
 #include "mf_encoder_factory.h"
+#include "realtime_encoder.h"
 
 #include <windows.h>
 #include <codecapi.h>
@@ -13,6 +14,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstdlib>
 #include <deque>
@@ -106,14 +108,15 @@ HRESULT VideoType(const GUID& subtype, const VideoCodec& settings,
   return S_OK;
 }
 
-void SetCodecUint(ICodecAPI* codec, const GUID& key, ULONG value) {
-  if (!codec || codec->IsSupported(&key) != S_OK) return;
+HRESULT SetCodecUint(ICodecAPI* codec, const GUID& key, ULONG value) {
+  if (!codec || codec->IsSupported(&key) != S_OK) return E_NOTIMPL;
   VARIANT setting;
   VariantInit(&setting);
   setting.vt = VT_UI4;
   setting.ulVal = value;
   HRESULT hr = codec->SetValue(&key, &setting);
   if (FAILED(hr)) RTC_LOG(LS_WARNING) << "Hardware encoder rejected tuning property: " << hr;
+  return hr;
 }
 
 struct Session {
@@ -127,7 +130,8 @@ struct Session {
   DWORD input_id = 0;
   DWORD output_id = 0;
   unsigned input_requests = 0;
-  LONGLONG next_time = 0;
+  mf::SampleClock clock;
+  mf::OutputWatchdog watchdog;
   LONGLONG duration = 0;
   int width = 0;
   int height = 0;
@@ -207,6 +211,8 @@ struct Session {
     MF_TRY(VideoType(MFVideoFormat_NV12, settings, &input));
     MF_TRY(input->SetUINT32(MF_MT_DEFAULT_STRIDE, settings.width));
     MF_TRY(transform->SetInputType(input_id, input.Get(), 0));
+    // Some hardware MFTs ignore MF_MT_AVG_BITRATE unless ICodecAPI is set as well.
+    MF_TRY(SetCodecUint(codec.Get(), CODECAPI_AVEncCommonMeanBitRate, settings.startBitrate * 1000));
     MF_TRY(transform->GetOutputStreamInfo(output_id, &output_info));
     MF_TRY(transform->ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0));
     MF_TRY(transform->ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0));
@@ -238,12 +244,12 @@ struct Session {
     ComPtr<IMFSample> sample;
     MF_TRY(MFCreateSample(&sample));
     MF_TRY(sample->AddBuffer(memory.Get()));
-    MF_TRY(sample->SetSampleTime(next_time));
+    LONGLONG time = clock.Next(frame.timestamp_us());
+    MF_TRY(sample->SetSampleTime(time));
     MF_TRY(sample->SetSampleDuration(duration));
-    if (keyframe) SetCodecUint(codec.Get(), CODECAPI_AVEncVideoForceKeyFrame, 1);
+    if (keyframe) MF_TRY(SetCodecUint(codec.Get(), CODECAPI_AVEncVideoForceKeyFrame, 1));
     MF_TRY(transform->ProcessInput(input_id, sample.Get(), 0));
-    submitted.emplace(next_time, frame);
-    next_time += duration;
+    submitted.emplace(time, frame);
     --input_requests;
     return S_OK;
   }
@@ -301,10 +307,18 @@ struct Session {
     image.SetSimulcastIndex(0);
     image._frameType = VideoFrameType::kVideoFrameDelta;
     for (const auto& nalu : H264::FindNaluIndices(MakeArrayView(data->data(), length))) {
-      if (H264::ParseNaluType(data->data()[nalu.payload_start_offset]) == H264::kIdr)
+      auto type = H264::ParseNaluType(data->data()[nalu.payload_start_offset]);
+      if ((type == H264::kIdr || type == H264::kSlice)
+          && (nalu.payload_size < 2
+              || !mf::FitsLiveKitH264Prefix(data->data()[nalu.payload_start_offset + 1]))) {
+        RTC_LOG(LS_WARNING) << "Hardware H264 slice header is incompatible with LiveKit encryption; requesting software fallback";
+        return E_FAIL;
+      }
+      if (type == H264::kIdr)
         image._frameType = VideoFrameType::kVideoFrameKey;
     }
     submitted.erase(metadata);
+    watchdog.Produced(mf::OutputWatchdog::Clock::now());
     CodecSpecificInfo info{};
     info.codecType = kVideoCodecH264;
     info.codecSpecific.H264.packetization_mode = H264PacketizationMode::NonInterleaved;
@@ -328,6 +342,7 @@ class WindowsMfEncoder : public VideoEncoder {
       initialized_ = false;
       failure_ = S_OK;
       bitrate_ = settings->startBitrate * 1000;
+      framerate_ = settings->maxFramerate;
     }
     worker_ = std::thread([this, settings = *settings] { Run(settings); });
     std::unique_lock lock(mutex_);
@@ -343,7 +358,7 @@ class WindowsMfEncoder : public VideoEncoder {
     { std::lock_guard lock(mutex_); stop_ = true; }
     wake_.notify_all();
     if (worker_.joinable()) worker_.join();
-    { std::lock_guard lock(mutex_); queue_.clear(); }
+    { std::lock_guard lock(mutex_); queue_.Clear(); }
     return WEBRTC_VIDEO_CODEC_OK;
   }
   int32_t Encode(const VideoFrame& frame, const std::vector<VideoFrameType>* types) override {
@@ -353,15 +368,18 @@ class WindowsMfEncoder : public VideoEncoder {
         && std::all_of(types->begin(), types->end(), [](VideoFrameType type) {
           return type == VideoFrameType::kEmptyFrame;
         })) return WEBRTC_VIDEO_CODEC_NO_OUTPUT;
-    if (bitrate_ == 0 || queue_.size() >= 3) return WEBRTC_VIDEO_CODEC_NO_OUTPUT;
+    if (bitrate_ == 0) return WEBRTC_VIDEO_CODEC_NO_OUTPUT;
     bool key = types && std::find(types->begin(), types->end(), VideoFrameType::kVideoFrameKey) != types->end();
-    queue_.push_back({frame, key});
+    queue_.Push(frame, key);
     wake_.notify_all();
     return WEBRTC_VIDEO_CODEC_OK;
   }
   void SetRates(const RateControlParameters& parameters) override {
     std::lock_guard lock(mutex_);
     bitrate_ = parameters.bitrate.get_sum_bps();
+    if (std::isfinite(parameters.framerate_fps) && parameters.framerate_fps > 0)
+      framerate_ = parameters.framerate_fps;
+    if (!bitrate_) queue_.Clear();
     wake_.notify_all();
   }
   EncoderInfo GetEncoderInfo() const override {
@@ -376,7 +394,6 @@ class WindowsMfEncoder : public VideoEncoder {
     return info;
   }
  private:
-  struct QueuedFrame { VideoFrame frame; bool key; };
   void Run(VideoCodec settings) {
     Apartment apartment;
     std::unique_ptr<Session> session;
@@ -402,16 +419,24 @@ class WindowsMfEncoder : public VideoEncoder {
     while (SUCCEEDED(failure)) {
       EncodedImageCallback* callback;
       ULONG bitrate;
+      double framerate;
+      bool queued;
       {
         std::lock_guard lock(mutex_);
         if (stop_) break;
         callback = callback_;
         bitrate = bitrate_;
+        framerate = framerate_;
+        queued = !queue_.Empty();
       }
       if (bitrate != previous_bitrate) {
-        if (bitrate) SetCodecUint(session->codec.Get(), CODECAPI_AVEncCommonMeanBitRate, bitrate);
+        if (bitrate) {
+          failure = SetCodecUint(session->codec.Get(), CODECAPI_AVEncCommonMeanBitRate, bitrate);
+          if (FAILED(failure)) break;
+        }
         previous_bitrate = bitrate;
       }
+      if (framerate > 0) session->duration = static_cast<LONGLONG>(10000000 / framerate);
       for (;;) {
         ComPtr<IMFMediaEvent> event;
         HRESULT hr = session->events->GetEvent(MF_EVENT_FLAG_NO_WAIT, &event);
@@ -428,16 +453,21 @@ class WindowsMfEncoder : public VideoEncoder {
         if (FAILED(failure)) break;
       }
       if (FAILED(failure)) break;
-      std::optional<QueuedFrame> frame;
+      if (session->watchdog.Stalled(bitrate && (queued || !session->submitted.empty()),
+                                    mf::OutputWatchdog::Clock::now())) {
+        RTC_LOG(LS_ERROR) << "Hardware encoder stopped producing frames; requesting software fallback";
+        failure = MF_E_HW_MFT_FAILED_START_STREAMING;
+        break;
+      }
+      std::optional<mf::LatestFrames<VideoFrame>::Entry> frame;
       {
         std::unique_lock lock(mutex_);
         if (stop_) break;
-        if (bitrate && session->input_requests && !queue_.empty() && session->submitted.size() < 8) {
-          frame = std::move(queue_.front());
-          queue_.pop_front();
-        } else if (queue_.empty() && session->submitted.empty()) {
+        if (bitrate && session->input_requests && !queue_.Empty() && session->submitted.size() < 8) {
+          frame = queue_.Pop();
+        } else if (queue_.Empty() && session->submitted.empty()) {
           wake_.wait(lock, [this, previous_bitrate] {
-            return stop_ || !queue_.empty() || bitrate_ != previous_bitrate;
+            return stop_ || !queue_.Empty() || bitrate_ != previous_bitrate;
           });
         } else {
           wake_.wait_for(lock, std::chrono::milliseconds(2));
@@ -454,12 +484,13 @@ class WindowsMfEncoder : public VideoEncoder {
   mutable std::mutex mutex_;
   std::condition_variable wake_;
   std::thread worker_;
-  std::deque<QueuedFrame> queue_;
+  mf::LatestFrames<VideoFrame> queue_;
   EncodedImageCallback* callback_ = nullptr;
   bool stop_ = true;
   bool initialized_ = false;
   HRESULT failure_ = S_OK;
   ULONG bitrate_ = 0;
+  double framerate_ = 0;
   std::string name_ = "Media Foundation H264 Encoder";
 };
 #undef MF_TRY
