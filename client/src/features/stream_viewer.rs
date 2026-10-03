@@ -38,6 +38,20 @@ pub(super) struct Popouts {
 
 pub(super) fn use_popouts(mut state: Signal<AppState>) -> Popouts {
     let mut detached = use_signal(HashSet::<String>::new);
+    let mut detached_epoch = use_signal(move || state.peek().voice_session_epoch);
+    use_effect(move || {
+        let s = state.read();
+        let epoch = s.voice_session_epoch;
+        let same_session = epoch == *detached_epoch.peek() && s.screen_viewer_token.is_some();
+        let mut current = detached.read().clone();
+        reconcile_detached(&mut current, &s.screen_viewing, same_session);
+        if current != *detached.peek() {
+            detached.set(current);
+        }
+        if epoch != *detached_epoch.peek() {
+            detached_epoch.set(epoch);
+        }
+    });
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let mut generation = use_signal(|| 0_u64);
     let mut creating = use_signal(|| false);
@@ -209,6 +223,18 @@ pub(super) fn use_popouts(mut state: Signal<AppState>) -> Popouts {
                 popup.window.set_focus();
             }
         }),
+    }
+}
+
+fn reconcile_detached(
+    detached: &mut HashSet<String>,
+    viewing: &HashSet<String>,
+    same_session: bool,
+) {
+    if same_session {
+        detached.retain(|pk| viewing.contains(pk));
+    } else {
+        detached.clear();
     }
 }
 
@@ -569,7 +595,34 @@ fn PopoutTile(props: PopoutTileProps) -> Element {
 
 #[cfg(test)]
 mod tests {
-    use super::grid_style;
+    use super::{grid_style, reconcile_detached};
+    use std::collections::HashSet;
+
+    #[test]
+    fn a_rewatched_stream_stays_in_the_app_until_explicitly_detached_again() {
+        let mut detached = HashSet::from(["A".into(), "B".into()]);
+        let mut viewing = detached.clone();
+        viewing.remove("A");
+        reconcile_detached(&mut detached, &viewing, true);
+        assert_eq!(detached, HashSet::from(["B".into()]));
+        viewing.insert("A".into());
+        reconcile_detached(&mut detached, &viewing, true);
+        assert!(!detached.contains("A"));
+        assert!(detached.contains("B"));
+        detached.insert("A".into());
+        reconcile_detached(&mut detached, &viewing, true);
+        assert!(detached.contains("A"));
+    }
+
+    #[test]
+    fn changing_voice_sessions_drops_old_external_window_selections() {
+        let viewing = HashSet::from(["A".into(), "B".into()]);
+        let mut detached = viewing.clone();
+        reconcile_detached(&mut detached, &viewing, false);
+        assert!(detached.is_empty());
+        reconcile_detached(&mut detached, &viewing, true);
+        assert!(detached.is_empty());
+    }
 
     #[test]
     fn two_streams_fit_side_by_side_on_a_wide_window() {
