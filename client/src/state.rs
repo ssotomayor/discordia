@@ -329,6 +329,7 @@ pub struct AppState {
     /// a failed join must hand playback back to the webview, not go silent.
     pub screen_audio_joined: bool,
     pub screen_video_token: Option<(String, String)>,
+    pub screen_viewer_token: Option<(String, String)>,
     pub screen_share_target: Option<crate::sysvideo::Target>,
     pub screen_picker: Option<Result<Vec<crate::sysvideo::Source>, String>>,
     pub screen_sharing: bool,
@@ -448,6 +449,7 @@ impl AppState {
             screen_token: None,
             screen_audio_token: None,
             screen_video_token: None,
+            screen_viewer_token: None,
             screen_share_target: None,
             screen_picker: None,
             screen_audio_joined: false,
@@ -524,6 +526,7 @@ impl AppState {
         self.screen_token = None;
         self.screen_audio_token = None;
         self.screen_video_token = None;
+        self.screen_viewer_token = None;
         self.screen_share_target = None;
         self.screen_sharing = false;
         self.screen_viewing.clear();
@@ -1749,9 +1752,11 @@ mod tests {
         s.screen_sharing = true;
         s.camera_on = true;
         s.screen_token = Some(("url".into(), "tok".into()));
+        s.screen_viewer_token = Some(("url".into(), "viewer".into()));
         s.end_voice_locally();
         assert!(s.media_keys.is_empty());
         assert!(!s.screen_sharing && !s.camera_on && s.screen_token.is_none());
+        assert!(s.screen_viewer_token.is_none());
         assert_eq!(s.voice.channel_id, None);
     }
 

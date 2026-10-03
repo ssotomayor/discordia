@@ -746,12 +746,16 @@ async fn the_server_evicts_every_seat_a_person_holds_in_a_call() {
     let voice_room = dioxusfun_server::livekit::room_name(channel);
     let screen_room = dioxusfun_server::livekit::screen_room_name(channel);
     let audio_identity = dioxusfun_server::livekit::screen_audio_identity(&who);
+    let video_identity = dioxusfun_server::livekit::screen_video_identity(&who);
+    let viewer_identity = dioxusfun_server::livekit::screen_viewer_identity(&who);
 
     let mut seats = Vec::new();
     for (room, identity) in [
         (&voice_room, who.clone()),
         (&screen_room, who.clone()),
         (&screen_room, audio_identity),
+        (&screen_room, video_identity),
+        (&screen_room, viewer_identity),
     ] {
         let (joined, events) =
             Room::connect(&url, &token(&identity, room, true), RoomOptions::default())

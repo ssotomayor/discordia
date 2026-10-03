@@ -65,21 +65,47 @@ pub fn spawn_gateway(
     mut state: Signal<AppState>,
     voice_tx: UnboundedSender<VoiceCmd>,
     on_disconnect: impl FnOnce(String) + 'static,
-) -> GatewayTx {
+) -> (GatewayTx, GatewayShutdown) {
     let (tx, rx) = unbounded_channel::<ClientMessage>();
     let gateway_tx = GatewayTx(tx.clone());
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let (done_tx, done_rx) = tokio::sync::watch::channel(false);
 
     spawn(async move {
-        let reason = match run(params, &tx, rx, state, &voice_tx).await {
+        let reason = match run(params, &tx, rx, state, &voice_tx, shutdown_rx).await {
             Ok(()) => "connection closed".to_string(),
             Err(e) => e,
         };
+        tracing::warn!(%reason, transport = ?state.peek().transport, "gateway session ended");
         state.write().status = ConnectionStatus::Disconnected;
         let _ = voice_tx.send(VoiceCmd::Disconnect { done: None });
         on_disconnect(reason);
+        done_tx.send_replace(true);
     });
 
-    gateway_tx
+    (
+        gateway_tx,
+        GatewayShutdown {
+            request: shutdown_tx,
+            done: done_rx,
+        },
+    )
+}
+
+#[derive(Clone)]
+pub struct GatewayShutdown {
+    request: tokio::sync::watch::Sender<bool>,
+    done: tokio::sync::watch::Receiver<bool>,
+}
+
+impl GatewayShutdown {
+    pub async fn close(&self) {
+        self.request.send_replace(true);
+        let mut done = self.done.clone();
+        if done.wait_for(|closed| *closed).await.is_err() {
+            tracing::debug!("gateway task already gone");
+        }
+    }
 }
 
 /// Off this machine every connection is QUIC — encrypted end to end and
@@ -269,6 +295,7 @@ async fn run(
     rx: UnboundedReceiver<ClientMessage>,
     mut state: Signal<AppState>,
     voice_tx: &UnboundedSender<VoiceCmd>,
+    shutdown: tokio::sync::watch::Receiver<bool>,
 ) -> Result<(), String> {
     let (dial, mut host_handle) =
         resolve_session(params.mode.clone(), params.identity.clone(), &mut state).await?;
@@ -310,10 +337,27 @@ async fn run(
         rx,
         voice_tx,
         host_updates,
+        shutdown,
     };
     let outcome = match ws_stream {
         Socket::Tcp(ws) => run_session(*ws, params, origin, state, links).await,
-        Socket::Quic(ws, _guard) => run_session(*ws, params, origin, state, links).await,
+        Socket::Quic(ws, guard) => {
+            let outcome = run_session(*ws, params, origin, state, links).await;
+            if outcome.is_err() {
+                tracing::warn!(
+                    close_reason = ?guard.close_reason(),
+                    relayed = guard.relayed(),
+                    "gateway QUIC session failed"
+                );
+            }
+            if tokio::time::timeout(std::time::Duration::from_secs(1), guard.shutdown())
+                .await
+                .is_err()
+            {
+                tracing::warn!("gateway QUIC endpoint shutdown timed out");
+            }
+            outcome
+        }
     };
     drop(host_handle);
     outcome
@@ -349,6 +393,7 @@ struct Links<'a> {
     rx: UnboundedReceiver<ClientMessage>,
     voice_tx: &'a UnboundedSender<VoiceCmd>,
     host_updates: Option<UnboundedReceiver<crate::rendezvous::HostUpdate>>,
+    shutdown: tokio::sync::watch::Receiver<bool>,
 }
 
 async fn run_session<S>(
@@ -366,6 +411,7 @@ where
         mut rx,
         voice_tx,
         mut host_updates,
+        mut shutdown,
     } = links;
     state.write().identity = Some(params.identity.clone());
     let (mut ws_tx, mut ws_rx) = ws_stream.split();
@@ -437,6 +483,10 @@ where
     loop {
         watch.finish("session");
         tokio::select! {
+            _ = shutdown.wait_for(|requested| *requested) => {
+                close_gateway_socket(&mut ws_tx, &mut ws_rx).await;
+                break;
+            }
             update = async {
                 match host_updates.as_mut() {
                     Some(rx) => rx.recv().await,
@@ -503,6 +553,71 @@ where
     tracing::info!("session loop ended");
 
     Ok(())
+}
+
+async fn close_gateway_socket<T, R>(tx: &mut T, rx: &mut R)
+where
+    T: futures_util::Sink<WsMessage> + Unpin,
+    T::Error: std::fmt::Display,
+    R: futures_util::Stream<Item = Result<WsMessage, tokio_tungstenite::tungstenite::Error>>
+        + Unpin,
+{
+    let close = async {
+        if let Err(error) = tx.send(WsMessage::Close(None)).await {
+            tracing::debug!(%error, "gateway already closed during teardown");
+            return;
+        }
+        while let Some(Ok(frame)) = rx.next().await {
+            if matches!(frame, WsMessage::Close(_)) {
+                break;
+            }
+        }
+    };
+    if tokio::time::timeout(std::time::Duration::from_secs(2), close)
+        .await
+        .is_err()
+    {
+        tracing::warn!("gateway close handshake timed out");
+    }
+}
+
+#[cfg(test)]
+mod graceful_shutdown_tests {
+    use super::*;
+    use tokio_tungstenite::{WebSocketStream, tungstenite::protocol::Role};
+
+    #[tokio::test]
+    async fn closing_gateway_sends_a_close_frame_and_waits_for_the_peer() {
+        let (client, server) = tokio::io::duplex(4096);
+        let client = WebSocketStream::from_raw_socket(client, Role::Client, None).await;
+        let mut server = WebSocketStream::from_raw_socket(server, Role::Server, None).await;
+        let (mut tx, mut rx) = client.split();
+        let peer = async {
+            assert!(matches!(
+                server.next().await,
+                Some(Ok(WsMessage::Close(None)))
+            ));
+            server.flush().await.expect("close acknowledgement");
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            tokio::join!(close_gateway_socket(&mut tx, &mut rx), peer);
+        })
+        .await
+        .expect("close handshake completes");
+    }
+
+    #[tokio::test]
+    async fn an_unresponsive_gateway_cannot_block_exit_forever() {
+        let (client, _server) = tokio::io::duplex(4096);
+        let client = WebSocketStream::from_raw_socket(client, Role::Client, None).await;
+        let (mut tx, mut rx) = client.split();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            close_gateway_socket(&mut tx, &mut rx),
+        )
+        .await
+        .expect("exit is bounded");
+    }
 }
 
 /// Stable, so roles written before positions were kept apart stay in the
@@ -1192,12 +1307,16 @@ fn apply(
             token,
             audio_token,
             video_token,
+            viewer_token,
             ..
         } => {
             s.screen_token = Some((livekit_url.clone(), token));
             s.screen_audio_token =
                 (!audio_token.is_empty()).then_some((livekit_url.clone(), audio_token));
-            s.screen_video_token = (!video_token.is_empty()).then_some((livekit_url, video_token));
+            s.screen_video_token =
+                (!video_token.is_empty()).then_some((livekit_url.clone(), video_token));
+            s.screen_viewer_token =
+                (!viewer_token.is_empty()).then_some((livekit_url, viewer_token));
         }
         ServerMessage::Error { message } => {
             tracing::warn!(server_error = %message);

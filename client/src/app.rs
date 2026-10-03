@@ -595,6 +595,35 @@ fn window_close_behavior(
 
 #[component]
 pub fn App() -> Element {
+    let mut quitting = use_signal(|| false);
+    use_context_provider(|| QuitRequest(quitting));
+    let mut session = use_signal(|| None::<SessionParams>);
+    let quit_window = dioxus::desktop::use_window();
+    let close_to_tray = use_signal(|| false);
+    let close_window = quit_window.clone();
+    use_hook(move || {
+        close_window.set_close_behavior(dioxus::desktop::WindowCloseBehaviour::WindowHides)
+    });
+    let window_id = quit_window.window.id();
+    dioxus::desktop::use_wry_event_handler(move |event, _| {
+        use dioxus::desktop::tao::event::{Event, WindowEvent};
+        if let Event::WindowEvent {
+            window_id: id,
+            event: WindowEvent::CloseRequested,
+            ..
+        } = event
+            && *id == window_id
+            && !*close_to_tray.peek()
+        {
+            quitting.set(true);
+        }
+    });
+    use_effect(move || {
+        if quitting() && session.read().is_none() {
+            quit_window.set_close_behavior(dioxus::desktop::WindowCloseBehaviour::WindowCloses);
+            quit_window.close();
+        }
+    });
     #[cfg(target_os = "windows")]
     {
         use dioxus::desktop::{
@@ -605,19 +634,16 @@ pub fn App() -> Element {
 
         let tray_window = dioxus::desktop::use_window();
         let tray_quit_available = TRAY_QUIT_AVAILABLE.load(std::sync::atomic::Ordering::SeqCst);
-        let tray_quit_window = tray_window.clone();
         use_future(move || {
             let receiver = TRAY_QUIT_RECEIVER
                 .get()
                 .and_then(|receiver| receiver.lock().ok())
                 .and_then(|mut receiver| receiver.take());
-            let tray_window = tray_quit_window.clone();
             async move {
                 if let Some(mut receiver) = receiver
                     && receiver.recv().await.is_some()
                 {
-                    tray_window.set_close_behavior(WindowCloseBehaviour::WindowCloses);
-                    tray_window.close();
+                    quitting.set(true);
                 }
             }
         });
@@ -678,15 +704,15 @@ pub fn App() -> Element {
         });
 
         use_effect(move || {
-            tray_window.set_close_behavior(window_close_behavior(
-                tray_icon.is_some(),
-                tray_quit_available,
-            ));
+            let mut close_to_tray = close_to_tray;
+            close_to_tray.set(
+                window_close_behavior(tray_icon.is_some(), tray_quit_available)
+                    == WindowCloseBehaviour::WindowHides,
+            );
         });
     }
 
     let mut identity = use_signal(|| Identity::load().ok().flatten());
-    let mut session = use_signal(|| None::<SessionParams>);
     let mut error = use_signal(|| None::<String>);
     let last_session = use_signal(|| session::load().ok().flatten());
 
@@ -792,6 +818,9 @@ pub fn App() -> Element {
     }
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct QuitRequest(pub Signal<bool>);
+
 fn session_key(p: &SessionParams) -> String {
     let mode = match &p.mode {
         SessionMode::Remote { server_url } => format!("remote:{server_url}"),
@@ -820,7 +849,7 @@ fn session_key(p: &SessionParams) -> String {
 #[component]
 /// Prop-less so Dioxus memoizes it — re-evaluating it warns "Changing the
 /// props of Style/Script is not supported".
-fn AppHead() -> Element {
+pub(crate) fn AppHead() -> Element {
     rsx! {
         document::Style { {TAILWIND_CSS} }
         document::Script { {LIVEKIT_JS} }

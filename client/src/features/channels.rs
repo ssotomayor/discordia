@@ -1468,8 +1468,8 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
     rsx! {
         div { class: "border-t border-[var(--border)]",
             if show_banner {
-                div { class: "px-3 pt-2.5 pb-2 border-b border-[var(--border)]",
-                    div { class: "flex items-center gap-2",
+                div { class: "px-3 pt-2.5 pb-2 border-b border-[var(--border)] grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 gap-y-1",
+                    div { class: "min-w-0 flex items-center gap-2",
                         span {
                             class: "w-2 h-2 rounded-full shrink-0",
                             style: "background-color:{dot_color};",
@@ -1478,13 +1478,25 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                         span {
                             class: "text-[12.5px] font-semibold truncate",
                             style: "color:{dot_color};",
+                            title: "{voice_where}",
                             "{voice_where}"
                         }
-                        span { class: "ml-auto shrink-0 font-mono text-[10.5px] text-[var(--text-dim)]",
+                        span { class: "shrink-0 font-mono text-[10.5px] text-[var(--text-dim)]",
                             "{voice_bitrate_kbps} kbps"
                         }
                     }
-                    div { class: "mt-px text-[11px] text-[var(--text-dim)] truncate", "{voice_sub}" }
+                    div { class: "min-w-0 text-[11px] text-[var(--text-dim)] truncate", title: "{voice_sub}", "{voice_sub}" }
+                    button {
+                        class: "col-start-2 row-start-1 row-span-2 justify-self-end h-9 px-2.5 flex items-center justify-center gap-1.5 rounded-lg border text-[11.5px] font-semibold text-[var(--danger)] transition-colors hover:brightness-125",
+                        style: "background-color: color-mix(in srgb, var(--danger) 10%, transparent); border-color: color-mix(in srgb, var(--danger) 35%, transparent);",
+                        title: "Leave voice",
+                        onclick: move |_| {
+                            g_for_hang.send(ClientMessage::LeaveVoice);
+                            v_for_hang.send(VoiceCmd::Disconnect { done: None });
+                        },
+                        span { class: "block w-4 h-4", dangerous_inner_html: crate::features::icons::PHONE_HANGUP }
+                        "Leave"
+                    }
                 }
             }
             // Always present, so you can arrive already muted; the share and
@@ -1619,17 +1631,6 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                                 s.soundboard_adjusting = true;
                             },
                             dangerous_inner_html: crate::features::icons::SOUNDBOARD,
-                        }
-                        button {
-                            class: "shrink-0 h-9 px-3 flex items-center gap-1.5 rounded-lg border text-[11.5px] font-semibold text-[var(--danger)] transition-colors",
-                            style: "background: color-mix(in srgb, var(--danger) 10%, transparent); border-color: color-mix(in srgb, var(--danger) 35%, transparent);",
-                            title: "Leave voice",
-                            onclick: move |_| {
-                                g_for_hang.send(ClientMessage::LeaveVoice);
-                                v_for_hang.send(VoiceCmd::Disconnect { done: None });
-                            },
-                            span { class: "block w-4 h-4", dangerous_inner_html: crate::features::icons::PHONE_OFF }
-                            "Leave"
                         }
                     }
             }
