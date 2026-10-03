@@ -1,7 +1,7 @@
 use dioxus::prelude::*;
 
 use crate::features::globe::{Globe, GlobePin, describe};
-use crate::identity::Identity;
+use crate::identity::{Identity, IdentitySource};
 use crate::protocol::rendezvous::{DiscoverEntry, GeoPoint};
 use crate::session::{self, SavedSession};
 use crate::state::{SessionMode, SessionParams};
@@ -518,6 +518,10 @@ pub fn IdentityCard(
     let mut draft = use_signal(|| identity.display_name.clone());
     let signature = crate::identity::color_signature(&identity.pubkey, 16);
     let npub = identity.npub();
+    let phrase = match &identity.source {
+        IdentitySource::Phrase(p) => Some(p.clone()),
+        IdentitySource::Nsec(_) => None,
+    };
 
     rsx! {
         div { class: "rounded-2xl border border-[var(--edge)] bg-[var(--panel2)] p-4 space-y-3",
@@ -604,6 +608,7 @@ pub fn IdentityCard(
             div { class: "text-[11px] text-[var(--text-dim)]",
                 "This color signature is derived from your public key. Nobody else has it."
             }
+            RecoveryPhrase { phrase }
             details { class: "text-[10px] text-[var(--text-dim)]",
                 summary { class: "cursor-pointer hover:text-[var(--text-muted)] transition-colors",
                     "Identity file location"
@@ -611,6 +616,109 @@ pub fn IdentityCard(
                 code { class: "block mt-1 text-[var(--text-muted)] font-mono break-all select-all",
                     "{file_path}"
                 }
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Reveal {
+    Hidden,
+    Confirming,
+    Shown,
+}
+
+const REVEAL_FOR: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Two clicks, not one, and it closes itself: the phrase is the whole account,
+/// and the card it sits in stays open as long as the window does.
+#[component]
+fn RecoveryPhrase(phrase: Option<String>) -> Element {
+    let mut reveal = use_signal(|| Reveal::Hidden);
+    let mut generation = use_signal(|| 0u32);
+
+    let Some(phrase) = phrase else {
+        return rsx! {
+            div { class: "text-[10px] text-[var(--text-dim)]",
+                "Imported from a private key, so there is no recovery phrase. Keep the key string itself."
+            }
+        };
+    };
+    let mut show = move || {
+        let current = generation() + 1;
+        generation.set(current);
+        reveal.set(Reveal::Shown);
+        spawn(async move {
+            tokio::time::sleep(REVEAL_FOR).await;
+            if generation() == current {
+                reveal.set(Reveal::Hidden);
+            }
+        });
+    };
+
+    rsx! {
+        div { class: "space-y-1.5",
+            div { class: "flex items-center gap-2",
+                span { class: "text-[10px] uppercase tracking-wider text-[var(--text-dim)]",
+                    "Recovery phrase"
+                }
+                span { class: "flex-1" }
+                match reveal() {
+                    Reveal::Hidden => rsx! {
+                        button {
+                            r#type: "button",
+                            class: "text-[10px] text-[var(--accent)] hover:text-[var(--accent-strong)] uppercase tracking-wider",
+                            onclick: move |_| reveal.set(Reveal::Confirming),
+                            "Reveal"
+                        }
+                    },
+                    Reveal::Confirming => rsx! {
+                        button {
+                            r#type: "button",
+                            class: "text-[10px] text-[var(--text-muted)] hover:text-[var(--text)] uppercase tracking-wider",
+                            onclick: move |_| reveal.set(Reveal::Hidden),
+                            "Cancel"
+                        }
+                    },
+                    Reveal::Shown => rsx! {
+                        button {
+                            r#type: "button",
+                            class: "text-[10px] text-[var(--accent)] hover:text-[var(--accent-strong)] uppercase tracking-wider",
+                            onclick: move |_| {
+                                generation.set(generation() + 1);
+                                reveal.set(Reveal::Hidden);
+                            },
+                            "Hide"
+                        }
+                    },
+                }
+            }
+            match reveal() {
+                Reveal::Hidden => rsx! {
+                    div { class: "text-[10px] text-[var(--text-dim)]",
+                        "Twelve words that restore this identity on any device."
+                    }
+                },
+                Reveal::Confirming => rsx! {
+                    p { class: "text-[10px] text-[var(--warn)]",
+                        "Anyone who sees these words owns this identity, and any wallet that shares the phrase. Make sure nobody is looking or recording."
+                    }
+                    button {
+                        r#type: "button",
+                        class: "w-full text-[10px] text-[var(--warn)] hover:text-[var(--text)] uppercase tracking-wider border border-[var(--warn)] rounded-md px-2.5 py-1 transition-colors",
+                        onclick: move |_| show(),
+                        "Show the phrase"
+                    }
+                },
+                Reveal::Shown => rsx! {
+                    div { class: "text-sm font-mono text-[var(--text)] border border-[var(--edge)] rounded-xl p-3 leading-relaxed select-all break-words",
+                        style: "background: var(--bg2);",
+                        "{phrase}"
+                    }
+                    div { class: "text-[10px] text-[var(--text-dim)]",
+                        "Hides by itself after a minute."
+                    }
+                },
             }
         }
     }

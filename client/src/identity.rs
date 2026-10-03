@@ -5,6 +5,7 @@ use bip39::{Language, Mnemonic};
 use hmac::{Hmac, Mac};
 use secp256k1::{Keypair, Message, PublicKey, Scalar, Secp256k1, SecretKey};
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroizing;
 use sha2::{Digest, Sha256, Sha512};
 
 const FILE_VERSION: u32 = 2;
@@ -184,8 +185,9 @@ impl Identity {
         set_active(&self.pubkey)
     }
 
-    /// The file holds the encrypted key and never the phrase: a phrase is
-    /// shown once at creation and is the user's to keep, not the disk's.
+    /// The phrase goes to disk sealed under the same passphrase as the key: it
+    /// is the key in another spelling, so it widens nothing, and it can be
+    /// shown again.
     fn write_key_file(&self) -> Result<(), String> {
         let dir = identities_dir();
         std::fs::create_dir_all(&dir).map_err(|e| format!("create identities dir: {e}"))?;
@@ -195,11 +197,25 @@ impl Identity {
             &passphrase,
             crate::keyvault::LOG_N,
         )?;
+        let entropy = match &self.source {
+            IdentitySource::Phrase(phrase) => {
+                let mnemonic = Mnemonic::parse_in_normalized(Language::English, phrase)
+                    .map_err(|e| format!("recovery phrase: {e}"))?;
+                let entropy = Zeroizing::new(mnemonic.to_entropy());
+                Some(crate::keyvault::seal(
+                    &entropy,
+                    &passphrase,
+                    crate::keyvault::LOG_N,
+                )?)
+            }
+            IdentitySource::Nsec(_) => None,
+        };
         let stored = Stored {
             version: FILE_VERSION,
             display_name: self.display_name.clone(),
             pubkey: self.pubkey.clone(),
             ncryptsec: Some(ncryptsec),
+            entropy,
             seed_phrase: None,
             nsec: None,
         };
@@ -268,7 +284,13 @@ impl Identity {
                     .ok_or_else(|| "identity file has no ncryptsec".to_string())?;
                 let passphrase = crate::keyvault::passphrase()?;
                 let bytes = crate::keyvault::decrypt(&ncryptsec, &passphrase)?;
-                Self::restore_from_private_key(hex::encode(bytes.as_ref()), stored.display_name)
+                let mut identity =
+                    Self::restore_from_private_key(hex::encode(bytes.as_ref()), stored.display_name)?;
+                if let Some(sealed) = stored.entropy {
+                    identity.source = recover_phrase(&sealed, &passphrase, &identity.pubkey)
+                        .unwrap_or(identity.source);
+                }
+                Ok(identity)
             }
             PLAINTEXT_FILE_VERSION => {
                 if let Some(phrase) = stored.seed_phrase {
@@ -469,8 +491,28 @@ pub(crate) fn write_private(path: &Path, content: &str) -> Result<(), String> {
     })
 }
 
-/// v2 carries `ncryptsec`; v1 carried the phrase or nsec in the clear and is
-/// still read so it can be rewritten.
+/// A phrase that does not derive the key it sits beside is a backup that
+/// would restore someone else, so it is dropped rather than shown.
+fn recover_phrase(sealed: &str, passphrase: &str, pubkey: &str) -> Option<IdentitySource> {
+    let entropy = match crate::keyvault::unseal(sealed, passphrase) {
+        Ok(entropy) => entropy,
+        Err(e) => {
+            tracing::warn!(error = %e, "sealed recovery phrase unreadable");
+            return None;
+        }
+    };
+    let mnemonic = Mnemonic::from_entropy_in(Language::English, &entropy).ok()?;
+    let from_phrase = Identity::from_mnemonic(mnemonic, String::new()).ok()?;
+    if from_phrase.pubkey != pubkey {
+        tracing::warn!("sealed recovery phrase derives a different key; ignoring it");
+        return None;
+    }
+    Some(from_phrase.source)
+}
+
+/// v2 carries `ncryptsec` and, for a key born from a phrase, its sealed
+/// entropy; v1 carried the phrase or nsec in the clear and is still read so
+/// it can be rewritten.
 #[derive(Serialize, Deserialize)]
 struct Stored {
     version: u32,
@@ -478,6 +520,8 @@ struct Stored {
     pubkey: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     ncryptsec: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    entropy: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     seed_phrase: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -694,6 +738,50 @@ mod store_tests {
         std::fs::create_dir_all(&dir).expect("sandbox");
         TEST_CONFIG_DIR.with(|d| *d.borrow_mut() = Some(dir.clone()));
         dir
+    }
+
+    #[test]
+    fn a_created_phrase_is_read_back_and_an_imported_key_has_none() {
+        sandbox("phrase-back");
+        let id = Identity::create("maria").expect("identity");
+        id.save().expect("save");
+        let back = Identity::load().expect("load").expect("signed in");
+        assert_eq!(back.source, id.source);
+        assert!(matches!(back.source, IdentitySource::Phrase(_)));
+
+        let imported = Identity::restore_from_private_key("22".repeat(32), "nsec").expect("import");
+        imported.save().expect("save");
+        let content = std::fs::read_to_string(imported.key_path()).expect("file");
+        assert!(!content.contains("entropy"), "{content}");
+        let back = Identity::sign_in(&imported.pubkey).expect("sign in");
+        assert!(matches!(back.source, IdentitySource::Nsec(_)));
+    }
+
+    /// A file whose sealed phrase belongs to another key still opens, but the
+    /// phrase is not offered as this key's backup.
+    #[test]
+    fn a_foreign_phrase_beside_a_key_is_dropped() {
+        sandbox("foreign-phrase");
+        let id = Identity::create("ana").expect("identity");
+        id.save().expect("save");
+        let other = Identity::create("other").expect("identity");
+        let IdentitySource::Phrase(phrase) = &other.source else {
+            panic!("expected a phrase")
+        };
+        let mnemonic = Mnemonic::parse_in_normalized(Language::English, phrase).unwrap();
+        let passphrase = crate::keyvault::passphrase().unwrap();
+        let sealed =
+            crate::keyvault::seal(&mnemonic.to_entropy(), &passphrase, crate::keyvault::LOG_N)
+                .unwrap();
+        let path = id.key_path();
+        let mut file: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        file["entropy"] = serde_json::Value::String(sealed);
+        std::fs::write(&path, file.to_string()).unwrap();
+
+        let back = Identity::load().expect("load").expect("signed in");
+        assert_eq!(back.pubkey, id.pubkey);
+        assert!(matches!(back.source, IdentitySource::Nsec(_)), "{:?}", back.source);
     }
 
     /// Sign out has to leave something behind, or the list it feeds is always

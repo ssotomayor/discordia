@@ -195,6 +195,60 @@ pub fn encrypt(secret: &[u8; 32], passphrase: &str, log_n: u8) -> Result<String,
     bech32::encode::<Bech32>(hrp, &out).map_err(|e| format!("encode ncryptsec: {e}"))
 }
 
+const SEALED_VERSION: u8 = 0x01;
+const SEALED_AAD: &[u8] = b"dioxusfun/sealed/v1";
+const SEALED_HEAD: usize = 1 + 1 + SALT_LEN + NONCE_LEN;
+
+/// Same passphrase, same cipher, any length. `encrypt` stays at 32 bytes so a
+/// key remains an `ncryptsec` another wallet can read; nothing else reads this.
+pub fn seal(plain: &[u8], passphrase: &str, log_n: u8) -> Result<String, String> {
+    let mut salt = [0u8; SALT_LEN];
+    let mut nonce = [0u8; NONCE_LEN];
+    rand::rngs::OsRng.fill_bytes(&mut salt);
+    rand::rngs::OsRng.fill_bytes(&mut nonce);
+    let key = derive(passphrase, &salt, log_n)?;
+    let cipher = XChaCha20Poly1305::new(key.as_ref().into());
+    let ciphertext = cipher
+        .encrypt(
+            XNonce::from_slice(&nonce),
+            Payload {
+                msg: plain,
+                aad: SEALED_AAD,
+            },
+        )
+        .map_err(|_| "seal".to_string())?;
+    let mut out = Vec::with_capacity(SEALED_HEAD + ciphertext.len());
+    out.push(SEALED_VERSION);
+    out.push(log_n);
+    out.extend_from_slice(&salt);
+    out.extend_from_slice(&nonce);
+    out.extend_from_slice(&ciphertext);
+    Ok(hex::encode(out))
+}
+
+pub fn unseal(sealed: &str, passphrase: &str) -> Result<Zeroizing<Vec<u8>>, String> {
+    let data = hex::decode(sealed.trim()).map_err(|e| format!("sealed data: {e}"))?;
+    if data.len() < SEALED_HEAD + 16 || data[0] != SEALED_VERSION {
+        return Err("sealed data has an unknown shape or version".into());
+    }
+    let log_n = data[1];
+    let salt = &data[2..2 + SALT_LEN];
+    let nonce = &data[2 + SALT_LEN..SEALED_HEAD];
+    let ciphertext = &data[SEALED_HEAD..];
+    let key = derive(passphrase, salt, log_n)?;
+    let cipher = XChaCha20Poly1305::new(key.as_ref().into());
+    cipher
+        .decrypt(
+            XNonce::from_slice(nonce),
+            Payload {
+                msg: ciphertext,
+                aad: SEALED_AAD,
+            },
+        )
+        .map(Zeroizing::new)
+        .map_err(|_| "sealed with a vault passphrase this machine no longer has".to_string())
+}
+
 pub fn decrypt(ncryptsec: &str, passphrase: &str) -> Result<Zeroizing<[u8; 32]>, String> {
     let (hrp, data) = bech32::decode(ncryptsec.trim()).map_err(|e| format!("ncryptsec: {e}"))?;
     if hrp.as_str() != "ncryptsec" {
@@ -247,6 +301,17 @@ mod tests {
         let i = tampered.len() - 10;
         tampered[i] = if tampered[i] == b'q' { b'p' } else { b'q' };
         assert!(decrypt(std::str::from_utf8(&tampered).unwrap(), "correct horse").is_err());
+    }
+
+    #[test]
+    fn sealed_bytes_of_any_length_round_trip_and_do_not_pass_as_a_key() {
+        let entropy = [9u8; 16];
+        let sealed = seal(&entropy, "correct horse", LOG_N).expect("seal");
+        assert_eq!(**unseal(&sealed, "correct horse").expect("unseal"), entropy[..]);
+        assert!(unseal(&sealed, "wrong horse").is_err());
+        assert!(decrypt(&sealed, "correct horse").is_err());
+        let key = encrypt(&[7u8; 32], "correct horse", LOG_N).expect("encrypt");
+        assert!(unseal(&key, "correct horse").is_err());
     }
 
     #[test]
