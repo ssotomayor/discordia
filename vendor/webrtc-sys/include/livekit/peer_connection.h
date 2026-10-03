@@ -93,7 +93,7 @@ class PeerConnection : webrtc::PeerConnectionObserver {
       std::shared_ptr<MediaStreamTrack> track,
       const rust::Vec<rust::String>& stream_ids) const;
 
-  void remove_track(std::shared_ptr<RtpSender> sender) const;
+  RtcError remove_track(std::shared_ptr<RtpSender> sender) const;
 
   void get_stats(
       rust::Box<PeerContext> ctx,

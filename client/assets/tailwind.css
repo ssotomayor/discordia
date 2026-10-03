@@ -246,9 +246,6 @@
   .top-10 {
     top: calc(var(--spacing) * 10);
   }
-  .top-16 {
-    top: calc(var(--spacing) * 16);
-  }
   .top-\[58px\] {
     top: 58px;
   }
@@ -308,9 +305,6 @@
   }
   .left-3 {
     left: calc(var(--spacing) * 3);
-  }
-  .left-6 {
-    left: calc(var(--spacing) * 6);
   }
   .z-10 {
     z-index: 10;
@@ -620,6 +614,9 @@
   }
   .min-h-0 {
     min-height: calc(var(--spacing) * 0);
+  }
+  .min-h-9 {
+    min-height: calc(var(--spacing) * 9);
   }
   .w-0 {
     width: calc(var(--spacing) * 0);

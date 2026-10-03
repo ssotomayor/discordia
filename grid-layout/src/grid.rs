@@ -145,6 +145,10 @@ fn DragOverlay() -> Element {
             class: "dioxus-grid-drag-overlay",
             style: "position: fixed; inset: 0; cursor: grabbing; z-index: 9999; touch-action: none;",
             onpointermove: move |evt| {
+                if !evt.held_buttons().contains(dioxus::html::input_data::MouseButton::Primary) {
+                    commit_and_clear(&mut drag, store, ctx.on_change, ctx.is_free());
+                    return;
+                }
                 let (cx, cy) = (evt.client_coordinates().x, evt.client_coordinates().y);
 
                 let (kind, item_id, projected) = {

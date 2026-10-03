@@ -22,16 +22,24 @@ fn persist_layout(
     layout: dioxus_grid_layout::LayoutStore,
 ) {
     let mut next = settings.read().clone();
-    next.layout_cells = layout
+    let streams = layout.get("streams").is_some();
+    let cells = layout
         .snapshot()
         .into_iter()
         .map(|(id, p)| (id, [p.x, p.y, p.w, p.h]))
         .collect();
-    next.layout_free = layout
+    let free = layout
         .free_snapshot()
         .into_iter()
         .map(|(id, r)| (id, [r.x, r.y, r.w, r.h]))
         .collect();
+    if streams {
+        next.stream_layout_cells = cells;
+        next.stream_layout_free = free;
+    } else {
+        next.layout_cells = cells;
+        next.layout_free = free;
+    }
     settings.set(next.clone());
     crate::settings::save(&next);
 }
@@ -76,7 +84,7 @@ const LAYOUT_TEMPLATES: &[(&str, fn() -> Vec<(String, GridPosition)>, &str)] = &
     ),
 ];
 
-fn tpl_default() -> Vec<(String, GridPosition)> {
+pub(super) fn tpl_default() -> Vec<(String, GridPosition)> {
     vec![
         ("guilds".into(), GridPosition::new(0, 0, 1, GRID_ROWS)),
         ("channels".into(), GridPosition::new(1, 0, 2, GRID_ROWS)),
@@ -185,7 +193,14 @@ fn LayoutButton(
         } else {
             Vec::new()
         };
-        layout.restore(make(), free);
+        let mut arrangement = super::stream_layout::Arrangement {
+            cells: make(),
+            free,
+        };
+        if layout.get("streams").is_some() {
+            arrangement = super::stream_layout::above_chat(arrangement, 12, GRID_ROWS);
+        }
+        layout.restore(arrangement.cells, arrangement.free);
         persist_layout(settings, layout);
     };
 
@@ -385,6 +400,13 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
     crate::state::use_dm_read_persistence(state);
     crate::state::use_dm_clock_persistence(state);
     crate::state::use_volume_persistence(state);
+    let popouts = super::stream_viewer::use_popouts(state);
+    provide_context(popouts);
+    let streams_visible = use_memo(move || {
+        let s = state.read();
+        let detached = popouts.detached.read();
+        s.screen_viewing.iter().any(|pk| !detached.contains(pk))
+    });
 
     let layout = use_layout_store(|| {
         let saved = settings.read();
@@ -411,6 +433,53 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
         let mut store = layout;
         for (id, [x, y, w, h]) in &saved.layout_free {
             store.set_free(id.clone(), FloatRect::new(*x, *y, *w, *h));
+        }
+    });
+    let mut normal_arrangement = use_signal(|| None::<super::stream_layout::Arrangement>);
+    use_effect(move || {
+        let active = streams_visible();
+        let mut store = layout;
+        if active && normal_arrangement.peek().is_none() {
+            let mut base = super::stream_layout::Arrangement {
+                cells: store.snapshot(),
+                free: store.free_snapshot(),
+            };
+            base.cells.retain(|(id, _)| id != "streams");
+            base.free.retain(|(id, _)| id != "streams");
+            let saved = settings.peek();
+            let next = if saved
+                .stream_layout_cells
+                .iter()
+                .any(|(id, _)| id == "streams")
+            {
+                let saved = super::stream_layout::Arrangement {
+                    cells: saved
+                        .stream_layout_cells
+                        .iter()
+                        .map(|(id, [x, y, w, h])| (id.clone(), GridPosition::new(*x, *y, *w, *h)))
+                        .collect(),
+                    free: saved
+                        .stream_layout_free
+                        .iter()
+                        .map(|(id, [x, y, w, h])| (id.clone(), FloatRect::new(*x, *y, *w, *h)))
+                        .collect(),
+                };
+                super::stream_layout::restore_streams(
+                    super::stream_layout::above_chat(base.clone(), 12, GRID_ROWS),
+                    saved,
+                )
+            } else {
+                super::stream_layout::above_chat(base.clone(), 12, GRID_ROWS)
+            };
+            drop(saved);
+            normal_arrangement.set(Some(base));
+            store.restore(next.cells, next.free);
+        } else if !active {
+            let previous = normal_arrangement.peek().clone();
+            if let Some(previous) = previous {
+                normal_arrangement.set(None);
+                store.restore(previous.cells, previous.free);
+            }
         }
     });
 
@@ -536,7 +605,6 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
             crate::mediakey::MediaKeyBridge {}
             crate::features::camera::CameraSelfPreview {}
             crate::features::camera::CameraGridWindow {}
-            crate::features::screenshare::ScreenWatchWindow {}
             crate::features::profiles::ProfileCard {}
             crate::features::chat::ImageViewer {}
             if status == ConnectionStatus::Connecting {
@@ -608,7 +676,8 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
                     GridItem { id: "channels", x: 1, y: 0, w: 2, h: GRID_ROWS, min_w: 2, min_h: 10,
                         ChannelsColumn {}
                     }
-                    GridItem { id: "chat", x: 3, y: 0, w: 7, h: GRID_ROWS, min_w: 3, min_h: 10,
+                    crate::features::screenshare::ScreenWatchWindow {}
+                    GridItem { id: "chat", x: 3, y: 0, w: 7, h: GRID_ROWS, min_w: 3, min_h: 4,
                         // The log is the darkest surface in the window: the
                         // panels around it read as chrome only if they sit above it.
                         div { class: "panel-hover w-full h-full flex flex-col bg-[var(--bg)] border border-[var(--border)] rounded-xl overflow-hidden",
