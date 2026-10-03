@@ -149,6 +149,10 @@ pub fn screen_video_identity(user_pubkey: &str) -> String {
     format!("{user_pubkey}#video")
 }
 
+pub fn screen_viewer_identity(user_pubkey: &str) -> String {
+    format!("{user_pubkey}#viewer")
+}
+
 pub async fn screen_token_as(
     cfg: &LiveKitConfig,
     identity: &str,
@@ -205,7 +209,8 @@ pub async fn evict(cfg: &LiveKitConfig, channel_id: Id, user_pubkey: &str) {
         (room_name(channel_id), user_pubkey.to_string()),
         (screen.clone(), user_pubkey.to_string()),
         (screen.clone(), screen_audio_identity(user_pubkey)),
-        (screen, screen_video_identity(user_pubkey)),
+        (screen.clone(), screen_video_identity(user_pubkey)),
+        (screen, screen_viewer_identity(user_pubkey)),
     ];
     for (room, identity) in seats {
         match client.remove_participant(&room, &identity).await {

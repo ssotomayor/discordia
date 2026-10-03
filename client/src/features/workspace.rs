@@ -40,6 +40,20 @@ fn default_layout() -> Vec<(String, GridPosition)> {
     LAYOUT_TEMPLATES[0].1()
 }
 
+fn default_free_layout() -> Vec<(String, FloatRect)> {
+    let transferred_width = 7.0 / 12.0 * 0.10;
+    vec![
+        (
+            "channels".into(),
+            FloatRect::new(1.0 / 12.0, 0.0, 2.0 / 12.0 + transferred_width, 1.0),
+        ),
+        (
+            "chat".into(),
+            FloatRect::new(3.0 / 12.0 + transferred_width, 0.0, 7.0 / 12.0 * 0.90, 1.0),
+        ),
+    ]
+}
+
 /// Whole-window arrangements, each covering all four panels and all twelve
 /// columns. A template that left a gap would read as a bug in the drag handles.
 #[allow(clippy::type_complexity)]
@@ -164,9 +178,14 @@ fn LayoutButton(
     let mut open = use_signal(|| false);
     let mut edit_mode = edit_mode;
 
-    let apply = move |make: fn() -> Vec<(String, GridPosition)>| {
+    let apply = move |make: fn() -> Vec<(String, GridPosition)>, is_default: bool| {
         let mut layout = layout;
-        layout.restore(make(), Vec::new());
+        let free = if is_default {
+            default_free_layout()
+        } else {
+            Vec::new()
+        };
+        layout.restore(make(), free);
         persist_layout(settings, layout);
     };
 
@@ -198,7 +217,7 @@ fn LayoutButton(
                             key: "{name}",
                             class: "w-full text-left px-2 py-1.5 rounded-md hover:bg-white/[0.04] transition-colors",
                             onclick: move |_| {
-                                apply(make);
+                                apply(make, name == "Default");
                                 open.set(false);
                             },
                             div { class: "text-xs text-[var(--text)]", "{name}" }
@@ -272,13 +291,16 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
     let mut state = use_signal(AppState::empty);
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let leaving = use_signal(|| None::<Leaving>);
+    let quitting = use_context::<crate::app::QuitRequest>().0;
+    use_effect(move || {
+        if quitting() && !matches!(*leaving.peek(), Some(Leaving::Running(_))) {
+            let mut leaving = leaving;
+            leaving.set(Some(Leaving::Running(String::new())));
+        }
+    });
 
-    // Every exit funnels through here: the button, and the gateway task ending
-    // under us. Media published from the webview outlives this component —
-    // the page does not reload — so somebody has to say stop.
-    //
-    // An empty reason is the button; anything else is the connection reporting
-    // how it ended, which is not a question and so overtakes an open confirm.
+    // Media outlives this component. A lost connection bypasses the host's
+    // confirmation because the session has already ended.
     let leave = move |reason: String| {
         let mut leaving = leaving;
         let asked = matches!(*leaving.peek(), Some(Leaving::Confirm(_)));
@@ -294,7 +316,7 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
         }));
     };
 
-    let (gateway_tx, voice_tx, nostr_tx) = use_hook(|| {
+    let (gateway_tx, gateway_shutdown, voice_tx, nostr_tx) = use_hook(|| {
         {
             let saved = settings.read();
             let mut app = state;
@@ -337,9 +359,10 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
         // Audio prefs must be restored before this: the service seeds its live
         // controls from AppState on the first poll.
         let voice_tx = spawn_voice_service(state);
-        let gateway_tx = spawn_gateway(params.clone(), state, voice_tx.clone(), move |reason| {
-            leave(reason);
-        });
+        let (gateway_tx, gateway_shutdown) =
+            spawn_gateway(params.clone(), state, voice_tx.clone(), move |reason| {
+                leave(reason);
+            });
         let relays = {
             let saved = settings.read();
             if saved.dm_relays.is_empty() {
@@ -352,7 +375,7 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
             }
         };
         let nostr_tx = crate::nostr::service::spawn_nostr(params.identity.clone(), relays, state);
-        (gateway_tx, voice_tx, nostr_tx)
+        (gateway_tx, gateway_shutdown, voice_tx, nostr_tx)
     });
     provide_context(gateway_tx.clone());
     provide_context(nostr_tx.clone());
@@ -377,6 +400,12 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
     use_hook(|| {
         let saved = settings.read();
         if saved.layout_free.is_empty() {
+            if saved.layout_cells.is_empty() {
+                let mut store = layout;
+                for (id, rect) in default_free_layout() {
+                    store.set_free(id, rect);
+                }
+            }
             return;
         }
         let mut store = layout;
@@ -385,17 +414,17 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
         }
     });
 
-    // Runs once per session, when the exit is settled. The order is what
-    // matters: the webview room publishes camera and screen and survives this
-    // component, so it goes first; the native rooms own the mic, the macOS
-    // capture and the SFU participants, and are given until LEAVE_TIMEOUT to
-    // close before the session is dropped out from under them.
+    // Media rooms survive an unmount; the gateway must finish its close
+    // handshake before quitting can destroy the transport.
     let leave_voice = voice_tx.clone();
+    let leave_gateway = gateway_tx.clone();
     use_effect(move || {
         let Some(Leaving::Running(reason)) = leaving() else {
             return;
         };
         let voice_tx = leave_voice.clone();
+        let gateway_shutdown = gateway_shutdown.clone();
+        leave_gateway.send(ClientMessage::LeaveVoice);
         spawn(async move {
             let stop_webview = document::eval(STOP_WEBVIEW_MEDIA_JS);
             let (done_tx, done_rx) = tokio::sync::oneshot::channel();
@@ -409,6 +438,12 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
             };
             if tokio::time::timeout(LEAVE_TIMEOUT, teardown).await.is_err() {
                 eprintln!("[dioxusfun] media teardown timed out; leaving anyway");
+            }
+            if tokio::time::timeout(LEAVE_TIMEOUT, gateway_shutdown.close())
+                .await
+                .is_err()
+            {
+                tracing::warn!("gateway teardown timed out; leaving anyway");
             }
             on_disconnect.call(reason);
         });

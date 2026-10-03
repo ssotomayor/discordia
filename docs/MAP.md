@@ -20,13 +20,13 @@ name instead.
 | `client/src/features/voice.rs` | 4000 |
 | `server/src/state/mod.rs` | 3124 |
 | `server/tests/owner_controls.rs` | 3036 |
-| `server/src/gateway/connection.rs` | 2842 |
-| `client/src/features/channels.rs` | 1968 |
-| `client/src/features/screenshare.rs` | 2535 |
-| `protocol/src/lib.rs` | 2503 |
-| `client/src/state.rs` | 1922 |
+| `server/src/gateway/connection.rs` | 2855 |
+| `client/src/features/channels.rs` | 1969 |
+| `client/src/features/screenshare.rs` | 2778 |
+| `protocol/src/lib.rs` | 2517 |
+| `client/src/state.rs` | 1927 |
 | `client/src/update.rs` | 1226 |
-| `client/src/net.rs` | 1587 |
+| `client/src/net.rs` | 1758 |
 | `client/src/features/chat.rs` | 1192 |
 | `server/src/store.rs` | 1201 |
 | `client/src/features/guild_settings.rs` | 1132 |
@@ -61,7 +61,7 @@ that direction says a file is safe to open when it is not.
 | Where this session's data goes | `client/src/features/topology.rs` | `TopologyDialog` — per-leg, per-session; opened from the transport chip |
 | Panel arrangements | `client/src/features/workspace.rs` | `LAYOUT_TEMPLATES` + `LayoutButton`; `persist_layout` writes both the cell and free snapshots |
 | Panel drag rendering | `grid-layout/src/item.rs`, `grid-layout/src/grid.rs` | `GridItem` derives snap-mode transforms/z-order through a Rust memo; pointer moves update `Interaction`, and commit/cancel clears it. Free positioning, snapping and resize retain their Rust layout policy; no JavaScript style mutations |
-| Watching several screen shares | `client/src/features/screenshare.rs` | `ScreenWatchWindow` renders a keyed `ScreenWatchTile` per pubkey in `AppState::screen_viewing`; each owns its video attachment and window, with independent webview and native audio gains. Expand preserves floating bounds; one tile at a time owns native full screen, restored on Esc, tile removal or teardown. `QUALITY_PRESETS` feeds both capture paths, up to 4K30 |
+| Watching several screen shares | `client/src/features/screenshare.rs`, `client/src/features/stream_viewer.rs` | `ScreenWatchWindow` keeps keyed attachments while switching between floating panels and a viewport-sized mosaic. `stream_tile_style` resets all inline layout properties in every mode because Dioxus retains omitted properties; the drag layer stays above every tile. `use_stream_drag` cancels on release, focus loss, cursor exit and Escape. `grid_style` maximizes 16:9 video area. `use_popouts` opens one native desktop window for detached screens, with focus, volume, pinning and full screen; closing it docks the streams. Stopped watches and voice epoch changes clear detachment selections. Watch channels synchronize state and keys across independent VirtualDOMs; generation-tagged commands reject old windows. `#viewer` is subscribe-only; the main window retains audio and unsubscribes detached video. Legacy servers leave in-app viewing available |
 | Selecting a screen share | `client/src/features/screenshare.rs` | `ScreenSourcePicker` mounts `ScreenShareDialog`; `ScreenSourceTile` loads an in-memory PNG through `sysvideo::thumbnail`, at most two native captures at once, refreshed on request. Source, resolution, FPS and audio are drafts until Share. `ScreenSelfPreview` uses native focus/visibility/minimize events with a cancellable one-second Rust debounce before changing its own preview subscription; brief focus switches avoid keyframe churn, while stop/identity changes clean up immediately without stopping publication. `sysvideo/windows.rs` uses Windows Graphics Capture without borders where supported, `sysvideo/macos.rs` ScreenCaptureKit; `selected_capture_settings` feeds the native LiveKit publisher |
 | Cropping avatars and banners | `client/src/image_edit.rs`, `client/src/features/image_editor.rs` | Native PNG/JPEG/GIF/WebP decoding, EXIF orientation, bounded PNG preview and crop/export run through `spawn_blocking`; the WebView draws the preview and drag/zoom controls. Avatars preserve PNG alpha; JPEG banners flatten on white. Invalid input stays in the editor with an error |
 | Copying keys and invites | `client/src/clipboard.rs` | `copy_text` writes to the native system clipboard through arboard; a thread-local owner keeps X11 contents available. Copy buttons report success only after the native write succeeds |
@@ -87,7 +87,7 @@ that direction says a file is safe to open when it is not.
 | A bot's buttons | `server/src/state/commands.rs` | `invoke_command` — every check a press passes before the bot sees it; `protocol::validate_commands` and `check_args` hold the declaration and the args, and the client form runs the same `check_args`. Drawn by `features/bot_commands.rs`: `BotCommandsSection` on the profile card, `CommandNotes` for private replies under the chat |
 | Closing a secondary session | `server/src/gateway/connection.rs`, `server/tests/voice.rs` | `handle_connection` preserves voice/share while another identified socket remains; the last socket still clears voice and evicts SFU identities |
 | A socket that went quiet | `server/src/watchdog.rs` | `ArmWatch` — both socket loops name the branch they are in; `loop step still running` in the log names the arm that never returned, `gateway send dropped` a client loop that is gone |
-| Leaving a server, and stopping an embedded one | `client/src/features/workspace.rs` | `Leaving` + `leave`; the teardown effect runs before `on_disconnect` (trap 17) |
+| Leaving a server, quitting, and stopping an embedded one | `client/src/app.rs`, `client/src/features/workspace.rs`, `client/src/net.rs` | `QuitRequest` routes application exit through `Leaving`; notify `LeaveVoice`, close media, then await the bounded WebSocket/QUIC shutdown before `on_disconnect` and window destruction. Windows tray hiding preserves the session (trap 17) |
 
 ## Change recipes
 

@@ -65,6 +65,38 @@ assert.equal(bridge.testAudioTracks.bob.elements.length, 2);
 assert.equal(bridge.testAudioTracks.bob.volume, 0.8);
 console.log('Multiple streams retain independent video, audio, volume and teardown.');
 
+{
+  const publication = (kind, source) => ({ kind, source, subscribed: null,
+    setSubscribed(value) { this.subscribed = value; },
+  });
+  const aliceVideo = publication('video', 'screen_share');
+  const bobVideo = publication('video', 'screen_share');
+  const aliceCamera = publication('video', 'camera');
+  const aliceAudio = publication('audio', 'screen_share_audio');
+  const room = { remoteParticipants: new Map([
+    ['alice#video', { identity: 'alice#video', trackPublications: new Map([['v', aliceVideo], ['c', aliceCamera], ['a', aliceAudio]]) }],
+    ['bob#video', { identity: 'bob#video', trackPublications: new Map([['v', bobVideo]]) }],
+  ]) };
+  bridge.testSetRoom(room);
+  bridge.setDetachedScreens(['alice']);
+  assert.equal(aliceVideo.subscribed, false, 'the main window stops receiving a detached video');
+  assert.equal(bobVideo.subscribed, true, 'other videos remain subscribed');
+  assert.equal(aliceCamera.subscribed, null, 'detaching a screen does not interrupt its camera');
+  assert.equal(aliceAudio.subscribed, null, 'audio remains in the main window');
+  bridge.setDetachedScreens([]);
+  assert.equal(aliceVideo.subscribed, true, 'docking restores the original video subscription');
+  bridge.setViewerTargets(['bob']);
+  assert.equal(aliceVideo.subscribed, false);
+  assert.equal(aliceCamera.subscribed, false, 'the external viewer never subscribes to cameras');
+  assert.equal(bobVideo.subscribed, true);
+  bridge.setViewerTargets(['alice']);
+  assert.equal(aliceVideo.subscribed, true);
+  assert.equal(bobVideo.subscribed, false, 'removed external streams stop consuming video');
+  bridge.setViewerTargets(null);
+  bridge.setDetachedScreens([]);
+  console.log('External viewers transfer video subscriptions without duplicating camera or audio playback.');
+}
+
 const activeRoom = {};
 bridge.testSetRoom(activeRoom);
 const unsubscribeActive = bridge.testUnsubscribe(activeRoom);

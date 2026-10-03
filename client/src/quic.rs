@@ -13,6 +13,15 @@ pub struct ConnectionGuard {
 }
 
 impl ConnectionGuard {
+    pub async fn shutdown(&self) {
+        self.conn.close(0_u32.into(), b"client leaving");
+        self._endpoint.close().await;
+    }
+
+    pub fn close_reason(&self) -> Option<iroh::endpoint::ConnectionError> {
+        self.conn.close_reason()
+    }
+
     /// True while the coordinator's relay carries the packets. It forwards
     /// ciphertext and sees only the two keys, so this is a matter of latency
     /// and of which party learns an address, not of who can read.

@@ -200,7 +200,8 @@ async fn voice_evict(
         (voice, req.pubkey.clone()),
         (screen.clone(), req.pubkey.clone()),
         (screen.clone(), format!("{}#audio", req.pubkey)),
-        (screen, format!("{}#video", req.pubkey)),
+        (screen.clone(), format!("{}#video", req.pubkey)),
+        (screen, format!("{}#viewer", req.pubkey)),
     ];
     let requests = seats
         .iter()

@@ -58,6 +58,32 @@ window.dxScreen = window.dxScreen || (function () {
     return s === 'camera' ? 'camera' : 'screen';
   }
   const attached = {};
+  let viewerTargets = null;
+  let detachedScreens = [];
+  function applyViewerSubscription(pub, participant) {
+    if (!pub || !participant || pub.kind !== 'video') return;
+    const identity = baseIdentity(participant.identity);
+    const kind = kindOf(pub, pub.track);
+    if (viewerTargets === null && (kind !== 'screen' || !detachedScreens.includes(identity))) return;
+    const enabled = viewerTargets === null
+      ? !detachedScreens.includes(identity)
+      : kind === 'screen' && viewerTargets.includes(identity);
+    try { pub.setSubscribed(enabled); } catch (e) { console.warn('[dxScreen] viewer subscribe toggle failed', e); }
+  }
+  function refreshViewerSubscriptions() {
+    if (!room || !room.remoteParticipants) return;
+    room.remoteParticipants.forEach(function (p) {
+      p.trackPublications.forEach(function (pub) {
+        if (pub.kind !== 'video') return;
+        if (viewerTargets === null && kindOf(pub, pub.track) === 'screen') {
+          try { pub.setSubscribed(!detachedScreens.includes(baseIdentity(p.identity))); } catch (e) {}
+        } else applyViewerSubscription(pub, p);
+        applySelfPreviewSubscription(pub, p);
+      });
+    });
+  }
+  function setViewerTargets(identities) { viewerTargets = identities; refreshViewerSubscriptions(); }
+  function setDetachedScreens(identities) { detachedScreens = identities; refreshViewerSubscriptions(); }
   const LK = () => window.LivekitClient || window.LiveKitClient;
 
   let nativeStreamAudio = false;
@@ -157,6 +183,7 @@ window.dxScreen = window.dxScreen || (function () {
   function applySelfPreviewSubscription(pub, participant, previousIdentity) {
     if (!pub || !participant || pub.kind !== 'video' || kindOf(pub, pub.track) !== 'screen') return;
     const identity = baseIdentity(participant.identity);
+    if (viewerTargets !== null || detachedScreens.includes(identity)) return;
     if (identity !== selfPreviewIdentity && identity !== previousIdentity) return;
     try { pub.setSubscribed(identity === selfPreviewIdentity ? selfPreviewEnabled : true); }
     catch (e) { console.warn('[dxScreen] self preview subscribe toggle failed', e); }
@@ -320,6 +347,7 @@ window.dxScreen = window.dxScreen || (function () {
       if (room !== thisRoom) return;
       applyAudioSubscription(pub);
       applySelfPreviewSubscription(pub, participant);
+      applyViewerSubscription(pub, participant);
     });
     thisRoom.on(lk.RoomEvent.TrackSubscribed, function (track, pub, participant) {
       if (room !== thisRoom) return;
@@ -380,7 +408,7 @@ window.dxScreen = window.dxScreen || (function () {
       if (kind === 'camera') notifyCameraEnded(); else notifyShareEnded();
     });
     try {
-      await thisRoom.connect(url, token);
+      await thisRoom.connect(url, token, { autoSubscribe: viewerTargets === null });
       if (!current() || room !== thisRoom) { try { await thisRoom.disconnect(); } catch (e) {} return; }
       reportState('connected');
     } catch (e) {
@@ -397,6 +425,7 @@ window.dxScreen = window.dxScreen || (function () {
     if (room && room.remoteParticipants) room.remoteParticipants.forEach(function (participant) {
       participant.trackPublications.forEach(function (pub) {
         applySelfPreviewSubscription(pub, participant);
+        applyViewerSubscription(pub, participant);
       });
     });
     if (localCameraTrack && localCameraTrack.readyState !== 'ended') {
@@ -912,7 +941,7 @@ window.dxScreen = window.dxScreen || (function () {
     dropE2eeWorker();
     e2eeProvider = null;
   }
-  return { connect: connect, setSelfPreview: setSelfPreview, attach: attach, detach: detach, previewStats: previewStats, requestAndStartShare: requestAndStartShare, stopShare: stopShare, disconnect: disconnect, setStreamVolume: setStreamVolume, setSink: setSink, setNativeStreamAudio: setNativeStreamAudio, setStatsEnabled: setStatsEnabled, startCamera: startCamera, stopCamera: stopCamera, listCameras: listCameras, attachLocalCamera: attachLocalCamera, setE2eeKey: setE2eeKey };
+  return { connect: connect, setViewerTargets: setViewerTargets, setDetachedScreens: setDetachedScreens, setSelfPreview: setSelfPreview, attach: attach, detach: detach, previewStats: previewStats, requestAndStartShare: requestAndStartShare, stopShare: stopShare, disconnect: disconnect, setStreamVolume: setStreamVolume, setSink: setSink, setNativeStreamAudio: setNativeStreamAudio, setStatsEnabled: setStatsEnabled, startCamera: startCamera, stopCamera: stopCamera, listCameras: listCameras, attachLocalCamera: attachLocalCamera, setE2eeKey: setE2eeKey };
 })();
 "#;
 
@@ -1758,7 +1787,7 @@ pub fn ScreenSelfPreview() -> Element {
     let mut py = use_signal(|| 56.0_f64);
     let mut pw = use_signal(|| 300.0_f64);
     let mut ph = use_signal(|| 208.0_f64);
-    let mut drag = use_signal(|| None::<Drag>);
+    let mut drag = use_stream_drag();
 
     let sharing = use_memo(move || state.read().screen_sharing);
     let self_pk = use_memo(move || state.read().self_user.as_ref().map(|u| u.pubkey.clone()));
@@ -1887,6 +1916,10 @@ pub fn ScreenSelfPreview() -> Element {
             div {
                 class: "fixed inset-0 z-50",
                 onmousemove: move |e| {
+                    if !e.held_buttons().contains(dioxus::html::input_data::MouseButton::Primary) {
+                        drag.set(None);
+                        return;
+                    }
                     let c = e.client_coordinates();
                     match drag() {
                         Some(Drag::Move { dx, dy }) => { px.set(c.x - dx); py.set(c.y - dy); }
@@ -1906,6 +1939,7 @@ pub fn ScreenSelfPreview() -> Element {
             div {
                 class: "h-8 px-2.5 flex items-center gap-1.5 border-b border-[var(--border)] shrink-0 cursor-move select-none",
                 onmousedown: move |e| {
+                    if !e.held_buttons().contains(dioxus::html::input_data::MouseButton::Primary) { return; }
                     let c = e.client_coordinates();
                     drag.set(Some(Drag::Move { dx: c.x - px(), dy: c.y - py() }));
                 },
@@ -1962,6 +1996,7 @@ pub fn ScreenSelfPreview() -> Element {
                 style: "background: linear-gradient(135deg, transparent 0 50%, var(--border-strong) 50% 100%);",
                 onmousedown: move |e| {
                     e.stop_propagation();
+                    if !e.held_buttons().contains(dioxus::html::input_data::MouseButton::Primary) { return; }
                     let c = e.client_coordinates();
                     drag.set(Some(Drag::Resize { px: c.x, py: c.y, w0: pw(), h0: ph() }));
                 },
@@ -1992,9 +2027,105 @@ pub(crate) enum Drag {
     Resize { px: f64, py: f64, w0: f64, h0: f64 },
 }
 
+const STREAM_DRAG_LAYER: u32 = 100;
+
+fn stream_tile_style(
+    detached: bool,
+    fullscreen: bool,
+    maximized: bool,
+    tiled: bool,
+    rect: [f64; 4],
+) -> String {
+    // Dioxus retains omitted inline properties, so every mode resets the
+    // complete layout, especially the layer above the drag surface.
+    let (position, layer, radius, left, top, width, height) = if fullscreen {
+        (
+            "fixed",
+            60,
+            0,
+            "0".into(),
+            "0".into(),
+            "100vw".into(),
+            "100vh".into(),
+        )
+    } else if tiled {
+        (
+            "relative",
+            40,
+            8,
+            "auto".into(),
+            "auto".into(),
+            "100%".into(),
+            "100%".into(),
+        )
+    } else if maximized {
+        (
+            "fixed",
+            50,
+            8,
+            "12px".into(),
+            "12px".into(),
+            "calc(100vw - 24px)".into(),
+            "calc(100vh - 24px)".into(),
+        )
+    } else {
+        let [x, y, w, h] = rect;
+        (
+            "fixed",
+            40,
+            8,
+            format!("{x}px"),
+            format!("{y}px"),
+            format!("{w}px"),
+            format!("{h}px"),
+        )
+    };
+    let display = if detached { "none" } else { "flex" };
+    format!(
+        "display:{display};position:{position};z-index:{layer};border-top-left-radius:{radius}px;border-top-right-radius:{radius}px;border-bottom-left-radius:{radius}px;border-bottom-right-radius:{radius}px;left:{left};top:{top};right:auto;bottom:auto;min-width:0;min-height:0;width:{width};height:{height};"
+    )
+}
+
+fn use_stream_drag() -> Signal<Option<Drag>> {
+    let mut drag = use_signal(|| None::<Drag>);
+    let window_id = dioxus::desktop::use_window().window.id();
+    dioxus::desktop::use_wry_event_handler(move |event, _| {
+        use dioxus::desktop::tao::event::{ElementState, Event, WindowEvent};
+        use dioxus::desktop::tao::keyboard::Key;
+        if let Event::WindowEvent {
+            window_id: id,
+            event,
+            ..
+        } = event
+            && *id == window_id
+            && drag.peek().is_some()
+        {
+            let cancel = match event {
+                WindowEvent::Focused(false) | WindowEvent::CursorLeft { .. } => true,
+                WindowEvent::MouseInput {
+                    state: ElementState::Released,
+                    button: dioxus::desktop::tao::event::MouseButton::Left,
+                    ..
+                } => true,
+                WindowEvent::KeyboardInput { event, .. } => {
+                    event.state == ElementState::Pressed && event.logical_key == Key::Escape
+                }
+                _ => false,
+            };
+            if cancel {
+                drag.set(None);
+            }
+        }
+    });
+    drag
+}
+
 #[component]
 pub fn ScreenWatchWindow() -> Element {
     let state = use_app_state();
+    let popouts = super::stream_viewer::use_popouts(state);
+    let detached = popouts.detached;
+    let mut mosaic = use_signal(|| true);
     let viewing = use_memo(move || state.read().screen_viewing.clone());
     let mut fullscreen = use_signal::<Option<String>>(|| None);
     let mut was_fullscreen = use_signal(|| false);
@@ -2004,6 +2135,8 @@ pub fn ScreenWatchWindow() -> Element {
         move || window.window.fullscreen()
     });
     let fullscreen_window = window.clone();
+    let initial_size = window.window.inner_size();
+    let mut size = use_signal(move || (initial_size.width as f64, initial_size.height as f64));
     let restore_fullscreen = original_fullscreen.clone();
     use_effect(move || {
         let active = fullscreen().is_some();
@@ -2021,6 +2154,15 @@ pub fn ScreenWatchWindow() -> Element {
         use dioxus::desktop::tao::event::{ElementState, Event, WindowEvent};
         if let Event::WindowEvent {
             window_id: id,
+            event: WindowEvent::Resized(value),
+            ..
+        } = event
+            && *id == window_id
+        {
+            size.set((value.width as f64, value.height as f64));
+        }
+        if let Event::WindowEvent {
+            window_id: id,
             event: WindowEvent::KeyboardInput { event, .. },
             ..
         } = event
@@ -2031,9 +2173,10 @@ pub fn ScreenWatchWindow() -> Element {
             fullscreen.set(None);
         }
     });
+    let close_window = window.clone();
     use_drop(move || {
         if *was_fullscreen.peek() {
-            window.window.set_fullscreen(original_fullscreen);
+            close_window.window.set_fullscreen(original_fullscreen);
         }
     });
 
@@ -2095,9 +2238,33 @@ pub fn ScreenWatchWindow() -> Element {
 
     let mut watched: Vec<String> = viewing().into_iter().collect();
     watched.sort();
+    let count = watched
+        .iter()
+        .filter(|pk| !detached.read().contains(*pk))
+        .count();
+    let tiled = mosaic() && count > 1 && fullscreen().is_none();
+    let (width, height) = size();
+    let scale = window.window.scale_factor();
+    let grid =
+        super::stream_viewer::grid_style(count, width / scale - 48.0, height / scale - 150.0);
+    let grid_container = if tiled {
+        format!(
+            "position:fixed;left:24px;right:24px;top:100px;bottom:24px;z-index:40;display:grid;gap:8px;{grid}"
+        )
+    } else {
+        "display:contents;".into()
+    };
     rsx! {
-        for (index, pk) in watched.into_iter().enumerate() {
-            ScreenWatchTile { key: "{pk}", pubkey: pk, index, fullscreen }
+        if count > 1 {
+            div { class: "fixed top-16 left-6 z-50 flex items-center gap-2 px-3 py-2 rounded-lg border border-[var(--border)] bg-[var(--panel-solid)]",
+                span { class: "text-sm text-[var(--text)]", "Streams · {count}" }
+                button { class: "text-xs px-2 py-1 rounded border border-[var(--border)] text-[var(--text)]", aria_pressed: "{mosaic}", onclick: move |_| mosaic.toggle(), if mosaic() { "Floating windows" } else { "Mosaic" } }
+            }
+        }
+        div { style: "{grid_container}",
+            for (index, pk) in watched.into_iter().enumerate() {
+                ScreenWatchTile { key: "{pk}", is_detached: detached.read().contains(&pk), pubkey: pk, index, fullscreen, tiled, on_popout: popouts.open }
+            }
         }
     }
 }
@@ -2107,6 +2274,9 @@ fn ScreenWatchTile(
     pubkey: String,
     index: usize,
     mut fullscreen: Signal<Option<String>>,
+    tiled: bool,
+    is_detached: bool,
+    on_popout: EventHandler<String>,
 ) -> Element {
     let mut state = use_app_state();
     let pk = pubkey;
@@ -2174,17 +2344,27 @@ fn ScreenWatchTile(
     let mut y = use_signal(move || 90.0_f64 + (index % 4) as f64 * 48.0);
     let mut w = use_signal(|| 880.0_f64);
     let mut h = use_signal(|| 540.0_f64);
-    let mut drag = use_signal(|| None::<Drag>);
+    let mut drag = use_stream_drag();
     let mut maximized = use_signal(|| false);
     let is_fullscreen = fullscreen().as_ref() == Some(&pk);
-    let expanded = maximized() || is_fullscreen;
-    let layout = if is_fullscreen {
-        "left:0;top:0;width:100vw;height:100vh;z-index:60;border-radius:0;".into()
-    } else if maximized() {
-        "left:12px;top:12px;width:calc(100vw - 24px);height:calc(100vh - 24px);z-index:50;".into()
-    } else {
-        format!("left:{x}px;top:{y}px;width:{w}px;height:{h}px;")
-    };
+    let mut previously_fullscreen = use_signal(|| false);
+    let restore_pk = pk.clone();
+    use_effect(move || {
+        let active = fullscreen.read().as_ref() == Some(&restore_pk);
+        if *previously_fullscreen.peek() && !active {
+            maximized.set(false);
+            drag.set(None);
+        }
+        previously_fullscreen.set(active);
+    });
+    let expanded = (maximized() && !tiled) || is_fullscreen;
+    let layout = stream_tile_style(
+        is_detached,
+        is_fullscreen,
+        maximized(),
+        tiled,
+        [x(), y(), w(), h()],
+    );
 
     let name = state.read().display_name(&pk);
 
@@ -2194,12 +2374,18 @@ fn ScreenWatchTile(
     let pk_vol = pk.clone();
     let pk_mute = pk.clone();
     let pk_fullscreen = pk.clone();
+    let pk_popout = pk.clone();
 
     rsx! {
         if drag().is_some() {
             div {
                 class: "fixed inset-0 z-50",
+                style: "z-index:{STREAM_DRAG_LAYER};",
                 onmousemove: move |e| {
+                    if !e.held_buttons().contains(dioxus::html::input_data::MouseButton::Primary) {
+                        drag.set(None);
+                        return;
+                    }
                     let c = e.client_coordinates();
                     match drag() {
                         Some(Drag::Move { dx, dy }) => { x.set(c.x - dx); y.set(c.y - dy); }
@@ -2219,7 +2405,8 @@ fn ScreenWatchTile(
             div {
                 class: "h-9 px-3 flex items-center gap-2 border-b border-[var(--border)] shrink-0 cursor-move select-none",
                 onmousedown: move |e| {
-                    if expanded { return; }
+                    if expanded || tiled { return; }
+                    if !e.held_buttons().contains(dioxus::html::input_data::MouseButton::Primary) { return; }
                     let c = e.client_coordinates();
                     drag.set(Some(Drag::Move { dx: c.x - x(), dy: c.y - y() }));
                 },
@@ -2229,9 +2416,18 @@ fn ScreenWatchTile(
                 button {
                     r#type: "button",
                     class: "w-7 h-7 flex items-center justify-center rounded text-[var(--text-dim)] hover:text-[var(--text)]",
+                    title: "Open in separate window",
+                    aria_label: "Open in separate window",
+                    onmousedown: move |e| e.stop_propagation(),
+                    onclick: move |_| { drag.set(None); maximized.set(false); fullscreen.set(None); on_popout.call(pk_popout.clone()); },
+                    dangerous_inner_html: crate::features::icons::WINDOW_POP_OUT,
+                }
+                button {
+                    r#type: "button",
+                    class: "w-7 h-7 flex items-center justify-center rounded text-[var(--text-dim)] hover:text-[var(--text)]",
                     title: if maximized() { "Restore window" } else { "Expand within app" },
                     aria_label: if maximized() { "Restore window" } else { "Expand within app" },
-                    disabled: is_fullscreen,
+                    disabled: is_fullscreen || tiled,
                     onmousedown: move |e| e.stop_propagation(),
                     onclick: move |_| { drag.set(None); maximized.toggle(); },
                     "▣"
@@ -2244,6 +2440,7 @@ fn ScreenWatchTile(
                     onmousedown: move |e| e.stop_propagation(),
                     onclick: move |_| {
                         drag.set(None);
+                        maximized.set(false);
                         fullscreen.set(if is_fullscreen { None } else { Some(pk_fullscreen.clone()) });
                     },
                     if is_fullscreen { "⤡" } else { "⤢" }
@@ -2312,11 +2509,12 @@ fn ScreenWatchTile(
                     span { class: "text-[10px] text-[var(--text-dim)] w-8 text-right", "{stream_volume}%" }
                 }
             }
-            if !expanded { div {
+            if !expanded && !tiled { div {
                 class: "absolute bottom-0 right-0 w-4 h-4 cursor-nwse-resize",
                 style: "background: linear-gradient(135deg, transparent 0 50%, var(--border-strong) 50% 100%);",
                 onmousedown: move |e| {
                     e.stop_propagation();
+                    if !e.held_buttons().contains(dioxus::html::input_data::MouseButton::Primary) { return; }
                     let c = e.client_coordinates();
                     drag.set(Some(Drag::Resize { px: c.x, py: c.y, w0: w(), h0: h() }));
                 },
@@ -2328,6 +2526,51 @@ fn ScreenWatchTile(
 #[cfg(test)]
 mod js_escaping_tests {
     use super::{attach_js, js_str, screen_stats_js, share_js};
+
+    #[test]
+    fn restoring_a_stream_resets_properties_retained_by_the_renderer() {
+        use std::collections::BTreeMap;
+        let properties = |style: String| -> BTreeMap<String, String> {
+            style
+                .split(';')
+                .filter_map(|property| property.split_once(':'))
+                .map(|(key, value)| (key.into(), value.into()))
+                .collect()
+        };
+        let rect = [160.0, 90.0, 880.0, 540.0];
+        let floating = properties(super::stream_tile_style(false, false, false, false, rect));
+        for (detached, fullscreen, maximized, tiled) in [
+            (false, false, true, false),
+            (false, true, false, false),
+            (false, false, false, true),
+            (true, false, false, false),
+        ] {
+            let mut retained = floating.clone();
+            retained.extend(properties(super::stream_tile_style(
+                detached, fullscreen, maximized, tiled, rect,
+            )));
+            retained.extend(properties(super::stream_tile_style(
+                false, false, false, false, rect,
+            )));
+            assert_eq!(
+                retained, floating,
+                "restore must discard the previous layout mode"
+            );
+            assert_eq!(retained["z-index"], "40");
+            assert_eq!(retained["position"], "fixed");
+            assert_eq!(retained["display"], "flex");
+            retained.extend(properties(super::stream_tile_style(
+                false,
+                false,
+                false,
+                false,
+                [240.0, 180.0, 880.0, 540.0],
+            )));
+            assert_eq!(retained["left"], "240px");
+            assert_eq!(retained["top"], "180px");
+            assert!(retained["z-index"].parse::<u32>().expect("layer") < super::STREAM_DRAG_LAYER);
+        }
+    }
 
     #[test]
     fn brief_focus_changes_do_not_cycle_the_preview_subscription() {

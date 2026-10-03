@@ -64,21 +64,47 @@ pub fn spawn_gateway(
     mut state: Signal<AppState>,
     voice_tx: UnboundedSender<VoiceCmd>,
     on_disconnect: impl FnOnce(String) + 'static,
-) -> GatewayTx {
+) -> (GatewayTx, GatewayShutdown) {
     let (tx, rx) = unbounded_channel::<ClientMessage>();
     let gateway_tx = GatewayTx(tx.clone());
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let (done_tx, done_rx) = tokio::sync::watch::channel(false);
 
     spawn(async move {
-        let reason = match run(params, &tx, rx, state, &voice_tx).await {
+        let reason = match run(params, &tx, rx, state, &voice_tx, shutdown_rx).await {
             Ok(()) => "connection closed".to_string(),
             Err(e) => e,
         };
+        tracing::warn!(%reason, transport = ?state.peek().transport, "gateway session ended");
         state.write().status = ConnectionStatus::Disconnected;
         let _ = voice_tx.send(VoiceCmd::Disconnect { done: None });
         on_disconnect(reason);
+        done_tx.send_replace(true);
     });
 
-    gateway_tx
+    (
+        gateway_tx,
+        GatewayShutdown {
+            request: shutdown_tx,
+            done: done_rx,
+        },
+    )
+}
+
+#[derive(Clone)]
+pub struct GatewayShutdown {
+    request: tokio::sync::watch::Sender<bool>,
+    done: tokio::sync::watch::Receiver<bool>,
+}
+
+impl GatewayShutdown {
+    pub async fn close(&self) {
+        self.request.send_replace(true);
+        let mut done = self.done.clone();
+        if done.wait_for(|closed| *closed).await.is_err() {
+            tracing::debug!("gateway task already gone");
+        }
+    }
 }
 
 /// Off this machine every connection is QUIC — encrypted end to end and
@@ -268,13 +294,18 @@ async fn run(
     mut rx: UnboundedReceiver<ClientMessage>,
     mut state: Signal<AppState>,
     voice_tx: &UnboundedSender<VoiceCmd>,
+    mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) -> Result<(), String> {
     let (dial, mut host_handle) =
         resolve_session(params.mode.clone(), params.identity.clone(), &mut state).await?;
     let mut host_updates = host_handle.as_mut().and_then(|h| h.updates.take());
     let mut failures = 0u32;
     loop {
-        let outcome = match connect_gateway(&dial).await {
+        let connected = tokio::select! {
+            _ = shutdown.wait_for(|requested| *requested) => return Ok(()),
+            connected = connect_gateway(&dial) => connected,
+        };
+        let outcome = match connected {
             Ok((socket, transport, origin)) => {
                 {
                     let mut s = state.write();
@@ -286,16 +317,30 @@ async fn run(
                     rx: &mut rx,
                     voice_tx,
                     host_updates: &mut host_updates,
+                    shutdown: shutdown.clone(),
                 };
                 match socket {
                     Socket::Tcp(ws) => run_session(*ws, params.clone(), origin, state, links).await,
-                    Socket::Quic(ws, _guard) => {
-                        run_session(*ws, params.clone(), origin, state, links).await
+                    Socket::Quic(ws, guard) => {
+                        let outcome = run_session(*ws, params.clone(), origin, state, links).await;
+                        if outcome.is_err() {
+                            tracing::warn!(close_reason = ?guard.close_reason(), relayed = guard.relayed(), "gateway QUIC session failed");
+                        }
+                        if tokio::time::timeout(std::time::Duration::from_secs(1), guard.shutdown())
+                            .await
+                            .is_err()
+                        {
+                            tracing::warn!("gateway QUIC endpoint shutdown timed out");
+                        }
+                        outcome
                     }
                 }
             }
             Err(error) => Err(error),
         };
+        if *shutdown.borrow() {
+            return Ok(());
+        }
         if state.peek().status == ConnectionStatus::Connecting {
             return outcome;
         }
@@ -310,6 +355,7 @@ async fn run(
         let until = tokio::time::Instant::now() + delay;
         loop {
             tokio::select! {
+                _ = shutdown.wait_for(|requested| *requested) => return Ok(()),
                 _ = tokio::time::sleep_until(until) => break,
                 command = rx.recv() => {
                     let Some(command) = command else { return Ok(()); };
@@ -396,6 +442,7 @@ struct Links<'a> {
     rx: &'a mut UnboundedReceiver<ClientMessage>,
     voice_tx: &'a UnboundedSender<VoiceCmd>,
     host_updates: &'a mut Option<UnboundedReceiver<crate::rendezvous::HostUpdate>>,
+    shutdown: tokio::sync::watch::Receiver<bool>,
 }
 
 struct SessionWatchdog(tokio::task::JoinHandle<()>);
@@ -421,11 +468,17 @@ where
         rx,
         voice_tx,
         host_updates,
+        mut shutdown,
     } = links;
     state.write().identity = Some(params.identity.clone());
     let (mut ws_tx, mut ws_rx) = ws_stream.split();
 
-    let nonce = tokio::time::timeout(crate::protocol::GATEWAY_HEARTBEAT_TIMEOUT, async {
+    let nonce = tokio::select! {
+        _ = shutdown.wait_for(|requested| *requested) => {
+            close_gateway_socket(&mut ws_tx, &mut ws_rx).await;
+            return Ok(());
+        }
+        nonce = tokio::time::timeout(crate::protocol::GATEWAY_HEARTBEAT_TIMEOUT, async {
         loop {
             let Some(frame) = ws_rx.next().await else {
                 return Err("server closed before Hello".into());
@@ -443,9 +496,8 @@ where
                 other => return Err(format!("expected Hello, got {other:?}")),
             }
         }
-    })
-    .await
-    .map_err(|_| "server did not send Hello before the deadline".to_string())??;
+        }) => nonce.map_err(|_| "server did not send Hello before the deadline".to_string())??,
+    };
 
     let username = crate::protocol::canonical_username(&if state.peek().status
         == ConnectionStatus::Reconnecting
@@ -508,6 +560,10 @@ where
     loop {
         watch.finish("session");
         tokio::select! {
+            _ = shutdown.wait_for(|requested| *requested) => {
+                close_gateway_socket(&mut ws_tx, &mut ws_rx).await;
+                break;
+            }
             _ = heartbeat.tick() => {
                 if !ready && tokio::time::Instant::now() >= ready_deadline {
                     return Err("the host did not accept the session before the deadline".into());
@@ -596,6 +652,117 @@ where
     tracing::info!("session loop ended");
 
     Ok(())
+}
+
+async fn close_gateway_socket<T, R>(tx: &mut T, rx: &mut R)
+where
+    T: futures_util::Sink<WsMessage> + Unpin,
+    T::Error: std::fmt::Display,
+    R: futures_util::Stream<Item = Result<WsMessage, tokio_tungstenite::tungstenite::Error>>
+        + Unpin,
+{
+    let close = async {
+        if let Err(error) = tx.send(WsMessage::Close(None)).await {
+            tracing::debug!(%error, "gateway already closed during teardown");
+            return;
+        }
+        while let Some(Ok(frame)) = rx.next().await {
+            if matches!(frame, WsMessage::Close(_)) {
+                break;
+            }
+        }
+    };
+    if tokio::time::timeout(std::time::Duration::from_secs(2), close)
+        .await
+        .is_err()
+    {
+        tracing::warn!("gateway close handshake timed out");
+    }
+}
+
+#[cfg(test)]
+mod graceful_shutdown_tests {
+    use super::*;
+    use tokio_tungstenite::{WebSocketStream, tungstenite::protocol::Role};
+
+    #[tokio::test]
+    async fn quitting_cancels_both_a_pending_connection_and_reconnect_backoff() {
+        for keep_listener in [true, false] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("listen");
+            let address = listener.local_addr().expect("address");
+            let _listener = keep_listener.then_some(listener);
+            let mut dom = VirtualDom::new(|| rsx! {});
+            dom.rebuild_in_place();
+            let state = dom.in_scope(ScopeId::ROOT, || {
+                let mut initial = AppState::empty();
+                initial.status = ConnectionStatus::Reconnecting;
+                Signal::new(initial)
+            });
+            let params = SessionParams {
+                mode: SessionMode::Remote {
+                    server_url: format!("ws://{address}"),
+                },
+                username: "Alice".into(),
+                identity: crate::identity::Identity::restore_from_private_key(
+                    "11".repeat(32),
+                    "Alice",
+                )
+                .expect("identity"),
+            };
+            let (tx, rx) = unbounded_channel();
+            let (voice_tx, _voice_rx) = unbounded_channel();
+            let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+            let mut running = Box::pin(run(params, &tx, rx, state, &voice_tx, shutdown_rx));
+            let session = std::future::poll_fn(|cx| {
+                dom.in_scope(ScopeId::ROOT, || running.as_mut().poll(cx))
+            });
+            let quit = async {
+                tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+                shutdown_tx.send_replace(true);
+            };
+            let (outcome, ()) = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+                tokio::join!(session, quit)
+            })
+            .await
+            .expect("quit interrupts connection/retry");
+            assert!(outcome.is_ok());
+        }
+    }
+
+    #[tokio::test]
+    async fn closing_gateway_sends_a_close_frame_and_waits_for_the_peer() {
+        let (client, server) = tokio::io::duplex(4096);
+        let client = WebSocketStream::from_raw_socket(client, Role::Client, None).await;
+        let mut server = WebSocketStream::from_raw_socket(server, Role::Server, None).await;
+        let (mut tx, mut rx) = client.split();
+        let peer = async {
+            assert!(matches!(
+                server.next().await,
+                Some(Ok(WsMessage::Close(None)))
+            ));
+            server.flush().await.expect("close acknowledgement");
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            tokio::join!(close_gateway_socket(&mut tx, &mut rx), peer);
+        })
+        .await
+        .expect("close handshake completes");
+    }
+
+    #[tokio::test]
+    async fn an_unresponsive_gateway_cannot_block_exit_forever() {
+        let (client, _server) = tokio::io::duplex(4096);
+        let client = WebSocketStream::from_raw_socket(client, Role::Client, None).await;
+        let (mut tx, mut rx) = client.split();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            close_gateway_socket(&mut tx, &mut rx),
+        )
+        .await
+        .expect("exit is bounded");
+    }
 }
 
 async fn gateway_send<S>(sink: &mut S, frame: WsMessage) -> Result<(), String>
@@ -1353,12 +1520,16 @@ fn apply(
             token,
             audio_token,
             video_token,
+            viewer_token,
             ..
         } => {
             s.screen_token = Some((livekit_url.clone(), token));
             s.screen_audio_token =
                 (!audio_token.is_empty()).then_some((livekit_url.clone(), audio_token));
-            s.screen_video_token = (!video_token.is_empty()).then_some((livekit_url, video_token));
+            s.screen_video_token =
+                (!video_token.is_empty()).then_some((livekit_url.clone(), video_token));
+            s.screen_viewer_token =
+                (!viewer_token.is_empty()).then_some((livekit_url, viewer_token));
         }
         ServerMessage::Error { message } => {
             tracing::warn!(server_error = %message);

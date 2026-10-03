@@ -27,6 +27,7 @@ pub mod screenshare;
 pub mod settings_dialog;
 pub mod soundboard;
 pub mod sounds;
+mod stream_viewer;
 pub mod topology;
 mod video_lifecycle;
 pub mod voice;

@@ -8,7 +8,7 @@ use livekit_api::access_token::{AccessToken, VideoGrants};
 
 #[tokio::test]
 #[ignore = "requires LIVEKIT_URL, LIVEKIT_API_KEY and LIVEKIT_API_SECRET for a local test SFU"]
-async fn rendezvous_removes_all_four_native_and_webview_seats() {
+async fn rendezvous_removes_all_five_native_and_webview_seats() {
     let url = std::env::var("LIVEKIT_URL").unwrap();
     let key = std::env::var("LIVEKIT_API_KEY").unwrap();
     let secret = std::env::var("LIVEKIT_API_SECRET").unwrap();
@@ -38,6 +38,7 @@ async fn rendezvous_removes_all_four_native_and_webview_seats() {
         (&screen, pubkey.clone()),
         (&screen, format!("{pubkey}#audio")),
         (&screen, format!("{pubkey}#video")),
+        (&screen, format!("{pubkey}#viewer")),
     ] {
         let token = AccessToken::with_api_key(&key, &secret)
             .with_identity(&identity)

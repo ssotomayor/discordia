@@ -2005,6 +2005,8 @@ pub enum ServerMessage {
         audio_token: String,
         #[serde(default)]
         video_token: String,
+        #[serde(default)]
+        viewer_token: String,
     },
     Error {
         message: String,
@@ -2014,6 +2016,18 @@ pub enum ServerMessage {
 #[cfg(test)]
 mod identify_wire_tests {
     use super::ClientMessage;
+
+    #[test]
+    fn older_screen_grants_without_an_external_viewer_still_parse() {
+        let old = serde_json::json!({
+            "op": "screen_token",
+            "d": { "channel_id": "00000000-0000-0000-0000-000000000001", "livekit_url": "wss://sfu", "token": "main", "audio_token": "audio", "video_token": "video" }
+        });
+        let grant: super::ServerMessage = serde_json::from_value(old).expect("legacy grant parses");
+        assert!(
+            matches!(grant, super::ServerMessage::ScreenToken { viewer_token, .. } if viewer_token.is_empty())
+        );
+    }
 
     #[test]
     fn an_identify_without_a_version_still_parses() {

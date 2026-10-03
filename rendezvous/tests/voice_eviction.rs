@@ -16,7 +16,7 @@ async fn serve(app: axum::Router) -> String {
 }
 
 #[tokio::test]
-async fn eviction_is_authenticated_scoped_and_removes_all_four_seats() {
+async fn eviction_is_authenticated_scoped_and_removes_all_five_seats() {
     let calls = Arc::new(tokio::sync::Mutex::new(Vec::<Vec<u8>>::new()));
     let fake_sfu = axum::Router::new()
         .route(
@@ -88,11 +88,12 @@ async fn eviction_is_authenticated_scoped_and_removes_all_four_seats() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
     let calls = calls.lock().await;
-    assert_eq!(calls.len(), 4);
+    assert_eq!(calls.len(), 5);
     for identity in [
         &pubkey,
         &format!("{pubkey}#audio"),
         &format!("{pubkey}#video"),
+        &format!("{pubkey}#viewer"),
     ] {
         assert!(calls.iter().any(|body| {
             body.windows(identity.len())

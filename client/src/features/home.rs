@@ -210,11 +210,9 @@ fn TopBar(
     rsx! {
         div { class: "relative shrink-0 z-50",
             div {
-                class: "dxf-drag-region h-[58px] px-5 flex items-center gap-3.5 bg-[var(--panel)] border-b border-[var(--edge)]",
+                class: "dxf-drag-region relative z-50 h-[58px] px-5 flex items-center gap-3.5 bg-[var(--panel)] border-b border-[var(--edge)]",
                 onmousedown: move |_| crate::app::start_window_drag(),
-                // Everything here is `shrink-0`, so a narrow window cannot
-                // squeeze the bar — it drops the least load-bearing parts by
-                // width instead, and Account never falls off the end.
+                onclick: move |_| open.set(false),
                 div { class: "flex items-center gap-2.5 shrink-0",
                     crate::app::DiscordiaLogo { class: "w-6 h-6 shrink-0" }
                     span { class: "dxf-display dxf-wordmark text-[17px] font-semibold tracking-tight hidden min-[900px]:inline",
@@ -256,32 +254,39 @@ fn TopBar(
                             span { class: "text-[var(--accent)] font-semibold", "{unread}" }
                         }
                     }
-                    crate::features::profiles::Avatar {
-                        pubkey: identity.pubkey.clone(),
-                        name: identity.display_name.clone(),
-                        size: "w-8 h-8",
-                        text: "text-xs",
-                    }
-                    div { class: "min-w-0 max-w-40 leading-tight hidden min-[1060px]:block",
-                        div { class: "text-sm font-semibold text-[var(--text)] truncate",
-                            "{identity.display_name}"
-                        }
-                        div { class: "text-[10.5px] font-mono tracking-wide text-[var(--text-dim)] truncate",
-                            "{short}"
-                        }
-                    }
                     button {
-                        class: "px-3.5 py-1.5 rounded-lg border border-[var(--border-strong)] text-[13px] text-[var(--text-muted)] hover:text-[var(--text)] hover:border-[var(--accent)] transition-colors",
-                        onclick: move |_| {
+                        class: "flex items-center gap-2.5 px-2 py-1.5 rounded-lg border border-transparent text-left hover:bg-[var(--panel2)] hover:border-[var(--border-strong)] transition-colors",
+                        title: "Account",
+                        aria_label: "Account",
+                        aria_expanded: "{open()}",
+                        onclick: move |e| {
+                            e.stop_propagation();
                             social.set(false);
                             let now = open();
                             open.set(!now);
                         },
-                        "Account"
+                        crate::features::profiles::Avatar {
+                            pubkey: identity.pubkey.clone(),
+                            name: identity.display_name.clone(),
+                            size: "w-8 h-8",
+                            text: "text-xs",
+                        }
+                        div { class: "min-w-0 max-w-40 leading-tight hidden min-[1060px]:block",
+                            div { class: "text-sm font-semibold text-[var(--text)] truncate",
+                                "{identity.display_name}"
+                            }
+                            div { class: "text-[10.5px] font-mono tracking-wide text-[var(--text-dim)] truncate",
+                                "{short}"
+                            }
+                        }
                     }
                 }
             }
             if open() {
+                div {
+                    class: "fixed inset-0 z-40",
+                    onclick: move |_| open.set(false),
+                }
                 div { class: "absolute right-5 top-[58px] z-50 w-80",
                     crate::features::connect::IdentityCard {
                         identity: identity.clone(),

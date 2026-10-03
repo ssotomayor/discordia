@@ -5,7 +5,7 @@ use std::time::Duration;
 use dioxusfun_bot::{Bot, BotIdentity};
 use dioxusfun_server::livekit::{
     BoxFuture, LiveKitConfig, MintRequest, VoiceTokenMinter, screen_audio_identity,
-    screen_room_name, screen_video_identity,
+    screen_room_name, screen_video_identity, screen_viewer_identity,
 };
 use dioxusfun_server::protocol::{ChannelKind, ClientMessage, Id, ServerMessage};
 use livekit_api::access_token::TokenVerifier;
@@ -317,7 +317,7 @@ async fn a_token_minted_after_leaving_is_not_delivered() {
 }
 
 #[tokio::test]
-async fn join_voice_mints_three_identities_with_the_right_grants() {
+async fn join_voice_mints_four_screen_identities_with_the_right_grants() {
     let (url, _handle) = spawn_gateway(local_signing()).await;
     let id = BotIdentity::generate();
     let mut user = connect_user(&url, &id, "sharer").await;
@@ -328,6 +328,13 @@ async fn join_voice_mints_three_identities_with_the_right_grants() {
     assert!(errors(&frames).is_empty(), "unexpected errors: {frames:?}");
 
     let (main, audio, video) = screen_token(&frames).expect("no ScreenToken");
+    let viewer = frames
+        .iter()
+        .find_map(|m| match m {
+            ServerMessage::ScreenToken { viewer_token, .. } => Some(viewer_token),
+            _ => None,
+        })
+        .expect("viewer token present");
     for (what, t) in [("main", &main), ("audio", &audio), ("video", &video)] {
         assert!(
             !t.is_empty(),
@@ -343,10 +350,14 @@ async fn join_voice_mints_three_identities_with_the_right_grants() {
     assert_eq!(sub(&main), pubkey);
     assert_eq!(sub(&audio), screen_audio_identity(pubkey));
     assert_eq!(sub(&video), screen_video_identity(pubkey));
+    assert_eq!(sub(viewer), screen_viewer_identity(pubkey));
     let room = claims(&main).room;
     assert!(room.starts_with("screen-"), "unexpected room {room}");
     assert_eq!(claims(&audio).room, room);
     assert_eq!(claims(&video).room, room);
+    assert_eq!(claims(viewer).room, room);
+    assert!(!claims(viewer).can_publish);
+    assert!(!claims(viewer).can_publish_data);
 
     assert!(claims(&main).can_publish, "webview must be able to capture");
     assert!(
@@ -358,10 +369,26 @@ async fn join_voice_mints_three_identities_with_the_right_grants() {
         "the subscribe-only identity was minted with publish rights"
     );
     assert!(!claims(&audio).can_publish_data);
-    for t in [&main, &audio, &video] {
+    for t in [&main, &audio, &video, viewer] {
         assert!(claims(t).can_subscribe);
         assert!(claims(t).room_join);
     }
+}
+
+#[tokio::test]
+async fn a_failed_viewer_mint_preserves_in_app_streams_and_voice() {
+    let (url, _handle) = spawn_gateway(delegated(|req| req.identity.ends_with("#viewer"))).await;
+    let id = BotIdentity::generate();
+    let mut user = connect_user(&url, &id, "viewer").await;
+    let (_guild_id, channel_id) = voice_channel(&mut user).await;
+    let frames = join_voice(&mut user, channel_id).await;
+    assert!(has_voice_token(&frames));
+    assert!(errors(&frames).is_empty());
+    let (main, audio, video) = screen_token(&frames).expect("screen tokens remain available");
+    assert!(!main.is_empty() && !audio.is_empty() && !video.is_empty());
+    assert!(frames.iter().any(
+        |m| matches!(m, ServerMessage::ScreenToken { viewer_token, .. } if viewer_token.is_empty())
+    ));
 }
 
 #[tokio::test]

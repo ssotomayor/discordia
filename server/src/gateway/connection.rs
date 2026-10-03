@@ -2091,6 +2091,7 @@ const _: () = assert!(FLOOD_LIMIT > WRITE_LIMIT);
 enum OptionalScreen {
     Audio,
     Video,
+    Viewer,
 }
 
 /// Longest a voice join waits on the token service before the client hears
@@ -2144,12 +2145,17 @@ async fn mint_voice_frames(
     .await
     {
         Ok(screen_token) => {
-            let (audio_token, audio_err) =
-                optional_screen_token(cfg, OptionalScreen::Audio, pubkey, &screen_name, channel_id)
-                    .await;
-            let (video_token, video_err) =
-                optional_screen_token(cfg, OptionalScreen::Video, pubkey, &screen_name, channel_id)
-                    .await;
+            let ((audio_token, audio_err), (video_token, video_err), (viewer_token, _)) = tokio::join!(
+                optional_screen_token(cfg, OptionalScreen::Audio, pubkey, &screen_name, channel_id),
+                optional_screen_token(cfg, OptionalScreen::Video, pubkey, &screen_name, channel_id),
+                optional_screen_token(
+                    cfg,
+                    OptionalScreen::Viewer,
+                    pubkey,
+                    &screen_name,
+                    channel_id
+                ),
+            );
             frames.extend(audio_err);
             frames.extend(video_err);
             frames.push(ServerMessage::ScreenToken {
@@ -2158,6 +2164,7 @@ async fn mint_voice_frames(
                 token: screen_token,
                 audio_token,
                 video_token,
+                viewer_token,
             });
         }
         Err(err) => {
@@ -2191,6 +2198,12 @@ async fn optional_screen_token(
             true,
             "video",
             true,
+        ),
+        OptionalScreen::Viewer => (
+            livekit::screen_viewer_identity(user_pubkey),
+            false,
+            "viewer",
+            false,
         ),
     };
     match minted(livekit::screen_token_as(
