@@ -27,14 +27,31 @@ enum ConfirmAction {
 pub fn GuildsSidebar() -> Element {
     let mut state = use_app_state();
     let gateway = use_gateway();
+    let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
+    let mut dragging = use_signal::<Option<Id>>(|| None);
+    let mut drop_target = use_signal::<Option<Id>>(|| None);
+    let order = settings.read().guild_order.clone();
 
     let snapshot = state.read();
     let guilds = {
         let mut v = snapshot.guilds.clone();
-        v.sort_by_key(|g| !snapshot.is_owner(g.id));
+        v.sort_by_key(|g| {
+            (
+                order
+                    .iter()
+                    .position(|id| *id == g.id)
+                    .unwrap_or(usize::MAX),
+                !snapshot.is_owner(g.id),
+            )
+        });
         v
     };
-    let owned_count = guilds.iter().filter(|g| snapshot.is_owner(g.id)).count();
+    let owned: Vec<Id> = guilds
+        .iter()
+        .filter(|g| snapshot.is_owner(g.id))
+        .map(|g| g.id)
+        .collect();
+    let guild_ids: Vec<Id> = guilds.iter().map(|g| g.id).collect();
     let selected = snapshot.selected_guild;
     let dm_mode = snapshot.dm_mode;
     let dm_unread = snapshot.dm_unread_total() as usize;
@@ -50,7 +67,6 @@ pub fn GuildsSidebar() -> Element {
     drop(snapshot);
 
     let mut menu = use_signal::<Option<GuildMenu>>(|| None);
-    let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let mut show_browse = use_signal(|| false);
 
     rsx! {
@@ -88,14 +104,37 @@ pub fn GuildsSidebar() -> Element {
 
                 div { class: "w-6 h-px bg-[var(--border)] my-1" }
 
-                for (idx, guild) in guilds.iter().cloned().enumerate() {
+                for guild in guilds.iter().cloned() {
                     {
                         let has_menu = !guild.owner_pubkey.is_empty() || is_operator;
-                        let is_mine = idx < owned_count;
+                        let is_mine = owned.contains(&guild.id);
+                        let gid = guild.id;
+                        let drop_ids = guild_ids.clone();
                         let gname = guild.name.clone();
                         rsx! {
+                            div {
+                                key: "{gid}",
+                                draggable: true,
+                                title: "Drag to reorder guilds",
+                                style: if drop_target() == Some(gid) { "outline:2px solid var(--accent);border-radius:16px;" } else { "outline:none;" },
+                                ondragstart: move |_| { menu.set(None); dragging.set(Some(gid)); },
+                                ondragover: move |e: Event<DragData>| {
+                                    if dragging().is_some() { e.prevent_default(); drop_target.set(Some(gid)); }
+                                },
+                                ondrop: move |e: Event<DragData>| {
+                                    e.prevent_default();
+                                    if let Some(moved) = dragging() {
+                                        let mut next = settings.read().clone();
+                                        if let Some(order) = crate::ui_size::moved_guilds(&drop_ids, &next.guild_order, moved, gid) {
+                                            next.guild_order = order;
+                                            crate::settings::save(&next);
+                                            settings.set(next);
+                                        }
+                                    }
+                                    dragging.set(None); drop_target.set(None);
+                                },
+                                ondragend: move |_| { dragging.set(None); drop_target.set(None); },
                             GuildIcon {
-                                key: "{guild.id}",
                                 id: guild.id,
                                 label: guild.icon.clone().unwrap_or_else(|| initials(&guild.name)),
                                 image: guild.icon_image.as_deref().and_then(|i| state.read().media_src(i).map(str::to_string)),
@@ -131,6 +170,7 @@ pub fn GuildsSidebar() -> Element {
                                         confirming: None,
                                     }));
                                 },
+                            }
                             }
                         }
                     }
@@ -625,7 +665,7 @@ fn GuildIcon(
                     }
                 },
                 if let Some(src) = image {
-                    img { class: "w-full h-full object-cover", src: "{src}", alt: "{name}" }
+                    img { class: "w-full h-full object-cover", src: "{src}", alt: "{name}", draggable: false }
                 } else {
                     "{label}"
                 }

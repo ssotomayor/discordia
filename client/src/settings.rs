@@ -4,9 +4,19 @@ use crate::identity::config_dir;
 
 const FILE_VERSION: u32 = 1;
 
+fn default_ui_size() -> u16 {
+    100
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ClientSettings {
     pub theme: String,
+    #[serde(default = "default_ui_size")]
+    pub text_size_percent: u16,
+    #[serde(default = "default_ui_size")]
+    pub emoji_size_percent: u16,
+    #[serde(default)]
+    pub guild_order: Vec<crate::protocol::Id>,
     #[serde(default)]
     pub accent: Option<String>,
     #[serde(default = "default_pattern")]
@@ -188,6 +198,9 @@ impl Default for ClientSettings {
     fn default() -> Self {
         Self {
             theme: "ember".into(),
+            text_size_percent: default_ui_size(),
+            emoji_size_percent: default_ui_size(),
+            guild_order: Vec::new(),
             accent: None,
             pattern: default_pattern(),
             background: None,
@@ -402,6 +415,18 @@ mod tests {
     }
 
     #[test]
+    fn appearance_sizes_and_personal_guild_order_round_trip() {
+        let settings = ClientSettings {
+            text_size_percent: 120,
+            emoji_size_percent: 200,
+            guild_order: vec![uuid::Uuid::new_v4(), uuid::Uuid::new_v4()],
+            ..ClientSettings::default()
+        };
+        let loaded = parse(&file(serde_json::to_value(&settings).unwrap())).unwrap();
+        assert_eq!(loaded, settings);
+    }
+
+    #[test]
     fn one_unreadable_field_does_not_cost_the_rest() {
         let mut good = serde_json::to_value(ClientSettings::default()).unwrap();
         good["noise_cancellation"] = true.into();
@@ -422,11 +447,17 @@ mod tests {
     #[test]
     fn a_file_written_before_a_field_existed_still_loads() {
         let mut old = serde_json::to_value(ClientSettings::default()).unwrap();
+        for field in ["text_size_percent", "emoji_size_percent", "guild_order"] {
+            old.as_object_mut().unwrap().remove(field);
+        }
         old.as_object_mut().unwrap().remove("user_volumes");
         old.as_object_mut().unwrap().remove("screenshare_codec");
         old.as_object_mut().unwrap().remove("screenshare_encoder");
         old["auto_gain_control"] = false.into();
         let loaded = parse(&file(old)).expect("loads");
+        assert_eq!(loaded.text_size_percent, 100);
+        assert_eq!(loaded.emoji_size_percent, 100);
+        assert!(loaded.guild_order.is_empty());
         assert!(!loaded.auto_gain_control);
         assert!(loaded.user_volumes.is_empty());
         assert_eq!(loaded.screenshare_codec, crate::sysvideo::Codec::H264);

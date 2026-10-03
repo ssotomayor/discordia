@@ -727,6 +727,7 @@ pub fn App() -> Element {
     use_context_provider(|| settings);
     let appearance = settings.read();
     let theme = appearance.theme.clone();
+    let size_css = crate::ui_size::text_css(appearance.text_size_percent);
     let accent = appearance.accent.clone();
     let background = appearance.background.clone();
     let pattern = appearance.pattern.clone();
@@ -746,9 +747,10 @@ pub fn App() -> Element {
 
     rsx! {
         AppHead {}
+        style { "{size_css}" }
 
         div {
-            class: "h-screen w-screen bg-[var(--bg)] text-[var(--text)] antialiased overflow-hidden",
+            class: "dxf-ui h-screen w-screen bg-[var(--bg)] text-[var(--text)] antialiased overflow-hidden",
             style: "{root_style}",
             if !pattern_class.is_empty() {
                 div { class: "{pattern_class}" }

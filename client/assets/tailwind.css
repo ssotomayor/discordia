@@ -1120,6 +1120,9 @@
   .border-\[var\(--panel-solid\)\] {
     border-color: var(--panel-solid);
   }
+  .border-\[var\(--warn\)\] {
+    border-color: var(--warn);
+  }
   .border-\[var\(--warn\)\]\/40 {
     border-color: var(--warn);
     @supports (color: color-mix(in lab, red, red)) {

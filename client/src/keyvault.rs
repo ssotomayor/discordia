@@ -307,7 +307,10 @@ mod tests {
     fn sealed_bytes_of_any_length_round_trip_and_do_not_pass_as_a_key() {
         let entropy = [9u8; 16];
         let sealed = seal(&entropy, "correct horse", LOG_N).expect("seal");
-        assert_eq!(**unseal(&sealed, "correct horse").expect("unseal"), entropy[..]);
+        assert_eq!(
+            **unseal(&sealed, "correct horse").expect("unseal"),
+            entropy[..]
+        );
         assert!(unseal(&sealed, "wrong horse").is_err());
         assert!(decrypt(&sealed, "correct horse").is_err());
         let key = encrypt(&[7u8; 32], "correct horse", LOG_N).expect("encrypt");

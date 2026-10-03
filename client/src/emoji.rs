@@ -2,6 +2,47 @@ use std::path::PathBuf;
 
 use crate::identity::config_dir;
 
+pub fn needs_rendering(text: &str) -> bool {
+    text.chars().any(|c| {
+        c == ':' || matches!(c as u32, 0x1f000..=0x1faff | 0x2600..=0x27bf | 0x20e3 | 0xfe0f)
+    })
+}
+
+pub fn unicode_parts(text: &str) -> Vec<(&str, bool)> {
+    use unicode_segmentation::UnicodeSegmentation;
+    let mut parts: Vec<(&str, bool)> = Vec::new();
+    for (offset, grapheme) in text.grapheme_indices(true) {
+        let emoji = grapheme.contains('\u{20e3}')
+            || grapheme.chars().any(|c| {
+                matches!(c as u32, 0x1f000..=0x1faff | 0x2600..=0x27bf)
+                    || (grapheme.contains('\u{fe0f}')
+                        && matches!(c as u32, 0xa9 | 0xae | 0x203c..=0x3299))
+            });
+        if !emoji && let Some((last, false)) = parts.last_mut() {
+            let start = offset - last.len();
+            *last = &text[start..offset + grapheme.len()];
+        } else {
+            parts.push((grapheme, emoji));
+        }
+    }
+    parts
+}
+
+#[cfg(test)]
+mod unicode_tests {
+    #[test]
+    fn emoji_sequences_remain_whole_without_changing_text() {
+        let text = "Hi 👨‍👩‍👧‍👦 👍🏽 🇦🇷 1️⃣ café";
+        let parts = super::unicode_parts(text);
+        assert_eq!(parts.iter().map(|(s, _)| *s).collect::<String>(), text);
+        assert_eq!(parts.iter().filter(|(_, emoji)| *emoji).count(), 4);
+        assert_eq!(
+            super::unicode_parts("123 abc é"),
+            vec![("123 abc é", false)]
+        );
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Piece<'a> {
     Text(&'a str),
@@ -40,13 +81,6 @@ pub fn split_shortcodes(s: &str) -> Vec<Piece<'_>> {
         out.push(Piece::Text(&s[cursor..]));
     }
     out
-}
-
-pub fn has_shortcode(s: &str) -> bool {
-    s.matches(':').count() >= 2
-        && split_shortcodes(s)
-            .iter()
-            .any(|p| matches!(p, Piece::Shortcode(_)))
 }
 
 fn cache_dir() -> PathBuf {
@@ -129,13 +163,6 @@ mod tests {
         assert!(codes(":a:").is_empty(), "one char is below the minimum");
         assert!(codes(&format!(":{}:", "x".repeat(33))).is_empty());
         assert_eq!(codes(&format!(":{}:", "x".repeat(32))).len(), 1);
-    }
-
-    #[test]
-    fn has_shortcode_matches_the_scanner() {
-        assert!(has_shortcode("hey :tada: there"));
-        assert!(!has_shortcode("hey there"));
-        assert!(!has_shortcode("ratio 3:1"));
     }
 
     #[test]

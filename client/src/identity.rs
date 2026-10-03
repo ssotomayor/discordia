@@ -5,8 +5,8 @@ use bip39::{Language, Mnemonic};
 use hmac::{Hmac, Mac};
 use secp256k1::{Keypair, Message, PublicKey, Scalar, Secp256k1, SecretKey};
 use serde::{Deserialize, Serialize};
-use zeroize::Zeroizing;
 use sha2::{Digest, Sha256, Sha512};
+use zeroize::Zeroizing;
 
 const FILE_VERSION: u32 = 2;
 const PLAINTEXT_FILE_VERSION: u32 = 1;
@@ -284,8 +284,10 @@ impl Identity {
                     .ok_or_else(|| "identity file has no ncryptsec".to_string())?;
                 let passphrase = crate::keyvault::passphrase()?;
                 let bytes = crate::keyvault::decrypt(&ncryptsec, &passphrase)?;
-                let mut identity =
-                    Self::restore_from_private_key(hex::encode(bytes.as_ref()), stored.display_name)?;
+                let mut identity = Self::restore_from_private_key(
+                    hex::encode(bytes.as_ref()),
+                    stored.display_name,
+                )?;
                 if let Some(sealed) = stored.entropy {
                     identity.source = recover_phrase(&sealed, &passphrase, &identity.pubkey)
                         .unwrap_or(identity.source);
@@ -781,7 +783,11 @@ mod store_tests {
 
         let back = Identity::load().expect("load").expect("signed in");
         assert_eq!(back.pubkey, id.pubkey);
-        assert!(matches!(back.source, IdentitySource::Nsec(_)), "{:?}", back.source);
+        assert!(
+            matches!(back.source, IdentitySource::Nsec(_)),
+            "{:?}",
+            back.source
+        );
     }
 
     /// Sign out has to leave something behind, or the list it feeds is always
