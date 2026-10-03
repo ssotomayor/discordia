@@ -1,6 +1,3 @@
-//! The connect screen, with the half that needs no server beside it: DMs are
-//! Nostr events on relays, so arriving somewhere was never a precondition.
-
 use dioxus::prelude::*;
 
 use crate::identity::Identity;
@@ -78,7 +75,7 @@ pub fn HomeView(
         GatewayTx(tx)
     }));
 
-    let mut social = use_signal(|| false);
+    let (social, open_social) = super::social_window::use_social_window(state);
     use_effect(move || {
         let mut app = state;
         app.write().dm_pane_open = social();
@@ -89,29 +86,16 @@ pub fn HomeView(
     } else {
         ""
     };
-    // Width, not transform: the panel has to take its room from the form rather
-    // than cover it. Always mounted, so it has something to open from.
-    //
-    // 40% is the rule and 560px is the floor, because under ~1400 the rule
-    // stops leaving a conversation worth opening: 40% of 1024 is 410, and the
-    // list alone is 320. The floor wins there and the drawer runs wide.
-    let drawer = if social() {
-        "w-[max(560px,40vw)]"
-    } else {
-        "w-0"
-    };
-
     rsx! {
         div { class: "h-full w-full flex flex-col bg-[var(--bg)] {mac_top_pad}",
             crate::features::sounds::MessageSounds {}
-            crate::features::chat::ImageViewer {}
-            crate::features::dm_call::CallPanel {}
+            if !social() { crate::features::chat::ImageViewer {} }
+            crate::features::dm_call::CallAlert {}
+            if !social() { crate::features::dm_call::CallPanel {} }
             crate::features::workspace::ErrorToast {}
-            crate::features::profiles::ProfileCard {}
-            TopBar { identity: identity.clone(), social, on_rename, on_sign_out }
+            if !social() { crate::features::profiles::ProfileCard {} }
+            TopBar { identity: identity.clone(), social, open_social, on_rename, on_sign_out }
             div { class: "flex-1 flex min-h-0",
-                // Takes what the drawer leaves and centres its content: pinned
-                // left, a wide window reads as a layout that lost a column.
                 div { class: "flex-1 min-w-0 flex flex-col",
                     div { class: "w-full max-w-[588px] mx-auto flex-1 min-h-0 flex flex-col",
                         div { class: "px-7 pt-5 shrink-0",
@@ -135,30 +119,7 @@ pub fn HomeView(
                         }
                     }
                 }
-                // The conversation belongs to the drawer, not to the screen:
-                // with nowhere to go it was a permanent empty state next to a
-                // form that has nothing to do with it.
-                div { class: "shrink-0 overflow-hidden transition-[width] duration-200 ease-out {drawer}",
-                    // Held at the open width so the inside does not reflow while
-                    // the outside is still narrowing — the clip is the movement.
-                    div { class: "h-full flex w-[max(560px,40vw)] border-l border-[var(--edge)]",
-                        // Full height on purpose: the whole edge is the target,
-                        // so closing never asks anyone to aim.
-                        button {
-                            class: "w-4 shrink-0 h-full flex items-center justify-center border-r border-[var(--edge)] bg-[var(--panel)] text-[10px] text-[var(--text-dim)] hover:bg-[var(--bg2)] hover:text-[var(--accent)] transition-colors",
-                            title: "Collapse the social panel",
-                            onclick: move |_| social.set(false),
-                            "❯"
-                        }
-                        // 320 when there is room, down to 240 when there is
-                        // not: inside a capped drawer the list is the half
-                        // that still reads narrow, so it is the half that gives.
-                        div { class: "w-[320px] min-w-[240px] shrink flex flex-col border-r border-[var(--edge)] bg-[var(--panel)]",
-                            SocialPanel { on_close: move |_| social.set(false) }
-                        }
-                        TalkPane {}
-                    }
-                }
+
             }
         }
     }
@@ -170,10 +131,10 @@ pub fn HomeView(
 fn TopBar(
     identity: Identity,
     social: Signal<bool>,
+    open_social: EventHandler<()>,
     on_rename: EventHandler<String>,
     on_sign_out: EventHandler<()>,
 ) -> Element {
-    let mut social = social;
     let state = use_app_state();
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let configured: Vec<String> = {
@@ -271,8 +232,7 @@ fn TopBar(
                         class: "flex items-center gap-2 px-3.5 py-1.5 rounded-lg border text-[13px] transition-colors {social_cls}",
                         onclick: move |_| {
                             open.set(false);
-                            let now = social();
-                            social.set(!now);
+                            open_social.call(());
                         },
                         span {
                             class: "shrink-0 flex items-center",
@@ -290,7 +250,6 @@ fn TopBar(
                         aria_expanded: "{open()}",
                         onclick: move |e| {
                             e.stop_propagation();
-                            social.set(false);
                             let now = open();
                             open.set(!now);
                         },
@@ -331,7 +290,7 @@ fn TopBar(
 /// Conversations and the people in them — the half that needs no server, kept
 /// out of the way until it is asked for.
 #[component]
-fn SocialPanel(on_close: EventHandler<()>) -> Element {
+pub(super) fn SocialPanel(on_close: EventHandler<()>) -> Element {
     let mut state = use_app_state();
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let nostr = use_context::<crate::nostr::service::NostrTx>();
@@ -581,24 +540,16 @@ fn SocialPanel(on_close: EventHandler<()>) -> Element {
     }
 }
 
-/// The conversation itself, which is what the space freed by the panel is for.
 #[component]
-fn TalkPane() -> Element {
+pub(super) fn TalkPane() -> Element {
     let state = use_app_state();
     let snapshot = state.read();
     let selected = snapshot.selected_channel;
     let any_dms = !snapshot.dms.is_empty();
     drop(snapshot);
 
-    // `app.rs` pins the version label at `bottom-3 right-3`, which lands on the
-    // composer's Send button; this is the room it needs.
-    let chat_pad = if selected.is_some() { "pb-7" } else { "" };
-
     rsx! {
-        // The floor that makes the list yield: without it flex hands the list
-        // its full 320 and the conversation takes whatever is left, however
-        // little. 240 + 300 + the strip is what the drawer's own floor allows.
-        div { class: "flex-1 min-w-[300px] flex flex-col {chat_pad}",
+        div { class: "flex-1 min-w-0 min-h-0 flex flex-col",
             if selected.is_some() {
                 crate::features::chat::ChatView {}
             } else {

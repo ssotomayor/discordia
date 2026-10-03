@@ -28,6 +28,7 @@ pub mod roles;
 mod screen_stats;
 pub mod screenshare;
 pub mod settings_dialog;
+mod social_window;
 pub mod soundboard;
 pub mod sounds;
 mod stream_layout;

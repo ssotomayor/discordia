@@ -705,9 +705,8 @@ pub fn CallButton(peer: String) -> Element {
 mod tests;
 
 #[component]
-pub fn CallPanel() -> Element {
-    let mut state = use_app_state();
-    let nostr = use_context::<crate::nostr::service::NostrTx>();
+pub fn CallAlert() -> Element {
+    let state = use_app_state();
     let incoming = use_memo(move || {
         state
             .read()
@@ -720,6 +719,13 @@ pub fn CallPanel() -> Element {
             super::sounds::sfx("dm");
         }
     });
+    rsx! {}
+}
+
+#[component]
+pub fn CallPanel(#[props(default)] embedded: bool) -> Element {
+    let mut state = use_app_state();
+    let nostr = use_context::<crate::nostr::service::NostrTx>();
     let Some(call) = state.read().dm_call.clone() else {
         return rsx! {};
     };
@@ -748,11 +754,16 @@ pub fn CallPanel() -> Element {
     };
     let accept = nostr.clone();
     let audio_peer = call.peer.clone();
+    let placement = if embedded {
+        "position: relative; width: 100%; border-radius: 0;"
+    } else {
+        "position: fixed; top: 72px; right: 20px; z-index: 10000; width: min(356px, calc(100vw - 40px)); max-height: calc(100vh - 96px); overflow-y: auto; border-radius: 14px;"
+    };
     rsx! {
         dioxus_grid_layout::NoDrag {
             section {
                 class: "dxf-pop-in",
-                style: "position: fixed; bottom: 20px; right: 20px; z-index: 10000; width: min(356px, calc(100vw - 40px)); overflow: hidden; border-width: 1px; border-style: solid; border-color: var(--border-strong); border-radius: 14px; background-color: var(--panel-solid, var(--bg2)); color: var(--text); box-shadow: 0 12px 40px #0005;",
+                style: "{placement} border-width: 1px; border-style: solid; border-color: var(--border-strong); background-color: var(--panel-solid, var(--bg2)); color: var(--text);",
                 role: "region", aria_label: "Private voice call",
                 div { style: "height: 3px; background-color: {status_color};" }
                 div { style: "padding: 16px;",
