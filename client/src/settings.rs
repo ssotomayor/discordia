@@ -66,6 +66,10 @@ pub struct ClientSettings {
     pub layout_cells: Vec<(String, [u32; 4])>,
     #[serde(default)]
     pub layout_free: Vec<(String, [f64; 4])>,
+    #[serde(default)]
+    pub stream_layout_cells: Vec<(String, [u32; 4])>,
+    #[serde(default)]
+    pub stream_layout_free: Vec<(String, [f64; 4])>,
     #[serde(default = "default_screenshare_quality")]
     pub screenshare_quality: String,
     #[serde(default)]
@@ -204,6 +208,8 @@ impl Default for ClientSettings {
             voice_bitrate_kbps: default_voice_bitrate_kbps(),
             layout_cells: Vec::new(),
             layout_free: Vec::new(),
+            stream_layout_cells: Vec::new(),
+            stream_layout_free: Vec::new(),
             screenshare_quality: default_screenshare_quality(),
             screenshare_fps: None,
             screenshare_codec: crate::sysvideo::Codec::default(),

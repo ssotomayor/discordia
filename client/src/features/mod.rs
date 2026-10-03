@@ -20,6 +20,8 @@ pub mod image_editor;
 pub mod integrations;
 pub mod leveling;
 pub mod members;
+#[cfg(test)]
+mod native_teardown;
 pub mod profiles;
 pub mod roles;
 mod screen_stats;
@@ -27,6 +29,7 @@ pub mod screenshare;
 pub mod settings_dialog;
 pub mod soundboard;
 pub mod sounds;
+mod stream_layout;
 mod stream_viewer;
 pub mod topology;
 mod video_lifecycle;

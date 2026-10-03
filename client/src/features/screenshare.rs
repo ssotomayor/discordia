@@ -1915,6 +1915,7 @@ pub fn ScreenSelfPreview() -> Element {
         if drag().is_some() {
             div {
                 class: "fixed inset-0 z-50",
+                style: "z-index:{STREAM_DRAG_LAYER};",
                 onmousemove: move |e| {
                     if !e.held_buttons().contains(dioxus::html::input_data::MouseButton::Primary) {
                         drag.set(None);
@@ -2051,7 +2052,7 @@ fn stream_tile_style(
     } else if tiled {
         (
             "relative",
-            40,
+            0,
             8,
             "auto".into(),
             "auto".into(),
@@ -2088,6 +2089,20 @@ fn stream_tile_style(
 
 fn use_stream_drag() -> Signal<Option<Drag>> {
     let mut drag = use_signal(|| None::<Drag>);
+    #[cfg(target_os = "windows")]
+    use_effect(move || {
+        if drag().is_none() {
+            return;
+        }
+        spawn(async move {
+            while drag.peek().is_some() {
+                tokio::time::sleep(std::time::Duration::from_millis(32)).await;
+                if drag.peek().is_some() && !primary_mouse_button_down() {
+                    drag.set(None);
+                }
+            }
+        });
+    });
     let window_id = dioxus::desktop::use_window().window.id();
     dioxus::desktop::use_wry_event_handler(move |event, _| {
         use dioxus::desktop::tao::event::{ElementState, Event, WindowEvent};
@@ -2120,12 +2135,28 @@ fn use_stream_drag() -> Signal<Option<Drag>> {
     drag
 }
 
+#[cfg(target_os = "windows")]
+fn primary_mouse_button_down() -> bool {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON, VK_RBUTTON};
+    use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_SWAPBUTTON};
+
+    // SAFETY: These queries accept constant identifiers and do not access caller memory.
+    unsafe {
+        let button = if GetSystemMetrics(SM_SWAPBUTTON) != 0 {
+            VK_RBUTTON
+        } else {
+            VK_LBUTTON
+        };
+        GetAsyncKeyState(i32::from(button.0)) < 0
+    }
+}
+
 #[component]
 pub fn ScreenWatchWindow() -> Element {
     let state = use_app_state();
-    let popouts = super::stream_viewer::use_popouts(state);
+    let popouts = use_context::<super::stream_viewer::Popouts>();
     let detached = popouts.detached;
-    let mut mosaic = use_signal(|| true);
+    let mut focused = use_signal::<Option<String>>(|| None);
     let viewing = use_memo(move || state.read().screen_viewing.clone());
     let mut fullscreen = use_signal::<Option<String>>(|| None);
     let mut was_fullscreen = use_signal(|| false);
@@ -2135,8 +2166,7 @@ pub fn ScreenWatchWindow() -> Element {
         move || window.window.fullscreen()
     });
     let fullscreen_window = window.clone();
-    let initial_size = window.window.inner_size();
-    let mut size = use_signal(move || (initial_size.width as f64, initial_size.height as f64));
+    let mut size = use_signal(|| (800.0, 500.0));
     let restore_fullscreen = original_fullscreen.clone();
     use_effect(move || {
         let active = fullscreen().is_some();
@@ -2154,15 +2184,6 @@ pub fn ScreenWatchWindow() -> Element {
         use dioxus::desktop::tao::event::{ElementState, Event, WindowEvent};
         if let Event::WindowEvent {
             window_id: id,
-            event: WindowEvent::Resized(value),
-            ..
-        } = event
-            && *id == window_id
-        {
-            size.set((value.width as f64, value.height as f64));
-        }
-        if let Event::WindowEvent {
-            window_id: id,
             event: WindowEvent::KeyboardInput { event, .. },
             ..
         } = event
@@ -2171,6 +2192,20 @@ pub fn ScreenWatchWindow() -> Element {
             && event.logical_key == dioxus::desktop::tao::keyboard::Key::Escape
         {
             fullscreen.set(None);
+            focused.set(None);
+        }
+    });
+    use_effect(move || {
+        let watched = viewing.read();
+        let detached = detached.read();
+        for mut selection in [focused, fullscreen] {
+            let invalid = selection
+                .peek()
+                .as_ref()
+                .is_some_and(|pk| !watched.contains(pk) || detached.contains(pk));
+            if invalid {
+                selection.set(None);
+            }
         }
     });
     let close_window = window.clone();
@@ -2242,39 +2277,53 @@ pub fn ScreenWatchWindow() -> Element {
         .iter()
         .filter(|pk| !detached.read().contains(*pk))
         .count();
-    let tiled = mosaic() && count > 1 && fullscreen().is_none();
+    let selected = fullscreen().or(focused());
     let (width, height) = size();
-    let scale = window.window.scale_factor();
     let grid =
-        super::stream_viewer::grid_style(count, width / scale - 48.0, height / scale - 150.0);
-    let grid_container = if tiled {
-        format!(
-            "position:fixed;left:24px;right:24px;top:100px;bottom:24px;z-index:40;display:grid;gap:8px;{grid}"
-        )
-    } else {
-        "display:contents;".into()
-    };
+        super::stream_viewer::grid_style(if selected.is_some() { 1 } else { count }, width, height);
     rsx! {
-        if count > 1 {
-            div { class: "fixed top-16 left-6 z-50 flex items-center gap-2 px-3 py-2 rounded-lg border border-[var(--border)] bg-[var(--panel-solid)]",
-                span { class: "text-sm text-[var(--text)]", "Streams · {count}" }
-                button { class: "text-xs px-2 py-1 rounded border border-[var(--border)] text-[var(--text)]", aria_pressed: "{mosaic}", onclick: move |_| mosaic.toggle(), if mosaic() { "Floating windows" } else { "Mosaic" } }
+        if count > 0 { dioxus_grid_layout::GridItem { id: "streams", x: 3, y: 0, w: 7, h: 22,
+            min_w: 3, min_h: 6, overlay: fullscreen().is_some(),
+            div { class: "panel-hover w-full h-full min-h-0 flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-xl overflow-hidden",
+                div { class: "h-12 shrink-0 px-4 flex items-center gap-2 border-b border-[var(--border)]",
+                    span { class: "text-sm font-semibold text-[var(--text)]", "Streams" }
+                    span { class: "text-xs text-[var(--text-muted)]", "{count} live" }
+                    if selected.is_some() {
+                        button { class: "ml-auto text-xs px-2 py-1 rounded border border-[var(--border)] text-[var(--text)]",
+                            onclick: move |_| { focused.set(None); fullscreen.set(None); }, "Mosaic" }
+                    }
+                }
+                div { class: "flex-1 min-h-0 grid gap-2 p-2", style: "{grid}",
+                    onmounted: move |event| {
+                        let data = event.data();
+                        spawn(async move {
+                            if let Ok(rect) = data.get_client_rect().await {
+                                size.set((rect.size.width, rect.size.height));
+                            }
+                        });
+                    },
+                    onresize: move |event| {
+                        if let Ok(box_size) = event.get_content_box_size() {
+                            size.set((box_size.width, box_size.height));
+                        }
+                    },
+                    for pk in watched {
+                        ScreenWatchTile { key: "{pk}", is_detached: detached.read().contains(&pk),
+                            hidden: selected.as_ref().is_some_and(|selected| selected != &pk),
+                            pubkey: pk, focused, fullscreen, on_popout: popouts.open }
+                    }
+                }
             }
-        }
-        div { style: "{grid_container}",
-            for (index, pk) in watched.into_iter().enumerate() {
-                ScreenWatchTile { key: "{pk}", is_detached: detached.read().contains(&pk), pubkey: pk, index, fullscreen, tiled, on_popout: popouts.open }
-            }
-        }
+        } }
     }
 }
 
 #[component]
 fn ScreenWatchTile(
     pubkey: String,
-    index: usize,
+    mut focused: Signal<Option<String>>,
     mut fullscreen: Signal<Option<String>>,
-    tiled: bool,
+    hidden: bool,
     is_detached: bool,
     on_popout: EventHandler<String>,
 ) -> Element {
@@ -2340,31 +2389,9 @@ fn ScreenWatchTile(
             js_str(&gain_pk)
         ));
     });
-    let mut x = use_signal(move || 160.0_f64 + (index % 4) as f64 * 48.0);
-    let mut y = use_signal(move || 90.0_f64 + (index % 4) as f64 * 48.0);
-    let mut w = use_signal(|| 880.0_f64);
-    let mut h = use_signal(|| 540.0_f64);
-    let mut drag = use_stream_drag();
-    let mut maximized = use_signal(|| false);
     let is_fullscreen = fullscreen().as_ref() == Some(&pk);
-    let mut previously_fullscreen = use_signal(|| false);
-    let restore_pk = pk.clone();
-    use_effect(move || {
-        let active = fullscreen.read().as_ref() == Some(&restore_pk);
-        if *previously_fullscreen.peek() && !active {
-            maximized.set(false);
-            drag.set(None);
-        }
-        previously_fullscreen.set(active);
-    });
-    let expanded = (maximized() && !tiled) || is_fullscreen;
-    let layout = stream_tile_style(
-        is_detached,
-        is_fullscreen,
-        maximized(),
-        tiled,
-        [x(), y(), w(), h()],
-    );
+    let selected = focused().as_ref() == Some(&pk);
+    let layout = stream_tile_style(is_detached || hidden, false, false, true, [0.0; 4]);
 
     let name = state.read().display_name(&pk);
 
@@ -2375,41 +2402,14 @@ fn ScreenWatchTile(
     let pk_mute = pk.clone();
     let pk_fullscreen = pk.clone();
     let pk_popout = pk.clone();
+    let pk_focus = pk.clone();
 
     rsx! {
-        if drag().is_some() {
-            div {
-                class: "fixed inset-0 z-50",
-                style: "z-index:{STREAM_DRAG_LAYER};",
-                onmousemove: move |e| {
-                    if !e.held_buttons().contains(dioxus::html::input_data::MouseButton::Primary) {
-                        drag.set(None);
-                        return;
-                    }
-                    let c = e.client_coordinates();
-                    match drag() {
-                        Some(Drag::Move { dx, dy }) => { x.set(c.x - dx); y.set(c.y - dy); }
-                        Some(Drag::Resize { px, py, w0, h0 }) => {
-                            w.set((w0 + (c.x - px)).max(320.0));
-                            h.set((h0 + (c.y - py)).max(200.0));
-                        }
-                        None => {}
-                    }
-                },
-                onmouseup: move |_| drag.set(None),
-            }
-        }
         div {
-            class: "fixed z-40 flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-2xl overflow-hidden dxf-modal-in",
+            class: "flex flex-col min-w-0 min-h-0 bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg overflow-hidden",
             style: "{layout}",
             div {
-                class: "h-9 px-3 flex items-center gap-2 border-b border-[var(--border)] shrink-0 cursor-move select-none",
-                onmousedown: move |e| {
-                    if expanded || tiled { return; }
-                    if !e.held_buttons().contains(dioxus::html::input_data::MouseButton::Primary) { return; }
-                    let c = e.client_coordinates();
-                    drag.set(Some(Drag::Move { dx: c.x - x(), dy: c.y - y() }));
-                },
+                class: "min-h-9 px-3 flex flex-wrap items-center gap-2 border-b border-[var(--border)] shrink-0 select-none",
                 span { class: "w-2.5 h-2.5 rounded-full shrink-0", style: "background: var(--danger);" }
                 span { class: "min-w-0 flex-1 text-sm text-[var(--text)] font-medium truncate", "{name}'s screen" }
                 span { class: "text-[10px] uppercase tracking-wider text-[var(--danger)] font-semibold", "Live" }
@@ -2419,17 +2419,17 @@ fn ScreenWatchTile(
                     title: "Open in separate window",
                     aria_label: "Open in separate window",
                     onmousedown: move |e| e.stop_propagation(),
-                    onclick: move |_| { drag.set(None); maximized.set(false); fullscreen.set(None); on_popout.call(pk_popout.clone()); },
+                    onclick: move |_| { focused.set(None); fullscreen.set(None); on_popout.call(pk_popout.clone()); },
                     dangerous_inner_html: crate::features::icons::WINDOW_POP_OUT,
                 }
                 button {
                     r#type: "button",
                     class: "w-7 h-7 flex items-center justify-center rounded text-[var(--text-dim)] hover:text-[var(--text)]",
-                    title: if maximized() { "Restore window" } else { "Expand within app" },
-                    aria_label: if maximized() { "Restore window" } else { "Expand within app" },
-                    disabled: is_fullscreen || tiled,
+                    title: if selected { "Return to mosaic" } else { "Focus stream" },
+                    aria_label: if selected { "Return to mosaic" } else { "Focus stream" },
+                    disabled: is_fullscreen,
                     onmousedown: move |e| e.stop_propagation(),
-                    onclick: move |_| { drag.set(None); maximized.toggle(); },
+                    onclick: move |_| focused.set(if selected { None } else { Some(pk_focus.clone()) }),
                     "▣"
                 }
                 button {
@@ -2439,8 +2439,7 @@ fn ScreenWatchTile(
                     aria_label: if is_fullscreen { "Exit full screen" } else { "Full screen" },
                     onmousedown: move |e| e.stop_propagation(),
                     onclick: move |_| {
-                        drag.set(None);
-                        maximized.set(false);
+                        focused.set(None);
                         fullscreen.set(if is_fullscreen { None } else { Some(pk_fullscreen.clone()) });
                     },
                     if is_fullscreen { "⤡" } else { "⤢" }
@@ -2463,7 +2462,7 @@ fn ScreenWatchTile(
                 class: "px-3 py-1 flex flex-wrap items-center justify-between gap-2 shrink-0",
                 span { class: "text-[10px] text-[var(--text-dim)]", "{received_label}" }
                 div {
-                    class: "flex items-center gap-1.5",
+                    class: "flex flex-wrap items-center gap-1.5",
                     onmousedown: move |e| e.stop_propagation(),
                     if !has_audio {
                         span {
@@ -2509,16 +2508,6 @@ fn ScreenWatchTile(
                     span { class: "text-[10px] text-[var(--text-dim)] w-8 text-right", "{stream_volume}%" }
                 }
             }
-            if !expanded && !tiled { div {
-                class: "absolute bottom-0 right-0 w-4 h-4 cursor-nwse-resize",
-                style: "background: linear-gradient(135deg, transparent 0 50%, var(--border-strong) 50% 100%);",
-                onmousedown: move |e| {
-                    e.stop_propagation();
-                    if !e.held_buttons().contains(dioxus::html::input_data::MouseButton::Primary) { return; }
-                    let c = e.client_coordinates();
-                    drag.set(Some(Drag::Resize { px: c.x, py: c.y, w0: w(), h0: h() }));
-                },
-            } }
         }
     }
 }

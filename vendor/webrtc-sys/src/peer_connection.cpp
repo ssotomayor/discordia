@@ -201,10 +201,12 @@ std::shared_ptr<RtpSender> PeerConnection::add_track(
                                      peer_connection_);
 }
 
-void PeerConnection::remove_track(std::shared_ptr<RtpSender> sender) const {
+RtcError PeerConnection::remove_track(std::shared_ptr<RtpSender> sender) const {
+  if (!sender)
+    return to_error(webrtc::RTCError(webrtc::RTCErrorType::INVALID_PARAMETER,
+                                   "Cannot remove a null sender"));
   auto error = peer_connection_->RemoveTrackOrError(sender->rtc_sender());
-  if (!error.ok())
-    throw std::runtime_error(serialize_error(to_error(error)));
+  return to_error(error);
 }
 
 void PeerConnection::get_stats(

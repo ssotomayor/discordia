@@ -162,7 +162,8 @@ pub mod ffi {
             track: SharedPtr<MediaStreamTrack>,
             stream_ids: &Vec<String>,
         ) -> Result<SharedPtr<RtpSender>>;
-        fn remove_track(self: &PeerConnection, sender: SharedPtr<RtpSender>) -> Result<()>;
+        #[cxx_name = "remove_track"]
+        fn remove_track_error(self: &PeerConnection, sender: SharedPtr<RtpSender>) -> RtcError;
         fn get_stats(
             self: &PeerConnection,
             ctx: Box<PeerContext>,
@@ -211,6 +212,38 @@ pub mod ffi {
 
 #[repr(transparent)]
 pub struct PeerContext(pub Box<dyn Any + Send>);
+
+#[derive(Debug)]
+pub struct RemoveTrackError(String);
+
+impl RemoveTrackError {
+    pub fn what(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for RemoveTrackError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.what())
+    }
+}
+
+impl std::error::Error for RemoveTrackError {}
+
+impl ffi::PeerConnection {
+    pub fn remove_track(&self, sender: cxx::SharedPtr<ffi::RtpSender>) -> Result<(), RemoveTrackError> {
+        // Disconnect errors must not traverse CXX's exception-string callback.
+        let error = self.remove_track_error(sender);
+        if error.ok() {
+            return Ok(());
+        }
+        Err(RemoveTrackError(format!(
+            "{:08x}{:08x}{:02x}{:04x}{}",
+            error.error_type.repr, error.error_detail.repr,
+            u8::from(error.has_sctp_cause_code), error.sctp_cause_code, error.message,
+        )))
+    }
+}
 
 // https://webrtc.github.io/webrtc-org/native-code/native-apis/
 impl_thread_safety!(ffi::PeerConnection, Send + Sync);

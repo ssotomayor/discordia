@@ -31,6 +31,7 @@ enum Command {
     DockAll,
 }
 
+#[derive(Clone, Copy)]
 pub(super) struct Popouts {
     pub detached: Signal<HashSet<String>>,
     pub open: EventHandler<String>,
@@ -141,6 +142,7 @@ pub(super) fn use_popouts(mut state: Signal<AppState>) -> Popouts {
             .with_window(
                 dioxus::desktop::tao::window::WindowBuilder::new()
                     .with_title("Discordia — Streams")
+                    .with_window_icon(crate::load_window_icon())
                     .with_inner_size(dioxus::desktop::tao::dpi::LogicalSize::new(1100.0, 700.0))
                     .with_min_inner_size(dioxus::desktop::tao::dpi::LogicalSize::new(480.0, 320.0))
                     .with_always_on_top(false),
@@ -573,7 +575,7 @@ fn PopoutTile(props: PopoutTileProps) -> Element {
     let mute = props.commands.clone();
     let generation = props.generation;
     rsx! {
-        div { class: "min-w-0 min-h-0 flex flex-col border border-[var(--border)] rounded-lg overflow-hidden bg-[var(--panel-solid)]", style: if hidden { "display:none;" } else { "" },
+        div { class: "min-w-0 min-h-0 flex flex-col border border-[var(--border)] rounded-lg overflow-hidden bg-[var(--panel-solid)]", style: if hidden { "display:none;" } else { "display:flex;" },
             div { class: "flex flex-wrap items-center gap-2 px-3 py-2 shrink-0",
                 span { class: "flex-1 min-w-0 truncate text-sm font-medium", "{stream.name}" }
                 button { class: "text-xs px-2 py-1 rounded hover:bg-[var(--panel2)]", onclick: move |_| focused.set(if selected { None } else { Some(pk_focus.clone()) }), if selected { "Mosaic" } else { "Focus" } }

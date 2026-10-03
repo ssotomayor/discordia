@@ -15,6 +15,7 @@ pub fn GridItem(
     #[props(default = 1)] min_w: u32,
     #[props(default = 1)] min_h: u32,
     #[props(default = false)] pinned: bool,
+    #[props(default = false)] overlay: bool,
     #[props(default = String::new())] class: String,
     children: Element,
 ) -> Element {
@@ -45,21 +46,25 @@ pub fn GridItem(
         None => String::new(),
     });
 
-    let cell_style = match ctx.filter(|c| c.is_free()) {
-        Some(c) => free_style(&id, c, pos),
-        None => {
-            format!(
-                "grid-column: {col} / span {w}; grid-row: {row} / span {h}; position: relative;",
-                col = pos.x + 1,
-                row = pos.y + 1,
-                w = pos.w,
-                h = pos.h,
-            ) + &snap_style()
+    let cell_style = if overlay {
+        "position:fixed;left:0;top:0;width:100vw;height:100vh;z-index:70;transform:none;".into()
+    } else {
+        match ctx.filter(|c| c.is_free()) {
+            Some(c) => free_style(&id, c, pos),
+            None => {
+                format!(
+                    "grid-column: {col} / span {w}; grid-row: {row} / span {h}; position: relative;",
+                    col = pos.x + 1,
+                    row = pos.y + 1,
+                    w = pos.w,
+                    h = pos.h,
+                ) + &snap_style()
+            }
         }
     };
     let pinned_class = if pinned { " grid-item-pinned" } else { "" };
     let editable = ctx.map(|c| *c.editable.read()).unwrap_or(false);
-    let interactive = editable && !pinned;
+    let interactive = editable && !pinned && !overlay;
 
     let item_id_for_raise = id.clone();
     let onpointerdown_raise = move |_: PointerEvent| {
@@ -218,12 +223,11 @@ fn snap_drag_style(id: &str, interaction: Option<&Interaction>) -> String {
 
 fn free_style(id: &str, ctx: GridContext, cell: GridPosition) -> String {
     let z = ctx.store.map(|s| s.z_of(id)).unwrap_or(0);
-    // Omitted at 0: any z-index establishes a stacking context, which traps
-    // fixed-position children inside the panel.
+    // Auto avoids trapping fixed children and clears a previous overlay layer.
     let z_rule = if z > 0 {
         format!(" z-index: {z};")
     } else {
-        String::new()
+        " z-index: auto;".into()
     };
 
     let rect = ctx
