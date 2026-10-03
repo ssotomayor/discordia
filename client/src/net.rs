@@ -499,18 +499,7 @@ where
         }) => nonce.map_err(|_| "server did not send Hello before the deadline".to_string())??,
     };
 
-    let username = crate::protocol::canonical_username(&if state.peek().status
-        == ConnectionStatus::Reconnecting
-    {
-        state
-            .peek()
-            .self_user
-            .as_ref()
-            .map(|user| user.username.clone())
-            .unwrap_or_else(|| params.username.clone())
-    } else {
-        params.username.clone()
-    });
+    let username = crate::protocol::canonical_username(&params.identity.display_name);
     let pubkey = params.identity.pubkey.clone();
     let to_sign = crate::protocol::identify_payload(&nonce, &origin, &pubkey, &username);
     let signature = params.identity.sign_hex(&to_sign);
@@ -713,7 +702,6 @@ mod graceful_shutdown_tests {
                 mode: SessionMode::Remote {
                     server_url: format!("ws://{address}"),
                 },
-                username: "Alice".into(),
                 identity: crate::identity::Identity::restore_from_private_key(
                     "11".repeat(32),
                     "Alice",

@@ -33,7 +33,6 @@ pub enum SessionMode {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionParams {
     pub mode: SessionMode,
-    pub username: String,
     pub identity: crate::identity::Identity,
 }
 

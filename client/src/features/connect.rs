@@ -67,14 +67,12 @@ pub fn ConnectForm(
     let identity_for_rows = identity.clone();
     let identity_for_submit = identity.clone();
     let submit = move |_| {
-        let name = identity_for_submit.display_name.clone();
         let params = match mode() {
             Mode::Join => match join_by(&server_url(), &code(), &rendezvous_url()) {
                 JoinBy::Url => SessionParams {
                     mode: SessionMode::Remote {
                         server_url: server_url().trim().to_string(),
                     },
-                    username: name,
                     identity: identity_for_submit.clone(),
                 },
                 JoinBy::Code => SessionParams {
@@ -82,7 +80,6 @@ pub fn ConnectForm(
                         rendezvous_url: rendezvous_url().trim().to_string(),
                         code: code().trim().to_string(),
                     },
-                    username: name,
                     identity: identity_for_submit.clone(),
                 },
                 JoinBy::Nothing => return,
@@ -106,7 +103,6 @@ pub fn ConnectForm(
                         location: location()
                             .filter(|_| publish_to_rendezvous() && publish_public()),
                     },
-                    username: name,
                     identity: identity_for_submit.clone(),
                 }
             }
@@ -150,7 +146,6 @@ pub fn ConnectForm(
                                 onclick: move |_| {
                                     let params = SessionParams {
                                         mode: saved.mode.clone(),
-                                        username: saved.username.clone(),
                                         identity: identity_for_reconnect.clone(),
                                     };
                                     on_connect_for_reconnect.call(params);
@@ -230,7 +225,6 @@ pub fn ConnectForm(
                                             rendezvous_url: rendezvous_url().trim().to_string(),
                                             code: entry.shortcode,
                                         },
-                                        username: identity_for_rows.display_name.clone(),
                                         identity: identity_for_rows.clone(),
                                     };
                                     on_connect.call(params);

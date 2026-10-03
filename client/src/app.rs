@@ -781,7 +781,6 @@ pub fn App() -> Element {
                             error.set(None);
                             let saved = SavedSession {
                                 mode: params.mode.clone(),
-                                username: params.username.clone(),
                             };
                             let _ = session::save(&saved);
                             session.set(Some(params));
@@ -843,7 +842,7 @@ fn session_key(p: &SessionParams) -> String {
             format!("bycode:{rendezvous_url}:{code}")
         }
     };
-    format!("{mode}|{}|{}", p.username, p.identity.pubkey)
+    format!("{mode}|{}|{}", p.identity.display_name, p.identity.pubkey)
 }
 
 #[component]

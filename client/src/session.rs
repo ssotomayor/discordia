@@ -10,7 +10,6 @@ const FILE_VERSION: u32 = 1;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SavedSession {
     pub mode: SessionMode,
-    pub username: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
