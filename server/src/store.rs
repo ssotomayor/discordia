@@ -72,6 +72,84 @@ impl Store {
         Ok(store)
     }
 
+    pub async fn create_guild(
+        &self,
+        guild: &Guild,
+        channels: &[Channel],
+        roles: &[Role],
+        member: Option<&Member>,
+    ) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        Self::write_guild(&mut *tx, guild).await?;
+        for channel in channels {
+            Self::write_channel(&mut *tx, channel).await?;
+        }
+        for role in roles {
+            Self::write_role(&mut *tx, role).await?;
+        }
+        if let Some(member) = member {
+            Self::write_member(&mut *tx, member).await?;
+        }
+        tx.commit().await
+    }
+
+    pub async fn install_bot(&self, install: &BotInstall, member: &Member) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        Self::write_bot_install(&mut *tx, install).await?;
+        Self::write_member(&mut *tx, member).await?;
+        tx.commit().await
+    }
+
+    pub async fn uninstall_bot(&self, guild_id: Id, pubkey: &str) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        for (table, column) in [("bot_installs", "bot_pubkey"), ("members", "pubkey")] {
+            sqlx::query(&format!(
+                "DELETE FROM {table} WHERE guild_id = ? AND {column} = ?"
+            ))
+            .bind(guild_id.to_string())
+            .bind(pubkey)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await
+    }
+
+    pub async fn reorder_channels(&self, channels: &[Channel]) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        for channel in channels {
+            sqlx::query("UPDATE channels SET position = ? WHERE id = ?")
+                .bind(channel.position as i64)
+                .bind(channel.id.to_string())
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await
+    }
+
+    pub async fn admit_member(&self, member: &Member, invite: Option<&str>) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        Self::write_member(&mut *tx, member).await?;
+        if let Some(code) = invite {
+            sqlx::query("UPDATE invites SET uses = uses + 1 WHERE code = ?")
+                .bind(code)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await
+    }
+
+    pub async fn rename_user(&self, user: &User) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("INSERT INTO users (pubkey, username) VALUES (?, ?) ON CONFLICT(pubkey) DO UPDATE SET username=excluded.username")
+            .bind(&user.pubkey).bind(&user.username).execute(&mut *tx).await?;
+        sqlx::query("UPDATE members SET username = ? WHERE pubkey = ? AND bot = 0")
+            .bind(&user.username)
+            .bind(&user.pubkey)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await
+    }
+
     async fn init_schema(&self) -> Result<()> {
         let ddl = [
             "CREATE TABLE IF NOT EXISTS users (
@@ -400,6 +478,13 @@ impl Store {
     }
 
     pub async fn upsert_guild(&self, g: &Guild) -> Result<()> {
+        Self::write_guild(&self.pool, g).await
+    }
+
+    async fn write_guild<'e>(
+        executor: impl sqlx::Executor<'e, Database = sqlx::Sqlite>,
+        g: &Guild,
+    ) -> Result<()> {
         sqlx::query(
             "INSERT INTO guilds (id, name, icon, owner_pubkey, accent, visibility,
                                  description, icon_image, banner, retention_days,
@@ -427,7 +512,7 @@ impl Store {
         .bind(&g.rules)
         .bind(g.panic_mode as i64)
         .bind(serde_json::to_string(&g.leveling).ok())
-        .execute(&self.pool)
+        .execute(executor)
         .await?;
         Ok(())
     }
@@ -466,6 +551,13 @@ impl Store {
     }
 
     pub async fn upsert_channel(&self, c: &Channel) -> Result<()> {
+        Self::write_channel(&self.pool, c).await
+    }
+
+    async fn write_channel<'e>(
+        executor: impl sqlx::Executor<'e, Database = sqlx::Sqlite>,
+        c: &Channel,
+    ) -> Result<()> {
         sqlx::query(
             "INSERT INTO channels (id, guild_id, name, kind, topic, read_only,
                                    slowmode_secs, position, access)
@@ -487,7 +579,7 @@ impl Store {
                 .as_ref()
                 .and_then(|a| serde_json::to_string(a).ok()),
         )
-        .execute(&self.pool)
+        .execute(executor)
         .await?;
         Ok(())
     }
@@ -548,6 +640,13 @@ impl Store {
     }
 
     pub async fn upsert_member(&self, m: &Member) -> Result<()> {
+        Self::write_member(&self.pool, m).await
+    }
+
+    async fn write_member<'e>(
+        executor: impl sqlx::Executor<'e, Database = sqlx::Sqlite>,
+        m: &Member,
+    ) -> Result<()> {
         sqlx::query(
             "INSERT INTO members (guild_id, pubkey, username, bot, roles)
              VALUES (?, ?, ?, ?, ?)
@@ -559,7 +658,7 @@ impl Store {
         .bind(&m.user.username)
         .bind(m.bot as i64)
         .bind(serde_json::to_string(&m.roles).unwrap_or_else(|_| "[]".into()))
-        .execute(&self.pool)
+        .execute(executor)
         .await?;
         Ok(())
     }
@@ -574,6 +673,13 @@ impl Store {
     }
 
     pub async fn upsert_role(&self, role: &Role) -> Result<()> {
+        Self::write_role(&self.pool, role).await
+    }
+
+    async fn write_role<'e>(
+        executor: impl sqlx::Executor<'e, Database = sqlx::Sqlite>,
+        role: &Role,
+    ) -> Result<()> {
         sqlx::query(
             "INSERT INTO roles (id, guild_id, name, color, permissions, position)
              VALUES (?, ?, ?, ?, ?, ?)
@@ -586,7 +692,7 @@ impl Store {
         .bind(&role.color)
         .bind(serde_json::to_string(&role.permissions).unwrap_or_else(|_| "[]".into()))
         .bind(role.position as i64)
-        .execute(&self.pool)
+        .execute(executor)
         .await?;
         Ok(())
     }
@@ -650,6 +756,38 @@ impl Store {
         Ok(())
     }
 
+    pub async fn delete_role_and_assignments(&self, role_id: Id, members: &[Member]) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("DELETE FROM roles WHERE id = ?")
+            .bind(role_id.to_string())
+            .execute(&mut *tx)
+            .await?;
+        for member in members {
+            sqlx::query("UPDATE members SET roles = ? WHERE guild_id = ? AND pubkey = ?")
+                .bind(
+                    serde_json::to_string(&member.roles)
+                        .map_err(|e| sqlx::Error::Decode(Box::new(e)))?,
+                )
+                .bind(member.guild_id.to_string())
+                .bind(&member.user.pubkey)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await
+    }
+
+    pub async fn reorder_roles(&self, roles: &[Role]) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        for role in roles {
+            sqlx::query("UPDATE roles SET position = ? WHERE id = ?")
+                .bind(role.position as i64)
+                .bind(role.id.to_string())
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await
+    }
+
     pub async fn insert_ban(&self, guild_id: Id, pubkey: &str) -> Result<()> {
         sqlx::query(
             "INSERT INTO bans (guild_id, pubkey) VALUES (?, ?)
@@ -660,6 +798,21 @@ impl Store {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    pub async fn ban_member(&self, guild_id: Id, pubkey: &str) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("INSERT INTO bans (guild_id, pubkey) VALUES (?, ?) ON CONFLICT DO NOTHING")
+            .bind(guild_id.to_string())
+            .bind(pubkey)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM members WHERE guild_id = ? AND pubkey = ?")
+            .bind(guild_id.to_string())
+            .bind(pubkey)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await
     }
 
     pub async fn delete_ban(&self, guild_id: Id, pubkey: &str) -> Result<()> {
@@ -753,6 +906,13 @@ impl Store {
     }
 
     pub async fn upsert_bot_install(&self, i: &BotInstall) -> Result<()> {
+        Self::write_bot_install(&self.pool, i).await
+    }
+
+    async fn write_bot_install<'e>(
+        executor: impl sqlx::Executor<'e, Database = sqlx::Sqlite>,
+        i: &BotInstall,
+    ) -> Result<()> {
         sqlx::query(
             "INSERT INTO bot_installs (guild_id, bot_pubkey, name, permissions, intents)
              VALUES (?, ?, ?, ?, ?)
@@ -764,7 +924,7 @@ impl Store {
         .bind(&i.name)
         .bind(serde_json::to_string(&i.permissions).unwrap_or_else(|_| "[]".into()))
         .bind(serde_json::to_string(&i.intents).unwrap_or_else(|_| "[]".into()))
-        .execute(&self.pool)
+        .execute(executor)
         .await?;
         Ok(())
     }

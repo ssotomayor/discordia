@@ -881,3 +881,57 @@ async fn closing_a_secondary_session_preserves_the_other_sessions_call_and_share
     let state = next_voice_state(&mut owner, member_id.pubkey()).await;
     assert!(state.channel_id.is_none() && !state.screen_sharing);
 }
+
+#[tokio::test]
+async fn a_quick_gateway_reconnect_preserves_voice_and_share_after_old_cleanup() {
+    let (url, _handle) = spawn_gateway(local_signing()).await;
+    let owner_id = BotIdentity::generate();
+    let member_id = BotIdentity::generate();
+    let mut owner = connect_user(&url, &owner_id, "owner").await;
+    let (guild_id, channel_id) = voice_channel(&mut owner).await;
+    let mut member = connect_user(&url, &member_id, "member").await;
+    join_guild(&mut member, guild_id).await;
+    let _ = join_voice(&mut member, channel_id).await;
+    member
+        .send(&ClientMessage::SetScreenShare {
+            channel_id,
+            sharing: true,
+        })
+        .await
+        .unwrap();
+    let _ = drain_quiet(&mut owner).await;
+    drop(member);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let mut replacement = connect_user(&url, &member_id, "member").await;
+    tokio::time::sleep(Duration::from_millis(3200)).await;
+    let events = drain_quiet(&mut owner).await;
+    assert!(!events.iter().any(|event| matches!(event,
+        ServerMessage::VoiceStateUpdate(vs) if vs.user_pubkey == member_id.pubkey() && vs.channel_id.is_none()
+    )), "old socket teardown must not remove a recovered call: {events:?}");
+    replacement
+        .send(&ClientMessage::SetVoiceMute {
+            muted: true,
+            deafened: false,
+        })
+        .await
+        .unwrap();
+    let state = next_voice_state(&mut owner, member_id.pubkey()).await;
+    assert_eq!(state.channel_id, Some(channel_id));
+    assert!(state.screen_sharing && state.muted);
+}
+
+#[tokio::test]
+async fn heartbeat_closes_a_session_that_stops_reading_probes() {
+    let (url, _handle) = spawn_gateway(local_signing()).await;
+    let identity = BotIdentity::generate();
+    let mut idle = connect_user(&url, &identity, "idle").await;
+    tokio::time::sleep(
+        dioxusfun_server::protocol::GATEWAY_HEARTBEAT_TIMEOUT + Duration::from_secs(4),
+    )
+    .await;
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while idle.next_event().await.is_some() {}
+    })
+    .await
+    .expect("dead gateway must close its socket");
+}

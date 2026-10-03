@@ -66,13 +66,14 @@ pub fn router(ctx: AppCtx) -> Router {
         .route("/resolve/:code", get(resolve))
         .route("/config", get(config))
         .route("/voice-token", axum::routing::post(voice_token))
+        .route("/voice-evict", axum::routing::post(voice_evict))
         .route("/control", get(control))
         .with_state(ctx)
         .layer(cors)
 }
 
 async fn root() -> &'static str {
-    "dioxusfun-rendezvous. Endpoints: /config, /discover, /resolve/:code, /voice-token, /control"
+    "dioxusfun-rendezvous. Endpoints: /config, /discover, /resolve/:code, /voice-token, /voice-evict, /control"
 }
 
 async fn config(State(ctx): State<AppCtx>) -> Json<serde_json::Value> {
@@ -169,6 +170,59 @@ fn grants_for(room: String, can_publish: bool) -> livekit_api::access_token::Vid
         can_publish_data: can_publish,
         ..Default::default()
     }
+}
+
+async fn voice_evict(
+    State(ctx): State<AppCtx>,
+    Json(req): Json<dioxusfun_protocol::rendezvous::VoiceEvictRequest>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let shortcode = ctx
+        .registry
+        .voice_grant_owner(&req.grant)
+        .ok_or((StatusCode::UNAUTHORIZED, "unknown or expired grant".into()))?;
+    if req.pubkey.len() != 64 || !req.pubkey.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err((StatusCode::BAD_REQUEST, "invalid participant key".into()));
+    }
+    let (Some(url), Some(key), Some(secret)) = (
+        &ctx.config.livekit_url,
+        &ctx.config.livekit_api_key,
+        &ctx.config.livekit_api_secret,
+    ) else {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "this rendezvous has no shared LiveKit".into(),
+        ));
+    };
+    let client = livekit_api::services::room::RoomClient::with_api_key(url, key, secret);
+    let voice = format!("{shortcode}--voice-{}", req.channel_id);
+    let screen = format!("{shortcode}--screen-{}", req.channel_id);
+    let seats = [
+        (voice, req.pubkey.clone()),
+        (screen.clone(), req.pubkey.clone()),
+        (screen.clone(), format!("{}#audio", req.pubkey)),
+        (screen.clone(), format!("{}#video", req.pubkey)),
+        (screen, format!("{}#viewer", req.pubkey)),
+    ];
+    let requests = seats
+        .iter()
+        .map(|(room, identity)| client.remove_participant(room, identity));
+    let results = tokio::time::timeout(
+        std::time::Duration::from_secs(4),
+        futures_util::future::join_all(requests),
+    )
+    .await
+    .map_err(|_| (StatusCode::GATEWAY_TIMEOUT, "SFU eviction timed out".into()))?;
+    for result in results {
+        if let Err(error) = result {
+            if matches!(&error, livekit_api::services::ServiceError::Twirp(livekit_api::services::ServerError::Twirp(code)) if code.code == "not_found")
+            {
+                continue;
+            }
+            tracing::warn!(%error, "shared SFU eviction failed");
+            return Err((StatusCode::BAD_GATEWAY, "SFU eviction failed".into()));
+        }
+    }
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn control(

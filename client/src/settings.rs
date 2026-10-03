@@ -147,7 +147,7 @@ fn default_soundboard_volume() -> u8 {
 }
 
 fn default_mic_sensitivity() -> u32 {
-    50
+    10
 }
 
 fn default_mic_volume() -> u16 {

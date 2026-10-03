@@ -128,6 +128,8 @@ coreaudio-sys = "0.2"
 ignored = ["deep_filter", "tract-core", "tract-onnx", "tract-pulse", "tract-hir", "libwebrtc", "webrtc-sys", "webrtc-sys-build", "livekit-common", "livekit-data-stream", "livekit-protocol", "livekit-datatrack"]
 
 [dev-dependencies]
+axum = { workspace = true }
+dioxusfun-rendezvous = { path = "../rendezvous" }
 livekit-api = { workspace = true }
 uuid = { workspace = true }
 

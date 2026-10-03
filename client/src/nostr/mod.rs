@@ -23,6 +23,7 @@
 //! - `service` — the task that owns the pool and feeds `AppState`, shaped like
 //!   `net::spawn_gateway` deliberately.
 
+pub mod delivery;
 pub mod event;
 pub mod metadata;
 pub mod nip02;

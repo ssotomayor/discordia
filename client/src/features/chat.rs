@@ -490,6 +490,8 @@ fn typing_label(typers: &[String]) -> Option<String> {
 fn MessageRow(message: Message, grouped: bool) -> Element {
     let mut state = use_app_state();
     let gateway = use_gateway();
+    let nostr = use_context::<crate::nostr::service::NostrTx>();
+    let delivery = state.read().dm_delivery.get(&message.id).copied();
     let mut show_react = use_signal(|| false);
     let mut confirm_delete = use_signal(|| false);
 
@@ -591,6 +593,18 @@ fn MessageRow(message: Message, grouped: bool) -> Element {
             }
 
             div { class: "flex-1 min-w-0",
+                if let Some(delivery) = delivery {
+                    div { class: "text-[10px] text-[var(--text-dim)]",
+                        match delivery {
+                            crate::nostr::delivery::Delivery::Pending => rsx! { "Sending…" },
+                            crate::nostr::delivery::Delivery::Accepted => rsx! { span { title: "A relay accepted this encrypted message; this is not a delivery or read receipt", "Accepted by relay" } },
+                            crate::nostr::delivery::Delivery::Failed => rsx! {
+                                span { "Not accepted · " }
+                                button { class: "underline", onclick: move |_| nostr.send(crate::nostr::service::NostrCmd::Retry { message_id }), "Retry" }
+                            },
+                        }
+                    }
+                }
                 if !grouped {
                     div { class: "flex items-baseline gap-2",
                         span {
@@ -973,6 +987,17 @@ fn Composer(
             .dm_of(channel_id)
             .map(|d| d.other_pubkey.clone());
         if let Some(peer) = dm_peer {
+            if state
+                .peek()
+                .dm_delivery
+                .values()
+                .filter(|status| **status != crate::nostr::delivery::Delivery::Accepted)
+                .count()
+                >= 128
+            {
+                state.write().error_toast = Some("Too many messages await delivery. Your draft has been kept; retry a failed message first.".into());
+                return;
+            }
             if image.is_some() {
                 state.write().error_toast =
                     Some("Images in DMs are not supported yet — the text was not sent.".into());
@@ -980,12 +1005,21 @@ fn Composer(
             }
             let reply_event =
                 reply_to.and_then(|id| state.read().nostr_event_ids.get(&id).cloned());
-            nostr_submit.send(crate::nostr::service::NostrCmd::Send {
+            if !nostr_submit.try_send(crate::nostr::service::NostrCmd::Send {
                 peer,
                 text: content,
                 reply_to: reply_event,
-            });
+            }) {
+                state.write().error_toast =
+                    Some("The message service is unavailable. Your draft has been kept.".into());
+                return;
+            }
         } else {
+            if state.peek().status != crate::state::ConnectionStatus::Ready {
+                state.write().error_toast =
+                    Some("The server is reconnecting. Your draft has been kept.".into());
+                return;
+            }
             gateway_submit.send(ClientMessage::SendMessage {
                 channel_id,
                 content,

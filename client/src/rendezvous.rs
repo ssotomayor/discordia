@@ -23,6 +23,7 @@ pub struct PublishInfo {
 
 pub struct RendezvousMinter {
     endpoint: String,
+    eviction_endpoint: String,
     /// Replaced by `maintain` after every re-registration: the rendezvous
     /// keeps grants in memory, so its restart voids the one it gave us.
     grant: RwLock<String>,
@@ -40,6 +41,7 @@ impl RendezvousMinter {
         };
         Self {
             endpoint: format!("{}/voice-token", http.trim_end_matches('/')),
+            eviction_endpoint: format!("{}/voice-evict", http.trim_end_matches('/')),
             grant: RwLock::new(grant),
             http: reqwest::Client::builder()
                 .timeout(MINT_TIMEOUT)
@@ -58,6 +60,46 @@ impl RendezvousMinter {
 }
 
 impl dioxusfun_server::livekit::VoiceTokenMinter for RendezvousMinter {
+    fn evict<'a>(
+        &'a self,
+        channel_id: crate::protocol::Id,
+        pubkey: &'a str,
+    ) -> dioxusfun_server::livekit::BoxFuture<'a, Result<(), String>> {
+        Box::pin(async move {
+            let mut failure = String::new();
+            for attempt in 0..2 {
+                if attempt > 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                }
+                let response = self
+                    .http
+                    .post(&self.eviction_endpoint)
+                    .timeout(std::time::Duration::from_secs(2))
+                    .json(&crate::protocol::rendezvous::VoiceEvictRequest {
+                        grant: self.grant(),
+                        channel_id,
+                        pubkey: pubkey.to_string(),
+                    })
+                    .send()
+                    .await;
+                match response {
+                    Ok(response) if response.status().is_success() => return Ok(()),
+                    Ok(response) => {
+                        let status = response.status();
+                        failure = format!("rendezvous eviction rejected ({status})");
+                        if !status.is_server_error()
+                            && status != reqwest::StatusCode::UNAUTHORIZED
+                            && status != reqwest::StatusCode::TOO_MANY_REQUESTS
+                        {
+                            return Err(failure);
+                        }
+                    }
+                    Err(error) => failure = format!("rendezvous eviction request: {error}"),
+                }
+            }
+            Err(failure)
+        })
+    }
     fn mint<'a>(
         &'a self,
         req: dioxusfun_server::livekit::MintRequest,
@@ -364,6 +406,50 @@ pub fn backoff(attempt: u32) -> Duration {
 #[cfg(test)]
 mod backoff_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn eviction_retry_reads_the_renewed_registration_grant() {
+        use dioxusfun_server::livekit::VoiceTokenMinter;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let minter = Arc::new(RendezvousMinter::new(
+            &format!("http://{}", listener.local_addr().unwrap()),
+            "old".into(),
+        ));
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let app = axum::Router::new().route(
+            "/voice-evict",
+            axum::routing::post({
+                let minter = minter.clone();
+                let attempts = attempts.clone();
+                move |axum::Json(request): axum::Json<
+                    crate::protocol::rendezvous::VoiceEvictRequest,
+                >| {
+                    let minter = minter.clone();
+                    let attempts = attempts.clone();
+                    async move {
+                        if attempts.fetch_add(1, Ordering::Relaxed) == 0 {
+                            assert_eq!(request.grant, "old");
+                            minter.set_grant("renewed".into());
+                            axum::http::StatusCode::UNAUTHORIZED
+                        } else {
+                            assert_eq!(request.grant, "renewed");
+                            axum::http::StatusCode::NO_CONTENT
+                        }
+                    }
+                }
+            }),
+        );
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        minter
+            .evict(uuid::Uuid::new_v4(), &"ab".repeat(32))
+            .await
+            .unwrap();
+        assert_eq!(attempts.load(Ordering::Relaxed), 2);
+        server.abort();
+    }
 
     #[test]
     fn backoff_doubles_and_caps() {

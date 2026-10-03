@@ -26,6 +26,18 @@ pub struct Agc {
     fall: f32,
 }
 
+pub fn limit(hop: &mut [f32]) {
+    let peak = hop
+        .iter()
+        .fold(0.0f32, |peak, sample| peak.max(sample.abs()));
+    if peak > CEILING {
+        let gain = CEILING / peak;
+        for sample in hop {
+            *sample *= gain;
+        }
+    }
+}
+
 impl Agc {
     pub fn new() -> Self {
         Self {
@@ -68,6 +80,15 @@ impl Agc {
 mod tests {
     use super::*;
     use crate::denoise::HOP;
+
+    #[test]
+    fn manual_boost_is_limited_without_flattening_the_waveform() {
+        let mut samples = [1.6, -0.8, 0.4];
+        limit(&mut samples);
+        assert!((samples[0] - 0.98).abs() < 1e-6);
+        assert!((samples[1] + 0.49).abs() < 1e-6);
+        assert!((samples[2] - 0.245).abs() < 1e-6);
+    }
 
     /// Alternating full-amplitude samples: rms and peak are both `amp`, so the
     /// arithmetic in a test says what it means.

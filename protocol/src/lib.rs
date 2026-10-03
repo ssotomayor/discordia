@@ -6,6 +6,9 @@ pub mod rendezvous;
 
 pub type Id = Uuid;
 
+pub const GATEWAY_HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+pub const GATEWAY_HEARTBEAT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct User {
     pub pubkey: String,

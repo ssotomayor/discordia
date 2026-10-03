@@ -34,6 +34,9 @@ use crate::state::{AppState, DmInfo};
 
 /// What the UI asks the service to do.
 pub enum NostrCmd {
+    Retry {
+        message_id: Id,
+    },
     /// Send `text` to `peer`, optionally answering a message.
     Send {
         peer: String,
@@ -41,9 +44,14 @@ pub enum NostrCmd {
         reply_to: Option<String>,
     },
     /// Make sure a conversation with `peer` exists in the list, and select it.
-    Open { peer: String },
+    Open {
+        peer: String,
+    },
     /// Add or remove a contact, and publish the whole replaced list.
-    SetContact { peer: String, keep: bool },
+    SetContact {
+        peer: String,
+        keep: bool,
+    },
     /// Republish the cross-server total. Sent when the ledger moves, and
     /// ignored when the number has not actually changed since the last one:
     /// kind 30078 is replaceable, so a re-send costs every relay a write.
@@ -55,6 +63,9 @@ pub enum NostrCmd {
 pub struct NostrTx(UnboundedSender<NostrCmd>);
 
 impl NostrTx {
+    pub fn try_send(&self, cmd: NostrCmd) -> bool {
+        self.0.send(cmd).is_ok()
+    }
     pub fn send(&self, cmd: NostrCmd) {
         let _ = self.0.send(cmd);
     }
@@ -151,6 +162,38 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
         request_names(&pool, &state, &our_pubkey, &mut named);
 
         let mut xp_publisher = xp::Publisher::default();
+        let mut routes = super::delivery::Routes::default();
+        let mut outbox = super::delivery::Outbox::new();
+        for (peer, theirs, ours) in super::delivery::load(&our_pubkey).await {
+            if let Ok(msg) = nip17::open_chat(&secret, &our_pubkey, &ours)
+                && msg.author == our_pubkey
+                && msg.peer == peer
+                && theirs
+                    .tags
+                    .iter()
+                    .any(|tag| tag.first().is_some_and(|t| t == "p") && tag.get(1) == Some(&peer))
+            {
+                insert_message(&msg, &our_pubkey, &mut state, Source::Ours, false);
+                let id = message_id(&msg.id);
+                state
+                    .write()
+                    .dm_delivery
+                    .insert(id, super::delivery::Delivery::Failed);
+                outbox.insert(
+                    id,
+                    super::delivery::Pending {
+                        peer,
+                        theirs,
+                        ours,
+                        due: std::time::Instant::now(),
+                        started: true,
+                    },
+                );
+            }
+        }
+        let (delivery_tx, mut delivery_rx) = unbounded_channel();
+        let mut delivery_tick = tokio::time::interval(std::time::Duration::from_millis(100));
+        delivery_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         // Relays that have said they finished replaying since they connected.
         // A message arriving once every connected relay has is one that was
@@ -162,7 +205,16 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
             tokio::select! {
                 cmd = rx.recv() => match cmd {
                     Some(NostrCmd::Send { peer, text, reply_to }) => {
-                        send_message(&pool, &secret, &our_pubkey, &peer, &text, reply_to, &mut state);
+                        if outbox.len() >= 128 {
+                            state.write().error_toast = Some("Too many messages await delivery. Retry a failed message first.".into());
+                            continue;
+                        }
+                        if let Some((id, pending)) = send_message(&pool, &secret, &our_pubkey, &peer, &text, reply_to, &mut state) {
+                            outbox.insert(id, pending);
+                            if let Err(error) = super::delivery::persist(&our_pubkey, &outbox).await {
+                                state.write().error_toast = Some(format!("Could not save pending messages: {error}"));
+                            }
+                        }
                         // Speaking first also introduces somebody: this is the
                         // path a pasted npub takes when the composer is used
                         // before the conversation exists.
@@ -171,6 +223,16 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
                     Some(NostrCmd::Open { peer }) => {
                         open_conversation(&peer, &mut state);
                         request_names(&pool, &state, &our_pubkey, &mut named);
+                    }
+                    Some(NostrCmd::Retry { message_id }) => {
+                        if state.peek().dm_delivery.get(&message_id) == Some(&super::delivery::Delivery::Failed)
+                            && let Some(pending) = outbox.get_mut(&message_id)
+                        {
+                            pending.started = false;
+                            pending.due = std::time::Instant::now() + std::time::Duration::from_secs(2);
+                            state.write().dm_delivery.insert(message_id, super::delivery::Delivery::Pending);
+                            request_names(&pool, &state, &our_pubkey, &mut Vec::new());
+                        }
                     }
                     Some(NostrCmd::SetContact { peer, keep }) => {
                         // Read-modify-write, never append: kind 3 is
@@ -200,6 +262,36 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
                     }
                     None => break,
                 },
+                _ = delivery_tick.tick(), if outbox.values().any(|pending| !pending.started) => {
+                    let active = outbox.iter().filter(|(id, pending)| pending.started && state.peek().dm_delivery.get(id) == Some(&super::delivery::Delivery::Pending)).count();
+                    let mut slots = 8usize.saturating_sub(active);
+                    for (id, pending) in &mut outbox {
+                        if slots == 0 { break; }
+                        if pending.started || pending.due > std::time::Instant::now() { continue; }
+                        pending.started = true;
+                        slots -= 1;
+                        let targets = routes.targets(&pending.peer, &relays);
+                        let event = pending.theirs.clone();
+                        let id = *id;
+                        let result_tx = delivery_tx.clone();
+                        pool.publish(pending.ours.clone());
+                        spawn(async move {
+                            let status = super::delivery::publish(event, targets).await;
+                            let _ = result_tx.send((id, status));
+                        });
+                    }
+                }
+                result = delivery_rx.recv() => {
+                    if let Some((id, status)) = result {
+                        state.write().dm_delivery.insert(id, status);
+                        if status == super::delivery::Delivery::Accepted {
+                            outbox.remove(&id);
+                            if let Err(error) = super::delivery::persist(&our_pubkey, &outbox).await {
+                                state.write().error_toast = Some(format!("Could not update pending messages: {error}"));
+                            }
+                        }
+                    }
+                }
                 _ = tokio::time::sleep_until(
                     tokio::time::Instant::from_std(xp_publisher.due_at().unwrap_or_else(std::time::Instant::now))
                 ), if xp_publisher.due_at().is_some() => {
@@ -209,6 +301,7 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
                 }
                 ev = events.recv() => match ev {
                     Some(RelayEvent::Event(event)) => match event.kind {
+                        nip17::KIND_DM_RELAYS => routes.note(&event),
                         nip02::KIND_CONTACTS if event.pubkey == our_pubkey => {
                             state.write().contacts = nip02::parse_contact_list(&event);
                             request_names(&pool, &state, &our_pubkey, &mut named);
@@ -348,7 +441,7 @@ fn request_names(
         SUB_NAMES,
         vec![
             Filter {
-                kinds: Some(vec![metadata::KIND_METADATA]),
+                kinds: Some(vec![metadata::KIND_METADATA, nip17::KIND_DM_RELAYS]),
                 authors: Some(want.clone()),
                 ..Default::default()
             },
@@ -378,13 +471,6 @@ fn open_conversation(peer: &str, state: &mut Signal<AppState>) {
     s.mark_dm_read(cid);
 }
 
-/// Build, wrap and publish a message; show it immediately.
-///
-/// The local copy is added before any relay answers, because waiting would mean
-/// a visible delay on every message for a confirmation that says nothing useful
-/// — publishing succeeds if *any* relay accepts, and the copy addressed to us
-/// will arrive back through the subscription anyway. `insert_message`
-/// deduplicates by id, so the echo is a no-op rather than a double.
 #[allow(clippy::too_many_arguments)]
 fn send_message(
     pool: &RelayPool,
@@ -394,13 +480,12 @@ fn send_message(
     text: &str,
     reply_to: Option<String>,
     state: &mut Signal<AppState>,
-) {
+) -> Option<(Id, super::delivery::Pending)> {
     let ts = now();
     let rumor = nip17::chat_rumor(our_pubkey, peer, text, reply_to.as_deref(), ts);
     match nip17::wrap_both(secret, peer, &rumor, ts) {
         Ok((theirs, ours)) => {
-            pool.publish(theirs);
-            pool.publish(ours);
+            pool.publish(ours.clone());
             let msg = nip17::ChatMessage {
                 id: rumor.id.clone(),
                 author: our_pubkey.to_string(),
@@ -410,12 +495,28 @@ fn send_message(
                 reply_to,
             };
             insert_message(&msg, our_pubkey, state, Source::Ours, false);
+            let id = message_id(&rumor.id);
+            state
+                .write()
+                .dm_delivery
+                .insert(id, super::delivery::Delivery::Pending);
+            Some((
+                id,
+                super::delivery::Pending {
+                    peer: peer.to_string(),
+                    theirs,
+                    ours,
+                    due: std::time::Instant::now() + std::time::Duration::from_secs(2),
+                    started: false,
+                },
+            ))
         }
         Err(e) => {
             // Refused rather than sent in the clear — there is no cleartext
             // path here to fall back to, so the only honest outcome is to say
             // it did not go.
             state.write().error_toast = Some(format!("Not sent — {e}"));
+            None
         }
     }
 }

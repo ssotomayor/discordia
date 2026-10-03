@@ -566,6 +566,9 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
                     class: "dxf-no-drag shrink-0 flex items-center rounded-md border border-[var(--border)] bg-[var(--panel2)] overflow-hidden",
                     onmousedown: move |e| e.stop_propagation(),
                     TransportBadge {}
+                    if status == ConnectionStatus::Reconnecting {
+                        span { class: "px-2 text-[10px] text-[var(--warn)]", "Reconnecting…" }
+                    }
                     EncryptionBadge {}
                     button {
                         class: "h-8 px-2 flex items-center gap-1.5 border-l border-[var(--border)] text-[10px] uppercase tracking-wider text-[var(--text-muted)] hover:text-[var(--danger)] transition-colors",

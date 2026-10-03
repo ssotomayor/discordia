@@ -116,6 +116,7 @@ impl AudioControls {
 struct MicMeter {
     peak: AtomicI32,
     peak_pre: AtomicI32,
+    gate_peak: AtomicI32,
     open: AtomicBool,
 }
 
@@ -610,6 +611,7 @@ impl ActiveVoice {
 
         let (frame_tx, frame_rx) = crate::audio_queue::channel::<f32>();
         let (gated_tx, gated_rx) = crate::audio_queue::channel::<i16>();
+        let (reference_tx, reference_rx) = crate::audio_queue::channel::<i16>();
         let meter = Arc::new(MicMeter::default());
         let start_muted = state.peek().voice.muted;
         let muted = Arc::new(AtomicBool::new(start_muted));
@@ -623,7 +625,15 @@ impl ActiveVoice {
             std::thread::Builder::new()
                 .name("dxf-mic-dsp".into())
                 .spawn(move || {
-                    denoise_gate_loop(frame_rx, gated_tx, controls, meter, muted, gate_stats)
+                    denoise_gate_loop(
+                        frame_rx,
+                        gated_tx,
+                        controls,
+                        meter,
+                        muted,
+                        gate_stats,
+                        reference_rx,
+                    )
                 })
                 .map_err(|e| format!("spawn mic dsp thread: {e}"))?;
         }
@@ -632,7 +642,7 @@ impl ActiveVoice {
         crate::audio_diag::log("mic open");
         let meter_task = spawn_meter_task(state, meter);
 
-        let playback = PlaybackMixer::start(state, controls.clone())?;
+        let playback = PlaybackMixer::start(state, controls.clone(), reference_tx)?;
         let mixer_handle = playback.handle();
 
         let (native_audio_tx, mut native_audio_rx) =
@@ -1819,12 +1829,15 @@ fn denoise_gate_loop(
     meter: Arc<MicMeter>,
     muted: Arc<AtomicBool>,
     stats: Arc<GateStats>,
+    reference_rx: crate::audio_queue::AudioReceiver<i16>,
 ) {
     let mut denoiser: Option<crate::denoise::Denoiser> = None;
     let mut agc = crate::agc::Agc::new();
     let mut applied_atten_lim = 0u32;
     let mut gate = GateState::default();
     let mut gated = 0u64;
+    let mut echo = crate::echo::Echo::new(reference_rx);
+    let mut echo_error_reported = false;
 
     while let Some(packet) = frame_rx.blocking_recv() {
         if !packet.is_fresh() {
@@ -1832,16 +1845,17 @@ fn denoise_gate_loop(
             continue;
         }
         let mut samples = packet.samples;
-        let gain_pct = controls.mic_gain_pct.load(Ordering::Relaxed);
-        if gain_pct != 100 {
-            let g = gain_pct as f32 / 100.0;
-            for s in samples.iter_mut() {
-                *s = (*s * g).clamp(-1.0, 1.0);
-            }
+        if let Err(error) = echo.process(
+            &mut samples,
+            50 + packet.captured.elapsed().as_millis().min(450) as i32,
+        ) && !echo_error_reported
+        {
+            tracing::warn!(%error, "microphone echo cancellation failed");
+            echo_error_reported = true;
         }
-
         if muted.load(Ordering::Relaxed) {
             let peak = peak_fixed(&samples);
+            meter.gate_peak.fetch_max(peak, Ordering::Relaxed);
             meter.bump_peak(peak);
             meter.bump_peak_pre(peak);
             meter.open.store(false, Ordering::Relaxed);
@@ -1891,15 +1905,27 @@ fn denoise_gate_loop(
             stats.atten_lim_applied.store(0, Ordering::Relaxed);
         }
 
-        let boosted = if controls.agc.load(Ordering::Relaxed) {
+        let gate_peak = peak_fixed(&samples);
+        meter.gate_peak.fetch_max(gate_peak, Ordering::Relaxed);
+        if controls.agc.load(Ordering::Relaxed) {
             agc.process(&mut samples);
-            true
         } else {
             agc.reset();
-            false
-        };
+        }
+        let gain = controls.mic_gain_pct.load(Ordering::Relaxed) as f32 / 100.0;
+        for sample in &mut samples {
+            *sample *= gain;
+        }
+        crate::agc::limit(&mut samples);
+        if gain == 0.0 {
+            gate.silence();
+            meter.open.store(false, Ordering::Relaxed);
+            stats.dropped.fetch_add(1, Ordering::Relaxed);
+            gated += 1;
+            continue;
+        }
 
-        let peak = if denoised || boosted {
+        let peak = if denoised || controls.agc.load(Ordering::Relaxed) {
             peak_fixed(&samples)
         } else {
             peak_pre
@@ -1909,7 +1935,7 @@ fn denoise_gate_loop(
 
         let threshold = controls.threshold.load(Ordering::Relaxed);
         stats.threshold.store(threshold, Ordering::Relaxed);
-        let action = gate.step(peak, threshold);
+        let action = gate.step(gate_peak, threshold);
         meter.open.store(
             matches!(action, GateAction::Pass | GateAction::RampIn),
             Ordering::Relaxed,
@@ -2170,11 +2196,17 @@ fn spawn_meter_task(mut state: Signal<AppState>, meter: Arc<MicMeter>) -> Task {
         let mut last_speaking = false;
         let mut last_level = u32::MAX;
         let mut last_level_pre = u32::MAX;
+        let mut last_gate_level = u32::MAX;
         loop {
             tokio::time::sleep(std::time::Duration::from_millis(150)).await;
             let level = meter.peak.swap(0, Ordering::Relaxed).clamp(0, 1000) as u32;
             let level_pre = meter.peak_pre.swap(0, Ordering::Relaxed).clamp(0, 1000) as u32;
             let speaking = meter.open.load(Ordering::Relaxed);
+            let gate_level = meter.gate_peak.swap(0, Ordering::Relaxed).clamp(0, 1000) as u32;
+            if gate_level != last_gate_level {
+                last_gate_level = gate_level;
+                state.write().mic_gate_level = gate_level;
+            }
             if level != last_level {
                 last_level = level;
                 state.write().mic_level = level;
@@ -2971,7 +3003,11 @@ impl Drop for PlaybackMixer {
 }
 
 impl PlaybackMixer {
-    fn start(state: Signal<AppState>, controls: AudioControls) -> Result<Self, String> {
+    fn start(
+        state: Signal<AppState>,
+        controls: AudioControls,
+        reference_tx: crate::audio_queue::AudioSender<i16>,
+    ) -> Result<Self, String> {
         let host = cpal::default_host();
         let selected = state.read().selected_output_device.clone();
         let device = pick_device(
@@ -3010,6 +3046,8 @@ impl PlaybackMixer {
         let deafened_f32 = controls.deafened.clone();
         let deafened_i16 = controls.deafened.clone();
         let mut dither_rng = DITHER_SEED;
+        let mut reference_f32 = crate::echo::Reference::new(reference_tx.clone(), device_rate);
+        let mut reference_i16 = crate::echo::Reference::new(reference_tx, device_rate);
 
         let err = |e| eprintln!("output stream error: {e}");
         let stream = match sample_format {
@@ -3043,6 +3081,7 @@ impl PlaybackMixer {
                             acc += s;
                         }
                         let sample = mix(acc);
+                        reference_f32.push(sample);
                         if sample != 0.0 {
                             pulled += 1;
                         }
@@ -3086,6 +3125,7 @@ impl PlaybackMixer {
                         }
                         let sample = mix(acc);
                         let s16 = dither_to_i16(sample, &mut dither_rng);
+                        reference_i16.push(s16 as f32 / i16::MAX as f32);
                         for s in frame.iter_mut() {
                             *s = s16;
                         }
@@ -3771,32 +3811,30 @@ mod tests {
         assert_eq!(mix(-2.4), -1.0);
     }
 
-    /// The two halves have to agree: the AGC runs before the gate, so a mic too
-    /// quiet to clear the default bar on its own clears it once normalised.
-    /// That is the reported difference against other clients, end to end.
     #[test]
-    fn a_quiet_mic_reaches_the_gate_loud_enough_to_open_it() {
-        let quiet = 0.02_f32;
-        let default_bar = 50; // `settings::default_mic_sensitivity`
-        assert!(
-            peak_fixed(&[quiet]) < default_bar,
-            "precondition: raw, this mic is under the bar and gets dropped"
-        );
-
+    fn quiet_speech_passes_and_agc_does_not_keep_room_tone_open() {
+        let bar = crate::settings::ClientSettings::default().mic_sensitivity as i32;
         let mut agc = crate::agc::Agc::new();
         let mut gate = GateState::default();
-        let mut action = GateAction::Drop;
         for _ in 0..600 {
-            let mut hop: Vec<f32> = (0..crate::denoise::HOP)
-                .map(|i| if i % 2 == 0 { quiet } else { -quiet })
-                .collect();
+            let mut hop = [0.02_f32; FRAME_SAMPLES];
+            let gate_peak = peak_fixed(&hop);
             agc.process(&mut hop);
-            action = gate.step(peak_fixed(&hop), default_bar);
+            assert!(matches!(
+                gate.step(gate_peak, bar),
+                GateAction::RampIn | GateAction::Pass
+            ));
         }
-        assert!(
-            matches!(action, GateAction::Pass),
-            "still {action:?} after the AGC settled"
-        );
+        let mut leaked = 0;
+        for _ in 0..500 {
+            let mut hop = [0.003_f32; FRAME_SAMPLES];
+            let gate_peak = peak_fixed(&hop);
+            agc.process(&mut hop);
+            if !matches!(gate.step(gate_peak, bar), GateAction::Drop) {
+                leaked += 1;
+            }
+        }
+        assert!(leaked < 60, "room tone stayed open for {leaked} hops");
     }
 
     #[test]
@@ -3958,83 +3996,5 @@ mod tests {
     fn threshold_never_collapses_to_zero() {
         assert!(meter_pct_to_peak(0) >= 1);
         assert!(meter_pct_to_peak(1000) <= 1000);
-    }
-
-    /// Not a guard — a measurement, like the raw-mode one in `rawmic`. The AGC
-    /// runs before the gate, so the bar judges audio whose level has already
-    /// been normalised. Re-run it with a real recording to settle 63/98:
-    /// synthetic speech has a crest factor near 2 and real speech 3 to 5, so
-    /// the numbers below understate what a microphone actually delivers.
-    #[test]
-    #[ignore = "a measurement to re-run, not a guard; see issue #171"]
-    fn where_the_gate_opens_once_the_agc_has_normalised_the_level() {
-        fn noise(n: usize, rms_want: f32, seed: &mut u32) -> Vec<f32> {
-            let mut v: Vec<f32> = (0..n)
-                .map(|_| {
-                    *seed ^= *seed << 13;
-                    *seed ^= *seed >> 17;
-                    *seed ^= *seed << 5;
-                    (*seed >> 8) as f32 / (1u32 << 24) as f32 - 0.5
-                })
-                .collect();
-            let r = (v.iter().map(|s| s * s).sum::<f32>() / n as f32).sqrt();
-            let k = rms_want / r.max(1e-9);
-            for s in v.iter_mut() {
-                *s *= k;
-            }
-            v
-        }
-        fn voiced(n: usize, rms_want: f32, seed: &mut u32, ph: &mut f32) -> Vec<f32> {
-            let mut v = noise(n, rms_want * 0.4, seed);
-            for s in v.iter_mut() {
-                *ph += 2.0 * std::f32::consts::PI * 140.0 / 48_000.0;
-                *s += rms_want * 1.2 * ph.sin();
-            }
-            v
-        }
-
-        let threshold = crate::settings::ClientSettings::default().mic_sensitivity as i32;
-        println!("bar {threshold} ({})", peak_to_db_label(threshold as u32));
-
-        println!(
-            "
-what the bar demands of the microphone, before the AGC:"
-        );
-        let (mut seed, mut ph) = (0x9E37_79B9u32, 0.0f32);
-        for rms in [0.01f32, 0.02, 0.03, 0.05, 0.13] {
-            let peak = peak_fixed(&voiced(FRAME_SAMPLES, rms, &mut seed, &mut ph));
-            println!(
-                "  speech {:+.0} dBFS -> peak {peak:>4}  {}",
-                20.0 * rms.log10(),
-                if peak > threshold { "passes" } else { "CUT" }
-            );
-        }
-
-        println!(
-            "
-two seconds of speech, then only room tone:"
-        );
-        for room in [0.002f32, 0.003, 0.005, 0.01] {
-            let (mut seed, mut ph) = (0x9E37_79B9u32, 0.0f32);
-            let mut agc = crate::agc::Agc::new();
-            let mut gate = GateState::default();
-            for _ in 0..200 {
-                let mut h = voiced(FRAME_SAMPLES, 0.02, &mut seed, &mut ph);
-                agc.process(&mut h);
-                gate.step(peak_fixed(&h), threshold);
-            }
-            let mut open = 0;
-            for _ in 0..500 {
-                let mut h = noise(FRAME_SAMPLES, room, &mut seed);
-                agc.process(&mut h);
-                if !matches!(gate.step(peak_fixed(&h), threshold), GateAction::Drop) {
-                    open += 1;
-                }
-            }
-            println!(
-                "  room {:+.0} dBFS -> {open}/500 hops of the pause transmitted",
-                20.0 * room.log10()
-            );
-        }
     }
 }

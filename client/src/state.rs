@@ -48,6 +48,7 @@ pub enum Transport {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectionStatus {
     Connecting,
+    Reconnecting,
     Ready,
     Disconnected,
 }
@@ -279,6 +280,7 @@ pub struct AppState {
     pub muted_channels: HashSet<Id>,
     pub muted_guilds: HashSet<Id>,
     pub nostr_event_ids: HashMap<Id, String>,
+    pub dm_delivery: HashMap<Id, crate::nostr::delivery::Delivery>,
     pub contacts: crate::nostr::nip02::ContactList,
     pub nostr_relays_up: std::collections::HashSet<String>,
     /// Names peers published for themselves (kind 0), by pubkey, each with the
@@ -353,6 +355,7 @@ pub struct AppState {
     pub mic_volume: u16,
     pub auto_gain_control: bool,
     pub mic_level: u32,
+    pub mic_gate_level: u32,
     pub mic_level_pre: u32,
     pub noise_cancellation: bool,
     pub denoise_atten_lim_db: u32,
@@ -424,6 +427,7 @@ impl AppState {
             muted_channels: HashSet::new(),
             muted_guilds: HashSet::new(),
             nostr_event_ids: HashMap::new(),
+            dm_delivery: HashMap::new(),
             contacts: Default::default(),
             nostr_relays_up: std::collections::HashSet::new(),
             nostr_names: HashMap::new(),
@@ -472,6 +476,7 @@ impl AppState {
             mic_volume: 100,
             auto_gain_control: true,
             mic_level: 0,
+            mic_gate_level: 0,
             mic_level_pre: 0,
             noise_cancellation: false,
             denoise_atten_lim_db: 30,
