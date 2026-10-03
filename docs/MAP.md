@@ -17,18 +17,18 @@ name instead.
 
 | File | Lines |
 |---|---|
-| `client/src/features/voice.rs` | 4040 |
-| `server/src/state/mod.rs` | 2983 |
+| `client/src/features/voice.rs` | 4000 |
+| `server/src/state/mod.rs` | 3124 |
 | `server/tests/owner_controls.rs` | 3036 |
-| `server/src/gateway/connection.rs` | 2795 |
+| `server/src/gateway/connection.rs` | 2842 |
 | `client/src/features/channels.rs` | 1968 |
 | `client/src/features/screenshare.rs` | 2535 |
-| `protocol/src/lib.rs` | 2500 |
-| `client/src/state.rs` | 1917 |
+| `protocol/src/lib.rs` | 2503 |
+| `client/src/state.rs` | 1922 |
 | `client/src/update.rs` | 1226 |
-| `client/src/net.rs` | 1341 |
-| `client/src/features/chat.rs` | 1158 |
-| `server/src/store.rs` | 1041 |
+| `client/src/net.rs` | 1587 |
+| `client/src/features/chat.rs` | 1192 |
+| `server/src/store.rs` | 1201 |
 | `client/src/features/guild_settings.rs` | 1132 |
 | `client/src/identity.rs` | 1029 |
 | `client/src/features/discord_import.rs` | 1127 |
@@ -45,9 +45,10 @@ that direction says a file is safe to open when it is not.
 | What a `ServerMessage` does to the client | `client/src/net.rs` | `fn apply` — one arm per variant, exhaustive |
 | What the server does with a `ClientMessage` | `server/src/gateway/connection.rs` | `handle_connection`, then ~50 `ClientMessage::` arms |
 | Every wire type | `protocol/src/lib.rs` | grep the variant name; ~70 of them |
-| Server state mutation + permissions | `server/src/state/mod.rs` | methods on `AppState`; all async, all write through `persist(…)` |
+| Server state mutation + permissions | `server/src/state/mod.rs` | `durable_writes` stages serialized commands; `durable` rejects failed writes before memory changes; Store handles compound transactions |
 | Client state + advisory `can()` | `client/src/state.rs` | `AppState`, `use_app_state`, `use_gateway` |
-| DMs end to end | `client/src/nostr/service.rs` | `spawn_nostr`; `conversation_id` is the Uuid derivation |
+| DMs end to end | `client/src/nostr/service.rs`, `nostr/delivery.rs` | `spawn_nostr`; `Routes` resolves recipient kind 10050 lists; pending encrypted wraps survive restart, retries reuse event ids; relay acceptance is not a read receipt |
+| Native echo cancellation | `client/src/echo.rs`, `features/voice.rs` | `Reference` resamples actual mixed playback into bounded 10 ms frames; `Echo` runs WebRTC APM before denoise, gate detection, AGC, manual trim and limiter |
 | Voice, capture, mixing | `client/src/features/voice.rs` | the largest file in the tree — grep `ScreenAudioRoom`, `NativeVideoRoom`, `ScreenVideoRoom`, `forward_mic` |
 | The first screen | `client/src/features/home.rs` | `HomeView`; the connect form is `connect::ConnectForm` |
 | Public servers on a globe | `client/src/features/globe.rs` | `Globe` — `globe_geometry.rs` generates land dots from `assets/globe-land.bin` and converts geographic coordinates; `assets/globe.js` draws Canvas on demand, animating only for motion/pulses, suspending while hidden and releasing observers/listeners on destroy; `connect::BrowseTab` feeds it `/discover`, and the Create tab reuses it in `pick` mode to place a host's own pin, pre-placed by `tzgeo::guess` from the machine's timezone |
@@ -166,7 +167,7 @@ flowchart LR
     GW-->LK
   end
   SFU["LiveKit SFU<br/>voice-{ch} · screen-{ch}"]
-  RZ["rendezvous/<br/>/control · /discover · /resolve · /config · /voice-token · iroh relay"]
+  RZ["rendezvous/<br/>/control · /discover · /resolve · /config · /voice-token · /voice-evict · iroh relay"]
   RELAYS[("Nostr relays")]
   BOT["bot-sdk"]
   NET<-->|"QUIC (loopback: WS)<br/>Schnorr Identify"|GW

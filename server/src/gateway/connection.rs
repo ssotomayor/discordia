@@ -60,12 +60,16 @@ pub async fn handle_connection(
     let watch = Arc::new(crate::watchdog::ArmWatch::default());
     let who = format!("conn {conn_id}");
     let dog = crate::watchdog::watchdog(watch.clone(), who.clone());
+    let mut heartbeat = tokio::time::interval(crate::protocol::GATEWAY_HEARTBEAT_INTERVAL);
+    let mut last_received = tokio::time::Instant::now();
+    let mut graceful = false;
 
     loop {
         watch.finish(&who);
         tokio::select! {
             incoming = ws_rx.next() => {
                 let Some(Ok(msg)) = incoming else { break };
+                last_received = tokio::time::Instant::now();
 
                 // Ahead of the parse and of the frame kinds that skip it: a
                 // peer that never sends valid JSON is still spending our time,
@@ -79,8 +83,12 @@ pub async fn handle_connection(
 
                 let text = match msg {
                     WsMessage::Text(t) => t,
-                    WsMessage::Close(_) => break,
-                    WsMessage::Ping(_) | WsMessage::Pong(_) | WsMessage::Binary(_) => continue,
+                    WsMessage::Close(_) => { graceful = true; break; }
+                    WsMessage::Ping(payload) => {
+                        if ws_tx.send(WsMessage::Pong(payload)).await.is_err() { break; }
+                        continue;
+                    }
+                    WsMessage::Pong(_) | WsMessage::Binary(_) => continue,
                 };
                 watch.begin(format!("recv {}", crate::watchdog::op_of(&text)));
                 let parsed: Result<ClientMessage, _> = serde_json::from_str(&text);
@@ -157,12 +165,22 @@ pub async fn handle_connection(
                             continue;
                         }
                         let new_user = User { pubkey: pubkey.clone(), username };
-                        ctx.state.remember_user(&new_user).await;
+                        if let Err(message) = ctx.state.remember_user(&new_user).await {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await;
+                            break;
+                        }
                         is_bot = bot;
                         let ready = if is_bot {
-                            ctx.state.snapshot_for_bot(&new_user)
+                            Ok(ctx.state.snapshot_for_bot(&new_user))
                         } else {
                             ctx.state.snapshot_for(&new_user).await
+                        };
+                        let ready = match ready {
+                            Ok(ready) => ready,
+                            Err(message) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await;
+                                break;
+                            }
                         };
                         if send(&mut ws_tx, &ready).await.is_err() {
                             break;
@@ -525,7 +543,10 @@ pub async fn handle_connection(
                         let profile = ctx.state.set_profile(
                             &u.pubkey, avatar, banner, bio, status, custom_status,
                         ).await;
-                        ctx.state.broadcast(ServerMessage::ProfileUpdate(profile));
+                        match profile {
+                            Ok(profile) => ctx.state.broadcast(ServerMessage::ProfileUpdate(profile)),
+                            Err(message) => { let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await; }
+                        }
                     }
                     ClientMessage::SetActivity { activity } => {
                         let Some(u) = user.as_ref() else {
@@ -1576,8 +1597,15 @@ pub async fn handle_connection(
                         if username == u.username {
                             continue;
                         }
+                        let changed = match ctx.state.rename_user(&u.pubkey, &username).await {
+                            Ok(changed) => changed,
+                            Err(message) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await;
+                                continue;
+                            }
+                        };
                         u.username = username.clone();
-                        for member in ctx.state.rename_user(&u.pubkey, &username).await {
+                        for member in changed {
                             let targets = ctx.state.guild_member_pubkeys(member.guild_id);
                             ctx.state.deliver(targets, ServerMessage::MemberUpdate(member));
                         }
@@ -1862,6 +1890,12 @@ pub async fn handle_connection(
                 }
             }
 
+            _ = heartbeat.tick(), if user.is_some() => {
+                if last_received.elapsed() >= crate::protocol::GATEWAY_HEARTBEAT_TIMEOUT { break; }
+                let sent = tokio::time::timeout(crate::protocol::GATEWAY_HEARTBEAT_INTERVAL,
+                    ws_tx.send(WsMessage::Ping(Vec::new()))).await;
+                if !matches!(sent, Ok(Ok(()))) { break; }
+            }
             _ = tokio::time::sleep_until(identify_by), if user.is_none() => {
                 let _ = send(&mut ws_tx, &ServerMessage::Error {
                     message: "identify timed out".into(),
@@ -1873,6 +1907,7 @@ pub async fn handle_connection(
             // the client is about to lose the socket either way, and a frame
             // it might not read before the close says nothing.
             _ = host_stopped(&mut shutdown) => {
+                graceful = true;
                 let _ = ws_tx.send(WsMessage::Close(Some(axum::extract::ws::CloseFrame {
                     code: axum::extract::ws::close_code::AWAY,
                     reason: HOST_STOPPED.into(),
@@ -1906,6 +1941,13 @@ pub async fn handle_connection(
         .unregister_conn(conn_id, user.as_ref().map(|u| u.pubkey.as_str()));
 
     if let Some(u) = user {
+        if !graceful && !ctx.state.has_sessions(&u.pubkey) {
+            let revision = ctx.state.session_revision(&u.pubkey);
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            if ctx.state.session_revision(&u.pubkey) != revision {
+                return;
+            }
+        }
         // Another socket of this key may own the call and its screen share.
         if ctx.state.has_sessions(&u.pubkey) {
             tracing::info!(user = ?u.username, "a session closed; others remain");
@@ -1960,8 +2002,13 @@ async fn send<S>(tx: &mut S, msg: &ServerMessage) -> Result<(), axum::Error>
 where
     S: SinkExt<WsMessage, Error = axum::Error> + Unpin,
 {
-    let json = serde_json::to_string(msg).expect("serializable");
-    tx.send(WsMessage::Text(json)).await
+    let json = serde_json::to_string(msg).map_err(axum::Error::new)?;
+    tokio::time::timeout(
+        crate::protocol::GATEWAY_HEARTBEAT_INTERVAL,
+        tx.send(WsMessage::Text(json)),
+    )
+    .await
+    .map_err(|error| axum::Error::new(std::io::Error::new(std::io::ErrorKind::TimedOut, error)))?
 }
 
 async fn reject_rate_limited<S>(tx: &mut S)

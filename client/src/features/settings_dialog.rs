@@ -73,7 +73,7 @@ pub fn SettingsDialog() -> Element {
 
     let selected_camera_id = settings.read().camera_device_id.clone();
     let mic_sensitivity = state.read().mic_sensitivity;
-    let mic_level = state.read().mic_level;
+    let mic_level = state.read().mic_gate_level;
     let noise_cancellation = state.read().noise_cancellation;
     let atten_lim_db = state.read().denoise_atten_lim_db;
     let mic_volume = state.read().mic_volume;
@@ -98,26 +98,11 @@ pub fn SettingsDialog() -> Element {
     let mic_level_pct = crate::features::voice::peak_to_meter_pct(mic_level);
     let mic_level_pre = state.read().mic_level_pre;
     let mic_level_pre_pct = crate::features::voice::peak_to_meter_pct(mic_level_pre);
-    // Either one moves the level the threshold is then judged against, and the
-    // AGC moves it *up*, so the old `pre > post` test could never fire for it.
-    let show_pre = (noise_cancellation || auto_gain_control) && mic_level_pre != mic_level;
+    let show_pre = noise_cancellation && mic_level_pre != mic_level;
     let mic_level_display = crate::features::voice::peak_to_db_label(mic_level);
     let threshold_pct = crate::features::voice::peak_to_meter_pct(mic_sensitivity);
     let sensitivity_display = crate::features::voice::peak_to_db_label(mic_sensitivity);
-    let pre_caption = match (noise_cancellation, auto_gain_control) {
-        (true, false) => {
-            "Grey tick: your raw microphone. The gap is what noise cancellation removed."
-        }
-        (false, true) => {
-            "Grey tick: your raw microphone. Auto gain moves the level the white threshold is \
-             judged against, so the threshold is not a microphone level."
-        }
-        (true, true) => {
-            "Grey tick: your raw microphone. Noise cancellation and auto gain both move the level \
-             before the white threshold sees it."
-        }
-        (false, false) => "",
-    };
+    let pre_caption = "Grey tick: before noise suppression. Sensitivity is measured before automatic gain and microphone volume.";
 
     let available_input_devices = state.read().available_input_devices.clone();
     let available_output_devices = state.read().available_output_devices.clone();
@@ -300,8 +285,6 @@ pub fn SettingsDialog() -> Element {
                                         class: "absolute inset-y-0 left-0 rounded-full transition-all duration-75",
                                         style: "width: {mic_level_pct}%; background: linear-gradient(90deg, var(--up), var(--accent), var(--danger));",
                                     }
-                                    // A tick, not the faint bar this replaced: the AGC pushes
-                                    // the raw level *below* the drawn one, where a bar hides.
                                     if show_pre {
                                         div {
                                             class: "absolute top-0 bottom-0 w-0.5 bg-[var(--text-dim)] pointer-events-none",
@@ -327,7 +310,7 @@ pub fn SettingsDialog() -> Element {
                         }
                         div { class: "mb-2",
                             div { class: "flex items-center justify-between",
-                                span { class: "text-[11px] text-[var(--text-muted)]", "Microphone Input" }
+                                span { class: "text-[11px] text-[var(--text-muted)]", "Microphone Volume" }
                                 span { class: "text-[10px] text-[var(--text-dim)]", "{mic_volume}%" }
                             }
                             input {
@@ -335,8 +318,7 @@ pub fn SettingsDialog() -> Element {
                                 min: "0",
                                 max: "200",
                                 value: "{mic_volume}",
-                                disabled: auto_gain_control,
-                                class: if auto_gain_control { "w-full mt-1 accent-[var(--accent)] opacity-40 cursor-not-allowed" } else { "w-full mt-1 accent-[var(--accent)]" },
+                                class: "w-full mt-1 accent-[var(--accent)]",
                                 oninput: move |e| {
                                     let pct: u16 = e.value().parse().unwrap_or(100).min(200);
                                     let mut next = settings.read().clone();
@@ -350,13 +332,13 @@ pub fn SettingsDialog() -> Element {
                             }
                             if auto_gain_control {
                                 span { class: "text-[10px] text-[var(--text-dim)] mt-0.5 block",
-                                    "Auto gain is setting your level, so this does nothing. Turn it off below to set it by hand."
+                                    "Volume adjusts the level after automatic gain. Peaks are limited to prevent clipping."
                                 }
                             }
                         }
                         div { class: "mb-2",
                             div { class: "flex items-center justify-between",
-                                span { class: "text-[11px] text-[var(--text-muted)]", "Sensitivity" }
+                                span { class: "text-[11px] text-[var(--text-muted)]", title: "Measured before automatic gain and microphone volume", "Sensitivity" }
                                 span { class: "text-[10px] text-[var(--text-dim)]", "{sensitivity_display}" }
                             }
                             input {

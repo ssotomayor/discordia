@@ -114,6 +114,17 @@ type Subscriptions = BTreeMap<String, Vec<Filter>>;
 #[derive(Clone)]
 pub struct RelayPool {
     cmd: mpsc::UnboundedSender<Command>,
+    _tasks: Arc<PoolTasks>,
+}
+
+struct PoolTasks(Vec<tokio::task::JoinHandle<()>>);
+
+impl Drop for PoolTasks {
+    fn drop(&mut self) {
+        for task in &self.0 {
+            task.abort();
+        }
+    }
 }
 
 impl RelayPool {
@@ -133,19 +144,20 @@ impl RelayPool {
         let subs: Arc<Mutex<Subscriptions>> = Arc::new(Mutex::new(Subscriptions::new()));
 
         let mut senders = Vec::new();
+        let mut tasks = Vec::new();
         for url in urls {
             let (relay_tx, relay_rx) = mpsc::unbounded_channel::<Command>();
             senders.push(relay_tx);
-            tokio::spawn(run_relay(
+            tasks.push(tokio::spawn(run_relay(
                 url,
                 relay_rx,
                 out_tx.clone(),
                 Arc::clone(&seen),
                 Arc::clone(&subs),
-            ));
+            )));
         }
 
-        tokio::spawn(async move {
+        tasks.push(tokio::spawn(async move {
             while let Some(cmd) = cmd_rx.recv().await {
                 if let Command::Subscribe { id, filters } = &cmd {
                     subs.lock().await.insert(id.clone(), filters.clone());
@@ -161,9 +173,15 @@ impl RelayPool {
                     let _ = s.send(copy);
                 }
             }
-        });
+        }));
 
-        (RelayPool { cmd: cmd_tx }, out_rx)
+        (
+            RelayPool {
+                cmd: cmd_tx,
+                _tasks: Arc::new(PoolTasks(tasks)),
+            },
+            out_rx,
+        )
     }
 
     /// Publish to every relay. Returns immediately; acceptance arrives as

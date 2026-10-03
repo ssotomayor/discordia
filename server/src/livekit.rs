@@ -17,6 +17,10 @@ pub type BoxFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T
 
 pub trait VoiceTokenMinter: Send + Sync {
     fn mint<'a>(&'a self, req: MintRequest) -> BoxFuture<'a, Result<String, String>>;
+
+    fn evict<'a>(&'a self, _channel_id: Id, _pubkey: &'a str) -> BoxFuture<'a, Result<(), String>> {
+        Box::pin(async { Err("this token minter does not support participant eviction".into()) })
+    }
 }
 
 #[derive(Clone)]
@@ -184,6 +188,12 @@ impl LiveKitConfig {
 /// Every identity one person can hold in a channel's two rooms (trap 10). One
 /// that is not there is the usual answer, not a failure.
 pub async fn evict(cfg: &LiveKitConfig, channel_id: Id, user_pubkey: &str) {
+    if let Some(minter) = &cfg.minter {
+        if let Err(error) = minter.evict(channel_id, user_pubkey).await {
+            tracing::warn!(%channel_id, %error, "delegated SFU eviction failed");
+        }
+        return;
+    }
     let Some(url) = cfg.admin_url() else {
         tracing::debug!(%channel_id, "no SFU keys here; the app is trusted to leave");
         return;
