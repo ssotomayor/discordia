@@ -50,7 +50,7 @@ peer's IP, and a proxy makes every host the same peer.
 |---|---|---|
 | `DIOXUSFUN_CONFIG_DIR` | OS config dir | identity, settings, release log |
 | `DIOXUSFUN_VAULT` | chosen on first run | `keychain` or `file`: where the passphrase that locks key files lives; changing it later means re-importing every key |
-| `DIOXUSFUN_RENDEZVOUS_URL` | — | presets the rendezvous |
+| `DIOXUSFUN_RENDEZVOUS_URL` | `ws://rendezvous.discordia.world:7700` | presets the rendezvous; plain `ws://` because the rendezvous is never behind TLS |
 | `DISCORDIA_E2EE` | on | `0`/`off` disables media encryption |
 | `DISCORDIA_E2EE_KEY` | — | passphrase shared by hand; developer path |
 | `DISCORDIA_E2EE_OVERLAP` | off | overlap voice keys across a rekey — **unverified** |
