@@ -261,9 +261,12 @@ async fn a_play_reaches_the_voice_channel_and_nobody_else() {
     join_guild(&mut elsewhere, guild_id).await;
 
     for s in [&mut owner, &mut listener] {
-        s.send(&ClientMessage::JoinVoice { channel_id: voice })
-            .await
-            .unwrap();
+        s.send(&ClientMessage::JoinVoice {
+            channel_id: voice,
+            preferences: None,
+        })
+        .await
+        .unwrap();
     }
     // Both joins fan out as voice state updates; wait for the listener's own
     // before playing, or the play can land before the server has them in.

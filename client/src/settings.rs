@@ -150,8 +150,10 @@ fn default_soundboard_volume() -> u8 {
     DEFAULT_SOUNDBOARD_VOLUME
 }
 
+pub const DEFAULT_MIC_SENSITIVITY: u32 = 10;
+
 fn default_mic_sensitivity() -> u32 {
-    10
+    DEFAULT_MIC_SENSITIVITY
 }
 
 fn default_mic_volume() -> u16 {

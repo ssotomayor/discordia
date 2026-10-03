@@ -179,7 +179,10 @@ async fn a_hidden_channel_is_only_sent_to_those_allowed_and_follows_their_roles(
     }
 
     guest
-        .send(&ClientMessage::JoinVoice { channel_id: voice })
+        .send(&ClientMessage::JoinVoice {
+            channel_id: voice,
+            preferences: None,
+        })
         .await
         .unwrap();
     assert!(
@@ -188,7 +191,10 @@ async fn a_hidden_channel_is_only_sent_to_those_allowed_and_follows_their_roles(
     );
 
     staffer
-        .send(&ClientMessage::JoinVoice { channel_id: voice })
+        .send(&ClientMessage::JoinVoice {
+            channel_id: voice,
+            preferences: None,
+        })
         .await
         .unwrap();
     let seen_by_guest = next_state_of(&mut guest, &staffer_key).await;

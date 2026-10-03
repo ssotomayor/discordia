@@ -54,6 +54,14 @@ Add `--features devtools` to client builds for Dioxus hot reload and developer
 tools. Normal builds retain application logging and the Diagnostics panel.
 Desktop dependency patches are recorded in `vendor/dioxus-desktop/PATCHES.md`.
 
+The opt-in `human_speech_audit` test needs `DIOXUSFUN_SPEECH_FIXTURES` pointing to
+a directory with `female.wav` and `male.wav`: Open Speech Repository recordings
+[`OSR_us_000_0010_8k.wav` and `OSR_us_000_0030_8k.wav`](https://www.voiptroubleshooter.com/open_speech/american.html).
+Run `cargo test -p dioxusfun --bin Discordia human_speech_audit -- --ignored --nocapture`.
+It writes listening comparisons beside the fixtures; 8 kHz sources test speech
+retention, not full-band fidelity. Set `DIOXUSFUN_SPEECH_CASE` to a printed case
+name to repeat one configuration.
+
 First run is slow: `server/` fetches or builds `livekit-server` once (macOS
 builds from source, needs `go`). `LIVEKIT_BUNDLE_SKIP=1` opts out.
 

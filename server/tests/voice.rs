@@ -209,7 +209,10 @@ async fn voice_channel(owner: &mut Bot) -> (Id, Id) {
 
 async fn join_voice(session: &mut Bot, channel_id: Id) -> Vec<ServerMessage> {
     session
-        .send(&ClientMessage::JoinVoice { channel_id })
+        .send(&ClientMessage::JoinVoice {
+            channel_id,
+            preferences: None,
+        })
         .await
         .unwrap();
     let mut out = Vec::new();
@@ -256,6 +259,50 @@ fn has_voice_token(frames: &[ServerMessage]) -> bool {
 }
 
 #[tokio::test]
+async fn the_first_join_state_respects_preferences_and_legacy_moves_keep_them() {
+    let (url, _handle) = spawn_gateway(local_signing()).await;
+    let id = BotIdentity::generate();
+    let mut user = connect_user(&url, &id, "talker").await;
+    let (guild_id, _) = text_channel_of(&mut user).await;
+    let voice = create_voice_channel(&mut user, guild_id).await;
+    let other_voice = create_voice_channel(&mut user, guild_id).await;
+
+    for muted in [false, true] {
+        for deafened in [false, true] {
+            user.send(&ClientMessage::JoinVoice {
+                channel_id: voice,
+                preferences: Some(dioxusfun_server::protocol::VoicePreferences { muted, deafened }),
+            })
+            .await
+            .unwrap();
+            let first = next_voice_state(&mut user, id.pubkey()).await;
+            assert_eq!(first.channel_id, Some(voice));
+            assert_eq!(first.muted, muted || deafened);
+            assert_eq!(first.deafened, deafened);
+
+            user.send(&ClientMessage::JoinVoice {
+                channel_id: other_voice,
+                preferences: None,
+            })
+            .await
+            .unwrap();
+            let left = next_voice_state(&mut user, id.pubkey()).await;
+            assert_eq!(left.channel_id, None);
+            let moved = next_voice_state(&mut user, id.pubkey()).await;
+            assert_eq!(moved.channel_id, Some(other_voice));
+            assert_eq!(moved.muted, muted || deafened);
+            assert_eq!(moved.deafened, deafened);
+
+            user.send(&ClientMessage::LeaveVoice).await.unwrap();
+            assert_eq!(
+                next_voice_state(&mut user, id.pubkey()).await.channel_id,
+                None
+            );
+        }
+    }
+}
+
+#[tokio::test]
 async fn a_stalled_token_service_does_not_stall_the_socket() {
     let (cfg, _hold) = stalling();
     let (url, _handle) = spawn_gateway(cfg).await;
@@ -264,9 +311,12 @@ async fn a_stalled_token_service_does_not_stall_the_socket() {
     let (guild_id, text) = text_channel_of(&mut user).await;
     let voice = create_voice_channel(&mut user, guild_id).await;
 
-    user.send(&ClientMessage::JoinVoice { channel_id: voice })
-        .await
-        .unwrap();
+    user.send(&ClientMessage::JoinVoice {
+        channel_id: voice,
+        preferences: None,
+    })
+    .await
+    .unwrap();
     user.send(&ClientMessage::SendMessage {
         channel_id: text,
         content: "still here".into(),
@@ -301,9 +351,12 @@ async fn a_token_minted_after_leaving_is_not_delivered() {
     let (guild_id, _text) = text_channel_of(&mut user).await;
     let voice = create_voice_channel(&mut user, guild_id).await;
 
-    user.send(&ClientMessage::JoinVoice { channel_id: voice })
-        .await
-        .unwrap();
+    user.send(&ClientMessage::JoinVoice {
+        channel_id: voice,
+        preferences: None,
+    })
+    .await
+    .unwrap();
     user.send(&ClientMessage::LeaveVoice).await.unwrap();
     let before = drain_quiet(&mut user).await;
     assert!(!has_voice_token(&before), "{before:?}");

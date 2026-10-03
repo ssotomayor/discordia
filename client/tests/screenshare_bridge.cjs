@@ -43,6 +43,11 @@ for (const id of ['alice', 'bob']) {
 }
 bridge.setStreamVolume(0.4, 'alice');
 bridge.setStreamVolume(0.8, 'bob');
+bridge.setStreamVolume(0, 'alice#audio');
+assert.equal(bridge.testAudioTracks.alice.volume, 0);
+assert.equal(bridge.testAudioTracks.bob.volume, 0.8);
+bridge.setStreamVolume(0.4, 'alice#video');
+assert.equal(bridge.testAudioTracks.alice.volume, 0.4);
 assert.equal(bridge.testAudioTracks.alice.volume, 0.4);
 assert.equal(bridge.testAudioTracks.bob.volume, 0.8);
 bridge.setStreamVolume(0.25, 'alice#video');
@@ -83,6 +88,16 @@ console.log('Multiple streams retain independent video, audio, volume and teardo
   assert.equal(bobVideo.subscribed, true, 'other videos remain subscribed');
   assert.equal(aliceCamera.subscribed, null, 'detaching a screen does not interrupt its camera');
   assert.equal(aliceAudio.subscribed, null, 'audio remains in the main window');
+  bridge.setDetachedScreens(['alice', 'bob']);
+  bridge.setStreamVolume(0.2, 'alice#video');
+  bridge.setStreamVolume(0.6, 'bob#video');
+  assert.equal(bridge.testAudioTracks.alice.volume, 0.2);
+  assert.equal(bridge.testAudioTracks.bob.volume, 0.6);
+  bridge.setStreamVolume(0, 'alice');
+  assert.equal(bridge.testAudioTracks.alice.volume, 0);
+  assert.equal(bridge.testAudioTracks.bob.volume, 0.6);
+  bridge.setStreamVolume(0.4, 'alice');
+  bridge.setStreamVolume(0.8, 'bob');
   bridge.setDetachedScreens([]);
   assert.equal(aliceVideo.subscribed, true, 'docking restores the original video subscription');
   bridge.setViewerTargets(['bob']);

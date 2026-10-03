@@ -536,7 +536,7 @@ pub fn ChannelsColumn() -> Element {
                                             self_pubkey: self_user.as_ref().map(|u| u.pubkey.clone()),
                                             on_join: move |_| {
                                                 tracing::debug!(channel_id = %cid, "join voice clicked");
-                                                g_join.send(ClientMessage::JoinVoice { channel_id: cid });
+                                                g_join.send(state.read().voice.join_message(cid));
                                             },
                                             on_leave: move |_| {
                                                 g_leave.send(ClientMessage::LeaveVoice);
@@ -1510,7 +1510,8 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                         },
                         title: mute_label,
                         onclick: move |_| {
-                            let new_muted = !muted;
+                            let new_muted = !muted || deafened;
+                            state.write().voice.muted = new_muted;
                             g_for_mute.send(ClientMessage::SetVoiceMute { muted: new_muted, deafened });
                             v_for_mute.send(VoiceCmd::SetMute { muted: new_muted });
                         },
@@ -1525,6 +1526,11 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                         title: if deafened { "undeafen" } else { "deafen" },
                         onclick: move |_| {
                             let (next_muted, next_deafened) = state.write().voice.toggle_deafen();
+                            {
+                                let mut s = state.write();
+                                s.voice.muted = next_muted;
+                                s.voice.deafened = next_deafened;
+                            }
                             g_for_deafen.send(ClientMessage::SetVoiceMute { muted: next_muted, deafened: next_deafened });
                             v_for_deafen.send(VoiceCmd::SetDeafen { deafened: next_deafened });
                             v_for_deafen.send(VoiceCmd::SetMute { muted: next_muted });
