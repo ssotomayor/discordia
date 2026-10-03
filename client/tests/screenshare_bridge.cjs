@@ -28,6 +28,17 @@ const context = { window: { postMessage(message) { messages.push(message); } }, 
 }, console, setTimeout() {}, clearTimeout() {}, setInterval() { return 1; }, clearInterval() {}, navigator: {} };
 vm.runInNewContext(script, context);
 const bridge = context.window.dxScreen;
+{
+  let started = 0;
+  const early = { ...context, window: { postMessage() {} }, setInterval() { started++; return 1; } };
+  const enable = source.match(/format!\("(window\.__dxfScreenStatsEnabled=.*?)"\)/)[1].replaceAll('{enabled}', 'true');
+  vm.runInNewContext(enable, early);
+  vm.runInNewContext(script, early);
+  assert.equal(started, 1, 'Diagnostics enabled before bridge initialization must start polling');
+  early.window.dxScreen.setStatsEnabled(false);
+  vm.runInNewContext(script, early);
+  assert.equal(started, 1, 'closed Diagnostics must remain disabled on reinitialization');
+}
 function track() {
   return { elements: [], detached: [], volume: 0,
     attach() { const el = element(); this.elements.push(el); return el; },
@@ -263,4 +274,33 @@ console.log('Native camera and screen share one identity and detach independentl
   assert.notEqual(sent.sampleKey, newSession.sampleKey);
   console.log('Statistics transfer raw counters and isolate tracks and diagnostic sessions.');
   console.log('Freeze diagnostics identify the received track and discard stale asynchronous reports.');
+  bridge.testClearTracks();
+  const statsRoom = {};
+  bridge.setStatsEnabled(false);
+  bridge.testSetRoom(statsRoom);
+  const subscribeStats = bridge.testSubscribe(statsRoom);
+  const unsubscribeStats = bridge.testUnsubscribe(statsRoom);
+  const remaining = Object.assign(track(), { kind: 'video', sid: 'remaining', async getRTCStatsReport() {
+    return new Map([['v', { type: 'inbound-rtp', mediaType: 'video', frameWidth: 2560, frameHeight: 1440, framesPerSecond: 60 }]]);
+  } });
+  const removed = Object.assign(track(), { kind: 'video', sid: 'removed', async getRTCStatsReport() { return videoReport; } });
+  subscribeStats(remaining, { source: 'screen_share' }, { identity: 'remaining#video' });
+  subscribeStats(removed, { source: 'screen_share' }, { identity: 'removed#video' });
+  unsubscribeStats(removed, { source: 'screen_share' }, { identity: 'removed#video' });
+  bridge.testSetRemoteTrack(null);
+  await bridge.testPollRemoteStats();
+  assert.equal(messages.at(-1).trackSid, 'remaining', 'removing the latest track must preserve statistics for another stream');
+  assert.equal(messages.at(-1).encodedWidth, 2560);
+  assert.equal(messages.at(-1).encodedFps, 60);
+  unsubscribeStats(remaining, { source: 'screen_share' }, { identity: 'remaining#video' });
+  await bridge.testPollRemoteStats();
+  assert.equal(messages.at(-1).active, false);
+  const missingStats = Object.assign(track(), { kind: 'video', sid: 'pending', async getRTCStatsReport() { return new Map(); } });
+  bridge.setStatsEnabled(false);
+  subscribeStats(missingStats, { source: 'screen_share' }, { identity: 'pending#video' });
+  bridge.testSetRemoteTrack(missingStats);
+  await bridge.testPollRemoteStats();
+  assert.equal(messages.at(-1).active, true);
+  assert.match(messages.at(-1).error, /receiver statistics/);
+  console.log('Diagnostics survive track removal, legacy mediaType reports and missing receiver statistics.');
 })().catch(error => { console.error(error); process.exitCode = 1; });
