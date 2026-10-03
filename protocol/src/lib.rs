@@ -953,6 +953,12 @@ pub struct VoiceState {
     pub screen_sharing: bool,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VoicePreferences {
+    pub muted: bool,
+    pub deafened: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Permission {
@@ -1807,6 +1813,8 @@ pub enum ClientMessage {
     },
     JoinVoice {
         channel_id: Id,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        preferences: Option<VoicePreferences>,
     },
     LeaveVoice,
     SetVoiceMute {
@@ -2077,6 +2085,55 @@ mod identify_wire_tests {
                 assert_eq!(client_version, "v0.1.0-pre.223")
             }
             other => panic!("parsed as {other:?}"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod voice_join_tests {
+    use super::*;
+
+    #[test]
+    fn older_voice_joins_parse_without_preferences() {
+        let channel_id = Id::new_v4();
+        let json = serde_json::to_string(&ClientMessage::JoinVoice {
+            channel_id,
+            preferences: None,
+        })
+        .unwrap();
+        assert!(!json.contains("preferences"));
+        match serde_json::from_str::<ClientMessage>(&json).unwrap() {
+            ClientMessage::JoinVoice {
+                channel_id: received,
+                preferences,
+            } => {
+                assert_eq!(received, channel_id);
+                assert_eq!(preferences, None);
+            }
+            other => panic!("unexpected frame: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn voice_join_preferences_survive_serialization() {
+        for muted in [false, true] {
+            for deafened in [false, true] {
+                let preferences = Some(VoicePreferences { muted, deafened });
+                let json = serde_json::to_string(&ClientMessage::JoinVoice {
+                    channel_id: Id::new_v4(),
+                    preferences,
+                })
+                .unwrap();
+                match serde_json::from_str::<ClientMessage>(&json).unwrap() {
+                    ClientMessage::JoinVoice {
+                        preferences: received,
+                        ..
+                    } => {
+                        assert_eq!(received, preferences);
+                    }
+                    other => panic!("unexpected frame: {other:?}"),
+                }
+            }
         }
     }
 }

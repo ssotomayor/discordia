@@ -122,7 +122,10 @@ async fn livekit_url_for_voice(session: &mut Bot) -> String {
         }
     };
     session
-        .send(&ClientMessage::JoinVoice { channel_id })
+        .send(&ClientMessage::JoinVoice {
+            channel_id,
+            preferences: None,
+        })
         .await
         .unwrap();
     loop {

@@ -1101,7 +1101,7 @@ pub async fn handle_connection(
                             );
                         }
                     }
-                    ClientMessage::JoinVoice { channel_id } => {
+                    ClientMessage::JoinVoice { channel_id, preferences } => {
                         let Some(u) = user.as_ref() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
@@ -1137,7 +1137,7 @@ pub async fn handle_connection(
                             .map(|v| (v.guild_id, v.channel_id));
                         let was_sharing = sharing_in(&ctx.state, &u.pubkey);
                         let new_state =
-                            ctx.state.set_voice_channel(&u.pubkey, guild_id, Some(channel_id));
+                            ctx.state.set_voice_channel(&u.pubkey, guild_id, Some(channel_id), preferences);
                         // A move is a leave and then a join, for everyone including the
                         // mover. The leave goes first: one client can be in both guilds.
                         if let Some((old_guild, Some(old_channel))) = previous

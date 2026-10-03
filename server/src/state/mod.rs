@@ -2622,14 +2622,22 @@ impl AppState {
         user_pubkey: &str,
         guild_id: Id,
         channel_id: Option<Id>,
+        preferences: Option<crate::protocol::VoicePreferences>,
     ) -> VoiceState {
         let prev = self.voice_states.get(user_pubkey).map(|v| v.clone());
+        let deafened = preferences
+            .map(|p| p.deafened)
+            .unwrap_or_else(|| prev.as_ref().is_some_and(|p| p.deafened));
+        let muted = deafened
+            || preferences
+                .map(|p| p.muted)
+                .unwrap_or_else(|| prev.as_ref().is_some_and(|p| p.muted));
         let state = VoiceState {
             user_pubkey: user_pubkey.to_string(),
             guild_id,
             channel_id,
-            muted: prev.as_ref().map(|p| p.muted).unwrap_or(false),
-            deafened: prev.as_ref().map(|p| p.deafened).unwrap_or(false),
+            muted,
+            deafened,
             speaking: false,
             screen_sharing: false,
             camera_on: false,

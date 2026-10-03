@@ -148,6 +148,7 @@ pub struct ScreenShareStats {
 pub struct VoiceSession {
     pub phase: VoicePhase,
     pub channel_id: Option<Id>,
+    pub joining_channel_id: Option<Id>,
     pub muted: bool,
     pub deafened: bool,
     pub muted_before_deafen: bool,
@@ -160,6 +161,7 @@ impl Default for VoiceSession {
         Self {
             phase: VoicePhase::Idle,
             channel_id: None,
+            joining_channel_id: None,
             muted: false,
             deafened: false,
             muted_before_deafen: false,
@@ -170,6 +172,16 @@ impl Default for VoiceSession {
 }
 
 impl VoiceSession {
+    pub fn join_message(&self, channel_id: Id) -> ClientMessage {
+        ClientMessage::JoinVoice {
+            channel_id,
+            preferences: Some(crate::protocol::VoicePreferences {
+                muted: self.muted || self.deafened,
+                deafened: self.deafened,
+            }),
+        }
+    }
+
     pub fn toggle_deafen(&mut self) -> (bool, bool) {
         if self.deafened {
             (self.muted_before_deafen, false)
@@ -472,7 +484,7 @@ impl AppState {
             available_output_devices: Vec::new(),
             selected_input_device: None,
             selected_output_device: None,
-            mic_sensitivity: 50,
+            mic_sensitivity: crate::settings::DEFAULT_MIC_SENSITIVITY,
             mic_volume: 100,
             auto_gain_control: true,
             mic_level: 0,
@@ -1899,6 +1911,31 @@ mod tests {
         assert_eq!(v.toggle_deafen(), (true, true));
         v.deafened = true;
         assert_eq!(v.toggle_deafen(), (true, false));
+    }
+
+    #[test]
+    fn joining_voice_carries_the_local_mute_and_deafen_choices() {
+        let channel_id = Id::new_v4();
+        for muted in [false, true] {
+            for deafened in [false, true] {
+                let voice = VoiceSession {
+                    muted,
+                    deafened,
+                    ..VoiceSession::default()
+                };
+                match voice.join_message(channel_id) {
+                    ClientMessage::JoinVoice {
+                        channel_id: requested,
+                        preferences: Some(prefs),
+                    } => {
+                        assert_eq!(requested, channel_id);
+                        assert_eq!(prefs.muted, muted || deafened);
+                        assert_eq!(prefs.deafened, deafened);
+                    }
+                    other => panic!("unexpected join: {other:?}"),
+                }
+            }
+        }
     }
 
     #[test]

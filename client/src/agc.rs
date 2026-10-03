@@ -51,6 +51,18 @@ impl Agc {
         self.gain = 1.0;
     }
 
+    pub fn hold(&self, hop: &mut [f32]) {
+        let peak = hop.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+        let gain = if peak * self.gain > CEILING {
+            CEILING / peak
+        } else {
+            self.gain
+        };
+        for sample in hop {
+            *sample *= gain;
+        }
+    }
+
     /// Brings one hop toward `TARGET_RMS` and applies the gain in place.
     pub fn process(&mut self, hop: &mut [f32]) {
         let rms = (hop.iter().map(|s| s * s).sum::<f32>() / hop.len().max(1) as f32).sqrt();
@@ -70,9 +82,7 @@ impl Agc {
             self.gain = CEILING / peak;
         }
 
-        for s in hop.iter_mut() {
-            *s *= self.gain;
-        }
+        self.hold(hop);
     }
 }
 

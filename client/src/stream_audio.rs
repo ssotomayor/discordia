@@ -1,5 +1,26 @@
 use std::collections::HashSet;
 
+pub(crate) fn playback_gains(
+    state: &crate::state::AppState,
+    previous: &[(String, f32)],
+) -> Vec<(String, f32)> {
+    let mut seen: Vec<String> = state.screen_shares.values().flatten().cloned().collect();
+    seen.extend(state.screen_viewing.iter().cloned());
+    seen.extend(previous.iter().map(|(pk, _)| pk.clone()));
+    seen.sort();
+    seen.dedup();
+    seen.into_iter()
+        .map(|pk| {
+            let gain = if state.screen_viewing.contains(&pk) && !state.voice.deafened {
+                state.stream_gain_of(&pk)
+            } else {
+                0.0
+            };
+            (pk, gain)
+        })
+        .collect()
+}
+
 #[derive(Clone, Copy)]
 pub(crate) enum Source {
     Voice,
@@ -46,6 +67,36 @@ impl Presence {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn detached_stream_levels_survive_reconnect_and_stop_independently() {
+        let mut state = crate::state::AppState::empty();
+        state.screen_viewing.extend(["alice".into(), "bob".into()]);
+        state.stream_volumes.insert("alice".into(), 25);
+        state.stream_volumes.insert("bob".into(), 75);
+        let initial = playback_gains(&state, &[]);
+        assert_eq!(initial, vec![("alice".into(), 0.25), ("bob".into(), 0.75)]);
+        state.voice_session_epoch += 1;
+        assert_eq!(playback_gains(&state, &initial), initial);
+        state.stream_muted.insert("alice".into());
+        assert_eq!(
+            playback_gains(&state, &initial),
+            vec![("alice".into(), 0.0), ("bob".into(), 0.75)]
+        );
+        state.voice.deafened = true;
+        assert!(
+            playback_gains(&state, &initial)
+                .iter()
+                .all(|(_, gain)| *gain == 0.0)
+        );
+        state.voice.deafened = false;
+        state.stream_muted.clear();
+        assert_eq!(playback_gains(&state, &initial), initial);
+        state.screen_viewing.remove("alice");
+        assert_eq!(
+            playback_gains(&state, &initial),
+            vec![("alice".into(), 0.0), ("bob".into(), 0.75)]
+        );
+    }
     #[test]
     fn connecting_screen_audio_or_a_webview_absence_cannot_erase_voice_stream_audio() {
         let mut presence = Presence::default();

@@ -120,6 +120,7 @@ async fn moving_to_another_guilds_call_is_a_leave_the_old_guild_hears() {
     mover
         .send(&ClientMessage::JoinVoice {
             channel_id: first_voice,
+            preferences: None,
         })
         .await
         .unwrap();
@@ -139,6 +140,7 @@ async fn moving_to_another_guilds_call_is_a_leave_the_old_guild_hears() {
     mover
         .send(&ClientMessage::JoinVoice {
             channel_id: second_voice,
+            preferences: None,
         })
         .await
         .unwrap();
@@ -211,6 +213,7 @@ async fn moving_within_a_guild_also_drops_the_share() {
     mover
         .send(&ClientMessage::JoinVoice {
             channel_id: first_voice,
+            preferences: None,
         })
         .await
         .unwrap();
@@ -227,6 +230,7 @@ async fn moving_within_a_guild_also_drops_the_share() {
     mover
         .send(&ClientMessage::JoinVoice {
             channel_id: second_voice,
+            preferences: None,
         })
         .await
         .unwrap();
@@ -266,7 +270,10 @@ async fn a_manager_disconnects_someone_and_everyone_sees_them_leave() {
     join_guild(&mut bystander, guild_id).await;
 
     target
-        .send(&ClientMessage::JoinVoice { channel_id: voice })
+        .send(&ClientMessage::JoinVoice {
+            channel_id: voice,
+            preferences: None,
+        })
         .await
         .unwrap();
     next_state_of(&mut owner, &target_key).await;
@@ -347,7 +354,10 @@ async fn a_manager_disconnects_someone_and_everyone_sees_them_leave() {
         .await
         .unwrap();
     owner
-        .send(&ClientMessage::JoinVoice { channel_id: voice })
+        .send(&ClientMessage::JoinVoice {
+            channel_id: voice,
+            preferences: None,
+        })
         .await
         .unwrap();
     next_state_of(&mut target, &owner_key).await;
@@ -361,7 +371,10 @@ async fn a_manager_disconnects_someone_and_everyone_sees_them_leave() {
     assert!(next_error(&mut target).await.contains("owner"));
 
     bystander
-        .send(&ClientMessage::JoinVoice { channel_id: voice })
+        .send(&ClientMessage::JoinVoice {
+            channel_id: voice,
+            preferences: None,
+        })
         .await
         .unwrap();
     let bystander_key = bystander_id.pubkey().to_string();
@@ -438,6 +451,7 @@ async fn a_category_is_a_separator_nobody_can_join_or_post_to() {
     owner
         .send(&ClientMessage::JoinVoice {
             channel_id: category.id,
+            preferences: None,
         })
         .await
         .unwrap();
@@ -484,7 +498,10 @@ async fn a_media_key_only_travels_between_two_people_in_that_call() {
     join_guild(&mut peer, guild_id).await;
 
     sender
-        .send(&ClientMessage::JoinVoice { channel_id: voice })
+        .send(&ClientMessage::JoinVoice {
+            channel_id: voice,
+            preferences: None,
+        })
         .await
         .unwrap();
     let share = |to: &str| ClientMessage::ShareMediaKey {
@@ -508,9 +525,12 @@ async fn a_media_key_only_travels_between_two_people_in_that_call() {
         "someone outside the call is never handed its key"
     );
 
-    peer.send(&ClientMessage::JoinVoice { channel_id: voice })
-        .await
-        .unwrap();
+    peer.send(&ClientMessage::JoinVoice {
+        channel_id: voice,
+        preferences: None,
+    })
+    .await
+    .unwrap();
     next_state_of(&mut sender, &peer_key).await;
     sender.send(&share(&peer_key)).await.unwrap();
     loop {

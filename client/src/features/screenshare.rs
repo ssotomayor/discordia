@@ -2222,31 +2222,15 @@ pub fn ScreenWatchWindow() -> Element {
     });
     let voice_for_stream = use_voice_tx();
     let mut last_gains = use_signal(Vec::<(String, f32)>::new);
+    let mut last_gain_epoch = use_signal(|| None::<u64>);
     use_effect(move || {
         let watched = watching();
         let _ = stream_levels();
         let s = state.read();
-        let mut seen: Vec<String> = s.screen_shares.values().flatten().cloned().collect();
-        seen.extend(watched.iter().cloned());
-        seen.sort();
-        seen.dedup();
-        seen.extend(last_gains.peek().iter().map(|(pk, _)| pk.clone()));
-        seen.sort();
-        seen.dedup();
-        let mut desired: Vec<(String, f32)> = seen
-            .into_iter()
-            .map(|pk| {
-                let gain = if watched.contains(&pk) {
-                    s.stream_gain_of(&pk)
-                } else {
-                    0.0
-                };
-                (pk, gain)
-            })
-            .collect();
+        let epoch = s.voice_session_epoch;
+        let desired = crate::stream_audio::playback_gains(&s, &last_gains.peek());
         drop(s);
-        desired.sort_by(|a, b| a.0.cmp(&b.0));
-        if *last_gains.peek() == desired {
+        if *last_gains.peek() == desired && *last_gain_epoch.peek() == Some(epoch) {
             return;
         }
         crate::dlog!(
@@ -2262,8 +2246,13 @@ pub fn ScreenWatchWindow() -> Element {
                 pubkey: pk.clone(),
                 gain: *gain,
             });
+            let _ = document::eval(&format!(
+                "window.dxScreen?.setStreamVolume({gain},{});",
+                js_str(pk)
+            ));
         }
         last_gains.set(desired);
+        last_gain_epoch.set(Some(epoch));
     });
 
     let output_device = use_memo(move || state.read().selected_output_device.clone());
@@ -2375,19 +2364,6 @@ fn ScreenWatchTile(
             fullscreen.set(None);
         }
         let _ = document::eval(&detach_js(&detach_container));
-    });
-    let gain_pk = pk.clone();
-    use_effect(move || {
-        let s = state.read();
-        let gain = if s.voice.deafened {
-            0.0
-        } else {
-            s.stream_gain_of(&gain_pk)
-        };
-        let _ = document::eval(&format!(
-            "window.dxScreen.setStreamVolume({gain},{});",
-            js_str(&gain_pk)
-        ));
     });
     let is_fullscreen = fullscreen().as_ref() == Some(&pk);
     let selected = focused().as_ref() == Some(&pk);

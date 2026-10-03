@@ -595,6 +595,15 @@ where
                     continue;
                 }
                 let json = serde_json::to_string(&msg).map_err(|e| e.to_string())?;
+                match &msg {
+                    ClientMessage::JoinVoice { channel_id, .. } => {
+                        state.write().voice.joining_channel_id = Some(*channel_id);
+                    }
+                    ClientMessage::LeaveVoice => {
+                        state.write().voice.joining_channel_id = None;
+                    }
+                    _ => {}
+                }
                 tracing::debug!(op = op_of(&json), "→ gateway");
                 watch.begin(format!("send {}", op_of(&json)));
                 gateway_send(&mut ws_tx, WsMessage::Text(json)).await?;
@@ -960,9 +969,7 @@ fn apply(
                 let _ = voice_tx.send(VoiceCmd::Disconnect { done: None });
                 s.end_voice_locally();
                 if guild.is_some() && server_channel.is_none() {
-                    let _ = tx.send(ClientMessage::JoinVoice {
-                        channel_id: channel,
-                    });
+                    let _ = tx.send(s.voice.join_message(channel));
                 }
             }
             s.status = ConnectionStatus::Ready;
@@ -1444,6 +1451,7 @@ fn apply(
             }
         }
         ServerMessage::VoiceStateUpdate(vs) => {
+            let mut vs = vs;
             let self_pubkey = s.self_user.as_ref().map(|u| u.pubkey.clone());
             let is_self = self_pubkey.as_deref() == Some(vs.user_pubkey.as_str());
             if is_self {
@@ -1455,6 +1463,18 @@ fn apply(
                     vs.speaking,
                     s.voice.phase
                 );
+            }
+
+            if is_self && vs.channel_id.is_some() && s.voice.joining_channel_id == vs.channel_id {
+                s.voice.joining_channel_id = None;
+                let muted = s.voice.muted || s.voice.deafened;
+                let deafened = s.voice.deafened;
+                // Older hosts ignore join preferences; their initial echo must not open the mic.
+                if vs.muted != muted || vs.deafened != deafened {
+                    let _ = tx.send(ClientMessage::SetVoiceMute { muted, deafened });
+                    vs.muted = muted;
+                    vs.deafened = deafened;
+                }
             }
 
             let existing_idx = s
@@ -1483,16 +1503,18 @@ fn apply(
             }
 
             if is_self {
-                if vs.muted != s.voice.muted {
+                if vs.channel_id.is_some() && vs.muted != s.voice.muted {
                     let _ = voice_tx.send(VoiceCmd::SetMute { muted: vs.muted });
                 }
-                if vs.deafened != s.voice.deafened {
+                if vs.channel_id.is_some() && vs.deafened != s.voice.deafened {
                     let _ = voice_tx.send(VoiceCmd::SetDeafen {
                         deafened: vs.deafened,
                     });
                 }
-                s.voice.muted = vs.muted;
-                s.voice.deafened = vs.deafened;
+                if vs.channel_id.is_some() {
+                    s.voice.muted = vs.muted;
+                    s.voice.deafened = vs.deafened;
+                }
                 if vs.channel_id.is_none() && s.voice.phase != VoicePhase::Idle {
                     eprintln!("[net] server says we're out of voice — forcing Idle");
                     let _ = voice_tx.send(VoiceCmd::Disconnect { done: None });
@@ -1532,6 +1554,7 @@ fn apply(
                 (!viewer_token.is_empty()).then_some((livekit_url, viewer_token));
         }
         ServerMessage::Error { message } => {
+            s.voice.joining_channel_id = None;
             tracing::warn!(server_error = %message);
             s.error_toast = Some(message);
         }
@@ -1544,6 +1567,74 @@ fn apply(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn legacy_join_echo_cannot_clear_local_mute_or_deafen_and_leave_keeps_choices() {
+        fn harness() -> Element {
+            let mut state = use_signal(AppState::empty);
+            use_hook(move || {
+                for (muted, deafened) in [(true, false), (true, true), (false, false)] {
+                    let channel = Id::new_v4();
+                    let pubkey = "ab".repeat(32);
+                    {
+                        let mut s = state.write();
+                        s.self_user = Some(crate::protocol::User {
+                            pubkey: pubkey.clone(),
+                            username: "Alice".into(),
+                        });
+                        s.voice.muted = muted;
+                        s.voice.deafened = deafened;
+                        s.voice.joining_channel_id = Some(channel);
+                    }
+                    let (tx, mut messages) = unbounded_channel();
+                    let (voice_tx, mut native) = unbounded_channel();
+                    let vs = crate::protocol::VoiceState {
+                        user_pubkey: pubkey,
+                        guild_id: Id::new_v4(),
+                        channel_id: Some(channel),
+                        muted: false,
+                        deafened: false,
+                        speaking: false,
+                        camera_on: false,
+                        screen_sharing: false,
+                    };
+                    apply(
+                        &mut state,
+                        ServerMessage::VoiceStateUpdate(vs.clone()),
+                        &tx,
+                        &voice_tx,
+                    );
+                    assert_eq!(state.peek().voice.muted, muted);
+                    assert_eq!(state.peek().voice.deafened, deafened);
+                    assert!(
+                        native.try_recv().is_err(),
+                        "join must not send an unmute command"
+                    );
+                    if muted || deafened {
+                        assert!(
+                            matches!(messages.try_recv().unwrap(), ClientMessage::SetVoiceMute { muted: true, deafened: d } if d == deafened)
+                        );
+                    } else {
+                        assert!(messages.try_recv().is_err());
+                    }
+                    apply(
+                        &mut state,
+                        ServerMessage::VoiceStateUpdate(crate::protocol::VoiceState {
+                            channel_id: None,
+                            ..vs
+                        }),
+                        &tx,
+                        &voice_tx,
+                    );
+                    assert_eq!(state.peek().voice.muted, muted);
+                    assert_eq!(state.peek().voice.deafened, deafened);
+                }
+            });
+            rsx! {}
+        }
+        let mut dom = VirtualDom::new(harness);
+        dom.rebuild_in_place();
+    }
 
     #[test]
     fn reconnect_wait_is_bounded_and_starts_with_a_short_retry() {

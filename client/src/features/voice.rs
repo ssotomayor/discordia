@@ -97,7 +97,7 @@ impl AudioControls {
             atten_lim_db: Arc::new(AtomicU32::new(s.denoise_atten_lim_db)),
             bitrate_kbps: Arc::new(AtomicU32::new(s.voice_bitrate_kbps)),
             stats_polling: Arc::new(AtomicBool::new(false)),
-            deafened: Arc::new(AtomicBool::new(false)),
+            deafened: Arc::new(AtomicBool::new(s.voice.deafened)),
             // Restored volumes reach the mixer here: nothing sends them again.
             gains: Arc::new(Mutex::new(
                 s.user_volumes
@@ -225,6 +225,14 @@ impl VoiceTx {
 pub fn use_voice_tx() -> VoiceTx {
     use_context::<VoiceTx>()
 }
+
+#[cfg(test)]
+#[path = "voice_audio_tests.rs"]
+mod audio_audit_tests;
+
+#[cfg(test)]
+#[path = "voice_speech_tests.rs"]
+mod speech_audit_tests;
 
 pub fn spawn_voice_service(state: Signal<AppState>) -> UnboundedSender<VoiceCmd> {
     let (tx, rx) = unbounded_channel::<VoiceCmd>();
@@ -613,7 +621,11 @@ impl ActiveVoice {
         let (gated_tx, gated_rx) = crate::audio_queue::channel::<i16>();
         let (reference_tx, reference_rx) = crate::audio_queue::channel::<i16>();
         let meter = Arc::new(MicMeter::default());
-        let start_muted = state.peek().voice.muted;
+        let (start_muted, start_deafened) = {
+            let s = state.peek();
+            (s.voice.muted || s.voice.deafened, s.voice.deafened)
+        };
+        controls.deafened.store(start_deafened, Ordering::Relaxed);
         let muted = Arc::new(AtomicBool::new(start_muted));
         local_audio_for_mute.rtc_track().set_enabled(!start_muted);
         let gate_stats = Arc::new(GateStats::default());
@@ -726,7 +738,6 @@ impl ActiveVoice {
 
         let event_task = tokio::spawn({
             let mixer_handle = mixer_handle.clone();
-            let stream_gains = controls.stream_gains.clone();
             async move {
                 while let Some(ev) = events.recv().await {
                     match &ev {
@@ -736,7 +747,6 @@ impl ActiveVoice {
                         RoomEvent::ParticipantDisconnected(p) => {
                             crate::dlog!("[voice] participant left: {}", p.identity().0);
                             let _ = quality_tx.send(QualityMsg::Drop(p.identity().0.clone()));
-                            stream_gains.lock().remove(&p.identity().0);
                         }
                         RoomEvent::ConnectionQualityChanged {
                             quality,
@@ -1907,8 +1917,14 @@ fn denoise_gate_loop(
 
         let gate_peak = peak_fixed(&samples);
         meter.gate_peak.fetch_max(gate_peak, Ordering::Relaxed);
+        let threshold = controls.threshold.load(Ordering::Relaxed);
         if controls.agc.load(Ordering::Relaxed) {
-            agc.process(&mut samples);
+            // Raising gain on room tone behind the gate makes the next word jump.
+            if gate_peak > threshold {
+                agc.process(&mut samples);
+            } else {
+                agc.hold(&mut samples);
+            }
         } else {
             agc.reset();
         }
@@ -1933,7 +1949,6 @@ fn denoise_gate_loop(
         meter.bump_peak(peak);
         stats.peak_after.fetch_max(peak, Ordering::Relaxed);
 
-        let threshold = controls.threshold.load(Ordering::Relaxed);
         stats.threshold.store(threshold, Ordering::Relaxed);
         let action = gate.step(gate_peak, threshold);
         meter.open.store(
@@ -3063,10 +3078,10 @@ impl PlaybackMixer {
                         &board_f32,
                         &deafened_f32,
                     );
-                    let mut pulled = 0u64;
                     let overrun_threshold = (device_rate_cb as f64 * DRIFT_OVERRUN_SECS) as usize;
                     let underrun_threshold = (device_rate_cb as f64 * DRIFT_UNDERRUN_SECS) as usize;
                     let mut counter = drift_counter_cb.load(Ordering::Relaxed);
+                    let mut pulled = 0u64;
                     for frame in data.chunks_mut(device_channels) {
                         counter = counter.wrapping_add(1);
                         let mut acc = 0.0f32;
@@ -3107,6 +3122,7 @@ impl PlaybackMixer {
                         &board_i16,
                         &deafened_i16,
                     );
+                    let mut pulled = 0u64;
                     let overrun_threshold = (device_rate_cb as f64 * DRIFT_OVERRUN_SECS) as usize;
                     let underrun_threshold = (device_rate_cb as f64 * DRIFT_UNDERRUN_SECS) as usize;
                     let mut counter = drift_counter_cb.load(Ordering::Relaxed);
@@ -3125,12 +3141,16 @@ impl PlaybackMixer {
                         }
                         let sample = mix(acc);
                         let s16 = dither_to_i16(sample, &mut dither_rng);
+                        if sample != 0.0 {
+                            pulled += 1;
+                        }
                         reference_i16.push(s16 as f32 / i16::MAX as f32);
                         for s in frame.iter_mut() {
                             *s = s16;
                         }
                     }
                     drift_counter_cb.store(counter, Ordering::Relaxed);
+                    pulled_cb.fetch_add(pulled, Ordering::Relaxed);
                 },
                 err,
                 None,
