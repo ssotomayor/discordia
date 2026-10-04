@@ -22,6 +22,7 @@ its entry count is not the client build count.
 | `--features devtools` | Dioxus hot reload and developer tools |
 | Workspace LiveKit API 0.5 | Server/coordinator token minting and SFU administration; client grant tests |
 | WebRTC build-helper pin in build dependencies | Exact SDK-compatible version without compiling the helper as a runtime library |
+| `winresource` build dependency | Embeds Windows executable identity and icon; no runtime dependency |
 
 Remaining Reqwest, Tokio-Tungstenite, Rand and Windows versions are constrained
 by upstream SDKs/frameworks or incompatible APIs. No forced version overrides.

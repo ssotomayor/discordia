@@ -137,3 +137,4 @@ uuid = { workspace = true }
 
 [build-dependencies]
 webrtc-sys-build = "=0.3.18"
+winresource = "0.1"
