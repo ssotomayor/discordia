@@ -94,7 +94,17 @@ pub fn SettingsDialog() -> Element {
     let v_for_bitrate = voice.clone();
 
     let voice_phase = state.read().voice.phase;
-    let reconnecting = matches!(voice_phase, VoicePhase::Connecting);
+    let dm_phase = state.read().dm_call.as_ref().map(|call| call.phase);
+    let reconnecting = matches!(voice_phase, VoicePhase::Connecting)
+        || matches!(
+            dm_phase,
+            Some(
+                crate::features::dm_call::Phase::Connecting
+                    | crate::features::dm_call::Phase::Reconnecting
+            )
+        );
+    let microphone_active = voice_phase == VoicePhase::Connected
+        || dm_phase == Some(crate::features::dm_call::Phase::Connected);
     let mic_level_pct = crate::features::voice::peak_to_meter_pct(mic_level);
     let mic_level_pre = state.read().mic_level_pre;
     let mic_level_pre_pct = crate::features::voice::peak_to_meter_pct(mic_level_pre);
@@ -282,13 +292,13 @@ pub fn SettingsDialog() -> Element {
                                 span { class: "text-[11px] text-[var(--text-muted)]", "Level" }
                                 if reconnecting {
                                     span { class: "text-[10px] text-[var(--text-dim)]", "reconnecting" }
-                                } else if voice_phase == VoicePhase::Connected {
+                                } else if microphone_active {
                                     span { class: "text-[10px] text-[var(--text-dim)]", "{mic_level_display}" }
                                 } else {
                                     span { class: "text-[10px] text-[var(--text-dim)]", "join voice" }
                                 }
                             }
-                            if voice_phase == VoicePhase::Connected && !reconnecting {
+                            if microphone_active && !reconnecting {
                                 div {
                                     class: "relative w-full h-2 mt-1 rounded-full overflow-hidden",
                                     style: "background: var(--bg2);",
@@ -370,7 +380,7 @@ pub fn SettingsDialog() -> Element {
                                 },
                                 onchange: persist_settings,
                             }
-                            if voice_phase == VoicePhase::Connected && !reconnecting {
+                            if microphone_active && !reconnecting {
                                 if muted {
                                     span { class: "text-[10px] text-[var(--text-dim)] mt-0.5 block", "Muted" }
                                 } else if gate_open {

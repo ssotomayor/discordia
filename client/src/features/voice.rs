@@ -3005,6 +3005,19 @@ fn pop_drift_compensated(
     }
 }
 
+fn next_playback_sample(
+    tracks: &mut MixerTracks,
+    counter: u32,
+    overrun: usize,
+    underrun: usize,
+) -> f32 {
+    let mut total = 0.0;
+    for track in tracks.buffers.values_mut() {
+        total += track.gain * pop_drift_compensated(&mut track.samples, counter, overrun, underrun);
+    }
+    mix(total)
+}
+
 struct PlaybackMixer {
     stream: cpal::Stream,
     handle: PlaybackHandle,
@@ -3086,18 +3099,12 @@ impl PlaybackMixer {
                     let mut pulled = 0u64;
                     for frame in data.chunks_mut(device_channels) {
                         counter = counter.wrapping_add(1);
-                        let mut acc = 0.0f32;
-                        for track in tracks.buffers.values_mut() {
-                            let s = track.gain
-                                * pop_drift_compensated(
-                                    &mut track.samples,
-                                    counter,
-                                    overrun_threshold,
-                                    underrun_threshold,
-                                );
-                            acc += s;
-                        }
-                        let sample = mix(acc);
+                        let sample = next_playback_sample(
+                            &mut tracks,
+                            counter,
+                            overrun_threshold,
+                            underrun_threshold,
+                        );
                         reference_f32.push(sample);
                         if sample != 0.0 {
                             pulled += 1;
@@ -3130,18 +3137,12 @@ impl PlaybackMixer {
                     let mut counter = drift_counter_cb.load(Ordering::Relaxed);
                     for frame in data.chunks_mut(device_channels) {
                         counter = counter.wrapping_add(1);
-                        let mut acc = 0.0f32;
-                        for track in tracks.buffers.values_mut() {
-                            let s = track.gain
-                                * pop_drift_compensated(
-                                    &mut track.samples,
-                                    counter,
-                                    overrun_threshold,
-                                    underrun_threshold,
-                                );
-                            acc += s;
-                        }
-                        let sample = mix(acc);
+                        let sample = next_playback_sample(
+                            &mut tracks,
+                            counter,
+                            overrun_threshold,
+                            underrun_threshold,
+                        );
                         let s16 = dither_to_i16(sample, &mut dither_rng);
                         if sample != 0.0 {
                             pulled += 1;

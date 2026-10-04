@@ -129,6 +129,7 @@ pub fn ChannelsColumn() -> Element {
 
     let snapshot = state.read();
     let dm_mode = snapshot.dm_mode;
+    let has_dm_call = snapshot.dm_call.is_some();
     let dms: Vec<DmInfo> = snapshot.dms.clone();
     // The effective state, not the channel's own flag: a guild muted as a whole
     // is silent, and a row that did not say so would be lying about what the
@@ -557,6 +558,11 @@ pub fn ChannelsColumn() -> Element {
             }
             }
 
+            if has_dm_call {
+                div { style: "flex-shrink: 0; min-height: 0; max-height: 45%; overflow-y: auto;",
+                    crate::features::dm_call::CallPanel { embedded: true }
+                }
+            }
             UserPanel { self_voice: self_voice, self_username: self_user.map(|u| u.username) }
             }
 
