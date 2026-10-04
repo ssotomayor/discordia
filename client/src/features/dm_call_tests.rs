@@ -381,6 +381,8 @@ async fn native_peer_connections_deliver_encoded_audio_without_a_voice_server() 
         let mut phase = 0f32;
         let mut audible = false;
         let mut alice_audible = false;
+        let mut decoded_levels = Vec::new();
+        let mut alice_levels = Vec::new();
         for _ in 0..300 {
             for sample in &mut samples {
                 *sample = (phase.sin() * 6_000.0) as i16;
@@ -409,14 +411,30 @@ async fn native_peer_connections_deliver_encoded_audio_without_a_voice_server() 
                 && frame.data.iter().any(|value| value.saturating_abs() > 500)
             {
                 audible = true;
+                decoded_levels.push(
+                    frame
+                        .data
+                        .iter()
+                        .map(|sample| (*sample as f64).powi(2))
+                        .sum::<f64>()
+                        / frame.data.len() as f64,
+                );
             }
             if let Ok(Some(frame)) =
                 tokio::time::timeout(Duration::from_millis(10), alice_stream.next()).await
                 && frame.data.iter().any(|value| value.saturating_abs() > 500)
             {
                 alice_audible = true;
+                alice_levels.push(
+                    frame
+                        .data
+                        .iter()
+                        .map(|sample| (*sample as f64).powi(2))
+                        .sum::<f64>()
+                        / frame.data.len() as f64,
+                );
             }
-            if audible && alice_audible {
+            if decoded_levels.len() >= 30 && alice_levels.len() >= 30 {
                 break;
             }
         }
@@ -425,6 +443,21 @@ async fn native_peer_connections_deliver_encoded_audio_without_a_voice_server() 
             "The remote peer must decode actual audible Opus frames"
         );
         assert!(alice_audible, "The caller must also decode audible frames");
+        for levels in [decoded_levels, alice_levels] {
+            assert!(
+                levels.len() >= 30,
+                "Not enough decoded frames to measure settled volume"
+            );
+            let settled = &levels[levels.len() - 20..];
+            let decoded_rms = (settled.iter().sum::<f64>() / settled.len() as f64).sqrt();
+            let expected_rms = 6000.0 / 2.0_f64.sqrt();
+            let difference_db = 20.0 * (decoded_rms / expected_rms).log10();
+            eprintln!("DM decoded microphone level: {difference_db:.2} dB relative to input");
+            assert!(
+                difference_db.abs() < 2.0,
+                "DM transport changed microphone volume by {difference_db:.2} dB"
+            );
+        }
         assert_eq!(alice.0.connection_state(), PeerConnectionState::Connected);
         assert_eq!(bob.0.connection_state(), PeerConnectionState::Connected);
         bob.0.on_track(None);

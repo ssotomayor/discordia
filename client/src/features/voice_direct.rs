@@ -9,6 +9,7 @@ pub struct Audio {
     pub track: RtcAudioTrack,
     publisher: tokio::task::JoinHandle<()>,
     meter: Task,
+    diagnostics: Task,
     receivers: Vec<tokio::task::JoinHandle<()>>,
 }
 
@@ -51,6 +52,26 @@ impl Audio {
             track,
             publisher: tokio::spawn(publish_loop(gated_rx, source)),
             meter: spawn_meter_task(state, meter),
+            diagnostics: spawn(async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    let s = state.peek();
+                    eprintln!(
+                        "[dm-call] mic pre={} processed={} gain={}% agc={} noise_suppression={} threshold={} muted={} deafened={} playback_gain={:.2}",
+                        peak_to_db_label(s.mic_level_pre),
+                        peak_to_db_label(s.mic_level),
+                        s.mic_volume,
+                        s.auto_gain_control,
+                        s.noise_cancellation,
+                        peak_to_db_label(s.mic_sensitivity),
+                        s.voice.muted,
+                        s.voice.deafened,
+                        s.dm_call
+                            .as_ref()
+                            .map_or(1.0, |call| s.voice_gain_of(&call.peer)),
+                    );
+                }
+            }),
             receivers: Vec::new(),
         })
     }
@@ -103,6 +124,7 @@ impl Drop for Audio {
         self.track.set_enabled(false);
         self.publisher.abort();
         self.meter.cancel();
+        self.diagnostics.cancel();
         for receiver in self.receivers.drain(..) {
             receiver.abort();
         }
