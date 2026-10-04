@@ -110,14 +110,16 @@ rendezvous entry. The plaintext gateway binds loopback only.
 
 | Setup | You | LAN friend | Friend over the internet |
 |---|---|---|---|
-| Self-host, nothing else | loopback | share string with the LAN address (needs "accept direct connections") | **unreachable** |
+| Self-host, nothing else | loopback | share string with the LAN address ("Accept direct connections" starts enabled for new hosts) | **unreachable** |
 | + rendezvous | loopback | punched, or carried by the relay | punched by the relay, or carried by it. Calls on the rendezvous's SFU, since nobody outside reaches this machine's |
 | + port mapping (UPnP/NAT-PMP) | loopback | direct | **direct** on the forwarded UDP port. Calls on this machine's SFU, whatever the rendezvous offers |
 | Community server | loopback or `wss://` proxy | QUIC by share string | QUIC by share string, or `wss://` through a TLS proxy (`DIOXUSFUN_PUBLIC_HOSTS`) |
 
 Port mapping failure is the normal case and never stops hosting. It also
 measures hairpin NAT, because LiveKit *replaces* its LAN candidate with the
-advertised address rather than adding to it.
+advertised address rather than adding to it. The hairpin check uses a temporary
+challenge responder on the mapped media TCP port before LiveKit starts; a
+successful probe releases that port before starting the bundled SFU.
 
 ## Deploying a box
 
