@@ -686,6 +686,114 @@ fn share_states(frames: &[ServerMessage], pubkey: &str) -> Vec<bool> {
         .collect()
 }
 
+#[tokio::test]
+async fn screen_watchers_are_explicit_deduplicated_and_cleared_on_stop_or_leave() {
+    let (url, _handle) = spawn_gateway(local_signing()).await;
+    let owner_id = BotIdentity::generate();
+    let sharer_id = BotIdentity::generate();
+    let mut owner = connect_user(&url, &owner_id, "viewer").await;
+    let (guild_id, channel_id) = voice_channel(&mut owner).await;
+    let _ = join_voice(&mut owner, channel_id).await;
+    let mut sharer = connect_user(&url, &sharer_id, "sharer").await;
+    join_guild(&mut sharer, guild_id).await;
+    let _ = join_voice(&mut sharer, channel_id).await;
+    let _ = drain_quiet(&mut owner).await;
+    sharer
+        .send(&ClientMessage::SetScreenShare {
+            channel_id,
+            sharing: true,
+        })
+        .await
+        .unwrap();
+    let _ = next_voice_state(&mut owner, sharer_id.pubkey()).await;
+    assert!(
+        drain_quiet(&mut sharer)
+            .await
+            .iter()
+            .all(|frame| !matches!(frame,
+        ServerMessage::VoiceStateUpdate(vs) if !vs.screen_watching.is_empty()))
+    );
+
+    owner
+        .send(&ClientMessage::SetScreenWatching {
+            sharers: vec![
+                sharer_id.pubkey().into(),
+                sharer_id.pubkey().into(),
+                owner_id.pubkey().into(),
+                "unknown".into(),
+            ],
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        next_voice_state(&mut sharer, owner_id.pubkey())
+            .await
+            .screen_watching,
+        vec![sharer_id.pubkey().to_string()]
+    );
+    let _ = drain_quiet(&mut owner).await;
+    owner
+        .send(&ClientMessage::SetScreenWatching {
+            sharers: Vec::new(),
+        })
+        .await
+        .unwrap();
+    assert!(
+        next_voice_state(&mut sharer, owner_id.pubkey())
+            .await
+            .screen_watching
+            .is_empty()
+    );
+    owner
+        .send(&ClientMessage::SetScreenWatching {
+            sharers: vec![sharer_id.pubkey().into()],
+        })
+        .await
+        .unwrap();
+    let _ = next_voice_state(&mut sharer, owner_id.pubkey()).await;
+    let _ = drain_quiet(&mut owner).await;
+    sharer
+        .send(&ClientMessage::SetScreenShare {
+            channel_id,
+            sharing: false,
+        })
+        .await
+        .unwrap();
+    assert!(
+        next_voice_state(&mut owner, owner_id.pubkey())
+            .await
+            .screen_watching
+            .is_empty()
+    );
+
+    sharer
+        .send(&ClientMessage::SetScreenShare {
+            channel_id,
+            sharing: true,
+        })
+        .await
+        .unwrap();
+    let _ = next_voice_state(&mut owner, sharer_id.pubkey()).await;
+    let _ = drain_quiet(&mut sharer).await;
+    owner
+        .send(&ClientMessage::SetScreenWatching {
+            sharers: vec![sharer_id.pubkey().into()],
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        next_voice_state(&mut sharer, owner_id.pubkey())
+            .await
+            .screen_watching
+            .len(),
+        1
+    );
+    owner.send(&ClientMessage::LeaveVoice).await.unwrap();
+    let left = next_voice_state(&mut sharer, owner_id.pubkey()).await;
+    assert!(left.channel_id.is_none());
+    assert!(left.screen_watching.is_empty());
+}
+
 fn legacy_sharers(frames: &[ServerMessage]) -> Vec<Vec<String>> {
     frames
         .iter()

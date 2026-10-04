@@ -707,6 +707,35 @@ impl AppState {
             .unwrap_or(&[])
     }
 
+    pub fn screen_viewer_names(&self, sharer: &str) -> Vec<String> {
+        let Some(channel) = self
+            .voice_states
+            .iter()
+            .find(|vs| vs.user_pubkey == sharer && vs.screen_sharing)
+            .and_then(|vs| vs.channel_id)
+        else {
+            return Vec::new();
+        };
+        let mut viewers: Vec<_> = self
+            .voice_states
+            .iter()
+            .filter(|vs| {
+                vs.channel_id == Some(channel)
+                    && vs.user_pubkey != sharer
+                    && vs.screen_watching.iter().any(|pk| pk == sharer)
+            })
+            .map(|vs| vs.user_pubkey.as_str())
+            .collect();
+        viewers.sort_unstable();
+        viewers.dedup();
+        let mut names: Vec<_> = viewers
+            .into_iter()
+            .map(|pk| self.display_name(pk))
+            .collect();
+        names.sort();
+        names
+    }
+
     pub fn screen_sharers_in(&self, channel_id: Id) -> Vec<String> {
         let mut out: Vec<String> = self
             .voice_states
@@ -1340,6 +1369,40 @@ mod tests {
     use super::*;
     use crate::protocol::{Member, Profile, User};
 
+    #[test]
+    fn stream_viewers_exclude_other_channels_self_and_duplicate_identities() {
+        let mut state = AppState::empty();
+        let channel = Id::new_v4();
+        let guild = Id::new_v4();
+        let sharer = VoiceState {
+            user_pubkey: "sharer".into(),
+            guild_id: guild,
+            channel_id: Some(channel),
+            muted: false,
+            deafened: false,
+            speaking: false,
+            camera_on: false,
+            screen_sharing: true,
+            screen_watching: vec!["sharer".into()],
+        };
+        let viewer = VoiceState {
+            user_pubkey: "viewer".into(),
+            screen_sharing: false,
+            ..sharer.clone()
+        };
+        let other = VoiceState {
+            user_pubkey: "other".into(),
+            channel_id: Some(Id::new_v4()),
+            ..viewer.clone()
+        };
+        state.voice_states = vec![sharer, viewer.clone(), viewer, other];
+        assert_eq!(
+            state.screen_viewer_names("sharer"),
+            vec![state.display_name("viewer")]
+        );
+        state.voice_states[0].screen_sharing = false;
+        assert!(state.screen_viewer_names("sharer").is_empty());
+    }
     fn prompt(invite_code: Option<&str>) -> RulesPrompt {
         RulesPrompt {
             guild_id: Id::new_v4(),

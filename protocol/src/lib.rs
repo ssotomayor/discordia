@@ -951,6 +951,8 @@ pub struct VoiceState {
     pub camera_on: bool,
     #[serde(default)]
     pub screen_sharing: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub screen_watching: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -1811,6 +1813,9 @@ pub enum ClientMessage {
         channel_id: Id,
         sharing: bool,
     },
+    SetScreenWatching {
+        sharers: Vec<String>,
+    },
     JoinVoice {
         channel_id: Id,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2024,6 +2029,16 @@ pub enum ServerMessage {
 #[cfg(test)]
 mod identify_wire_tests {
     use super::ClientMessage;
+
+    #[test]
+    fn legacy_voice_states_have_no_reported_screen_viewers() {
+        let old = serde_json::json!({
+            "user_pubkey": "alice", "guild_id": "00000000-0000-0000-0000-000000000001",
+            "channel_id": null, "muted": false, "deafened": false, "speaking": false
+        });
+        let state: super::VoiceState = serde_json::from_value(old).unwrap();
+        assert!(state.screen_watching.is_empty());
+    }
 
     #[test]
     fn older_screen_grants_without_an_external_viewer_still_parse() {

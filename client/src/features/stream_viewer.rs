@@ -12,6 +12,7 @@ struct Stream {
     volume: u32,
     muted: bool,
     has_audio: bool,
+    viewers: Vec<String>,
 }
 
 #[derive(Clone, PartialEq)]
@@ -39,6 +40,22 @@ pub(super) struct Popouts {
 }
 
 pub(super) fn use_popouts(mut state: Signal<AppState>) -> Popouts {
+    let gateway = crate::state::use_gateway();
+    let mut reported = use_signal(|| None);
+    use_effect(move || {
+        let s = state.read();
+        let mut sharers: Vec<_> = s.screen_viewing.iter().cloned().collect();
+        sharers.sort();
+        let next = (s.voice_session_epoch, s.voice.channel_id, sharers);
+        if reported.peek().as_ref() != Some(&next) {
+            if next.1.is_some() {
+                gateway.send(crate::protocol::ClientMessage::SetScreenWatching {
+                    sharers: next.2.clone(),
+                });
+            }
+            reported.set(Some(next));
+        }
+    });
     let mut detached = use_signal(HashSet::<String>::new);
     let mut detached_epoch = use_signal(move || state.peek().voice_session_epoch);
     use_effect(move || {
@@ -81,6 +98,7 @@ pub(super) fn use_popouts(mut state: Signal<AppState>) -> Popouts {
                 volume: s.stream_volumes.get(pk).copied().unwrap_or(100),
                 muted: s.stream_muted.contains(pk),
                 has_audio: s.stream_has_audio.contains(pk),
+                viewers: s.screen_viewer_names(pk),
             })
             .collect();
         streams.sort_by(|a, b| a.pubkey.cmp(&b.pubkey));
@@ -278,7 +296,7 @@ impl PartialEq for PopoutWindowProps {
 fn PopoutWindow(props: PopoutWindowProps) -> Element {
     let mut model = use_signal(|| props.receiver.borrow().clone());
     let mut focused = use_signal::<Option<String>>(|| None);
-    let mut pinned = use_signal(|| false);
+    let pinned = use_signal(|| false);
     let mut status = use_signal(|| "Connecting…".to_owned());
     let mut active_generation = use_signal(|| 0_u64);
     let window = dioxus::desktop::use_window();
@@ -443,31 +461,59 @@ fn PopoutWindow(props: PopoutWindowProps) -> Element {
     let (width, height) = size();
     let scale = window.window.scale_factor();
     let grid = grid_style(visible_count, width / scale - 16.0, height / scale - 60.0);
-    let commands_for_dock = props.commands.clone();
-    let fullscreen_window = window.clone();
-    let pin_window = window.clone();
     let multiple_streams = snapshot.streams.len() > 1;
     rsx! {
         crate::app::AppHead {}
         style { "{size_css}" }
         div { class: "dxf-ui h-full flex flex-col bg-[var(--bg)] text-[var(--text)]", style: "{theme}",
-            div { class: "flex items-center flex-wrap gap-2 px-3 py-2 border-b border-[var(--border)] shrink-0",
-                span { class: "flex-1 text-xs text-[var(--text-muted)]", "{status}" }
-                button { class: "px-2 py-1 rounded border border-[var(--border)] text-xs", title: "Keep window on top", aria_pressed: "{pinned}",
-                    onclick: move |_| { pinned.toggle(); pin_window.window.set_always_on_top(pinned()); },
-                    if pinned() { "Unpin" } else { "Pin" }
+            if multiple_streams || !status().is_empty() {
+                div { class: "flex items-center flex-wrap gap-2 px-3 py-2 border-b border-[var(--border)] shrink-0",
+                    span { class: "flex-1 text-xs text-[var(--text-muted)]", "{status}" }
+                    if multiple_streams {
+                        WindowControls { pinned, commands: props.commands.clone(), generation }
+                    }
                 }
-                button { class: "px-2 py-1 rounded border border-[var(--border)] text-xs", onclick: move |_| {
-                    let active = fullscreen_window.window.fullscreen().is_some();
-                    fullscreen_window.window.set_fullscreen(if active { None } else { Some(dioxus::desktop::tao::window::Fullscreen::Borderless(None)) });
-                }, "Full screen" }
-                button { class: "px-2 py-1 rounded border border-[var(--border)] text-xs", onclick: move |_| send(&commands_for_dock, generation, Command::DockAll), "Return to app" }
             }
             div { class: "flex-1 min-h-0 grid gap-2 p-2", style: "{grid}",
                 for stream in snapshot.streams {
-                    PopoutTile { key: "{stream.pubkey}", stream, focused, commands: props.commands.clone(), generation, multiple_streams }
+                    PopoutTile { key: "{stream.pubkey}", stream, focused, pinned, commands: props.commands.clone(), generation, multiple_streams }
                 }
             }
+        }
+    }
+}
+
+#[derive(Clone, Props)]
+struct WindowControlsProps {
+    pinned: Signal<bool>,
+    commands: mpsc::UnboundedSender<(u64, Command)>,
+    generation: u64,
+}
+
+impl PartialEq for WindowControlsProps {
+    fn eq(&self, other: &Self) -> bool {
+        self.pinned == other.pinned && self.generation == other.generation
+    }
+}
+
+#[allow(non_snake_case)]
+fn WindowControls(props: WindowControlsProps) -> Element {
+    let mut pinned = props.pinned;
+    let commands = props.commands;
+    let generation = props.generation;
+    let pin_window = dioxus::desktop::use_window();
+    let fullscreen_window = pin_window.clone();
+    rsx! {
+        div { class: "flex flex-wrap items-center justify-end gap-2",
+            button { class: "px-2 py-1 rounded border border-[var(--border)] text-xs", title: "Keep window on top", aria_pressed: "{pinned}",
+                onclick: move |_| { pinned.toggle(); pin_window.window.set_always_on_top(pinned()); },
+                if pinned() { "Unpin" } else { "Pin" }
+            }
+            button { class: "px-2 py-1 rounded border border-[var(--border)] text-xs", onclick: move |_| {
+                let active = fullscreen_window.window.fullscreen().is_some();
+                fullscreen_window.window.set_fullscreen(if active { None } else { Some(dioxus::desktop::tao::window::Fullscreen::Borderless(None)) });
+            }, "Full screen" }
+            button { class: "px-2 py-1 rounded border border-[var(--border)] text-xs", onclick: move |_| send(&commands, generation, Command::DockAll), "Return to app" }
         }
     }
 }
@@ -507,6 +553,7 @@ fn send(commands: &mpsc::UnboundedSender<(u64, Command)>, generation: u64, comma
 struct PopoutTileProps {
     stream: Stream,
     focused: Signal<Option<String>>,
+    pinned: Signal<bool>,
     commands: mpsc::UnboundedSender<(u64, Command)>,
     generation: u64,
     multiple_streams: bool,
@@ -516,6 +563,7 @@ impl PartialEq for PopoutTileProps {
     fn eq(&self, other: &Self) -> bool {
         self.stream == other.stream
             && self.focused == other.focused
+            && self.pinned == other.pinned
             && self.generation == other.generation
             && self.multiple_streams == other.multiple_streams
     }
@@ -588,6 +636,7 @@ fn PopoutTile(props: PopoutTileProps) -> Element {
         div { class: "min-w-0 min-h-0 flex flex-col border border-[var(--border)] rounded-lg overflow-hidden bg-[var(--panel-solid)]", style: if hidden { "display:none;" } else { "display:flex;" },
             div { class: "flex flex-wrap items-center gap-2 px-3 py-2 shrink-0",
                 span { class: "flex-1 min-w-0 truncate text-sm font-medium", "{stream.name}" }
+                super::screenshare::StreamViewers { names: stream.viewers.clone() }
                 if props.multiple_streams {
                     button { class: "text-xs px-2 py-1 rounded hover:bg-[var(--panel2)]", onclick: move |_| send(&dock, generation, Command::Dock(pk_dock.clone())), "Return" }
                 }
@@ -615,13 +664,20 @@ fn PopoutTile(props: PopoutTileProps) -> Element {
                 },
                 "Connecting to stream…"
             }
-            div { class: "flex flex-wrap items-center gap-2 px-3 py-2 shrink-0",
-                span { class: "flex-1 text-xs text-[var(--text-muted)]", "{received}" }
+            div { class: "grid items-center gap-2 px-3 py-2 shrink-0", style: "grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);",
+                span { class: "min-w-0 text-xs text-[var(--text-muted)]", "{received}" }
+                div { class: "flex items-center gap-2",
                 button { class: "text-xs px-2 py-1 rounded border border-[var(--border)]", disabled: !stream.has_audio, aria_pressed: "{stream.muted}", onclick: move |_| send(&mute, generation, Command::Mute(pk_mute.clone(), !stream.muted)), if stream.muted { "Unmute" } else { "Mute" } }
                 input { r#type: "range", min: "0", max: "100", value: "{stream.volume}", class: "w-24 accent-[var(--accent)]", aria_label: "Stream volume", disabled: !stream.has_audio || stream.muted,
                     oninput: move |event| if let Ok(value) = event.value().parse::<u32>() { send(&volume, generation, Command::Volume(pk_volume.clone(), value.min(100))); }
                 }
                 span { class: "text-xs text-[var(--text-muted)]", "{stream.volume}%" }
+                }
+                div { class: "min-w-0 justify-self-end",
+                    if !props.multiple_streams {
+                        WindowControls { pinned: props.pinned, commands: props.commands.clone(), generation }
+                    }
+                }
             }
         }
     }
