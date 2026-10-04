@@ -1585,6 +1585,7 @@ mod tests {
                         speaking: false,
                         camera_on: false,
                         screen_sharing: false,
+                        screen_watching: Vec::new(),
                     };
                     apply(
                         &mut state,

@@ -1961,6 +1961,7 @@ pub fn ScreenSelfPreview() -> Element {
                 },
                 span { class: "w-2 h-2 rounded-full shrink-0", style: "background: var(--danger);" }
                 span { class: "text-[11px] text-[var(--text)] truncate flex-1", "{requested_label}" }
+                StreamViewers { names: state.read().self_user.as_ref().map(|user| state.read().screen_viewer_names(&user.pubkey)).unwrap_or_default() }
                 button {
                     class: "text-[9px] uppercase tracking-wider text-[var(--danger)] hover:text-[var(--accent-strong)] font-semibold",
                     onmousedown: move |e| {
@@ -2328,6 +2329,24 @@ pub fn ScreenWatchWindow() -> Element {
 }
 
 #[component]
+pub(super) fn StreamViewers(names: Vec<String>) -> Element {
+    let count = names.len();
+    let tooltip = if names.is_empty() {
+        "No viewers yet".to_owned()
+    } else {
+        format!("Watching ({count}):\n{}", names.join("\n"))
+    };
+    rsx! {
+        span { class: "flex items-center gap-1 text-xs text-[var(--text-muted)] shrink-0",
+            title: "{tooltip}", aria_label: "{tooltip}", tabindex: "0",
+            onmousedown: move |e| e.stop_propagation(),
+            span { dangerous_inner_html: crate::features::icons::EYE }
+            "{count}"
+        }
+    }
+}
+
+#[component]
 fn ScreenWatchTile(
     pubkey: String,
     mut focused: Signal<Option<String>>,
@@ -2411,6 +2430,7 @@ fn ScreenWatchTile(
                 class: "min-h-9 px-3 flex flex-wrap items-center gap-2 border-b border-[var(--border)] shrink-0 select-none",
                 span { class: "w-2.5 h-2.5 rounded-full shrink-0", style: "background: var(--danger);" }
                 span { class: "min-w-0 flex-1 text-sm text-[var(--text)] font-medium truncate", "{name}'s screen" }
+                StreamViewers { names: state.read().screen_viewer_names(&pk) }
                 span { class: "text-[10px] uppercase tracking-wider text-[var(--danger)] font-semibold", "Live" }
                 button {
                     r#type: "button",

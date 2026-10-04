@@ -1080,6 +1080,16 @@ pub async fn handle_connection(
                             }
                         }
                     }
+                    ClientMessage::SetScreenWatching { sharers } => {
+                        let Some(u) = user.as_ref() else { continue };
+                        if !signals.allow() || sharers.len() > 64 {
+                            continue;
+                        }
+                        if let Some(vs) = ctx.state.update_screen_watching(&u.pubkey, sharers) {
+                            let targets = ctx.state.guild_member_pubkeys(vs.guild_id);
+                            send_voice_state(&ctx.state, targets, vs);
+                        }
+                    }
                     ClientMessage::SetScreenShare { channel_id: _, sharing } => {
                         let Some(u) = user.as_ref() else { continue };
                         if !signals.allow() {
@@ -1089,16 +1099,11 @@ pub async fn handle_connection(
                             continue;
                         };
                         let targets = ctx.state.guild_member_pubkeys(vs.guild_id);
+                        let guild_id = vs.guild_id;
                         let channel = vs.channel_id;
-                        send_voice_state(&ctx.state, targets.clone(), vs);
+                        send_voice_state(&ctx.state, targets, vs);
                         if let Some(cid) = channel {
-                            ctx.state.deliver(
-                                targets,
-                                ServerMessage::ScreenShareState {
-                                    channel_id: cid,
-                                    sharers: ctx.state.screen_sharers_in(cid),
-                                },
-                            );
+                            broadcast_screen_state(&ctx.state, guild_id, cid);
                         }
                     }
                     ClientMessage::JoinVoice { channel_id, preferences } => {
@@ -1152,6 +1157,7 @@ pub async fn handle_connection(
                                 speaking: false,
                                 camera_on: false,
                                 screen_sharing: false,
+                                screen_watching: Vec::new(),
                             };
                             let targets = ctx.state.guild_member_pubkeys(old_guild);
                             send_voice_state(&ctx.state, targets, left);
@@ -2432,6 +2438,26 @@ fn sharing_in(state: &crate::state::AppState, pubkey: &str) -> Option<(Id, Id)> 
 }
 
 fn broadcast_screen_state(state: &crate::state::AppState, guild_id: Id, channel_id: Id) {
+    let watching: Vec<_> = state
+        .voice_states
+        .iter()
+        .filter(|vs| vs.channel_id == Some(channel_id))
+        .flat_map(|vs| vs.screen_watching.clone())
+        .collect();
+    let stopped: Vec<_> = watching
+        .into_iter()
+        .filter(|pk| {
+            !state
+                .voice_states
+                .get(pk)
+                .is_some_and(|vs| vs.screen_sharing && vs.channel_id == Some(channel_id))
+        })
+        .collect();
+    for pk in stopped {
+        for vs in state.clear_screen_watchers(&pk) {
+            send_voice_state(state, state.guild_member_pubkeys(vs.guild_id), vs);
+        }
+    }
     let targets = match state.channel(channel_id) {
         Some(c) => viewers_of(state, &c),
         None => state.guild_member_pubkeys(guild_id),

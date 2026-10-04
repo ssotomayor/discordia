@@ -697,6 +697,35 @@ impl AppState {
         list
     }
 
+    pub fn update_screen_watching(&self, pubkey: &str, sharers: Vec<String>) -> Option<VoiceState> {
+        let channel = self.voice_states.get(pubkey)?.channel_id?;
+        let active = self.screen_sharers_in(channel);
+        let mut sharers: Vec<_> = sharers
+            .into_iter()
+            .filter(|key| key != pubkey && active.contains(key))
+            .collect();
+        sharers.sort();
+        sharers.dedup();
+        let mut entry = self.voice_states.get_mut(pubkey)?;
+        if entry.channel_id != Some(channel) || entry.screen_watching == sharers {
+            return None;
+        }
+        entry.screen_watching = sharers;
+        Some(entry.clone())
+    }
+
+    pub fn clear_screen_watchers(&self, sharer: &str) -> Vec<VoiceState> {
+        let mut changed = Vec::new();
+        for mut entry in self.voice_states.iter_mut() {
+            let previous = entry.screen_watching.len();
+            entry.screen_watching.retain(|key| key != sharer);
+            if entry.screen_watching.len() != previous {
+                changed.push(entry.clone());
+            }
+        }
+        changed
+    }
+
     pub fn voice_states_in(&self, guild_id: Id) -> Vec<VoiceState> {
         self.voice_states
             .iter()
@@ -2640,6 +2669,7 @@ impl AppState {
             deafened,
             speaking: false,
             screen_sharing: false,
+            screen_watching: Vec::new(),
             camera_on: false,
         };
         if channel_id.is_some() {
@@ -2774,6 +2804,7 @@ impl AppState {
             speaking: false,
             camera_on: false,
             screen_sharing: false,
+            screen_watching: Vec::new(),
             ..prev
         })
     }
@@ -2959,6 +2990,7 @@ pub fn masked_voice_state(vs: VoiceState) -> VoiceState {
         speaking: false,
         camera_on: false,
         screen_sharing: false,
+        screen_watching: Vec::new(),
         ..vs
     }
 }
@@ -3106,6 +3138,24 @@ fn guild_initials(name: &str) -> String {
 mod cooldown_tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn hidden_voice_state_does_not_leak_watched_streams() {
+        let state = VoiceState {
+            user_pubkey: "viewer".into(),
+            guild_id: Id::new_v4(),
+            channel_id: Some(Id::new_v4()),
+            muted: false,
+            deafened: false,
+            speaking: true,
+            camera_on: false,
+            screen_sharing: false,
+            screen_watching: vec!["private-sharer".into()],
+        };
+        let masked = masked_voice_state(state);
+        assert!(masked.channel_id.is_none());
+        assert!(masked.screen_watching.is_empty());
+    }
 
     /// In a thread with a deadline: the regression this guards against is a
     /// hang, and a hung test is a red build with no name on it.
