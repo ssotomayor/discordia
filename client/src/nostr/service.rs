@@ -166,6 +166,7 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
 
         let mut xp_publisher = xp::Publisher::default();
         let mut routes = super::delivery::Routes::default();
+        let mut senders = super::delivery::Senders::new();
         let mut outbox = super::delivery::Outbox::new();
         for (peer, theirs, ours) in super::delivery::load(&our_pubkey).await {
             if let Ok(msg) = nip17::open_chat(&secret, &our_pubkey, &ours)
@@ -217,7 +218,7 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
                             state.write().error_toast = Some("Too many messages await delivery. Retry a failed message first.".into());
                             continue;
                         }
-                        if let Some((id, pending)) = send_message(&pool, &secret, &our_pubkey, &peer, &text, reply_to, &mut state) {
+                        if let Some((id, pending)) = send_message(&secret, &our_pubkey, &peer, &text, reply_to, &mut state) {
                             outbox.insert(id, pending);
                             if let Err(error) = super::delivery::persist(&our_pubkey, &outbox).await {
                                 state.write().error_toast = Some(format!("Could not save pending messages: {error}"));
@@ -276,10 +277,10 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
                             .and_then(|rumor| nip59::wrap_with_expiration(&secret, &peer, &rumor, now(), Some(signal.sent_at + super::calls::TTL)));
                         match wrap {
                             Ok(wrap) => {
-                                let targets = routes.targets(&peer, &relays);
+                                let published = senders.publish_call(wrap, routes.targets(&peer, &relays), signal.sent_at + super::calls::TTL);
                                 let calls = calls.clone();
                                 spawn(async move {
-                                    let accepted = super::delivery::publish_call(wrap, targets, signal.sent_at + super::calls::TTL).await == super::delivery::Delivery::Accepted;
+                                    let accepted = published.await == super::delivery::Delivery::Accepted;
                                     if !accepted {
                                         tracing::warn!(call_id = %signal.call_id, "DM call signal was not accepted by any recipient relay");
                                     }
@@ -305,14 +306,12 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
                         if pending.started || pending.due > std::time::Instant::now() { continue; }
                         pending.started = true;
                         slots -= 1;
-                        let targets = routes.targets(&pending.peer, &relays);
-                        let event = pending.theirs.clone();
+                        let delivery = senders.publish(pending.theirs.clone(), routes.targets(&pending.peer, &relays));
                         let id = *id;
                         let result_tx = delivery_tx.clone();
                         pool.publish(pending.ours.clone());
                         spawn(async move {
-                            let status = super::delivery::publish(event, targets).await;
-                            let _ = result_tx.send((id, status));
+                            let _ = result_tx.send((id, delivery.await));
                         });
                     }
                 }
@@ -515,9 +514,7 @@ fn open_conversation(peer: &str, state: &mut Signal<AppState>) {
     s.mark_dm_read(cid);
 }
 
-#[allow(clippy::too_many_arguments)]
 fn send_message(
-    pool: &RelayPool,
     secret: &secp256k1::SecretKey,
     our_pubkey: &str,
     peer: &str,
@@ -529,7 +526,6 @@ fn send_message(
     let rumor = nip17::chat_rumor(our_pubkey, peer, text, reply_to.as_deref(), ts);
     match nip17::wrap_both(secret, peer, &rumor, ts) {
         Ok((theirs, ours)) => {
-            pool.publish(ours.clone());
             let msg = nip17::ChatMessage {
                 id: rumor.id.clone(),
                 author: our_pubkey.to_string(),

@@ -108,16 +108,69 @@ mod tests {
     use super::*;
     type ExportedState = Rc<RefCell<Option<Signal<AppState>>>>;
 
+    /// Counts the signal-hoisting lint, which `tracing::warn!`s from its own
+    /// module, while `f` runs.
+    fn hoist_warnings(f: impl FnOnce()) -> usize {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tracing_subscriber::layer::SubscriberExt;
+
+        struct Count(Arc<AtomicUsize>);
+        impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Count {
+            fn on_event(
+                &self,
+                event: &tracing::Event<'_>,
+                _: tracing_subscriber::layer::Context<'_, S>,
+            ) {
+                if event
+                    .metadata()
+                    .target()
+                    .starts_with("dioxus_signals::warnings")
+                {
+                    self.0.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        }
+        let count = Arc::new(AtomicUsize::new(0));
+        let subscriber = tracing_subscriber::registry().with(Count(count.clone()));
+        tracing::subscriber::with_default(subscriber, f);
+        count.load(Ordering::Relaxed)
+    }
+
+    /// Where the shared signal is made. As `WorkspaceView` does: owned by
+    /// ROOT, so the popup's scopes descend from the owner in their own tree.
+    #[component]
+    fn Holder(capture: ExportedState, observed: Rc<Cell<bool>>) -> Element {
+        let state = use_hook(|| Signal::new_in_scope(AppState::empty(), ScopeId::ROOT));
+        *capture.borrow_mut() = Some(state);
+        observed.set(state.read().voice.muted);
+        rsx! {}
+    }
+
+    #[component]
+    fn Spacer() -> Element {
+        rsx! {}
+    }
+
+    #[component]
+    fn Reader(observed: Rc<Cell<bool>>) -> Element {
+        let state = crate::state::use_app_state();
+        observed.set(state.read().voice.muted);
+        rsx! { div { "{state.read().voice.muted}" } }
+    }
+
     #[tokio::test]
     async fn separate_windows_share_state_and_repaint_each_other() {
         let exported = Rc::new(RefCell::new(None::<Signal<AppState>>));
         let owner_muted = Rc::new(Cell::new(false));
+        // Two children so the holder's scope id differs from the reader's:
+        // equal ids would pass as "the owning scope" by coincidence.
         let mut owner = VirtualDom::new_with_props(
             |(capture, observed): (ExportedState, Rc<Cell<bool>>)| {
-                let state = use_signal(AppState::empty);
-                *capture.borrow_mut() = Some(state);
-                observed.set(state.read().voice.muted);
-                rsx! {}
+                rsx! {
+                    Spacer {}
+                    Holder { capture, observed }
+                }
             },
             (exported.clone(), owner_muted.clone()),
         );
@@ -125,26 +178,28 @@ mod tests {
         let mut state = exported.borrow().unwrap();
         let popup_muted = Rc::new(Cell::new(false));
         let mut popup = VirtualDom::new_with_props(
-            |observed: Rc<Cell<bool>>| {
-                let state = crate::state::use_app_state();
-                observed.set(state.read().voice.muted);
-                rsx! {}
-            },
+            |observed: Rc<Cell<bool>>| rsx! { Reader { observed } },
             popup_muted.clone(),
         )
         .with_root_context(state);
-        popup.rebuild_in_place();
+        assert_eq!(hoist_warnings(|| popup.rebuild_in_place()), 0);
         state.write().voice.muted = true;
         tokio::time::timeout(std::time::Duration::from_secs(1), popup.wait_for_work())
             .await
             .unwrap();
-        popup.render_immediate_to_vec();
+        assert_eq!(
+            hoist_warnings(|| {
+                popup.render_immediate_to_vec();
+            }),
+            0
+        );
         owner.render_immediate_to_vec();
         assert!(popup_muted.get() && owner_muted.get());
         drop(popup);
         state.write().voice.muted = false;
         owner.render_immediate_to_vec();
         assert!(!owner_muted.get());
+        state.manually_drop();
     }
 }
 

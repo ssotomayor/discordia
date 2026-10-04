@@ -555,6 +555,29 @@ fn MessageRow(message: Message, grouped: bool) -> Element {
                 .unwrap_or(false)
     };
 
+    let delivery_mark = delivery.map(|delivery| {
+        use crate::nostr::delivery::Delivery;
+        let icon = "inline-block w-3 h-3 align-[-1px] text-[var(--text-dim)]";
+        match delivery {
+            Delivery::Pending => rsx! {
+                span { class: icon, title: "Sending…", dangerous_inner_html: crate::features::icons::CLOCK }
+            },
+            Delivery::Accepted => rsx! {
+                span {
+                    class: icon,
+                    title: "Accepted by relay. Not a delivery or read receipt.",
+                    dangerous_inner_html: crate::features::icons::CHECK,
+                }
+            },
+            Delivery::Failed => rsx! {
+                span { class: "text-[10px] text-[var(--danger)]",
+                    "Not accepted · "
+                    button { class: "underline", onclick: move |_| nostr.send(crate::nostr::service::NostrCmd::Retry { message_id }), "Retry" }
+                }
+            },
+        }
+    });
+
     let menu_open = show_react() || confirm_delete();
     let bar_visibility = if menu_open {
         "opacity-100"
@@ -596,18 +619,6 @@ fn MessageRow(message: Message, grouped: bool) -> Element {
             }
 
             div { class: "flex-1 min-w-0",
-                if let Some(delivery) = delivery {
-                    div { class: "text-[10px] text-[var(--text-dim)]",
-                        match delivery {
-                            crate::nostr::delivery::Delivery::Pending => rsx! { "Sending…" },
-                            crate::nostr::delivery::Delivery::Accepted => rsx! { span { title: "A relay accepted this encrypted message; this is not a delivery or read receipt", "Accepted by relay" } },
-                            crate::nostr::delivery::Delivery::Failed => rsx! {
-                                span { "Not accepted · " }
-                                button { class: "underline", onclick: move |_| nostr.send(crate::nostr::service::NostrCmd::Retry { message_id }), "Retry" }
-                            },
-                        }
-                    }
-                }
                 if !grouped {
                     div { class: "flex items-baseline gap-2",
                         span {
@@ -626,7 +637,12 @@ fn MessageRow(message: Message, grouped: bool) -> Element {
                 if has_text {
                     div { class: "text-sm text-[var(--text)] break-words whitespace-pre-wrap leading-relaxed",
                         MessageContent { content: message.content.clone(), channel_id }
+                        if let Some(mark) = delivery_mark.clone() {
+                            span { class: "ml-1.5", {mark} }
+                        }
                     }
+                } else if let Some(mark) = delivery_mark.clone() {
+                    div { class: "mt-0.5", {mark} }
                 }
                 if let Some(img) = message.image.as_ref() {
                     {

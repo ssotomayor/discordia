@@ -303,7 +303,10 @@ fn ConnectingOverlay(target: String) -> Element {
 
 #[component]
 pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>) -> Element {
-    let mut state = use_signal(AppState::empty);
+    // Owned by ROOT so the Social window, another VirtualDom, is a descendant of the owner:
+    // the signal-hoisting lint otherwise fires on its every read. Dropped with the view.
+    let mut state = use_hook(|| Signal::new_in_scope(AppState::empty(), ScopeId::ROOT));
+    use_drop(move || state.manually_drop());
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let leaving = use_signal(|| None::<Leaving>);
     let quitting = use_context::<crate::app::QuitRequest>().0;
