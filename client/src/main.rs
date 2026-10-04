@@ -174,6 +174,9 @@ fn main() {
     init_logging();
 
     #[cfg(target_os = "windows")]
+    init_windows_identity();
+
+    #[cfg(target_os = "windows")]
     app::init_tray_quit_bridge();
 
     update::sweep_outgoing();
@@ -203,6 +206,18 @@ fn main() {
     LaunchBuilder::new()
         .with_cfg(apply_menu(Config::new().with_window(window)))
         .launch(app::App);
+}
+
+#[cfg(target_os = "windows")]
+fn init_windows_identity() {
+    // SAFETY: Windows receives a static, NUL-terminated UTF-16 application identifier.
+    if let Err(error) = unsafe {
+        windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID(windows::core::w!(
+            "com.discordia.app"
+        ))
+    } {
+        tracing::warn!(%error, "could not set Discordia's Windows application identity");
+    }
 }
 
 #[cfg(target_os = "macos")]

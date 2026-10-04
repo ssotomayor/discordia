@@ -4,11 +4,17 @@
 
 | Rung | For | How |
 |---|---|---|
-| One click | friend groups | "Host my own" in the client — spawns a gateway and an SFU in-process; the rendezvous's SFU is used only when friends cannot reach this machine's media ports |
+| One click | friend groups | "Host my own" in the client — runs the gateway in-process and launches a bundled SFU child; the rendezvous's SFU is used only when friends cannot reach this machine's media ports |
 | One box | communities | `cargo run -p dioxusfun-server`, or Docker (`Dockerfile`, `docker-compose.yml` — what the test deployment runs) |
 | Cluster | giants | not built (entry: demand-gated) |
 
 ## Environment
+
+On Windows, `Discordia.exe` includes the app icon and product/version metadata
+even in plain Cargo builds. Its taskbar identity is `com.discordia.app`;
+the bundled SFU appears as `Discordia-media-<digest>.exe`. WebView2 remains a
+Microsoft runtime with separate processes; Task Manager grouping varies by
+Windows/runtime version. Cargo is a development launcher, not a shipped service.
 
 **Server**
 
@@ -120,9 +126,9 @@ measures hairpin NAT, because LiveKit *replaces* its LAN candidate with the
 advertised address rather than adding to it. The hairpin check uses a temporary
 challenge responder on the mapped media TCP port before LiveKit starts; a
 successful probe releases that port before starting the bundled SFU.
-SFU startup requires an authenticated room-list request with this host's keys;
-an occupied port alone is not readiness. A conflicting instance triggers the
-existing rendezvous fallback rather than issuing unusable local voice tokens.
+SFU readiness requires an authenticated room-list request and a live child,
+not just an open TCP port. Startup failures, including occupied media ports,
+use the existing rendezvous SFU fallback when available.
 
 ## Deploying a box
 

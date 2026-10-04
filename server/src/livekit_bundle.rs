@@ -15,7 +15,11 @@ const LIVEKIT_SIZE: &str = include_str!(concat!(env!("OUT_DIR"), "/livekit-serve
 
 const LIVEKIT_DIGEST: &str = include_str!(concat!(env!("OUT_DIR"), "/livekit-server.sha"));
 
-const LIVEKIT_BIN_STEM: &str = "livekit-server";
+const LEGACY_BIN_STEM: &str = "livekit-server";
+#[cfg(target_os = "windows")]
+const LIVEKIT_BIN_STEM: &str = "Discordia-media";
+#[cfg(not(target_os = "windows"))]
+const LIVEKIT_BIN_STEM: &str = LEGACY_BIN_STEM;
 
 #[cfg(target_os = "windows")]
 const LIVEKIT_BIN_EXT: &str = ".exe";
@@ -219,7 +223,7 @@ fn sweep_stale(dir: &Path, keep: &str) {
     for entry in entries.flatten() {
         let name = entry.file_name();
         let Some(name) = name.to_str() else { continue };
-        if name.starts_with(LIVEKIT_BIN_STEM) && name != keep && !name.ends_with(".pid") {
+        if bundled_image_name(name) && name != keep && !name.ends_with(".pid") {
             let _ = fs::remove_file(entry.path());
         }
     }
@@ -241,17 +245,22 @@ impl Drop for LivekitSubprocess {
 }
 
 fn pid_file_name() -> String {
-    format!("{LIVEKIT_BIN_STEM}-{}.pid", ports().ws)
+    // The record must survive the Windows helper rename so an older orphan can be reclaimed.
+    format!("{LEGACY_BIN_STEM}-{}.pid", ports().ws)
+}
+
+fn bundled_image_name(name: &str) -> bool {
+    [LIVEKIT_BIN_STEM, LEGACY_BIN_STEM].iter().any(|stem| {
+        name.strip_prefix(stem)
+            .is_some_and(|rest| rest.starts_with('-'))
+    })
 }
 
 fn parse_pid_record(contents: &str) -> Option<(u32, &str)> {
     let mut lines = contents.lines();
     let pid = lines.next()?.trim().parse::<u32>().ok()?;
     let image = lines.next()?.trim();
-    image
-        .strip_prefix(LIVEKIT_BIN_STEM)
-        .is_some_and(|rest| rest.starts_with('-'))
-        .then_some((pid, image))
+    bundled_image_name(image).then_some((pid, image))
 }
 
 fn reclaim_orphan(dir: &Path) {
@@ -438,8 +447,8 @@ async fn wait_for_ready(
             .map_err(|e| format!("livekit status: {e}"))?
         {
             return Err(format!(
-                "livekit-server exited on startup ({status}); port {port} is most likely \
-                 held by another process"
+                "livekit-server exited on startup ({status}); check the media ports \
+                 and the server's startup log"
             ));
         }
         if tokio::time::Instant::now() >= deadline {
@@ -553,7 +562,7 @@ mod tests {
         let config = dir.join("test.yaml");
         write_private(&config, config_yaml_for(None, p, &creds)).unwrap();
         drop((ws, tcp, udp));
-        let mut command = Command::new(path);
+        let mut command = Command::new(&path);
         command
             .arg("--config")
             .arg(config)
@@ -571,12 +580,63 @@ mod tests {
             Duration::from_millis(300),
         )
         .await;
+        let blocked_ws = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let blocked_tcp = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let blocked_ports = LivekitPorts {
+            ws: blocked_ws.local_addr().unwrap().port(),
+            tcp: blocked_tcp.local_addr().unwrap().port(),
+            udp: p.udp,
+        };
+        let blocked_config = dir.join("blocked.yaml");
+        write_private(
+            &blocked_config,
+            config_yaml_for(None, blocked_ports, &creds),
+        )
+        .unwrap();
+        drop((blocked_ws, blocked_tcp));
+        let mut blocked_command = Command::new(path);
+        blocked_command
+            .arg("--config")
+            .arg(blocked_config)
+            .kill_on_drop(true)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        #[cfg(windows)]
+        blocked_command.creation_flags(CREATE_NO_WINDOW);
+        let mut blocked_child = blocked_command.spawn().unwrap();
+        let blocked = wait_for_ready(
+            &mut blocked_child,
+            blocked_ports.ws,
+            &creds,
+            Duration::from_secs(5),
+        )
+        .await;
+        if blocked_child.try_wait().unwrap().is_none() {
+            blocked_child.kill().await.unwrap();
+        }
+        let mut blocked_log = String::new();
+        if let Some(mut stderr) = blocked_child.stderr.take() {
+            use tokio::io::AsyncReadExt;
+            stderr.read_to_string(&mut blocked_log).await.unwrap();
+        }
+        if let Some(mut stdout) = blocked_child.stdout.take() {
+            use tokio::io::AsyncReadExt;
+            stdout.read_to_string(&mut blocked_log).await.unwrap();
+        }
         child.kill().await.unwrap();
         fs::remove_dir_all(dir).unwrap();
         assert!(ready.is_ok(), "{ready:?}");
         assert!(
             wrong.is_err(),
             "another profile's credentials must not pass readiness"
+        );
+        assert!(
+            blocked.is_err(),
+            "a UDP bind failure must never pass readiness"
+        );
+        assert!(
+            blocked_log.contains("bind"),
+            "expected an actual UDP bind failure"
         );
     }
 
@@ -649,7 +709,7 @@ mod tests {
         assert!(!LIVEKIT_BIN.is_empty());
         let dir = scratch("run-bundle");
         private_dir(&dir).unwrap();
-        let name = format!("livekit-server-test{LIVEKIT_BIN_EXT}");
+        let name = format!("{LIVEKIT_BIN_STEM}-test{LIVEKIT_BIN_EXT}");
         let path = ensure_binary(
             &dir,
             &name,
@@ -849,6 +909,11 @@ mod tests {
 
     #[test]
     fn a_pid_record_names_only_our_own_image() {
+        let current_image = format!("{LIVEKIT_BIN_STEM}-deadbeef{LIVEKIT_BIN_EXT}");
+        assert_eq!(
+            parse_pid_record(&format!("42\n{current_image}\n")),
+            Some((42, current_image.as_str()))
+        );
         assert_eq!(
             parse_pid_record("42\nlivekit-server-deadbeef\n"),
             Some((42, "livekit-server-deadbeef"))
@@ -866,6 +931,30 @@ mod tests {
         assert_eq!(parse_pid_record("42\nlivekit-serverd\n"), None);
         assert_eq!(parse_pid_record("not-a-pid\nlivekit-server-x\n"), None);
         assert_eq!(parse_pid_record("42\n"), None);
+    }
+
+    #[test]
+    fn renaming_the_helper_preserves_records_and_sweeps_both_names() {
+        let dir = scratch("helper-rename");
+        private_dir(&dir).unwrap();
+        let keep = format!("{LIVEKIT_BIN_STEM}-current{LIVEKIT_BIN_EXT}");
+        let old = format!("{LEGACY_BIN_STEM}-old{LIVEKIT_BIN_EXT}");
+        let stale = format!("{LIVEKIT_BIN_STEM}-stale{LIVEKIT_BIN_EXT}");
+        let record = pid_file_name();
+        for name in [&keep, &old, &stale, &record, "unrelated.exe"] {
+            fs::write(dir.join(name), b"fixture").unwrap();
+        }
+        sweep_stale(&dir, &keep);
+        assert!(dir.join(keep).exists());
+        assert!(!dir.join(old).exists());
+        assert!(!dir.join(stale).exists());
+        assert!(dir.join(record).exists());
+        assert!(dir.join("unrelated.exe").exists());
+        assert_eq!(
+            pid_file_name(),
+            format!("livekit-server-{}.pid", ports().ws)
+        );
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

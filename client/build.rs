@@ -1,6 +1,6 @@
 use std::process::Command;
 
-fn main() {
+fn main() -> std::io::Result<()> {
     println!("cargo::rerun-if-env-changed=DISCORDIA_VERSION");
 
     let version = std::env::var("DISCORDIA_VERSION")
@@ -13,6 +13,25 @@ fn main() {
 
     embed_info_plist();
     grow_windows_main_stack();
+    embed_windows_identity(&version)?;
+    Ok(())
+}
+
+fn embed_windows_identity(version: &str) -> std::io::Result<()> {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+        return Ok(());
+    }
+    println!("cargo::rerun-if-changed=assets/icon.ico");
+    winresource::WindowsResource::new()
+        .set_icon("assets/icon.ico")
+        .set("FileDescription", "Discordia")
+        .set("ProductName", "Discordia")
+        .set("InternalName", "Discordia")
+        .set("OriginalFilename", "Discordia.exe")
+        .set("CompanyName", "TehSoTo")
+        .set("FileVersion", version)
+        .set("ProductVersion", version)
+        .compile()
 }
 
 /// Windows gives the main thread 1 MB where macOS and Linux give 8, and the UI,
