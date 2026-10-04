@@ -17,6 +17,12 @@ services:
     cap_add:
       - NET_ADMIN
       - NET_RAW
+    # The site's dev server and static preview (site/package.json). The
+    # devcontainer CLI ignores forwardPorts; only a published port reaches the
+    # host. Not 3000: other devcontainers on this machine already publish it.
+    ports:
+      - "127.0.0.1:3100:3100"
+      - "127.0.0.1:8787:8787"
     volumes:
       # Mounted at the host's own absolute path. Claude derives its project
       # slug from the directory, so mounting it anywhere else would land on a
