@@ -51,12 +51,42 @@ peer's IP, and a proxy makes every host the same peer.
 | `DIOXUSFUN_CONFIG_DIR` | OS config dir | identity, settings, release log |
 | `DIOXUSFUN_VAULT` | chosen on first run | `keychain` or `file`: where the passphrase that locks key files lives; changing it later means re-importing every key |
 | `DIOXUSFUN_RENDEZVOUS_URL` | `ws://rendezvous.discordia.world:7700` | presets the rendezvous; plain `ws://` because the rendezvous is never behind TLS |
+| `DIOXUSFUN_DM_ICE_SERVERS` | `[{"urls":["stun:stun.cloudflare.com:3478"]}]` | JSON list of STUN/TURN servers for private DM calls; each entry accepts `urls`, `username`, `password`. Credentials stay local and are never sent through Nostr |
+| `DIOXUSFUN_DM_RELAY_ONLY` | off | `1` requires a configured TURN server and excludes direct media connections |
 | `DISCORDIA_E2EE` | on | `0`/`off` disables media encryption |
 | `DISCORDIA_E2EE_KEY` | — | passphrase shared by hand; developer path |
 | `DISCORDIA_E2EE_OVERLAP` | off | overlap voice keys across a rekey — **unverified** |
 
 Guild migration: `cargo run -p dioxusfun-server -- export --guild <uuid> f.json`
 then `import f.json` on the target. Fresh ids, pubkeys preserved.
+
+## DM voice calls
+
+| Property | Behavior |
+|---|---|
+| Scope | One-to-one voice, both clients open; no guild server or LiveKit room required |
+| Signaling | Discordia-specific versioned kind 24133 rumor inside NIP-59 kind 1059; NIP-40 expiration and authenticated 60 s freshness checks; not interoperable with other clients' call drafts |
+| Identity | Nostr-authenticated SDP binds the WebRTC DTLS fingerprint to the contact; relays carry encrypted signaling, never audio |
+| Media | Native WebRTC, DTLS-SRTP; existing Rust microphone DSP, echo reference and playback mixer |
+| Consent | Incoming panel with Accept/Decline; microphone opens only after acceptance |
+| Devices | First accepted device receives the offer; other incoming panels are dismissed |
+| Connectivity | Default STUN attempts direct media; restrictive NAT/firewalls require TURN. Direct calls expose peer network addresses to the other participant |
+| Teardown | End call closes the peer connection, capture, playback and tasks; network interruption gets a 15 s recovery window |
+
+TURN is a separate service (for example self-hosted coturn), not bundled or
+automatically deployed. Configure its public address, authentication and media
+ports, then supply credentials to both clients. The iroh relay cannot replace it.
+
+PowerShell example, before launching Discordia:
+
+```powershell
+$env:DIOXUSFUN_DM_ICE_SERVERS = '[{"urls":["stun:turn.example.org:3478"]},{"urls":["turn:turn.example.org:3478?transport=udp","turns:turn.example.org:5349?transport=tcp"],"username":"alice","password":"YOUR_TURN_PASSWORD"}]'
+$env:DIOXUSFUN_DM_RELAY_ONLY = '1'
+```
+
+Verify two identities on different networks, then repeat with relay-only mode.
+Check decline, timeout, hangup, mute/deafen, volume and application exit. Automated
+peer tests use synthesized PCM and real Opus decoding without audio hardware.
 
 ## Published names
 

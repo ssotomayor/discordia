@@ -25,7 +25,6 @@
 use dioxus::prelude::*;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 
-use super::event::Event;
 use super::relay::{Filter, RelayEvent, RelayPool};
 use super::{metadata, nip02, nip17, nip59, xp};
 use crate::identity::Identity;
@@ -34,6 +33,7 @@ use crate::state::{AppState, DmInfo};
 
 /// What the UI asks the service to do.
 pub enum NostrCmd {
+    Call(crate::features::dm_call::Action),
     Retry {
         message_id: Id,
     },
@@ -104,6 +104,9 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
         let mut state = state;
         let our_pubkey = identity.pubkey.clone();
         let secret = identity.secret_key();
+        let (call_outgoing, mut call_signals) = unbounded_channel();
+        let calls =
+            crate::features::dm_call::spawn_service(our_pubkey.clone(), state, call_outgoing);
         let (pool, mut events) = RelayPool::connect(relays.clone());
 
         // No author filter: gift wraps are signed by ephemeral keys. `p` is
@@ -163,6 +166,7 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
 
         let mut xp_publisher = xp::Publisher::default();
         let mut routes = super::delivery::Routes::default();
+        let mut senders = super::delivery::Senders::new();
         let mut outbox = super::delivery::Outbox::new();
         for (peer, theirs, ours) in super::delivery::load(&our_pubkey).await {
             if let Ok(msg) = nip17::open_chat(&secret, &our_pubkey, &ours)
@@ -204,12 +208,17 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
         loop {
             tokio::select! {
                 cmd = rx.recv() => match cmd {
+                    Some(NostrCmd::Call(action)) => {
+                        if calls.send(crate::features::dm_call::Command::Action(action)).is_err() {
+                            state.write().error_toast = Some("Voice call service is unavailable.".into());
+                        }
+                    }
                     Some(NostrCmd::Send { peer, text, reply_to }) => {
                         if outbox.len() >= 128 {
                             state.write().error_toast = Some("Too many messages await delivery. Retry a failed message first.".into());
                             continue;
                         }
-                        if let Some((id, pending)) = send_message(&pool, &secret, &our_pubkey, &peer, &text, reply_to, &mut state) {
+                        if let Some((id, pending)) = send_message(&secret, &our_pubkey, &peer, &text, reply_to, &mut state) {
                             outbox.insert(id, pending);
                             if let Err(error) = super::delivery::persist(&our_pubkey, &outbox).await {
                                 state.write().error_toast = Some(format!("Could not save pending messages: {error}"));
@@ -262,6 +271,33 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
                     }
                     None => break,
                 },
+                outgoing = call_signals.recv() => {
+                    if let Some((peer, signal)) = outgoing {
+                        let wrap = super::calls::rumor(&our_pubkey, &peer, &signal)
+                            .and_then(|rumor| nip59::wrap_with_expiration(&secret, &peer, &rumor, now(), Some(signal.sent_at + super::calls::TTL)));
+                        match wrap {
+                            Ok(wrap) => {
+                                let published = senders.publish_call(wrap, routes.targets(&peer, &relays), signal.sent_at + super::calls::TTL);
+                                let calls = calls.clone();
+                                spawn(async move {
+                                    let accepted = published.await == super::delivery::Delivery::Accepted;
+                                    if !accepted {
+                                        tracing::warn!(call_id = %signal.call_id, "DM call signal was not accepted by any recipient relay");
+                                    }
+                                    if calls.send(crate::features::dm_call::Command::Published { call_id: signal.call_id, accepted }).is_err() {
+                                        tracing::debug!("Call ended before relay publication completed");
+                                    }
+                                });
+                            }
+                            Err(error) => {
+                                state.write().error_toast = Some(error);
+                                if calls.send(crate::features::dm_call::Command::Published { call_id: signal.call_id, accepted: false }).is_err() {
+                                    tracing::debug!("Call service stopped");
+                                }
+                            }
+                        }
+                    }
+                }
                 _ = delivery_tick.tick(), if outbox.values().any(|pending| !pending.started) => {
                     let active = outbox.iter().filter(|(id, pending)| pending.started && state.peek().dm_delivery.get(id) == Some(&super::delivery::Delivery::Pending)).count();
                     let mut slots = 8usize.saturating_sub(active);
@@ -270,14 +306,12 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
                         if pending.started || pending.due > std::time::Instant::now() { continue; }
                         pending.started = true;
                         slots -= 1;
-                        let targets = routes.targets(&pending.peer, &relays);
-                        let event = pending.theirs.clone();
+                        let delivery = senders.publish(pending.theirs.clone(), routes.targets(&pending.peer, &relays));
                         let id = *id;
                         let result_tx = delivery_tx.clone();
                         pool.publish(pending.ours.clone());
                         spawn(async move {
-                            let status = super::delivery::publish(event, targets).await;
-                            let _ = result_tx.send((id, status));
+                            let _ = result_tx.send((id, delivery.await));
                         });
                     }
                 }
@@ -325,8 +359,17 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
                             }
                         }
                         nip59::KIND_GIFT_WRAP => {
+                            let Ok(rumor) = nip59::unwrap(&secret, &event) else { continue; };
+                            if rumor.kind == super::calls::KIND_CALL {
+                                if let Ok(signal) = super::calls::open(&rumor, &our_pubkey, now())
+                                    && calls.send(crate::features::dm_call::Command::Incoming(crate::features::dm_call::Incoming { author: rumor.pubkey, signal })).is_err()
+                                { tracing::debug!("Call service stopped"); }
+                                continue;
+                            }
                             let live = every_relay_replayed(&state, &replayed);
-                            receive(&secret, &our_pubkey, &event, &mut state, live);
+                            if let Ok(msg) = nip17::open_rumor(&our_pubkey, &rumor) {
+                                insert_message(&msg, &our_pubkey, &mut state, Source::Relay, live);
+                            }
                             request_names(&pool, &state, &our_pubkey, &mut named);
                         }
                         _ => {}
@@ -471,9 +514,7 @@ fn open_conversation(peer: &str, state: &mut Signal<AppState>) {
     s.mark_dm_read(cid);
 }
 
-#[allow(clippy::too_many_arguments)]
 fn send_message(
-    pool: &RelayPool,
     secret: &secp256k1::SecretKey,
     our_pubkey: &str,
     peer: &str,
@@ -485,7 +526,6 @@ fn send_message(
     let rumor = nip17::chat_rumor(our_pubkey, peer, text, reply_to.as_deref(), ts);
     match nip17::wrap_both(secret, peer, &rumor, ts) {
         Ok((theirs, ours)) => {
-            pool.publish(ours.clone());
             let msg = nip17::ChatMessage {
                 id: rumor.id.clone(),
                 author: our_pubkey.to_string(),
@@ -533,24 +573,6 @@ fn every_relay_replayed(
 ) -> bool {
     let up = &state.read().nostr_relays_up;
     !up.is_empty() && up.iter().all(|relay| replayed.contains(relay))
-}
-
-/// Open an inbound gift wrap and file it, if it is a chat message for us.
-fn receive(
-    secret: &secp256k1::SecretKey,
-    our_pubkey: &str,
-    gift: &Event,
-    state: &mut Signal<AppState>,
-    live: bool,
-) {
-    // Failure is the normal case, not an error: the subscription asks for every
-    // gift wrap addressed to us, and other Nostr apps wrap other things. A wrap
-    // we cannot read, or that turns out not to be a chat message, is simply not
-    // ours to render.
-    let Ok(msg) = nip17::open_chat(secret, our_pubkey, gift) else {
-        return;
-    };
-    insert_message(&msg, our_pubkey, state, Source::Relay, live);
 }
 
 /// Where a message came from. Only a relay can be replaying deleted history;

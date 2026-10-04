@@ -204,6 +204,7 @@ pub fn SoundboardVolume() -> Element {
                 value: "{pct}",
                 class: "flex-1 accent-[var(--accent)]",
                 title: "Soundboard volume — only changes what you hear",
+                aria_label: "Soundboard playback volume",
                 oninput: move |e| {
                     let v: u32 = e.value().parse().unwrap_or(pct).min(100);
                     state.write().soundboard_volume = v;

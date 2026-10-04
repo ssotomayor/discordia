@@ -535,6 +535,10 @@ pub fn ChannelsColumn() -> Element {
                                             occupants: occupants,
                                             self_pubkey: self_user.as_ref().map(|u| u.pubkey.clone()),
                                             on_join: move |_| {
+                                                if state.peek().dm_call.is_some() {
+                                                    state.write().error_toast = Some("End your DM call before joining a voice channel.".into());
+                                                    return;
+                                                }
                                                 tracing::debug!(channel_id = %cid, "join voice clicked");
                                                 g_join.send(state.read().voice.join_message(cid));
                                             },

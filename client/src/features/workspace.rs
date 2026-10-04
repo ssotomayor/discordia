@@ -10,9 +10,7 @@ use crate::features::{
 };
 use crate::net::spawn_gateway;
 use crate::protocol::{ClientMessage, Id};
-use crate::state::{
-    AppState, ConnectionStatus, SessionParams, VoicePhase, use_app_state, use_gateway,
-};
+use crate::state::{ConnectionStatus, SessionParams, VoicePhase, use_app_state, use_gateway};
 
 const GRID_ROWS: u32 = 30;
 const GRID_GAP: f64 = 8.0;
@@ -303,7 +301,7 @@ fn ConnectingOverlay(target: String) -> Element {
 
 #[component]
 pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>) -> Element {
-    let mut state = use_signal(AppState::empty);
+    let mut state = use_app_state();
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let leaving = use_signal(|| None::<Leaving>);
     let quitting = use_context::<crate::app::QuitRequest>().0;
@@ -331,75 +329,19 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
         }));
     };
 
-    let (gateway_tx, gateway_shutdown, voice_tx, nostr_tx) = use_hook(|| {
-        {
-            let saved = settings.read();
-            let mut app = state;
-            let mut w = app.write();
-            w.mic_sensitivity = saved.mic_sensitivity.clamp(1, 1000);
-            w.mic_volume = saved.mic_volume.min(200);
-            w.soundboard_volume = saved.soundboard_volume.min(100) as u32;
-            w.user_volumes = saved
-                .user_volumes
-                .iter()
-                .map(|(pk, v)| (pk.clone(), (*v).min(200)))
-                .collect();
-            w.user_muted = saved.user_muted.iter().cloned().collect();
-            w.stream_volumes = saved
-                .stream_volumes
-                .iter()
-                .map(|(pk, v)| (pk.clone(), (*v).min(200)))
-                .collect();
-            w.stream_muted = saved.stream_muted.iter().cloned().collect();
-            w.auto_gain_control = saved.auto_gain_control;
-            w.noise_cancellation = saved.noise_cancellation;
-            w.bypass_system_audio_processing =
-                saved.bypass_system_audio_processing && crate::rawmic::supported();
-            w.denoise_atten_lim_db = saved.denoise_atten_lim_db.clamp(
-                crate::features::voice::DENOISE_ATTEN_LIM_DB_MIN,
-                crate::features::voice::DENOISE_ATTEN_LIM_DB_MAX,
-            );
-            w.voice_bitrate_kbps = match saved.voice_bitrate_kbps {
-                24 => 24,
-                _ => 48,
-            };
-            w.selected_input_device = saved.selected_input_device.clone();
-            w.selected_output_device = saved.selected_output_device.clone();
-            w.dm_cleared_at = saved.dm_cleared_at.iter().cloned().collect();
-            w.dm_clock_offset = saved.dm_clock_offset.iter().cloned().collect();
-            w.dm_read_at = saved.dm_read_at.iter().cloned().collect();
-            w.muted_channels = saved.muted_channels.iter().copied().collect();
-            w.muted_guilds = saved.muted_guilds.iter().copied().collect();
-        }
-        // Audio prefs must be restored before this: the service seeds its live
-        // controls from AppState on the first poll.
+    let (gateway_tx, gateway_shutdown, voice_tx) = use_hook(|| {
+        state.write().status = ConnectionStatus::Connecting;
         let voice_tx = spawn_voice_service(state);
         let (gateway_tx, gateway_shutdown) =
             spawn_gateway(params.clone(), state, voice_tx.clone(), move |reason| {
                 leave(reason);
             });
-        let relays = {
-            let saved = settings.read();
-            if saved.dm_relays.is_empty() {
-                crate::nostr::relay::DEFAULT_RELAYS
-                    .iter()
-                    .map(|s| s.to_string())
-                    .collect()
-            } else {
-                saved.dm_relays.clone()
-            }
-        };
-        let nostr_tx = crate::nostr::service::spawn_nostr(params.identity.clone(), relays, state);
-        (gateway_tx, gateway_shutdown, voice_tx, nostr_tx)
+        (gateway_tx, gateway_shutdown, voice_tx)
     });
     provide_context(gateway_tx.clone());
-    provide_context(nostr_tx.clone());
     provide_context(crate::features::voice::VoiceTx(voice_tx.clone()));
     provide_context(state);
     provide_context(params.identity.clone());
-    crate::state::use_dm_read_persistence(state);
-    crate::state::use_dm_clock_persistence(state);
-    crate::state::use_volume_persistence(state);
     let popouts = super::stream_viewer::use_popouts(state);
     provide_context(popouts);
     let streams_visible = use_memo(move || {
@@ -582,7 +524,6 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
                 }
             },
             VoiceSounds {}
-            crate::features::sounds::MessageSounds {}
             VoiceSpeakingBridge {}
             ErrorToast {}
             match leaving() {
@@ -607,6 +548,7 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
             crate::features::camera::CameraGridWindow {}
             crate::features::profiles::ProfileCard {}
             crate::features::chat::ImageViewer {}
+            crate::features::dm_call::CallPanel {}
             if status == ConnectionStatus::Connecting {
                 ConnectingOverlay { target: connecting_target(&params.mode) }
             }
@@ -706,7 +648,7 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
 }
 
 #[component]
-fn ErrorToast() -> Element {
+pub(crate) fn ErrorToast() -> Element {
     let mut state = use_app_state();
     let message = use_memo(move || state.read().error_toast.clone());
 

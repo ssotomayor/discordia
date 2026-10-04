@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use parking_lot::Mutex;
 
-const NAMES: [&str; 15] = [
+const NAMES: [&str; 19] = [
     "disconnect",
     "watch-start",
     "watch-stop",
@@ -22,6 +22,10 @@ const NAMES: [&str; 15] = [
     "peer-stream-stop",
     "mute",
     "unmute",
+    "call-incoming",
+    "call-outgoing",
+    "call-connected",
+    "call-ended",
 ];
 const IDLE: Duration = Duration::from_millis(1500);
 const COOLDOWN: Duration = Duration::from_millis(250);
@@ -37,6 +41,7 @@ enum Command {
 
 struct Control {
     volume: AtomicU32,
+    call_ring: AtomicU32,
     output: Mutex<Option<String>>,
 }
 
@@ -52,6 +57,7 @@ fn service() -> Option<&'static Service> {
             let (tx, rx) = mpsc::sync_channel(32);
             let control = Arc::new(Control {
                 volume: AtomicU32::new(0.7_f32.to_bits()),
+                call_ring: AtomicU32::new(0),
                 output: Mutex::new(None),
             });
             let worker_control = Arc::clone(&control);
@@ -82,6 +88,21 @@ pub fn play(name: &str) {
             Err(mpsc::TrySendError::Disconnected(_)) => {
                 tracing::warn!("Notification audio worker stopped");
             }
+        }
+    }
+}
+
+pub fn call_ring(name: Option<&str>) {
+    if let Some(service) = service() {
+        let index = name.and_then(|name| NAMES.iter().position(|candidate| *candidate == name));
+        service.control.call_ring.store(
+            index
+                .filter(|index| matches!(index, 15 | 16))
+                .map_or(0, |index| index as u32 + 1),
+            Ordering::Relaxed,
+        );
+        if let Some(name) = name {
+            play(name);
         }
     }
 }
@@ -169,7 +190,13 @@ fn run(rx: mpsc::Receiver<Command>, control: Arc<Control>) {
             if bank.rate != output.rate {
                 bank = SoundBank::new(output.rate);
             }
-            output.player.lock().push(bank.get(sound));
+            let mut player = output.player.lock();
+            player.push(bank.get(sound));
+            if matches!(sound.0, 15 | 16)
+                && let Some(voice) = player.voices.last_mut()
+            {
+                voice.call_ring = Some(sound.0 as u32 + 1);
+            }
             last_play = Instant::now();
         }
     }
@@ -178,6 +205,7 @@ fn run(rx: mpsc::Receiver<Command>, control: Arc<Control>) {
 struct Voice {
     samples: Arc<[f32]>,
     position: usize,
+    call_ring: Option<u32>,
 }
 
 #[derive(Default)]
@@ -186,6 +214,11 @@ struct Player {
 }
 
 impl Player {
+    fn cancel_rings(&mut self, active: u32) {
+        self.voices
+            .retain(|voice| voice.call_ring.is_none_or(|ring| ring == active));
+    }
+
     fn push(&mut self, samples: Arc<[f32]>) {
         if self.voices.len() >= MAX_VOICES {
             self.voices.remove(0);
@@ -193,6 +226,7 @@ impl Player {
         self.voices.push(Voice {
             samples,
             position: 0,
+            call_ring: None,
         });
     }
 
@@ -285,6 +319,7 @@ fn build<T: cpal::SizedSample + cpal::FromSample<f32>>(
         config,
         move |data: &mut [T], _| {
             if let Some(mut player) = player.try_lock() {
+                player.cancel_rings(control.call_ring.load(Ordering::Relaxed));
                 let volume = f32::from_bits(control.volume.load(Ordering::Relaxed));
                 write_samples(data, channels, &mut player, volume);
             } else {
@@ -421,6 +456,22 @@ fn tones(sound: Sound) -> &'static [Tone] {
         ],
         &[tone(0.0, 220.0, 0.06, 0.10, Square)],
         &[tone(0.0, 440.0, 0.06, 0.10, Square)],
+        &[
+            tone(0.0, 740.0, 0.18, 0.21, Sine),
+            tone(0.18, 988.0, 0.18, 0.21, Sine),
+        ],
+        &[
+            tone(0.0, 440.0, 0.32, 0.1575, Sine),
+            tone(0.0, 480.0, 0.32, 0.105, Sine),
+        ],
+        &[
+            tone(0.0, 523.0, 0.12, 0.10, Triangle),
+            tone(0.12, 784.0, 0.18, 0.10, Triangle),
+        ],
+        &[
+            tone(0.0, 440.0, 0.12, 0.10, Sine),
+            tone(0.12, 294.0, 0.18, 0.10, Sine),
+        ],
     ];
     BANK.get(sound.0).copied().unwrap_or(&[])
 }
@@ -522,6 +573,23 @@ mod tests {
     }
 
     #[test]
+    fn ending_or_switching_a_call_cancels_ringing_without_dropping_notifications() {
+        let mut player = Player::default();
+        player.push(vec![0.1; 8].into());
+        player.push(vec![0.2; 8].into());
+        player.voices[1].call_ring = Some(16);
+        player.cancel_rings(16);
+        assert_eq!(player.voices.len(), 2);
+        player.cancel_rings(17);
+        assert_eq!(player.voices.len(), 1);
+        player.push(vec![0.2; 8].into());
+        player.voices[1].call_ring = Some(17);
+        player.cancel_rings(0);
+        assert_eq!(player.voices.len(), 1);
+        assert!((player.next(1.0) - 0.1).abs() < 0.00001);
+    }
+
+    #[test]
     fn mixer_applies_live_volume_clamps_overlap_and_retires_finished_sounds() {
         let mut player = Player::default();
         player.push(vec![0.8, 0.8, 0.8].into());
@@ -562,6 +630,7 @@ mod tests {
     fn native_notification_output_plays_and_stops() {
         let control = Arc::new(Control {
             volume: AtomicU32::new(0.7_f32.to_bits()),
+            call_ring: AtomicU32::new(0),
             output: Mutex::new(None),
         });
         let output = AudioOutput::open(None, control).expect("native audio output");
