@@ -15,11 +15,21 @@ fn processed(
     agc: bool,
     muted: bool,
 ) -> Vec<crate::audio_queue::Frame<i16>> {
-    let controls = AudioControls::from_state(&AppState::empty());
-    controls.agc.store(agc, Ordering::Relaxed);
-    controls.denoise.store(false, Ordering::Relaxed);
-    controls.mic_gain_pct.store(gain, Ordering::Relaxed);
-    controls.threshold.store(10, Ordering::Relaxed);
+    let mut state = AppState::empty();
+    let controls = AudioControls::from_state(&state);
+    state.auto_gain_control = agc;
+    state.noise_cancellation = false;
+    state.mic_volume = gain as u16;
+    state.mic_sensitivity = 10;
+    direct::update_controls(&controls, &state);
+    processed_controls(amplitudes, controls, muted)
+}
+
+fn processed_controls(
+    amplitudes: &[f32],
+    controls: AudioControls,
+    muted: bool,
+) -> Vec<crate::audio_queue::Frame<i16>> {
     let (tx, rx) = crate::audio_queue::channel();
     let (out, mut received) = crate::audio_queue::channel();
     let (_reference, reference_rx) = crate::audio_queue::channel();
@@ -63,6 +73,25 @@ fn native_pipeline_honors_mute_and_zero_microphone_volume() {
 }
 
 #[test]
+fn sensitivity_gates_before_microphone_volume_and_automatic_gain() {
+    for agc in [false, true] {
+        for gain in [50, 200] {
+            let mut state = AppState::empty();
+            state.noise_cancellation = false;
+            state.auto_gain_control = agc;
+            state.mic_volume = gain;
+            state.mic_sensitivity = 30;
+            let controls = AudioControls::from_state(&state);
+            assert!(processed_controls(&[0.015; 200], controls, false).is_empty());
+            state.mic_sensitivity = 1;
+            let controls = AudioControls::from_state(&state);
+            let frames = processed_controls(&[0.015; 200], controls, false);
+            assert!(frames.len() > 100 && rms(&frames) > 0.001);
+        }
+    }
+}
+
+#[test]
 fn native_pipeline_manual_gain_is_applied_after_automatic_gain() {
     for agc in [false, true] {
         let levels: Vec<_> = [50, 100, 200]
@@ -75,7 +104,56 @@ fn native_pipeline_manual_gain_is_applied_after_automatic_gain() {
             .collect();
         assert!((levels[1] / levels[0] - 2.0).abs() < 0.05, "{levels:?}");
         assert!((levels[2] / levels[1] - 2.0).abs() < 0.05, "{levels:?}");
+        eprintln!("DM microphone gain (AGC {agc}), RMS at 50/100/200%: {levels:?}");
     }
+}
+
+#[test]
+fn dm_playback_volume_changes_output_without_changing_microphone_gain() {
+    let mut state = AppState::empty();
+    state.mic_volume = 150;
+    let controls = AudioControls::from_state(&state);
+    let handle = PlaybackHandle {
+        tracks: Arc::new(Mutex::new(MixerTracks::default())),
+        device_rate: 48000,
+        gains: controls.gains.clone(),
+        stream_gains: controls.stream_gains.clone(),
+        soundboard_pct: controls.soundboard_pct.clone(),
+    };
+    let id = handle.add_track("peer".into(), TrackKind::Voice);
+    let mut measure = |volume, muted, deafened| {
+        state.user_volumes.insert("peer".into(), volume);
+        if muted {
+            state.user_muted.insert("peer".into());
+        } else {
+            state.user_muted.remove("peer");
+        }
+        state.voice.deafened = deafened;
+        direct::update_controls(&controls, &state);
+        assert_eq!(controls.mic_gain_pct.load(Ordering::Relaxed), 150);
+        handle.push(id, &[0.1; 480], 480);
+        let mut tracks = handle.tracks.lock();
+        refresh_gains(
+            &mut tracks,
+            &controls.gains,
+            &controls.stream_gains,
+            &controls.soundboard_pct,
+            &controls.deafened,
+        );
+        let power: f32 = (0..480)
+            .map(|counter| next_playback_sample(&mut tracks, counter, usize::MAX, 0).powi(2))
+            .sum();
+        (power / 480.0).sqrt()
+    };
+    let levels = [50, 100, 200].map(|volume| measure(volume, false, false));
+    eprintln!("DM playback RMS at 50/100/200%: {levels:?}");
+    for (actual, expected) in levels.into_iter().zip([0.05, 0.1, 0.2]) {
+        assert!((actual - expected).abs() < 0.001);
+    }
+    assert_eq!(measure(0, false, false), 0.0);
+    assert_eq!(measure(200, true, false), 0.0);
+    assert_eq!(measure(200, false, true), 0.0);
+    assert!((measure(200, false, false) - 0.2).abs() < 0.001);
 }
 
 #[test]

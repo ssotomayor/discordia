@@ -407,6 +407,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn microphone_defaults_and_legacy_settings_keep_unity_gain() {
+        let defaults = ClientSettings::default();
+        assert_eq!(defaults.mic_volume, 100);
+        assert!(defaults.auto_gain_control);
+        assert_eq!(defaults.mic_sensitivity, DEFAULT_MIC_SENSITIVITY);
+        let mut old = serde_json::to_value(&defaults).unwrap();
+        old.as_object_mut().unwrap().remove("mic_volume");
+        assert_eq!(parse(&file(old)).unwrap().mic_volume, 100);
+    }
+
+    #[test]
     fn screen_sharing_defaults_to_the_game_friendly_preset() {
         assert_eq!(default_screenshare_quality(), "smooth");
     }

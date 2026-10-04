@@ -548,7 +548,6 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
             crate::features::camera::CameraGridWindow {}
             crate::features::profiles::ProfileCard {}
             crate::features::chat::ImageViewer {}
-            crate::features::dm_call::CallPanel {}
             if status == ConnectionStatus::Connecting {
                 ConnectingOverlay { target: connecting_target(&params.mode) }
             }

@@ -81,11 +81,19 @@ fn write_wav(path: &Path, samples: &[f32]) {
     std::fs::write(path, bytes).unwrap();
 }
 
-fn run_speech(mic: &[f32], far: &[f32], denoise: bool, agc: bool, threshold: i32) -> Vec<f32> {
+fn run_speech(
+    mic: &[f32],
+    far: &[f32],
+    denoise: bool,
+    agc: bool,
+    threshold: i32,
+    attenuation: u32,
+) -> Vec<f32> {
     let controls = AudioControls::from_state(&AppState::empty());
     controls.denoise.store(denoise, Ordering::Relaxed);
     controls.agc.store(agc, Ordering::Relaxed);
     controls.threshold.store(threshold, Ordering::Relaxed);
+    controls.atten_lim_db.store(attenuation, Ordering::Relaxed);
     let stats = Arc::new(GateStats::default());
     let (tx, rx) = crate::audio_queue::channel();
     let (out, mut received) = crate::audio_queue::channel();
@@ -248,21 +256,22 @@ fn human_speech_audit() {
     write_wav(&dir.join("speech-clean.wav"), &clean[warmup..]);
     write_wav(&dir.join("speech-noisy-echo.wav"), &noisy[warmup..]);
     let silence = vec![0.0; len];
-    let baseline = run_speech(&clean, &silence, false, false, 10);
+    let baseline = run_speech(&clean, &silence, false, false, 10, 30);
     write_wav(&dir.join("speech-baseline.wav"), &baseline[warmup..]);
     let mut failures = Vec::new();
     let selected = std::env::var("DIOXUSFUN_SPEECH_CASE").ok();
-    for (name, input, reference, denoise, agc, threshold) in [
-        ("clean-denoise", &clean, &silence[..], true, false, 10),
-        ("aec", &noisy, far, false, false, 10),
-        ("aec-denoise", &noisy, far, true, false, 10),
-        ("aec-denoise-agc", &noisy, far, true, true, 10),
-        ("aec-denoise-low-gate", &noisy, far, true, true, 1),
+    for (name, input, reference, denoise, agc, threshold, attenuation) in [
+        ("clean-denoise", &clean, &silence[..], true, false, 10, 30),
+        ("aec", &noisy, far, false, false, 10, 30),
+        ("aec-denoise", &noisy, far, true, false, 10, 30),
+        ("aec-denoise-agc", &noisy, far, true, true, 10, 30),
+        ("aec-denoise-low-gate", &noisy, far, true, true, 1, 30),
+        ("aec-denoise-agc-9db", &noisy, far, true, true, 22, 9),
     ] {
         if selected.as_deref().is_some_and(|selected| selected != name) {
             continue;
         }
-        let output = run_speech(input, reference, denoise, agc, threshold);
+        let output = run_speech(input, reference, denoise, agc, threshold, attenuation);
         write_wav(&dir.join(format!("speech-{name}.wav")), &output[warmup..]);
         let (delay, correlation) = speech_alignment(&clean, &output, warmup);
         let speech_power = power(&output[warmup..]);

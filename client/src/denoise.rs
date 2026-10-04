@@ -96,6 +96,28 @@ mod tests {
     }
 
     #[test]
+    fn suppression_strength_changes_residual_noise() {
+        let input = noise(480 * 300, 0.1);
+        let levels: Vec<_> = [9.0, 30.0]
+            .into_iter()
+            .map(|strength| {
+                let mut model = Denoiser::new().unwrap();
+                model.set_atten_lim(strength);
+                let mut output = input.clone();
+                for hop in output.as_chunks_mut::<480>().0 {
+                    model.process_hop(hop);
+                }
+                rms(&output[480 * 100..])
+            })
+            .collect();
+        eprintln!("Noise RMS at 9/30 dB suppression: {levels:?}");
+        assert!(
+            levels[1] < levels[0] * 0.7,
+            "stronger suppression must reduce noise: {levels:?}"
+        );
+    }
+
+    #[test]
     fn wrong_length_frames_pass_through() {
         let mut d = Denoiser::new().expect("model");
         let mut short = vec![0.5f32; HOP - 1];

@@ -557,10 +557,10 @@ impl Actor {
                 EndReason::Busy,
                 Some("DM call ended because a voice channel was joined."),
             );
-        } else if let Some(s) = &self.session
-            && let Some(audio) = &s.audio
+        } else if let Some(s) = &mut self.session
+            && let Some(audio) = &mut s.audio
         {
-            audio.update(&self.state.peek());
+            audio.update(self.state);
         }
     }
 }
@@ -750,12 +750,14 @@ pub fn CallAlert() -> Element {
 #[component]
 pub fn CallPanel(#[props(default)] embedded: bool) -> Element {
     let mut state = use_app_state();
+    let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let nostr = use_context::<crate::nostr::service::NostrTx>();
     let Some(call) = state.read().dm_call.clone() else {
         return rsx! {};
     };
     let name = state.read().display_name(&call.peer);
     let muted = state.read().voice.muted;
+    let mic_volume = state.read().mic_volume;
     let deafened = state.read().voice.deafened;
     let volume = state
         .read()
@@ -837,6 +839,27 @@ pub fn CallPanel(#[props(default)] embedded: bool) -> Element {
                     }
                 }
                 if call.phase != Phase::Incoming {
+                    div { style: "padding: 12px 16px; border-top-width: 1px; border-top-style: solid; border-top-color: var(--border); background-color: var(--bg2);",
+                        div { style: "display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; font-size: 11px;",
+                            label { r#for: "dm-microphone-volume", style: "color: var(--text-muted);", "Microphone volume" }
+                            span { style: "font-variant-numeric: tabular-nums; color: var(--text-dim);", "{mic_volume}%" }
+                        }
+                        input { id: "dm-microphone-volume", r#type: "range", min: "0", max: "200", step: "5", value: "{mic_volume}",
+                            style: "width: 100%; min-width: 0; accent-color: var(--accent); cursor: pointer;",
+                            aria_label: "Microphone volume", aria_valuetext: "{mic_volume} percent",
+                            oninput: move |event| {
+                                if let Ok(value) = event.value().parse::<u16>() {
+                                    let volume = value.min(200);
+                                    state.write().mic_volume = volume;
+                                    settings.write().mic_volume = volume;
+                                }
+                            },
+                            onchange: move |_| crate::settings::save(&settings.peek()),
+                        }
+                        p { style: "margin: 6px 0 0; font-size: 10px; color: var(--text-dim);",
+                            "Changes how loud your contact hears you."
+                        }
+                    }
                     div { style: "padding: 12px 16px; border-top-width: 1px; border-top-style: solid; border-top-color: var(--border); background-color: var(--bg2);",
                         div { style: "display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; font-size: 11px;",
                             label { r#for: "dm-call-volume", style: "color: var(--text-muted);", "Call volume" }
