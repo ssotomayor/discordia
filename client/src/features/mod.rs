@@ -1,3 +1,4 @@
+pub mod account;
 pub mod activities;
 pub mod appearance;
 pub mod bot_commands;

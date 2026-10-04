@@ -553,6 +553,64 @@ impl AppState {
         self.cameras_watching.clear();
     }
 
+    pub fn clear_server_session(&mut self) {
+        self.status = ConnectionStatus::Disconnected;
+        self.self_user = None;
+        self.guilds.clear();
+        self.channels.clear();
+        self.members.clear();
+        self.voice_states.clear();
+        self.end_voice_locally();
+        self.voice_session_epoch = self.voice_session_epoch.wrapping_add(1);
+        self.selected_guild = None;
+        self.selected_channel = self.selected_channel.filter(|id| self.dm_of(*id).is_some());
+        self.dm_mode = self.selected_channel.is_some();
+        self.dm_pane_open = false;
+        let dm_channels: HashSet<_> = self.dms.iter().map(|dm| dm.channel_id).collect();
+        self.messages.retain(|id, _| dm_channels.contains(id));
+        self.catalog.clear();
+        self.catalog_total = 0;
+        self.profiles.clear();
+        self.activities.clear();
+        self.server_origin = None;
+        self.rendezvous_url = None;
+        self.host_info = None;
+        self.transport = Transport::Loopback;
+        self.guild_dialog = None;
+        self.rules_prompt = None;
+        self.audio_settings = false;
+        self.topology_open = false;
+        self.channel_access_open = None;
+        self.typing.clear();
+        self.replying_to = None;
+        self.profile_card = None;
+        self.image_viewer = None;
+        self.media_undecryptable = false;
+        self.pending_rekey = false;
+        self.screen_shares.clear();
+        self.screen_picker = None;
+        self.screen_audio_joined = false;
+        self.stream_has_audio = Default::default();
+        self.soundboard_open = false;
+        self.soundboard_adjusting = false;
+        self.recent_sounds.clear();
+        self.voice_quality.clear();
+        self.voice_stats.clear();
+        self.screen_share_stats = None;
+        self.screen_share_in_stats = None;
+        self.integrations.clear();
+        self.bot_commands.clear();
+        self.command_notes.clear();
+        self.guild_emojis.clear();
+        self.guild_sounds.clear();
+        self.emoji_requested.clear();
+        self.roles.clear();
+        self.bans.clear();
+        self.invites.clear();
+        self.audit_logs.clear();
+        self.is_operator = false;
+    }
+
     pub fn is_owner(&self, guild_id: Id) -> bool {
         let Some(me) = self.self_user.as_ref() else {
             return false;
@@ -1164,11 +1222,7 @@ pub fn set_dm_muted(
     crate::settings::save(&next);
 }
 
-/// Mirrors the read watermarks into the settings file as they move.
-///
-/// A hook rather than a line at each read site: the counter is cleared from four
-/// places and `HomeView` and `WorkspaceView` each build their own `AppState`, so
-/// one writer is what keeps the file from drifting from the map.
+// Read marks change on several surfaces; one account-level writer prevents drift.
 pub fn use_dm_read_persistence(state: Signal<AppState>) {
     let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let marks = use_memo(move || {

@@ -1,8 +1,6 @@
 use dioxus::prelude::*;
 
-use crate::features::{
-    home::HomeView, identity_setup::IdentitySetupView, workspace::WorkspaceView,
-};
+use crate::features::{account::AccountView, identity_setup::IdentitySetupView};
 use crate::identity::Identity;
 use crate::session::{self, SavedSession};
 use crate::state::{SessionMode, SessionParams};
@@ -774,9 +772,12 @@ pub fn App() -> Element {
                         on_done: move |new_id: Identity| identity.set(Some(new_id)),
                     }
                 },
-                (Some(id), None) => rsx! {
-                    HomeView {
+                (Some(id), active_session) => rsx! {
+                    for id in std::iter::once(id) {
+                    AccountView {
+                        key: "{id.pubkey}",
                         identity: id,
+                        session: active_session.clone(),
                         error: error(),
                         last_session: last_session.read().clone(),
                         on_connect: move |params: SessionParams| {
@@ -799,19 +800,12 @@ pub fn App() -> Element {
                             session.set(None);
                             identity.set(None);
                         },
+                        on_disconnect: move |reason: String| {
+                            error.set(if reason.is_empty() { None } else { Some(reason) });
+                            session.set(None);
+                        },
                     }
-                },
-                (Some(_), Some(params)) => rsx! {
-                    Fragment {
-                        WorkspaceView {
-                            key: "{session_key(&params)}",
-                            params: params.clone(),
-                            on_disconnect: move |reason: String| {
-                                error.set(if reason.is_empty() { None } else { Some(reason) });
-                                session.set(None);
-                            },
-                        }
-                    },
+                    }
                 },
             }
             }
@@ -822,7 +816,7 @@ pub fn App() -> Element {
 #[derive(Clone, Copy)]
 pub(crate) struct QuitRequest(pub Signal<bool>);
 
-fn session_key(p: &SessionParams) -> String {
+pub(crate) fn session_key(p: &SessionParams) -> String {
     let mode = match &p.mode {
         SessionMode::Remote { server_url } => format!("remote:{server_url}"),
         SessionMode::SelfHost {

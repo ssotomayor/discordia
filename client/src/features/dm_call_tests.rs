@@ -51,6 +51,29 @@ fn incoming(id: Uuid, device: Uuid, body: Body) -> Incoming {
 }
 
 #[test]
+fn server_navigation_preserves_calls_but_guild_voice_is_exclusive() {
+    harness(|actor, _| {
+        actor.incoming(incoming(Uuid::new_v4(), Uuid::new_v4(), Body::Invite));
+        let call_id = actor.session.as_ref().unwrap().id;
+        for status in [
+            crate::state::ConnectionStatus::Connecting,
+            crate::state::ConnectionStatus::Ready,
+        ] {
+            actor.state.write().status = status;
+            actor.tick();
+            assert_eq!(actor.session.as_ref().unwrap().id, call_id);
+        }
+        actor.state.write().clear_server_session();
+        actor.tick();
+        assert_eq!(actor.session.as_ref().unwrap().id, call_id);
+        actor.state.write().voice.phase = VoicePhase::Connecting;
+        actor.tick();
+        assert!(actor.session.is_none());
+        assert!(actor.state.peek().dm_call.is_none());
+    });
+}
+
+#[test]
 fn incoming_requires_consent_and_duplicate_invites_do_not_extend_deadline() {
     harness(|actor, output| {
         let id = Uuid::new_v4();
