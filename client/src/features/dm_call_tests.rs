@@ -120,6 +120,117 @@ fn strangers_and_wrong_devices_cannot_take_over_or_end_a_call() {
 }
 
 #[test]
+fn cancellation_and_decline_dismiss_both_peers_and_replayed_invites() {
+    harness(|actor, output| {
+        actor.action(Action::Start("22".repeat(32)));
+        let invite = output.try_recv().unwrap().1;
+        actor.action(Action::End);
+        let cancel = output.try_recv().unwrap().1;
+        assert_eq!(invite.call_id, cancel.call_id);
+        assert_eq!(invite.device, cancel.device);
+        assert_eq!(cancel.target, None);
+        assert!(matches!(
+            cancel.body,
+            Body::End {
+                reason: EndReason::Hangup
+            }
+        ));
+        assert!(actor.state.peek().dm_call.is_none());
+        let mut initial = AppState::empty();
+        initial.contacts.contacts.push(Contact {
+            pubkey: actor.our_key.clone(),
+            relay: None,
+            petname: None,
+        });
+        let (outgoing, mut recipient_output) = unbounded_channel();
+        let mut recipient = Actor {
+            our_key: "22".repeat(32),
+            device: Uuid::new_v4(),
+            state: Signal::new(initial),
+            outgoing,
+            tx: actor.tx.clone(),
+            session: None,
+            finished: HashMap::new(),
+        };
+        recipient.incoming(Incoming {
+            author: actor.our_key.clone(),
+            signal: invite.clone(),
+        });
+        assert_eq!(
+            recipient.state.peek().dm_call.as_ref().unwrap().phase,
+            Phase::Incoming
+        );
+        recipient.incoming(Incoming {
+            author: actor.our_key.clone(),
+            signal: cancel,
+        });
+        assert!(recipient.state.peek().dm_call.is_none());
+        recipient.incoming(Incoming {
+            author: actor.our_key.clone(),
+            signal: invite,
+        });
+        assert!(recipient.session.is_none());
+        actor.action(Action::Start("22".repeat(32)));
+        let invite = output.try_recv().unwrap().1;
+        recipient.incoming(Incoming {
+            author: actor.our_key.clone(),
+            signal: invite,
+        });
+        recipient.action(Action::End);
+        let decline = recipient_output.try_recv().unwrap().1;
+        assert_eq!(decline.target, Some(actor.device));
+        assert!(matches!(
+            decline.body,
+            Body::End {
+                reason: EndReason::Declined
+            }
+        ));
+        actor.incoming(Incoming {
+            author: recipient.our_key.clone(),
+            signal: decline,
+        });
+        assert!(actor.state.peek().dm_call.is_none());
+        assert!(recipient.state.peek().dm_call.is_none());
+    });
+    harness(|actor, _| {
+        let id = Uuid::new_v4();
+        let device = Uuid::new_v4();
+        actor.incoming(incoming(id, device, Body::Invite));
+        actor.incoming(incoming(
+            id,
+            device,
+            Body::End {
+                reason: EndReason::Hangup,
+            },
+        ));
+        assert!(actor.state.peek().dm_call.is_none());
+        actor.incoming(incoming(id, device, Body::Invite));
+        assert!(actor.session.is_none());
+    });
+}
+
+#[test]
+fn cancellation_of_another_call_is_remembered_while_busy() {
+    harness(|actor, _| {
+        let current = Uuid::new_v4();
+        let cancelled = Uuid::new_v4();
+        let device = Uuid::new_v4();
+        actor.incoming(incoming(current, device, Body::Invite));
+        actor.incoming(incoming(
+            cancelled,
+            device,
+            Body::End {
+                reason: EndReason::Hangup,
+            },
+        ));
+        assert_eq!(actor.session.as_ref().unwrap().id, current);
+        actor.action(Action::End);
+        actor.incoming(incoming(cancelled, device, Body::Invite));
+        assert!(actor.state.peek().dm_call.is_none());
+    });
+}
+
+#[test]
 fn voice_channel_is_busy_and_expiration_clears_state() {
     harness(|actor, output| {
         actor.state.write().voice.phase = VoicePhase::Connecting;

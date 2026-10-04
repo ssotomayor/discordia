@@ -89,6 +89,42 @@ pub async fn publish(event: Event, urls: Vec<String>) -> Delivery {
     }
 }
 
+pub async fn publish_call(event: Event, urls: Vec<String>, expires_at: i64) -> Delivery {
+    let targets: HashSet<_> = urls.into_iter().collect();
+    let results = futures_util::future::join_all(targets.into_iter().map(|url| {
+        let event = event.clone();
+        async move {
+            for attempt in 0..2 {
+                if chrono::Utc::now().timestamp() >= expires_at {
+                    break;
+                }
+                let remaining = expires_at
+                    .saturating_sub(chrono::Utc::now().timestamp())
+                    .max(0) as u64;
+                if tokio::time::timeout(
+                    Duration::from_secs(remaining),
+                    publish(event.clone(), vec![url.clone()]),
+                )
+                .await
+                    == Ok(Delivery::Accepted)
+                {
+                    return Delivery::Accepted;
+                }
+                if attempt == 0 {
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                }
+            }
+            Delivery::Failed
+        }
+    }))
+    .await;
+    if results.contains(&Delivery::Accepted) {
+        Delivery::Accepted
+    } else {
+        Delivery::Failed
+    }
+}
+
 pub type Outbox = HashMap<Id, Pending>;
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -185,12 +221,20 @@ mod tests {
     }
 
     async fn fake_relay(accepted: bool) -> (String, tokio::task::JoinHandle<()>) {
+        fake_relay_delayed(accepted, Duration::ZERO).await
+    }
+
+    async fn fake_relay_delayed(
+        accepted: bool,
+        delay: Duration,
+    ) -> (String, tokio::task::JoinHandle<()>) {
         use futures_util::{SinkExt, StreamExt};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("ws://{}", listener.local_addr().unwrap());
         let task = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
             let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            tokio::time::sleep(delay).await;
             while let Some(Ok(tokio_tungstenite::tungstenite::Message::Text(raw))) =
                 socket.next().await
             {
@@ -207,6 +251,51 @@ mod tests {
             }
         });
         (url, task)
+    }
+
+    #[tokio::test]
+    async fn call_signals_reach_slower_relays_after_the_first_acceptance() {
+        let secret = secp256k1::SecretKey::from_slice(&[7; 32]).unwrap();
+        let event = super::super::event::sign_with(&secret, 123, 1059, vec![], "call".into());
+        let (fast, fast_task) = fake_relay(true).await;
+        let (slow, slow_task) = fake_relay_delayed(true, Duration::from_millis(150)).await;
+        assert_eq!(
+            publish_call(event, vec![fast, slow], chrono::Utc::now().timestamp() + 60).await,
+            Delivery::Accepted
+        );
+        fast_task.await.unwrap();
+        slow_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn call_publication_retries_the_same_event_after_rejection() {
+        use futures_util::{SinkExt, StreamExt};
+        let secret = secp256k1::SecretKey::from_slice(&[7; 32]).unwrap();
+        let event = super::super::event::sign_with(&secret, 123, 1059, vec![], "cancel".into());
+        let id = event.id.clone();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move {
+            for accepted in [false, true] {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+                let raw = socket.next().await.unwrap().unwrap().into_text().unwrap();
+                let frame: serde_json::Value = serde_json::from_str(&raw).unwrap();
+                assert_eq!(frame[0], "EVENT");
+                assert_eq!(frame[1]["id"], id);
+                socket
+                    .send(tokio_tungstenite::tungstenite::Message::Text(
+                        serde_json::json!(["OK", id, accepted, "test"]).to_string(),
+                    ))
+                    .await
+                    .unwrap();
+            }
+        });
+        assert_eq!(
+            publish_call(event, vec![url], chrono::Utc::now().timestamp() + 60).await,
+            Delivery::Accepted
+        );
+        task.await.unwrap();
     }
 
     #[tokio::test]

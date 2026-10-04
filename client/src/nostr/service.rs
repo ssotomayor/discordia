@@ -279,7 +279,10 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
                                 let targets = routes.targets(&peer, &relays);
                                 let calls = calls.clone();
                                 spawn(async move {
-                                    let accepted = super::delivery::publish(wrap, targets).await == super::delivery::Delivery::Accepted;
+                                    let accepted = super::delivery::publish_call(wrap, targets, signal.sent_at + super::calls::TTL).await == super::delivery::Delivery::Accepted;
+                                    if !accepted {
+                                        tracing::warn!(call_id = %signal.call_id, "DM call signal was not accepted by any recipient relay");
+                                    }
                                     if calls.send(crate::features::dm_call::Command::Published { call_id: signal.call_id, accepted }).is_err() {
                                         tracing::debug!("Call ended before relay publication completed");
                                     }

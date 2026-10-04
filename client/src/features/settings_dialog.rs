@@ -180,7 +180,7 @@ pub fn SettingsDialog() -> Element {
                         if settings_tab() == SettingsTab::Audio {
                         h3 { class: "dxf-display text-[17px] font-bold tracking-tight text-[var(--text)]", "Audio" }
                         p { class: "mt-0.5 mb-4 text-[12.5px] text-[var(--text-dim)]",
-                            "Where sound comes out, and how loud the cues are."
+                            "Choose your output device and adjust app sounds and soundboard volume independently."
                         }
                         div { class: "mb-2",
                             span { class: "text-[11px] text-[var(--text-muted)]", "Output" }
@@ -207,8 +207,9 @@ pub fn SettingsDialog() -> Element {
                                 }
                             }
                         }
-                        div { class: "mb-2",
-                            span { class: "text-[11px] text-[var(--text-muted)]", "Sound effects" }
+                        div { class: "mt-4 mb-3 rounded-lg border border-[var(--border)] p-3",
+                            span { class: "text-[12px] font-semibold text-[var(--text)]", "App sounds" }
+                            p { class: "mt-1 text-[11px] text-[var(--text-dim)]", "Messages, incoming and outgoing calls, and interface notifications." }
                             div { class: "flex items-center gap-2 mt-1",
                                 input {
                                     r#type: "range",
@@ -216,7 +217,8 @@ pub fn SettingsDialog() -> Element {
                                     max: "100",
                                     value: "{settings.read().sfx_volume}",
                                     class: "flex-1 accent-[var(--accent)]",
-                                    title: "UI sound effects volume",
+                                    title: "App sounds volume",
+                                    aria_label: "App sounds volume",
                                     oninput: move |e| {
                                         let val: u8 = e.value().parse().unwrap_or(70).min(100);
                                         let mut next = settings.read().clone();
@@ -227,12 +229,21 @@ pub fn SettingsDialog() -> Element {
                                 }
                                 span { class: "text-[10px] text-[var(--text-dim)] w-8 text-right", "{settings.read().sfx_volume}%" }
                             }
+                            button {
+                                class: "mt-2 rounded border border-[var(--border)] px-2 py-1 text-[11px] text-[var(--text-muted)] hover:text-[var(--text)]",
+                                onclick: move |_| {
+                                    let saved = settings.read();
+                                    crate::native_sounds::configure(saved.sfx_volume, saved.selected_output_device.clone());
+                                    crate::native_sounds::play("call-connected");
+                                },
+                                "Test app sound"
+                            }
                         }
-                        div { class: "mb-2",
-                            span { class: "text-[11px] text-[var(--text-muted)]", "Soundboard" }
+                        div { class: "mb-3 rounded-lg border border-[var(--border)] p-3",
+                            span { class: "text-[12px] font-semibold text-[var(--text)]", "Soundboard volume" }
                             div { class: "mt-1", crate::features::soundboard::SoundboardVolume {} }
                             div { class: "mt-1 text-[10px] text-[var(--text-dim)]",
-                                "How loud other people's soundboard sounds are for you. Muting someone mutes their sounds too."
+                                "Soundboard playback only. App notifications and call sounds use the separate control above. Muting someone also mutes their soundboard."
                             }
                         }
                         }

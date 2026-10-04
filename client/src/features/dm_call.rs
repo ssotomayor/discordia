@@ -349,6 +349,9 @@ impl Actor {
             return;
         };
         if s.id != signal.call_id || s.peer != author {
+            if matches!(signal.body, Body::End { .. }) {
+                self.remember(author, signal.call_id);
+            }
             return;
         }
         if s.remote_device
