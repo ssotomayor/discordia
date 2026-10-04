@@ -117,6 +117,30 @@ file read out of a working tree is whatever revision that tree last held.
 | `deploy/livekit.yaml` carries no `keys:` | `LIVEKIT_KEYS` supplies them, so a copied file never carries a secret |
 | Off loopback the gateway needs QUIC reachable | `9001/udp` published and open (`DIOXUSFUN_QUIC_PORT`); `DIOXUSFUN_RELAY_URL` so a blocked UDP port still connects |
 
+## The website
+
+`discordia.world` is a Next.js static export in `site/`, served by the VPS's
+nginx from `/var/www/discordia.world`. The VPS never runs Node: it has no
+toolchain and cannot build, so `out/` is produced elsewhere and synced in.
+
+| Name | Serves | How |
+|---|---|---|
+| `discordia.world`, `www` | the site, HTTPS | nginx vhost `discordia.world`, root `/var/www/discordia.world`, certbot cert, `error_page 404 /404.html`, `/_next/static/` immutable for a year |
+| `app.discordia.world` | `wss://` gateway proxy to 127.0.0.1:9000 | nginx vhost `app.discordia.world`, WebSocket upgrade, 1 h timeouts |
+| `rendezvous.discordia.world` | plain `ws://…:7700`, no proxy, no TLS | bare A record; the rendezvous must see real peer addresses |
+
+| Path | What happens |
+|---|---|
+| Push to `master` touching `site/**` | `site.yml` builds; if the `SITE_DEPLOY_KEY` secret is set it rsyncs `out/` to `SITE_HOST:SITE_ROOT` (repo variables, default `root@151.243.137.35:/var/www/discordia.world`) |
+| Pull request touching `site/**` | `site.yml` builds only |
+| By hand | `site/deploy.sh` from a machine holding the VPS key; same rsync |
+
+The deploy key is an ed25519 keypair made for this: the private half in the
+secret, the public half in `authorized_keys` on the VPS. Every DNS record stays
+unproxied in Cloudflare; a proxied record broke the rendezvous, QUIC and the
+`wss://` login at once. `Downloads.tsx` asks the GitHub releases API at page
+load, so a new release needs no site deploy; the site has no analytics.
+
 ## Devcontainer
 
 A Linux box holding nothing but this repo, for agent sessions run with
@@ -139,6 +163,7 @@ devcontainer up --workspace-folder . --remove-existing-container   # after editi
 | `dx` | pinned to `DIOXUS_CLI_VERSION` in `ci.yml` | bump both, plus the literal in `windows-release.yml` |
 | Client | compiles, never runs | no display for wry, no audio device, screen capture is Windows/macOS-only |
 | SFU | `LIVEKIT_BUNDLE_SKIP=1`, autospawn off | unset to build a server that embeds one |
+| Site | `cd site && npm run dev` on 3100, `npm run build && npm run preview` on 8787 | the only ports compose publishes to the host, loopback only; recreate the container after editing `.devcontainer/` |
 
 ## Who can read what
 
