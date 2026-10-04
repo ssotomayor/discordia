@@ -95,6 +95,11 @@ pub fn SettingsDialog() -> Element {
 
     let voice_phase = state.read().voice.phase;
     let dm_phase = state.read().dm_call.as_ref().map(|call| call.phase);
+    let microphone_unavailable = state
+        .read()
+        .dm_call
+        .as_ref()
+        .is_some_and(|call| call.microphone_error.is_some());
     let reconnecting = matches!(voice_phase, VoicePhase::Connecting)
         || matches!(
             dm_phase,
@@ -103,8 +108,9 @@ pub fn SettingsDialog() -> Element {
                     | crate::features::dm_call::Phase::Reconnecting
             )
         );
-    let microphone_active = voice_phase == VoicePhase::Connected
-        || dm_phase == Some(crate::features::dm_call::Phase::Connected);
+    let microphone_active = !microphone_unavailable
+        && (voice_phase == VoicePhase::Connected
+            || dm_phase == Some(crate::features::dm_call::Phase::Connected));
     let mic_level_pct = crate::features::voice::peak_to_meter_pct(mic_level);
     let mic_level_pre = state.read().mic_level_pre;
     let mic_level_pre_pct = crate::features::voice::peak_to_meter_pct(mic_level_pre);
@@ -290,7 +296,9 @@ pub fn SettingsDialog() -> Element {
                         div { class: "mb-2",
                             div { class: "flex items-center justify-between",
                                 span { class: "text-[11px] text-[var(--text-muted)]", "Level" }
-                                if reconnecting {
+                                if microphone_unavailable {
+                                    span { class: "text-[10px] text-[var(--text-dim)]", "microphone unavailable — retrying" }
+                                } else if reconnecting {
                                     span { class: "text-[10px] text-[var(--text-dim)]", "reconnecting" }
                                 } else if microphone_active {
                                     span { class: "text-[10px] text-[var(--text-dim)]", "{mic_level_display}" }

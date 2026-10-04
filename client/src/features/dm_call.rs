@@ -45,6 +45,7 @@ impl Phase {
 pub struct CallView {
     pub peer: String,
     pub phase: Phase,
+    pub microphone_error: Option<String>,
 }
 
 pub enum Action {
@@ -178,6 +179,10 @@ impl Actor {
         self.state.write().dm_call = self.session.as_ref().map(|s| CallView {
             peer: s.peer.clone(),
             phase: s.phase,
+            microphone_error: s
+                .audio
+                .as_ref()
+                .and_then(|audio| audio.microphone_error.clone()),
         });
     }
 
@@ -560,7 +565,11 @@ impl Actor {
         } else if let Some(s) = &mut self.session
             && let Some(audio) = &mut s.audio
         {
+            let previous_error = audio.microphone_error.clone();
             audio.update(self.state);
+            if previous_error != audio.microphone_error {
+                self.update_view();
+            }
         }
     }
 }
@@ -809,6 +818,11 @@ pub fn CallPanel(#[props(default)] embedded: bool) -> Element {
                         "{call.phase.label()}"
                     }
                     p { style: "margin: 6px 0 0; font-size: 11px; line-height: 1.5; color: var(--text-dim);", "{hint}" }
+                    if let Some(error) = &call.microphone_error {
+                        p { role: "status", style: "margin: 6px 0 0; font-size: 11px; color: var(--warn);",
+                            "Microphone unavailable — retrying. {error}"
+                        }
+                    }
                 }
                 div { style: "display: flex; gap: 8px; padding: 0 16px 16px;",
                     if call.phase == Phase::Incoming {
