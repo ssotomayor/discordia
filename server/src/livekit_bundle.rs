@@ -364,7 +364,7 @@ pub async fn spawn_livekit(
         let _ = fs::write(dir.join(pid_file_name()), format!("{pid}\n{bin_name}\n"));
     }
 
-    wait_for_ready(&mut child, ports().ws, Duration::from_secs(10))
+    wait_for_ready(&mut child, ports().ws, creds, Duration::from_secs(10))
         .await
         .map_err(|e| format!("livekit not ready: {e}"))?;
 
@@ -420,29 +420,165 @@ fn yaml_quote(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
-async fn wait_for_ready(child: &mut Child, port: u16, timeout: Duration) -> Result<(), String> {
+async fn wait_for_ready(
+    child: &mut Child,
+    port: u16,
+    creds: &Credentials,
+    timeout: Duration,
+) -> Result<(), String> {
     let deadline = tokio::time::Instant::now() + timeout;
-    let addr = format!("127.0.0.1:{port}");
+    let client = livekit_api::services::room::RoomClient::with_api_key(
+        &format!("http://127.0.0.1:{port}"),
+        &creds.key,
+        &creds.secret,
+    );
     loop {
-        if let Ok(Some(status)) = child.try_wait() {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|e| format!("livekit status: {e}"))?
+        {
             return Err(format!(
                 "livekit-server exited on startup ({status}); port {port} is most likely \
                  held by another process"
             ));
         }
-        if tokio::net::TcpStream::connect(&addr).await.is_ok() {
-            return Ok(());
-        }
         if tokio::time::Instant::now() >= deadline {
-            return Err(format!("{addr} not listening after {timeout:?}"));
+            return Err(format!(
+                "port {port} did not accept this host's credentials after {timeout:?}; \
+                 another instance may be using the media port"
+            ));
         }
-        tokio::time::sleep(Duration::from_millis(150)).await;
+        // Another profile's SFU can already own this port while our child is still starting.
+        if authenticated_ready(&client, deadline).await {
+            if child
+                .try_wait()
+                .map_err(|e| format!("livekit status: {e}"))?
+                .is_none()
+            {
+                return Ok(());
+            }
+            return Err("livekit-server exited during its readiness check".into());
+        }
+        tokio::time::sleep_until(
+            deadline.min(tokio::time::Instant::now() + Duration::from_millis(150)),
+        )
+        .await;
     }
+}
+
+async fn authenticated_ready(
+    client: &livekit_api::services::room::RoomClient,
+    deadline: tokio::time::Instant,
+) -> bool {
+    let attempt_deadline = deadline.min(tokio::time::Instant::now() + Duration::from_millis(500));
+    matches!(
+        tokio::time::timeout_at(attempt_deadline, client.list_rooms(Vec::new())).await,
+        Ok(Ok(_))
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn an_open_media_port_is_not_authenticated_readiness() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0; 4096];
+            assert!(socket.read(&mut request).await.unwrap() > 0);
+            socket
+                .write_all(
+                    b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .unwrap();
+        });
+        let creds = Credentials::generate();
+        let client =
+            livekit_api::services::room::RoomClient::with_api_key(&url, &creds.key, &creds.secret);
+        assert!(
+            !authenticated_ready(
+                &client,
+                tokio::time::Instant::now() + Duration::from_secs(1)
+            )
+            .await
+        );
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_silent_media_port_cannot_stall_the_startup_deadline() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let creds = Credentials::generate();
+        let client =
+            livekit_api::services::room::RoomClient::with_api_key(&url, &creds.key, &creds.secret);
+        let check = authenticated_ready(
+            &client,
+            tokio::time::Instant::now() + Duration::from_millis(50),
+        );
+        assert!(
+            !tokio::time::timeout(Duration::from_secs(1), check)
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "starts the real bundled SFU on isolated ports; requires process access"]
+    async fn real_sfu_readiness_requires_the_configured_credentials() {
+        let dir = scratch("authenticated-sfu");
+        private_dir(&dir).unwrap();
+        let path = ensure_binary(
+            &dir,
+            &format!("livekit-server-test{LIVEKIT_BIN_EXT}"),
+            LIVEKIT_BIN,
+            LIVEKIT_SHA256,
+            LIVEKIT_SIZE.trim().parse().unwrap(),
+        )
+        .unwrap();
+        let ws = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let tcp = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let udp = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let p = LivekitPorts {
+            ws: ws.local_addr().unwrap().port(),
+            tcp: tcp.local_addr().unwrap().port(),
+            udp: udp.local_addr().unwrap().port(),
+        };
+        let creds = Credentials::generate();
+        let config = dir.join("test.yaml");
+        write_private(&config, config_yaml_for(None, p, &creds)).unwrap();
+        drop((ws, tcp, udp));
+        let mut command = Command::new(path);
+        command
+            .arg("--config")
+            .arg(config)
+            .kill_on_drop(true)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        #[cfg(windows)]
+        command.creation_flags(CREATE_NO_WINDOW);
+        let mut child = command.spawn().unwrap();
+        let ready = wait_for_ready(&mut child, p.ws, &creds, Duration::from_secs(10)).await;
+        let wrong = wait_for_ready(
+            &mut child,
+            p.ws,
+            &Credentials::generate(),
+            Duration::from_millis(300),
+        )
+        .await;
+        child.kill().await.unwrap();
+        fs::remove_dir_all(dir).unwrap();
+        assert!(ready.is_ok(), "{ready:?}");
+        assert!(
+            wrong.is_err(),
+            "another profile's credentials must not pass readiness"
+        );
+    }
 
     fn compress(bytes: &[u8]) -> Vec<u8> {
         use std::io::Write;
