@@ -120,6 +120,9 @@ measures hairpin NAT, because LiveKit *replaces* its LAN candidate with the
 advertised address rather than adding to it. The hairpin check uses a temporary
 challenge responder on the mapped media TCP port before LiveKit starts; a
 successful probe releases that port before starting the bundled SFU.
+SFU startup requires an authenticated room-list request with this host's keys;
+an occupied port alone is not readiness. A conflicting instance triggers the
+existing rendezvous fallback rather than issuing unusable local voice tokens.
 
 ## Deploying a box
 
