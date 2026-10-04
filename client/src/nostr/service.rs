@@ -274,7 +274,7 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
                 outgoing = call_signals.recv() => {
                     if let Some((peer, signal)) = outgoing {
                         let wrap = super::calls::rumor(&our_pubkey, &peer, &signal)
-                            .and_then(|rumor| nip59::wrap_with_expiration(&secret, &peer, &rumor, now(), Some(signal.sent_at + super::calls::TTL)));
+                            .and_then(|rumor| nip59::wrap_with_expiration(&secret, &peer, &rumor, now(), Some(super::calls::relay_expiration(signal.sent_at))));
                         match wrap {
                             Ok(wrap) => {
                                 let published = senders.publish_call(wrap, routes.targets(&peer, &relays), signal.sent_at + super::calls::TTL);
@@ -361,9 +361,16 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
                         nip59::KIND_GIFT_WRAP => {
                             let Ok(rumor) = nip59::unwrap(&secret, &event) else { continue; };
                             if rumor.kind == super::calls::KIND_CALL {
-                                if let Ok(signal) = super::calls::open(&rumor, &our_pubkey, now())
-                                    && calls.send(crate::features::dm_call::Command::Incoming(crate::features::dm_call::Incoming { author: rumor.pubkey, signal })).is_err()
-                                { tracing::debug!("Call service stopped"); }
+                                let offset = state.peek().clock_offset(&rumor.pubkey);
+                                let sender_now = super::calls::sender_now(now(), offset);
+                                match super::calls::open(&rumor, &our_pubkey, sender_now) {
+                                    Ok(signal) => {
+                                        if calls.send(crate::features::dm_call::Command::Incoming(crate::features::dm_call::Incoming { author: rumor.pubkey, signal })).is_err() {
+                                            tracing::debug!("Call service stopped");
+                                        }
+                                    }
+                                    Err(reason) => tracing::warn!(%reason, clock_offset = offset, age_secs = sender_now.saturating_sub(rumor.created_at), "Rejected incoming DM call signal"),
+                                }
                                 continue;
                             }
                             let live = every_relay_replayed(&state, &replayed);
@@ -600,7 +607,7 @@ fn hidden_by_delete(s: &AppState, peer: &str, at: i64, source: Source) -> bool {
 /// How far a sender's stamp may sit from ours before we call it a clock
 /// difference rather than the delivery taking a moment. Wide enough that
 /// network delay and a relay holding an event never move a conversation.
-const CLOCK_DEADBAND_SECS: i64 = 60;
+const CLOCK_DEADBAND_SECS: i64 = super::calls::CLOCK_DEADBAND;
 
 /// Re-estimate how far ahead an author's clock runs, from a message that was
 /// sent moments ago.

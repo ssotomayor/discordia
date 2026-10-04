@@ -51,6 +51,26 @@ fn incoming(id: Uuid, device: Uuid, body: Body) -> Incoming {
 }
 
 #[test]
+fn incoming_uses_learned_sender_clock_without_accepting_expired_calls() {
+    for offset in [-94, 94] {
+        harness(|actor, _| {
+            let mut event = incoming(Uuid::new_v4(), Uuid::new_v4(), Body::Invite);
+            actor.state.write().note_clock_offset(&event.author, offset);
+            event.signal.sent_at += offset;
+            actor.incoming(event);
+            assert_eq!(actor.session.as_ref().unwrap().phase, Phase::Incoming);
+        });
+        harness(|actor, _| {
+            let mut event = incoming(Uuid::new_v4(), Uuid::new_v4(), Body::Invite);
+            actor.state.write().note_clock_offset(&event.author, offset);
+            event.signal.sent_at += offset - crate::nostr::calls::TTL - 5;
+            actor.incoming(event);
+            assert!(actor.session.is_none());
+        });
+    }
+}
+
+#[test]
 fn server_navigation_preserves_calls_but_guild_voice_is_exclusive() {
     harness(|actor, _| {
         actor.incoming(incoming(Uuid::new_v4(), Uuid::new_v4(), Body::Invite));

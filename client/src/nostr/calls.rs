@@ -5,7 +5,18 @@ use super::event::{self, Rumor};
 
 pub const KIND_CALL: u16 = 24133;
 pub const TTL: i64 = 60;
+pub const MAX_CLOCK_SKEW: i64 = 300;
+pub const CLOCK_DEADBAND: i64 = 60;
 pub const MAX_SDP: usize = 24_000;
+
+pub fn sender_now(now: i64, learned_offset: i64) -> i64 {
+    now.saturating_add(learned_offset.clamp(-MAX_CLOCK_SKEW, MAX_CLOCK_SKEW))
+}
+
+pub fn relay_expiration(sent_at: i64) -> i64 {
+    // Relay retention tolerates skew; authenticated inner signals still expire after TTL.
+    sent_at.saturating_add(TTL).saturating_add(MAX_CLOCK_SKEW)
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -43,7 +54,9 @@ impl Signal {
         if self.version != 1 || self.call_id.is_nil() || self.device.is_nil() {
             return Err("Unsupported call signal".into());
         }
-        if self.sent_at < now.saturating_sub(TTL) || self.sent_at > now.saturating_add(15) {
+        if self.sent_at < now.saturating_sub(TTL)
+            || self.sent_at > now.saturating_add(CLOCK_DEADBAND)
+        {
             return Err("Expired call signal or clock mismatch".into());
         }
         match &self.body {
@@ -124,12 +137,12 @@ mod tests {
             &b,
             &rumor,
             signal.sent_at,
-            Some(signal.sent_at + TTL),
+            Some(relay_expiration(signal.sent_at)),
         )
         .unwrap();
         assert_eq!(
             wrap.tag("expiration"),
-            Some((signal.sent_at + TTL).to_string().as_str())
+            Some(relay_expiration(signal.sent_at).to_string().as_str())
         );
         assert_ne!(wrap.pubkey, a);
         let opened = nip59::unwrap(&bob, &wrap).unwrap();
@@ -145,7 +158,40 @@ mod tests {
         let signal = invite();
         assert!(signal.validate(signal.sent_at + TTL).is_ok());
         assert!(signal.validate(signal.sent_at + TTL + 1).is_err());
-        assert!(signal.validate(signal.sent_at - 16).is_err());
+        assert!(signal.validate(signal.sent_at - CLOCK_DEADBAND).is_ok());
+        assert!(
+            signal
+                .validate(signal.sent_at - CLOCK_DEADBAND - 1)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn learned_clock_offsets_preserve_freshness_in_both_directions() {
+        let signal = invite();
+        for offset in [-94, 94] {
+            let local_now = signal.sent_at - offset;
+            let decoded = rumor("sender", "recipient", &signal).unwrap();
+            assert!(open(&decoded, "recipient", sender_now(local_now, offset)).is_ok());
+            assert!(
+                signal
+                    .validate(sender_now(local_now + TTL + 1, offset))
+                    .is_err()
+            );
+            assert!(relay_expiration(signal.sent_at) > local_now + TTL);
+        }
+        assert!(
+            signal
+                .validate(sender_now(signal.sent_at - 1000, 1000))
+                .is_err()
+        );
+        assert!(
+            signal
+                .validate(sender_now(signal.sent_at + 1000, -1000))
+                .is_err()
+        );
+        assert_eq!(sender_now(i64::MAX, 94), i64::MAX);
+        assert_eq!(relay_expiration(i64::MAX), i64::MAX);
     }
 
     #[test]

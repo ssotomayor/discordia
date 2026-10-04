@@ -646,7 +646,7 @@ pub fn SettingsDialog() -> Element {
                         }
                         h3 { class: "dxf-display text-[17px] font-bold tracking-tight text-[var(--text)]", "Game activity" }
                         p { class: "mt-0.5 mb-4 text-[12.5px] text-[var(--text-dim)]",
-                            "Shows the people you share a guild with what you are playing. Everything here is off until you turn it on, and nothing about this machine leaves it while it is off."
+                            "Shows the people you share a guild with what you are playing. Enabled by default. Turn off sharing to stop publishing your game activity."
                         }
                         div { class: "mb-3",
                             label { class: "flex items-center gap-2 cursor-pointer select-none",
