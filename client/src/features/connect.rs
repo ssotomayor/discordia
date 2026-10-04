@@ -53,7 +53,7 @@ pub fn ConnectForm(
 
     let mut mode = use_signal(initial_mode);
     let mut server_url = use_signal(String::new);
-    let mut allow_lan = use_signal(|| false);
+    let mut allow_lan = use_signal(|| true);
     let mut publish_to_rendezvous = use_signal(|| true);
     let mut rendezvous_url = use_signal(|| default_rendezvous.clone());
     let mut code = use_signal(String::new);

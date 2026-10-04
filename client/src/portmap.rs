@@ -104,9 +104,13 @@ async fn finish(
         all_ok
     };
 
-    // Hairpin matters for the SFU, which replaces its LAN candidate with the
-    // advertised address, so the SFU's own TCP port is what gets probed.
-    let hairpin = media && probe_hairpin(SocketAddr::new(public_ip, ports.media_tcp)).await;
+    let hairpin = media
+        && probe_hairpin(
+            SocketAddr::new(IpAddr::V4(local_ip), ports.media_tcp),
+            SocketAddr::new(public_ip, ports.media_tcp),
+            HAIRPIN_TIMEOUT,
+        )
+        .await;
 
     let mapped = Mapped {
         method: router.method(),
@@ -160,11 +164,47 @@ fn keep_alive(router: Router, local_ip: Ipv4Addr, ports: Ports) -> MappingGuard 
     MappingGuard { _shutdown: tx }
 }
 
-async fn probe_hairpin(public: SocketAddr) -> bool {
-    matches!(
-        tokio::time::timeout(HAIRPIN_TIMEOUT, tokio::net::TcpStream::connect(public)).await,
-        Ok(Ok(_))
-    )
+async fn probe_hairpin(local: SocketAddr, public: SocketAddr, timeout: Duration) -> bool {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let probe = async {
+        // LiveKit starts after this probe chooses an SFU, so its port needs a temporary responder.
+        let listener = tokio::net::TcpListener::bind(local).await?;
+        let challenge = rand::random::<[u8; 16]>();
+        let outgoing = async {
+            let mut stream = tokio::net::TcpStream::connect(public).await?;
+            stream.write_all(&challenge).await?;
+            let mut response = [0; 16];
+            stream.read_exact(&mut response).await?;
+            // Closing from the client keeps the listener port reusable immediately on Windows.
+            stream.shutdown().await?;
+            Ok::<_, std::io::Error>(response == challenge)
+        };
+        let incoming = async {
+            let (mut stream, _) = listener.accept().await?;
+            let mut request = [0; 16];
+            stream.read_exact(&mut request).await?;
+            if request != challenge {
+                return Ok(false);
+            }
+            stream.write_all(&challenge).await?;
+            let mut extra = [0; 1];
+            Ok::<_, std::io::Error>(stream.read(&mut extra).await? == 0)
+        };
+        let (outgoing, incoming) = tokio::try_join!(outgoing, incoming)?;
+        Ok::<_, std::io::Error>(outgoing && incoming)
+    };
+    match tokio::time::timeout(timeout, probe).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(error)) => {
+            tracing::warn!(%local, %public, %error, "media hairpin probe failed");
+            false
+        }
+        Err(_) => {
+            tracing::warn!(%local, %public, "media hairpin probe timed out");
+            false
+        }
+    }
 }
 
 fn is_private(ip: IpAddr) -> bool {
@@ -301,6 +341,54 @@ async fn natpmp_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn unused_local_address() -> SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        listener.local_addr().unwrap()
+    }
+
+    #[tokio::test]
+    async fn hairpin_probe_responds_before_livekit_and_releases_its_port() {
+        let local = unused_local_address().await;
+        for _ in 0..3 {
+            assert!(probe_hairpin(local, local, Duration::from_secs(1)).await);
+            let listener = tokio::net::TcpListener::bind(local).await.unwrap();
+            drop(listener);
+        }
+    }
+
+    #[tokio::test]
+    async fn an_existing_service_is_not_mistaken_for_a_successful_probe() {
+        let occupied = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = occupied.local_addr().unwrap();
+        assert!(!probe_hairpin(address, address, Duration::from_secs(1)).await);
+    }
+
+    #[tokio::test]
+    async fn a_wrong_public_endpoint_times_out_and_releases_the_probe_listener() {
+        let local = unused_local_address().await;
+        let other = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let result = tokio::time::timeout(
+            Duration::from_secs(1),
+            probe_hairpin(
+                local,
+                other.local_addr().unwrap(),
+                Duration::from_millis(50),
+            ),
+        )
+        .await
+        .unwrap();
+        assert!(!result);
+        let _listener = tokio::net::TcpListener::bind(local).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_public_endpoint_releases_the_probe_listener() {
+        let local = unused_local_address().await;
+        let public = unused_local_address().await;
+        assert!(!probe_hairpin(local, public, Duration::from_secs(1)).await);
+        let _listener = tokio::net::TcpListener::bind(local).await.unwrap();
+    }
 
     #[test]
     fn private_addresses_are_not_public() {
