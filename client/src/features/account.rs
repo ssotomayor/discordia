@@ -143,6 +143,7 @@ mod tests {
                     s.dm_call = Some(CallView {
                         peer: "peer".into(),
                         phase: Phase::Connected,
+                        microphone_error: None,
                     });
                     s.voice.muted = true;
                     s.voice.deafened = true;
