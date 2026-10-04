@@ -270,7 +270,13 @@ impl Actor {
 
     fn incoming(&mut self, incoming: Incoming) {
         let Incoming { author, signal } = incoming;
-        if author == self.our_key || signal.validate(chrono::Utc::now().timestamp()).is_err() {
+        if author == self.our_key {
+            return;
+        }
+        let offset = self.state.peek().clock_offset(&author);
+        let now = crate::nostr::calls::sender_now(chrono::Utc::now().timestamp(), offset);
+        if let Err(reason) = signal.validate(now) {
+            tracing::warn!(%reason, call_id = %signal.call_id, clock_offset = offset, "Rejected queued DM call signal");
             return;
         }
         if !self.state.peek().contacts.contains(&author)

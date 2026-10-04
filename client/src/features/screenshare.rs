@@ -1015,14 +1015,13 @@ fn quality_preset(id: &str) -> (u32, u32, u32, u32, &'static str, &'static str) 
 
 fn upload_budget(height: u32, fps: u32) -> u32 {
     match (height, fps) {
-        (720, 60) => 5_000_000,
-        (720, _) => 3_000_000,
-        (1440, 60) => 20_000_000,
-        (1440, _) => 12_000_000,
-        (2160, 60) => 40_000_000,
-        (2160, _) => 30_000_000,
-        (_, 60) => 10_000_000,
-        _ => 6_000_000,
+        (720, _) => 8_000_000,
+        (1440, 60) => 34_000_000,
+        (1440, _) => 21_000_000,
+        (2160, 60) => 50_000_000,
+        (2160, _) => 42_000_000,
+        (_, 60) => 17_000_000,
+        _ => 14_000_000,
     }
 }
 
@@ -2214,6 +2213,11 @@ pub fn ScreenWatchWindow() -> Element {
     use_effect(move || {
         let watched = viewing.read();
         let detached = detached.read();
+        if watched.iter().filter(|pk| !detached.contains(*pk)).count() <= 1
+            && focused.peek().is_some()
+        {
+            focused.set(None);
+        }
         for mut selection in [focused, fullscreen] {
             let invalid = selection
                 .peek()
@@ -2282,7 +2286,7 @@ pub fn ScreenWatchWindow() -> Element {
         .iter()
         .filter(|pk| !detached.read().contains(*pk))
         .count();
-    let selected = fullscreen().or(focused());
+    let selected = fullscreen().or(if count > 1 { focused() } else { None });
     let (width, height) = size();
     let grid =
         super::stream_viewer::grid_style(if selected.is_some() { 1 } else { count }, width, height);
@@ -2293,7 +2297,7 @@ pub fn ScreenWatchWindow() -> Element {
                 div { class: "h-12 shrink-0 px-4 flex items-center gap-2 border-b border-[var(--border)]",
                     span { class: "text-sm font-semibold text-[var(--text)]", "Streams" }
                     span { class: "text-xs text-[var(--text-muted)]", "{count} live" }
-                    if selected.is_some() {
+                    if count > 1 && selected.is_some() {
                         button { class: "ml-auto text-xs px-2 py-1 rounded border border-[var(--border)] text-[var(--text)]",
                             onclick: move |_| { focused.set(None); fullscreen.set(None); }, "Mosaic" }
                     }
@@ -2315,7 +2319,7 @@ pub fn ScreenWatchWindow() -> Element {
                     for pk in watched {
                         ScreenWatchTile { key: "{pk}", is_detached: detached.read().contains(&pk),
                             hidden: selected.as_ref().is_some_and(|selected| selected != &pk),
-                            pubkey: pk, focused, fullscreen, on_popout: popouts.open }
+                            pubkey: pk, focused, fullscreen, multiple_streams: count > 1, on_popout: popouts.open }
                     }
                 }
             }
@@ -2330,6 +2334,7 @@ fn ScreenWatchTile(
     mut fullscreen: Signal<Option<String>>,
     hidden: bool,
     is_detached: bool,
+    multiple_streams: bool,
     on_popout: EventHandler<String>,
 ) -> Element {
     let mut state = use_app_state();
@@ -2382,7 +2387,8 @@ fn ScreenWatchTile(
         let _ = document::eval(&detach_js(&detach_container));
     });
     let is_fullscreen = fullscreen().as_ref() == Some(&pk);
-    let selected = focused().as_ref() == Some(&pk);
+    let selected = multiple_streams && focused().as_ref() == Some(&pk);
+    let can_focus = multiple_streams && !is_fullscreen;
     let layout = stream_tile_style(is_detached || hidden, false, false, true, [0.0; 4]);
 
     let name = state.read().display_name(&pk);
@@ -2395,6 +2401,7 @@ fn ScreenWatchTile(
     let pk_fullscreen = pk.clone();
     let pk_popout = pk.clone();
     let pk_focus = pk.clone();
+    let pk_focus_key = pk.clone();
 
     rsx! {
         div {
@@ -2413,16 +2420,6 @@ fn ScreenWatchTile(
                     onmousedown: move |e| e.stop_propagation(),
                     onclick: move |_| { focused.set(None); fullscreen.set(None); on_popout.call(pk_popout.clone()); },
                     dangerous_inner_html: crate::features::icons::WINDOW_POP_OUT,
-                }
-                button {
-                    r#type: "button",
-                    class: "w-7 h-7 flex items-center justify-center rounded text-[var(--text-dim)] hover:text-[var(--text)]",
-                    title: if selected { "Return to mosaic" } else { "Focus stream" },
-                    aria_label: if selected { "Return to mosaic" } else { "Focus stream" },
-                    disabled: is_fullscreen,
-                    onmousedown: move |e| e.stop_propagation(),
-                    onclick: move |_| focused.set(if selected { None } else { Some(pk_focus.clone()) }),
-                    "▣"
                 }
                 button {
                     r#type: "button",
@@ -2448,6 +2445,26 @@ fn ScreenWatchTile(
             div {
                 id: "{container}",
                 class: "flex-1 min-h-0 bg-black flex items-center justify-center text-[var(--text-dim)] text-sm",
+                style: if can_focus { "cursor: pointer;" } else { "cursor: default;" },
+                role: if can_focus { "button" } else { "group" },
+                tabindex: if can_focus { "0" } else { "-1" },
+                title: can_focus.then_some(if selected { "Return to mosaic" } else { "Focus stream" }),
+                aria_label: if can_focus { if selected { "Return to mosaic" } else { "Focus stream" }.to_owned() } else { format!("{name}'s screen") },
+                aria_pressed: can_focus.then(|| selected.to_string()),
+                onmousedown: move |e| e.stop_propagation(),
+                onclick: move |e| {
+                    e.stop_propagation();
+                    if can_focus {
+                        focused.set(if selected { None } else { Some(pk_focus.clone()) });
+                    }
+                },
+                onkeydown: move |e| {
+                    if can_focus && (e.key() == Key::Enter || e.key() == Key::Character(" ".into())) {
+                        e.prevent_default();
+                        e.stop_propagation();
+                        focused.set(if selected { None } else { Some(pk_focus_key.clone()) });
+                    }
+                },
                 "Connecting to stream…"
             }
             div {
@@ -2606,10 +2623,10 @@ mod js_escaping_tests {
     #[test]
     fn fps_selection_preserves_resolution_and_selects_the_upload_budget() {
         for (quality, height, budget_30, budget_60) in [
-            ("720", 720, 3_000_000, 5_000_000),
-            ("balanced", 1080, 6_000_000, 10_000_000),
-            ("ultra", 1440, 12_000_000, 20_000_000),
-            ("4k", 2160, 30_000_000, 40_000_000),
+            ("720", 720, 8_000_000, 8_000_000),
+            ("balanced", 1080, 14_000_000, 17_000_000),
+            ("ultra", 1440, 21_000_000, 34_000_000),
+            ("4k", 2160, 42_000_000, 50_000_000),
         ] {
             for (fps, budget) in [(15, budget_30), (30, budget_30), (60, budget_60)] {
                 let settings = crate::settings::ClientSettings {
@@ -2642,7 +2659,7 @@ mod js_escaping_tests {
             (capture.width, capture.height, capture.fps),
             (3840, 2160, 60)
         );
-        assert_eq!(capture.max_bitrate, 40_000_000);
+        assert_eq!(capture.max_bitrate, 50_000_000);
         settings.screenshare_fps = Some(0);
         assert_eq!(super::selected_capture_settings(&settings).fps, 30);
     }

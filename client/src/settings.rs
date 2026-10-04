@@ -62,13 +62,13 @@ pub struct ClientSettings {
     pub mic_sensitivity: u32,
     #[serde(default = "default_mic_volume")]
     pub mic_volume: u16,
-    #[serde(default = "default_auto_gain_control")]
+    #[serde(default = "default_enabled")]
     pub auto_gain_control: bool,
-    #[serde(default)]
+    #[serde(default = "default_enabled")]
     pub noise_cancellation: bool,
     #[serde(default = "default_denoise_atten_lim_db")]
     pub denoise_atten_lim_db: u32,
-    #[serde(default)]
+    #[serde(default = "default_enabled")]
     pub bypass_system_audio_processing: bool,
     #[serde(default = "default_voice_bitrate_kbps")]
     pub voice_bitrate_kbps: u32,
@@ -122,16 +122,14 @@ pub struct ClientSettings {
     #[serde(default = "default_publish_global_level")]
     pub publish_global_level: bool,
 
-    /// Off by default, and the master switch for both producers: nothing about
-    /// what is running on this machine leaves it until this is on.
-    #[serde(default)]
+    #[serde(default = "default_enabled")]
     pub share_activity: bool,
-    #[serde(default)]
+    #[serde(default = "default_enabled")]
     pub detect_games: bool,
     /// Bind `discord-ipc-N` rather than our own names. Free integration with
     /// every game already shipping Rich Presence, at the cost of taking the
     /// slot a running Discord wants — first to bind wins.
-    #[serde(default)]
+    #[serde(default = "default_enabled")]
     pub discord_rpc_socket: bool,
     /// Executable to display name, for what the committed catalogue misses.
     #[serde(default)]
@@ -174,7 +172,7 @@ fn default_denoise_atten_lim_db() -> u32 {
     30
 }
 
-fn default_auto_gain_control() -> bool {
+fn default_enabled() -> bool {
     true
 }
 
@@ -217,9 +215,9 @@ impl Default for ClientSettings {
             selected_output_device: None,
             mic_sensitivity: default_mic_sensitivity(),
             mic_volume: default_mic_volume(),
-            auto_gain_control: default_auto_gain_control(),
-            noise_cancellation: false,
-            bypass_system_audio_processing: false,
+            auto_gain_control: default_enabled(),
+            noise_cancellation: default_enabled(),
+            bypass_system_audio_processing: default_enabled(),
             denoise_atten_lim_db: default_denoise_atten_lim_db(),
             voice_bitrate_kbps: default_voice_bitrate_kbps(),
             layout_cells: Vec::new(),
@@ -241,9 +239,9 @@ impl Default for ClientSettings {
             camera_device_label: None,
             keep_my_accent: false,
             publish_global_level: true,
-            share_activity: false,
-            detect_games: false,
-            discord_rpc_socket: false,
+            share_activity: default_enabled(),
+            detect_games: default_enabled(),
+            discord_rpc_socket: default_enabled(),
             detect_extra: Vec::new(),
         }
     }
@@ -415,6 +413,32 @@ mod tests {
         let mut old = serde_json::to_value(&defaults).unwrap();
         old.as_object_mut().unwrap().remove("mic_volume");
         assert_eq!(parse(&file(old)).unwrap().mic_volume, 100);
+    }
+
+    #[test]
+    fn microphone_processing_and_game_activity_defaults_preserve_saved_choices() {
+        let fields = [
+            "auto_gain_control",
+            "noise_cancellation",
+            "bypass_system_audio_processing",
+            "share_activity",
+            "detect_games",
+            "discord_rpc_socket",
+        ];
+        let defaults = serde_json::to_value(ClientSettings::default()).unwrap();
+        let mut legacy = defaults.clone();
+        let mut disabled = defaults.clone();
+        for field in fields {
+            assert_eq!(defaults[field], true);
+            legacy.as_object_mut().unwrap().remove(field);
+            disabled[field] = false.into();
+        }
+        let restored = serde_json::to_value(parse(&file(legacy)).unwrap()).unwrap();
+        let saved = serde_json::to_value(parse(&file(disabled)).unwrap()).unwrap();
+        for field in fields {
+            assert_eq!(restored[field], true, "missing {field}");
+            assert_eq!(saved[field], false, "saved {field}");
+        }
     }
 
     #[test]

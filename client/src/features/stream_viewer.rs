@@ -373,7 +373,9 @@ fn PopoutWindow(props: PopoutWindowProps) -> Element {
                 json(&ids),
                 json(&s.key)
             ));
-            if focused.peek().as_ref().is_some_and(|pk| !ids.contains(&pk)) {
+            if focused.peek().is_some()
+                && (ids.len() <= 1 || focused.peek().as_ref().is_some_and(|pk| !ids.contains(&pk)))
+            {
                 focused.set(None);
             }
         }
@@ -403,7 +405,7 @@ fn PopoutWindow(props: PopoutWindowProps) -> Element {
                     }
                     status.set(
                         match value["status"].as_str() {
-                            Some("connected") => "Connected",
+                            Some("connected") => "",
                             Some("blocked") => "Encryption unavailable",
                             _ => "Reconnecting…",
                         }
@@ -444,13 +446,13 @@ fn PopoutWindow(props: PopoutWindowProps) -> Element {
     let commands_for_dock = props.commands.clone();
     let fullscreen_window = window.clone();
     let pin_window = window.clone();
+    let multiple_streams = snapshot.streams.len() > 1;
     rsx! {
         crate::app::AppHead {}
         style { "{size_css}" }
         div { class: "dxf-ui h-full flex flex-col bg-[var(--bg)] text-[var(--text)]", style: "{theme}",
             div { class: "flex items-center flex-wrap gap-2 px-3 py-2 border-b border-[var(--border)] shrink-0",
-                span { class: "flex-1 text-sm font-medium", "Streams · {snapshot.streams.len()}" }
-                span { class: "text-xs text-[var(--text-muted)]", "{status}" }
+                span { class: "flex-1 text-xs text-[var(--text-muted)]", "{status}" }
                 button { class: "px-2 py-1 rounded border border-[var(--border)] text-xs", title: "Keep window on top", aria_pressed: "{pinned}",
                     onclick: move |_| { pinned.toggle(); pin_window.window.set_always_on_top(pinned()); },
                     if pinned() { "Unpin" } else { "Pin" }
@@ -463,7 +465,7 @@ fn PopoutWindow(props: PopoutWindowProps) -> Element {
             }
             div { class: "flex-1 min-h-0 grid gap-2 p-2", style: "{grid}",
                 for stream in snapshot.streams {
-                    PopoutTile { key: "{stream.pubkey}", stream, focused, commands: props.commands.clone(), generation }
+                    PopoutTile { key: "{stream.pubkey}", stream, focused, commands: props.commands.clone(), generation, multiple_streams }
                 }
             }
         }
@@ -507,6 +509,7 @@ struct PopoutTileProps {
     focused: Signal<Option<String>>,
     commands: mpsc::UnboundedSender<(u64, Command)>,
     generation: u64,
+    multiple_streams: bool,
 }
 
 impl PartialEq for PopoutTileProps {
@@ -514,6 +517,7 @@ impl PartialEq for PopoutTileProps {
         self.stream == other.stream
             && self.focused == other.focused
             && self.generation == other.generation
+            && self.multiple_streams == other.multiple_streams
     }
 }
 
@@ -521,8 +525,9 @@ impl PartialEq for PopoutTileProps {
 fn PopoutTile(props: PopoutTileProps) -> Element {
     let stream = props.stream;
     let mut focused = props.focused;
-    let selected = focused().as_ref() == Some(&stream.pubkey);
-    let hidden = focused().is_some() && !selected;
+    let can_focus = props.multiple_streams;
+    let selected = can_focus && focused().as_ref() == Some(&stream.pubkey);
+    let hidden = can_focus && focused().is_some() && !selected;
     let container = format!("popout-stream-{}", stream.pubkey);
     let pk = stream.pubkey.clone();
     let target = container.clone();
@@ -569,6 +574,7 @@ fn PopoutTile(props: PopoutTileProps) -> Element {
         }
     });
     let pk_focus = stream.pubkey.clone();
+    let pk_focus_key = stream.pubkey.clone();
     let pk_dock = stream.pubkey.clone();
     let pk_stop = stream.pubkey.clone();
     let pk_volume = stream.pubkey.clone();
@@ -582,11 +588,33 @@ fn PopoutTile(props: PopoutTileProps) -> Element {
         div { class: "min-w-0 min-h-0 flex flex-col border border-[var(--border)] rounded-lg overflow-hidden bg-[var(--panel-solid)]", style: if hidden { "display:none;" } else { "display:flex;" },
             div { class: "flex flex-wrap items-center gap-2 px-3 py-2 shrink-0",
                 span { class: "flex-1 min-w-0 truncate text-sm font-medium", "{stream.name}" }
-                button { class: "text-xs px-2 py-1 rounded hover:bg-[var(--panel2)]", onclick: move |_| focused.set(if selected { None } else { Some(pk_focus.clone()) }), if selected { "Mosaic" } else { "Focus" } }
-                button { class: "text-xs px-2 py-1 rounded hover:bg-[var(--panel2)]", onclick: move |_| send(&dock, generation, Command::Dock(pk_dock.clone())), "Return" }
+                if props.multiple_streams {
+                    button { class: "text-xs px-2 py-1 rounded hover:bg-[var(--panel2)]", onclick: move |_| send(&dock, generation, Command::Dock(pk_dock.clone())), "Return" }
+                }
                 button { class: "text-xs px-2 py-1 rounded hover:bg-[var(--panel2)]", aria_label: "Stop watching", onclick: move |_| send(&stop, generation, Command::Stop(pk_stop.clone())), "✕" }
             }
-            div { id: "{container}", class: "flex-1 min-h-0 bg-black flex items-center justify-center text-sm text-[var(--text-muted)]", "Connecting to stream…" }
+            div { id: "{container}", class: "flex-1 min-h-0 bg-black flex items-center justify-center text-sm text-[var(--text-muted)]",
+                style: if can_focus { "cursor: pointer;" } else { "cursor: default;" },
+                role: if can_focus { "button" } else { "group" },
+                tabindex: if can_focus { "0" } else { "-1" },
+                title: can_focus.then_some(if selected { "Return to mosaic" } else { "Focus stream" }),
+                aria_label: if can_focus { if selected { "Return to mosaic" } else { "Focus stream" }.to_owned() } else { format!("{}'s screen", stream.name) },
+                aria_pressed: can_focus.then(|| selected.to_string()),
+                onclick: move |e| {
+                    e.stop_propagation();
+                    if can_focus {
+                        focused.set(if selected { None } else { Some(pk_focus.clone()) });
+                    }
+                },
+                onkeydown: move |e| {
+                    if can_focus && (e.key() == Key::Enter || e.key() == Key::Character(" ".into())) {
+                        e.prevent_default();
+                        e.stop_propagation();
+                        focused.set(if selected { None } else { Some(pk_focus_key.clone()) });
+                    }
+                },
+                "Connecting to stream…"
+            }
             div { class: "flex flex-wrap items-center gap-2 px-3 py-2 shrink-0",
                 span { class: "flex-1 text-xs text-[var(--text-muted)]", "{received}" }
                 button { class: "text-xs px-2 py-1 rounded border border-[var(--border)]", disabled: !stream.has_audio, aria_pressed: "{stream.muted}", onclick: move |_| send(&mute, generation, Command::Mute(pk_mute.clone(), !stream.muted)), if stream.muted { "Unmute" } else { "Mute" } }

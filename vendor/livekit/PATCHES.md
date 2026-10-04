@@ -9,4 +9,4 @@ Source: crates.io `livekit` 0.7.53, upstream commit `da3ee007c044e31422ce3412346
 | `src/rtc_engine/rtc_session.rs` | Forward the publishing track's startup hint alongside its encoding budget. |
 | `src/rtc_engine/peer_transport.rs`, `start_bitrate.rs`, `mod.rs` | Apply the hint to video SDP offers; clamp to the encoding budget. Unconfigured tracks retain the 1 Mbps ceiling. No minimum bitrate is imposed. |
 
-The client applies a hint only to screen shares: half their bitrate cap, bounded to 1–4 Mbps and never above the cap. The pure startup policy is included in the client's test build so CI exercises the vendored implementation.
+The client applies a hint only to screen shares: fixed per-resolution/FPS startup values independent of adaptive caps (see `docs/MAP.md`). Hints never exceed the cap. The pure startup policy is included in the client's test build so CI exercises the vendored implementation.

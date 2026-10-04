@@ -1343,9 +1343,17 @@ fn screen_video_options(settings: crate::sysvideo::Settings) -> TrackPublishOpti
             max_bitrate: settings.max_bitrate,
         }),
         video_start_bitrate: Some(
-            (settings.max_bitrate / 2)
-                .clamp(1_000_000, 4_000_000)
-                .min(settings.max_bitrate),
+            match (settings.height, settings.fps) {
+                (720, 60) => 2_500_000,
+                (720, _) => 1_500_000,
+                (1080, 60) => 5_000_000,
+                (1080, _) => 3_000_000,
+                (1440, 30) => 6_000_000,
+                (1440, 60) => 10_000_000,
+                (1440 | 2160, _) => 4_000_000,
+                _ => (settings.max_bitrate / 2).clamp(1_000_000, 4_000_000),
+            }
+            .min(settings.max_bitrate),
         ),
         ..Default::default()
     }
@@ -3369,6 +3377,40 @@ mod tests {
         assert_eq!(encodings[0].scale_resolution_down_by, Some(1.0));
         assert_eq!(encodings[0].max_framerate, Some(60.0));
         assert_eq!(encodings[0].max_bitrate, Some(18_000_000));
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[test]
+    fn screen_startup_bitrate_reaches_sdk_and_stays_inside_budget() {
+        for (height, fps, cap, expected) in [
+            (720, 30, 8_000_000, 1_500_000),
+            (720, 60, 8_000_000, 2_500_000),
+            (1080, 15, 14_000_000, 3_000_000),
+            (1080, 30, 14_000_000, 3_000_000),
+            (1080, 60, 17_000_000, 5_000_000),
+            (1440, 30, 21_000_000, 6_000_000),
+            (1440, 60, 34_000_000, 10_000_000),
+            (1440, 15, 21_000_000, 4_000_000),
+            (2160, 30, 42_000_000, 4_000_000),
+            (2160, 60, 50_000_000, 4_000_000),
+        ] {
+            let mut settings = crate::features::screenshare::native_settings("smooth");
+            settings.height = height;
+            settings.fps = fps;
+            settings.max_bitrate = cap;
+            let options = screen_video_options(settings);
+            assert_eq!(options.video_start_bitrate, Some(expected));
+            assert_eq!(options.video_encoding.unwrap().max_bitrate, cap);
+            assert_eq!(
+                crate::livekit_start_bitrate_tests::start_bitrate_kbps(
+                    Some(cap),
+                    options.video_start_bitrate,
+                ),
+                Some((expected / 1000) as u32),
+            );
+            settings.max_bitrate = 2_000_000;
+            assert!(screen_video_options(settings).video_start_bitrate.unwrap() <= 2_000_000);
+        }
     }
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]
