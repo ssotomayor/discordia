@@ -18,11 +18,13 @@
   // The gateway and the rendezvous. Not 7880: the bundled SFU is skipped in
   // here (DIOXUSFUN_LIVEKIT_AUTOSPAWN=0), and a forwarded port for a process
   // that never starts is a debugging red herring.
-  "forwardPorts": [9000, 7700, 7701],
+  "forwardPorts": [9000, 7700, 7701, 3100, 8787],
   "portsAttributes": {
     "9000": { "label": "gateway" },
     "7700": { "label": "rendezvous" },
-    "7701": { "label": "rendezvous relay" }
+    "7701": { "label": "rendezvous relay" },
+    "3100": { "label": "site dev" },
+    "8787": { "label": "site preview" }
   }
 
   // No "customizations" block. That key is editor-specific (it lists VS Code

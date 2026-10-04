@@ -1,0 +1,42 @@
+name: Site
+
+on:
+  push:
+    branches: [master]
+    paths: ["site/**", ".github/workflows/site.yml"]
+  pull_request:
+    paths: ["site/**", ".github/workflows/site.yml"]
+  workflow_dispatch:
+
+jobs:
+  site:
+    name: build · deploy
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: site
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
+      SITE_DEPLOY_KEY: ${{ secrets.SITE_DEPLOY_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npm run build
+
+      # Pull requests build only. A push to master deploys when the key is set; without it the
+      # job stays green so the site can be synced by hand with site/deploy.sh.
+      - name: Deploy
+        if: github.event_name != 'pull_request' && env.SITE_DEPLOY_KEY != ''
+        env:
+          SITE_HOST: ${{ vars.SITE_HOST || 'root@151.243.137.35' }}
+          SITE_ROOT: ${{ vars.SITE_ROOT || '/var/www/discordia.world' }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SITE_DEPLOY_KEY" > ~/.ssh/id_ed25519 && chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "${SITE_HOST#*@}" >> ~/.ssh/known_hosts 2>/dev/null
+          rsync -az --delete --chmod=Du=rwx,Dgo=rx,Fu=rw,Fgo=r out/ "$SITE_HOST:$SITE_ROOT/"
