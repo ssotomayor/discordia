@@ -192,6 +192,8 @@ mod resolution_tests {
         let cached = super::codec_capabilities().await.unwrap();
         assert_eq!(caps.software, cached.software);
         assert_eq!(caps.hardware, cached.hardware);
+        #[cfg(target_os = "macos")]
+        assert!(!caps.supports(Codec::Vp8, Encoder::Gpu), "{caps:?}");
         eprintln!("Native codec capabilities: {caps:?}");
     }
 
