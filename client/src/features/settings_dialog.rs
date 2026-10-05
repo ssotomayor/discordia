@@ -58,6 +58,18 @@ const SETTINGS_TABS: &[(&str, SettingsTab, &str, &str)] = &[
 
 #[component]
 pub fn SettingsDialog() -> Element {
+    #[cfg(target_os = "windows")]
+    {
+        rsx! { super::native_settings::NativeSettingsDialog {} }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        rsx! { WebSettingsDialog {} }
+    }
+}
+
+#[component]
+pub(super) fn WebSettingsDialog() -> Element {
     let mut state = use_app_state();
     let voice = use_voice_tx();
     let gw_camera = crate::state::use_gateway();
