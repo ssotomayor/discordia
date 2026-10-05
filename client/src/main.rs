@@ -193,7 +193,7 @@ fn main() {
         );
     }
 
-    let window = desktop_window_builder()
+    let window = WindowBuilder::new()
         .with_title("Discordia")
         .with_inner_size(LogicalSize::new(1440.0, 900.0))
         // The binding case is the social drawer open: it floors at 600 and the
@@ -206,20 +206,6 @@ fn main() {
     LaunchBuilder::new()
         .with_cfg(apply_menu(Config::new().with_window(window)))
         .launch(app::App);
-}
-
-pub(crate) fn desktop_window_builder() -> WindowBuilder {
-    let builder = WindowBuilder::new();
-    #[cfg(target_os = "windows")]
-    {
-        use dioxus::desktop::tao::platform::windows::WindowBuilderExtWindows;
-        // Tao and winit share a default Win32 class name but incompatible window data.
-        builder.with_window_classname("Discordia.TaoWindow")
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        builder
-    }
 }
 
 #[cfg(target_os = "windows")]

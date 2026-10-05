@@ -92,8 +92,6 @@ name = "Discordia"
 path = "src/main.rs"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-eframe = { version = "=0.33.3", default-features = false, features = ["default_fonts", "glow", "accesskit"] }
-winit = { version = "0.30", default-features = false }
 windows-capture = "2.0.1"
 windows = { version = "0.61", features = [
     "Wdk_System_SystemServices",

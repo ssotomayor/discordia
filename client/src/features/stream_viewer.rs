@@ -160,7 +160,7 @@ pub(super) fn use_popouts(mut state: Signal<AppState>) -> Popouts {
         );
         let cfg = dioxus::desktop::Config::new()
             .with_window(
-                crate::desktop_window_builder()
+                dioxus::desktop::tao::window::WindowBuilder::new()
                     .with_title("Discordia — Streams")
                     .with_window_icon(crate::load_window_icon())
                     .with_inner_size(dioxus::desktop::tao::dpi::LogicalSize::new(1100.0, 700.0))
