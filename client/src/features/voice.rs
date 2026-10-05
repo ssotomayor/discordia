@@ -3470,6 +3470,25 @@ mod tests {
             assert_eq!(encodings[0].rid, "f");
             let layers = livekit::options::video_layers_from_encodings(1280, 720, &encodings);
             assert_eq!(layers[0].quality, livekit::track::VideoQuality::High as i32);
+            let expected_rids = ["f", "h", "q"];
+            let expected_qualities = [
+                livekit::track::VideoQuality::High,
+                livekit::track::VideoQuality::Medium,
+                livekit::track::VideoQuality::Low,
+            ];
+            for (index, preset) in presets.iter().rev().enumerate() {
+                assert_eq!(encodings[index].rid, expected_rids[index]);
+                assert_eq!(
+                    encodings[index].max_bitrate,
+                    Some(preset.encoding.max_bitrate)
+                );
+                assert_eq!(layers[index].quality, expected_qualities[index] as i32);
+                assert_eq!(
+                    (layers[index].width, layers[index].height),
+                    (preset.width, preset.height)
+                );
+                assert_eq!(layers[index].bitrate as u64, preset.encoding.max_bitrate);
+            }
         }
     }
 
