@@ -77,7 +77,7 @@ pub(super) fn use_social_window(state: Signal<AppState>) -> (Signal<bool>, Event
         .with_root_context(gateway.clone());
         let config = dioxus::desktop::Config::new()
             .with_window(
-                dioxus::desktop::tao::window::WindowBuilder::new()
+                crate::desktop_window_builder()
                     .with_title("Discordia — Social")
                     .with_window_icon(crate::load_window_icon())
                     .with_inner_size(dioxus::desktop::tao::dpi::LogicalSize::new(1050.0, 720.0))

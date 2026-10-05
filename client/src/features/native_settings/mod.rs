@@ -496,6 +496,17 @@ mod tests {
     #[test]
     #[ignore = "opens a real native Settings window twice; DISCORDIA_NATIVE_SETTINGS_PROBE exports tab screenshots"]
     fn native_settings_window_closes_and_reopens_without_a_webview() {
+        use dioxus::desktop::tao::{
+            event_loop::EventLoopBuilder, platform::windows::EventLoopBuilderExtWindows,
+        };
+        let mut event_builder = EventLoopBuilder::<()>::new();
+        event_builder.with_any_thread(true);
+        let event_loop = event_builder.build();
+        let app_window = crate::desktop_window_builder()
+            .with_title("Discordia — window coexistence test")
+            .with_visible(false)
+            .build(&event_loop)
+            .expect("Tao app window");
         let directory =
             std::env::var_os("DISCORDIA_NATIVE_SETTINGS_PROBE").expect("set screenshot directory");
         for _ in 0..2 {
@@ -521,6 +532,7 @@ mod tests {
                 }
             }
             assert!(session.context.lock().is_some());
+            app_window.set_title("Discordia — Tao window still responds");
         }
         for name in ["audio", "microphone", "video", "activity", "diagnostics"] {
             assert!(
