@@ -1217,6 +1217,36 @@ pub fn stream_sink_js(device: Option<&str>) -> String {
     format!("window.dxScreen.setSink({arg});")
 }
 
+type ScreenBridgeState = (
+    u64,
+    Option<(String, String)>,
+    bool,
+    bool,
+    Option<(String, String)>,
+    Option<crate::sysvideo::Target>,
+    crate::sysvideo::Settings,
+);
+
+fn capture_settings_for_session(
+    previous: Option<&ScreenBridgeState>,
+    epoch: u64,
+    room: &Option<(String, String)>,
+    target: Option<crate::sysvideo::Target>,
+    selected: crate::sysvideo::Settings,
+) -> crate::sysvideo::Settings {
+    // Preferences apply to the next capture, never restart a live publication.
+    if let Some(previous) = previous
+        && previous.0 == epoch
+        && previous.4.is_some()
+        && &previous.4 == room
+        && previous.5 == target
+    {
+        previous.6
+    } else {
+        selected
+    }
+}
+
 #[component]
 pub fn ScreenShareBridge() -> Element {
     let visibility_window = dioxus::desktop::use_window();
@@ -1314,18 +1344,7 @@ pub fn ScreenShareBridge() -> Element {
     });
 
     let voice_screen_audio = use_voice_tx();
-    #[allow(clippy::type_complexity)]
-    let mut last_sent = use_signal(|| {
-        None::<(
-            u64,
-            Option<(String, String)>,
-            bool,
-            bool,
-            Option<(String, String)>,
-            Option<crate::sysvideo::Target>,
-            crate::sysvideo::Settings,
-        )>
-    });
+    let mut last_sent = use_signal(|| None::<ScreenBridgeState>);
     use_effect(move || {
         let s = state.read();
         let self_pk = s.self_user.as_ref().map(|u| u.pubkey.as_str());
@@ -1348,15 +1367,13 @@ pub fn ScreenShareBridge() -> Element {
             _ => None,
         };
         drop(s);
-        let mut capture_settings = selected_capture_settings(&settings.read());
-        if let Some(previous) = last_sent.peek().as_ref()
-            && previous.0 == epoch
-            && previous.4.is_some()
-            && previous.4 == want_video
-            && previous.5 == target
-        {
-            capture_settings.adaptive_quality = previous.6.adaptive_quality;
-        }
+        let capture_settings = capture_settings_for_session(
+            last_sent.peek().as_ref(),
+            epoch,
+            &want_video,
+            target,
+            selected_capture_settings(&settings.read()),
+        );
 
         let now = (
             epoch,
@@ -2730,6 +2747,59 @@ fn ScreenWatchTile(
 
 #[cfg(test)]
 mod js_escaping_tests {
+    #[test]
+    fn live_capture_keeps_all_preferences_until_the_next_share() {
+        use crate::sysvideo::{Codec, Encoder, Target};
+        let original =
+            super::selected_capture_settings(&crate::settings::ClientSettings::default());
+        let selected = crate::sysvideo::Settings {
+            width: 2560,
+            height: 1440,
+            fps: 30,
+            max_bitrate: original.max_bitrate + 1,
+            adaptive_quality: !original.adaptive_quality,
+            priority: crate::sysvideo::Priority::Detail,
+            codec: Codec::Vp8,
+            encoder: Encoder::Cpu,
+        };
+        let room = Some(("url".into(), "token".into()));
+        let target = Some(Target::Display(0));
+        let previous = (1, None, true, true, room.clone(), target, original);
+        let retained =
+            super::capture_settings_for_session(Some(&previous), 1, &room, target, selected);
+        assert_eq!(retained, original);
+        assert_eq!(
+            (1, None, true, true, room.clone(), target, retained),
+            previous
+        );
+        for (epoch, next_room, next_target) in [
+            (2, room.clone(), target),
+            (1, Some(("url".into(), "new-token".into())), target),
+            (1, room.clone(), Some(Target::Display(1))),
+            (1, None, target),
+        ] {
+            assert_eq!(
+                super::capture_settings_for_session(
+                    Some(&previous),
+                    epoch,
+                    &next_room,
+                    next_target,
+                    selected,
+                ),
+                selected
+            );
+        }
+        let stopped = (1, None, false, false, None, target, original);
+        assert_eq!(
+            super::capture_settings_for_session(Some(&stopped), 1, &room, target, selected,),
+            selected
+        );
+        assert_eq!(
+            super::capture_settings_for_session(None, 1, &room, target, selected,),
+            selected
+        );
+    }
+
     #[test]
     fn picker_explains_when_a_source_is_smaller_than_the_selected_maximum() {
         let message = super::source_resolution_notice(2560, 1440, "4k").expect("notice");
