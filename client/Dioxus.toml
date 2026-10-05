@@ -11,12 +11,15 @@ enable_dev_tools = true
 display_name = "Discordia"
 identifier = "com.discordia.app"
 publisher = "TehSoTo"
+short_description = "Discordia"
+original_file_name = "Discordia.exe"
 icon = ["assets/icon.ico", "assets/icon.icns", "assets/icon-1024.png"]
 
 [bundle.macos]
 info_plist_path = "Info.plist"
 
 [bundle.windows]
+internal_name = "Discordia"
 webview_install_mode = "Skip"
 
 [bundle.windows.nsis]
