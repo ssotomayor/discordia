@@ -160,7 +160,7 @@ const STOP_WEBVIEW_MEDIA_JS: &str = r#"
 /// the one `app.rs` puts the personal accent on, so anything written here wins
 /// the cascade. Declining to write it is the only way to let the personal one
 /// through, which is what `keep_my_accent` asks for.
-fn guild_accent_to_apply(
+pub(crate) fn guild_accent_to_apply(
     dm_mode: bool,
     keep_my_accent: bool,
     guild_accent: Option<String>,
