@@ -18,7 +18,12 @@ fn main() -> std::io::Result<()> {
 }
 
 fn embed_windows_identity(version: &str) -> std::io::Result<()> {
+    println!("cargo::rerun-if-env-changed=DX_RUSTC");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+        return Ok(());
+    }
+    // dx already links its own icon and VERSIONINFO; adding ours duplicates resource IDs.
+    if std::env::var_os("DX_RUSTC").is_some() {
         return Ok(());
     }
     println!("cargo::rerun-if-changed=assets/icon.ico");
