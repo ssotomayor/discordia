@@ -351,6 +351,7 @@ pub fn perform(install: &Install) -> Result<Applied, String> {
             replace_portable(zip, dir, &exe)?;
             let _ = std::fs::remove_file(zip);
             std::process::Command::new(dir.join(&exe))
+                .arg(crate::RESTART_FLAG)
                 .current_dir(dir)
                 .spawn()
                 .map(|_| Applied::Restarted)
@@ -392,6 +393,7 @@ fn run_installer(path: &std::path::Path) -> Result<Applied, String> {
         Ok(status) if status.success() => {
             let _ = std::fs::remove_file(path);
             std::process::Command::new(&exe)
+                .arg(crate::RESTART_FLAG)
                 .current_dir(&dir)
                 .spawn()
                 .map(|_| Applied::Restarted)

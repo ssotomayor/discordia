@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-const ENSURE_FLAG: &str = "--ensure-webview2";
+pub(crate) const ENSURE_FLAG: &str = "--ensure-webview2";
 
 const BOOTSTRAPPER: &str = "MicrosoftEdgeWebview2Setup.exe";
 
