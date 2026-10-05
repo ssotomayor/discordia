@@ -620,6 +620,23 @@ pub fn SettingsDialog() -> Element {
                             }
                         }
                         }
+                        if settings_tab() == SettingsTab::Video {
+                            label { class: "flex items-center gap-2 cursor-pointer mt-2",
+                                input { r#type: "checkbox", class: "accent-[var(--accent)]",
+                                    checked: settings.read().screenshare_adaptive_quality,
+                                    onchange: move |e| {
+                                        let mut next = settings.read().clone();
+                                        next.screenshare_adaptive_quality = e.checked();
+                                        settings.set(next.clone());
+                                        crate::settings::save(&next);
+                                    },
+                                }
+                                span { class: "text-[12px] text-[var(--text)]", "Adaptive quality for viewers" }
+                            }
+                            p { class: "text-[10px] text-[var(--text-dim)] mt-1",
+                                "Send an additional quality for slower connections. Uses more upload bandwidth and encoding resources. Applies to the next screen share."
+                            }
+                        }
                         if settings_tab() == SettingsTab::Activity {
                         h3 { class: "dxf-display text-[17px] font-bold tracking-tight text-[var(--text)]", "Level" }
                         p { class: "mt-0.5 mb-4 text-[12.5px] text-[var(--text-dim)]",

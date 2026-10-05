@@ -85,6 +85,8 @@ pub struct ClientSettings {
     #[serde(default)]
     pub screenshare_fps: Option<u32>,
     #[serde(default)]
+    pub screenshare_adaptive_quality: bool,
+    #[serde(default)]
     pub screenshare_codec: crate::sysvideo::Codec,
     #[serde(default)]
     pub screenshare_encoder: crate::sysvideo::Encoder,
@@ -226,6 +228,7 @@ impl Default for ClientSettings {
             stream_layout_free: Vec::new(),
             screenshare_quality: default_screenshare_quality(),
             screenshare_fps: None,
+            screenshare_adaptive_quality: false,
             screenshare_codec: crate::sysvideo::Codec::default(),
             screenshare_encoder: crate::sysvideo::Encoder::default(),
             screenshare_audio: default_screenshare_audio(),
@@ -489,6 +492,9 @@ mod tests {
         old.as_object_mut().unwrap().remove("user_volumes");
         old.as_object_mut().unwrap().remove("screenshare_codec");
         old.as_object_mut().unwrap().remove("screenshare_encoder");
+        old.as_object_mut()
+            .unwrap()
+            .remove("screenshare_adaptive_quality");
         old["auto_gain_control"] = false.into();
         let loaded = parse(&file(old)).expect("loads");
         assert_eq!(loaded.text_size_percent, 100);
@@ -496,7 +502,32 @@ mod tests {
         assert!(loaded.guild_order.is_empty());
         assert!(!loaded.auto_gain_control);
         assert!(loaded.user_volumes.is_empty());
-        assert_eq!(loaded.screenshare_codec, crate::sysvideo::Codec::H264);
+        assert_eq!(loaded.screenshare_codec, crate::sysvideo::Codec::Auto);
         assert_eq!(loaded.screenshare_encoder, crate::sysvideo::Encoder::Auto);
+        assert!(!loaded.screenshare_adaptive_quality);
+    }
+
+    #[test]
+    fn adaptive_screen_quality_preference_survives_serialization() {
+        let settings = ClientSettings {
+            screenshare_adaptive_quality: true,
+            ..Default::default()
+        };
+        let loaded = parse(&file(serde_json::to_value(settings).unwrap())).expect("loads");
+        assert!(loaded.screenshare_adaptive_quality);
+    }
+
+    #[test]
+    fn codec_defaults_to_automatic_and_preserves_explicit_saved_choices() {
+        use crate::sysvideo::Codec;
+        assert_eq!(ClientSettings::default().screenshare_codec, Codec::Auto);
+        for codec in [Codec::Auto, Codec::H264, Codec::Vp8] {
+            let settings = ClientSettings {
+                screenshare_codec: codec,
+                ..Default::default()
+            };
+            let loaded = parse(&file(serde_json::to_value(settings).unwrap())).unwrap();
+            assert_eq!(loaded.screenshare_codec, codec);
+        }
     }
 }

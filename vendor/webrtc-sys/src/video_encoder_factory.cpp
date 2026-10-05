@@ -363,6 +363,32 @@ rust::Vec<VideoEncoderBackend> video_encoder_backend_list() {
   return backends;
 }
 
+rust::Vec<rust::String> video_encoder_codec_list(VideoEncoderBackend backend) {
+  VideoEncoderFactory factory;
+  rust::Vec<rust::String> names;
+  for (const auto& format : factory.GetImplementations()) {
+    auto actual = BackendFromFormat(format);
+    if (!actual || *actual == VideoEncoderBackend::PreEncoded ||
+        (backend != VideoEncoderBackend::Auto &&
+         !BackendMatches(backend, *actual))) {
+      continue;
+    }
+    // Apple's default factory includes software VPx alongside VideoToolbox.
+    if (backend == VideoEncoderBackend::Hardware &&
+        *actual == VideoEncoderBackend::VideoToolbox &&
+        (IsSameCodecName(format.name, "VP8") ||
+         IsSameCodecName(format.name, "VP9"))) {
+      continue;
+    }
+    if (std::none_of(names.begin(), names.end(), [&](const rust::String& name) {
+          return EqualsIgnoreAsciiCase(std::string(name), format.name);
+        })) {
+      names.push_back(rust::String(format.name));
+    }
+  }
+  return names;
+}
+
 VideoEncoderFactory::InternalFactory::InternalFactory() {
   AddBackendFactory(
       factories_,

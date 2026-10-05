@@ -5,6 +5,22 @@ use crate::features::voice::{VoiceCmd, use_voice_tx};
 use crate::protocol::ClientMessage;
 use crate::state::{use_app_state, use_gateway};
 
+#[component]
+pub(crate) fn StreamQualityNotice(reason: String) -> Element {
+    let message = match reason.as_str() {
+        "sender" => {
+            "Quality limited by the broadcaster’s connection. Quality will recover automatically when possible."
+        }
+        "receiver" => {
+            "Reduced quality for your connection. Quality will recover automatically when possible."
+        }
+        _ => return rsx! {},
+    };
+    rsx! {
+        span { class: "block text-[10px] text-[var(--accent)]", role: "status", "{message}" }
+    }
+}
+
 /// `screen-…` is a misnomer since the camera moved onto this same room and
 /// connection. The name is load-bearing on the wire, so it stays.
 pub(crate) const SCREEN_JS: &str = r#"
@@ -29,6 +45,7 @@ window.dxScreen = window.dxScreen || (function () {
     return statsEpoch + '/' + statsTrackIds.get(track) + '/' + (entry.id || 'video');
   }
   const videoReports = new WeakMap();
+  const qualityReports = new Map();
   function videoStatsReport(track) {
     const now = Date.now();
     const sample = videoReports.get(track);
@@ -59,15 +76,19 @@ window.dxScreen = window.dxScreen || (function () {
   }
   const attached = {};
   let viewerTargets = null;
+  let viewerVisible = true;
   let detachedScreens = [];
   function applyViewerSubscription(pub, participant) {
     if (!pub || !participant || pub.kind !== 'video') return;
     const identity = baseIdentity(participant.identity);
     const kind = kindOf(pub, pub.track);
-    if (viewerTargets === null && (kind !== 'screen' || !detachedScreens.includes(identity))) return;
-    const enabled = viewerTargets === null
+    if (viewerTargets === null && (kind !== 'screen' || !detachedScreens.includes(identity))) {
+      if (!viewerVisible) pub.setSubscribed(false);
+      return;
+    }
+    const enabled = viewerVisible && (viewerTargets === null
       ? !detachedScreens.includes(identity)
-      : kind === 'screen' && viewerTargets.includes(identity);
+      : kind === 'screen' && viewerTargets.includes(identity));
     try { pub.setSubscribed(enabled); } catch (e) { console.warn('[dxScreen] viewer subscribe toggle failed', e); }
   }
   function refreshViewerSubscriptions() {
@@ -75,8 +96,11 @@ window.dxScreen = window.dxScreen || (function () {
     room.remoteParticipants.forEach(function (p) {
       p.trackPublications.forEach(function (pub) {
         if (pub.kind !== 'video') return;
-        if (viewerTargets === null && kindOf(pub, pub.track) === 'screen') {
-          try { pub.setSubscribed(!detachedScreens.includes(baseIdentity(p.identity))); } catch (e) {}
+        if (viewerTargets === null) {
+          const identity = baseIdentity(p.identity);
+          const screen = kindOf(pub, pub.track) === 'screen';
+          const enabled = viewerVisible && (!screen || (!detachedScreens.includes(identity) && (identity !== selfPreviewIdentity || selfPreviewEnabled)));
+          try { pub.setSubscribed(enabled); } catch (e) {}
         } else applyViewerSubscription(pub, p);
         applySelfPreviewSubscription(pub, p);
       });
@@ -84,6 +108,11 @@ window.dxScreen = window.dxScreen || (function () {
   }
   function setViewerTargets(identities) { viewerTargets = identities; refreshViewerSubscriptions(); }
   function setDetachedScreens(identities) { detachedScreens = identities; refreshViewerSubscriptions(); }
+  function setViewerVisibility(visible) {
+    if (viewerVisible === visible) return;
+    viewerVisible = visible;
+    refreshViewerSubscriptions();
+  }
   const LK = () => window.LivekitClient || window.LiveKitClient;
 
   let nativeStreamAudio = false;
@@ -164,8 +193,25 @@ window.dxScreen = window.dxScreen || (function () {
   function report(identity, present) {
     try { window.postMessage({ __dxf: 'stream-audio', identity: identity, present: !!present }, '*'); } catch (e) {}
   }
+  function requestCameraDimensions(track) {
+    if (!room || !room.remoteParticipants) return;
+    let width = 0, height = 0;
+    Object.values(attached).forEach(function (a) {
+      if (a.kind !== 'camera' || a.track !== track || !a.el) return;
+      const rect = a.el.getBoundingClientRect();
+      width = Math.max(width, rect.width); height = Math.max(height, rect.height);
+    });
+    const density = Math.min(2, window.devicePixelRatio || 1);
+    room.remoteParticipants.forEach(function (p) {
+      p.trackPublications.forEach(function (pub) {
+        if (pub.trackSid !== track.sid) return;
+        pub.setVideoDimensions({ width: Math.max(1, Math.ceil(width * density)), height: Math.max(1, Math.ceil(height * density)) });
+      });
+    });
+  }
   function attachInto(track, c, cid, identity, kind) {
     const prev = attached[cid];
+    if (prev && prev.cameraObserver) prev.cameraObserver.disconnect();
     if (prev && prev.track && prev.el) { try { prev.track.detach(prev.el); } catch (e) {} }
     c.innerHTML = '';
     const el = track.attach();
@@ -175,6 +221,11 @@ window.dxScreen = window.dxScreen || (function () {
     if (kind === 'camera' && cid === 'camera-self') el.style.transform = 'scaleX(-1)';
     c.appendChild(el);
     attached[cid] = { identity: identity, kind: kind, track: track, el: el };
+    if (kind === 'camera' && typeof ResizeObserver !== 'undefined') {
+      const observer = new ResizeObserver(function () { requestCameraDimensions(track); });
+      attached[cid].cameraObserver = observer;
+      observer.observe(c);
+    }
   }
   const VIDEO_SUFFIX = '#video';
   function baseIdentity(id) {
@@ -185,7 +236,7 @@ window.dxScreen = window.dxScreen || (function () {
     const identity = baseIdentity(participant.identity);
     if (viewerTargets !== null || detachedScreens.includes(identity)) return;
     if (identity !== selfPreviewIdentity && identity !== previousIdentity) return;
-    try { pub.setSubscribed(identity === selfPreviewIdentity ? selfPreviewEnabled : true); }
+    try { pub.setSubscribed(viewerVisible && (identity === selfPreviewIdentity ? selfPreviewEnabled : true)); }
     catch (e) { console.warn('[dxScreen] self preview subscribe toggle failed', e); }
   }
   function setSelfPreview(identity, enabled) {
@@ -210,7 +261,7 @@ window.dxScreen = window.dxScreen || (function () {
       const a = attached[cid];
       if (!a || a.identity !== base || a.kind !== kind) return;
       const c = document.getElementById(cid);
-      if (!c) { delete attached[cid]; return; }
+      if (!c) { if (a.cameraObserver) a.cameraObserver.disconnect(); delete attached[cid]; return; }
       const t = videoTrackFor(base, kind);
       if (t) attachInto(t, c, cid, base, kind);
       else c.querySelectorAll('video').forEach(function (e) { e.remove(); });
@@ -221,6 +272,7 @@ window.dxScreen = window.dxScreen || (function () {
     try { window.postMessage({ __dxf: kind, detail: String(detail || '') }, '*'); } catch (e) {}
   }
   function clearRemoteTracks() {
+    qualityReports.clear();
     remoteShareVideoTrack = null;
     post('screen-stats-in', { active: false });
     detachAudio();
@@ -228,6 +280,7 @@ window.dxScreen = window.dxScreen || (function () {
     for (const k in audioTracks) delete audioTracks[k];
     Object.keys(attached).forEach(function (cid) {
       const a = attached[cid];
+      if (a && a.cameraObserver) { a.cameraObserver.disconnect(); a.cameraObserver = null; }
       if (a && a.track && a.el) { try { a.track.detach(a.el); } catch (e) {} }
       const c = document.getElementById(cid);
       if (c) c.querySelectorAll('video').forEach(function (e) { e.remove(); });
@@ -263,7 +316,8 @@ window.dxScreen = window.dxScreen || (function () {
     }
     if (!current()) return;
     const lk = LK();
-    const opts = { adaptiveStream: true, dynacast: true };
+    // Request full quality; the SFU still adapts to each receiver's bandwidth.
+    const opts = { adaptiveStream: false, dynacast: true };
     dropE2eeWorker();
     e2eeProvider = null;
     // Encryption that cannot be set up is a room that is not joined: joining
@@ -304,6 +358,19 @@ window.dxScreen = window.dxScreen || (function () {
       return;
     }
     room = thisRoom;
+    thisRoom.on(lk.RoomEvent.TrackUnpublished, function (pub) {
+      if (room === thisRoom) qualityReports.delete(pub.trackSid);
+    });
+    thisRoom.on(lk.RoomEvent.DataReceived, function (bytes, participant, kind, topic) {
+      if (room !== thisRoom || !participant || topic !== 'discordia.screen-quality.v1' || bytes.length > 1024) return;
+      try {
+        const status = JSON.parse(new TextDecoder().decode(bytes));
+        if (!participant.trackPublications.has(status.sid)) return;
+        if (![status.width, status.height, status.primaryWidth, status.primaryHeight].every(function (v) { return Number.isInteger(v) && v >= 0 && v <= 16384; })) return;
+        const previous = qualityReports.get(status.sid);
+        qualityReports.set(status.sid, { status: status, at: Date.now(), reason: previous ? previous.reason : '', since: previous ? previous.since : Date.now() });
+      } catch (e) {}
+    });
     thisRoom.on(lk.RoomEvent.EncryptionError, function (err) {
       if (!current() || room !== thisRoom) return;
       console.error('[dxScreen] encryption error', err);
@@ -607,12 +674,25 @@ window.dxScreen = window.dxScreen || (function () {
   }
   function detach(cid) {
     const a = attached[cid];
+    if (a && a.cameraObserver) a.cameraObserver.disconnect();
     if (a && a.track && a.el) { try { a.track.detach(a.el); } catch (e) {} }
     delete attached[cid];
     if (cid.startsWith('screenshare-viewer-') && a) detachAudio(a.identity);
     const c = document.getElementById(cid); if (!c) return;
     c.removeAttribute('data-identity');
     c.querySelectorAll('video').forEach(function (e) { e.remove(); });
+  }
+  function screenQualityReason(status, received) {
+    const senderReduced = status.primaryHeight > 0 && (
+      status.primaryHeight < status.height * 0.9 || status.primaryWidth < status.width * 0.9 ||
+      (status.captureFps > 10 && status.primaryFps < status.captureFps * 0.75)
+    );
+    if (senderReduced && status.bandwidth === true) return 'sender';
+    const belowPrimary = status.primaryHeight > 0 && (
+      received.height < status.primaryHeight * 0.9 || received.width < status.primaryWidth * 0.9
+    );
+    const lowerLayer = received.height < status.height * 0.9 || received.width < status.width * 0.9;
+    return lowerLayer && status.adaptive === true && (!senderReduced || belowPrimary) ? 'receiver' : '';
   }
   async function previewStats(identity) {
     const track = videoTrackFor(identity, 'screen');
@@ -625,6 +705,13 @@ window.dxScreen = window.dxScreen || (function () {
           result = { width: entry.frameWidth || null, height: entry.frameHeight || null, fps: Number.isFinite(entry.framesPerSecond) ? entry.framesPerSecond : null };
         }
       });
+      const sample = qualityReports.get(track.sid);
+      if (result && sample && Date.now() - sample.at < 10000) {
+        const status = sample.status;
+        const reason = screenQualityReason(status, result);
+        if (sample.reason !== reason) { sample.reason = reason; sample.since = Date.now(); }
+        if (reason && Date.now() - sample.since >= 4000) result.qualityReason = reason;
+      }
       return result;
     } catch (e) { return null; }
   }
@@ -957,7 +1044,7 @@ window.dxScreen = window.dxScreen || (function () {
     e2eeProvider = null;
   }
   if (window.__dxfScreenStatsEnabled) setStatsEnabled(true);
-  return { connect: connect, setViewerTargets: setViewerTargets, setDetachedScreens: setDetachedScreens, setSelfPreview: setSelfPreview, attach: attach, detach: detach, previewStats: previewStats, requestAndStartShare: requestAndStartShare, stopShare: stopShare, disconnect: disconnect, setStreamVolume: setStreamVolume, setSink: setSink, setNativeStreamAudio: setNativeStreamAudio, setStatsEnabled: setStatsEnabled, startCamera: startCamera, stopCamera: stopCamera, listCameras: listCameras, attachLocalCamera: attachLocalCamera, setE2eeKey: setE2eeKey };
+  return { connect: connect, setViewerVisibility: setViewerVisibility, setViewerTargets: setViewerTargets, setDetachedScreens: setDetachedScreens, setSelfPreview: setSelfPreview, attach: attach, detach: detach, previewStats: previewStats, requestAndStartShare: requestAndStartShare, stopShare: stopShare, disconnect: disconnect, setStreamVolume: setStreamVolume, setSink: setSink, setNativeStreamAudio: setNativeStreamAudio, setStatsEnabled: setStatsEnabled, startCamera: startCamera, stopCamera: stopCamera, listCameras: listCameras, attachLocalCamera: attachLocalCamera, setE2eeKey: setE2eeKey };
 })();
 "#;
 
@@ -1040,6 +1127,7 @@ pub fn native_settings(quality: &str) -> crate::sysvideo::Settings {
         height,
         fps,
         max_bitrate: bitrate as u64,
+        adaptive_quality: false,
         priority: match degradation {
             "maintain-framerate" => crate::sysvideo::Priority::Motion,
             "maintain-resolution" => crate::sysvideo::Priority::Detail,
@@ -1056,6 +1144,7 @@ fn selected_capture_settings(
     let mut capture = native_settings(&settings.screenshare_quality);
     capture.codec = settings.screenshare_codec;
     capture.encoder = settings.screenshare_encoder;
+    capture.adaptive_quality = settings.screenshare_adaptive_quality;
     if let Some(fps @ (15 | 30 | 60)) = settings.screenshare_fps {
         capture.fps = fps;
     }
@@ -1072,6 +1161,22 @@ fn picker_quality(saved: &str) -> String {
     } else {
         "balanced".into()
     }
+}
+
+fn source_resolution_notice(width: u32, height: u32, quality: &str) -> Option<String> {
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let settings = native_settings(quality);
+    if width >= settings.width && height >= settings.height {
+        return None;
+    }
+    let (effective_width, effective_height) =
+        crate::sysvideo::fit_resolution(width, height, settings);
+    Some(format!(
+        "Selected maximum: {}×{}. Source: {width}×{height}. Sending up to {effective_width}×{effective_height}; smaller sources are not upscaled.",
+        settings.width, settings.height,
+    ))
 }
 
 pub(crate) fn js_str(s: &str) -> String {
@@ -1112,6 +1217,18 @@ pub fn stream_sink_js(device: Option<&str>) -> String {
 
 #[component]
 pub fn ScreenShareBridge() -> Element {
+    let visibility_window = dioxus::desktop::use_window();
+    use_future(move || {
+        let window = visibility_window.clone();
+        async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                let visible = window.window.is_visible() && !window.window.is_minimized();
+                let _ =
+                    document::eval(&format!("window.dxScreen?.setViewerVisibility({visible});"));
+            }
+        }
+    });
     let state = use_app_state();
     let gateway = use_gateway();
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
@@ -1229,7 +1346,15 @@ pub fn ScreenShareBridge() -> Element {
             _ => None,
         };
         drop(s);
-        let capture_settings = selected_capture_settings(&settings.read());
+        let mut capture_settings = selected_capture_settings(&settings.read());
+        if let Some(previous) = last_sent.peek().as_ref()
+            && previous.0 == epoch
+            && previous.4.is_some()
+            && previous.4 == want_video
+            && previous.5 == target
+        {
+            capture_settings.adaptive_quality = previous.6.adaptive_quality;
+        }
 
         let now = (
             epoch,
@@ -1512,6 +1637,15 @@ fn ScreenShareDialog(result: Result<Vec<crate::sysvideo::Source>, String>) -> El
     let mut preview_revision = use_signal(|| 0_u64);
     let mut codec = use_signal(move || settings.read().screenshare_codec);
     let mut encoder = use_signal(move || settings.read().screenshare_encoder);
+    let capabilities = use_resource(crate::sysvideo::codec_capabilities);
+    use_effect(move || {
+        if let Some(Ok(caps)) = capabilities.read().as_ref()
+            && !caps.supports(codec(), encoder())
+            && codec() != crate::sysvideo::Codec::Auto
+        {
+            codec.set(crate::sysvideo::Codec::Auto);
+        }
+    });
     let mut quality = use_signal(move || picker_quality(&settings.read().screenshare_quality));
     let mut fps = use_signal(move || selected_capture_settings(&settings.read()).fps);
     let mut audio =
@@ -1524,7 +1658,36 @@ fn ScreenShareDialog(result: Result<Vec<crate::sysvideo::Source>, String>) -> El
         .iter()
         .find(|source| Some(source.target) == target())
         .cloned();
-    let can_share = selected_source.is_some() && state.read().voice.channel_id.is_some();
+    let detected = capabilities.read().clone();
+    let caps = detected.as_ref().and_then(|result| result.as_ref().ok());
+    let h264_supported =
+        caps.is_some_and(|caps| caps.supports(crate::sysvideo::Codec::H264, encoder()));
+    let vp8_supported =
+        caps.is_some_and(|caps| caps.supports(crate::sysvideo::Codec::Vp8, encoder()));
+    let gpu_supported = caps.is_some_and(|caps| {
+        caps.supports(crate::sysvideo::Codec::Auto, crate::sysvideo::Encoder::Gpu)
+    });
+    let codec_ready = caps.is_some_and(|caps| caps.supports(codec(), encoder()));
+    let codec_status = match &detected {
+        None => "Checking codec compatibility…".to_owned(),
+        Some(Err(error)) => error.clone(),
+        Some(Ok(caps)) => match caps.resolve(codec(), encoder()) {
+            Ok(chosen) => format!(
+                "{} available with the selected encoder.",
+                if chosen == crate::sysvideo::Codec::H264 {
+                    "H.264"
+                } else {
+                    "VP8"
+                }
+            ),
+            Err(error) => error,
+        },
+    };
+    let can_share =
+        selected_source.is_some() && state.read().voice.channel_id.is_some() && codec_ready;
+    let resolution_notice = selected_source
+        .as_ref()
+        .and_then(|source| source_resolution_notice(source.width, source.height, &quality()));
 
     rsx! {
         div {
@@ -1608,9 +1771,19 @@ fn ScreenShareDialog(result: Result<Vec<crate::sysvideo::Source>, String>) -> El
                             select {
                                 id: "share-codec",
                                 class: "w-full bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)] rounded px-2 py-1 text-sm",
-                                onchange: move |e| codec.set(if e.value() == "vp8" { crate::sysvideo::Codec::Vp8 } else { crate::sysvideo::Codec::H264 }),
-                                option { value: "h264", selected: codec() == crate::sysvideo::Codec::H264, "H.264" }
-                                option { value: "vp8", selected: codec() == crate::sysvideo::Codec::Vp8, disabled: encoder() == crate::sysvideo::Encoder::Gpu, "VP8 — compatibility" }
+                                disabled: caps.is_none(),
+                                onchange: move |e| codec.set(match e.value().as_str() {
+                                    "vp8" => crate::sysvideo::Codec::Vp8,
+                                    "h264" => crate::sysvideo::Codec::H264,
+                                    _ => crate::sysvideo::Codec::Auto,
+                                }),
+                                option { value: "auto", selected: codec() == crate::sysvideo::Codec::Auto, "Automatic" }
+                                option { value: "h264", selected: codec() == crate::sysvideo::Codec::H264, disabled: !h264_supported,
+                                    if h264_supported { "H.264" } else { "H.264 — Not compatible" }
+                                }
+                                option { value: "vp8", selected: codec() == crate::sysvideo::Codec::Vp8, disabled: !vp8_supported,
+                                    if vp8_supported { "VP8 — compatibility" } else { "VP8 — Not compatible" }
+                                }
                             }
                         }
                         div { class: "min-w-0 space-y-1",
@@ -1624,18 +1797,20 @@ fn ScreenShareDialog(result: Result<Vec<crate::sysvideo::Source>, String>) -> El
                                         "cpu" => crate::sysvideo::Encoder::Cpu,
                                         _ => crate::sysvideo::Encoder::Auto,
                                     };
-                                    if selected == crate::sysvideo::Encoder::Gpu {
-                                        codec.set(crate::sysvideo::Codec::H264);
-                                    }
                                     encoder.set(selected);
                                 },
                                 option { value: "auto", selected: encoder() == crate::sysvideo::Encoder::Auto, "Automatic — prefer {crate::sysvideo::hardware_encoder_label()}" }
-                                option { value: "gpu", selected: encoder() == crate::sysvideo::Encoder::Gpu,
-                                    if cfg!(target_os = "macos") { "Hardware" } else { "GPU — hardware" }
+                                option { value: "gpu", selected: encoder() == crate::sysvideo::Encoder::Gpu, disabled: !gpu_supported,
+                                    if !gpu_supported { "Hardware — Not compatible" }
+                                    else if cfg!(target_os = "macos") { "Hardware" } else { "GPU — hardware" }
                                 }
                                 option { value: "cpu", selected: encoder() == crate::sysvideo::Encoder::Cpu, "CPU — software" }
                             }
                         }
+                    }
+                    p { class: "text-xs text-[var(--text-muted)]", role: "status", "{codec_status}" }
+                    if let Some(notice) = resolution_notice {
+                        p { class: "text-xs text-[var(--accent)]", role: "status", "{notice}" }
                     }
                     label { class: "flex items-center gap-2 cursor-pointer select-none",
                         input { r#type: "checkbox", checked: audio(), disabled: !crate::sysaudio::supported(),
@@ -2361,6 +2536,7 @@ fn ScreenWatchTile(
     let container = format!("screenshare-viewer-{pk}");
     let stats_pk = pk.clone();
     let mut received_label = use_signal(|| "Waiting for stream measurements…".to_owned());
+    let mut quality_reason = use_signal(String::new);
     let window = dioxus::desktop::use_window();
     use_future(move || {
         let identity = js_str(&stats_pk);
@@ -2375,6 +2551,12 @@ fn ScreenWatchTile(
                     "dioxus.send(await window.dxScreen.previewStats({identity}));"
                 ));
                 if let Ok(value) = eval.recv::<Value>().await {
+                    quality_reason.set(
+                        value["qualityReason"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .to_owned(),
+                    );
                     let label = match (
                         value["width"].as_u64(),
                         value["height"].as_u64(),
@@ -2489,7 +2671,10 @@ fn ScreenWatchTile(
             }
             div {
                 class: "px-3 py-1 flex flex-wrap items-center justify-between gap-2 shrink-0",
-                span { class: "text-[10px] text-[var(--text-dim)]", "{received_label}" }
+                div {
+                    span { class: "text-[10px] text-[var(--text-dim)]", "{received_label}" }
+                    StreamQualityNotice { reason: quality_reason() }
+                }
                 div {
                     class: "flex flex-wrap items-center gap-1.5",
                     onmousedown: move |e| e.stop_propagation(),
@@ -2543,6 +2728,16 @@ fn ScreenWatchTile(
 
 #[cfg(test)]
 mod js_escaping_tests {
+    #[test]
+    fn picker_explains_when_a_source_is_smaller_than_the_selected_maximum() {
+        let message = super::source_resolution_notice(2560, 1440, "4k").expect("notice");
+        assert!(message.contains("Source: 2560×1440"));
+        assert!(message.contains("Sending up to 2560×1440"));
+        assert!(super::source_resolution_notice(3840, 2160, "4k").is_none());
+        assert!(super::source_resolution_notice(0, 0, "4k").is_none());
+        let portrait = super::source_resolution_notice(1080, 1920, "smooth").expect("portrait");
+        assert!(portrait.contains("606×1080"));
+    }
     use super::{attach_js, js_str, screen_stats_js, share_js};
 
     #[test]

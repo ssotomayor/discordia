@@ -1322,7 +1322,7 @@ fn screen_video_options(settings: crate::sysvideo::Settings) -> TrackPublishOpti
     TrackPublishOptions {
         source: TrackSource::Screenshare,
         video_codec: match settings.codec {
-            crate::sysvideo::Codec::H264 => VideoCodec::H264,
+            crate::sysvideo::Codec::Auto | crate::sysvideo::Codec::H264 => VideoCodec::H264,
             crate::sysvideo::Codec::Vp8 => VideoCodec::VP8,
         },
         video_encoder: match settings.encoder {
@@ -1336,8 +1336,17 @@ fn screen_video_options(settings: crate::sysvideo::Settings) -> TrackPublishOpti
             crate::sysvideo::Priority::Detail => DegradationPreference::MaintainResolution,
             crate::sysvideo::Priority::Balanced => DegradationPreference::Balanced,
         }),
-        // LiveKit's default lower screen-share layer halves resolution and caps it at 3 FPS.
-        simulcast: false,
+        // Explicit presets avoid LiveKit's 3 FPS screen-share fallback.
+        simulcast: settings.adaptive_quality && settings.height > 360,
+        simulcast_layers: (settings.adaptive_quality && settings.height > 360).then(|| {
+            let height = if settings.height <= 720 { 360 } else { 720 };
+            vec![livekit::options::VideoPreset::new(
+                settings.width * height / settings.height,
+                height,
+                if height == 360 { 500_000 } else { 1_500_000 },
+                settings.fps.min(30) as f64,
+            )]
+        }),
         video_encoding: Some(VideoEncoding {
             max_framerate: settings.fps as f64,
             max_bitrate: settings.max_bitrate,
@@ -1353,7 +1362,16 @@ fn screen_video_options(settings: crate::sysvideo::Settings) -> TrackPublishOpti
                 (1440 | 2160, _) => 4_000_000,
                 _ => (settings.max_bitrate / 2).clamp(1_000_000, 4_000_000),
             }
-            .min(settings.max_bitrate),
+            .min(settings.max_bitrate)
+            .saturating_add(if settings.adaptive_quality && settings.height > 360 {
+                if settings.height <= 720 {
+                    500_000
+                } else {
+                    1_500_000
+                }
+            } else {
+                0
+            }),
         ),
         ..Default::default()
     }
@@ -1367,27 +1385,23 @@ impl ScreenVideoRoom {
         settings: crate::sysvideo::Settings,
         state: Signal<AppState>,
     ) -> Result<Self, String> {
-        if settings.encoder == crate::sysvideo::Encoder::Gpu {
-            if settings.codec != crate::sysvideo::Codec::H264 {
-                return Err(format!(
-                    "{} screen sharing requires H.264",
-                    crate::sysvideo::hardware_encoder_label()
-                ));
-            }
-            if !VideoEncoderBackend::list_available()
-                .into_iter()
-                .any(|backend| backend == VideoEncoderBackend::Hardware)
-            {
-                return Err(format!(
-                    "{} encoding is unavailable. Choose Automatic or CPU.",
-                    crate::sysvideo::hardware_encoder_label()
-                ));
+        let mut publish_settings = settings;
+        publish_settings.codec = crate::sysvideo::codec_capabilities()
+            .await?
+            .resolve(settings.codec, settings.encoder)?;
+        if settings.adaptive_quality {
+            let sources = tokio::task::spawn_blocking(crate::sysvideo::sources)
+                .await
+                .map_err(|e| format!("screen source lookup failed: {e}"))??;
+            if let Some(actual) = sources.iter().find(|s| s.target == target) {
+                (publish_settings.width, publish_settings.height) =
+                    crate::sysvideo::fit_resolution(actual.width, actual.height, settings);
             }
         }
         let source = NativeVideoSource::new(
             VideoResolution {
-                width: settings.width,
-                height: settings.height,
+                width: publish_settings.width,
+                height: publish_settings.height,
             },
             true,
         );
@@ -1398,11 +1412,28 @@ impl ScreenVideoRoom {
             .local_participant()
             .publish_track(
                 LocalTrack::Video(track.clone()),
-                screen_video_options(settings),
+                screen_video_options(publish_settings),
             )
             .await;
         let publication = match publication {
             Ok(publication) => publication,
+            Err(error) if publish_settings.adaptive_quality => {
+                tracing::warn!(%error, "simulcast publication failed; retrying a single quality");
+                publish_settings.adaptive_quality = false;
+                let publication = room
+                    .local_participant()
+                    .publish_track(
+                        LocalTrack::Video(track.clone()),
+                        screen_video_options(publish_settings),
+                    )
+                    .await
+                    .map_err(|e| format!("publishing the video track failed ({e})"))?;
+                let mut state = state;
+                state.write().error_toast = Some(
+                    "Adaptive quality is unavailable. Sharing a single quality instead.".into(),
+                );
+                publication
+            }
             Err(error) => {
                 return Err(format!("publishing the video track failed ({error})"));
             }
@@ -1482,11 +1513,13 @@ impl ScreenVideoRoom {
         let mut stats_state = state;
         let capture_metrics = capture.metrics();
         let stats_sid = publication.sid();
+        let status_room = room.clone();
         let stats_task = dioxus::prelude::spawn(async move {
             let mut previous = None;
             let mut capture_previous = capture_metrics.snapshot();
             let mut encode_previous = None;
             let mut sampled = Instant::now();
+            let mut status_sent = Instant::now() - std::time::Duration::from_secs(3);
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                 let now = Instant::now();
@@ -1509,10 +1542,19 @@ impl ScreenVideoRoom {
                 let Ok(report) = track.get_stats().await else {
                     continue;
                 };
-                let Some(outbound) = report.iter().find_map(|entry| match entry {
-                    RtcStats::OutboundRtp(o) if o.stream.kind == "video" => Some(o),
-                    _ => None,
-                }) else {
+                let Some(outbound) = report
+                    .iter()
+                    .filter_map(|entry| match entry {
+                        RtcStats::OutboundRtp(o) if o.stream.kind == "video" => Some(o),
+                        _ => None,
+                    })
+                    .max_by_key(|o| {
+                        (
+                            o.outbound.rid == "f",
+                            o.outbound.frame_width as u64 * o.outbound.frame_height as u64,
+                        )
+                    })
+                else {
                     continue;
                 };
                 if settings.encoder == crate::sysvideo::Encoder::Gpu && {
@@ -1533,13 +1575,20 @@ impl ScreenVideoRoom {
                     }
                     break;
                 }
-                let rates = outbound_rates(
-                    previous,
-                    outbound.sent.packets_sent,
-                    outbound.sent.bytes_sent,
-                    now,
-                );
-                previous = Some((outbound.sent.packets_sent, outbound.sent.bytes_sent, now));
+                let (packets, bytes) =
+                    report
+                        .iter()
+                        .fold((0_u64, 0_u64), |(packets, bytes), entry| {
+                            if let RtcStats::OutboundRtp(o) = entry
+                                && o.stream.kind == "video"
+                            {
+                                (packets + o.sent.packets_sent, bytes + o.sent.bytes_sent)
+                            } else {
+                                (packets, bytes)
+                            }
+                        });
+                let rates = outbound_rates(previous, packets, bytes, now);
+                previous = Some((packets, bytes, now));
                 let encode_ms = screen_encode_ms(
                     encode_previous,
                     outbound.outbound.frames_encoded,
@@ -1549,6 +1598,35 @@ impl ScreenVideoRoom {
                     outbound.outbound.frames_encoded,
                     outbound.outbound.total_encode_time,
                 ));
+                if now.duration_since(status_sent).as_secs() >= 3 {
+                    let (width, height) =
+                        crate::sysvideo::fit_resolution(captured.width, captured.height, settings);
+                    let payload = serde_json::json!({
+                        "sid": stats_sid.to_string(),
+                        "width": width, "height": height,
+                        "primaryWidth": outbound.outbound.frame_width,
+                        "primaryHeight": outbound.outbound.frame_height,
+                        "primaryFps": outbound.outbound.frames_per_second,
+                        "captureFps": capture_fps,
+                        "adaptive": publish_settings.adaptive_quality,
+                        "bandwidth": outbound.outbound.quality_limitation_reason
+                            == livekit::webrtc::stats::QualityLimitationReason::Bandwidth,
+                    })
+                    .to_string()
+                    .into_bytes();
+                    if let Err(error) = status_room
+                        .local_participant()
+                        .publish_data(livekit::DataPacket {
+                            payload,
+                            topic: Some("discordia.screen-quality.v1".into()),
+                            ..Default::default()
+                        })
+                        .await
+                    {
+                        tracing::debug!(%error, "screen quality status unavailable");
+                    }
+                    status_sent = now;
+                }
                 let mut s = stats_state.write();
                 if s.voice_session_epoch != capture_epoch
                     || s.screen_share_target != Some(target)
@@ -1563,6 +1641,7 @@ impl ScreenVideoRoom {
                     rates.map(|(_, rate)| rate),
                 );
                 stats.capture_width = (captured.width > 0).then_some(captured.width);
+                stats.packets = Some(packets);
                 stats.capture_height = (captured.height > 0).then_some(captured.height);
                 stats.capture_processing_ms = capture_processing_ms;
                 stats.encode_ms = encode_ms;
@@ -3364,6 +3443,7 @@ mod tests {
             height: 1080,
             fps: 60,
             max_bitrate: 18_000_000,
+            adaptive_quality: false,
             priority: crate::sysvideo::Priority::Motion,
             codec: crate::sysvideo::Codec::H264,
             encoder: crate::sysvideo::Encoder::Auto,
@@ -3377,6 +3457,72 @@ mod tests {
         assert_eq!(encodings[0].scale_resolution_down_by, Some(1.0));
         assert_eq!(encodings[0].max_framerate, Some(60.0));
         assert_eq!(encodings[0].max_bitrate, Some(18_000_000));
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[test]
+    fn principal_encoding_is_high_quality_with_one_two_or_three_layers() {
+        for count in 1..=3 {
+            let presets: Vec<_> = (0..count)
+                .map(|i| livekit::options::VideoPreset::new(320 << i, 180 << i, 500_000 << i, 30.0))
+                .collect();
+            let encodings = livekit::options::into_rtp_encodings(1280, 720, &presets);
+            assert_eq!(encodings[0].rid, "f");
+            let layers = livekit::options::video_layers_from_encodings(1280, 720, &encodings);
+            assert_eq!(layers[0].quality, livekit::track::VideoQuality::High as i32);
+        }
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[test]
+    fn optional_screen_simulcast_advertises_two_distinct_qualities() {
+        for (width, height, alternative_height) in [
+            (1280, 720, 360),
+            (1920, 1080, 720),
+            (2560, 1440, 720),
+            (3840, 2160, 720),
+        ] {
+            for fps in [15, 30, 60] {
+                let mut settings = crate::features::screenshare::native_settings("smooth");
+                settings.width = width;
+                settings.height = height;
+                settings.fps = fps;
+                settings.adaptive_quality = true;
+                let options = screen_video_options(settings);
+                let encodings = livekit::options::compute_video_encodings(width, height, &options);
+                assert_eq!(encodings.len(), 2);
+                assert_eq!(encodings[0].rid, "f");
+                assert_eq!(encodings[0].scale_resolution_down_by, Some(1.0));
+                assert_eq!(encodings[0].max_framerate, Some(fps as f64));
+                assert_eq!(encodings[1].rid, "h");
+                assert_eq!(
+                    encodings[1].scale_resolution_down_by,
+                    Some(height as f64 / alternative_height as f64)
+                );
+                assert_eq!(encodings[1].max_framerate, Some(fps.min(30) as f64));
+                assert_eq!(
+                    encodings[1].max_bitrate,
+                    Some(if alternative_height == 360 {
+                        500_000
+                    } else {
+                        1_500_000
+                    })
+                );
+                let layers =
+                    livekit::options::video_layers_from_encodings(width, height, &encodings);
+                assert_eq!(layers[0].quality, livekit::track::VideoQuality::High as i32);
+                assert_eq!(
+                    layers[1].quality,
+                    livekit::track::VideoQuality::Medium as i32
+                );
+                assert_eq!(layers[1].height, alternative_height);
+            }
+        }
+        let mut small = crate::features::screenshare::native_settings("720");
+        small.width = 640;
+        small.height = 360;
+        small.adaptive_quality = true;
+        assert!(!screen_video_options(small).simulcast);
     }
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -3476,6 +3622,7 @@ mod tests {
         let available_backends: Vec<_> =
             VideoEncoderBackend::list_available().into_iter().collect();
         eprintln!("Available video encoders: {available_backends:?}");
+        let verify_simulcast = std::env::var_os("DISCORDIA_TEST_SIMULCAST").is_some();
         let require_nvenc = std::env::var_os("DISCORDIA_TEST_REQUIRE_NVENC").is_some();
         let verify_nvenc_rates = std::env::var_os("DISCORDIA_TEST_NVENC_RATES").is_some();
         let verify_1440p = std::env::var_os("DISCORDIA_TEST_NVENC_1440P").is_some();
@@ -3561,6 +3708,45 @@ mod tests {
                     .expect("listener");
             let events =
                 tokio::spawn(async move { while publisher_events.recv().await.is_some() {} });
+            let low_frames = Arc::new(AtomicU64::new(0));
+            let recovered_frames = Arc::new(AtomicU64::new(0));
+            let mut low_listener = None;
+            let mut low_reader = None;
+            if verify_simulcast {
+                let (receiver, mut rx) =
+                    Room::connect(&url, &token("low-listener"), encrypted_options())
+                        .await
+                        .expect("low listener");
+                low_listener = Some(receiver);
+                let low = low_frames.clone();
+                let recovered = recovered_frames.clone();
+                low_reader = Some(tokio::spawn(async move {
+                    while let Some(event) = rx.recv().await {
+                        if let RoomEvent::TrackSubscribed {
+                            track: RemoteTrack::Video(video),
+                            publication,
+                            ..
+                        } = event
+                        {
+                            publication.set_video_quality(livekit::track::VideoQuality::Medium);
+                            let mut stream = NativeVideoStream::new(video.rtc_track());
+                            while let Some(frame) = stream.next().await {
+                                if frame.buffer.height() == 720 {
+                                    let count = low.fetch_add(1, Ordering::Relaxed) + 1;
+                                    if count == 45 {
+                                        publication
+                                            .set_video_quality(livekit::track::VideoQuality::High);
+                                    }
+                                } else if frame.buffer.height() == 1080
+                                    && low.load(Ordering::Relaxed) >= 45
+                                {
+                                    recovered.fetch_add(1, Ordering::Relaxed);
+                                }
+                            }
+                        }
+                    }
+                }));
+            }
             let received = Arc::new(AtomicU64::new(0));
             let decoded = received.clone();
             let reader = tokio::spawn(async move {
@@ -3573,7 +3759,9 @@ mod tests {
                         let mut stream = NativeVideoStream::new(video.rtc_track());
                         while let Some(frame) = stream.next().await {
                             assert!(frame.buffer.width() > 0 && frame.buffer.height() > 0);
-                            decoded.fetch_add(1, Ordering::Relaxed);
+                            if !verify_simulcast || frame.buffer.height() == 1080 {
+                                decoded.fetch_add(1, Ordering::Relaxed);
+                            }
                         }
                     }
                 }
@@ -3581,6 +3769,7 @@ mod tests {
             let mut settings = crate::features::screenshare::native_settings("smooth");
             settings.codec = codec;
             settings.encoder = encoder;
+            settings.adaptive_quality = verify_simulcast;
             if verify_nvenc_rates {
                 settings.width = 1280;
                 settings.height = 720;
@@ -3636,7 +3825,9 @@ mod tests {
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             let mut last_bytes = None;
             let mut measured_bps = 0.0;
-            let frame_count = if verify_1440p {
+            let frame_count = if verify_simulcast {
+                360
+            } else if verify_1440p {
                 900
             } else if verify_nvenc_rates {
                 450
@@ -3771,7 +3962,14 @@ mod tests {
                 assert_eq!(stats.power_efficient, Some(true));
             }
             if encoder == crate::sysvideo::Encoder::Cpu {
-                assert_eq!(stats.codec_implementation.as_deref(), Some("OpenH264"));
+                assert_eq!(
+                    stats.codec_implementation.as_deref(),
+                    Some(if verify_simulcast {
+                        "SimulcastEncoderAdapter (OpenH264, OpenH264)"
+                    } else {
+                        "OpenH264"
+                    })
+                );
                 assert_eq!(stats.power_efficient, Some(false));
             }
             eprintln!(
@@ -3798,11 +3996,37 @@ mod tests {
                     Some("av1") => "video/AV1",
                     Some("h265") => "video/H265",
                     _ => match codec {
-                        crate::sysvideo::Codec::H264 => "video/H264",
+                        crate::sysvideo::Codec::Auto | crate::sysvideo::Codec::H264 => "video/H264",
                         crate::sysvideo::Codec::Vp8 => "video/VP8",
                     },
                 })
             );
+            if verify_simulcast {
+                eprintln!(
+                    "simulcast: {} principal frames, {} fallback frames, {} recovered frames",
+                    received.load(Ordering::Relaxed),
+                    low_frames.load(Ordering::Relaxed),
+                    recovered_frames.load(Ordering::Relaxed)
+                );
+                assert!(
+                    received.load(Ordering::Relaxed) > 60,
+                    "main listener keeps full resolution"
+                );
+                assert!(
+                    low_frames.load(Ordering::Relaxed) >= 45,
+                    "second listener decodes the lower layer"
+                );
+                assert!(
+                    recovered_frames.load(Ordering::Relaxed) > 30,
+                    "second listener recovers full resolution"
+                );
+            }
+            if let Some(receiver) = low_listener {
+                receiver.close().await.expect("close low listener");
+            }
+            if let Some(reader) = low_reader {
+                reader.abort();
+            }
             listener.close().await.expect("close listener");
             publisher.close().await.expect("close publisher");
             reader.abort();

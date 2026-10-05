@@ -367,7 +367,7 @@ pub fn into_rtp_encodings(
     let size = u32::min(initial_width, initial_height);
     for (i, preset) in presets.iter().enumerate() {
         encodings.push(RtpEncodingParameters {
-            rid: VIDEO_RIDS[i].to_string(),
+            rid: VIDEO_RIDS[VIDEO_RIDS.len() - presets.len() + i].to_string(),
             scale_resolution_down_by: Some(f64::max(
                 1.0,
                 size as f64 / u32::min(preset.width, preset.height) as f64,
