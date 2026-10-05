@@ -215,6 +215,10 @@ impl Session {
             self.close();
         }
     }
+
+    fn wants_reopen(&self, desired_open: bool) -> bool {
+        desired_open && self.close.load(Ordering::Acquire)
+    }
 }
 
 static RUNNER: LazyLock<Result<std::sync::mpsc::Sender<Arc<Session>>, String>> =
@@ -241,6 +245,19 @@ static RUNNER: LazyLock<Result<std::sync::mpsc::Sender<Arc<Session>>, String>> =
 fn stats_polling(voice: &VoiceTx, enabled: bool) {
     voice.send(VoiceCmd::SetStatsPolling { enabled });
     let _eval = document::eval(&super::screenshare::screen_stats_js(enabled));
+}
+
+fn complete_window_close(
+    session: Option<&Session>,
+    mut state: Signal<AppState>,
+    mut revision: Signal<u64>,
+) {
+    let reopen = session.is_some_and(|session| session.wants_reopen(state.peek().audio_settings));
+    if !reopen {
+        state.write().audio_settings = false;
+    }
+    // Taking the nonreactive session must wake the effect for queued reopen requests.
+    revision += 1;
 }
 
 fn apply_edit(
@@ -348,6 +365,7 @@ pub(super) fn NativeSettingsDialog() -> Element {
     let voice = use_voice_tx();
     let gateway = crate::state::use_gateway();
     let active = use_hook(|| Rc::new(RefCell::new(None::<Arc<Session>>)));
+    let window_revision = use_signal(|| 0_u64);
     let mut fallback = use_signal(|| false);
     let (tx, rx) = use_hook(|| {
         let (tx, rx) = mpsc::unbounded_channel();
@@ -357,6 +375,7 @@ pub(super) fn NativeSettingsDialog() -> Element {
         let active = active.clone();
         let voice = voice.clone();
         use_effect(move || {
+            let _revision = window_revision();
             if state.read().audio_settings && !fallback() && active.borrow().is_none() {
                 let session = Arc::new(Session {
                     snapshot: Mutex::new(Some(snapshot(&state.read(), &settings.read(), 0))),
@@ -405,7 +424,13 @@ pub(super) fn NativeSettingsDialog() -> Element {
                             Some(Event::Edit(id, edit, persist)) => { apply_edit(&edit, state, settings, &voice, &gateway, persist); ack = id; }
                             Some(Event::TestSound) => { let prefs = settings.read(); crate::native_sounds::configure(prefs.sfx_volume, prefs.selected_output_device.clone()); crate::native_sounds::play("call-connected"); }
                             Some(Event::Stats(enabled)) => stats_polling(&voice, enabled),
-                            Some(Event::Closed) => { active.borrow_mut().take(); state.write().audio_settings = false; stats_polling(&voice, false); crate::settings::save(&settings.read()); ack = 0; }
+                            Some(Event::Closed) => {
+                                let closed = active.borrow_mut().take();
+                                complete_window_close(closed.as_deref(), state, window_revision);
+                                stats_polling(&voice, false);
+                                crate::settings::save(&settings.read());
+                                ack = 0;
+                            }
                             Some(Event::Failed(error)) => { active.borrow_mut().take(); state.write().error_toast = Some(format!("{error}. Using the existing Settings dialog.")); fallback.set(true); stats_polling(&voice, false); }
                             None => break,
                         },
@@ -435,6 +460,45 @@ pub(super) fn NativeSettingsDialog() -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn delayed_window_close_preserves_only_an_explicit_reopen_request() {
+        let (events, _receiver) = mpsc::unbounded_channel();
+        let session = Session {
+            snapshot: Mutex::new(None),
+            context: Mutex::new(None),
+            close: AtomicBool::new(false),
+            events,
+        };
+        let mut dom = VirtualDom::new_with_props(
+            |session: Arc<Session>| {
+                let mut state = use_signal(AppState::empty);
+                let revision = use_signal(|| 0_u64);
+                use_hook(|| {
+                    state.write().audio_settings = true;
+                    complete_window_close(Some(&session), state, revision);
+                    assert!(!state.read().audio_settings, "window X closes Settings");
+                    assert_eq!(revision(), 1);
+
+                    session.close();
+                    complete_window_close(Some(&session), state, revision);
+                    assert!(!state.read().audio_settings, "a closed dialog stays closed");
+                    assert_eq!(revision(), 2);
+
+                    state.write().audio_settings = true;
+                    complete_window_close(Some(&session), state, revision);
+                    assert!(
+                        state.read().audio_settings,
+                        "a reopen request survives teardown"
+                    );
+                    assert_eq!(revision(), 3, "the opening effect is notified");
+                });
+                rsx! {}
+            },
+            Arc::new(session),
+        );
+        dom.rebuild_in_place();
+    }
+
     #[test]
     fn native_microphone_and_playback_edits_reach_the_existing_voice_service() {
         let (voice_tx, mut commands) = mpsc::unbounded_channel();
