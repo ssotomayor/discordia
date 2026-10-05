@@ -91,7 +91,7 @@ window.dxScreen = window.dxScreen || (function () {
       : kind === 'screen' && viewerTargets.includes(identity));
     try { pub.setSubscribed(enabled); } catch (e) { console.warn('[dxScreen] viewer subscribe toggle failed', e); }
   }
-  function refreshViewerSubscriptions() {
+  function refreshViewerSubscriptions(restoreVideos) {
     if (!room || !room.remoteParticipants) return;
     room.remoteParticipants.forEach(function (p) {
       p.trackPublications.forEach(function (pub) {
@@ -99,6 +99,7 @@ window.dxScreen = window.dxScreen || (function () {
         if (viewerTargets === null) {
           const identity = baseIdentity(p.identity);
           const screen = kindOf(pub, pub.track) === 'screen';
+          if (!screen && viewerVisible && !restoreVideos) return;
           const enabled = viewerVisible && (!screen || (!detachedScreens.includes(identity) && (identity !== selfPreviewIdentity || selfPreviewEnabled)));
           try { pub.setSubscribed(enabled); } catch (e) {}
         } else applyViewerSubscription(pub, p);
@@ -106,12 +107,12 @@ window.dxScreen = window.dxScreen || (function () {
       });
     });
   }
-  function setViewerTargets(identities) { viewerTargets = identities; refreshViewerSubscriptions(); }
+  function setViewerTargets(identities) { viewerTargets = identities; refreshViewerSubscriptions(true); }
   function setDetachedScreens(identities) { detachedScreens = identities; refreshViewerSubscriptions(); }
   function setViewerVisibility(visible) {
     if (viewerVisible === visible) return;
     viewerVisible = visible;
-    refreshViewerSubscriptions();
+    refreshViewerSubscriptions(true);
   }
   const LK = () => window.LivekitClient || window.LiveKitClient;
 
@@ -368,7 +369,8 @@ window.dxScreen = window.dxScreen || (function () {
         if (!participant.trackPublications.has(status.sid)) return;
         if (![status.width, status.height, status.primaryWidth, status.primaryHeight].every(function (v) { return Number.isInteger(v) && v >= 0 && v <= 16384; })) return;
         const previous = qualityReports.get(status.sid);
-        qualityReports.set(status.sid, { status: status, at: Date.now(), reason: previous ? previous.reason : '', since: previous ? previous.since : Date.now() });
+        const fresh = previous && Date.now() - previous.at < 10000;
+        qualityReports.set(status.sid, { status: status, at: Date.now(), reason: fresh ? previous.reason : '', since: fresh ? previous.since : Date.now() });
       } catch (e) {}
     });
     thisRoom.on(lk.RoomEvent.EncryptionError, function (err) {

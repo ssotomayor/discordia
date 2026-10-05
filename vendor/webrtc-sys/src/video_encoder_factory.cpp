@@ -373,9 +373,13 @@ rust::Vec<rust::String> video_encoder_codec_list(VideoEncoderBackend backend) {
          !BackendMatches(backend, *actual))) {
       continue;
     }
-    // Apple's default factory includes software VPx alongside VideoToolbox.
+    // Apple's software VPx also carries the generic Hardware alias.
     if (backend == VideoEncoderBackend::Hardware &&
-        *actual == VideoEncoderBackend::VideoToolbox &&
+        (*actual == VideoEncoderBackend::VideoToolbox
+#ifdef __APPLE__
+         || *actual == VideoEncoderBackend::Hardware
+#endif
+         ) &&
         (IsSameCodecName(format.name, "VP8") ||
          IsSameCodecName(format.name, "VP9"))) {
       continue;

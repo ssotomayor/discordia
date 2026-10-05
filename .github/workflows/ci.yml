@@ -94,6 +94,7 @@ jobs:
       - name: WebView bridge tests
         run: |
           node client/tests/screenshare_bridge.cjs
+          node --test scripts/test-stream-quality.mjs
           node client/tests/chat_attachment_bridge.cjs
           node client/tests/native_ui_bridges.cjs
 
@@ -144,6 +145,9 @@ jobs:
         env:
           RUSTFLAGS: "-C debug-assertions=off"
         run: cargo clippy -p dioxusfun --all-targets -- -D warnings
+
+      - name: Native codec capabilities
+        run: cargo test -p dioxusfun --bin Discordia native_codec_probe_reports_the_builtin_vp8_encoder
 
   prerelease-linux:
     name: pre-release · server+client (linux · x86_64)

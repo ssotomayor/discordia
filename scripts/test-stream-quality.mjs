@@ -78,6 +78,11 @@ test('quality reports must belong to the sending participant and preserve the wa
   handler(packet, sender, null, 'discordia.screen-quality.v1');
   assert.equal(reports.get('screen').since, since);
   assert.equal(reports.get('screen').reason, 'receiver');
+  now += 11000;
+  handler(packet, sender, null, 'discordia.screen-quality.v1');
+  assert.equal(reports.get('screen').reason, '');
+  assert.equal(reports.get('screen').since, now);
+  assert.equal(reports.get('screen').at, now);
 });
 
 test('hidden viewers pause video while detached streams and disabled self preview remain excluded', () => {
@@ -105,6 +110,13 @@ test('hidden viewers pause video while detached streams and disabled self previe
   assert.equal(subscribed.get('camera'), true);
   assert.equal(subscribed.get('detached'), false);
   assert.equal(subscribed.get('self'), false);
+  visibilityContext.setViewerTargets(['other']);
+  assert.equal(subscribed.get('camera'), false);
+  visibilityContext.setViewerTargets(null);
+  assert.equal(subscribed.get('camera'), true);
+  subscribed.set('camera', false);
+  visibilityContext.setDetachedScreens([]);
+  assert.equal(subscribed.get('camera'), false, 'docking a screen preserves camera subscriptions');
 });
 
 test('camera requests follow their largest rendered view without lowering screen quality', () => {
