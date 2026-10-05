@@ -22,8 +22,6 @@ pub mod image_editor;
 pub mod integrations;
 pub mod leveling;
 pub mod members;
-#[cfg(target_os = "windows")]
-mod native_settings;
 #[cfg(test)]
 mod native_teardown;
 pub mod profiles;
