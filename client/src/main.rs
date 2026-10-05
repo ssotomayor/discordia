@@ -34,6 +34,8 @@ mod rawmic;
 mod rendezvous;
 mod session;
 mod settings;
+#[cfg(target_os = "windows")]
+mod single_instance;
 mod sound_decode;
 mod state;
 mod stream_audio;
@@ -93,6 +95,13 @@ fn redirect_std_handles() {
 fn redirect_std_handles() {}
 
 const LOG_MAX_BYTES: u64 = 5 * 1024 * 1024;
+
+/// The main window's title, and how the second launch finds it to focus.
+pub(crate) const MAIN_WINDOW_TITLE: &str = "Discordia";
+
+/// Set on the process the updater spawns to replace a running one: the
+/// single-instance guard waits for the old process instead of focusing it.
+pub(crate) const RESTART_FLAG: &str = "--replaced";
 
 static LOG_FILE: std::sync::OnceLock<std::sync::Arc<std::sync::Mutex<std::fs::File>>> =
     std::sync::OnceLock::new();
@@ -176,6 +185,13 @@ fn main() {
     #[cfg(target_os = "windows")]
     init_windows_identity();
 
+    // The installer runs this binary with `--ensure-webview2` while a user's
+    // Discordia may be open, so that probe must not be mistaken for a launch.
+    #[cfg(target_os = "windows")]
+    if !std::env::args().any(|arg| arg == webview2::ENSURE_FLAG) && !single_instance::acquire() {
+        return;
+    }
+
     #[cfg(target_os = "windows")]
     app::init_tray_quit_bridge();
 
@@ -194,7 +210,7 @@ fn main() {
     }
 
     let window = WindowBuilder::new()
-        .with_title("Discordia")
+        .with_title(MAIN_WINDOW_TITLE)
         .with_inner_size(LogicalSize::new(1440.0, 900.0))
         // The binding case is the social drawer open: it floors at 600 and the
         // connect form stops being readable under ~420. Anything narrower and
