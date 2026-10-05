@@ -51,6 +51,7 @@ pub struct Settings {
     pub height: u32,
     pub fps: u32,
     pub max_bitrate: u64,
+    pub adaptive_quality: bool,
     pub priority: Priority,
     pub codec: Codec,
     pub encoder: Encoder,
@@ -75,8 +76,60 @@ pub fn hardware_encoder_label() -> &'static str {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Codec {
     #[default]
+    Auto,
     H264,
     Vp8,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct CodecCapabilities {
+    pub software: Vec<String>,
+    pub hardware: Vec<String>,
+}
+
+impl CodecCapabilities {
+    pub fn supports(&self, codec: Codec, encoder: Encoder) -> bool {
+        let name = match codec {
+            Codec::Auto => return self.resolve(codec, encoder).is_ok(),
+            Codec::H264 => "H264",
+            Codec::Vp8 => "VP8",
+        };
+        let contains = |names: &[String]| names.iter().any(|n| n.eq_ignore_ascii_case(name));
+        match encoder {
+            Encoder::Cpu => contains(&self.software),
+            Encoder::Gpu => contains(&self.hardware),
+            Encoder::Auto => contains(&self.hardware) || contains(&self.software),
+        }
+    }
+
+    pub fn resolve(&self, codec: Codec, encoder: Encoder) -> Result<Codec, String> {
+        if codec == Codec::Auto {
+            [Codec::H264, Codec::Vp8]
+                .into_iter()
+                .find(|candidate| self.supports(*candidate, encoder))
+                .ok_or_else(|| "No compatible video codec. Choose another encoder.".into())
+        } else if self.supports(codec, encoder) {
+            Ok(codec)
+        } else {
+            Err("Video codec is not compatible with the selected encoder. Choose Automatic or another encoder.".into())
+        }
+    }
+}
+
+pub(crate) async fn codec_capabilities() -> Result<CodecCapabilities, String> {
+    static CAPS: std::sync::OnceLock<CodecCapabilities> = std::sync::OnceLock::new();
+    tokio::task::spawn_blocking(|| {
+        CAPS.get_or_init(|| {
+            use webrtc_sys::webrtc::ffi::{VideoEncoderBackend, video_encoder_codec_list};
+            CodecCapabilities {
+                software: video_encoder_codec_list(VideoEncoderBackend::Software),
+                hardware: video_encoder_codec_list(VideoEncoderBackend::Hardware),
+            }
+        })
+        .clone()
+    })
+    .await
+    .map_err(|e| format!("Couldn't check video codec compatibility: {e}"))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -86,8 +139,7 @@ pub enum Priority {
     Balanced,
 }
 
-#[cfg(any(target_os = "windows", test))]
-fn fit_resolution(width: u32, height: u32, settings: Settings) -> (u32, u32) {
+pub(crate) fn fit_resolution(width: u32, height: u32, settings: Settings) -> (u32, u32) {
     let ratio = (settings.width as f64 / width.max(1) as f64)
         .min(settings.height as f64 / height.max(1) as f64)
         .min(1.0);
@@ -100,6 +152,49 @@ fn fit_resolution(width: u32, height: u32, settings: Settings) -> (u32, u32) {
 
 #[cfg(test)]
 mod resolution_tests {
+    use super::{Codec, CodecCapabilities, Encoder};
+
+    #[test]
+    fn automatic_codec_uses_available_encoders_without_assuming_hardware() {
+        let caps = CodecCapabilities {
+            software: vec!["VP8".into()],
+            hardware: vec![],
+        };
+        assert_eq!(caps.resolve(Codec::Auto, Encoder::Auto), Ok(Codec::Vp8));
+        assert_eq!(caps.resolve(Codec::Auto, Encoder::Cpu), Ok(Codec::Vp8));
+        assert!(caps.resolve(Codec::Auto, Encoder::Gpu).is_err());
+        assert!(caps.resolve(Codec::H264, Encoder::Auto).is_err());
+    }
+
+    #[test]
+    fn codec_support_is_specific_to_the_selected_encoder() {
+        let caps = CodecCapabilities {
+            software: vec!["h264".into(), "vp8".into()],
+            hardware: vec!["H264".into()],
+        };
+        for encoder in [Encoder::Auto, Encoder::Cpu, Encoder::Gpu] {
+            assert_eq!(caps.resolve(Codec::Auto, encoder), Ok(Codec::H264));
+        }
+        assert!(caps.supports(Codec::Vp8, Encoder::Cpu));
+        assert!(!caps.supports(Codec::Vp8, Encoder::Gpu));
+        assert!(
+            CodecCapabilities::default()
+                .resolve(Codec::Auto, Encoder::Auto)
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn native_codec_probe_reports_the_builtin_vp8_encoder() {
+        let caps = super::codec_capabilities().await.unwrap();
+        assert!(caps.supports(Codec::Vp8, Encoder::Cpu), "{caps:?}");
+        assert!(caps.resolve(Codec::Auto, Encoder::Auto).is_ok());
+        let cached = super::codec_capabilities().await.unwrap();
+        assert_eq!(caps.software, cached.software);
+        assert_eq!(caps.hardware, cached.hardware);
+        eprintln!("Native codec capabilities: {caps:?}");
+    }
+
     #[test]
     fn capture_fits_portrait_and_ultrawide_without_stretching_or_upscaling() {
         let settings = super::Settings {
@@ -107,6 +202,7 @@ mod resolution_tests {
             height: 1080,
             fps: 60,
             max_bitrate: 16_000_000,
+            adaptive_quality: false,
             priority: super::Priority::Motion,
             codec: super::Codec::H264,
             encoder: crate::sysvideo::Encoder::Auto,
@@ -205,6 +301,7 @@ fn capture_thumbnail(target: Target) -> Result<String, String> {
         height: 180,
         fps: 1,
         max_bitrate: 0,
+        adaptive_quality: false,
         priority: Priority::Detail,
         codec: Codec::H264,
         encoder: crate::sysvideo::Encoder::Auto,
@@ -342,6 +439,7 @@ mod tests {
                 height: 720,
                 fps: 30,
                 max_bitrate: 4_000_000,
+                adaptive_quality: false,
                 priority: super::Priority::Balanced,
                 codec: super::Codec::H264,
                 encoder: crate::sysvideo::Encoder::Auto,

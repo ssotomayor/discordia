@@ -591,6 +591,7 @@ fn PopoutTile(props: PopoutTileProps) -> Element {
     let detach = container.clone();
     use_drop(move || evaluate(&super::screenshare::detach_js(&detach)));
     let mut received = use_signal(|| "Waiting for stream…".to_owned());
+    let mut quality_reason = use_signal(String::new);
     let pk = stream.pubkey.clone();
     let window = dioxus::desktop::use_window();
     use_future(move || {
@@ -599,23 +600,32 @@ fn PopoutTile(props: PopoutTileProps) -> Element {
         async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                if window.window.is_minimized() || !window.window.is_visible() {
+                let visible = !window.window.is_minimized() && window.window.is_visible();
+                let _ =
+                    document::eval(&format!("window.dxScreen?.setViewerVisibility({visible});"));
+                if !visible {
                     continue;
                 }
                 let mut eval = document::eval(&format!(
                     "dioxus.send(await window.dxScreen.previewStats({}));",
                     json(&pk)
                 ));
-                if let Ok(value) = eval.recv::<serde_json::Value>().await
-                    && let (Some(w), Some(h), Some(fps)) = (
+                if let Ok(value) = eval.recv::<serde_json::Value>().await {
+                    quality_reason.set(
+                        value["qualityReason"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .to_owned(),
+                    );
+                    if let (Some(w), Some(h), Some(fps)) = (
                         value["width"].as_u64(),
                         value["height"].as_u64(),
                         value["fps"].as_f64(),
-                    )
-                {
-                    let label = format!("{w}×{h} · {fps:.0} FPS");
-                    if label != *received.peek() {
-                        received.set(label);
+                    ) {
+                        let label = format!("{w}×{h} · {fps:.0} FPS");
+                        if label != *received.peek() {
+                            received.set(label);
+                        }
                     }
                 }
             }
@@ -665,7 +675,10 @@ fn PopoutTile(props: PopoutTileProps) -> Element {
                 "Connecting to stream…"
             }
             div { class: "grid items-center gap-2 px-3 py-2 shrink-0", style: "grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);",
-                span { class: "min-w-0 text-xs text-[var(--text-muted)]", "{received}" }
+                div { class: "min-w-0",
+                    span { class: "text-xs text-[var(--text-muted)]", "{received}" }
+                    super::screenshare::StreamQualityNotice { reason: quality_reason() }
+                }
                 div { class: "flex items-center gap-2",
                 button { class: "text-xs px-2 py-1 rounded border border-[var(--border)]", disabled: !stream.has_audio, aria_pressed: "{stream.muted}", onclick: move |_| send(&mute, generation, Command::Mute(pk_mute.clone(), !stream.muted)), if stream.muted { "Unmute" } else { "Mute" } }
                 input { r#type: "range", min: "0", max: "100", value: "{stream.volume}", class: "w-24 accent-[var(--accent)]", aria_label: "Stream volume", disabled: !stream.has_audio || stream.muted,

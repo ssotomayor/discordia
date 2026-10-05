@@ -5,7 +5,7 @@ Source: crates.io `livekit` 0.7.53, upstream commit `da3ee007c044e31422ce3412346
 | File | Local change |
 |---|---|
 | `Cargo.toml` | Allow existing upstream unused/deprecated items and lifetime-syntax warnings exposed by using a local dependency. |
-| `src/room/options.rs` | Optional `video_start_bitrate` in bps, unset by default. |
+| `src/room/options.rs` | Optional `video_start_bitrate` in bps, unset by default; assign the highest RID to the principal layer for one/two/three encodings. |
 | `src/rtc_engine/rtc_session.rs` | Forward the publishing track's startup hint alongside its encoding budget. |
 | `src/rtc_engine/peer_transport.rs`, `start_bitrate.rs`, `mod.rs` | Apply the hint to video SDP offers; clamp to the encoding budget. Unconfigured tracks retain the 1 Mbps ceiling. No minimum bitrate is imposed. |
 
