@@ -714,8 +714,8 @@ window.dxScreen = window.dxScreen || (function () {
     const lk = LK();
     if (!lk || !lk.VideoQuality) return;
     try {
-      pub.setVideoQuality(lk.VideoQuality.Medium);
-      pub.setVideoQuality(lk.VideoQuality.High);
+      pub.setVideoQuality(lk.VideoQuality.MEDIUM);
+      pub.setVideoQuality(lk.VideoQuality.HIGH);
     } catch (e) { console.warn('[dxScreen] quality re-request failed', e); }
   }
   function nudgeScreenQuality(sid) {
