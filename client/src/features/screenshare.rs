@@ -46,6 +46,8 @@ window.dxScreen = window.dxScreen || (function () {
   }
   const videoReports = new WeakMap();
   const qualityReports = new Map();
+  const screenPubs = new Map();
+  const qualityNudgeAt = new Map();
   function videoStatsReport(track) {
     const now = Date.now();
     const sample = videoReports.get(track);
@@ -274,6 +276,8 @@ window.dxScreen = window.dxScreen || (function () {
   }
   function clearRemoteTracks() {
     qualityReports.clear();
+    screenPubs.clear();
+    qualityNudgeAt.clear();
     remoteShareVideoTrack = null;
     post('screen-stats-in', { active: false });
     detachAudio();
@@ -433,6 +437,9 @@ window.dxScreen = window.dxScreen || (function () {
       tracks[trackKey(participant.identity, kind)] = track;
       if (kind === 'screen') {
         remoteShareVideoTrack = track;
+        screenPubs.set(track.sid, pub);
+        qualityNudgeAt.delete(track.sid);
+        requestHighQuality(pub);
         if (screenStatsEnabled) pollRemoteScreenStats();
       }
       reattach(participant.identity, kind);
@@ -449,6 +456,10 @@ window.dxScreen = window.dxScreen || (function () {
       if (track.kind !== 'video') return;
       const kind = kindOf(pub, track);
       if (tracks[trackKey(participant.identity, kind)] !== track) return;
+      if (kind === 'screen') {
+        screenPubs.delete(track.sid);
+        qualityNudgeAt.delete(track.sid);
+      }
       if (kind === 'screen' && remoteShareVideoTrack === track) {
         remoteShareVideoTrack = null;
         post('screen-stats-in', { active: false });
@@ -696,6 +707,24 @@ window.dxScreen = window.dxScreen || (function () {
     const lowerLayer = received.height < status.height * 0.9 || received.width < status.width * 0.9;
     return lowerLayer && status.adaptive === true && (!senderReduced || belowPrimary) ? 'receiver' : '';
   }
+  // setVideoQuality is a no-op when the value is unchanged, so the Medium step
+  // is what makes the SFU re-run allocation and pick the high layer again.
+  function requestHighQuality(pub) {
+    if (!pub || typeof pub.setVideoQuality !== 'function') return;
+    const lk = LK();
+    if (!lk || !lk.VideoQuality) return;
+    try {
+      pub.setVideoQuality(lk.VideoQuality.Medium);
+      pub.setVideoQuality(lk.VideoQuality.High);
+    } catch (e) { console.warn('[dxScreen] quality re-request failed', e); }
+  }
+  function nudgeScreenQuality(sid) {
+    const pub = screenPubs.get(sid);
+    if (!pub) return;
+    if (Date.now() - (qualityNudgeAt.get(sid) || 0) < 10000) return;
+    requestHighQuality(pub);
+    qualityNudgeAt.set(sid, Date.now());
+  }
   async function previewStats(identity) {
     const track = videoTrackFor(identity, 'screen');
     if (!track) return null;
@@ -713,6 +742,11 @@ window.dxScreen = window.dxScreen || (function () {
         const reason = screenQualityReason(status, result);
         if (sample.reason !== reason) { sample.reason = reason; sample.since = Date.now(); }
         if (reason && Date.now() - sample.since >= 4000) result.qualityReason = reason;
+        if (reason === 'receiver') {
+          if (Date.now() - sample.since >= 4000) nudgeScreenQuality(track.sid);
+        } else {
+          qualityNudgeAt.delete(track.sid);
+        }
       }
       return result;
     } catch (e) { return null; }
