@@ -17,7 +17,7 @@ const context = vm.createContext({
   qualityReports: reports,
   screenPubs,
   qualityNudgeAt: nudgeAt,
-  LK: () => ({ VideoQuality: { Medium: 1, High: 2 } }),
+  LK: () => ({ VideoQuality: { LOW: 0, MEDIUM: 1, HIGH: 2 } }),
   console: { warn: () => {}, error: () => {}, log: () => {} },
   Date: { now: () => now },
   videoTrackFor: () => ({ sid: 'screen' }),
