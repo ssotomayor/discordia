@@ -1057,6 +1057,10 @@ fn Reachability(reachability: crate::host::Reachability) -> Element {
 
 #[component]
 fn EncryptionBadge() -> Element {
+    // The encryption badge is a diagnostic; release builds stay clean.
+    if !cfg!(debug_assertions) {
+        return rsx! { Fragment {} };
+    }
     let mut state = use_app_state();
     let snapshot = state.read();
     let in_voice = snapshot.voice.channel_id.is_some();
