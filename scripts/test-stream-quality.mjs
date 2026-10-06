@@ -70,13 +70,16 @@ test('receiver limitation re-requests the high layer after a sustained, rate-lim
   await context.previewStats('viewer');
   assert.equal(calls.length, 0, 'not until the reduction is sustained');
   now += 4001;
+  reports.get('screen').at = now;
   await context.previewStats('viewer');
   assert.deepEqual(calls, [1, 2], 'Medium then High re-runs the SFU allocator');
   calls.length = 0;
   now += 5000;
+  reports.get('screen').at = now;
   await context.previewStats('viewer');
   assert.equal(calls.length, 0, 'within the 10 s cooldown');
   now += 6000;
+  reports.get('screen').at = now;
   await context.previewStats('viewer');
   assert.deepEqual(calls, [1, 2]);
 
