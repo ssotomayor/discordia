@@ -23,5 +23,5 @@ internal_name = "Discordia"
 webview_install_mode = "Skip"
 
 [bundle.windows.nsis]
-installer_hooks = "nsis/webview2.nsh"
+installer_hooks = "nsis/hooks.nsh"
 installer_icon = "assets/icon.ico"

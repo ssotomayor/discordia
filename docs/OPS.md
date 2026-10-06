@@ -16,7 +16,9 @@ even in plain Cargo builds. `build.rs` embeds those resources for Cargo;
 Its taskbar identity is `com.discordia.app`;
 the bundled SFU appears as `Discordia-media-<digest>.exe`. WebView2 remains a
 Microsoft runtime with separate processes; Task Manager grouping varies by
-Windows/runtime version. Cargo is a development launcher, not a shipped service.
+Windows/runtime version. The installer leaves one top-level Start Menu icon and
+no separate uninstall shortcut, so Uninstall lives on that icon's context menu.
+Cargo is a development launcher, not a shipped service.
 
 **Server**
 
