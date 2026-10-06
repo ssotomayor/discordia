@@ -311,18 +311,11 @@ jobs:
           $srv = Get-Item target/release/dioxusfun-server
           if ($srv.Length -lt 40MB) { throw "dioxusfun-server is $($srv.Length) bytes - the ~51MB bundled livekit-server is missing; refusing to publish it" }
       - name: Bundle client
-        working-directory: client
-        run: dx bundle --release
+        run: ./bundle-macos.sh
       - name: Collect client artifacts
-        shell: pwsh
         run: |
-          $root = Get-ChildItem -Recurse -Directory target/dx |
-                  Where-Object { $_.Name -eq 'macos' } | Select-Object -First 1
-          if (-not $root) { throw "no macos bundle output found under target/dx" }
-
-          $dmg = Get-ChildItem -Recurse -Filter '*.dmg' $root.FullName | Select-Object -First 1
-          if (-not $dmg) { throw "no .dmg produced by dx bundle" }
-          Copy-Item $dmg.FullName Discordia-macos-arm64.dmg
+          cp client/build/macos/Discordia_0.1.0_aarch64.dmg Discordia-macos-arm64.dmg
+          codesign --verify --deep --strict --verbose=2 client/build/macos/Discordia.app
       - uses: actions/upload-artifact@v4
         with:
           name: prerelease-macos

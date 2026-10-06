@@ -113,7 +113,9 @@ The trusted comment names the tag and filename and is covered by the signature,
 and the in-app updater refuses a signature whose comment names another release
 or file, so one cannot be lifted onto another release's artifact. This says the
 file is the one CI built, unmodified — it is **not** an OS signature, so
-SmartScreen and Gatekeeper still warn on first launch (entries 9, 10).
+SmartScreen and Gatekeeper still warn on first launch (entries 9, 10). The
+macOS bundle is ad-hoc sealed, not notarized: after the first refused launch,
+System Settings → Privacy & Security → Open Anyway.
 
 Maintainers: `minisign -G -W -p release-signing.pub -s minisign.key`, commit the
 `.pub`, put the key's contents in the `MINISIGN_SECRET_KEY` secret, delete the

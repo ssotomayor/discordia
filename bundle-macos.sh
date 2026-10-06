@@ -44,10 +44,14 @@ if [[ -n "$identity" ]]; then
   codesign --force --options runtime \
     --entitlements client/Entitlements.plist \
     --sign "$identity" "$app"
-
-  codesign --verify --deep --strict --verbose=2 "$app"
-  echo "signature verified"
+else
+  # dx leaves only the linker's seal on the executable; without a bundle seal
+  # macOS 26 reports the download "damaged" instead of offering Open Anyway.
+  codesign --force --deep --sign - "$app"
 fi
+
+codesign --verify --deep --strict --verbose=2 "$app"
+echo "signature verified"
 
 output_dir="$PWD/client/build/macos"
 output_app="$output_dir/Discordia.app"
