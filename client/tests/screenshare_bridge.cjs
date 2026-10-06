@@ -6,7 +6,7 @@ require('./video_lifecycle_bridge.cjs');
 
 const source = fs.readFileSync(path.join(__dirname, '../src/features/screenshare.rs'), 'utf8');
 let script = source.split('const SCREEN_JS: &str = r#"')[1].split('"#;')[0];
-script = script.replace('return { connect: connect', 'return { testClearTracks: clearRemoteTracks, testAudioTracks: audioTracks, testTracks: tracks, testSetRoom(r) { room = r; }, testSetRemoteTrack(t) { remoteShareVideoTrack = t; screenStatsEnabled = true; }, testPollRemoteStats: pollRemoteScreenStats, testSetLocalTrack(t) { localShareVideoTrack = t; screenCaptureTrack = { getSettings() { return { width: 1920, height: 1080, frameRate: 60 }; } }; screenStatsEnabled = true; }, testPollLocalStats: pollScreenStats, connect: connect');
+script = script.replace('return { connect: connect', 'return { testClearTracks: clearRemoteTracks, testAudioTracks: audioTracks, testTracks: tracks, testScreenPubs: screenPubs, testQualityNudgeAt: qualityNudgeAt, testSetRoom(r) { room = r; }, testSetRemoteTrack(t) { remoteShareVideoTrack = t; screenStatsEnabled = true; }, testPollRemoteStats: pollRemoteScreenStats, testSetLocalTrack(t) { localShareVideoTrack = t; screenCaptureTrack = { getSettings() { return { width: 1920, height: 1080, frameRate: 60 }; } }; screenStatsEnabled = true; }, testPollLocalStats: pollScreenStats, connect: connect');
 const unsubscribe = script.match(/thisRoom\.on\(lk\.RoomEvent\.TrackUnsubscribed, (function \(track, pub, participant\) \{[\s\S]*?\n    \})\);/)[1];
 const subscribe = script.match(/thisRoom\.on\(lk\.RoomEvent\.TrackSubscribed, (function \(track, pub, participant\) \{[\s\S]*?\n    \})\);/)[1];
 script = script.replace('return { testClearTracks:', 'return { testSubscribe: function(thisRoom) { return ' + subscribe + '; }, testUnsubscribe: function(thisRoom) { return ' + unsubscribe + '; }, testClearTracks:');
@@ -275,6 +275,8 @@ console.log('Native camera and screen share one identity and detach independentl
   console.log('Statistics transfer raw counters and isolate tracks and diagnostic sessions.');
   console.log('Freeze diagnostics identify the received track and discard stale asynchronous reports.');
   bridge.testClearTracks();
+  assert.equal(bridge.testScreenPubs.size, 0, 'teardown forgets screen publications');
+  assert.equal(bridge.testQualityNudgeAt.size, 0, 'teardown forgets the quality nudge cooldown');
   const statsRoom = {};
   bridge.setStatsEnabled(false);
   bridge.testSetRoom(statsRoom);
@@ -286,7 +288,11 @@ console.log('Native camera and screen share one identity and detach independentl
   const removed = Object.assign(track(), { kind: 'video', sid: 'removed', async getRTCStatsReport() { return videoReport; } });
   subscribeStats(remaining, { source: 'screen_share' }, { identity: 'remaining#video' });
   subscribeStats(removed, { source: 'screen_share' }, { identity: 'removed#video' });
+  assert.equal(bridge.testScreenPubs.has('remaining'), true);
+  assert.equal(bridge.testScreenPubs.has('removed'), true);
   unsubscribeStats(removed, { source: 'screen_share' }, { identity: 'removed#video' });
+  assert.equal(bridge.testScreenPubs.has('removed'), false, 'an unsubscribed screen drops its publication');
+  assert.equal(bridge.testQualityNudgeAt.has('removed'), false);
   bridge.testSetRemoteTrack(null);
   await bridge.testPollRemoteStats();
   assert.equal(messages.at(-1).trackSid, 'remaining', 'removing the latest track must preserve statistics for another stream');

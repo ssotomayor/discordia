@@ -11,8 +11,14 @@ const end = bridge.indexOf('  async function startShare()', start);
 let now = 1000;
 let incoming = { width: 1280, height: 720, fps: 30 };
 const reports = new Map();
+const screenPubs = new Map();
+const nudgeAt = new Map();
 const context = vm.createContext({
   qualityReports: reports,
+  screenPubs,
+  qualityNudgeAt: nudgeAt,
+  LK: () => ({ VideoQuality: { Medium: 1, High: 2 } }),
+  console: { warn: () => {}, error: () => {}, log: () => {} },
   Date: { now: () => now },
   videoTrackFor: () => ({ sid: 'screen' }),
   videoStatsReport: async () => new Map([['video', {
@@ -51,6 +57,40 @@ test('notice waits for sustained reduction, clears on recovery and expires witho
   incoming = { width: 1280, height: 720, fps: 30 };
   now += 11000;
   assert.equal((await context.previewStats('viewer')).qualityReason, undefined);
+});
+
+test('receiver limitation re-requests the high layer after a sustained, rate-limited window', async () => {
+  reports.clear();
+  screenPubs.clear();
+  nudgeAt.clear();
+  const calls = [];
+  screenPubs.set('screen', { setVideoQuality: (quality) => calls.push(quality) });
+  incoming = { width: 1280, height: 720, fps: 30 };
+  reports.set('screen', { status: full, at: now, reason: 'receiver', since: now });
+  await context.previewStats('viewer');
+  assert.equal(calls.length, 0, 'not until the reduction is sustained');
+  now += 4001;
+  await context.previewStats('viewer');
+  assert.deepEqual(calls, [1, 2], 'Medium then High re-runs the SFU allocator');
+  calls.length = 0;
+  now += 5000;
+  await context.previewStats('viewer');
+  assert.equal(calls.length, 0, 'within the 10 s cooldown');
+  now += 6000;
+  await context.previewStats('viewer');
+  assert.deepEqual(calls, [1, 2]);
+
+  calls.length = 0;
+  reports.set('screen', { status: { ...full, primaryWidth: 1280, primaryHeight: 720, bandwidth: true },
+    at: now, reason: 'sender', since: now - 5000 });
+  await context.previewStats('viewer');
+  assert.equal(calls.length, 0, 'a sender limitation is not the viewer’s to fix');
+
+  nudgeAt.clear();
+  reports.set('screen', { status: full, at: now, reason: 'receiver', since: now - 5000 });
+  incoming = { width: 2560, height: 1440, fps: 60 };
+  await context.previewStats('viewer');
+  assert.equal(nudgeAt.has('screen'), false, 'recovery clears the cooldown');
 });
 
 test('quality reports must belong to the sending participant and preserve the warning timer', () => {
