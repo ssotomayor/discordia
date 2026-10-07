@@ -115,7 +115,7 @@ fn dm_playback_volume_changes_output_without_changing_microphone_gain() {
     let controls = AudioControls::from_state(&state);
     let handle = PlaybackHandle {
         tracks: Arc::new(Mutex::new(MixerTracks::default())),
-        device_rate: 48000,
+        device_rate: Arc::new(AtomicU32::new(48000)),
         gains: controls.gains.clone(),
         stream_gains: controls.stream_gains.clone(),
         soundboard_pct: controls.soundboard_pct.clone(),
@@ -245,7 +245,7 @@ fn playback_backlog_is_bounded_and_retains_current_audio() {
     let controls = AudioControls::from_state(&AppState::empty());
     let handle = PlaybackHandle {
         tracks: Arc::new(Mutex::new(MixerTracks::default())),
-        device_rate: 48000,
+        device_rate: Arc::new(AtomicU32::new(48000)),
         gains: controls.gains,
         stream_gains: controls.stream_gains,
         soundboard_pct: controls.soundboard_pct,

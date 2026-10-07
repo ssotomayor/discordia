@@ -2365,8 +2365,9 @@ async fn soundboard_loop(
     self_identity: String,
 ) {
     let local = mixer.add_track(self_identity, TrackKind::Soundboard);
-    let cap = (mixer.device_rate / PLAYBACK_CAP_DIVISOR) as usize;
-    let mut resampler = AudioResampler::new(SAMPLE_RATE, mixer.device_rate);
+    let mut rate = mixer.rate();
+    let mut cap = (rate / PLAYBACK_CAP_DIVISOR) as usize;
+    let mut resampler = AudioResampler::new(SAMPLE_RATE, rate);
     let mut resampled: Vec<f32> = Vec::with_capacity(FRAME_SAMPLES * 4);
     let mut playing: Vec<(Arc<[f32]>, usize)> = Vec::new();
     let mut tick = tokio::time::interval(std::time::Duration::from_millis(FRAME_MS as u64));
@@ -2405,6 +2406,12 @@ async fn soundboard_loop(
         };
         if let Err(e) = source.capture_frame(&sent).await {
             eprintln!("[voice] soundboard capture_frame error: {e:?}");
+        }
+        let current = mixer.rate();
+        if current != rate {
+            rate = current;
+            resampler = AudioResampler::new(SAMPLE_RATE, rate);
+            cap = (rate / PLAYBACK_CAP_DIVISOR) as usize;
         }
         match resampler.as_mut() {
             Some(r) => {
@@ -3169,7 +3176,9 @@ struct TrackBuf {
 #[derive(Clone)]
 struct PlaybackHandle {
     tracks: Arc<Mutex<MixerTracks>>,
-    device_rate: u32,
+    /// Shared and mutable: a live output reopen can change the device's native
+    /// rate while track consumers are already running.
+    device_rate: Arc<AtomicU32>,
     gains: Arc<Mutex<HashMap<String, f32>>>,
     stream_gains: Arc<Mutex<HashMap<String, f32>>>,
     soundboard_pct: Arc<AtomicU32>,
@@ -3196,6 +3205,10 @@ fn track_gain(
 }
 
 impl PlaybackHandle {
+    fn rate(&self) -> u32 {
+        self.device_rate.load(Ordering::Relaxed)
+    }
+
     fn add_track(&self, identity: String, kind: TrackKind) -> u64 {
         let gain = track_gain(
             kind,
@@ -3335,7 +3348,7 @@ impl PlaybackMixer {
     ) -> Self {
         let handle = PlaybackHandle {
             tracks: Arc::new(Mutex::new(MixerTracks::default())),
-            device_rate: SAMPLE_RATE,
+            device_rate: Arc::new(AtomicU32::new(SAMPLE_RATE)),
             gains: controls.gains.clone(),
             stream_gains: controls.stream_gains.clone(),
             soundboard_pct: controls.soundboard_pct.clone(),
@@ -3519,7 +3532,9 @@ impl PlaybackMixer {
         if device_rate != SAMPLE_RATE {
             eprintln!("[voice] playback: resampling {SAMPLE_RATE}Hz → {device_rate}Hz via rubato");
         }
-        self.handle.device_rate = device_rate;
+        self.handle
+            .device_rate
+            .store(device_rate, Ordering::Relaxed);
         self.stream = Some(stream);
         Ok(())
     }
@@ -3551,7 +3566,8 @@ async fn consume_remote_track(
     let mut frames = 0u64;
     let mut sample_count = 0u64;
     let mut peak_recent: i16 = 0;
-    let mut resampler = AudioResampler::new(SAMPLE_RATE, handle.device_rate);
+    let mut rate = handle.rate();
+    let mut resampler = AudioResampler::new(SAMPLE_RATE, rate);
     let mut f32_buf: Vec<f32> = Vec::with_capacity(FRAME_SAMPLES * 4);
     let mut resampled_buf: Vec<f32> = Vec::with_capacity(FRAME_SAMPLES * 4);
     let who = match identity.split_once('#') {
@@ -3559,8 +3575,15 @@ async fn consume_remote_track(
         None => crate::identity::truncate_pubkey(&identity),
     };
     let track_id = handle.add_track(identity, kind);
-    let cap = (handle.device_rate / PLAYBACK_CAP_DIVISOR) as usize;
+    let mut cap = (rate / PLAYBACK_CAP_DIVISOR) as usize;
     while let Some(frame) = stream.next().await {
+        // The output stream can be reopened at a different native rate mid-call.
+        let current = handle.rate();
+        if current != rate {
+            rate = current;
+            resampler = AudioResampler::new(SAMPLE_RATE, rate);
+            cap = (rate / PLAYBACK_CAP_DIVISOR) as usize;
+        }
         if frames == 0 {
             eprintln!(
                 "[voice] remote-track {who} first frame: {} samples @ {} Hz, ch={}",
