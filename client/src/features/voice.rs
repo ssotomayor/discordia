@@ -587,6 +587,8 @@ struct ActiveVoice {
     faults_rx: UnboundedReceiver<AudioFault>,
     mic_retry_at: Option<Instant>,
     output_retry_at: Option<Instant>,
+    mic_error: Option<String>,
+    output_error: Option<String>,
     event_task: tokio::task::JoinHandle<()>,
     system_audio: Option<SystemAudioTrack>,
     soundboard: Option<SoundboardTrack>,
@@ -603,7 +605,7 @@ impl ActiveVoice {
         livekit_url: &str,
         token: &str,
         channel_id: Id,
-        mut state: Signal<AppState>,
+        state: Signal<AppState>,
         controls: AudioControls,
     ) -> Result<Self, String> {
         let mut options = RoomOptions::default();
@@ -675,24 +677,27 @@ impl ActiveVoice {
         tokio::spawn(publish_loop(gated_rx, source.clone()));
         // A missing microphone no longer refuses the join: the track stays
         // published and silent until one appears.
-        let mic = match MicCapture::start(
+        let (mic, mic_error) = match MicCapture::start(
             frame_tx.clone(),
             state,
             muted.clone(),
             gate_stats.clone(),
             faults.clone(),
         ) {
-            Ok(mic) => Some(mic),
+            Ok(mic) => (Some(mic), None),
             Err(e) => {
                 eprintln!("[voice] microphone unavailable: {e}");
-                state.write().voice.error = Some(format!("Microphone unavailable — retrying. {e}"));
-                None
+                (
+                    None,
+                    Some(format!("Microphone unavailable — retrying. {e}")),
+                )
             }
         };
         crate::audio_diag::log("mic open");
         let meter_task = spawn_meter_task(state, meter);
 
         let playback = PlaybackMixer::start(state, controls.clone(), reference_tx, faults.clone());
+        let output_error = (!playback.is_open()).then(|| "No output device — retrying".to_string());
         let mixer_handle = playback.handle();
 
         let (native_audio_tx, mut native_audio_rx) =
@@ -909,7 +914,7 @@ impl ActiveVoice {
             controls.stats_polling.clone(),
         );
 
-        Ok(Self {
+        let active = Self {
             room,
             mic,
             muted,
@@ -921,6 +926,8 @@ impl ActiveVoice {
             faults_rx,
             mic_retry_at: None,
             output_retry_at: None,
+            mic_error,
+            output_error,
             event_task,
             meter_task,
             stats_task,
@@ -930,7 +937,9 @@ impl ActiveVoice {
             screen_video: None,
             mixer: mixer_handle,
             self_pubkey,
-        })
+        };
+        active.refresh_device_error(state);
+        Ok(active)
     }
 
     async fn set_system_audio(
@@ -1347,24 +1356,11 @@ impl ActiveVoice {
                     eprintln!("[voice] microphone reopened");
                     self.mic = Some(mic);
                     self.mic_retry_at = None;
-                    let stale = {
-                        let s = state.read();
-                        s.voice
-                            .error
-                            .as_deref()
-                            .is_some_and(|e| e.starts_with("Microphone"))
-                    };
-                    if stale {
-                        state.write().voice.error = None;
-                    }
+                    self.mic_error = None;
                 }
                 Err(e) => {
                     self.mic_retry_at = Some(now + DEVICE_RETRY);
-                    let message = format!("Microphone unavailable — retrying. {e}");
-                    let mut s = state.write();
-                    if s.voice.error.as_deref() != Some(message.as_str()) {
-                        s.voice.error = Some(message);
-                    }
+                    self.mic_error = Some(format!("Microphone unavailable — retrying. {e}"));
                 }
             }
         }
@@ -1374,26 +1370,32 @@ impl ActiveVoice {
                 Ok(()) => {
                     eprintln!("[voice] output reopened");
                     self.output_retry_at = None;
-                    let stale = {
-                        let s = state.read();
-                        s.voice
-                            .error
-                            .as_deref()
-                            .is_some_and(|e| e.starts_with("No output"))
-                    };
-                    if stale {
-                        state.write().voice.error = None;
-                    }
+                    self.output_error = None;
                 }
                 Err(e) => {
                     self.output_retry_at = Some(now + DEVICE_RETRY);
-                    let message = format!("No output device — retrying. {e}");
-                    let mut s = state.write();
-                    if s.voice.error.as_deref() != Some(message.as_str()) {
-                        s.voice.error = Some(message);
-                    }
+                    self.output_error = Some(format!("No output device — retrying. {e}"));
                 }
             }
+        }
+        self.refresh_device_error(state);
+    }
+
+    /// One banner line for whatever is down. Both down is its own message: the
+    /// output block used to overwrite the microphone's every tick, so a user
+    /// whose headset took both lost sight of the microphone failure.
+    fn refresh_device_error(&self, mut state: Signal<AppState>) {
+        let combined = match (self.mic_error.as_deref(), self.output_error.as_deref()) {
+            (Some(_), Some(_)) => {
+                Some("Microphone and output device unavailable — retrying".to_string())
+            }
+            (Some(mic), None) => Some(mic.to_string()),
+            (None, Some(output)) => Some(output.to_string()),
+            (None, None) => None,
+        };
+        let mut s = state.write();
+        if s.voice.error != combined {
+            s.voice.error = combined;
         }
     }
 
@@ -2748,10 +2750,7 @@ impl MicCapture {
         dioxus::prelude::spawn(async move {
             if let Some(e) = fatal_rx.recv().await {
                 eprintln!("[voice] raw mic died mid-call: {e}");
-                let mut s = state.write();
-                s.mic_bypass_error = Some(e.clone());
-                s.voice.error = Some(format!("Microphone stopped — reconnecting. {e}"));
-                drop(s);
+                state.write().mic_bypass_error = Some(e.clone());
                 let _ = faults.send(AudioFault::Input);
             }
         });
@@ -3351,7 +3350,6 @@ impl PlaybackMixer {
         mixer.spawn_heartbeat();
         if let Err(e) = mixer.try_open(&mut state, &controls, &faults) {
             eprintln!("[voice] playback unavailable: {e}");
-            state.write().voice.error = Some(format!("No output device — retrying. {e}"));
         }
         mixer
     }
