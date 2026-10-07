@@ -1313,7 +1313,11 @@ impl ActiveVoice {
                 s.available_output_devices = outputs.clone();
             }
         }
+        // Only schedule once per disappearance: the device is absent from every
+        // tick's enumeration, so resetting the deadline here would defeat the
+        // backoff below and retry the dead device every second.
         if let Some(name) = &selected_input
+            && self.mic.is_some()
             && !inputs.iter().any(|d| d == name)
         {
             if let Some(mic) = self.mic.take() {
@@ -1322,6 +1326,7 @@ impl ActiveVoice {
             self.mic_retry_at = Some(Instant::now());
         }
         if let Some(name) = &selected_output
+            && self.playback.is_open()
             && !outputs.iter().any(|d| d == name)
         {
             self.playback.drop_stream();
