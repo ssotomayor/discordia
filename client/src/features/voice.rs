@@ -254,7 +254,13 @@ async fn service_loop(
     let mut last_connect: Option<(String, String, Id)> = None;
     let controls = AudioControls::from_state(&state.read());
 
-    while let Some(cmd) = rx.recv().await {
+    let mut tick = tokio::time::interval(std::time::Duration::from_secs(1));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    tick.tick().await;
+    loop {
+        tokio::select! {
+            maybe = rx.recv() => {
+        let Some(cmd) = maybe else { break };
         match cmd {
             VoiceCmd::Connect {
                 livekit_url,
@@ -520,6 +526,13 @@ async fn service_loop(
                 }
             }
         }
+            }
+            _ = tick.tick() => {
+                if let Some(active) = session.as_mut() {
+                    active.maintain(state, &controls).await;
+                }
+            }
+        }
     }
     eprintln!("[voice] service loop ended (channel closed)");
     Ok(())
@@ -564,9 +577,16 @@ async fn restart_session(
 
 struct ActiveVoice {
     room: Arc<Room>,
-    mic: MicCapture,
+    mic: Option<MicCapture>,
+    muted: Arc<AtomicBool>,
+    frame_tx: crate::audio_queue::AudioSender<f32>,
+    gate_stats: Arc<GateStats>,
     local_audio: LocalAudioTrack,
-    _playback: PlaybackMixer,
+    playback: PlaybackMixer,
+    faults: UnboundedSender<AudioFault>,
+    faults_rx: UnboundedReceiver<AudioFault>,
+    mic_retry_at: Option<Instant>,
+    output_retry_at: Option<Instant>,
     event_task: tokio::task::JoinHandle<()>,
     system_audio: Option<SystemAudioTrack>,
     soundboard: Option<SoundboardTrack>,
@@ -583,7 +603,7 @@ impl ActiveVoice {
         livekit_url: &str,
         token: &str,
         channel_id: Id,
-        state: Signal<AppState>,
+        mut state: Signal<AppState>,
         controls: AudioControls,
     ) -> Result<Self, String> {
         let mut options = RoomOptions::default();
@@ -622,6 +642,7 @@ impl ActiveVoice {
         let (frame_tx, frame_rx) = crate::audio_queue::channel::<f32>();
         let (gated_tx, gated_rx) = crate::audio_queue::channel::<i16>();
         let (reference_tx, reference_rx) = crate::audio_queue::channel::<i16>();
+        let (faults, faults_rx) = unbounded_channel::<AudioFault>();
         let meter = Arc::new(MicMeter::default());
         let (start_muted, start_deafened) = {
             let s = state.peek();
@@ -652,11 +673,26 @@ impl ActiveVoice {
                 .map_err(|e| format!("spawn mic dsp thread: {e}"))?;
         }
         tokio::spawn(publish_loop(gated_rx, source.clone()));
-        let mic = MicCapture::start(frame_tx, state, muted, gate_stats)?;
+        // A missing microphone no longer refuses the join: the track stays
+        // published and silent until one appears.
+        let mic = match MicCapture::start(
+            frame_tx.clone(),
+            state,
+            muted.clone(),
+            gate_stats.clone(),
+            faults.clone(),
+        ) {
+            Ok(mic) => Some(mic),
+            Err(e) => {
+                eprintln!("[voice] microphone unavailable: {e}");
+                state.write().voice.error = Some(format!("Microphone unavailable — retrying. {e}"));
+                None
+            }
+        };
         crate::audio_diag::log("mic open");
         let meter_task = spawn_meter_task(state, meter);
 
-        let playback = PlaybackMixer::start(state, controls.clone(), reference_tx)?;
+        let playback = PlaybackMixer::start(state, controls.clone(), reference_tx, faults.clone());
         let mixer_handle = playback.handle();
 
         let (native_audio_tx, mut native_audio_rx) =
@@ -876,8 +912,15 @@ impl ActiveVoice {
         Ok(Self {
             room,
             mic,
+            muted,
+            frame_tx,
+            gate_stats,
             local_audio: local_audio_for_mute,
-            _playback: playback,
+            playback,
+            faults,
+            faults_rx,
+            mic_retry_at: None,
+            output_retry_at: None,
             event_task,
             meter_task,
             stats_task,
@@ -1218,15 +1261,144 @@ impl ActiveVoice {
     }
 
     async fn set_muted(&mut self, muted: bool) {
-        self.mic.muted.store(muted, Ordering::Relaxed);
+        self.muted.store(muted, Ordering::Relaxed);
+        if let Some(mic) = &self.mic {
+            mic.muted.store(muted, Ordering::Relaxed);
+        }
         self.local_audio.rtc_track().set_enabled(!muted);
+    }
+
+    /// Keeps the call alive across a device that came and went: refresh the
+    /// list, reopen what is missing, and back off so a device that is still
+    /// gone is not spun on.
+    async fn maintain(&mut self, mut state: Signal<AppState>, controls: &AudioControls) {
+        while let Ok(fault) = self.faults_rx.try_recv() {
+            match fault {
+                AudioFault::Input => {
+                    if let Some(mic) = self.mic.take() {
+                        mic.stop();
+                    }
+                    self.mic_retry_at = Some(Instant::now());
+                }
+                AudioFault::Output => {
+                    self.playback.drop_stream();
+                    self.output_retry_at = Some(Instant::now());
+                }
+            }
+        }
+
+        let host = cpal::default_host();
+        let mut inputs = Vec::new();
+        let mut outputs = Vec::new();
+        if let Ok(devices) = host.devices() {
+            for device in devices {
+                if let Ok(name) = device.name() {
+                    if device.default_input_config().is_ok() {
+                        inputs.push(name.clone());
+                    }
+                    if device.default_output_config().is_ok() {
+                        outputs.push(name);
+                    }
+                }
+            }
+        }
+        let selected_input = state.read().selected_input_device.clone();
+        let selected_output = state.read().selected_output_device.clone();
+        {
+            let mut s = state.write();
+            if s.available_input_devices != inputs {
+                s.available_input_devices = inputs.clone();
+            }
+            if s.available_output_devices != outputs {
+                s.available_output_devices = outputs.clone();
+            }
+        }
+        if let Some(name) = &selected_input
+            && !inputs.iter().any(|d| d == name)
+        {
+            if let Some(mic) = self.mic.take() {
+                mic.stop();
+            }
+            self.mic_retry_at = Some(Instant::now());
+        }
+        if let Some(name) = &selected_output
+            && !outputs.iter().any(|d| d == name)
+        {
+            self.playback.drop_stream();
+            self.output_retry_at = Some(Instant::now());
+        }
+
+        let now = Instant::now();
+        if self.mic.is_none() && self.mic_retry_at.is_none_or(|at| now >= at) {
+            let faults = self.faults.clone();
+            match MicCapture::start(
+                self.frame_tx.clone(),
+                state,
+                self.muted.clone(),
+                self.gate_stats.clone(),
+                faults,
+            ) {
+                Ok(mic) => {
+                    eprintln!("[voice] microphone reopened");
+                    self.mic = Some(mic);
+                    self.mic_retry_at = None;
+                    let stale = {
+                        let s = state.read();
+                        s.voice
+                            .error
+                            .as_deref()
+                            .is_some_and(|e| e.starts_with("Microphone"))
+                    };
+                    if stale {
+                        state.write().voice.error = None;
+                    }
+                }
+                Err(e) => {
+                    self.mic_retry_at = Some(now + DEVICE_RETRY);
+                    let message = format!("Microphone unavailable — retrying. {e}");
+                    let mut s = state.write();
+                    if s.voice.error.as_deref() != Some(message.as_str()) {
+                        s.voice.error = Some(message);
+                    }
+                }
+            }
+        }
+        if !self.playback.is_open() && self.output_retry_at.is_none_or(|at| now >= at) {
+            let faults = self.faults.clone();
+            match self.playback.try_open(&mut state, controls, &faults) {
+                Ok(()) => {
+                    eprintln!("[voice] output reopened");
+                    self.output_retry_at = None;
+                    let stale = {
+                        let s = state.read();
+                        s.voice
+                            .error
+                            .as_deref()
+                            .is_some_and(|e| e.starts_with("No output"))
+                    };
+                    if stale {
+                        state.write().voice.error = None;
+                    }
+                }
+                Err(e) => {
+                    self.output_retry_at = Some(now + DEVICE_RETRY);
+                    let message = format!("No output device — retrying. {e}");
+                    let mut s = state.write();
+                    if s.voice.error.as_deref() != Some(message.as_str()) {
+                        s.voice.error = Some(message);
+                    }
+                }
+            }
+        }
     }
 
     async fn shutdown(self, mut state: Signal<AppState>) {
         self.event_task.abort();
         self.meter_task.cancel();
         self.stats_task.cancel();
-        self.mic.stop();
+        if let Some(mic) = self.mic {
+            mic.stop();
+        }
         crate::audio_diag::log("mic dropped");
         if let Some(sa) = self.screen_audio {
             sa.shutdown().await;
@@ -2491,6 +2663,17 @@ pub(crate) fn pick_device(
     .or(default)
 }
 
+/// A device that went away mid-call. The voice session reopens it with backoff.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum AudioFault {
+    Input,
+    Output,
+}
+
+/// Reopening faster than this just spins on a device that is still gone; a
+/// re-plug is caught by the next tick anyway.
+const DEVICE_RETRY: std::time::Duration = std::time::Duration::from_secs(2);
+
 struct MicCapture {
     _backend: MicBackend,
     muted: Arc<AtomicBool>,
@@ -2513,16 +2696,23 @@ impl MicCapture {
         mut state: Signal<AppState>,
         muted: Arc<AtomicBool>,
         gate_stats: Arc<GateStats>,
+        faults: UnboundedSender<AudioFault>,
     ) -> Result<Self, String> {
         let raw_peak = Arc::new(AtomicI32::new(0));
         let frames_pushed = Arc::new(AtomicU64::new(0));
         let selected = state.read().selected_input_device.clone();
         state.write().mic_bypass_error = None;
 
-        let backend = match Self::maybe_raw(&frame_tx, state, &selected, &raw_peak, &frames_pushed)
-        {
+        let backend = match Self::maybe_raw(
+            &frame_tx,
+            state,
+            &selected,
+            &raw_peak,
+            &frames_pushed,
+            &faults,
+        ) {
             Some(raw) => raw,
-            None => Self::start_cpal(&frame_tx, selected, &raw_peak, &frames_pushed)?,
+            None => Self::start_cpal(&frame_tx, selected, &raw_peak, &frames_pushed, &faults)?,
         };
 
         let heartbeat = Self::spawn_heartbeat(raw_peak, frames_pushed, gate_stats);
@@ -2540,21 +2730,24 @@ impl MicCapture {
         selected: &Option<String>,
         raw_peak: &Arc<AtomicI32>,
         frames_pushed: &Arc<AtomicU64>,
+        faults: &UnboundedSender<AudioFault>,
     ) -> Option<MicBackend> {
         if !state.read().bypass_system_audio_processing {
             return None;
         }
 
         let (fatal_tx, mut fatal_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        // A raw device can only be rebuilt from the session loop, so the death
+        // is reported upwards instead of retried here.
+        let faults = faults.clone();
         dioxus::prelude::spawn(async move {
             if let Some(e) = fatal_rx.recv().await {
                 eprintln!("[voice] raw mic died mid-call: {e}");
                 let mut s = state.write();
                 s.mic_bypass_error = Some(e.clone());
-                s.error_toast = Some(format!(
-                    "Your microphone stopped: {e}. Leave and rejoin the voice channel to \
-                     bring it back."
-                ));
+                s.voice.error = Some(format!("Microphone stopped — reconnecting. {e}"));
+                drop(s);
+                let _ = faults.send(AudioFault::Input);
             }
         });
 
@@ -2602,6 +2795,7 @@ impl MicCapture {
         _selected: &Option<String>,
         _raw_peak: &Arc<AtomicI32>,
         _frames_pushed: &Arc<AtomicU64>,
+        _faults: &UnboundedSender<AudioFault>,
     ) -> Option<MicBackend> {
         None
     }
@@ -2611,6 +2805,7 @@ impl MicCapture {
         selected: Option<String>,
         raw_peak: &Arc<AtomicI32>,
         frames_pushed: &Arc<AtomicU64>,
+        faults: &UnboundedSender<AudioFault>,
     ) -> Result<MicBackend, String> {
         let frame_tx = frame_tx.clone();
         let host = cpal::default_host();
@@ -2642,7 +2837,13 @@ impl MicCapture {
             eprintln!("[voice] mic: resampling {device_rate}Hz → {SAMPLE_RATE}Hz via rubato");
         }
 
-        let err = |e| eprintln!("mic stream error: {e}");
+        let report_fault = |faults: &UnboundedSender<AudioFault>| {
+            let faults = faults.clone();
+            move |e: cpal::StreamError| {
+                eprintln!("mic stream error: {e}");
+                let _ = faults.send(AudioFault::Input);
+            }
+        };
         let stream = match sample_format {
             cpal::SampleFormat::F32 => {
                 let accum = accum.clone();
@@ -2665,7 +2866,7 @@ impl MicCapture {
                         );
                         frames_pushed_cb.fetch_add(pushed as u64, Ordering::Relaxed);
                     },
-                    err,
+                    report_fault(faults),
                     None,
                 )
             }
@@ -2693,7 +2894,7 @@ impl MicCapture {
                         );
                         frames_pushed_cb.fetch_add(pushed as u64, Ordering::Relaxed);
                     },
-                    err,
+                    report_fault(faults),
                     None,
                 )
             }
@@ -2721,7 +2922,7 @@ impl MicCapture {
                         );
                         frames_pushed_cb.fetch_add(pushed as u64, Ordering::Relaxed);
                     },
-                    err,
+                    report_fault(faults),
                     None,
                 )
             }
@@ -3106,25 +3307,84 @@ fn next_playback_sample(
 }
 
 struct PlaybackMixer {
-    stream: cpal::Stream,
+    stream: Option<cpal::Stream>,
     handle: PlaybackHandle,
+    reference_tx: crate::audio_queue::AudioSender<i16>,
+    callbacks: Arc<AtomicU64>,
+    pulled: Arc<AtomicU64>,
 }
 
 impl Drop for PlaybackMixer {
     fn drop(&mut self) {
-        match self.stream.pause() {
-            Ok(()) => eprintln!("[voice] playback stream stopped"),
-            Err(e) => eprintln!("[voice] playback stream would not stop: {e}"),
-        }
+        self.drop_stream();
     }
 }
 
 impl PlaybackMixer {
+    /// Never fails: a machine with no output device still joins, and the stream
+    /// is opened the moment one appears.
     fn start(
-        state: Signal<AppState>,
+        mut state: Signal<AppState>,
         controls: AudioControls,
         reference_tx: crate::audio_queue::AudioSender<i16>,
-    ) -> Result<Self, String> {
+        faults: UnboundedSender<AudioFault>,
+    ) -> Self {
+        let handle = PlaybackHandle {
+            tracks: Arc::new(Mutex::new(MixerTracks::default())),
+            device_rate: SAMPLE_RATE,
+            gains: controls.gains.clone(),
+            stream_gains: controls.stream_gains.clone(),
+            soundboard_pct: controls.soundboard_pct.clone(),
+        };
+        let mut mixer = Self {
+            stream: None,
+            handle,
+            reference_tx,
+            callbacks: Arc::new(AtomicU64::new(0)),
+            pulled: Arc::new(AtomicU64::new(0)),
+        };
+        mixer.spawn_heartbeat();
+        if let Err(e) = mixer.try_open(&mut state, &controls, &faults) {
+            eprintln!("[voice] playback unavailable: {e}");
+            state.write().voice.error = Some(format!("No output device — retrying. {e}"));
+        }
+        mixer
+    }
+
+    fn spawn_heartbeat(&self) {
+        let cb_for_log = Arc::downgrade(&self.callbacks);
+        let pulled_for_log = Arc::downgrade(&self.pulled);
+        tokio::spawn(async move {
+            let mut prev_cb = 0u64;
+            let mut prev_pulled = 0u64;
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                let (Some(callbacks), Some(pulled)) =
+                    (cb_for_log.upgrade(), pulled_for_log.upgrade())
+                else {
+                    break;
+                };
+                let cb = callbacks.load(std::sync::atomic::Ordering::Relaxed);
+                let pulled_written = pulled.load(std::sync::atomic::Ordering::Relaxed);
+                eprintln!(
+                    "[voice] playback heartbeat: callbacks={} (+{}), non-silent samples written={} (+{})",
+                    cb,
+                    cb - prev_cb,
+                    pulled_written,
+                    pulled_written - prev_pulled,
+                );
+                prev_cb = cb;
+                prev_pulled = pulled_written;
+            }
+        });
+    }
+
+    fn try_open(
+        &mut self,
+        state: &mut Signal<AppState>,
+        controls: &AudioControls,
+        faults: &UnboundedSender<AudioFault>,
+    ) -> Result<(), String> {
         let host = cpal::default_host();
         let selected = state.read().selected_output_device.clone();
         let device = pick_device(
@@ -3144,13 +3404,9 @@ impl PlaybackMixer {
             "[voice] playback: device={device_name} format={sample_format:?} rate={device_rate} ch={device_channels}"
         );
 
-        let tracks = Arc::new(Mutex::new(MixerTracks::default()));
-        let tracks_cb = tracks.clone();
-        let cb_counter = Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let cb_counter_cb = cb_counter.clone();
-        let pulled_counter = Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let pulled_cb = pulled_counter.clone();
-
+        let tracks_cb = self.handle.tracks.clone();
+        let cb_counter_cb = self.callbacks.clone();
+        let pulled_cb = self.pulled.clone();
         let drift_counter = Arc::new(std::sync::atomic::AtomicU32::new(0));
         let drift_counter_cb = drift_counter.clone();
         let device_rate_cb = device_rate;
@@ -3163,10 +3419,16 @@ impl PlaybackMixer {
         let deafened_f32 = controls.deafened.clone();
         let deafened_i16 = controls.deafened.clone();
         let mut dither_rng = DITHER_SEED;
-        let mut reference_f32 = crate::echo::Reference::new(reference_tx.clone(), device_rate);
-        let mut reference_i16 = crate::echo::Reference::new(reference_tx, device_rate);
+        let mut reference_f32 = crate::echo::Reference::new(self.reference_tx.clone(), device_rate);
+        let mut reference_i16 = crate::echo::Reference::new(self.reference_tx.clone(), device_rate);
 
-        let err = |e| eprintln!("output stream error: {e}");
+        let report_fault = |faults: &UnboundedSender<AudioFault>| {
+            let faults = faults.clone();
+            move |e: cpal::StreamError| {
+                eprintln!("output stream error: {e}");
+                let _ = faults.send(AudioFault::Output);
+            }
+        };
         let stream = match sample_format {
             cpal::SampleFormat::F32 => device.build_output_stream(
                 &config.into(),
@@ -3203,7 +3465,7 @@ impl PlaybackMixer {
                     drift_counter_cb.store(counter, Ordering::Relaxed);
                     pulled_cb.fetch_add(pulled, Ordering::Relaxed);
                 },
-                err,
+                report_fault(faults),
                 None,
             ),
             cpal::SampleFormat::I16 => device.build_output_stream(
@@ -3242,53 +3504,34 @@ impl PlaybackMixer {
                     drift_counter_cb.store(counter, Ordering::Relaxed);
                     pulled_cb.fetch_add(pulled, Ordering::Relaxed);
                 },
-                err,
+                report_fault(faults),
                 None,
             ),
             other => return Err(format!("unsupported output format: {other:?}")),
         }
         .map_err(|e| format!("build_output_stream: {e}"))?;
 
-        let cb_for_log = Arc::downgrade(&cb_counter);
-        let pulled_for_log = Arc::downgrade(&pulled_counter);
-        tokio::spawn(async move {
-            let mut prev_cb = 0u64;
-            let mut prev_pulled = 0u64;
-            loop {
-                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                let (Some(cb_counter), Some(pulled_counter)) =
-                    (cb_for_log.upgrade(), pulled_for_log.upgrade())
-                else {
-                    break;
-                };
-                let cb = cb_counter.load(std::sync::atomic::Ordering::Relaxed);
-                let pulled = pulled_counter.load(std::sync::atomic::Ordering::Relaxed);
-                eprintln!(
-                    "[voice] playback heartbeat: callbacks={} (+{}), non-silent samples written={} (+{})",
-                    cb,
-                    cb - prev_cb,
-                    pulled,
-                    pulled - prev_pulled,
-                );
-                prev_cb = cb;
-                prev_pulled = pulled;
-            }
-        });
-
         stream.play().map_err(|e| format!("play output: {e}"))?;
 
         if device_rate != SAMPLE_RATE {
             eprintln!("[voice] playback: resampling {SAMPLE_RATE}Hz → {device_rate}Hz via rubato");
         }
-        let handle = PlaybackHandle {
-            tracks,
-            device_rate,
-            gains: controls.gains.clone(),
-            stream_gains: controls.stream_gains.clone(),
-            soundboard_pct: controls.soundboard_pct.clone(),
-        };
+        self.handle.device_rate = device_rate;
+        self.stream = Some(stream);
+        Ok(())
+    }
 
-        Ok(Self { stream, handle })
+    fn is_open(&self) -> bool {
+        self.stream.is_some()
+    }
+
+    fn drop_stream(&mut self) {
+        if let Some(stream) = self.stream.take() {
+            match stream.pause() {
+                Ok(()) => eprintln!("[voice] playback stream stopped"),
+                Err(e) => eprintln!("[voice] playback stream would not stop: {e}"),
+            }
+        }
     }
 
     fn handle(&self) -> PlaybackHandle {

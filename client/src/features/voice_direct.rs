@@ -11,6 +11,9 @@ pub struct Audio {
     retry_at: Option<std::time::Instant>,
     pub microphone_error: Option<String>,
     playback: PlaybackMixer,
+    faults: UnboundedSender<AudioFault>,
+    faults_rx: UnboundedReceiver<AudioFault>,
+    output_retry_at: Option<std::time::Instant>,
     controls: AudioControls,
     pub track: RtcAudioTrack,
     publisher: tokio::task::JoinHandle<()>,
@@ -20,7 +23,10 @@ pub struct Audio {
 }
 
 impl Audio {
-    pub fn start(factory: &PeerConnectionFactory, state: Signal<AppState>) -> Result<Self, String> {
+    pub fn start(
+        factory: &PeerConnectionFactory,
+        mut state: Signal<AppState>,
+    ) -> Result<Self, String> {
         let controls = AudioControls::from_state(&state.peek());
         let source = NativeAudioSource::new(inert_apm_options(), SAMPLE_RATE, CHANNELS, 100);
         let track = factory.create_audio_track("dm-mic", source.clone());
@@ -33,9 +39,24 @@ impl Audio {
             state.peek().voice.muted || state.peek().voice.deafened,
         ));
         track.set_enabled(!muted.load(Ordering::Relaxed));
-        let playback = PlaybackMixer::start(state, controls.clone(), reference_tx)?;
+        let (faults, faults_rx) = unbounded_channel::<AudioFault>();
+        let playback = PlaybackMixer::start(state, controls.clone(), reference_tx, faults.clone());
         let input = input_preferences(&state.peek());
-        let mic = MicCapture::start(frame_tx.clone(), state, muted.clone(), gate_stats.clone())?;
+        let (mic, microphone_error) = match MicCapture::start(
+            frame_tx.clone(),
+            state,
+            muted.clone(),
+            gate_stats.clone(),
+            faults.clone(),
+        ) {
+            Ok(mic) => (Some(mic), None),
+            Err(error) => {
+                tracing::warn!(%error, "DM microphone unavailable; retrying capture");
+                state.write().error_toast =
+                    Some(format!("Couldn't open the call microphone: {error}"));
+                (None, Some(error))
+            }
+        };
         let dsp_controls = controls.clone();
         let dsp_meter = meter.clone();
         let dsp_muted = muted.clone();
@@ -55,14 +76,17 @@ impl Audio {
             })
             .map_err(|e| format!("Start call audio processing: {e}"))?;
         Ok(Self {
-            mic: Some(mic),
+            mic,
             frame_tx,
             gate_stats,
             muted,
             input,
             retry_at: None,
-            microphone_error: None,
+            microphone_error,
             playback,
+            faults,
+            faults_rx,
+            output_retry_at: None,
             controls,
             track,
             publisher: tokio::spawn(publish_loop(gated_rx, source)),
@@ -105,6 +129,18 @@ impl Audio {
     }
 
     pub fn update(&mut self, mut state: Signal<AppState>) {
+        while let Ok(fault) = self.faults_rx.try_recv() {
+            match fault {
+                AudioFault::Input => {
+                    self.mic = None;
+                    self.retry_at = None;
+                }
+                AudioFault::Output => {
+                    self.playback.drop_stream();
+                    self.output_retry_at = None;
+                }
+            }
+        }
         let muted = state.peek().voice.muted || state.peek().voice.deafened;
         update_controls(&self.controls, &state.peek());
         let input = input_preferences(&state.peek());
@@ -119,11 +155,13 @@ impl Audio {
             input,
             std::time::Instant::now(),
             || {
+                let faults = self.faults.clone();
                 MicCapture::start(
                     self.frame_tx.clone(),
                     state,
                     self.muted.clone(),
                     self.gate_stats.clone(),
+                    faults,
                 )
             },
         );
@@ -143,6 +181,20 @@ impl Audio {
         let transmitting = !muted && self.mic.is_some();
         self.muted.store(!transmitting, Ordering::Relaxed);
         self.track.set_enabled(transmitting);
+
+        if !self.playback.is_open()
+            && self
+                .output_retry_at
+                .is_none_or(|at| std::time::Instant::now() >= at)
+        {
+            let faults = self.faults.clone();
+            match self.playback.try_open(&mut state, &self.controls, &faults) {
+                Ok(()) => self.output_retry_at = None,
+                Err(_) => {
+                    self.output_retry_at = Some(std::time::Instant::now() + DEVICE_RETRY);
+                }
+            }
+        }
     }
 }
 
