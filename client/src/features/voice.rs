@@ -1311,8 +1311,6 @@ impl ActiveVoice {
                 }
             }
         }
-        let selected_input = state.read().selected_input_device.clone();
-        let selected_output = state.read().selected_output_device.clone();
         {
             let mut s = state.write();
             if s.available_input_devices != inputs {
@@ -1322,11 +1320,15 @@ impl ActiveVoice {
                 s.available_output_devices = outputs.clone();
             }
         }
-        // Only schedule once per disappearance: the device is absent from every
-        // tick's enumeration, so resetting the deadline here would defeat the
-        // backoff below and retry the dead device every second.
-        if let Some(name) = &selected_input
-            && self.mic.is_some()
+        // Watch the device actually in use, not the selection: `pick_device`
+        // silently falls back to the default, and re-checking a still-selected
+        // but unplugged name would reopen the fallback every tick.
+        let mic_device = self
+            .mic
+            .as_ref()
+            .and_then(|mic| mic.device_name())
+            .map(str::to_string);
+        if let Some(name) = mic_device.as_deref()
             && !inputs.iter().any(|d| d == name)
         {
             if let Some(mic) = self.mic.take() {
@@ -1334,8 +1336,8 @@ impl ActiveVoice {
             }
             self.mic_retry_at = Some(Instant::now());
         }
-        if let Some(name) = &selected_output
-            && self.playback.is_open()
+        let output_device = self.playback.device_name().map(str::to_string);
+        if let Some(name) = output_device.as_deref()
             && !outputs.iter().any(|d| d == name)
         {
             self.playback.drop_stream();
@@ -2692,6 +2694,9 @@ struct MicCapture {
     _backend: MicBackend,
     muted: Arc<AtomicBool>,
     heartbeat: tokio::task::JoinHandle<()>,
+    /// The device actually opened, which may be the default rather than
+    /// `selected_input_device`; `maintain` watches this name for disappearance.
+    device_name: Option<String>,
 }
 
 enum MicBackend {
@@ -2717,7 +2722,7 @@ impl MicCapture {
         let selected = state.read().selected_input_device.clone();
         state.write().mic_bypass_error = None;
 
-        let backend = match Self::maybe_raw(
+        let (backend, device_name) = match Self::maybe_raw(
             &frame_tx,
             state,
             &selected,
@@ -2725,8 +2730,14 @@ impl MicCapture {
             &frames_pushed,
             &faults,
         ) {
-            Some(raw) => raw,
-            None => Self::start_cpal(&frame_tx, selected, &raw_peak, &frames_pushed, &faults)?,
+            // The raw path reports its own device loss; only cpal resolves a
+            // name `maintain` can watch.
+            Some(raw) => (raw, None),
+            None => {
+                let (backend, name) =
+                    Self::start_cpal(&frame_tx, selected, &raw_peak, &frames_pushed, &faults)?;
+                (backend, Some(name))
+            }
         };
 
         let heartbeat = Self::spawn_heartbeat(raw_peak, frames_pushed, gate_stats);
@@ -2734,7 +2745,12 @@ impl MicCapture {
             _backend: backend,
             muted,
             heartbeat,
+            device_name,
         })
+    }
+
+    fn device_name(&self) -> Option<&str> {
+        self.device_name.as_deref()
     }
 
     #[cfg(target_os = "windows")]
@@ -2817,7 +2833,7 @@ impl MicCapture {
         raw_peak: &Arc<AtomicI32>,
         frames_pushed: &Arc<AtomicU64>,
         faults: &UnboundedSender<AudioFault>,
-    ) -> Result<MicBackend, String> {
+    ) -> Result<(MicBackend, String), String> {
         let frame_tx = frame_tx.clone();
         let host = cpal::default_host();
         let device = pick_device(
@@ -2942,7 +2958,7 @@ impl MicCapture {
         .map_err(|e| format!("build_input_stream: {e}"))?;
 
         stream.play().map_err(|e| format!("play mic: {e}"))?;
-        Ok(MicBackend::Cpal { stream })
+        Ok((MicBackend::Cpal { stream }, device_name))
     }
 
     fn spawn_heartbeat(
@@ -3329,6 +3345,9 @@ struct PlaybackMixer {
     reference_tx: crate::audio_queue::AudioSender<i16>,
     callbacks: Arc<AtomicU64>,
     pulled: Arc<AtomicU64>,
+    /// The device actually opened; `maintain` watches this name, not the
+    /// selection, since `pick_device` falls back to the default.
+    device_name: Option<String>,
 }
 
 impl Drop for PlaybackMixer {
@@ -3359,6 +3378,7 @@ impl PlaybackMixer {
             reference_tx,
             callbacks: Arc::new(AtomicU64::new(0)),
             pulled: Arc::new(AtomicU64::new(0)),
+            device_name: None,
         };
         mixer.spawn_heartbeat();
         if let Err(e) = mixer.try_open(&mut state, &controls, &faults) {
@@ -3535,6 +3555,7 @@ impl PlaybackMixer {
         self.handle
             .device_rate
             .store(device_rate, Ordering::Relaxed);
+        self.device_name = Some(device_name);
         self.stream = Some(stream);
         Ok(())
     }
@@ -3543,7 +3564,12 @@ impl PlaybackMixer {
         self.stream.is_some()
     }
 
+    fn device_name(&self) -> Option<&str> {
+        self.device_name.as_deref()
+    }
+
     fn drop_stream(&mut self) {
+        self.device_name = None;
         if let Some(stream) = self.stream.take() {
             match stream.pause() {
                 Ok(()) => eprintln!("[voice] playback stream stopped"),
