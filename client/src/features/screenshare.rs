@@ -1314,11 +1314,18 @@ pub fn ScreenShareBridge() -> Element {
     use_future(move || {
         let window = visibility_window.clone();
         async move {
+            // The eval crosses into the WebView; visibility rarely changes, so
+            // send only on a change and let the JS keep its state otherwise.
+            let mut sent: Option<bool> = None;
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                 let visible = window.window.is_visible() && !window.window.is_minimized();
-                let _ =
-                    document::eval(&format!("window.dxScreen?.setViewerVisibility({visible});"));
+                if sent != Some(visible) {
+                    sent = Some(visible);
+                    let _ = document::eval(&format!(
+                        "window.dxScreen?.setViewerVisibility({visible});"
+                    ));
+                }
             }
         }
     });
