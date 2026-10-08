@@ -137,7 +137,9 @@ use the existing rendezvous SFU fallback when available.
 Automatic mapping tries UPnP-IGD, NAT-PMP and PCP twice, continuing after a
 discovered router refuses or renumbers media ports. PCP retains its mapping
 nonce and renews against the granted lifetime. A partial chat mapping survives
-failed voice attempts. Under "I already forwarded the ports", a public IPv4
+failed voice attempts. An unverified manual address cannot replace a
+router-granted QUIC mapping or usable automatic voice mapping.
+Under "I already forwarded the ports", a public IPv4
 address selects fixed QUIC UDP 9001; the form lists the configured media ports.
 Manual IPv4 still needs the hairpin challenge. Global IPv6 is tried without
 port mapping, but requires the host firewall and the caller's IPv6 connectivity.
