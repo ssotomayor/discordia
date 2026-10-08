@@ -46,6 +46,13 @@ pub enum Transport {
     Proxied,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerRoutes {
+    pub gateway: String,
+    pub sent: Option<String>,
+    pub received: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectionStatus {
     Connecting,
@@ -341,6 +348,11 @@ pub struct AppState {
     pub dm_notify_tick: u64,
     pub screen_token: Option<(String, String)>,
     pub voice_endpoint: Option<String>,
+    pub voice_location: Option<String>,
+    pub voice_send_route: Option<crate::connection_routes::MediaRoute>,
+    pub voice_receive_route: Option<crate::connection_routes::MediaRoute>,
+    pub gateway_route: Option<String>,
+    pub peer_routes: HashMap<String, PeerRoutes>,
     pub voice_route_revision: u32,
     pub screen_audio_token: Option<(String, String)>,
     /// Whether the native side is *actually in*, not merely holding a token:
@@ -472,6 +484,11 @@ impl AppState {
             dm_notify_tick: 0,
             screen_token: None,
             voice_endpoint: None,
+            voice_location: None,
+            voice_send_route: None,
+            voice_receive_route: None,
+            gateway_route: None,
+            peer_routes: HashMap::new(),
             voice_route_revision: 0,
             screen_audio_token: None,
             screen_video_token: None,
@@ -566,6 +583,10 @@ impl AppState {
         self.voice.error = None;
         self.screen_token = None;
         self.voice_endpoint = None;
+        self.voice_location = None;
+        self.voice_send_route = None;
+        self.voice_receive_route = None;
+        self.peer_routes.clear();
         self.screen_audio_token = None;
         self.screen_video_token = None;
         self.screen_viewer_token = None;
@@ -601,6 +622,7 @@ impl AppState {
         self.rendezvous_url = None;
         self.host_info = None;
         self.transport = Transport::Loopback;
+        self.gateway_route = None;
         self.guild_dialog = None;
         self.rules_prompt = None;
         self.audio_settings = false;

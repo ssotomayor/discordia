@@ -56,17 +56,80 @@ async fn shared_voice_token(user: &mut Bot, channel: Id) {
             token,
             alternate_urls,
             route_revision,
+            voice_location,
             ..
         } = next_timeout(user).await
         {
             assert_eq!(channel_id, channel);
             assert_eq!(livekit_url, "wss://last-option");
             assert_eq!(route_revision, 1);
+            assert_eq!(voice_location.as_deref(), Some("rendezvous"));
             assert!(alternate_urls.is_empty());
             assert!(token.starts_with("token-for-"));
             break;
         }
     }
+}
+
+#[tokio::test]
+async fn connection_routes_are_shared_only_with_current_callers_and_never_include_addresses() {
+    let (url, _handle) = spawn_gateway(local_signing()).await;
+    let mut owner = connect_user(&url, &BotIdentity::generate(), "owner").await;
+    let (guild, channel) = voice_channel(&mut owner).await;
+    let mut friend = connect_user(&url, &BotIdentity::generate(), "friend").await;
+    let mut outsider = connect_user(&url, &BotIdentity::generate(), "outsider").await;
+    join_guild(&mut friend, guild).await;
+    join_guild(&mut outsider, guild).await;
+    join_voice(&mut owner, channel).await;
+    join_voice(&mut friend, channel).await;
+    drain_quiet(&mut outsider).await;
+    owner
+        .send(&ClientMessage::ConnectionRouteReport {
+            channel_id: channel,
+            gateway: "relay".into(),
+            voice_send: Some("IPv6 · UDP".into()),
+            voice_receive: Some("IPv4 · TCP".into()),
+        })
+        .await
+        .unwrap();
+    loop {
+        if let ServerMessage::ConnectionRouteUpdate {
+            channel_id,
+            gateway,
+            voice_send,
+            ..
+        } = next_timeout(&mut friend).await
+        {
+            assert_eq!(channel_id, channel);
+            assert_eq!(gateway, "relay");
+            assert_eq!(voice_send.as_deref(), Some("IPv6 · UDP"));
+            break;
+        }
+    }
+    assert!(
+        !drain_quiet(&mut outsider)
+            .await
+            .iter()
+            .any(|f| matches!(f, ServerMessage::ConnectionRouteUpdate { .. }))
+    );
+    drain_quiet(&mut owner).await;
+    for (reporter, gateway) in [(&mut friend, "203.0.113.9"), (&mut outsider, "relay")] {
+        reporter
+            .send(&ClientMessage::ConnectionRouteReport {
+                channel_id: channel,
+                gateway: gateway.into(),
+                voice_send: None,
+                voice_receive: None,
+            })
+            .await
+            .unwrap();
+    }
+    assert!(
+        !drain_quiet(&mut owner)
+            .await
+            .iter()
+            .any(|f| matches!(f, ServerMessage::ConnectionRouteUpdate { .. }))
+    );
 }
 
 #[tokio::test]

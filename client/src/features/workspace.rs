@@ -575,6 +575,7 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
                     class: "dxf-no-drag shrink-0 flex items-center rounded-md border border-[var(--border)] bg-[var(--panel2)] overflow-hidden",
                     onmousedown: move |e| e.stop_propagation(),
                     TransportBadge {}
+                    VoiceRouteBadge {}
                     if status == ConnectionStatus::Reconnecting {
                         span { class: "px-2 text-[10px] text-[var(--warn)]", "Reconnecting…" }
                     }
@@ -1117,14 +1118,16 @@ fn EncryptionBadge() -> Element {
 fn TransportBadge() -> Element {
     let mut state = use_app_state();
     let snapshot = state.read();
-    if snapshot.host_info.is_some() {
-        return rsx! { Fragment {} };
-    }
     let transport = snapshot.transport;
+    let route = snapshot.gateway_route.clone();
     drop(snapshot);
 
     let (label, color, title) = match transport {
-        crate::state::Transport::Loopback => return rsx! { Fragment {} },
+        crate::state::Transport::Loopback => (
+            "local",
+            "text-[var(--success)]",
+            "Chat and server control stay on this PC. Voice has a separate connection.",
+        ),
         crate::state::Transport::Quic => (
             "direct",
             "text-[var(--success)]",
@@ -1141,12 +1144,107 @@ fn TransportBadge() -> Element {
             "Connected over TLS to a proxy in front of the gateway. The proxy's operator, usually the server's, can read this connection; nobody else on the path can.",
         ),
     };
+    let route_label = route.unwrap_or_else(|| label.to_string());
     rsx! {
         button {
             class: "shrink-0 px-2 py-1 text-[10px] uppercase tracking-wider {color} hover:underline",
             title: "{title} — click for the whole picture",
             onclick: move |_| state.write().topology_open = true,
-            "{label}"
+            "Server: {route_label}"
+        }
+    }
+}
+
+#[component]
+fn VoiceRouteBadge() -> Element {
+    let state = use_app_state();
+    let mut open = use_signal(|| false);
+    let s = state.read();
+    if s.voice.phase == crate::state::VoicePhase::Idle {
+        return rsx! {};
+    }
+    let location = match s.voice_location.as_deref() {
+        Some("host") => "host PC",
+        Some("rendezvous") => "rendezvous",
+        Some("configured") => "configured server",
+        _ => "server unknown",
+    };
+    let phase = match s.voice.phase {
+        crate::state::VoicePhase::Connecting => "connecting".to_string(),
+        crate::state::VoicePhase::Error => "failed".to_string(),
+        _ => {
+            let send = s.voice_send_route.as_ref().map(|r| r.label());
+            let receive = s.voice_receive_route.as_ref().map(|r| r.label());
+            match (send, receive) {
+                (Some(a), Some(b)) if a != b => "different send/receive routes".into(),
+                (Some(a), Some(_)) => a,
+                (Some(a), None) => format!("send {a}"),
+                (None, Some(a)) => format!("receive {a}"),
+                _ => "media route unknown".into(),
+            }
+        }
+    };
+    let signaling = s.voice_endpoint.as_deref().unwrap_or("not connected");
+    let send = s
+        .voice_send_route
+        .as_ref()
+        .map(|r| format!("{} ({})", r.label(), r.endpoint))
+        .unwrap_or_else(|| "unknown".into());
+    let receive = s
+        .voice_receive_route
+        .as_ref()
+        .map(|r| format!("{} ({})", r.label(), r.endpoint))
+        .unwrap_or_else(|| "unknown".into());
+    let title = format!(
+        "Voice server: {location}. Audio send: {send}. Audio receive: {receive}. Signaling: {signaling}. This is your connection; other participants can use different routes. Chat/control uses the separate Server indicator."
+    );
+    let channel = s.server_voice_channel();
+    let peers: Vec<_> = s
+        .voice_states
+        .iter()
+        .filter(|v| v.channel_id == channel && channel.is_some())
+        .filter(|v| {
+            s.self_user
+                .as_ref()
+                .is_none_or(|u| u.pubkey != v.user_pubkey)
+        })
+        .map(|v| {
+            (
+                s.display_name(&v.user_pubkey),
+                s.peer_routes.get(&v.user_pubkey).cloned(),
+            )
+        })
+        .collect();
+    rsx! {
+        button { class: "shrink-0 px-2 py-1 text-[10px] text-[var(--text-muted)] border-l border-[var(--border)]", title: "{title}",
+            onclick: move |_| open.toggle(),
+            "Voice: {location} · {phase}"
+        }
+        if open() {
+            div { class: "dxf-no-drag rounded-md border border-[var(--border)] bg-[var(--panel2)] p-4 text-[12px]",
+                style: "position: fixed; top: 60px; right: 16px; z-index: 1000; max-width: min(520px, 90vw); max-height: 75vh; overflow: auto; white-space: normal;",
+                div { class: "flex items-center justify-between gap-2",
+                    strong { "Connection routes" }
+                    button { onclick: move |_| open.set(false), "Close" }
+                }
+                p { "Your voice server: {location}" }
+                p { "Audio send: {send}" }
+                p { "Audio receive: {receive}" }
+                p { style: "overflow-wrap: anywhere;", "Voice signaling: {signaling}" }
+                p { "Participants in this call — reported by their clients, refreshed every 5 seconds. No IP addresses are shared." }
+                for (name, report) in peers {
+                    div { class: "border-t border-[var(--border)] py-2",
+                        strong { "{name}" }
+                        if let Some(report) = report {
+                            p { "Server: {report.gateway}" }
+                            p { "Audio send: {report.sent.as_deref().unwrap_or(\"unknown\")}" }
+                            p { "Audio receive: {report.received.as_deref().unwrap_or(\"unknown\")}" }
+                        } else {
+                            p { "Waiting for route report…" }
+                        }
+                    }
+                }
+            }
         }
     }
 }

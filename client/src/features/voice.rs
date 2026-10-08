@@ -800,7 +800,12 @@ impl ActiveVoice {
                         );
                     if ours && current.phase != phase {
                         eprintln!("[voice] room says {phase:?}");
-                        state.write().voice.phase = phase;
+                        let mut s = state.write();
+                        s.voice.phase = phase;
+                        if phase != VoicePhase::Connected {
+                            s.voice_send_route = None;
+                            s.voice_receive_route = None;
+                        }
                     }
                 }
             });
@@ -1495,6 +1500,8 @@ impl ActiveVoice {
             s.screen_audio_joined = false;
             s.voice_quality.clear();
             s.voice_stats.clear();
+            s.voice_send_route = None;
+            s.voice_receive_route = None;
         }
         match tokio::time::timeout(ROOM_CLOSE_TIMEOUT, self.room.close()).await {
             Ok(Ok(())) => {}
@@ -2604,6 +2611,27 @@ fn spawn_stats_task(
         let mut prev_out: Option<(u64, u64, Instant)> = None;
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+            let mut routes =
+                match tokio::time::timeout(std::time::Duration::from_secs(2), room.get_stats())
+                    .await
+                {
+                    Ok(Ok(stats)) => crate::connection_routes::selected_media_routes(
+                        &stats.publisher_stats,
+                        &stats.subscriber_stats,
+                    ),
+                    _ => (None, None),
+                };
+            if state.peek().voice.phase != VoicePhase::Connected {
+                routes = (None, None);
+            }
+            if state.peek().voice_send_route != routes.0
+                || state.peek().voice_receive_route != routes.1
+            {
+                let mut s = state.write();
+                s.voice_send_route = routes.0;
+                s.voice_receive_route = routes.1;
+            }
 
             if !enabled.load(Ordering::Relaxed) {
                 if was_enabled {

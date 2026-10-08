@@ -12,6 +12,8 @@ use livekit_api::access_token::{AccessToken, VideoGrants};
 const SAMPLE_RATE: u32 = 48_000;
 const CHANNELS: u32 = 1;
 
+#[path = "../src/connection_routes.rs"]
+mod connection_routes;
 #[path = "../src/features/voice_endpoints.rs"]
 mod voice_endpoints;
 
@@ -110,6 +112,21 @@ async fn alternate_ipv6_endpoint_delivers_audio_without_rendezvous() {
     })
     .await
     .expect("direct audio did not decode");
+    let published = publisher.get_stats().await.unwrap();
+    let received = listener.get_stats().await.unwrap();
+    let send_route = connection_routes::selected_media_route(&published.publisher_stats)
+        .expect("publisher must have a selected audio route");
+    let receive_route = connection_routes::selected_media_routes(
+        &received.publisher_stats,
+        &received.subscriber_stats,
+    )
+    .1
+    .expect("listener must have a selected audio route");
+    for route in [send_route, receive_route] {
+        assert!(!route.relayed);
+        assert_ne!(route.family, "IP unknown");
+        assert!(matches!(route.protocol.as_str(), "udp" | "tcp"));
+    }
     drop(stream);
     feeder.stop().await;
     listener.close().await.unwrap();

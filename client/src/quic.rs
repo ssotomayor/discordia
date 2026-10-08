@@ -13,6 +13,48 @@ pub struct ConnectionGuard {
 }
 
 impl ConnectionGuard {
+    pub fn watch_route(
+        &self,
+        mut state: dioxus::prelude::Signal<crate::state::AppState>,
+    ) -> dioxus::core::Task {
+        use dioxus::prelude::*;
+        let conn = self.conn.clone();
+        spawn(async move {
+            loop {
+                let selected =
+                    conn.paths()
+                        .iter()
+                        .find(|p| p.is_selected())
+                        .map(|p| match p.remote_addr() {
+                            TransportAddr::Ip(addr) => (
+                                crate::state::Transport::Quic,
+                                format!(
+                                    "direct · {}",
+                                    if addr.ip().to_canonical().is_ipv6() {
+                                        "IPv6"
+                                    } else {
+                                        "IPv4"
+                                    }
+                                ),
+                            ),
+                            TransportAddr::Relay(_) => {
+                                (crate::state::Transport::QuicRelayed, "relay".into())
+                            }
+                            _ => (crate::state::Transport::Quic, "route unknown".into()),
+                        });
+                if let Some((transport, route)) = selected
+                    && (state.peek().transport != transport
+                        || state.peek().gateway_route.as_ref() != Some(&route))
+                {
+                    let mut s = state.write();
+                    s.transport = transport;
+                    s.gateway_route = Some(route);
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
+        })
+    }
+
     pub async fn shutdown(&self) {
         self.conn.close(0_u32.into(), b"client leaving");
         self._endpoint.close().await;

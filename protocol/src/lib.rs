@@ -1827,6 +1827,12 @@ pub enum ClientMessage {
         route_revision: u32,
         connected: bool,
     },
+    ConnectionRouteReport {
+        channel_id: Id,
+        gateway: String,
+        voice_send: Option<String>,
+        voice_receive: Option<String>,
+    },
     SetVoiceMute {
         muted: bool,
         deafened: bool,
@@ -2025,6 +2031,8 @@ pub enum ServerMessage {
     VoiceToken {
         channel_id: Id,
         livekit_url: String,
+        #[serde(default)]
+        voice_location: Option<String>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         alternate_urls: Vec<String>,
         #[serde(default)]
@@ -2036,6 +2044,13 @@ pub enum ServerMessage {
     VoiceRouteChanged {
         livekit_url: String,
         reason: String,
+    },
+    ConnectionRouteUpdate {
+        channel_id: Id,
+        user_pubkey: String,
+        gateway: String,
+        voice_send: Option<String>,
+        voice_receive: Option<String>,
     },
     ScreenToken {
         channel_id: Id,

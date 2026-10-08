@@ -17,16 +17,16 @@ name instead.
 
 | File | Lines |
 |---|---|
-| `client/src/features/voice.rs` | 4652 |
+| `client/src/features/voice.rs` | 4680 |
 | `server/src/state/mod.rs` | 3124 |
 | `server/tests/owner_controls.rs` | 3036 |
-| `server/src/gateway/connection.rs` | 2944 |
+| `server/src/gateway/connection.rs` | 2990 |
 | `client/src/features/channels.rs` | 1969 |
 | `client/src/features/screenshare.rs` | 2778 |
-| `protocol/src/lib.rs` | 2614 |
-| `client/src/state.rs` | 2103 |
+| `protocol/src/lib.rs` | 2629 |
+| `client/src/state.rs` | 2125 |
 | `client/src/update.rs` | 1226 |
-| `client/src/net.rs` | 1962 |
+| `client/src/net.rs` | 2007 |
 | `client/src/features/chat.rs` | 1192 |
 | `server/src/store.rs` | 1201 |
 | `client/src/features/guild_settings.rs` | 1132 |
@@ -84,6 +84,7 @@ that direction says a file is safe to open when it is not.
 | Keys on this machine | `client/src/identity.rs` | `detected` / `sign_in` / `forget`; one file per key under `identities_dir()` (default `config_dir()/identities/`, `identities-dir` overrides), `identity.json` names the active one |
 | Keys at rest | `client/src/keyvault.rs` | NIP-49 `ncryptsec` under a random passphrase; `seal`/`unseal` hold the phrase's entropy beside it; `backend()` picks keychain or `vault.key` once and `vault.backend` remembers (trap 23) |
 | Seeing the phrase again | `client/src/features/connect.rs` | `RecoveryPhrase` on `IdentityCard` — reveal, confirm, hides after a minute; only the home screen mounts the card |
+| Actual chat and voice connection routes | `client/src/connection_routes.rs`, `client/src/quic.rs`, `client/src/features/workspace.rs` | `watch_route` follows selected QUIC paths; `selected_media_route` follows selected WebRTC pairs, separate from signaling. Click Voice for local and same-channel caller reports. `ConnectionRouteReport` carries labels only; the gateway checks membership and label vocabulary before forwarding. |
 | Choosing the keys folder | `client/src/features/identity_setup.rs` | `FolderSettings` — the cog on the setup screen; `DetectedIdentities` rescans on every render, `rev` forces one |
 | Bringing a Discord server over | `client/src/features/discord_import.rs` | `read_plan` fetches with a bot token, `flatten_channels`/`plan_roles` map, `run_import` replays `CreateGuild`→`SetGuildProfile`→`CreateChannel`→`CreateRole`→`CreateGuildEmoji` one write per 450 ms; opened from the rail via `GuildDialog::ImportDiscord` |
 | A device that stays busy after voice | `client/src/features/voice.rs` | `pick_device`, and the `Drop` impls of `MicCapture` / `PlaybackMixer` (trap 24); `client/src/audio_diag.rs` prints CoreAudio's view in debug builds |

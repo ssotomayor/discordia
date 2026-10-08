@@ -1208,6 +1208,17 @@ pub async fn handle_connection(
                             tokio::spawn(async move { move_voice_to_shared(ctx).await; });
                         }
                     }
+                    ClientMessage::ConnectionRouteReport { channel_id, gateway, voice_send, voice_receive } => {
+                        let Some(u) = user.as_ref() else { continue };
+                        if !signals.allow() || ctx.state.voice_channel_of(&u.pubkey) != Some(channel_id)
+                            || !valid_reported_routes(&gateway, voice_send.as_deref(), voice_receive.as_deref()) { continue; }
+                        let targets = ctx.state.voice_states.iter()
+                            .filter(|v| v.channel_id == Some(channel_id))
+                            .map(|v| v.user_pubkey.clone()).collect();
+                        ctx.state.deliver(targets, ServerMessage::ConnectionRouteUpdate {
+                            channel_id, user_pubkey: u.pubkey.clone(), gateway, voice_send, voice_receive,
+                        });
+                    }
                     ClientMessage::LeaveVoice => {
                         let Some(u) = user.as_ref() else { continue };
                         let was_sharing = sharing_in(&ctx.state, &u.pubkey);
@@ -2133,6 +2144,31 @@ where
         .unwrap_or_else(|_| Err(MINT_TIMED_OUT.to_string()))
 }
 
+fn valid_reported_routes(gateway: &str, sent: Option<&str>, received: Option<&str>) -> bool {
+    let media_valid = |value: &str| {
+        ["IPv4", "IPv6", "local", "IP unknown"]
+            .iter()
+            .any(|family| {
+                ["", " · TURN relay"].iter().any(|relay| {
+                    ["UDP", "TCP", "UNKNOWN"]
+                        .iter()
+                        .any(|protocol| value == format!("{family}{relay} · {protocol}"))
+                })
+            })
+    };
+    matches!(
+        gateway,
+        "local"
+            | "direct · IPv4"
+            | "direct · IPv6"
+            | "direct · IP unknown"
+            | "relay"
+            | "proxied"
+            | "route unknown"
+    ) && sent.is_none_or(media_valid)
+        && received.is_none_or(media_valid)
+}
+
 async fn move_voice_to_shared(ctx: Arc<AppContext>) {
     let (cfg, revision) = ctx.livekit.route();
     let Some(url) = cfg.explicit_url.clone() else {
@@ -2198,6 +2234,16 @@ async fn mint_voice_frames(
     let ice_servers = cfg.ice_servers();
     frames.push(ServerMessage::VoiceToken {
         channel_id,
+        voice_location: Some(
+            if cfg.minter.is_some() {
+                "rendezvous"
+            } else if cfg.explicit_url.is_none() {
+                "host"
+            } else {
+                "configured"
+            }
+            .into(),
+        ),
         livekit_url: livekit_url.clone(),
         alternate_urls,
         route_revision,

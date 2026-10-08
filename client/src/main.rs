@@ -6,6 +6,7 @@ mod audio_diag;
 mod audio_queue;
 mod chat_image;
 mod clipboard;
+mod connection_routes;
 mod denoise;
 mod e2ee;
 mod echo;
