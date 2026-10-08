@@ -231,16 +231,7 @@ pub async fn start_self_host(
             }
         };
 
-    if let Some(manual) = manual
-        && mapped.as_ref().is_none_or(|m| !m.media || !m.hairpin)
-    {
-        reachability = Reachability::Direct {
-            method: "manual forwarding",
-            media: manual.media && manual.hairpin,
-            note: manual.media_note,
-        };
-        mapped = Some(manual);
-    }
+    apply_manual_mapping(&mut mapped, &mut reachability, manual);
 
     let public_v6: Vec<IpAddr> = if allow_lan
         && quic_endpoint
@@ -534,6 +525,25 @@ pub async fn start_self_host(
     })
 }
 
+fn apply_manual_mapping(
+    mapped: &mut Option<portmap::Mapped>,
+    reachability: &mut Reachability,
+    manual: Option<portmap::Mapped>,
+) {
+    if let Some(manual) = manual
+        && mapped
+            .as_ref()
+            .is_none_or(|m| !m.quic && (!m.media || !m.hairpin))
+    {
+        *reachability = Reachability::Direct {
+            method: "manual forwarding",
+            media: manual.media && manual.hairpin,
+            note: manual.media_note,
+        };
+        *mapped = Some(manual);
+    }
+}
+
 pub fn public_address(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(ip) => {
@@ -556,6 +566,78 @@ fn local_ipv4() -> Option<Ipv4Addr> {
 #[cfg(test)]
 mod sfu_tests {
     use super::*;
+
+    fn automatic_mapping(quic: bool, media: bool, hairpin: bool) -> portmap::Mapped {
+        portmap::Mapped {
+            method: "UPnP-IGD",
+            public_ip: "203.0.113.5".parse().unwrap(),
+            media,
+            quic,
+            quic_port: 19001,
+            hairpin,
+            media_note: Some("no hairpin NAT"),
+        }
+    }
+
+    fn unverified_manual_mapping() -> portmap::Mapped {
+        portmap::Mapped {
+            method: "manual forwarding",
+            public_ip: "198.51.100.9".parse().unwrap(),
+            media: false,
+            quic: true,
+            quic_port: 9001,
+            hairpin: false,
+            media_note: Some("manual signaling probe failed"),
+        }
+    }
+
+    #[test]
+    fn a_stale_manual_address_cannot_replace_a_router_granted_chat_endpoint() {
+        for media in [false, true] {
+            let automatic = automatic_mapping(true, media, false);
+            let mut mapped = Some(automatic.clone());
+            let mut reach = Reachability::Direct {
+                method: automatic.method,
+                media: false,
+                note: automatic.media_note,
+            };
+            apply_manual_mapping(&mut mapped, &mut reach, Some(unverified_manual_mapping()));
+            let selected = mapped.unwrap();
+            assert_eq!(selected.public_ip, automatic.public_ip);
+            assert_eq!(selected.quic_port, 19001);
+            assert!(matches!(
+                reach,
+                Reachability::Direct {
+                    method: "UPnP-IGD",
+                    media: false,
+                    ..
+                }
+            ));
+        }
+    }
+
+    #[test]
+    fn manual_address_remains_available_when_automatic_mapping_is_unusable() {
+        for automatic in [None, Some(automatic_mapping(false, false, false))] {
+            let mut mapped = automatic;
+            let mut reach = Reachability::LanOnly {
+                reason: "automatic failed".into(),
+            };
+            let manual = unverified_manual_mapping();
+            apply_manual_mapping(&mut mapped, &mut reach, Some(manual.clone()));
+            let selected = mapped.unwrap();
+            assert_eq!(selected.public_ip, manual.public_ip);
+            assert_eq!(selected.quic_port, 9001);
+            assert!(matches!(
+                reach,
+                Reachability::Direct {
+                    method: "manual forwarding",
+                    media: false,
+                    ..
+                }
+            ));
+        }
+    }
 
     #[test]
     fn ipv6_candidates_exclude_local_only_and_multicast_addresses() {
