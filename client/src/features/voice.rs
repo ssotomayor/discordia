@@ -425,7 +425,7 @@ async fn service_loop(
                 state.write().auto_gain_control = enabled;
             }
             VoiceCmd::SetVoiceBitrate { kbps } => {
-                let kbps = if kbps == 24 { 24 } else { 48 };
+                let kbps = crate::settings::normalize_voice_bitrate(kbps);
                 eprintln!("[voice] SetVoiceBitrate kbps={kbps} (applies on next connect)");
                 controls.bitrate_kbps.store(kbps, Ordering::Relaxed);
                 state.write().voice_bitrate_kbps = kbps;
