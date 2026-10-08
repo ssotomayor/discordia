@@ -129,7 +129,13 @@ fn map_response(
     lifetime: u32,
     nonce: [u8; 12],
 ) -> Option<Result<SocketAddr, String>> {
-    if packet.len() < 24 || packet[0] != 2 || packet[1] != 0x81 {
+    if packet.len() < 60
+        || packet[0] != 2
+        || packet[1] != 0x81
+        || packet[24..36] != nonce
+        || packet[36] != protocol
+        || packet[40..42] != port.to_be_bytes()
+    {
         return None;
     }
     if packet[3] != 0 {
@@ -137,13 +143,6 @@ fn map_response(
             "router rejected PCP MAP (result {})",
             packet[3]
         )));
-    }
-    if packet.len() < 60
-        || packet[24..36] != nonce
-        || packet[36] != protocol
-        || packet[40..42] != port.to_be_bytes()
-    {
-        return None;
     }
     let granted_lifetime = u32::from_be_bytes(packet[4..8].try_into().unwrap());
     if lifetime != 0 && granted_lifetime == 0 {
@@ -185,6 +184,55 @@ mod tests {
         reply[3] = 8;
         assert!(
             map_response(&reply, 17, 9001, 3600, nonce)
+                .unwrap()
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_delayed_error_for_another_mapping_does_not_reject_the_current_port() {
+        let router = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let client = Client::new(Ipv4Addr::LOCALHOST, router.local_addr().unwrap())
+            .await
+            .unwrap();
+        let task = tokio::spawn(async move {
+            let mut buf = [0; 100];
+            let (len, peer) = router.recv_from(&mut buf).await.unwrap();
+            let first = buf[..len].to_vec();
+            router.send_to(&response(&first), peer).await.unwrap();
+            let (len, peer) = router.recv_from(&mut buf).await.unwrap();
+            let current = buf[..len].to_vec();
+            let mut stale = response(&first);
+            stale[3] = 8;
+            router.send_to(&stale, peer).await.unwrap();
+            router.send_to(&response(&current), peer).await.unwrap();
+        });
+        let result = tokio::time::timeout(Duration::from_secs(2), async {
+            client.map(6, 7880, 3600).await.unwrap();
+            client.map(17, 9001, 3600).await
+        })
+        .await
+        .expect("the current response should be accepted without retransmission");
+        task.await.unwrap();
+        assert_eq!(result.unwrap(), "203.0.113.9:9001".parse().unwrap());
+    }
+
+    #[test]
+    fn errors_must_match_the_nonce_protocol_and_internal_port() {
+        let nonce = [7; 12];
+        let req = map_request(Ipv4Addr::LOCALHOST, 17, 9001, 3600, nonce, None);
+        let mut error = response(&req);
+        error[3] = 8;
+        for field in [24, 36, 40] {
+            let mut unrelated = error.clone();
+            unrelated[field] ^= 1;
+            assert!(map_response(&unrelated, 17, 9001, 3600, nonce).is_none());
+        }
+        for len in 0..60 {
+            assert!(map_response(&error[..len], 17, 9001, 3600, nonce).is_none());
+        }
+        assert!(
+            map_response(&error, 17, 9001, 3600, nonce)
                 .unwrap()
                 .is_err()
         );

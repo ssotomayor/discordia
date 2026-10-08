@@ -538,10 +538,6 @@ impl AppState {
         }
     }
 
-    /// On the *local* disconnect, not the server's echo, which lands after the
-    /// phase is Idle: a token left behind kept the webview's room alive for good.
-    /// Everything a call held goes, the media key included: the key in use is
-    /// global to the process, so a cached one would never be applied again.
     pub fn set_voice_endpoint(&mut self, url: String) {
         self.voice_endpoint = Some(url.clone());
         for token in [
@@ -557,6 +553,8 @@ impl AppState {
         }
     }
 
+    /// Clear locally before the server echo: retained tokens keep webview rooms alive,
+    /// and the process-wide media key must not survive a call.
     pub fn end_voice_locally(&mut self) {
         self.voice.phase = VoicePhase::Idle;
         self.voice.channel_id = None;

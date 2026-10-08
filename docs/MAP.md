@@ -24,7 +24,7 @@ name instead.
 | `client/src/features/channels.rs` | 1969 |
 | `client/src/features/screenshare.rs` | 2778 |
 | `protocol/src/lib.rs` | 2614 |
-| `client/src/state.rs` | 2105 |
+| `client/src/state.rs` | 2103 |
 | `client/src/update.rs` | 1226 |
 | `client/src/net.rs` | 1962 |
 | `client/src/features/chat.rs` | 1192 |
