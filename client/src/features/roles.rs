@@ -32,6 +32,7 @@ pub fn RolesEditor(guild_id: Id) -> Element {
     let mut color = use_signal(|| None::<String>);
     let mut perms = use_signal(Vec::<Permission>::new);
     let mut dragging = use_signal(|| None::<Id>);
+    let mut drop_target = use_signal(|| None::<Id>);
     let ids: Vec<Id> = roles.iter().map(|r| r.id).collect();
 
     let mut reset_form = move || {
@@ -69,7 +70,31 @@ pub fn RolesEditor(guild_id: Id) -> Element {
 
     rsx! {
                 div { class: "grid grid-cols-2 gap-4 items-start",
-                    div { class: "space-y-2",
+                    div {
+                        class: "space-y-2",
+                        // Pointer drag, not HTML5 DnD: Windows turns HTML5 DnD off
+                        // while the wry file-drop handler is installed.
+                        onpointerup: {
+                            let gateway = gateway.clone();
+                            let ids = ids.clone();
+                            move |_| {
+                                if let (Some(moved), Some(target)) = (dragging(), drop_target())
+                                    && let Some(order) = moved_order(&ids, moved, target)
+                                {
+                                    gateway.send(ClientMessage::ReorderRoles { guild_id, order });
+                                }
+                                dragging.set(None);
+                                drop_target.set(None);
+                            }
+                        },
+                        onpointerleave: move |_| {
+                            dragging.set(None);
+                            drop_target.set(None);
+                        },
+                        onpointercancel: move |_| {
+                            dragging.set(None);
+                            drop_target.set(None);
+                        },
                         div { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-1.5",
                             "Defined roles"
                         }
@@ -86,8 +111,6 @@ pub fn RolesEditor(guild_id: Id) -> Element {
                         for role in roles.iter().cloned() {
                             {
                                 let gw_del = gateway.clone();
-                                let gw_drop = gateway.clone();
-                                let drop_ids = ids.clone();
                                 let rid = role.id;
                                 let lifted = if dragging() == Some(role.id) { "opacity-40" } else { "" };
                                 let r_name = role.name.clone();
@@ -103,22 +126,19 @@ pub fn RolesEditor(guild_id: Id) -> Element {
                                     div {
                                         key: "{rid}",
                                         class: "border {row_cls} {lifted} rounded-md p-2.5 flex flex-col gap-1.5 cursor-pointer transition-colors",
-                                        draggable: true,
-                                        ondragstart: move |_| dragging.set(Some(rid)),
-                                        ondragover: move |e: Event<DragData>| {
+                                        onpointerdown: move |e: PointerEvent| {
+                                            if e.held_buttons().contains(
+                                                dioxus::html::input_data::MouseButton::Primary,
+                                            ) {
+                                                dragging.set(Some(rid));
+                                                drop_target.set(None);
+                                            }
+                                        },
+                                        onpointerenter: move |_| {
                                             if dragging().is_some() {
-                                                e.prevent_default();
+                                                drop_target.set(Some(rid));
                                             }
                                         },
-                                        ondrop: move |e: Event<DragData>| {
-                                            e.prevent_default();
-                                            let moved = dragging();
-                                            dragging.set(None);
-                                            if let Some(order) = moved.and_then(|m| moved_order(&drop_ids, m, rid)) {
-                                                gw_drop.send(ClientMessage::ReorderRoles { guild_id, order });
-                                            }
-                                        },
-                                        ondragend: move |_| dragging.set(None),
                                         onclick: move |_| {
                                             editing.set(Some(rid));
                                             name.set(r_name.clone());

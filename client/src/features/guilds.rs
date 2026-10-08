@@ -81,7 +81,32 @@ pub fn GuildsSidebar() -> Element {
             }
 
             NoDrag {
-            div { class: "flex-1 overflow-y-auto flex flex-col items-center py-3 gap-2.5",
+            div {
+                class: "flex-1 overflow-y-auto flex flex-col items-center py-3 gap-2.5",
+                // Pointer drag, not HTML5 DnD: on Windows the wry file-drop
+                // handler that attaches dropped files turns HTML5 DnD off.
+                onpointerup: move |_| {
+                    if let (Some(moved), Some(target)) = (dragging(), drop_target()) {
+                        let mut next = settings.read().clone();
+                        if let Some(order) =
+                            crate::ui_size::moved_guilds(&guild_ids, &next.guild_order, moved, target)
+                        {
+                            next.guild_order = order;
+                            crate::settings::save(&next);
+                            settings.set(next);
+                        }
+                    }
+                    dragging.set(None);
+                    drop_target.set(None);
+                },
+                onpointerleave: move |_| {
+                    dragging.set(None);
+                    drop_target.set(None);
+                },
+                onpointercancel: move |_| {
+                    dragging.set(None);
+                    drop_target.set(None);
+                },
                 DmHomeButton {
                     active: dm_mode,
                     count: dm_unread,
@@ -109,31 +134,24 @@ pub fn GuildsSidebar() -> Element {
                         let has_menu = !guild.owner_pubkey.is_empty() || is_operator;
                         let is_mine = owned.contains(&guild.id);
                         let gid = guild.id;
-                        let drop_ids = guild_ids.clone();
                         let gname = guild.name.clone();
                         rsx! {
                             div {
                                 key: "{gid}",
-                                draggable: true,
                                 title: "Drag to reorder guilds",
                                 style: if drop_target() == Some(gid) { "outline:2px solid var(--accent);border-radius:16px;" } else { "outline:none;" },
-                                ondragstart: move |_| { menu.set(None); dragging.set(Some(gid)); },
-                                ondragover: move |e: Event<DragData>| {
-                                    if dragging().is_some() { e.prevent_default(); drop_target.set(Some(gid)); }
-                                },
-                                ondrop: move |e: Event<DragData>| {
-                                    e.prevent_default();
-                                    if let Some(moved) = dragging() {
-                                        let mut next = settings.read().clone();
-                                        if let Some(order) = crate::ui_size::moved_guilds(&drop_ids, &next.guild_order, moved, gid) {
-                                            next.guild_order = order;
-                                            crate::settings::save(&next);
-                                            settings.set(next);
-                                        }
+                                onpointerdown: move |e: PointerEvent| {
+                                    if e.held_buttons()
+                                        .contains(dioxus::html::input_data::MouseButton::Primary)
+                                    {
+                                        menu.set(None);
+                                        dragging.set(Some(gid));
+                                        drop_target.set(Some(gid));
                                     }
-                                    dragging.set(None); drop_target.set(None);
                                 },
-                                ondragend: move |_| { dragging.set(None); drop_target.set(None); },
+                                onpointerenter: move |_| {
+                                    if dragging().is_some() { drop_target.set(Some(gid)); }
+                                },
                             GuildIcon {
                                 id: guild.id,
                                 label: guild.icon.clone().unwrap_or_else(|| initials(&guild.name)),

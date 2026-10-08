@@ -333,19 +333,14 @@ pub fn ChannelsColumn() -> Element {
                     }
                 }
             } else {
-            div { class: "flex-1 overflow-y-auto px-2 py-3 space-y-3",
-                // Rows only aim; the drop lands here, so letting go in the gap
-                // between two rows still goes where the line shows.
-                ondragover: move |e: Event<DragData>| {
-                    if dragging().is_some() && drop_at.peek().is_some() {
-                        e.prevent_default();
-                    }
-                },
-                ondrop: {
+            div {
+                class: "flex-1 overflow-y-auto px-2 py-3 space-y-3",
+                // Pointer drag, not HTML5 DnD: Windows turns HTML5 DnD off while
+                // the wry file-drop handler is installed. The rail commits it.
+                onpointerup: {
                     let gateway = gateway.clone();
                     let order = guild_order.clone();
-                    move |e: Event<DragData>| {
-                        e.prevent_default();
+                    move |_| {
                         let moved = dragging();
                         let at = drop_at();
                         dragging.set(None);
@@ -354,6 +349,14 @@ pub fn ChannelsColumn() -> Element {
                             send_reorder(&gateway, &order, moved, target);
                         }
                     }
+                },
+                onpointerleave: move |_| {
+                    dragging.set(None);
+                    drop_at.set(None);
+                },
+                onpointercancel: move |_| {
+                    dragging.set(None);
+                    drop_at.set(None);
                 },
                 if !text_channels.is_empty() {
                     div {
@@ -377,21 +380,22 @@ pub fn ChannelsColumn() -> Element {
                                     button {
                                         key: "{cid}",
                                         class: "relative w-full h-8 flex items-center gap-2 px-2.5 rounded-lg text-left text-[13.5px] transition-colors {cls} {dim}",
-                                        draggable: can_manage_channels,
-                                        ondragstart: move |_| dragging.set(Some(cid)),
-                                        ondragover: move |e: Event<DragData>| {
+                                        onpointerdown: move |e: PointerEvent| {
+                                            if can_manage_channels
+                                                && e.held_buttons().contains(
+                                                    dioxus::html::input_data::MouseButton::Primary,
+                                                )
+                                            {
+                                                dragging.set(Some(cid));
+                                                drop_at.set(None);
+                                            }
+                                        },
+                                        onpointerenter: move |_| {
                                             let Some(moved) = dragging() else { return };
                                             let next = drop_edge(&drop_group, moved, cid).map(|edge| (cid, edge));
-                                            if next.is_some() {
-                                                e.prevent_default();
-                                            }
                                             if *drop_at.peek() != next {
                                                 drop_at.set(next);
                                             }
-                                        },
-                                        ondragend: move |_| {
-                                            dragging.set(None);
-                                            drop_at.set(None);
                                         },
                                         onclick: move |_| select_text_channel(&mut state, &g2, cid),
                                         oncontextmenu: move |e: MouseEvent| {
@@ -454,21 +458,22 @@ pub fn ChannelsColumn() -> Element {
                                         div {
                                             key: "{cid}",
                                             class: "relative mt-2.5 mb-0.5 px-2 flex items-center gap-2 select-none {dim}",
-                                            draggable: can_manage_channels,
-                                            ondragstart: move |_| dragging.set(Some(cid)),
-                                            ondragover: move |e: Event<DragData>| {
+                                            onpointerdown: move |e: PointerEvent| {
+                                                if can_manage_channels
+                                                    && e.held_buttons().contains(
+                                                        dioxus::html::input_data::MouseButton::Primary,
+                                                    )
+                                                {
+                                                    dragging.set(Some(cid));
+                                                    drop_at.set(None);
+                                                }
+                                            },
+                                            onpointerenter: move |_| {
                                                 let Some(moved) = dragging() else { return };
                                                 let next = drop_edge(&drop_group, moved, cid).map(|edge| (cid, edge));
-                                                if next.is_some() {
-                                                    e.prevent_default();
-                                                }
                                                 if *drop_at.peek() != next {
                                                     drop_at.set(next);
                                                 }
-                                            },
-                                            ondragend: move |_| {
-                                                dragging.set(None);
-                                                drop_at.set(None);
                                             },
                                             oncontextmenu: move |e: MouseEvent| {
                                                 if !can_manage_channels {
@@ -495,21 +500,22 @@ pub fn ChannelsColumn() -> Element {
                                     div {
                                         key: "{cid}",
                                         class: "relative {dim}",
-                                        draggable: can_manage_channels,
-                                        ondragstart: move |_| dragging.set(Some(cid)),
-                                        ondragover: move |e: Event<DragData>| {
+                                        onpointerdown: move |e: PointerEvent| {
+                                            if can_manage_channels
+                                                && e.held_buttons().contains(
+                                                    dioxus::html::input_data::MouseButton::Primary,
+                                                )
+                                            {
+                                                dragging.set(Some(cid));
+                                                drop_at.set(None);
+                                            }
+                                        },
+                                        onpointerenter: move |_| {
                                             let Some(moved) = dragging() else { return };
                                             let next = drop_edge(&drop_group, moved, cid).map(|edge| (cid, edge));
-                                            if next.is_some() {
-                                                e.prevent_default();
-                                            }
                                             if *drop_at.peek() != next {
                                                 drop_at.set(next);
                                             }
-                                        },
-                                        ondragend: move |_| {
-                                            dragging.set(None);
-                                            drop_at.set(None);
                                         },
                                         // Muting is the only item a plain member gets and it means
                                         // nothing on a voice channel, so without this the menu
