@@ -94,9 +94,10 @@ console.log('Multiple streams retain independent video, audio, volume and teardo
     ['bob#video', { identity: 'bob#video', trackPublications: new Map([['v', bobVideo]]) }],
   ]) };
   bridge.testSetRoom(room);
+  bridge.setInlineScreens(['alice', 'bob']);
   bridge.setDetachedScreens(['alice']);
   assert.equal(aliceVideo.subscribed, false, 'the main window stops receiving a detached video');
-  assert.equal(bobVideo.subscribed, true, 'other videos remain subscribed');
+  assert.equal(bobVideo.subscribed, true, 'other inline-watched videos stay subscribed');
   assert.equal(aliceCamera.subscribed, null, 'detaching a screen does not interrupt its camera');
   assert.equal(aliceAudio.subscribed, null, 'audio remains in the main window');
   bridge.setDetachedScreens(['alice', 'bob']);
@@ -110,7 +111,11 @@ console.log('Multiple streams retain independent video, audio, volume and teardo
   bridge.setStreamVolume(0.4, 'alice');
   bridge.setStreamVolume(0.8, 'bob');
   bridge.setDetachedScreens([]);
-  assert.equal(aliceVideo.subscribed, true, 'docking restores the original video subscription');
+  assert.equal(aliceVideo.subscribed, true, 'docking restores the inline video subscription');
+  bridge.setInlineScreens([]);
+  assert.equal(aliceVideo.subscribed, false, 'a screen nobody watches stays paused');
+  assert.equal(bobVideo.subscribed, false, 'a screen nobody watches stays paused');
+  bridge.setInlineScreens(['alice', 'bob']);
   bridge.setViewerTargets(['bob']);
   assert.equal(aliceVideo.subscribed, false);
   assert.equal(aliceCamera.subscribed, false, 'the external viewer never subscribes to cameras');
