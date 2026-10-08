@@ -392,6 +392,7 @@ struct Metrics {
     purity_out: f32,
     band_in: f32,
     band_out: f32,
+    in_bytes: u64,
     h2: f32,
     h3: f32,
     applied_db: Option<f32>,
@@ -473,6 +474,20 @@ async fn measure_round_trip(cfg: Config) -> Metrics {
     let window = started.elapsed().saturating_sub(WARMUP).as_secs_f32();
     let applied = feeder.stop().await;
 
+    let in_bytes = listener
+        .get_stats()
+        .await
+        .unwrap()
+        .publisher_stats
+        .iter()
+        .filter_map(|s| match s {
+            livekit::webrtc::stats::RtcStats::InboundRtp(i) if i.stream.kind == "audio" => {
+                Some(i.inbound.bytes_received)
+            }
+            _ => None,
+        })
+        .sum();
+
     let sent = tone_samples(received.len(), cfg.amplitude);
     let (r_in, r_out) = (rms(&sent), rms(&received));
     let m = Metrics {
@@ -486,6 +501,7 @@ async fn measure_round_trip(cfg: Config) -> Metrics {
         purity_out: tone_purity(&received, TONE_HZ),
         band_in: band_energy(&sent, TONE_HZ, 40.0),
         band_out: band_energy(&received, TONE_HZ, 40.0),
+        in_bytes,
         h2: tone_purity(&received, TONE_HZ * 2.0),
         h3: tone_purity(&received, TONE_HZ * 3.0),
         applied_db: applied.mean_db(),
@@ -574,6 +590,69 @@ async fn media_encryption_carries_audio_only_when_the_keys_agree() {
         split.band_out < 0.20,
         "{:.1}% of the received energy was still the tone with mismatched keys",
         split.band_out * 100.0
+    );
+}
+
+/// #244: audio RED used to be synthesized by the SFU, which E2EE turns off, so
+/// an encrypted guild call ran without redundancy while a DM call — and the
+/// same call unencrypted — kept it. The publisher now sends RED itself, and the
+/// SFU forwards it untouched; the encrypted wire must carry the extra bytes.
+#[tokio::test]
+#[ignore = "starts the bundled SFU; verifies RED survives E2EE"]
+async fn audio_red_survives_end_to_end_encryption() {
+    let creds = dioxusfun_server::livekit_bundle::Credentials {
+        key: env_or("LIVEKIT_API_KEY", "devkey"),
+        secret: env_or(
+            "LIVEKIT_API_SECRET",
+            "secret-must-be-at-least-32-chars-long",
+        ),
+    };
+    let data_dir = std::env::temp_dir().join(format!("discordia-red-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&data_dir).unwrap();
+    let _sfu = dioxusfun_server::livekit_bundle::spawn_livekit(
+        Some(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)),
+        &creds,
+        &data_dir,
+    )
+    .await
+    .expect("start the bundled SFU");
+
+    let with_red = measure_round_trip(Config::encrypted(
+        "a-shared-passphrase",
+        "a-shared-passphrase",
+    ))
+    .await;
+    let without = measure_round_trip(Config {
+        red: false,
+        ..Config::encrypted("a-shared-passphrase", "a-shared-passphrase")
+    })
+    .await;
+    report("E2EE with RED", &with_red);
+    report("E2EE without RED", &without);
+
+    assert!(
+        with_red.samples > SAMPLE_RATE as usize && with_red.band_out > 0.80,
+        "the encrypted tone stopped decoding once RED was on: {} samples, band {:.4}",
+        with_red.samples,
+        with_red.band_out
+    );
+    assert!(
+        without.samples > SAMPLE_RATE as usize,
+        "the encrypted tone stopped decoding"
+    );
+    assert!(
+        with_red.in_bytes > without.in_bytes * 3 / 2,
+        "RED added no redundancy on the encrypted wire: {} vs {} inbound bytes",
+        with_red.in_bytes,
+        without.in_bytes
+    );
+
+    let split = measure_round_trip(Config::encrypted("one-passphrase", "another-passphrase")).await;
+    assert!(
+        split.r_out < with_red.r_out * 0.01 && split.band_out < 0.20,
+        "RED leaked the tone across mismatched E2EE keys: {:.4} RMS against {:.4}",
+        split.r_out,
+        with_red.r_out
     );
 }
 

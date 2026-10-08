@@ -1955,6 +1955,24 @@ impl SessionInner {
             .peer_connection()
             .add_transceiver(track.rtc_track(), init)?;
 
+        if track.kind() == TrackKind::Audio && options.red {
+            // Publish audio RED itself so the SFU forwards it even when the
+            // frames are end-to-end encrypted: the server only synthesizes RED
+            // for an opus-only upstream, and E2EE forces that synthesis off.
+            let capabilities = LkRuntime::instance()
+                .pc_factory()
+                .get_rtp_sender_capabilities(MediaType::Audio);
+            let matched = capabilities
+                .codecs
+                .into_iter()
+                .filter(|c| {
+                    let mime = c.mime_type.to_lowercase();
+                    mime == "audio/opus" || mime == "audio/red"
+                })
+                .collect();
+            transceiver.set_codec_preferences(matched)?;
+        }
+
         if track.kind() == TrackKind::Video {
             transceiver
                 .sender()
