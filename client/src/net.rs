@@ -312,6 +312,7 @@ async fn run(
                 {
                     let mut s = state.write();
                     s.transport = transport;
+                    s.gateway_route = None;
                     s.server_origin = Some(origin.clone());
                 }
                 let links = Links {
@@ -324,7 +325,9 @@ async fn run(
                 match socket {
                     Socket::Tcp(ws) => run_session(*ws, params.clone(), origin, state, links).await,
                     Socket::Quic(ws, guard) => {
+                        let route_task = guard.watch_route(state);
                         let outcome = run_session(*ws, params.clone(), origin, state, links).await;
+                        route_task.cancel();
                         if outcome.is_err() {
                             tracing::warn!(close_reason = ?guard.close_reason(), relayed = guard.relayed(), "gateway QUIC session failed");
                         }
@@ -544,6 +547,7 @@ where
     let _dog = SessionWatchdog(watchdog(watch.clone(), "session".into()));
     let mut media_tick = tokio::time::interval(MEDIA_TICK);
     let mut heartbeat = tokio::time::interval(crate::protocol::GATEWAY_HEARTBEAT_INTERVAL);
+    let mut route_tick = tokio::time::interval(std::time::Duration::from_secs(5));
     let mut last_received = tokio::time::Instant::now();
     let ready_deadline = last_received + crate::protocol::GATEWAY_HEARTBEAT_TIMEOUT;
     let mut ready = false;
@@ -551,6 +555,21 @@ where
     loop {
         watch.finish("session");
         tokio::select! {
+            _ = route_tick.tick() => {
+                let report = {
+                    let s = state.peek();
+                    s.server_voice_channel().map(|channel_id| ClientMessage::ConnectionRouteReport {
+                        channel_id,
+                        gateway: s.gateway_route.clone().unwrap_or_else(|| match s.transport {
+                            Transport::Loopback => "local", Transport::Quic => "direct · IP unknown",
+                            Transport::QuicRelayed => "relay", Transport::Proxied => "proxied",
+                        }.into()),
+                        voice_send: s.voice_send_route.as_ref().map(|r| r.label()),
+                        voice_receive: s.voice_receive_route.as_ref().map(|r| r.label()),
+                    })
+                };
+                if let Some(report) = report { let _ = tx.send(report); }
+            }
             _ = shutdown.wait_for(|requested| *requested) => {
                 close_gateway_socket(&mut ws_tx, &mut ws_rx).await;
                 break;
@@ -1441,6 +1460,9 @@ fn apply(
             }
         }
         ServerMessage::VoiceStateUpdate(vs) => {
+            if vs.channel_id.is_none() {
+                s.peer_routes.remove(&vs.user_pubkey);
+            }
             let mut vs = vs;
             let self_pubkey = s.self_user.as_ref().map(|u| u.pubkey.clone());
             let is_self = self_pubkey.as_deref() == Some(vs.user_pubkey.as_str());
@@ -1514,6 +1536,7 @@ fn apply(
         }
         ServerMessage::VoiceToken {
             channel_id,
+            voice_location,
             livekit_url,
             alternate_urls,
             route_revision,
@@ -1540,6 +1563,9 @@ fn apply(
             s.voice.error = None;
             s.voice_endpoint = None;
             s.ice_servers = ice_servers.clone();
+            s.voice_location = voice_location;
+            s.voice_send_route = None;
+            s.voice_receive_route = None;
             let _ = voice_tx.send(VoiceCmd::Connect {
                 livekit_url,
                 alternate_urls,
@@ -1585,6 +1611,24 @@ fn apply(
                 host.voice_bundled = false;
                 host.livekit_url = livekit_url;
                 host.voice_reason = reason;
+            }
+        }
+        ServerMessage::ConnectionRouteUpdate {
+            channel_id,
+            user_pubkey,
+            gateway,
+            voice_send,
+            voice_receive,
+        } => {
+            if s.server_voice_channel() == Some(channel_id) {
+                s.peer_routes.insert(
+                    user_pubkey,
+                    crate::state::PeerRoutes {
+                        gateway,
+                        sent: voice_send,
+                        received: voice_receive,
+                    },
+                );
             }
         }
         ServerMessage::Error { message } => {
@@ -1640,6 +1684,7 @@ mod tests {
                 );
                 let token = |revision| ServerMessage::VoiceToken {
                     channel_id: channel,
+                    voice_location: Some("host".into()),
                     livekit_url: "ws://primary".into(),
                     alternate_urls: Vec::new(),
                     route_revision: revision,

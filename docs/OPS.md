@@ -159,6 +159,13 @@ reports cannot select it; after remote local success, a later failure cannot
 move existing calls. Without a shared offer, local failures remain errors.
 The banner tooltip reports the attempted route or fallback reason.
 
+The workspace shows separate Server and Voice indicators on hosts and guests.
+Server follows the selected QUIC path, including relay-to-direct changes.
+Voice uses selected WebRTC candidate-pair stats for send/receive, independently
+of the signaling URL; missing stats remain unknown. Click Voice for local
+endpoints and route reports from current callers, refreshed every five seconds.
+Only route labels are shared, only within that channel; reports are client telemetry.
+
 ## Deploying a box
 
 CI builds the two images on every push to `master` (`deploy-images` in
