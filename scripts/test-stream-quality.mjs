@@ -186,7 +186,7 @@ test('quality reports must belong to the sending participant and preserve the wa
   assert.equal(reports.get('screen').at, now);
 });
 
-test('hidden viewers pause video while detached streams and disabled self preview remain excluded', () => {
+test('hidden viewers pause video while only inline-watched screens subscribe', () => {
   const subscribed = new Map();
   const participant = (identity, source) => ({ identity,
     trackPublications: new Map([[identity, { kind: 'video', source,
@@ -204,13 +204,19 @@ test('hidden viewers pause video while detached streams and disabled self previe
   const end = bridge.indexOf('  let nativeStreamAudio', start);
   vm.runInContext(bridge.slice(start, end), visibilityContext);
   visibilityContext.setDetachedScreens(['detached']);
+  visibilityContext.setInlineScreens(['other']);
   visibilityContext.setViewerVisibility(false);
   assert([...subscribed.values()].every((value) => !value));
   visibilityContext.setViewerVisibility(true);
-  assert.equal(subscribed.get('other'), true);
+  assert.equal(subscribed.get('other'), true, 'an inline-watched screen subscribes');
   assert.equal(subscribed.get('camera'), true);
-  assert.equal(subscribed.get('detached'), false);
-  assert.equal(subscribed.get('self'), false);
+  assert.equal(subscribed.get('detached'), false, 'the detached viewer owns that screen');
+  assert.ok(!subscribed.get('self'), 'the self preview is not the plain subscription');
+
+  subscribed.clear();
+  visibilityContext.setInlineScreens([]);
+  assert.equal(subscribed.get('other'), false, 'a screen nobody watches stays paused');
+
   visibilityContext.setViewerTargets(['other']);
   assert.equal(subscribed.get('camera'), false);
   visibilityContext.setViewerTargets(null);

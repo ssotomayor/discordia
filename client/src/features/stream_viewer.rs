@@ -126,13 +126,25 @@ pub(super) fn use_popouts(mut state: Signal<AppState>) -> Popouts {
     use_effect(move || {
         let next = snapshot();
         sender.send_replace(next.clone());
-        let identities: Vec<_> = next
+        let detached: Vec<String> = next
             .as_ref()
-            .map(|s| s.streams.iter().map(|v| &v.pubkey).collect())
+            .map(|s| s.streams.iter().map(|v| v.pubkey.clone()).collect())
             .unwrap_or_default();
-        let identities = serde_json::to_string(&identities).unwrap_or_else(|_| "[]".into());
+        let inline = {
+            let s = state.read();
+            let mut inline: Vec<String> = s
+                .screen_viewing
+                .iter()
+                .filter(|pk| !detached.contains(*pk))
+                .cloned()
+                .collect();
+            inline.sort();
+            inline
+        };
         evaluate(&format!(
-            "window.dxScreen.setDetachedScreens({identities});"
+            "window.dxScreen.setDetachedScreens({});window.dxScreen.setInlineScreens({});",
+            serde_json::to_string(&detached).unwrap_or_else(|_| "[]".into()),
+            serde_json::to_string(&inline).unwrap_or_else(|_| "[]".into()),
         ));
         if next.is_none() {
             close_popout(&handle_for_open);

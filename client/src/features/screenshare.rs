@@ -83,36 +83,46 @@ window.dxScreen = window.dxScreen || (function () {
   let viewerTargets = null;
   let viewerVisible = true;
   let detachedScreens = [];
-  function applyViewerSubscription(pub, participant) {
+  // The main window's inline tiles: screens it shows are subscribed, the rest
+  // are left paused so a share nobody is watching is not decoded.
+  let inlineScreens = [];
+  function applyViewerSubscription(pub, participant, restoreVideos) {
     if (!pub || !participant || pub.kind !== 'video') return;
     const identity = baseIdentity(participant.identity);
     const kind = kindOf(pub, pub.track);
-    if (viewerTargets === null && (kind !== 'screen' || !detachedScreens.includes(identity))) {
-      if (!viewerVisible) pub.setSubscribed(false);
-      return;
-    }
-    const enabled = viewerVisible && (viewerTargets === null
-      ? !detachedScreens.includes(identity)
-      : kind === 'screen' && viewerTargets.includes(identity));
-    try { pub.setSubscribed(enabled); } catch (e) { console.warn('[dxScreen] viewer subscribe toggle failed', e); }
+    try {
+      if (viewerTargets !== null) {
+        // The detached viewer subscribes only the screens its tiles show.
+        pub.setSubscribed(viewerVisible && kind === 'screen' && viewerTargets.includes(identity));
+        return;
+      }
+      if (kind !== 'screen') {
+        // A camera follows the window's visibility, and only a visibility or
+        // target change re-evaluates it — docking a screen must not.
+        if (restoreVideos) pub.setSubscribed(viewerVisible);
+        else if (!viewerVisible) pub.setSubscribed(false);
+        return;
+      }
+      if (identity === selfPreviewIdentity) return; // decided by setSelfPreview
+      if (detachedScreens.includes(identity)) {
+        pub.setSubscribed(false); // the detached viewer owns it
+        return;
+      }
+      pub.setSubscribed(viewerVisible && inlineScreens.includes(identity));
+    } catch (e) { console.warn('[dxScreen] viewer subscribe toggle failed', e); }
   }
   function refreshViewerSubscriptions(restoreVideos) {
     if (!room || !room.remoteParticipants) return;
     room.remoteParticipants.forEach(function (p) {
       p.trackPublications.forEach(function (pub) {
         if (pub.kind !== 'video') return;
-        if (viewerTargets === null) {
-          const identity = baseIdentity(p.identity);
-          const screen = kindOf(pub, pub.track) === 'screen';
-          if (!screen && viewerVisible && !restoreVideos) return;
-          const enabled = viewerVisible && (!screen || (!detachedScreens.includes(identity) && (identity !== selfPreviewIdentity || selfPreviewEnabled)));
-          try { pub.setSubscribed(enabled); } catch (e) {}
-        } else applyViewerSubscription(pub, p);
+        applyViewerSubscription(pub, p, restoreVideos);
         applySelfPreviewSubscription(pub, p);
       });
     });
   }
   function setViewerTargets(identities) { viewerTargets = identities; refreshViewerSubscriptions(true); }
+  function setInlineScreens(identities) { inlineScreens = identities; refreshViewerSubscriptions(); }
   function setDetachedScreens(identities) { detachedScreens = identities; refreshViewerSubscriptions(); }
   function setViewerVisibility(visible) {
     if (viewerVisible === visible) return;
@@ -1107,7 +1117,7 @@ window.dxScreen = window.dxScreen || (function () {
     e2eeProvider = null;
   }
   if (window.__dxfScreenStatsEnabled) setStatsEnabled(true);
-  return { connect: connect, setViewerVisibility: setViewerVisibility, setViewerTargets: setViewerTargets, setDetachedScreens: setDetachedScreens, setSelfPreview: setSelfPreview, attach: attach, detach: detach, previewStats: previewStats, requestAndStartShare: requestAndStartShare, stopShare: stopShare, disconnect: disconnect, setStreamVolume: setStreamVolume, setSink: setSink, setNativeStreamAudio: setNativeStreamAudio, setStatsEnabled: setStatsEnabled, startCamera: startCamera, stopCamera: stopCamera, listCameras: listCameras, attachLocalCamera: attachLocalCamera, setE2eeKey: setE2eeKey };
+  return { connect: connect, setViewerVisibility: setViewerVisibility, setViewerTargets: setViewerTargets, setInlineScreens: setInlineScreens, setDetachedScreens: setDetachedScreens, setSelfPreview: setSelfPreview, attach: attach, detach: detach, previewStats: previewStats, requestAndStartShare: requestAndStartShare, stopShare: stopShare, disconnect: disconnect, setStreamVolume: setStreamVolume, setSink: setSink, setNativeStreamAudio: setNativeStreamAudio, setStatsEnabled: setStatsEnabled, startCamera: startCamera, stopCamera: stopCamera, listCameras: listCameras, attachLocalCamera: attachLocalCamera, setE2eeKey: setE2eeKey };
 })();
 "#;
 
