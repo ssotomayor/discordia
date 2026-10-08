@@ -4,7 +4,7 @@ use std::time::Duration;
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
-use crate::protocol::rendezvous::{HostToRendezvous, RendezvousToHost};
+use crate::protocol::rendezvous::{HostToRendezvous, RendezvousToHost, TurnCredentials};
 
 /// A token request beyond this has failed; the server bounds the join too,
 /// but a request left running would pile up behind a dead rendezvous.
@@ -18,6 +18,9 @@ pub struct PublishInfo {
     pub shortcode: String,
     pub livekit_url: Option<String>,
     pub voice_token_grant: Option<String>,
+    /// The rendezvous's TURN relay, for friends who cannot reach this
+    /// machine's SFU. Absent from a rendezvous that runs none.
+    pub turn: Option<TurnCredentials>,
     pub rendezvous_base: String,
 }
 
@@ -304,12 +307,14 @@ pub async fn register(
                 shortcode,
                 livekit_url,
                 voice_token_grant,
+                turn,
                 ..
             } => {
                 let info = PublishInfo {
                     shortcode,
                     livekit_url,
                     voice_token_grant,
+                    turn,
                     rendezvous_base: base.clone(),
                 };
                 return Ok((info, ControlStream { ws }));
@@ -319,7 +324,7 @@ pub async fn register(
                 eprintln!("[rendezvous] unexpected release confirmation for '{name}'");
                 continue;
             }
-            RendezvousToHost::Challenge { .. } => continue,
+            RendezvousToHost::Challenge { .. } | RendezvousToHost::Turn(_) => continue,
         }
     }
 }
@@ -344,19 +349,78 @@ pub struct Registration {
     pub identity: crate::identity::Identity,
 }
 
-/// Answers the rendezvous's pings, and when the stream ends registers again
-/// with backoff: its memory is all that holds the listing, the pin and the voice grant.
+/// Where renewed relay credentials go: the embedded gateway reads this on
+/// every voice join, so a swap here reaches the next friend who joins.
+pub type IceServersSink = dioxusfun_server::livekit::SharedIceServers;
+
+pub fn apply_turn(sink: &IceServersSink, creds: &TurnCredentials) {
+    *sink.write().unwrap_or_else(|e| e.into_inner()) = creds.ice_servers();
+}
+
+/// Halfway to expiry: early enough to survive a retry, late enough that a
+/// host renews a handful of times a day.
+pub fn renew_at(creds: &TurnCredentials, now_unix: u64) -> Duration {
+    Duration::from_secs(creds.expires_unix.saturating_sub(now_unix) / 2)
+}
+
+fn now_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or_default()
+}
+
+/// Answers the rendezvous's pings, renews the relay credentials before they
+/// expire, and when the stream ends registers again with backoff: its memory
+/// is all that holds the listing, the pin and the voice grant.
 pub fn maintain(
     mut stream: ControlStream,
     registration: Registration,
     minter: Option<Arc<RendezvousMinter>>,
+    ice: Option<(IceServersSink, TurnCredentials)>,
     updates: tokio::sync::mpsc::UnboundedSender<HostUpdate>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
+        let (ice_sink, mut turn) = match ice {
+            Some((sink, creds)) => (Some(sink), Some(creds)),
+            None => (None, None),
+        };
         loop {
-            while let Some(Ok(frame)) = stream.ws.next().await {
-                if matches!(frame, WsMessage::Close(_)) {
-                    break;
+            let mut renewal = turn
+                .as_ref()
+                .map(|creds| Box::pin(tokio::time::sleep(renew_at(creds, now_unix()))));
+            loop {
+                let frame = tokio::select! {
+                    frame = stream.ws.next() => frame,
+                    _ = async {
+                        match renewal.as_mut() {
+                            Some(sleep) => sleep.await,
+                            None => std::future::pending().await,
+                        }
+                    } => {
+                        renewal = None;
+                        let renew = serde_json::to_string(&HostToRendezvous::RenewTurn {})
+                            .unwrap_or_default();
+                        if stream.ws.send(WsMessage::Text(renew)).await.is_err() {
+                            break;
+                        }
+                        continue;
+                    }
+                };
+                match frame {
+                    Some(Ok(WsMessage::Text(text))) => {
+                        if let Ok(RendezvousToHost::Turn(creds)) =
+                            serde_json::from_str::<RendezvousToHost>(&text)
+                        {
+                            if let Some(sink) = &ice_sink {
+                                apply_turn(sink, &creds);
+                            }
+                            renewal =
+                                Some(Box::pin(tokio::time::sleep(renew_at(&creds, now_unix()))));
+                        }
+                    }
+                    Some(Ok(WsMessage::Close(_))) | Some(Err(_)) | None => break,
+                    Some(Ok(_)) => {}
                 }
             }
             eprintln!("[rendezvous] control stream ended — registering again");
@@ -381,6 +445,10 @@ pub fn maintain(
                         if let (Some(m), Some(grant)) = (&minter, info.voice_token_grant) {
                             m.set_grant(grant);
                         }
+                        if let (Some(sink), Some(creds)) = (&ice_sink, &info.turn) {
+                            apply_turn(sink, creds);
+                        }
+                        turn = info.turn;
                         eprintln!("[rendezvous] registered again as {}", info.shortcode);
                         tracing::info!(shortcode = %info.shortcode, attempt, "rendezvous registration restored");
                         let _ = updates.send(HostUpdate::RendezvousRestored {

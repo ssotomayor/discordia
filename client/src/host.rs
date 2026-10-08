@@ -2,7 +2,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use dioxusfun_server::ServerHandle;
 use dioxusfun_server::livekit::LiveKitConfig;
-use dioxusfun_server::livekit_bundle::{self, LivekitSubprocess};
+use dioxusfun_server::livekit_bundle::{self, Advertise, LivekitSubprocess};
 
 use crate::portmap;
 
@@ -47,13 +47,27 @@ pub enum SfuPlan {
 }
 
 /// This machine pays for its own calls whenever friends can reach its media
-/// ports; the rendezvous's SFU is for the host nobody outside can reach.
-pub fn sfu_plan(reachability: &Reachability, shared_offer: Option<&str>) -> SfuPlan {
-    match (reachability, shared_offer) {
-        (_, None) => SfuPlan::Bundled,
-        (Reachability::Direct { media: true, .. }, Some(_)) => SfuPlan::Bundled,
-        (_, Some(url)) => SfuPlan::Shared(url.to_string()),
+/// ports, directly or through a TURN relay the rendezvous offers; the
+/// rendezvous's SFU is for the host nobody outside can reach any other way.
+pub fn sfu_plan(reachability: &Reachability, shared_offer: Option<&str>, relay: bool) -> SfuPlan {
+    match (reachability, shared_offer, relay) {
+        (_, None, _) => SfuPlan::Bundled,
+        (Reachability::Direct { media: true, .. }, Some(_), _) => SfuPlan::Bundled,
+        (_, Some(_), true) => SfuPlan::Bundled,
+        (_, Some(url), false) => SfuPlan::Shared(url.to_string()),
     }
+}
+
+/// `turn:host:port?transport=udp` → `host:port`: a TURN server answers STUN
+/// too, so the relay doubles as the SFU's address discovery.
+pub fn stun_target(turn_urls: &[String]) -> Option<String> {
+    turn_urls.iter().find_map(|url| {
+        let rest = url
+            .strip_prefix("turn:")
+            .or_else(|| url.strip_prefix("stun:"))?;
+        let rest = rest.split('?').next()?;
+        (!rest.is_empty()).then(|| rest.to_string())
+    })
 }
 
 pub struct HostHandle {
@@ -339,7 +353,19 @@ pub async fn start_self_host(
     let shared_offer = rendezvous_state
         .as_ref()
         .and_then(|(_, info)| info.livekit_url.clone());
-    let plan = sfu_plan(&reachability, shared_offer.as_deref());
+    let turn = rendezvous_state
+        .as_ref()
+        .and_then(|(_, info)| info.turn.clone())
+        .filter(|_| open_to_others);
+    let plan = sfu_plan(&reachability, shared_offer.as_deref(), turn.is_some());
+    let advertise = match (
+        advertise_ip,
+        turn.as_ref().and_then(|t| stun_target(&t.urls)),
+    ) {
+        (Some(ip), _) => Advertise::Mapped(ip),
+        (None, Some(stun)) => Advertise::Stun(stun),
+        (None, None) => Advertise::Local,
+    };
     let mut voice_reason = if !voice_hosts.is_empty() {
         format!(
             "Calls run on this machine. Clients try these addresses and verify the media connection: {}. IPv6 needs inbound firewall access and IPv6 at the caller.",
@@ -371,11 +397,16 @@ pub async fn start_self_host(
             (None, Some(url.clone()))
         }
         SfuPlan::Bundled => {
-            match livekit_bundle::spawn_livekit(advertise_ip, &creds, &data_dir).await {
+            match livekit_bundle::spawn_livekit(advertise.clone(), &creds, &data_dir).await {
                 Ok(child) => {
                     eprintln!(
-                        "[host] livekit ready at ws://127.0.0.1:{} — this machine carries the calls",
-                        livekit_bundle::ports().ws
+                        "[host] livekit ready at ws://127.0.0.1:{} — this machine carries the calls{}",
+                        livekit_bundle::ports().ws,
+                        if matches!(advertise, Advertise::Stun(_)) {
+                            ", friends behind NAT relayed by the rendezvous"
+                        } else {
+                            ""
+                        }
                     );
                     (Some(child), None)
                 }
@@ -401,7 +432,25 @@ pub async fn start_self_host(
         }
     };
     let voice_bundled = livekit.is_some();
+    let voice_relayed = voice_bundled && matches!(advertise, Advertise::Stun(_));
+    if voice_relayed {
+        voice_reason.push_str(
+            " Friends who cannot reach this machine's voice ports are relayed by the rendezvous's TURN, which forwards only their encrypted packets.",
+        );
+    }
     let shared_sfu_url = explicit_url.clone();
+    // Only a bundled SFU behind NAT needs the relay; the rendezvous's own SFU
+    // is public, and a mapped one is reached directly.
+    let relay_ice = voice_relayed
+        .then(|| turn.clone())
+        .flatten()
+        .map(|creds| (creds.ice_servers(), creds));
+    let ice_servers = dioxusfun_server::livekit::shared_ice_servers(
+        relay_ice
+            .as_ref()
+            .map(|(servers, _)| servers.clone())
+            .unwrap_or_default(),
+    );
 
     let rendezvous_minter = match rendezvous_state.as_ref() {
         Some((_, info)) => info.voice_token_grant.as_ref().map(|grant| {
@@ -435,6 +484,7 @@ pub async fn start_self_host(
         lan_host: local_ip_address::local_ip().ok().map(|ip| ip.to_string()),
         public_host: advertise_ip.map(|ip| ip.to_string()),
         alternate_hosts: voice_hosts,
+        ice_servers: ice_servers.clone(),
     };
 
     // Every way a friend can reach this gateway, because a login signed for
@@ -488,6 +538,7 @@ pub async fn start_self_host(
                     control,
                     registration,
                     rendezvous_minter,
+                    relay_ice.map(|(_, creds)| (ice_servers, creds)),
                     updates_tx,
                 )),
             )
@@ -663,15 +714,40 @@ mod sfu_tests {
             media: true,
             note: None,
         };
-        assert_eq!(sfu_plan(&direct, Some("ws://shared")), SfuPlan::Bundled);
         assert_eq!(
-            sfu_plan(&Reachability::LoopbackOnly, None),
+            sfu_plan(&direct, Some("ws://shared"), false),
+            SfuPlan::Bundled
+        );
+        assert_eq!(
+            sfu_plan(&Reachability::LoopbackOnly, None, false),
             SfuPlan::Bundled
         );
         let lan = Reachability::LanOnly {
             reason: "no mapping".into(),
         };
-        assert_eq!(sfu_plan(&lan, None), SfuPlan::Bundled);
+        assert_eq!(sfu_plan(&lan, None, false), SfuPlan::Bundled);
+    }
+
+    #[test]
+    fn a_relay_keeps_the_calls_on_this_machine_without_a_port_map() {
+        let lan = Reachability::LanOnly {
+            reason: "no mapping".into(),
+        };
+        assert_eq!(sfu_plan(&lan, Some("ws://shared"), true), SfuPlan::Bundled);
+        let chat_only = Reachability::Direct {
+            method: "UPnP",
+            media: false,
+            note: None,
+        };
+        assert_eq!(
+            sfu_plan(&chat_only, Some("ws://shared"), true),
+            SfuPlan::Bundled
+        );
+        assert_eq!(
+            stun_target(&["turn:relay.example:7702?transport=udp".into()]),
+            Some("relay.example:7702".into())
+        );
+        assert_eq!(stun_target(&["wss://not-a-relay".into()]), None);
     }
 
     #[test]
@@ -680,15 +756,15 @@ mod sfu_tests {
         let lan = Reachability::LanOnly {
             reason: "no mapping".into(),
         };
-        assert_eq!(sfu_plan(&lan, Some("ws://shared")), shared);
+        assert_eq!(sfu_plan(&lan, Some("ws://shared"), false), shared);
         let chat_only = Reachability::Direct {
             method: "UPnP",
             media: false,
             note: None,
         };
-        assert_eq!(sfu_plan(&chat_only, Some("ws://shared")), shared);
+        assert_eq!(sfu_plan(&chat_only, Some("ws://shared"), false), shared);
         assert_eq!(
-            sfu_plan(&Reachability::LoopbackOnly, Some("ws://shared")),
+            sfu_plan(&Reachability::LoopbackOnly, Some("ws://shared"), false),
             shared
         );
     }

@@ -1847,6 +1847,18 @@ pub enum ClientMessage {
     },
 }
 
+/// A STUN or TURN server a client hands its ICE agent, in the shape
+/// `RTCIceServer` takes. A host behind NAT gets one from the rendezvous so
+/// friends reach its SFU through the relay; the relay sees only ciphertext.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Default)]
+pub struct IceServer {
+    pub urls: Vec<String>,
+    #[serde(default)]
+    pub username: String,
+    #[serde(default)]
+    pub credential: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", content = "d", rename_all = "snake_case")]
 pub enum ServerMessage {
@@ -2018,6 +2030,8 @@ pub enum ServerMessage {
         #[serde(default)]
         route_revision: u32,
         token: String,
+        #[serde(default)]
+        ice_servers: Vec<IceServer>,
     },
     VoiceRouteChanged {
         livekit_url: String,
@@ -2035,6 +2049,8 @@ pub enum ServerMessage {
         video_token: String,
         #[serde(default)]
         viewer_token: String,
+        #[serde(default)]
+        ice_servers: Vec<IceServer>,
     },
     Error {
         message: String,
@@ -2063,6 +2079,18 @@ mod identify_wire_tests {
         });
         let state: super::VoiceState = serde_json::from_value(old).unwrap();
         assert!(state.screen_watching.is_empty());
+    }
+
+    #[test]
+    fn older_voice_grants_without_ice_servers_still_parse() {
+        let old = serde_json::json!({
+            "op": "voice_token",
+            "d": { "channel_id": "00000000-0000-0000-0000-000000000001", "livekit_url": "wss://sfu", "token": "main" }
+        });
+        let grant: super::ServerMessage = serde_json::from_value(old).expect("legacy grant parses");
+        assert!(
+            matches!(grant, super::ServerMessage::VoiceToken { ice_servers, .. } if ice_servers.is_empty())
+        );
     }
 
     #[test]

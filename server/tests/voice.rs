@@ -56,6 +56,7 @@ async fn shared_voice_token(user: &mut Bot, channel: Id) {
             token,
             alternate_urls,
             route_revision,
+            ..
         } = next_timeout(user).await
         {
             assert_eq!(channel_id, channel);
@@ -199,6 +200,7 @@ fn local_signing() -> LiveKitConfig {
         api_key: API_KEY.into(),
         api_secret: API_SECRET.into(),
         minter: None,
+        ice_servers: Default::default(),
     }
 }
 
@@ -253,6 +255,7 @@ fn stalling() -> (LiveKitConfig, tokio::sync::watch::Sender<bool>) {
     let (tx, rx) = tokio::sync::watch::channel(false);
     let cfg = LiveKitConfig {
         minter: Some(Arc::new(StallingMinter { released: rx })),
+        ice_servers: Default::default(),
         ..local_signing()
     };
     (cfg, tx)
@@ -409,6 +412,41 @@ fn has_voice_token(frames: &[ServerMessage]) -> bool {
     frames
         .iter()
         .any(|m| matches!(m, ServerMessage::VoiceToken { .. }))
+}
+
+#[tokio::test]
+async fn ice_servers_ride_with_both_grants() {
+    let ice = vec![dioxusfun_server::protocol::IceServer {
+        urls: vec!["turn:relay.example:7702".into()],
+        username: "1700000000".into(),
+        credential: "hmac".into(),
+    }];
+    let cfg = LiveKitConfig {
+        ice_servers: dioxusfun_server::livekit::shared_ice_servers(ice.clone()),
+        ..local_signing()
+    };
+    let (url, _handle) = spawn_gateway(cfg).await;
+    let id = BotIdentity::generate();
+    let mut user = connect_user(&url, &id, "relayed").await;
+    let (guild_id, _) = text_channel_of(&mut user).await;
+    let voice = create_voice_channel(&mut user, guild_id).await;
+    user.send(&ClientMessage::JoinVoice {
+        channel_id: voice,
+        preferences: None,
+    })
+    .await
+    .unwrap();
+    let frames = drain_quiet(&mut user).await;
+    let on_voice = frames.iter().find_map(|m| match m {
+        ServerMessage::VoiceToken { ice_servers, .. } => Some(ice_servers.clone()),
+        _ => None,
+    });
+    let on_screen = frames.iter().find_map(|m| match m {
+        ServerMessage::ScreenToken { ice_servers, .. } => Some(ice_servers.clone()),
+        _ => None,
+    });
+    assert_eq!(on_voice.as_deref(), Some(ice.as_slice()), "{frames:?}");
+    assert_eq!(on_screen.as_deref(), Some(ice.as_slice()), "{frames:?}");
 }
 
 #[tokio::test]
@@ -1074,6 +1112,7 @@ async fn a_delegated_mint_is_told_which_connection_may_publish() {
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
     let cfg = LiveKitConfig {
         minter: Some(Arc::new(RecordingMinter { seen: seen.clone() })),
+        ice_servers: Default::default(),
         ..local_signing()
     };
     let (url, _handle) = spawn_gateway(cfg).await;

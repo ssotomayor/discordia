@@ -140,9 +140,13 @@ mod tests {
         let dir =
             std::env::temp_dir().join(format!("discordia-camera-test-{}", uuid::Uuid::new_v4()));
         let credentials = Credentials::generate();
-        let sfu = spawn_livekit(Some("127.0.0.1".parse().unwrap()), &credentials, &dir)
-            .await
-            .unwrap();
+        let sfu = spawn_livekit(
+            dioxusfun_server::livekit_bundle::Advertise::Mapped("127.0.0.1".parse().unwrap()),
+            &credentials,
+            &dir,
+        )
+        .await
+        .unwrap();
         let name = format!("screen-{}", uuid::Uuid::new_v4());
         let token = |identity| {
             AccessToken::with_api_key(&credentials.key, &credentials.secret)

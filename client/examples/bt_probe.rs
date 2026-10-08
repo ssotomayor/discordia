@@ -156,9 +156,13 @@ async fn start_livekit() -> (
     let data_dir = std::env::temp_dir().join(format!("bt-probe-{}", std::process::id()));
     std::fs::create_dir_all(&data_dir).expect("temp dir");
     eprintln!("starting the bundled livekit-server on loopback…");
-    let child = spawn_livekit(None, &creds, &data_dir)
-        .await
-        .unwrap_or_else(|e| panic!("livekit: {e} (built with LIVEKIT_BUNDLE_SKIP?)"));
+    let child = spawn_livekit(
+        dioxusfun_server::livekit_bundle::Advertise::Local,
+        &creds,
+        &data_dir,
+    )
+    .await
+    .unwrap_or_else(|e| panic!("livekit: {e} (built with LIVEKIT_BUNDLE_SKIP?)"));
     let url = format!("ws://127.0.0.1:{}", ports().ws);
     (url, creds, child)
 }

@@ -110,6 +110,7 @@ pub(super) fn use_popouts(mut state: Signal<AppState>) -> Popouts {
                 url: url.clone(),
                 token: token.clone(),
                 voice_epoch: s.voice_session_epoch,
+                ice_servers: s.ice_servers.clone(),
             },
             key: crate::e2ee::current_key(),
             encrypted: crate::e2ee::enabled(),
@@ -386,8 +387,9 @@ fn PopoutWindow(props: PopoutWindowProps) -> Element {
                         active_generation.set(generation);
                         let Some(s) = model.peek().clone() else { return; };
                         let ids: Vec<_> = s.streams.iter().map(|v| &v.pubkey).collect();
-                        format!("window.dxScreen.setNativeStreamAudio(true);window.dxScreen.setViewerTargets({});window.dxScreen.connect({},{},{},{},{});",
-                            json(&ids), json(&target.url), json(&target.token), json(&s.key), s.encrypted, generation)
+                        format!("window.dxScreen.setNativeStreamAudio(true);window.dxScreen.setViewerTargets({});window.dxScreen.connect({},{},{},{},{},{});",
+                            json(&ids), json(&target.url), json(&target.token), json(&s.key), s.encrypted, generation,
+                            super::screenshare::ice_servers_js(&target.ice_servers))
                     }
                     super::video_lifecycle::Action::Disconnect => "window.dxScreen.disconnect();".into(),
                 };

@@ -14,5 +14,5 @@ COPY --from=builder /src/target/release/dioxusfun-rendezvous /usr/local/bin/disc
 ENV DIOXUSFUN_RENDEZVOUS_ADDR=0.0.0.0:7700 \
     DIOXUSFUN_RENDEZVOUS_DATA_DIR=/data
 VOLUME /data
-EXPOSE 7700
+EXPOSE 7700 7701 7702/udp 7710-7809/udp
 ENTRYPOINT ["discordia-rendezvous"]

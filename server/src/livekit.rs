@@ -3,7 +3,7 @@ use std::path::Path;
 use livekit_api::access_token::{AccessToken, VideoGrants};
 
 use crate::livekit_bundle;
-use crate::protocol::Id;
+use crate::protocol::{IceServer, Id};
 
 #[derive(Debug, Clone)]
 pub struct MintRequest {
@@ -75,11 +75,34 @@ pub struct LiveKitConfig {
     pub api_key: String,
     pub api_secret: String,
     pub minter: Option<std::sync::Arc<dyn VoiceTokenMinter>>,
+    /// Handed to every client with its voice tokens. Shared because a
+    /// self-host swaps in renewed relay credentials while the gateway runs.
+    pub ice_servers: SharedIceServers,
+}
+
+pub type SharedIceServers = std::sync::Arc<std::sync::RwLock<Vec<IceServer>>>;
+
+pub fn shared_ice_servers(servers: Vec<IceServer>) -> SharedIceServers {
+    std::sync::Arc::new(std::sync::RwLock::new(servers))
 }
 
 impl LiveKitConfig {
+    pub fn ice_servers(&self) -> Vec<IceServer> {
+        self.ice_servers
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
     pub fn from_env(data_dir: &Path) -> Self {
         let env = |name| std::env::var(name).ok().filter(|v| !v.trim().is_empty());
+        let ice_servers = env("DIOXUSFUN_ICE_SERVERS")
+            .map(|json| {
+                serde_json::from_str::<Vec<IceServer>>(&json).unwrap_or_else(|e| {
+                    panic!("DIOXUSFUN_ICE_SERVERS is not a JSON list of ICE servers: {e}")
+                })
+            })
+            .unwrap_or_default();
         let (api_key, api_secret) = match (env("LIVEKIT_API_KEY"), env("LIVEKIT_API_SECRET")) {
             (Some(key), Some(secret)) => (key, secret),
             _ => {
@@ -100,6 +123,7 @@ impl LiveKitConfig {
             public_host: None,
             alternate_hosts: Vec::new(),
             fallback: None,
+            ice_servers: shared_ice_servers(ice_servers),
         }
     }
 
@@ -369,6 +393,7 @@ mod tests {
             port: 7880,
             lan_host: Some("192.168.0.16".into()),
             public_host: Some("203.0.113.5".into()),
+            ice_servers: Default::default(),
             alternate_hosts: vec![
                 "203.0.113.5".parse().unwrap(),
                 "2800:810::123".parse().unwrap(),
@@ -444,6 +469,7 @@ mod tests {
             api_key: "devkey".into(),
             api_secret: "secret-long-enough-for-hs256-signing".into(),
             minter: None,
+            ice_servers: Default::default(),
             lan_host: None,
             public_host: None,
             alternate_hosts: Vec::new(),
@@ -498,6 +524,7 @@ mod tests {
             api_key: "".into(),
             api_secret: "".into(),
             minter: None,
+            ice_servers: Default::default(),
             lan_host: None,
             public_host: None,
             alternate_hosts: Vec::new(),
@@ -517,6 +544,7 @@ mod tests {
             api_key: "".into(),
             api_secret: "".into(),
             minter: None,
+            ice_servers: Default::default(),
             lan_host: None,
             public_host: None,
             alternate_hosts: Vec::new(),
@@ -537,6 +565,7 @@ mod tests {
             api_key: "".into(),
             api_secret: "".into(),
             minter: None,
+            ice_servers: Default::default(),
             lan_host: Some("192.168.0.61".into()),
             public_host: None,
             alternate_hosts: Vec::new(),
@@ -559,6 +588,7 @@ mod tests {
             api_key: "".into(),
             api_secret: "".into(),
             minter: None,
+            ice_servers: Default::default(),
             lan_host: Some("192.168.0.61".into()),
             public_host: Some("203.0.113.5".into()),
             alternate_hosts: Vec::new(),
@@ -582,6 +612,7 @@ mod tests {
             api_key: "".into(),
             api_secret: "".into(),
             minter: None,
+            ice_servers: Default::default(),
             lan_host: Some("192.168.0.61".into()),
             public_host: Some("203.0.113.5".into()),
             alternate_hosts: Vec::new(),

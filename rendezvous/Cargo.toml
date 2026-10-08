@@ -23,6 +23,8 @@ futures-util = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 uuid = { workspace = true }
+turn = "0.17"
+util = { package = "webrtc-util", version = "0.17", default-features = false, features = ["conn", "vnet"] }
 
 [dev-dependencies]
 tokio-tungstenite = { workspace = true }

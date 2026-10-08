@@ -23,9 +23,13 @@ async fn alternate_ipv6_endpoint_delivers_audio_without_rendezvous() {
 
     let creds = dioxusfun_server::livekit_bundle::Credentials::generate();
     let data_dir = std::env::temp_dir().join(format!("discordia-direct-{}", uuid::Uuid::new_v4()));
-    let _sfu = dioxusfun_server::livekit_bundle::spawn_livekit(None, &creds, &data_dir)
-        .await
-        .unwrap();
+    let _sfu = dioxusfun_server::livekit_bundle::spawn_livekit(
+        dioxusfun_server::livekit_bundle::Advertise::Local,
+        &creds,
+        &data_dir,
+    )
+    .await
+    .unwrap();
     let port = dioxusfun_server::livekit_bundle::ports().ws;
     let room_name = format!("direct-{}", uuid::Uuid::new_v4());
     let mint = |identity: &str| {
@@ -710,7 +714,9 @@ async fn audio_red_survives_end_to_end_encryption() {
     let data_dir = std::env::temp_dir().join(format!("discordia-red-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&data_dir).unwrap();
     let _sfu = dioxusfun_server::livekit_bundle::spawn_livekit(
-        Some(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)),
+        dioxusfun_server::livekit_bundle::Advertise::Mapped(std::net::IpAddr::V4(
+            std::net::Ipv4Addr::LOCALHOST,
+        )),
         &creds,
         &data_dir,
     )
@@ -956,6 +962,7 @@ async fn the_server_evicts_every_seat_a_person_holds_in_a_call() {
             "secret-must-be-at-least-32-chars-long",
         ),
         minter: None,
+        ice_servers: Default::default(),
     };
     dioxusfun_server::livekit::evict(&cfg, channel, &who).await;
 

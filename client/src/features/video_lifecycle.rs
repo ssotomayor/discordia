@@ -11,6 +11,7 @@ pub(super) struct Target {
     pub url: String,
     pub token: String,
     pub voice_epoch: u64,
+    pub ice_servers: Vec<crate::protocol::IceServer>,
 }
 
 #[derive(serde::Deserialize)]
@@ -143,6 +144,7 @@ mod tests {
             url: "wss://test.invalid".into(),
             token: token.into(),
             voice_epoch: epoch,
+            ice_servers: Vec::new(),
         }
     }
 

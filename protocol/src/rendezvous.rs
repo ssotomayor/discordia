@@ -37,6 +37,29 @@ pub enum HostToRendezvous {
         #[serde(default)]
         location: Option<GeoPoint>,
     },
+    /// Asked before the credentials in `Registered` expire; the stream stays up.
+    RenewTurn {},
+}
+
+/// Time-limited TURN credentials (the coturn REST scheme: the username is an
+/// expiry, the credential an HMAC of it). Issued per registration, so a host
+/// that stops registering stops being able to relay.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct TurnCredentials {
+    pub urls: Vec<String>,
+    pub username: String,
+    pub credential: String,
+    pub expires_unix: u64,
+}
+
+impl TurnCredentials {
+    pub fn ice_servers(&self) -> Vec<crate::IceServer> {
+        vec![crate::IceServer {
+            urls: self.urls.clone(),
+            username: self.username.clone(),
+            credential: self.credential.clone(),
+        }]
+    }
 }
 
 /// Where a host says it is. Self-declared and unverified, like `bot` in
@@ -90,7 +113,11 @@ pub enum RendezvousToHost {
         livekit_url: Option<String>,
         #[serde(default)]
         relay_url: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        turn: Option<TurnCredentials>,
     },
+    /// The answer to `RenewTurn`: fresh credentials for the same relay.
+    Turn(TurnCredentials),
     Released {
         name: String,
     },
@@ -203,7 +230,9 @@ mod tests {
                 voice_token_grant,
                 livekit_url,
                 relay_url,
+                turn,
             } => {
+                assert!(turn.is_none());
                 assert_eq!(shortcode, "brave-otter-07");
                 assert!(voice_token_grant.is_none());
                 assert!(livekit_url.is_none());

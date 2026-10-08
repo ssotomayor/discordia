@@ -15,6 +15,9 @@ use livekit::webrtc::audio_frame::AudioFrame;
 use livekit::webrtc::audio_source::AudioSourceOptions;
 use livekit::webrtc::audio_source::native::NativeAudioSource;
 use livekit::webrtc::audio_stream::native::NativeAudioStream;
+use livekit::webrtc::peer_connection_factory::{
+    ContinualGatheringPolicy, IceServer as RtcIceServer, IceTransportsType, RtcConfiguration,
+};
 use livekit::webrtc::prelude::RtcAudioSource;
 use livekit::webrtc::stats::RtcStats;
 #[cfg(target_os = "macos")]
@@ -29,7 +32,7 @@ use parking_lot::Mutex;
 use rubato::{FftFixedIn, Resampler};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
-use crate::protocol::{ClientMessage, Id};
+use crate::protocol::{ClientMessage, IceServer, Id};
 use crate::state::{AppState, ConnectionHealth, TrackStats, VoicePhase};
 
 #[cfg(target_os = "windows")]
@@ -142,6 +145,7 @@ pub enum VoiceCmd {
         report_tx: UnboundedSender<ClientMessage>,
         token: String,
         channel_id: Id,
+        ice_servers: Vec<IceServer>,
     },
     /// `done` fires once the rooms are closed and the capture is stopped, so a
     /// caller that is about to drop this service can wait for it.
@@ -257,7 +261,7 @@ async fn service_loop(
     mut state: Signal<AppState>,
 ) -> Result<(), String> {
     let mut session: Option<ActiveVoice> = None;
-    let mut last_connect: Option<(String, String, Id)> = None;
+    let mut last_connect: Option<(String, String, Id, Vec<IceServer>)> = None;
     let controls = AudioControls::from_state(&state.read());
 
     let mut tick = tokio::time::interval(std::time::Duration::from_secs(1));
@@ -275,6 +279,7 @@ async fn service_loop(
                 report_tx,
                 token,
                 channel_id,
+                ice_servers,
             } => {
                 eprintln!("[voice] Connect to {livekit_url} channel={channel_id}");
                 last_connect = None;
@@ -285,12 +290,13 @@ async fn service_loop(
                 let result = voice_endpoints::try_endpoints(livekit_url, alternate_urls, |url| {
                     let token = token.clone();
                     let controls = controls.clone();
+                    let ice = ice_servers.clone();
                     async move {
                         if state.peek().server_voice_channel() != Some(channel_id)
                             || state.peek().voice_route_revision != route_revision {
                             return Err("voice join cancelled".into());
                         }
-                        ActiveVoice::connect(&url, &token, channel_id, state, controls).await
+                        ActiveVoice::connect(&url, &token, channel_id, ice, state, controls).await
                     }
                 }).await;
                 if state.peek().server_voice_channel() != Some(channel_id)
@@ -303,7 +309,7 @@ async fn service_loop(
                 });
                 match result {
                     Ok((active, url)) => {
-                        last_connect = Some((url.clone(), token.clone(), channel_id));
+                        last_connect = Some((url.clone(), token.clone(), channel_id, ice_servers));
                         state.write().set_voice_endpoint(url);
                         eprintln!("[voice] connected ok — phase Connected");
                         {
@@ -562,7 +568,7 @@ async fn service_loop(
 
 async fn restart_session(
     session: &mut Option<ActiveVoice>,
-    last_connect: &Option<(String, String, Id)>,
+    last_connect: &Option<(String, String, Id, Vec<IceServer>)>,
     mut state: Signal<AppState>,
     controls: &AudioControls,
     why: &str,
@@ -570,14 +576,14 @@ async fn restart_session(
     if session.is_none() {
         return;
     }
-    let Some((url, tok, cid)) = last_connect.clone() else {
+    let Some((url, tok, cid, ice)) = last_connect.clone() else {
         return;
     };
     eprintln!("[voice] Reconnecting to apply {why}");
     if let Some(prev) = session.take() {
         prev.shutdown(state).await;
     }
-    match ActiveVoice::connect(&url, &tok, cid, state, controls.clone()).await {
+    match ActiveVoice::connect(&url, &tok, cid, ice, state, controls.clone()).await {
         Ok(active) => {
             eprintln!("[voice] reconnected ok");
             {
@@ -621,6 +627,26 @@ struct ActiveVoice {
     self_pubkey: Option<String>,
     meter_task: Task,
     stats_task: Task,
+    /// Every room of this call dials the same SFU, so every one gets these.
+    ice_servers: Vec<IceServer>,
+}
+
+/// What a room's ICE agent is told. A host behind NAT is reached through the
+/// relay its rendezvous runs; with nothing listed, libwebrtc gathers host
+/// candidates only, as before.
+pub fn rtc_config(servers: &[IceServer]) -> RtcConfiguration {
+    RtcConfiguration {
+        ice_servers: servers
+            .iter()
+            .map(|s| RtcIceServer {
+                urls: s.urls.clone(),
+                username: s.username.clone(),
+                password: s.credential.clone(),
+            })
+            .collect(),
+        continual_gathering_policy: ContinualGatheringPolicy::GatherOnce,
+        ice_transport_type: IceTransportsType::All,
+    }
 }
 
 impl ActiveVoice {
@@ -628,6 +654,7 @@ impl ActiveVoice {
         livekit_url: &str,
         token: &str,
         channel_id: Id,
+        ice_servers: Vec<IceServer>,
         state: Signal<AppState>,
         controls: AudioControls,
     ) -> Result<Self, String> {
@@ -635,6 +662,7 @@ impl ActiveVoice {
         options.encryption = crate::e2ee::room_options();
         options.join_retries = 0;
         options.connect_timeout = std::time::Duration::from_secs(5);
+        options.rtc_config = rtc_config(&ice_servers);
         let (room, mut events) = Room::connect(livekit_url, token, options)
             .await
             .map_err(|e| format!("livekit connect: {e}"))?;
@@ -967,6 +995,7 @@ impl ActiveVoice {
             soundboard: None,
             screen_audio: None,
             screen_video: None,
+            ice_servers,
             mixer: mixer_handle,
             self_pubkey,
         };
@@ -1138,7 +1167,7 @@ impl ActiveVoice {
             room.shutdown().await;
         }
         if self.screen_video.is_none() {
-            self.screen_video = Some(NativeVideoRoom::connect(key).await?);
+            self.screen_video = Some(NativeVideoRoom::connect(key, &self.ice_servers).await?);
         }
         self.screen_video
             .as_mut()
@@ -1280,8 +1309,16 @@ impl ActiveVoice {
             return;
         };
         let (url, token) = key.clone();
-        match ScreenAudioRoom::connect(&url, &token, self.mixer.clone(), self_pubkey, state, key)
-            .await
+        match ScreenAudioRoom::connect(
+            &url,
+            &token,
+            self.mixer.clone(),
+            self_pubkey,
+            state,
+            key,
+            &self.ice_servers,
+        )
+        .await
         {
             Ok(r) => {
                 self.screen_audio = Some(r);
@@ -1478,10 +1515,11 @@ struct NativeVideoRoom {
 
 impl NativeVideoRoom {
     #[cfg(any(target_os = "macos", target_os = "windows"))]
-    async fn connect(key: (String, String)) -> Result<Self, String> {
+    async fn connect(key: (String, String), ice_servers: &[IceServer]) -> Result<Self, String> {
         let mut options = RoomOptions::default();
         options.auto_subscribe = false;
         options.encryption = crate::e2ee::room_options();
+        options.rtc_config = rtc_config(ice_servers);
         let (room, mut events) = Room::connect(&key.0, &key.1, options)
             .await
             .map_err(|e| format!("livekit connect: {e}"))?;
@@ -2003,10 +2041,12 @@ impl ScreenAudioRoom {
         self_pubkey: String,
         state: Signal<AppState>,
         key: (String, String),
+        ice_servers: &[IceServer],
     ) -> Result<Self, String> {
         let mut options = RoomOptions::default();
         options.auto_subscribe = false;
         options.encryption = crate::e2ee::room_options();
+        options.rtc_config = rtc_config(ice_servers);
         let (room, mut events) = Room::connect(url, token, options)
             .await
             .map_err(|e| format!("livekit connect: {e}"))?;
@@ -4006,7 +4046,9 @@ mod tests {
             std::env::temp_dir().join(format!("discordia-video-test-{}", uuid::Uuid::new_v4()));
         let credentials = Credentials::generate();
         let _sfu = spawn_livekit(
-            Some("127.0.0.1".parse().expect("loopback")),
+            dioxusfun_server::livekit_bundle::Advertise::Mapped(
+                "127.0.0.1".parse().expect("loopback"),
+            ),
             &credentials,
             &data_dir,
         )
