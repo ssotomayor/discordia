@@ -172,7 +172,7 @@ impl App {
         {
             if button == tray_icon::MouseButton::Left && self.tray_icon_show_window_on_click {
                 for webview in self.webviews.values() {
-                    webview.desktop_context.window.set_visible(true);
+                    webview.desktop_context.set_visible(true);
                     webview.desktop_context.window.set_focus();
                 }
             }
@@ -205,7 +205,7 @@ impl App {
         match window.desktop_context.close_behaviour.get() {
             // If the window is just set to hide when closed, we can just hide it
             WindowCloseBehaviour::WindowHides => {
-                window.desktop_context.window.set_visible(false);
+                window.desktop_context.set_visible(false);
             }
 
             // If the window is set to close, we can remove it from the list of webviews
@@ -303,7 +303,6 @@ impl App {
         #[cfg(not(target_os = "linux"))]
         {
             view.desktop_context
-                .window
                 .set_visible(self.is_visible_before_start);
         }
 

@@ -84,6 +84,23 @@ impl std::ops::Deref for DesktopService {
 }
 
 impl DesktopService {
+    /// Show or hide the window and its webview. A hidden webview stops
+    /// rendering and drops to WebView2's low memory target until shown again.
+    pub fn set_visible(&self, visible: bool) {
+        self.window.set_visible(visible);
+        let _ = self.webview.set_visible(visible);
+        #[cfg(target_os = "windows")]
+        {
+            use wry::WebViewExtWindows as _;
+            let level = if visible {
+                wry::MemoryUsageLevel::Normal
+            } else {
+                wry::MemoryUsageLevel::Low
+            };
+            let _ = self.webview.set_memory_usage_level(level);
+        }
+    }
+
     pub(crate) fn new(
         webview: WebView,
         window: Arc<Window>,
