@@ -816,11 +816,16 @@ pub fn ImageViewer() -> Element {
     }
 }
 
+/// 100% emoji size. Emoji glyphs draw smaller than their box, so this sits
+/// above `1em`; the chat emoji slider scales it.
+const EMOJI_EM: f64 = 1.8;
+
 #[component]
 fn EmojiText(text: String, guild_id: Option<Id>) -> Element {
     let state = use_app_state();
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let emoji_scale = f64::from(settings.read().emoji_size_percent.clamp(50, 250)) / 100.0;
+    let base = EMOJI_EM;
     let parts: Vec<(String, Option<String>)> = {
         let s = state.read();
         crate::emoji::split_shortcodes(&text)
@@ -845,7 +850,7 @@ fn EmojiText(text: String, guild_id: Option<Id>) -> Element {
                         src: "{url}",
                         alt: ":{body}:",
                         title: ":{body}:",
-                        style: "height:calc(1.4em * {emoji_scale});width:auto;display:inline-block;vertical-align:-0.3em;",
+                        style: "height:calc({base}em * {emoji_scale});width:auto;display:inline-block;vertical-align:-0.3em;",
                     }
                 },
                 Some(_) => rsx! { ":{body}:" },
@@ -857,10 +862,11 @@ fn EmojiText(text: String, guild_id: Option<Id>) -> Element {
 
 #[component]
 fn UnicodeEmojiText(text: String, scale: f64) -> Element {
+    let base = EMOJI_EM;
     rsx! {
         for (part, emoji) in crate::emoji::unicode_parts(&text) {
             if emoji {
-                span { style: "font-size:calc(1em * {scale});", "{part}" }
+                span { style: "font-size:calc({base}em * {scale});", "{part}" }
             } else {
                 "{part}"
             }
