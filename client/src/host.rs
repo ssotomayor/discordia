@@ -282,7 +282,7 @@ pub async fn start_self_host(
         (Some(ep), Some(port)) => {
             let mut addrs = Vec::new();
             if let Some(m) = mapped.as_ref().filter(|m| m.quic) {
-                addrs.push(SocketAddr::new(m.public_ip, m.quic_port).to_string());
+                addrs.push(SocketAddr::new(m.quic_ip, m.quic_port).to_string());
             }
             for ip in &public_v6 {
                 if let Some(socket) = ep.bound_sockets().iter().find(|s| s.is_ipv6()) {
@@ -574,6 +574,7 @@ mod sfu_tests {
             media,
             quic,
             quic_port: 19001,
+            quic_ip: "203.0.113.5".parse().unwrap(),
             hairpin,
             media_note: Some("no hairpin NAT"),
         }
@@ -586,6 +587,7 @@ mod sfu_tests {
             media: false,
             quic: true,
             quic_port: 9001,
+            quic_ip: "198.51.100.9".parse().unwrap(),
             hairpin: false,
             media_note: Some("manual signaling probe failed"),
         }

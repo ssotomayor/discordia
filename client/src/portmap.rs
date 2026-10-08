@@ -27,6 +27,7 @@ pub struct Mapped {
     pub public_ip: IpAddr,
     pub media: bool,
     pub quic: bool,
+    pub quic_ip: IpAddr,
     pub quic_port: u16,
     pub hairpin: bool,
     /// Why the voice ports are unusable, for the host banner. `None` when they
@@ -56,6 +57,7 @@ where
     Fut: std::future::Future<Output = Result<(Mapped, MappingGuard), String>>,
 {
     let mut best: Option<Mapped> = None;
+    let mut chat: Option<SocketAddr> = None;
     let mut guards = MappingGuard {
         shutdown: Vec::new(),
     };
@@ -66,6 +68,9 @@ where
             match result {
                 Ok((mapped, mut guard)) => {
                     guards.shutdown.append(&mut guard.shutdown);
+                    if mapped.quic {
+                        chat.get_or_insert(SocketAddr::new(mapped.quic_ip, mapped.quic_port));
+                    }
                     let usable = mapped.media && mapped.hairpin;
                     if best
                         .as_ref()
@@ -74,7 +79,7 @@ where
                         best = Some(mapped);
                     }
                     if usable {
-                        return Ok((best.unwrap(), guards));
+                        return Ok((with_chat_mapping(best.unwrap(), chat), guards));
                     }
                 }
                 Err(error) => {
@@ -88,13 +93,22 @@ where
         }
     }
     match best {
-        Some(mapped) => Ok((mapped, guards)),
+        Some(mapped) => Ok((with_chat_mapping(mapped, chat), guards)),
         None => Err(format!(
             "automatic port mapping failed after two attempts per method — {}. \
             Try IPv6 or a manually forwarded public address; a timeout alone does not prove carrier-grade NAT.",
             errors.join("; ")
         )),
     }
+}
+
+fn with_chat_mapping(mut mapped: Mapped, chat: Option<SocketAddr>) -> Mapped {
+    if let Some(chat) = chat {
+        mapped.quic = true;
+        mapped.quic_ip = chat.ip();
+        mapped.quic_port = chat.port();
+    }
+    mapped
 }
 
 fn mapping_rank(mapped: &Mapped) -> (bool, bool, bool) {
@@ -118,6 +132,7 @@ pub async fn manual(
         public_ip,
         media: hairpin,
         quic: true,
+        quic_ip: public_ip,
         quic_port,
         hairpin,
         media_note: (!hairpin).then_some(
@@ -212,6 +227,7 @@ async fn finish(
         public_ip,
         media,
         quic: quic_ok,
+        quic_ip: public_ip,
         quic_port,
         hairpin,
         media_note,
@@ -489,10 +505,11 @@ mod tests {
         (
             Mapped {
                 method,
-                public_ip: "203.0.113.1".parse().unwrap(),
+                public_ip: "203.0.113.5".parse().unwrap(),
                 media,
                 quic: true,
                 quic_port: 19001,
+                quic_ip: "203.0.113.5".parse().unwrap(),
                 hairpin: media,
                 media_note: None,
             },
@@ -532,6 +549,70 @@ mod tests {
             assert!(error.contains(method));
         }
         assert!(error.contains("does not prove carrier-grade NAT"));
+    }
+
+    #[tokio::test]
+    async fn later_voice_success_keeps_the_earlier_chat_address_and_granted_port() {
+        for voice_works in [false, true] {
+            let mut count = 0;
+            let (result, _) = request_with(|method| {
+                count += 1;
+                std::future::ready(match count {
+                    1 => Ok(mapped(method, false)),
+                    2 => {
+                        let (mut voice, guard) = mapped(method, voice_works);
+                        voice.media = true;
+                        voice.quic = false;
+                        voice.public_ip = "198.51.100.9".parse().unwrap();
+                        voice.quic_ip = voice.public_ip;
+                        voice.quic_port = 9001;
+                        Ok((voice, guard))
+                    }
+                    _ => Err("timeout".into()),
+                })
+            })
+            .await
+            .unwrap();
+            assert_eq!(result.method, "NAT-PMP");
+            assert!(result.media);
+            assert_eq!(result.hairpin, voice_works);
+            assert!(result.quic, "voice success must not discard direct chat");
+            assert_eq!(result.quic_ip, "203.0.113.5".parse::<IpAddr>().unwrap());
+            assert_eq!(result.quic_port, 19001);
+            assert_eq!(result.public_ip, "198.51.100.9".parse::<IpAddr>().unwrap());
+        }
+    }
+
+    #[tokio::test]
+    async fn later_chat_success_is_retained_when_an_earlier_mapping_has_better_media() {
+        let mut count = 0;
+        let (result, _) = request_with(|method| {
+            count += 1;
+            std::future::ready(match count {
+                1 => {
+                    let (mut voice, guard) = mapped(method, false);
+                    voice.media = true;
+                    voice.quic = false;
+                    Ok((voice, guard))
+                }
+                2 => {
+                    let (mut chat, guard) = mapped(method, false);
+                    chat.public_ip = "198.51.100.9".parse().unwrap();
+                    chat.quic_ip = chat.public_ip;
+                    chat.quic_port = 29001;
+                    Ok((chat, guard))
+                }
+                _ => Err("timeout".into()),
+            })
+        })
+        .await
+        .unwrap();
+        assert_eq!(result.method, "UPnP-IGD");
+        assert!(result.media && !result.hairpin);
+        assert!(result.quic);
+        assert_eq!(result.quic_ip, "198.51.100.9".parse::<IpAddr>().unwrap());
+        assert_eq!(result.quic_port, 29001);
+        assert_eq!(result.public_ip, "203.0.113.5".parse::<IpAddr>().unwrap());
     }
 
     #[tokio::test]
