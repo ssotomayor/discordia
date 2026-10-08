@@ -12,11 +12,11 @@ let now = 1000;
 let incoming = { width: 1280, height: 720, fps: 30 };
 const reports = new Map();
 const screenPubs = new Map();
-const nudgeAt = new Map();
+const policy = new Map();
 const context = vm.createContext({
   qualityReports: reports,
   screenPubs,
-  qualityNudgeAt: nudgeAt,
+  qualityPolicy: policy,
   LK: () => ({ VideoQuality: { LOW: 0, MEDIUM: 1, HIGH: 2 } }),
   console: { warn: () => {}, error: () => {}, log: () => {} },
   Date: { now: () => now },
@@ -59,41 +59,64 @@ test('notice waits for sustained reduction, clears on recovery and expires witho
   assert.equal((await context.previewStats('viewer')).qualityReason, undefined);
 });
 
-test('receiver limitation re-requests the high layer after a sustained, rate-limited window', async () => {
+test('receiver limitation pins the stable layer and only probes High after a backed-off wait', async () => {
   reports.clear();
   screenPubs.clear();
-  nudgeAt.clear();
+  policy.clear();
   const calls = [];
   screenPubs.set('screen', { setVideoQuality: (quality) => calls.push(quality) });
-  incoming = { width: 1280, height: 720, fps: 30 };
-  reports.set('screen', { status: full, at: now, reason: 'receiver', since: now });
+
+  const reduced = { width: 1280, height: 720, fps: 30 };
+  const primary = { width: 2560, height: 1440, fps: 60 };
+  const receiver = (since) => reports.set('screen', { status: full, at: now, reason: 'receiver', since });
+  const recovered = (since) => reports.set('screen', { status: full, at: now, reason: '', since });
+
+  incoming = reduced;
+  receiver(now);
   await context.previewStats('viewer');
   assert.equal(calls.length, 0, 'not until the reduction is sustained');
-  now += 4001;
-  reports.get('screen').at = now;
+
+  now += 3000;
+  receiver(now - 3000);
   await context.previewStats('viewer');
-  assert.deepEqual(calls, [1, 2], 'Medium then High re-runs the SFU allocator');
-  calls.length = 0;
-  now += 5000;
-  reports.get('screen').at = now;
-  await context.previewStats('viewer');
-  assert.equal(calls.length, 0, 'within the 10 s cooldown');
-  now += 6000;
-  reports.get('screen').at = now;
-  await context.previewStats('viewer');
-  assert.deepEqual(calls, [1, 2]);
+  assert.deepEqual(calls, [1], 'pins the stable lower layer, never High');
 
   calls.length = 0;
-  reports.set('screen', { status: { ...full, primaryWidth: 1280, primaryHeight: 720, bandwidth: true },
-    at: now, reason: 'sender', since: now - 5000 });
+  now += 10000;
+  receiver(now - 10000);
   await context.previewStats('viewer');
-  assert.equal(calls.length, 0, 'a sender limitation is not the viewer’s to fix');
+  assert.deepEqual(calls, [1], 'stays pinned while the reduction lasts');
 
-  nudgeAt.clear();
-  reports.set('screen', { status: full, at: now, reason: 'receiver', since: now - 5000 });
-  incoming = { width: 2560, height: 1440, fps: 60 };
+  incoming = primary;
+  calls.length = 0;
+  recovered(now);
   await context.previewStats('viewer');
-  assert.equal(nudgeAt.has('screen'), false, 'recovery clears the cooldown');
+  assert.equal(calls.length, 0, 'no probe before the hold');
+  now += 30001;
+  recovered(now);
+  await context.previewStats('viewer');
+  assert.deepEqual(calls, [1], 'probes High once the hold elapses');
+
+  calls.length = 0;
+  incoming = reduced;
+  now += 3000;
+  receiver(now - 3000);
+  await context.previewStats('viewer');
+  assert.deepEqual(calls, [1], 're-pins Medium after a failed probe');
+
+  incoming = primary;
+  calls.length = 0;
+  recovered(now);
+  await context.previewStats('viewer');
+  assert.equal(calls.length, 0, 'no probe yet');
+  now += 30001;
+  recovered(now);
+  await context.previewStats('viewer');
+  assert.equal(calls.length, 0, 'still inside the doubled hold');
+  now += 30000;
+  recovered(now);
+  await context.previewStats('viewer');
+  assert.deepEqual(calls, [1], 'probes again after the doubled hold');
 });
 
 test('quality reports must belong to the sending participant and preserve the warning timer', () => {

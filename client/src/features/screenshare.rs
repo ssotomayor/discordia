@@ -47,7 +47,7 @@ window.dxScreen = window.dxScreen || (function () {
   const videoReports = new WeakMap();
   const qualityReports = new Map();
   const screenPubs = new Map();
-  const qualityNudgeAt = new Map();
+  const qualityPolicy = new Map();
   function videoStatsReport(track) {
     const now = Date.now();
     const sample = videoReports.get(track);
@@ -277,7 +277,7 @@ window.dxScreen = window.dxScreen || (function () {
   function clearRemoteTracks() {
     qualityReports.clear();
     screenPubs.clear();
-    qualityNudgeAt.clear();
+    qualityPolicy.clear();
     remoteShareVideoTrack = null;
     post('screen-stats-in', { active: false });
     detachAudio();
@@ -438,7 +438,7 @@ window.dxScreen = window.dxScreen || (function () {
       if (kind === 'screen') {
         remoteShareVideoTrack = track;
         screenPubs.set(track.sid, pub);
-        qualityNudgeAt.delete(track.sid);
+        qualityPolicy.delete(track.sid);
         requestHighQuality(pub);
         if (screenStatsEnabled) pollRemoteScreenStats();
       }
@@ -458,7 +458,7 @@ window.dxScreen = window.dxScreen || (function () {
       if (tracks[trackKey(participant.identity, kind)] !== track) return;
       if (kind === 'screen') {
         screenPubs.delete(track.sid);
-        qualityNudgeAt.delete(track.sid);
+        qualityPolicy.delete(track.sid);
       }
       if (kind === 'screen' && remoteShareVideoTrack === track) {
         remoteShareVideoTrack = null;
@@ -707,23 +707,25 @@ window.dxScreen = window.dxScreen || (function () {
     const lowerLayer = received.height < status.height * 0.9 || received.width < status.width * 0.9;
     return lowerLayer && status.adaptive === true && (!senderReduced || belowPrimary) ? 'receiver' : '';
   }
-  // setVideoQuality is a no-op when the value is unchanged, so the Medium step
-  // is what makes the SFU re-run allocation and pick the high layer again.
-  function requestHighQuality(pub) {
+  function requestQuality(pub, quality) {
     if (!pub || typeof pub.setVideoQuality !== 'function') return;
+    try { pub.setVideoQuality(quality); } catch (e) { console.warn('[dxScreen] quality request failed', e); }
+  }
+  // A stable lower layer beats a pixelated high one: after a reduction the
+  // viewer pins the SFU to Medium and only probes High once the connection has
+  // held, doubling the wait each time a probe is reduced again.
+  function qualityHoldMs(fails) {
+    return Math.min(30000 * Math.pow(2, fails), 120000);
+  }
+  function requestHighQuality(pub) {
     const lk = LK();
     if (!lk || !lk.VideoQuality) return;
-    try {
-      pub.setVideoQuality(lk.VideoQuality.MEDIUM);
-      pub.setVideoQuality(lk.VideoQuality.HIGH);
-    } catch (e) { console.warn('[dxScreen] quality re-request failed', e); }
+    requestQuality(pub, lk.VideoQuality.HIGH);
   }
-  function nudgeScreenQuality(sid) {
-    const pub = screenPubs.get(sid);
-    if (!pub) return;
-    if (Date.now() - (qualityNudgeAt.get(sid) || 0) < 10000) return;
-    requestHighQuality(pub);
-    qualityNudgeAt.set(sid, Date.now());
+  function participantIsPoor(track) {
+    const lk = LK();
+    const participant = track && track.participant;
+    return !!(lk && lk.ConnectionQuality && participant && participant.connectionQuality === lk.ConnectionQuality.Poor);
   }
   async function previewStats(identity) {
     const track = videoTrackFor(identity, 'screen');
@@ -738,15 +740,34 @@ window.dxScreen = window.dxScreen || (function () {
       });
       const sample = qualityReports.get(track.sid);
       if (result && sample && Date.now() - sample.at < 10000) {
-        const status = sample.status;
-        const reason = screenQualityReason(status, result);
-        if (sample.reason !== reason) { sample.reason = reason; sample.since = Date.now(); }
-        if (reason && Date.now() - sample.since >= 4000) result.qualityReason = reason;
-        if (reason === 'receiver') {
-          if (Date.now() - sample.since >= 4000) nudgeScreenQuality(track.sid);
-        } else {
-          qualityNudgeAt.delete(track.sid);
+        const now = Date.now();
+        const reason = screenQualityReason(sample.status, result);
+        if (sample.reason !== reason) { sample.reason = reason; sample.since = now; }
+        const sustained = now - sample.since;
+        if (reason && sustained >= 2500) result.qualityReason = reason;
+
+        const policy = qualityPolicy.get(track.sid) || { fails: 0, probeAt: 0, probingSince: 0 };
+        if (reason === 'receiver' && sustained >= 2500) {
+          // Pin the stable lower layer; a probe that is reduced inside its window is a failure.
+          if (policy.probingSince) policy.fails += 1;
+          policy.probingSince = 0;
+          const lk = LK();
+          if (lk && lk.VideoQuality) requestQuality(screenPubs.get(track.sid), lk.VideoQuality.MEDIUM);
+          policy.probeAt = now + qualityHoldMs(policy.fails);
+        } else if (reason === '') {
+          if (policy.probingSince) {
+            if (now - policy.probingSince >= 12000) {
+              policy.probingSince = 0;
+              policy.fails = 0;
+              policy.probeAt = 0;
+            }
+          } else if (policy.probeAt > 0 && now >= policy.probeAt && !participantIsPoor(track)) {
+            requestHighQuality(screenPubs.get(track.sid));
+            policy.probingSince = now;
+            policy.probeAt = now + 12000;
+          }
         }
+        qualityPolicy.set(track.sid, policy);
       }
       return result;
     } catch (e) { return null; }
