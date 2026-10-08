@@ -517,7 +517,11 @@ pub fn SettingsDialog() -> Element {
                                 class: "w-full mt-1 bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)] rounded px-2 py-1 text-sm",
                                 value: "{voice_bitrate_kbps}",
                                 onchange: move |e| {
-                                    let kbps = if e.value() == "24" { 24 } else { 48 };
+                                    let kbps = match e.value().as_str() {
+                                        "24" => 24,
+                                        "64" => 64,
+                                        _ => 48,
+                                    };
                                     let mut next = settings.read().clone();
                                     next.voice_bitrate_kbps = kbps;
                                     settings.set(next.clone());
@@ -527,6 +531,7 @@ pub fn SettingsDialog() -> Element {
                                 },
                                 option { value: "24", "Standard — 24 kbit/s" }
                                 option { value: "48", "High — 48 kbit/s" }
+                                option { value: "64", "Maximum — 64 kbit/s" }
                             }
                             span { class: "text-[10px] text-[var(--text-dim)] mt-0.5 block",
                                 if voice_phase == VoicePhase::Connected {

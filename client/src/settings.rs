@@ -179,7 +179,7 @@ fn default_enabled() -> bool {
 }
 
 fn default_voice_bitrate_kbps() -> u32 {
-    48
+    64
 }
 
 fn default_pattern() -> String {

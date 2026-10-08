@@ -38,6 +38,7 @@ fn initial_state(saved: &ClientSettings) -> AppState {
     s.stream_muted = saved.stream_muted.iter().cloned().collect();
     s.voice_bitrate_kbps = match saved.voice_bitrate_kbps {
         24 => 24,
+        64 => 64,
         _ => 48,
     };
     s.status = ConnectionStatus::Disconnected;
