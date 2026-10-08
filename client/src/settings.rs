@@ -182,6 +182,16 @@ fn default_voice_bitrate_kbps() -> u32 {
     64
 }
 
+/// The bitrates a saved voice setting may resolve to. One place, so a value the
+/// dialog offers cannot be clamped away by a loader keeping its own copy.
+pub(crate) fn normalize_voice_bitrate(kbps: u32) -> u32 {
+    match kbps {
+        24 => 24,
+        64 => 64,
+        _ => 48,
+    }
+}
+
 fn default_pattern() -> String {
     "dots".into()
 }
@@ -416,6 +426,14 @@ mod tests {
         let mut old = serde_json::to_value(&defaults).unwrap();
         old.as_object_mut().unwrap().remove("mic_volume");
         assert_eq!(parse(&file(old)).unwrap().mic_volume, 100);
+    }
+
+    #[test]
+    fn a_saved_voice_bitrate_survives_the_dialog_and_the_loader() {
+        assert_eq!(normalize_voice_bitrate(24), 24);
+        assert_eq!(normalize_voice_bitrate(48), 48);
+        assert_eq!(normalize_voice_bitrate(64), 64);
+        assert_eq!(normalize_voice_bitrate(96), 48);
     }
 
     #[test]
