@@ -377,7 +377,10 @@ impl LocalParticipant {
         options: TrackPublishOptions,
         video_send_encodings: Option<Vec<RtpEncodingParameters>>,
     ) -> RoomResult<LocalTrackPublication> {
-        let disable_red = self.local.encryption_type != EncryptionType::None || !options.red;
+        // RED now travels from the publisher (see the audio codec preferences in
+        // `rtc_session`), so the server never has to synthesize it and encryption
+        // no longer has to turn it off. Track-level `red: false` still opts out.
+        let disable_red = !options.red;
 
         let mut req = proto::AddTrackRequest {
             cid: track.rtc_track().id(),
