@@ -495,7 +495,7 @@ impl AppState {
             denoise_atten_lim_db: 30,
             bypass_system_audio_processing: true,
             mic_bypass_error: None,
-            voice_bitrate_kbps: 48,
+            voice_bitrate_kbps: 64,
             voice_quality: HashMap::new(),
             voice_stats: HashMap::new(),
             screen_share_stats: None,
