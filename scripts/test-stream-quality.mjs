@@ -13,11 +13,14 @@ let incoming = { width: 1280, height: 720, fps: 30 };
 const reports = new Map();
 const screenPubs = new Map();
 const policy = new Map();
+const participants = new Map();
 const context = vm.createContext({
   qualityReports: reports,
   screenPubs,
+  screenParticipants: participants,
   qualityPolicy: policy,
-  LK: () => ({ VideoQuality: { LOW: 0, MEDIUM: 1, HIGH: 2 } }),
+  LK: () => ({ VideoQuality: { LOW: 0, MEDIUM: 1, HIGH: 2 },
+    ConnectionQuality: { Poor: 'poor', Excellent: 'excellent' } }),
   console: { warn: () => {}, error: () => {}, log: () => {} },
   Date: { now: () => now },
   videoTrackFor: () => ({ sid: 'screen' }),
@@ -63,6 +66,7 @@ test('receiver limitation pins the stable layer and only probes High after a bac
   reports.clear();
   screenPubs.clear();
   policy.clear();
+  participants.clear();
   const calls = [];
   screenPubs.set('screen', { setVideoQuality: (quality) => calls.push(quality) });
 
@@ -95,7 +99,7 @@ test('receiver limitation pins the stable layer and only probes High after a bac
   now += 30001;
   recovered(now);
   await context.previewStats('viewer');
-  assert.deepEqual(calls, [1], 'probes High once the hold elapses');
+  assert.deepEqual(calls, [2], 'probes High once the hold elapses');
 
   calls.length = 0;
   incoming = reduced;
@@ -116,7 +120,38 @@ test('receiver limitation pins the stable layer and only probes High after a bac
   now += 30000;
   recovered(now);
   await context.previewStats('viewer');
-  assert.deepEqual(calls, [1], 'probes again after the doubled hold');
+  assert.deepEqual(calls, [2], 'probes again after the doubled hold');
+});
+
+test('a Poor participant blocks the High probe until its connection recovers', async () => {
+  reports.clear();
+  screenPubs.clear();
+  policy.clear();
+  participants.clear();
+  const calls = [];
+  screenPubs.set('screen', { setVideoQuality: (quality) => calls.push(quality) });
+  const reduced = { width: 1280, height: 720, fps: 30 };
+  const primary = { width: 2560, height: 1440, fps: 60 };
+
+  incoming = reduced;
+  reports.set('screen', { status: full, at: now, reason: 'receiver', since: now - 3000 });
+  await context.previewStats('viewer');
+  assert.deepEqual(calls, [1], 'pins Medium first');
+
+  calls.length = 0;
+  incoming = primary;
+  participants.set('screen', { connectionQuality: 'poor' });
+  reports.set('screen', { status: full, at: now, reason: '', since: now });
+  now += 30001;
+  reports.get('screen').at = now;
+  await context.previewStats('viewer');
+  assert.equal(calls.length, 0, 'no probe while the participant is Poor');
+
+  participants.set('screen', { connectionQuality: 'excellent' });
+  now += 1000;
+  reports.get('screen').at = now;
+  await context.previewStats('viewer');
+  assert.deepEqual(calls, [2], 'probes High once the connection is not Poor');
 });
 
 test('quality reports must belong to the sending participant and preserve the warning timer', () => {

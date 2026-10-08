@@ -47,6 +47,9 @@ window.dxScreen = window.dxScreen || (function () {
   const videoReports = new WeakMap();
   const qualityReports = new Map();
   const screenPubs = new Map();
+  // A LiveKit track carries no participant back-reference, so keep the one that
+  // arrived with it: the Poor gate reads it long after TrackSubscribed returned.
+  const screenParticipants = new Map();
   const qualityPolicy = new Map();
   function videoStatsReport(track) {
     const now = Date.now();
@@ -277,6 +280,7 @@ window.dxScreen = window.dxScreen || (function () {
   function clearRemoteTracks() {
     qualityReports.clear();
     screenPubs.clear();
+    screenParticipants.clear();
     qualityPolicy.clear();
     remoteShareVideoTrack = null;
     post('screen-stats-in', { active: false });
@@ -438,6 +442,7 @@ window.dxScreen = window.dxScreen || (function () {
       if (kind === 'screen') {
         remoteShareVideoTrack = track;
         screenPubs.set(track.sid, pub);
+        screenParticipants.set(track.sid, participant);
         qualityPolicy.delete(track.sid);
         requestHighQuality(pub);
         if (screenStatsEnabled) pollRemoteScreenStats();
@@ -458,6 +463,7 @@ window.dxScreen = window.dxScreen || (function () {
       if (tracks[trackKey(participant.identity, kind)] !== track) return;
       if (kind === 'screen') {
         screenPubs.delete(track.sid);
+        screenParticipants.delete(track.sid);
         qualityPolicy.delete(track.sid);
       }
       if (kind === 'screen' && remoteShareVideoTrack === track) {
@@ -722,9 +728,9 @@ window.dxScreen = window.dxScreen || (function () {
     if (!lk || !lk.VideoQuality) return;
     requestQuality(pub, lk.VideoQuality.HIGH);
   }
-  function participantIsPoor(track) {
+  function participantIsPoor(sid) {
     const lk = LK();
-    const participant = track && track.participant;
+    const participant = screenParticipants.get(sid);
     return !!(lk && lk.ConnectionQuality && participant && participant.connectionQuality === lk.ConnectionQuality.Poor);
   }
   async function previewStats(identity) {
@@ -761,7 +767,7 @@ window.dxScreen = window.dxScreen || (function () {
               policy.fails = 0;
               policy.probeAt = 0;
             }
-          } else if (policy.probeAt > 0 && now >= policy.probeAt && !participantIsPoor(track)) {
+          } else if (policy.probeAt > 0 && now >= policy.probeAt && !participantIsPoor(track.sid)) {
             requestHighQuality(screenPubs.get(track.sid));
             policy.probingSince = now;
             policy.probeAt = now + 12000;
