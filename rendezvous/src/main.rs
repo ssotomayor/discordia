@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use dioxusfun_rendezvous::{AppCtx, Config, registry::Registry, router};
+use dioxusfun_rendezvous::{AppCtx, Config, registry::Registry, router, turn_relay};
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -28,17 +28,55 @@ async fn main() {
         .expect("DIOXUSFUN_RENDEZVOUS_RELAY_ADDR must be host:port");
     let _relay = dioxusfun_rendezvous::relay_server::spawn(relay_bind, relay_url.clone()).await;
 
+    let (turn, _turn_server) = match std::env::var("DIOXUSFUN_RENDEZVOUS_TURN_URL").ok() {
+        Some(url) => {
+            let bind: SocketAddr = std::env::var("DIOXUSFUN_RENDEZVOUS_TURN_ADDR")
+                .unwrap_or_else(|_| format!("0.0.0.0:{}", turn_relay::DEFAULT_PORT))
+                .parse()
+                .expect("DIOXUSFUN_RENDEZVOUS_TURN_ADDR must be host:port");
+            let relay_ip = match std::env::var("DIOXUSFUN_RENDEZVOUS_TURN_RELAY_IP").ok() {
+                Some(ip) => ip
+                    .parse()
+                    .expect("DIOXUSFUN_RENDEZVOUS_TURN_RELAY_IP must be an IP address"),
+                None => turn_relay::resolve_relay_ip(&url).await.expect(
+                    "DIOXUSFUN_RENDEZVOUS_TURN_URL must name this machine's public address",
+                ),
+            };
+            // Credentials are minted per registration and renewed over the control
+            // stream, so a secret that changes with the process costs nothing.
+            let secret = std::env::var("DIOXUSFUN_RENDEZVOUS_TURN_SECRET")
+                .unwrap_or_else(|_| hex::encode(rand::random::<[u8; 32]>()));
+            let ports = match std::env::var("DIOXUSFUN_RENDEZVOUS_TURN_PORTS") {
+                Ok(spec) => {
+                    turn_relay::parse_ports(&spec).expect("DIOXUSFUN_RENDEZVOUS_TURN_PORTS")
+                }
+                Err(_) => turn_relay::DEFAULT_PORTS,
+            };
+            let issuer = turn_relay::Issuer::new(vec![url], secret);
+            match turn_relay::spawn(bind, relay_ip, ports, &issuer).await {
+                Ok(server) => (Some(issuer), Some(server)),
+                Err(e) => {
+                    tracing::error!(%e, "turn relay not started; hosts behind NAT fall back to the shared SFU");
+                    (None, None)
+                }
+            }
+        }
+        None => (None, None),
+    };
+
     let config = Config {
         relay_url,
         livekit_url: std::env::var("LIVEKIT_URL").ok(),
         livekit_api_key: std::env::var("LIVEKIT_API_KEY").ok(),
         livekit_api_secret: std::env::var("LIVEKIT_API_SECRET").ok(),
+        turn,
         ..Config::default()
     };
     tracing::info!(
         ?config.relay_url,
         ?config.livekit_url,
         shared_credentials = config.livekit_api_secret.is_some(),
+        turn = config.turn.as_ref().map(|t| t.urls().to_vec()).unwrap_or_default().join(","),
         "rendezvous configured"
     );
 

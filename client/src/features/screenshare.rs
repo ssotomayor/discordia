@@ -306,7 +306,7 @@ window.dxScreen = window.dxScreen || (function () {
       if (a) { a.track = null; a.el = null; }
     });
   }
-  async function connect(url, token, key, encrypt, generation) {
+  async function connect(url, token, key, encrypt, generation, iceServers) {
     const request = { generation: generation };
     connectionRequest = request;
     const current = () => connectionRequest === request;
@@ -504,7 +504,9 @@ window.dxScreen = window.dxScreen || (function () {
       if (kind === 'camera') notifyCameraEnded(); else notifyShareEnded();
     });
     try {
-      await thisRoom.connect(url, token, { autoSubscribe: viewerTargets === null });
+      const connectOptions = { autoSubscribe: viewerTargets === null };
+      if (Array.isArray(iceServers) && iceServers.length) connectOptions.rtcConfig = { iceServers: iceServers };
+      await thisRoom.connect(url, token, connectOptions);
       if (!current() || room !== thisRoom) { try { await thisRoom.disconnect(); } catch (e) {} return; }
       reportState('connected');
     } catch (e) {
@@ -1256,6 +1258,11 @@ pub(crate) fn js_str(s: &str) -> String {
     serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into())
 }
 
+/// The list as `RTCIceServer[]`; the wire type already uses those field names.
+pub(crate) fn ice_servers_js(servers: &[crate::protocol::IceServer]) -> String {
+    serde_json::to_string(servers).unwrap_or_else(|_| "[]".into())
+}
+
 pub fn share_js(on: bool, quality: &str, audio: bool) -> String {
     if !on {
         return "window.dxScreen.stopShare();".into();
@@ -1381,6 +1388,7 @@ pub fn ScreenShareBridge() -> Element {
                 url: url.clone(),
                 token: token.clone(),
                 voice_epoch: s.voice_session_epoch,
+                ice_servers: s.ice_servers.clone(),
             })
     });
     let targets = lifecycle.0.clone();
@@ -1400,7 +1408,8 @@ pub fn ScreenShareBridge() -> Element {
                             let (url, token) = (js_str(&target.url), js_str(&target.token));
                             let key = crate::e2ee::current_key().map(|k| js_str(&k)).unwrap_or_else(|| "null".into());
                             let encrypt = crate::e2ee::enabled();
-                            format!("window.dxScreen.connect({url},{token},{key},{encrypt},{generation});")
+                            let ice = ice_servers_js(&target.ice_servers);
+                            format!("window.dxScreen.connect({url},{token},{key},{encrypt},{generation},{ice});")
                         }
                         super::video_lifecycle::Action::Disconnect => "window.dxScreen.disconnect();".into(),
                     };

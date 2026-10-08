@@ -2195,12 +2195,14 @@ async fn mint_voice_frames(
             return frames;
         }
     };
+    let ice_servers = cfg.ice_servers();
     frames.push(ServerMessage::VoiceToken {
         channel_id,
         livekit_url: livekit_url.clone(),
         alternate_urls,
         route_revision,
         token,
+        ice_servers: ice_servers.clone(),
     });
     let screen_name = format!("{username} (screen)");
     match minted(livekit::screen_token_as(
@@ -2234,6 +2236,7 @@ async fn mint_voice_frames(
                 audio_token,
                 video_token,
                 viewer_token,
+                ice_servers,
             });
         }
         Err(err) => {

@@ -35,6 +35,7 @@ Cargo is a development launcher, not a shipped service.
 | `LIVEKIT_API_KEY` / `_SECRET` | generated into `<data dir>/livekit-keys` on first run | set only for an external SFU (`LIVEKIT_URL`); must match it |
 | `LIVEKIT_PORT` | `7880` | port used when deriving the URL (the bundled SFU always binds 7880) |
 | `DIOXUSFUN_LIVEKIT_AUTOSPAWN` | `1` | `0` when LiveKit runs separately |
+| `DIOXUSFUN_ICE_SERVERS` | — | JSON list of `{urls, username, credential}` handed to every voice client; for a box behind NAT with its own TURN |
 
 **Rendezvous**
 
@@ -44,7 +45,12 @@ Cargo is a development launcher, not a shipped service.
 | `DIOXUSFUN_RENDEZVOUS_DATA_DIR` | `./rendezvous-data` | persisted name reservations |
 | `DIOXUSFUN_RENDEZVOUS_RELAY_ADDR` | `0.0.0.0:7701` | iroh relay bind, the one that carries ciphertext for hosts behind NAT |
 | `DIOXUSFUN_RENDEZVOUS_RELAY_URL` | — | how clients reach that relay; handed out in `/config` and every entry |
-| `LIVEKIT_URL` / `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` | — | a shared SFU for hosts whose media ports nobody outside can reach; the rendezvous mints their tokens so no host holds the secret. A host that maps its ports carries its own calls and ignores this |
+| `DIOXUSFUN_RENDEZVOUS_TURN_URL` | — | enables the TURN relay: what clients dial, e.g. `turn:rendezvous.example:7702`. Hosts behind NAT keep their calls on their own SFU; friends who cannot reach it are relayed here, ciphertext only |
+| `DIOXUSFUN_RENDEZVOUS_TURN_ADDR` | `0.0.0.0:7702` | UDP bind for the relay's control socket |
+| `DIOXUSFUN_RENDEZVOUS_TURN_PORTS` | `7710-7809` | UDP range relayed media is allocated from; open it with the bind. Roughly eight ports per relayed friend, so the default seats a dozen |
+| `DIOXUSFUN_RENDEZVOUS_TURN_RELAY_IP` | resolved from the URL | the public IPv4 handed out in allocations; set it when the URL's name does not resolve to this machine |
+| `DIOXUSFUN_RENDEZVOUS_TURN_SECRET` | random per start | HMAC secret behind the time-limited credentials; hosts renew theirs over the control stream, so a restart costs nothing |
+| `LIVEKIT_URL` / `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` | — | a shared SFU for hosts whose media ports nobody outside can reach *and* that have no relay; the rendezvous mints their tokens so no host holds the secret. A host that maps its ports, or has a relay, carries its own calls and ignores this |
 
 Deploy the coordinator with `/voice-evict` alongside these clients. A host's
 registration grant permits removing seats only from its own room namespace;

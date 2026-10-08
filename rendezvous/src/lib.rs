@@ -3,6 +3,7 @@ pub mod registry;
 pub mod relay;
 pub mod relay_server;
 pub mod shortcode;
+pub mod turn_relay;
 pub mod verify;
 
 use std::net::{IpAddr, SocketAddr};
@@ -33,6 +34,9 @@ pub struct Config {
     pub host_timeout: std::time::Duration,
     pub register_timeout: std::time::Duration,
     pub relay_url: Option<String>,
+    /// Set when this rendezvous runs a TURN relay; every registration then
+    /// carries credentials for it.
+    pub turn: Option<turn_relay::Issuer>,
 }
 
 impl Default for Config {
@@ -42,6 +46,7 @@ impl Default for Config {
             livekit_api_key: None,
             livekit_api_secret: None,
             relay_url: None,
+            turn: None,
             heartbeat_interval: std::time::Duration::from_secs(20),
             host_timeout: std::time::Duration::from_secs(60),
             register_timeout: std::time::Duration::from_secs(10),
@@ -80,6 +85,7 @@ async fn config(State(ctx): State<AppCtx>) -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "relay_url": ctx.config.relay_url,
         "livekit_url": ctx.config.livekit_url,
+        "turn_urls": ctx.config.turn.as_ref().map(|t| t.urls().to_vec()),
     }))
 }
 

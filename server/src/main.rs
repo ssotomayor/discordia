@@ -35,7 +35,13 @@ async fn main() {
             key: livekit_cfg.api_key.clone(),
             secret: livekit_cfg.api_secret.clone(),
         };
-        match dioxusfun_server::livekit_bundle::spawn_livekit(None, &creds, &data_dir).await {
+        match dioxusfun_server::livekit_bundle::spawn_livekit(
+            dioxusfun_server::livekit_bundle::Advertise::Local,
+            &creds,
+            &data_dir,
+        )
+        .await
+        {
             Ok(child) => {
                 tracing::info!("bundled livekit-server started on port 7880");
                 Some(child)

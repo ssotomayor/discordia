@@ -1518,6 +1518,7 @@ fn apply(
             alternate_urls,
             route_revision,
             token,
+            ice_servers,
         } => {
             eprintln!("[net] VoiceToken channel={channel_id} url={livekit_url}");
             if route_revision < s.voice_route_revision
@@ -1538,6 +1539,7 @@ fn apply(
             s.voice.channel_id = Some(channel_id);
             s.voice.error = None;
             s.voice_endpoint = None;
+            s.ice_servers = ice_servers.clone();
             let _ = voice_tx.send(VoiceCmd::Connect {
                 livekit_url,
                 alternate_urls,
@@ -1545,6 +1547,7 @@ fn apply(
                 report_tx: tx.clone(),
                 token,
                 channel_id,
+                ice_servers,
             });
         }
         ServerMessage::ScreenToken {
@@ -1555,6 +1558,7 @@ fn apply(
             audio_token,
             video_token,
             viewer_token,
+            ice_servers,
             ..
         } => {
             if route_revision < s.voice_route_revision
@@ -1563,6 +1567,7 @@ fn apply(
                 return;
             }
             let livekit_url = s.voice_endpoint.clone().unwrap_or(livekit_url);
+            s.ice_servers = ice_servers;
             s.screen_token = Some((livekit_url.clone(), token));
             s.screen_audio_token =
                 (!audio_token.is_empty()).then_some((livekit_url.clone(), audio_token));
@@ -1639,6 +1644,7 @@ mod tests {
                     alternate_urls: Vec::new(),
                     route_revision: revision,
                     token: "voice".into(),
+                    ice_servers: Vec::new(),
                 };
                 apply(&mut state, token(0), &tx, &voice_tx);
                 assert!(native.try_recv().is_err());
@@ -1661,6 +1667,7 @@ mod tests {
                     audio_token: "audio".into(),
                     video_token: "video".into(),
                     viewer_token: "viewer".into(),
+                    ice_servers: Vec::new(),
                 };
                 apply(&mut state, screen(0), &tx, &voice_tx);
                 assert!(state.peek().screen_token.is_none());

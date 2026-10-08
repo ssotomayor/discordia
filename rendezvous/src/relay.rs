@@ -120,6 +120,10 @@ pub async fn handle_host_control(
                 }
                 return;
             }
+            Ok(HostToRendezvous::RenewTurn {}) => {
+                send_err(&mut tx, "register before renewing relay credentials").await;
+                return;
+            }
             Err(e) => {
                 send_err(&mut tx, &format!("invalid register frame: {e}")).await;
                 return;
@@ -240,6 +244,7 @@ pub async fn handle_host_control(
         livekit_url: cfg.livekit_url.clone(),
         voice_token_grant,
         relay_url: cfg.relay_url.clone(),
+        turn: cfg.turn.as_ref().and_then(|issuer| issuer.issue()),
     };
     if let Ok(json) = serde_json::to_string(&registered)
         && tx.send(Message::Text(json)).await.is_err()
@@ -258,6 +263,15 @@ pub async fn handle_host_control(
             inbound = rx.next() => {
                 match inbound {
                     Some(Ok(Message::Close(_))) | None => break,
+                    Some(Ok(Message::Text(text))) => {
+                        entry.touch();
+                        if let Ok(HostToRendezvous::RenewTurn {}) = serde_json::from_str::<HostToRendezvous>(&text)
+                            && let Some(creds) = cfg.turn.as_ref().and_then(|issuer| issuer.issue())
+                            && send_msg(&mut tx, &RendezvousToHost::Turn(creds)).await.is_err()
+                        {
+                            break;
+                        }
+                    }
                     Some(Ok(_)) => entry.touch(),
                     Some(Err(e)) => {
                         tracing::warn!(%shortcode, err = %e, "host control recv error");

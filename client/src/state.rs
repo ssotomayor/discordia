@@ -348,6 +348,9 @@ pub struct AppState {
     pub screen_audio_joined: bool,
     pub screen_video_token: Option<(String, String)>,
     pub screen_viewer_token: Option<(String, String)>,
+    /// What every LiveKit room of this session hands its ICE agent; a host
+    /// behind NAT sends its rendezvous's relay here so its SFU can be reached.
+    pub ice_servers: Vec<crate::protocol::IceServer>,
     pub screen_share_target: Option<crate::sysvideo::Target>,
     pub screen_picker: Option<Result<Vec<crate::sysvideo::Source>, String>>,
     pub screen_sharing: bool,
@@ -473,6 +476,7 @@ impl AppState {
             screen_audio_token: None,
             screen_video_token: None,
             screen_viewer_token: None,
+            ice_servers: Vec::new(),
             screen_share_target: None,
             screen_picker: None,
             screen_audio_joined: false,

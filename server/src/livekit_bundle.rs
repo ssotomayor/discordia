@@ -318,8 +318,28 @@ fn kill_pid(pid: u32) {
         .output();
 }
 
+/// How the SFU learns the address it advertises to friends.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum Advertise {
+    /// Interface addresses only: LAN friends, or a loopback-only host.
+    #[default]
+    Local,
+    /// A router mapped the media ports to this public address.
+    Mapped(IpAddr),
+    /// No mapping: discover the public address through this STUN server and
+    /// advertise it unverified, so a friend's TURN permission covers the
+    /// address the SFU's packets leave the NAT from.
+    Stun(String),
+}
+
+impl Advertise {
+    pub fn mapped(ip: Option<IpAddr>) -> Self {
+        ip.map(Advertise::Mapped).unwrap_or_default()
+    }
+}
+
 pub async fn spawn_livekit(
-    advertise_ip: Option<IpAddr>,
+    advertise: Advertise,
     creds: &Credentials,
     data_dir: &Path,
 ) -> Result<LivekitSubprocess, String> {
@@ -337,7 +357,7 @@ pub async fn spawn_livekit(
         LIVEKIT_DIGEST.trim()
     );
     let config_path = dir.join(format!("livekit-{}.yaml", ports().ws));
-    let config = config_yaml(advertise_ip, creds);
+    let config = config_yaml(&advertise, creds);
 
     let path = {
         let (dir, bin_name, config_path) = (dir.clone(), bin_name.clone(), config_path.clone());
@@ -405,20 +425,27 @@ fn forward_output(child: &mut Child) {
     }
 }
 
-fn config_yaml(advertise_ip: Option<IpAddr>, creds: &Credentials) -> String {
-    config_yaml_for(advertise_ip, ports(), creds)
+fn config_yaml(advertise: &Advertise, creds: &Credentials) -> String {
+    config_yaml_for(advertise, ports(), creds)
 }
 
-fn config_yaml_for(advertise_ip: Option<IpAddr>, p: LivekitPorts, creds: &Credentials) -> String {
-    let node_ip = advertise_ip
-        .map(|ip| format!("  node_ip: {ip}\n"))
-        .unwrap_or_default();
+fn config_yaml_for(advertise: &Advertise, p: LivekitPorts, creds: &Credentials) -> String {
+    let addressing = match advertise {
+        Advertise::Local => "  use_external_ip: false\n".to_string(),
+        Advertise::Mapped(ip) => format!("  use_external_ip: false\n  node_ip: {ip}\n"),
+        // Validation sends a packet to itself through the public address, which
+        // needs the hairpin a mapping-less NAT does not have.
+        Advertise::Stun(server) => format!(
+            "  use_external_ip: true\n  skip_external_ip_validation: true\n  stun_servers:\n    - {}\n",
+            yaml_quote(server)
+        ),
+    };
     let (ws, tcp, udp) = (p.ws, p.tcp, p.udp);
     let (key, secret) = (yaml_quote(&creds.key), yaml_quote(&creds.secret));
     format!(
         "port: {ws}\n\
          bind_addresses:\n  - \"\"\n\
-         rtc:\n  tcp_port: {tcp}\n  udp_port: {udp}\n  use_external_ip: false\n{node_ip}\
+         rtc:\n  tcp_port: {tcp}\n  udp_port: {udp}\n{addressing}\
          keys:\n  {key}: {secret}\n\
          logging:\n  level: info\n",
     )
@@ -560,7 +587,7 @@ mod tests {
         };
         let creds = Credentials::generate();
         let config = dir.join("test.yaml");
-        write_private(&config, config_yaml_for(None, p, &creds)).unwrap();
+        write_private(&config, config_yaml_for(&Advertise::Local, p, &creds)).unwrap();
         drop((ws, tcp, udp));
         let mut command = Command::new(&path);
         command
@@ -595,7 +622,7 @@ mod tests {
         let blocked_config = dir.join("blocked.yaml");
         write_private(
             &blocked_config,
-            config_yaml_for(None, blocked_ports, &creds),
+            config_yaml_for(&Advertise::Local, blocked_ports, &creds),
         )
         .unwrap();
         drop((blocked_ws, blocked_tcp));
@@ -760,15 +787,40 @@ mod tests {
         assert_eq!(moved.udp, 7892);
         let creds = Credentials::generate();
         assert!(
-            config_yaml_for(None, moved, &creds).contains("port: 7890"),
+            config_yaml_for(&Advertise::Local, moved, &creds).contains("port: 7890"),
             "the config the SFU reads has to agree with what we advertise"
         );
-        assert!(config_yaml_for(None, moved, &creds).contains("udp_port: 7892"));
+        assert!(config_yaml_for(&Advertise::Local, moved, &creds).contains("udp_port: 7892"));
+    }
+
+    #[test]
+    fn a_host_without_a_port_map_advertises_the_address_stun_reports_unverified() {
+        let creds = Credentials {
+            key: "k".into(),
+            secret: "s".into(),
+        };
+        let yaml = config_yaml_for(
+            &Advertise::Stun("relay.example:7702".into()),
+            ports(),
+            &creds,
+        );
+        assert!(yaml.contains("use_external_ip: true"));
+        assert!(yaml.contains("skip_external_ip_validation: true"));
+        assert!(yaml.contains("stun_servers:\n    - \"relay.example:7702\""));
+        assert!(!yaml.contains("node_ip"));
+
+        let mapped = config_yaml_for(
+            &Advertise::Mapped("203.0.113.9".parse().unwrap()),
+            ports(),
+            &creds,
+        );
+        assert!(mapped.contains("use_external_ip: false"));
+        assert!(mapped.contains("node_ip: 203.0.113.9"));
     }
 
     #[test]
     fn media_rides_a_single_udp_port() {
-        let yaml = config_yaml(None, &Credentials::generate());
+        let yaml = config_yaml(&Advertise::Local, &Credentials::generate());
         assert!(
             yaml.contains(&format!("udp_port: {DEFAULT_LIVEKIT_UDP_PORT}")),
             "{yaml}"
@@ -779,9 +831,9 @@ mod tests {
     #[test]
     fn node_ip_appears_only_when_advertising() {
         let creds = Credentials::generate();
-        assert!(!config_yaml(None, &creds).contains("node_ip"));
+        assert!(!config_yaml(&Advertise::Local, &creds).contains("node_ip"));
 
-        let yaml = config_yaml(Some("203.0.113.5".parse().unwrap()), &creds);
+        let yaml = config_yaml(&Advertise::Mapped("203.0.113.5".parse().unwrap()), &creds);
         assert!(yaml.contains("node_ip: 203.0.113.5"), "{yaml}");
         assert!(yaml.contains("use_external_ip: false"), "{yaml}");
     }
@@ -789,7 +841,7 @@ mod tests {
     #[test]
     fn the_sfu_is_keyed_with_what_we_generated_and_nothing_public() {
         let creds = Credentials::generate();
-        let yaml = config_yaml(None, &creds);
+        let yaml = config_yaml(&Advertise::Local, &creds);
         assert!(
             yaml.contains(&format!(
                 "keys:\n  \"{}\": \"{}\"\n",
@@ -805,7 +857,7 @@ mod tests {
             secret: "s\\ecret".into(),
         };
         assert!(
-            config_yaml(None, &odd).contains("\"k\\\"ey\": \"s\\\\ecret\""),
+            config_yaml(&Advertise::Local, &odd).contains("\"k\\\"ey\": \"s\\\\ecret\""),
             "quotes and backslashes survive the trip through YAML"
         );
     }

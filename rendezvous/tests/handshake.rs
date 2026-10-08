@@ -521,3 +521,53 @@ async fn resolve_is_throttled_per_address() {
     let r = client.get(&url).send().await.unwrap();
     assert_eq!(r.status(), reqwest::StatusCode::TOO_MANY_REQUESTS);
 }
+
+#[tokio::test]
+async fn a_relay_hands_every_registration_turn_credentials_and_renews_them_on_request() {
+    let issuer = dioxusfun_rendezvous::turn_relay::Issuer::new(
+        vec!["turn:relay.example:7702".into()],
+        "shared-secret".into(),
+    );
+    let (base, _registry) = spawn_with(Config {
+        turn: Some(issuer),
+        ..Config::default()
+    })
+    .await;
+    let (secret, pubkey) = identity(17);
+
+    let (mut ws, nonce) = connect_control(&base).await;
+    let sig = sign(&secret, &nonce, &pubkey, "Relayed");
+    send_register(&mut ws, "Relayed", &pubkey, &sig).await;
+    let registered = next_json(&mut ws).await;
+    assert_eq!(registered["op"], "registered");
+    let turn = &registered["d"]["turn"];
+    assert_eq!(turn["urls"][0], "turn:relay.example:7702");
+    let first_user = turn["username"].as_str().unwrap().to_string();
+    assert!(!turn["credential"].as_str().unwrap().is_empty());
+    assert_eq!(
+        turn["expires_unix"].as_u64().unwrap().to_string(),
+        first_user,
+        "the username is the expiry, as the relay's auth scheme requires"
+    );
+
+    ws.send(Message::Text(
+        serde_json::json!({ "op": "renew_turn", "d": {} }).to_string(),
+    ))
+    .await
+    .unwrap();
+    let renewed = next_json(&mut ws).await;
+    assert_eq!(renewed["op"], "turn");
+    assert_eq!(renewed["d"]["urls"][0], "turn:relay.example:7702");
+    assert!(renewed["d"]["expires_unix"].as_u64().unwrap() >= first_user.parse::<u64>().unwrap());
+
+    let (mut plain, nonce) = connect_control(&spawn().await).await;
+    let (secret, pubkey) = identity(19);
+    let sig = sign(&secret, &nonce, &pubkey, "Plain");
+    send_register(&mut plain, "Plain", &pubkey, &sig).await;
+    let registered = next_json(&mut plain).await;
+    assert_eq!(registered["op"], "registered");
+    assert!(
+        registered["d"].get("turn").is_none(),
+        "no relay, no credentials"
+    );
+}
