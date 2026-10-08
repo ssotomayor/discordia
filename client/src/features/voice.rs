@@ -587,6 +587,7 @@ struct ActiveVoice {
     faults_rx: UnboundedReceiver<AudioFault>,
     mic_retry_at: Option<Instant>,
     output_retry_at: Option<Instant>,
+    device_scan_at: Option<Instant>,
     mic_error: Option<String>,
     output_error: Option<String>,
     event_task: tokio::task::JoinHandle<()>,
@@ -926,6 +927,7 @@ impl ActiveVoice {
             faults_rx,
             mic_retry_at: None,
             output_retry_at: None,
+            device_scan_at: None,
             mic_error,
             output_error,
             event_task,
@@ -1296,55 +1298,60 @@ impl ActiveVoice {
             }
         }
 
-        let host = cpal::default_host();
-        let mut inputs = Vec::new();
-        let mut outputs = Vec::new();
-        if let Ok(devices) = host.devices() {
-            for device in devices {
-                if let Ok(name) = device.name() {
-                    if device.default_input_config().is_ok() {
-                        inputs.push(name.clone());
-                    }
-                    if device.default_output_config().is_ok() {
-                        outputs.push(name);
+        // The device lists are a full cpal enumeration. The fault channel
+        // already reports a device that errors, so watching the list can run on
+        // a slower cadence than the reopen/backoff below.
+        let now = Instant::now();
+        if self.device_scan_at.is_none_or(|at| now >= at) {
+            self.device_scan_at = Some(now + DEVICE_SCAN);
+            let host = cpal::default_host();
+            let mut inputs = Vec::new();
+            let mut outputs = Vec::new();
+            if let Ok(devices) = host.devices() {
+                for device in devices {
+                    if let Ok(name) = device.name() {
+                        if device.default_input_config().is_ok() {
+                            inputs.push(name.clone());
+                        }
+                        if device.default_output_config().is_ok() {
+                            outputs.push(name);
+                        }
                     }
                 }
             }
-        }
-        {
-            let mut s = state.write();
-            if s.available_input_devices != inputs {
-                s.available_input_devices = inputs.clone();
+            {
+                let mut s = state.write();
+                if s.available_input_devices != inputs {
+                    s.available_input_devices = inputs.clone();
+                }
+                if s.available_output_devices != outputs {
+                    s.available_output_devices = outputs.clone();
+                }
             }
-            if s.available_output_devices != outputs {
-                s.available_output_devices = outputs.clone();
+            // Watch the device actually in use, not the selection: `pick_device`
+            // silently falls back to the default, and re-checking a still-selected
+            // but unplugged name would reopen the fallback every tick.
+            let mic_device = self
+                .mic
+                .as_ref()
+                .and_then(|mic| mic.device_name())
+                .map(str::to_string);
+            if let Some(name) = mic_device.as_deref()
+                && !inputs.iter().any(|d| d == name)
+            {
+                if let Some(mic) = self.mic.take() {
+                    mic.stop();
+                }
+                self.mic_retry_at = Some(now);
+            }
+            let output_device = self.playback.device_name().map(str::to_string);
+            if let Some(name) = output_device.as_deref()
+                && !outputs.iter().any(|d| d == name)
+            {
+                self.playback.drop_stream();
+                self.output_retry_at = Some(now);
             }
         }
-        // Watch the device actually in use, not the selection: `pick_device`
-        // silently falls back to the default, and re-checking a still-selected
-        // but unplugged name would reopen the fallback every tick.
-        let mic_device = self
-            .mic
-            .as_ref()
-            .and_then(|mic| mic.device_name())
-            .map(str::to_string);
-        if let Some(name) = mic_device.as_deref()
-            && !inputs.iter().any(|d| d == name)
-        {
-            if let Some(mic) = self.mic.take() {
-                mic.stop();
-            }
-            self.mic_retry_at = Some(Instant::now());
-        }
-        let output_device = self.playback.device_name().map(str::to_string);
-        if let Some(name) = output_device.as_deref()
-            && !outputs.iter().any(|d| d == name)
-        {
-            self.playback.drop_stream();
-            self.output_retry_at = Some(Instant::now());
-        }
-
-        let now = Instant::now();
         if self.mic.is_none() && self.mic_retry_at.is_none_or(|at| now >= at) {
             let faults = self.faults.clone();
             match MicCapture::start(
@@ -2689,6 +2696,10 @@ pub(crate) enum AudioFault {
 /// Reopening faster than this just spins on a device that is still gone; a
 /// re-plug is caught by the next tick anyway.
 const DEVICE_RETRY: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// The device lists are a full cpal enumeration; the fault channel already
+/// reports a device that errors, so watching the list can be slower than the tick.
+const DEVICE_SCAN: std::time::Duration = std::time::Duration::from_secs(5);
 
 struct MicCapture {
     _backend: MicBackend,
