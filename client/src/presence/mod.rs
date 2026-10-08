@@ -15,9 +15,12 @@ use dioxus::prelude::*;
 use crate::protocol::{Activity, ClientMessage};
 use crate::state::use_gateway;
 
-/// How often the process table is walked. Long, because the scan is the whole
-/// cost of the feature and nobody notices a game showing up ten seconds late.
-const SCAN_EVERY: std::time::Duration = std::time::Duration::from_secs(15);
+/// How often the process table is walked while a game is showing. Long, because
+/// the scan is the whole cost of the feature.
+const SCAN_ACTIVE: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// With nothing found the walk doubles away from the active cadence, up to this.
+const SCAN_IDLE_MAX: std::time::Duration = std::time::Duration::from_secs(60);
 
 struct ScanWorker {
     _stop: std::sync::mpsc::Sender<()>,
@@ -29,14 +32,28 @@ fn scan_until_stopped(
     stop: std::sync::mpsc::Receiver<()>,
     mut scan: impl FnMut() -> Option<Activity>,
 ) {
+    // A game already running stays responsive; with nothing found the walk
+    // spaces out and resets the moment one is spotted.
+    let mut idle_walks = 0u32;
     loop {
         if stop.try_recv() != Err(std::sync::mpsc::TryRecvError::Empty) {
             break;
         }
-        if tx.send((Source::Detected, scan())).is_err() {
+        let activity = scan();
+        idle_walks = if activity.is_some() {
+            0
+        } else {
+            (idle_walks + 1).min(2)
+        };
+        if tx.send((Source::Detected, activity)).is_err() {
             return;
         }
-        if stop.recv_timeout(SCAN_EVERY) != Err(std::sync::mpsc::RecvTimeoutError::Timeout) {
+        let wait = match idle_walks {
+            0 => SCAN_ACTIVE,
+            1 => SCAN_ACTIVE * 2,
+            _ => SCAN_IDLE_MAX,
+        };
+        if stop.recv_timeout(wait) != Err(std::sync::mpsc::RecvTimeoutError::Timeout) {
             break;
         }
     }
