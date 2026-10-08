@@ -175,6 +175,12 @@ cd /opt/discordia
 docker compose pull && docker compose -p discordia up -d
 ```
 
+`deploy/update-rendezvous.sh` does the rendezvous half from any machine with
+SSH to the box: it writes a `docker-compose.override.yml` that pins the image
+and turns on the TURN relay, opens the UDP ports in ufw, restarts the one
+service and probes the relay from outside. `IMAGE_TAG=<short sha>` pins,
+`DRY_RUN=1` prints the remote steps.
+
 Rolling back is the same command against an older sha in the image tag. Keep
 the deploy directory off any checkout an agent or a timer writes to — a compose
 file read out of a working tree is whatever revision that tree last held.
