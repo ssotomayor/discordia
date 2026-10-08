@@ -173,6 +173,7 @@ async fn resolve_session(
         SessionMode::Remote { server_url } => Ok((parse_target(&server_url)?, None)),
         SessionMode::SelfHost {
             allow_lan,
+            manual_ip,
             rendezvous_url,
             publish_name,
             description,
@@ -186,7 +187,8 @@ async fn resolve_session(
                 location,
             };
             state.write().rendezvous_url = rendezvous_url.clone();
-            let handle = start_self_host(allow_lan, rendezvous_url, publish, identity).await?;
+            let handle =
+                start_self_host(allow_lan, manual_ip, rendezvous_url, publish, identity).await?;
             let url = normalize_url(&handle.info.local_url)?;
             let origin = origin_of(&url)?;
             state.write().host_info = Some(handle.info.clone());
@@ -1513,19 +1515,41 @@ fn apply(
         ServerMessage::VoiceToken {
             channel_id,
             livekit_url,
+            alternate_urls,
+            route_revision,
             token,
         } => {
             eprintln!("[net] VoiceToken channel={channel_id} url={livekit_url}");
+            if route_revision < s.voice_route_revision
+                || s.server_voice_channel() != Some(channel_id)
+            {
+                return;
+            }
+            s.voice_route_revision = route_revision;
+            if route_revision == 1
+                && let Some(host) = &mut s.host_info
+            {
+                host.voice_bundled = false;
+                host.livekit_url = livekit_url.clone();
+                host.voice_reason =
+                    "Local voice endpoints failed; this session now uses rendezvous voice.".into();
+            }
             s.voice.phase = VoicePhase::Connecting;
             s.voice.channel_id = Some(channel_id);
             s.voice.error = None;
+            s.voice_endpoint = None;
             let _ = voice_tx.send(VoiceCmd::Connect {
                 livekit_url,
+                alternate_urls,
+                route_revision,
+                report_tx: tx.clone(),
                 token,
                 channel_id,
             });
         }
         ServerMessage::ScreenToken {
+            channel_id,
+            route_revision,
             livekit_url,
             token,
             audio_token,
@@ -1533,6 +1557,12 @@ fn apply(
             viewer_token,
             ..
         } => {
+            if route_revision < s.voice_route_revision
+                || s.server_voice_channel() != Some(channel_id)
+            {
+                return;
+            }
+            let livekit_url = s.voice_endpoint.clone().unwrap_or(livekit_url);
             s.screen_token = Some((livekit_url.clone(), token));
             s.screen_audio_token =
                 (!audio_token.is_empty()).then_some((livekit_url.clone(), audio_token));
@@ -1540,6 +1570,17 @@ fn apply(
                 (!video_token.is_empty()).then_some((livekit_url.clone(), video_token));
             s.screen_viewer_token =
                 (!viewer_token.is_empty()).then_some((livekit_url, viewer_token));
+        }
+        ServerMessage::VoiceRouteChanged {
+            livekit_url,
+            reason,
+        } => {
+            s.voice_route_revision = 1;
+            if let Some(host) = &mut s.host_info {
+                host.voice_bundled = false;
+                host.livekit_url = livekit_url;
+                host.voice_reason = reason;
+            }
         }
         ServerMessage::Error { message } => {
             s.voice.joining_channel_id = None;
@@ -1555,6 +1596,89 @@ fn apply(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn late_local_tokens_cannot_restore_an_old_route_and_screen_follows_the_selected_address() {
+        fn harness() -> Element {
+            let mut state = use_signal(AppState::empty);
+            use_hook(move || {
+                let channel = Id::new_v4();
+                let pubkey = "ab".repeat(32);
+                state.write().self_user = Some(crate::protocol::User {
+                    pubkey: pubkey.clone(),
+                    username: "Host".into(),
+                });
+                state
+                    .write()
+                    .voice_states
+                    .push(crate::protocol::VoiceState {
+                        user_pubkey: pubkey,
+                        guild_id: Id::new_v4(),
+                        channel_id: Some(channel),
+                        muted: false,
+                        deafened: false,
+                        speaking: false,
+                        camera_on: false,
+                        screen_sharing: false,
+                        screen_watching: Vec::new(),
+                    });
+                let (tx, _messages) = unbounded_channel();
+                let (voice_tx, mut native) = unbounded_channel();
+                apply(
+                    &mut state,
+                    ServerMessage::VoiceRouteChanged {
+                        livekit_url: "wss://shared".into(),
+                        reason: "local failed".into(),
+                    },
+                    &tx,
+                    &voice_tx,
+                );
+                let token = |revision| ServerMessage::VoiceToken {
+                    channel_id: channel,
+                    livekit_url: "ws://primary".into(),
+                    alternate_urls: Vec::new(),
+                    route_revision: revision,
+                    token: "voice".into(),
+                };
+                apply(&mut state, token(0), &tx, &voice_tx);
+                assert!(native.try_recv().is_err());
+                apply(&mut state, token(1), &tx, &voice_tx);
+                assert!(matches!(
+                    native.try_recv().unwrap(),
+                    VoiceCmd::Connect {
+                        route_revision: 1,
+                        ..
+                    }
+                ));
+                state
+                    .write()
+                    .set_voice_endpoint("ws://[2800:810::1]:7880".into());
+                let screen = |revision| ServerMessage::ScreenToken {
+                    channel_id: channel,
+                    livekit_url: "ws://primary".into(),
+                    route_revision: revision,
+                    token: "screen".into(),
+                    audio_token: "audio".into(),
+                    video_token: "video".into(),
+                    viewer_token: "viewer".into(),
+                };
+                apply(&mut state, screen(0), &tx, &voice_tx);
+                assert!(state.peek().screen_token.is_none());
+                apply(&mut state, screen(1), &tx, &voice_tx);
+                for token in [
+                    &state.peek().screen_token,
+                    &state.peek().screen_audio_token,
+                    &state.peek().screen_video_token,
+                    &state.peek().screen_viewer_token,
+                ] {
+                    assert_eq!(token.as_ref().unwrap().0, "ws://[2800:810::1]:7880");
+                }
+            });
+            rsx! {}
+        }
+        let mut dom = VirtualDom::new(harness);
+        dom.rebuild_in_place();
+    }
 
     #[tokio::test]
     async fn legacy_join_echo_cannot_clear_local_mute_or_deafen_and_leave_keeps_choices() {

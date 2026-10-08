@@ -50,10 +50,13 @@ pub fn ConnectForm(
 ) -> Element {
     let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let default_rendezvous = settings.read().active_rendezvous();
+    let media = dioxusfun_server::livekit_bundle::ports();
+    let (media_ws, media_tcp, media_udp) = (media.ws, media.tcp, media.udp);
 
     let mut mode = use_signal(initial_mode);
     let mut server_url = use_signal(String::new);
     let mut allow_lan = use_signal(|| true);
+    let mut manual_ip = use_signal(String::new);
     let mut publish_to_rendezvous = use_signal(|| true);
     let mut rendezvous_url = use_signal(|| default_rendezvous.clone());
     let mut code = use_signal(String::new);
@@ -96,6 +99,11 @@ pub fn ConnectForm(
                 SessionParams {
                     mode: SessionMode::SelfHost {
                         allow_lan: allow_lan(),
+                        manual_ip: if allow_lan() {
+                            manual_ip().trim().parse().ok()
+                        } else {
+                            None
+                        },
                         rendezvous_url: r_url,
                         publish_name: if pn.is_empty() { None } else { Some(pn) },
                         description: if desc.is_empty() { None } else { Some(desc) },
@@ -118,7 +126,15 @@ pub fn ConnectForm(
     };
 
     let disabled = match mode() {
-        Mode::Create => false,
+        Mode::Create => {
+            allow_lan()
+                && !manual_ip().trim().is_empty()
+                && manual_ip()
+                    .trim()
+                    .parse::<std::net::IpAddr>()
+                    .ok()
+                    .is_none_or(|ip| !ip.is_ipv4() || !crate::host::public_address(ip))
+        }
         Mode::Join => join_by(&server_url(), &code(), &rendezvous_url()) == JoinBy::Nothing,
     };
     // Going grey says "not yet" without saying why; this names both ways in.
@@ -281,8 +297,28 @@ pub fn ConnectForm(
                                 }
                                 span {
                                     class: "w-4 h-4 shrink-0 flex items-center justify-center rounded-full border border-[var(--border)] text-[9px] text-[var(--text-dim)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors cursor-help",
-                                    title: "Offers this machine's own address in the share string and asks your router (UPnP / NAT-PMP) to let in friends elsewhere. Connections stay encrypted either way; your home IP becomes visible to anyone who joins that way.",
+                                    title: "Offers IPv4 and IPv6 addresses and asks your router (UPnP / NAT-PMP / PCP) to let friends in. Your home IP becomes visible to anyone who joins directly.",
                                     "?"
+                                }
+                            }
+                            if allow_lan() {
+                                details { class: "space-y-2 text-[12px] text-[var(--text-dim)]",
+                                    summary { class: "cursor-pointer", "I already forwarded the ports" }
+                                    label { class: LABEL, "Public IPv4 address (optional)" }
+                                    input {
+                                        class: INPUT_SM,
+                                        placeholder: "Your router's public IPv4 address",
+                                        value: "{manual_ip}",
+                                        oninput: move |e| manual_ip.set(e.value()),
+                                    }
+                                    if disabled {
+                                        div { class: "text-[var(--warn)]",
+                                            "Enter a public IPv4 address, or leave this empty to try automatic detection."
+                                        }
+                                    }
+                                    div { class: "text-[11px] leading-relaxed",
+                                        "Forward UDP 9001 for joining, TCP {media_ws} for voice connections, TCP {media_tcp} and UDP {media_udp} for media to this PC. IPv6 is tried automatically."
+                                    }
                                 }
                             }
                             if publish_to_rendezvous() {

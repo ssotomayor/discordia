@@ -417,7 +417,7 @@ fn config_yaml_for(advertise_ip: Option<IpAddr>, p: LivekitPorts, creds: &Creden
     let (key, secret) = (yaml_quote(&creds.key), yaml_quote(&creds.secret));
     format!(
         "port: {ws}\n\
-         bind_addresses:\n  - 0.0.0.0\n\
+         bind_addresses:\n  - \"\"\n\
          rtc:\n  tcp_port: {tcp}\n  udp_port: {udp}\n  use_external_ip: false\n{node_ip}\
          keys:\n  {key}: {secret}\n\
          logging:\n  level: info\n",
@@ -573,6 +573,11 @@ mod tests {
         command.creation_flags(CREATE_NO_WINDOW);
         let mut child = command.spawn().unwrap();
         let ready = wait_for_ready(&mut child, p.ws, &creds, Duration::from_secs(10)).await;
+        if std::net::TcpListener::bind("[::1]:0").is_ok() {
+            tokio::net::TcpStream::connect((std::net::Ipv6Addr::LOCALHOST, p.ws))
+                .await
+                .expect("the ready SFU must accept IPv6 signaling as well as IPv4");
+        }
         let wrong = wait_for_ready(
             &mut child,
             p.ws,

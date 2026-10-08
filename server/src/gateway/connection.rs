@@ -1172,23 +1172,41 @@ pub async fn handle_connection(
                         // one costs this join and not every frame on the socket.
                         let ctx = ctx.clone();
                         let (pubkey, username) = (u.pubkey.clone(), u.username.clone());
-                        let livekit_url = ctx.livekit.url_for_client(client_host.as_deref(), peer);
+                        let (voice_cfg, route_revision) = ctx.livekit.route();
+                        let mut livekit_urls = voice_cfg.urls_for_client(client_host.as_deref(), peer);
+                        let livekit_url = livekit_urls.remove(0);
                         tokio::spawn(async move {
                             let frames = mint_voice_frames(
-                                &ctx.livekit,
+                                &voice_cfg,
                                 &pubkey,
                                 &username,
                                 channel_id,
                                 livekit_url,
+                                livekit_urls,
+                                route_revision,
                             )
                             .await;
-                            if ctx.state.voice_channel_of(&pubkey) != Some(channel_id) {
+                            if ctx.state.voice_channel_of(&pubkey) != Some(channel_id)
+                                || ctx.livekit.route().1 != route_revision {
                                 return;
                             }
                             for frame in &frames {
                                 ctx.state.deliver_to_conn(conn_id, frame);
                             }
                         });
+                    }
+                    ClientMessage::VoiceConnectionReport { channel_id, route_revision, connected } => {
+                        let Some(u) = user.as_ref() else { continue };
+                        if !signals.allow() || ctx.state.voice_channel_of(&u.pubkey) != Some(channel_id)
+                            || route_revision != 0 || ctx.livekit.route().1 != 0
+                            || peer.is_some_and(crate::protocol::is_private_ip) { continue; }
+                        let Some(fallback) = &ctx.livekit.fallback else { continue };
+                        if connected {
+                            fallback.confirmed_local();
+                        } else if fallback.use_shared() {
+                            let ctx = ctx.clone();
+                            tokio::spawn(async move { move_voice_to_shared(ctx).await; });
+                        }
                     }
                     ClientMessage::LeaveVoice => {
                         let Some(u) = user.as_ref() else { continue };
@@ -2115,14 +2133,56 @@ where
         .unwrap_or_else(|_| Err(MINT_TIMED_OUT.to_string()))
 }
 
-/// Everything a voice join sends back, in order: the voice token, then any
-/// screen-share complaints, then the screen tokens. Or one error and nothing else.
+async fn move_voice_to_shared(ctx: Arc<AppContext>) {
+    let (cfg, revision) = ctx.livekit.route();
+    let Some(url) = cfg.explicit_url.clone() else {
+        return;
+    };
+    let reason = "A remote caller could not connect to any local voice address. The session moved to rendezvous voice as its last option.";
+    let targets = ctx.state.users.iter().map(|u| u.pubkey.clone()).collect();
+    ctx.state.deliver(
+        targets,
+        ServerMessage::VoiceRouteChanged {
+            livekit_url: url.clone(),
+            reason: reason.into(),
+        },
+    );
+    let callers: Vec<_> = ctx
+        .state
+        .voice_states
+        .iter()
+        .filter_map(|v| v.channel_id.map(|channel| (v.user_pubkey.clone(), channel)))
+        .collect();
+    for (pubkey, channel) in callers {
+        let ctx = ctx.clone();
+        let cfg = cfg.clone();
+        let url = url.clone();
+        tokio::spawn(async move {
+            let name = ctx
+                .state
+                .users
+                .get(&pubkey)
+                .map(|u| u.username.clone())
+                .unwrap_or_default();
+            let frames =
+                mint_voice_frames(&cfg, &pubkey, &name, channel, url, Vec::new(), revision).await;
+            if ctx.state.voice_channel_of(&pubkey) == Some(channel) {
+                for frame in frames {
+                    ctx.state.deliver(vec![pubkey.clone()], frame);
+                }
+            }
+        });
+    }
+}
+
 async fn mint_voice_frames(
     cfg: &livekit::LiveKitConfig,
     pubkey: &str,
     username: &str,
     channel_id: Id,
     livekit_url: String,
+    alternate_urls: Vec<String>,
+    route_revision: u32,
 ) -> Vec<ServerMessage> {
     let mut frames = Vec::new();
     let token = match minted(livekit::voice_token(cfg, pubkey, username, channel_id)).await {
@@ -2138,6 +2198,8 @@ async fn mint_voice_frames(
     frames.push(ServerMessage::VoiceToken {
         channel_id,
         livekit_url: livekit_url.clone(),
+        alternate_urls,
+        route_revision,
         token,
     });
     let screen_name = format!("{username} (screen)");
@@ -2166,6 +2228,7 @@ async fn mint_voice_frames(
             frames.extend(video_err);
             frames.push(ServerMessage::ScreenToken {
                 channel_id,
+                route_revision,
                 livekit_url,
                 token: screen_token,
                 audio_token,

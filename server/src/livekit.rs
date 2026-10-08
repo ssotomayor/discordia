@@ -15,6 +15,47 @@ pub struct MintRequest {
 
 pub type BoxFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
 
+pub struct VoiceFallback {
+    pub url: String,
+    pub minter: std::sync::Arc<dyn VoiceTokenMinter>,
+    selection: std::sync::atomic::AtomicU8,
+}
+
+impl VoiceFallback {
+    pub fn new(url: String, minter: std::sync::Arc<dyn VoiceTokenMinter>) -> Self {
+        Self {
+            url,
+            minter,
+            selection: std::sync::atomic::AtomicU8::new(0),
+        }
+    }
+
+    pub fn confirmed_local(&self) {
+        let _ = self.selection.compare_exchange(
+            0,
+            1,
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Acquire,
+        );
+    }
+
+    pub fn use_shared(&self) -> bool {
+        // Once a remote caller verified local media, a later caller cannot move the session.
+        self.selection
+            .compare_exchange(
+                0,
+                2,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            )
+            .is_ok()
+    }
+
+    fn shared(&self) -> bool {
+        self.selection.load(std::sync::atomic::Ordering::Acquire) == 2
+    }
+}
+
 pub trait VoiceTokenMinter: Send + Sync {
     fn mint<'a>(&'a self, req: MintRequest) -> BoxFuture<'a, Result<String, String>>;
 
@@ -29,6 +70,8 @@ pub struct LiveKitConfig {
     pub port: u16,
     pub lan_host: Option<String>,
     pub public_host: Option<String>,
+    pub alternate_hosts: Vec<std::net::IpAddr>,
+    pub fallback: Option<std::sync::Arc<VoiceFallback>>,
     pub api_key: String,
     pub api_secret: String,
     pub minter: Option<std::sync::Arc<dyn VoiceTokenMinter>>,
@@ -55,6 +98,8 @@ impl LiveKitConfig {
             minter: None,
             lan_host: None,
             public_host: None,
+            alternate_hosts: Vec::new(),
+            fallback: None,
         }
     }
 
@@ -68,6 +113,9 @@ impl LiveKitConfig {
     ) -> String {
         if let Some(url) = &self.explicit_url {
             return url.clone();
+        }
+        if !self.alternate_hosts.is_empty() {
+            return self.urls_for_client(client_host, peer).remove(0);
         }
         let host = client_host.map(host_without_port).unwrap_or("127.0.0.1");
         let host = if is_loopback(host) {
@@ -83,6 +131,43 @@ impl LiveKitConfig {
             host
         };
         format!("ws://{host}:{}", self.port)
+    }
+
+    pub fn urls_for_client(
+        &self,
+        client_host: Option<&str>,
+        peer: Option<std::net::IpAddr>,
+    ) -> Vec<String> {
+        if self.alternate_hosts.is_empty() || self.explicit_url.is_some() {
+            return vec![self.url_for_client(client_host, peer)];
+        }
+        let mut hosts = Vec::new();
+        if peer.is_some_and(|ip| ip.is_loopback()) {
+            hosts.push("127.0.0.1".to_string());
+        }
+        if peer.is_some_and(crate::protocol::is_private_ip)
+            && let Some(lan) = &self.lan_host
+        {
+            hosts.push(lan.clone());
+        }
+        let prefer_v6 = peer.is_some_and(|ip| ip.is_ipv6());
+        let mut ips = self.alternate_hosts.clone();
+        ips.sort_by_key(|ip| ip.is_ipv6() != prefer_v6);
+        hosts.extend(ips.into_iter().map(|ip| match ip {
+            std::net::IpAddr::V6(ip) => format!("[{ip}]"),
+            std::net::IpAddr::V4(ip) => ip.to_string(),
+        }));
+        if let Some(public) = &self.public_host {
+            hosts.push(public.clone());
+        }
+        let mut urls = Vec::new();
+        for host in hosts {
+            let url = format!("ws://{host}:{}", self.port);
+            if !urls.contains(&url) {
+                urls.push(url);
+            }
+        }
+        urls
     }
 }
 
@@ -175,6 +260,21 @@ pub async fn screen_token_as(
 }
 
 impl LiveKitConfig {
+    pub fn route(&self) -> (Self, u32) {
+        let mut cfg = self.clone();
+        cfg.fallback = None;
+        if let Some(fallback) = &self.fallback
+            && fallback.shared()
+        {
+            cfg.explicit_url = Some(fallback.url.clone());
+            cfg.minter = Some(fallback.minter.clone());
+            cfg.alternate_hosts.clear();
+            (cfg, 1)
+        } else {
+            (cfg, 0)
+        }
+    }
+
     /// `None` when a rendezvous mints the tokens: its SFU, its keys.
     fn admin_url(&self) -> Option<String> {
         if self.minter.is_some() {
@@ -192,6 +292,7 @@ impl LiveKitConfig {
 /// Every identity one person can hold in a channel's two rooms (trap 10). One
 /// that is not there is the usual answer, not a failure.
 pub async fn evict(cfg: &LiveKitConfig, channel_id: Id, user_pubkey: &str) {
+    let (cfg, _) = cfg.route();
     if let Some(minter) = &cfg.minter {
         if let Err(error) = minter.evict(channel_id, user_pubkey).await {
             tracing::warn!(%channel_id, %error, "delegated SFU eviction failed");
@@ -255,6 +356,84 @@ pub fn mint_screen_token(
 mod tests {
     use super::*;
 
+    struct FakeMinter;
+    impl VoiceTokenMinter for FakeMinter {
+        fn mint<'a>(&'a self, req: MintRequest) -> BoxFuture<'a, Result<String, String>> {
+            Box::pin(async move { Ok(format!("delegated-{}", req.identity)) })
+        }
+    }
+
+    fn direct_routes() -> LiveKitConfig {
+        LiveKitConfig {
+            explicit_url: None,
+            port: 7880,
+            lan_host: Some("192.168.0.16".into()),
+            public_host: Some("203.0.113.5".into()),
+            alternate_hosts: vec![
+                "203.0.113.5".parse().unwrap(),
+                "2800:810::123".parse().unwrap(),
+            ],
+            fallback: Some(std::sync::Arc::new(VoiceFallback::new(
+                "wss://last-option".into(),
+                std::sync::Arc::new(FakeMinter),
+            ))),
+            api_key: "key".into(),
+            api_secret: "secret".into(),
+            minter: None,
+        }
+    }
+
+    #[test]
+    fn the_host_uses_loopback_and_remote_callers_try_both_ip_families() {
+        let cfg = direct_routes();
+        let local = cfg.urls_for_client(Some("127.0.0.1"), Some("127.0.0.1".parse().unwrap()));
+        assert_eq!(local[0], "ws://127.0.0.1:7880");
+        let v6 = cfg.urls_for_client(Some("127.0.0.1"), Some("2800:40::9".parse().unwrap()));
+        assert_eq!(v6, ["ws://[2800:810::123]:7880", "ws://203.0.113.5:7880"]);
+        let v4 = cfg.urls_for_client(Some("127.0.0.1"), Some("198.51.100.9".parse().unwrap()));
+        assert_eq!(v4, ["ws://203.0.113.5:7880", "ws://[2800:810::123]:7880"]);
+        let relay = cfg.urls_for_client(Some("127.0.0.1"), None);
+        assert!(
+            !relay
+                .iter()
+                .any(|url| url.contains("127.0.0.1") || url.contains("192.168"))
+        );
+    }
+
+    #[tokio::test]
+    async fn failover_changes_urls_and_signing_together_for_all_config_clones() {
+        let cfg = direct_routes();
+        let other = cfg.clone();
+        let (before, revision) = cfg.route();
+        assert_eq!(revision, 0);
+        assert!(before.minter.is_none());
+        assert!(cfg.fallback.as_ref().unwrap().use_shared());
+        assert!(!cfg.fallback.as_ref().unwrap().use_shared());
+        let (after, revision) = other.route();
+        assert_eq!(revision, 1);
+        assert_eq!(after.urls_for_client(None, None), ["wss://last-option"]);
+        assert_eq!(
+            voice_token(&after, "friend", "Friend", Id::new_v4())
+                .await
+                .unwrap(),
+            "delegated-friend"
+        );
+        assert!(after.admin_url().is_none());
+        assert!(
+            before.minter.is_none(),
+            "an in-flight mint keeps its original signing authority"
+        );
+    }
+
+    #[test]
+    fn a_verified_local_session_cannot_be_moved_by_a_later_failure() {
+        let cfg = direct_routes();
+        let fallback = cfg.fallback.as_ref().unwrap();
+        fallback.confirmed_local();
+        assert!(!fallback.use_shared());
+        assert_eq!(cfg.route().1, 0);
+    }
+
     #[test]
     fn screen_grants_follow_the_connection() {
         use livekit_api::access_token::TokenVerifier;
@@ -267,6 +446,8 @@ mod tests {
             minter: None,
             lan_host: None,
             public_host: None,
+            alternate_hosts: Vec::new(),
+            fallback: None,
         };
         let channel = Id::new_v4();
         let verifier = TokenVerifier::with_api_key(&cfg.api_key, &cfg.api_secret);
@@ -319,6 +500,8 @@ mod tests {
             minter: None,
             lan_host: None,
             public_host: None,
+            alternate_hosts: Vec::new(),
+            fallback: None,
         };
         assert_eq!(
             cfg.url_for_client(Some("192.168.0.5:9000"), None),
@@ -336,6 +519,8 @@ mod tests {
             minter: None,
             lan_host: None,
             public_host: None,
+            alternate_hosts: Vec::new(),
+            fallback: None,
         };
         assert_eq!(
             cfg.url_for_client(Some("192.168.0.5:9000"), None),
@@ -354,6 +539,8 @@ mod tests {
             minter: None,
             lan_host: Some("192.168.0.61".into()),
             public_host: None,
+            alternate_hosts: Vec::new(),
+            fallback: None,
         };
         for h in ["127.0.0.1:9000", "localhost:9000", "[::1]:9000"] {
             assert_eq!(cfg.url_for_client(Some(h), None), "ws://192.168.0.61:7880");
@@ -374,6 +561,8 @@ mod tests {
             minter: None,
             lan_host: Some("192.168.0.61".into()),
             public_host: Some("203.0.113.5".into()),
+            alternate_hosts: Vec::new(),
+            fallback: None,
         };
         assert_eq!(
             cfg.url_for_client(Some("127.0.0.1:9000"), None),
@@ -395,6 +584,8 @@ mod tests {
             minter: None,
             lan_host: Some("192.168.0.61".into()),
             public_host: Some("203.0.113.5".into()),
+            alternate_hosts: Vec::new(),
+            fallback: None,
         };
         let quic_host = Some("127.0.0.1");
         assert_eq!(

@@ -31,6 +31,7 @@ pub struct HostInfo {
     /// machine may connect.
     pub share: Option<String>,
     pub voice_bundled: bool,
+    pub voice_reason: String,
     pub shortcode: Option<String>,
     pub publish_error: Option<String>,
     pub listed_public: bool,
@@ -103,10 +104,17 @@ impl Drop for HostHandle {
 /// forward them; a join code needs QUIC too, for the relay to introduce us.
 pub async fn start_self_host(
     allow_lan: bool,
+    manual_ip: Option<IpAddr>,
     rendezvous_url: Option<String>,
     publish: crate::rendezvous::PublishOptions,
     identity: crate::identity::Identity,
 ) -> Result<HostHandle, String> {
+    if manual_ip.is_some_and(|ip| !ip.is_ipv4() || !public_address(ip)) {
+        return Err(
+            "manual forwarding needs a public IPv4 address; IPv6 is discovered automatically"
+                .into(),
+        );
+    }
     let operator_pubkey = identity.pubkey.clone();
 
     let listener = dioxusfun_server::bind_with_fallback(
@@ -133,7 +141,11 @@ pub async fn start_self_host(
         match dioxusfun_server::quic::bind_quic(
             Some(transport_secret),
             &coordination,
-            dioxusfun_server::quic::RANDOM_PORT,
+            if manual_ip.is_some() {
+                dioxusfun_server::quic::DEFAULT_PORT
+            } else {
+                dioxusfun_server::quic::RANDOM_PORT
+            },
         )
         .await
         {
@@ -149,50 +161,119 @@ pub async fn start_self_host(
         .as_ref()
         .and_then(|ep| ep.bound_sockets().first().map(|s| s.port()));
 
-    let (mapped, port_mapping, reachability) = match (allow_lan, local_ipv4(), quic_port) {
-        (false, _, _) => (None, None, Reachability::LoopbackOnly),
-        (true, None, _) => (
-            None,
-            None,
-            Reachability::LanOnly {
-                reason: "this machine has no IPv4 address on a local network".into(),
-            },
-        ),
-        (true, _, None) => (
-            None,
-            None,
-            Reachability::LanOnly {
-                reason: "the QUIC endpoint did not bind, so there is no port to forward".into(),
-            },
-        ),
-        (true, Some(local_ip), Some(quic_udp)) => {
-            let sfu = livekit_bundle::ports();
-            let ports = portmap::Ports {
-                media_tcp: sfu.ws,
-                media_tcp_ice: sfu.tcp,
-                media_udp: sfu.udp,
-                quic_udp,
-            };
-            match portmap::request(local_ip, ports).await {
-                Ok((mapped, guard)) => {
-                    eprintln!(
-                        "[host] {} mapped {} (quic: {}, media: {}, hairpin: {})",
-                        mapped.method, mapped.public_ip, mapped.quic, mapped.media, mapped.hairpin
-                    );
-                    let reach = Reachability::Direct {
-                        method: mapped.method,
-                        media: mapped.media && mapped.hairpin,
-                        note: mapped.media_note,
+    let mut manual = if allow_lan
+        && let (Some(ip), Some(local), Some(port)) = (manual_ip, local_ipv4(), quic_port)
+    {
+        Some(portmap::manual(ip, local, livekit_bundle::ports().ws, port).await)
+    } else {
+        None
+    };
+    let (mut mapped, port_mapping, mut reachability) =
+        if manual.as_ref().is_some_and(|m| m.media && m.hairpin) {
+            (
+                manual.take(),
+                None,
+                Reachability::Direct {
+                    method: "manual forwarding",
+                    media: true,
+                    note: None,
+                },
+            )
+        } else {
+            match (allow_lan, local_ipv4(), quic_port) {
+                (false, _, _) => (None, None, Reachability::LoopbackOnly),
+                (true, None, _) => (
+                    None,
+                    None,
+                    Reachability::LanOnly {
+                        reason: "this machine has no IPv4 address on a local network".into(),
+                    },
+                ),
+                (true, _, None) => (
+                    None,
+                    None,
+                    Reachability::LanOnly {
+                        reason: "the QUIC endpoint did not bind, so there is no port to forward"
+                            .into(),
+                    },
+                ),
+                (true, Some(local_ip), Some(quic_udp)) => {
+                    let sfu = livekit_bundle::ports();
+                    let ports = portmap::Ports {
+                        media_tcp: sfu.ws,
+                        media_tcp_ice: sfu.tcp,
+                        media_udp: sfu.udp,
+                        quic_udp,
                     };
-                    (Some(mapped), Some(guard), reach)
-                }
-                Err(reason) => {
-                    eprintln!("[host] no port mapping: {reason}");
-                    (None, None, Reachability::LanOnly { reason })
+                    match portmap::request(local_ip, ports).await {
+                        Ok((mapped, guard)) => {
+                            eprintln!(
+                                "[host] {} mapped {} (quic: {}, media: {}, hairpin: {})",
+                                mapped.method,
+                                mapped.public_ip,
+                                mapped.quic,
+                                mapped.media,
+                                mapped.hairpin
+                            );
+                            let reach = Reachability::Direct {
+                                method: mapped.method,
+                                media: mapped.media && mapped.hairpin,
+                                note: mapped.media_note,
+                            };
+                            (Some(mapped), Some(guard), reach)
+                        }
+                        Err(reason) => {
+                            eprintln!("[host] no port mapping: {reason}");
+                            (None, None, Reachability::LanOnly { reason })
+                        }
+                    }
                 }
             }
-        }
+        };
+
+    if let Some(manual) = manual
+        && mapped.as_ref().is_none_or(|m| !m.media || !m.hairpin)
+    {
+        reachability = Reachability::Direct {
+            method: "manual forwarding",
+            media: manual.media && manual.hairpin,
+            note: manual.media_note,
+        };
+        mapped = Some(manual);
+    }
+
+    let public_v6: Vec<IpAddr> = if allow_lan
+        && quic_endpoint
+            .as_ref()
+            .is_some_and(|ep| ep.bound_sockets().iter().any(|socket| socket.is_ipv6()))
+    {
+        local_ip_address::list_afinet_netifas()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(_, ip)| ip)
+            .filter(|ip| ip.is_ipv6() && public_address(*ip))
+            .collect()
+    } else {
+        Vec::new()
     };
+    let mut voice_hosts = public_v6.clone();
+    if let Some(ip) = mapped
+        .as_ref()
+        .filter(|m| m.media && m.hairpin)
+        .map(|m| m.public_ip)
+    {
+        voice_hosts.push(ip);
+    }
+    voice_hosts.sort();
+    voice_hosts.dedup();
+    if !voice_hosts.is_empty() && !matches!(reachability, Reachability::Direct { media: true, .. })
+    {
+        reachability = Reachability::Direct {
+            method: "IPv6",
+            media: true,
+            note: None,
+        };
+    }
 
     let advertise_ip = mapped
         .as_ref()
@@ -210,7 +291,12 @@ pub async fn start_self_host(
         (Some(ep), Some(port)) => {
             let mut addrs = Vec::new();
             if let Some(m) = mapped.as_ref().filter(|m| m.quic) {
-                addrs.push(SocketAddr::new(m.public_ip, port).to_string());
+                addrs.push(SocketAddr::new(m.public_ip, m.quic_port).to_string());
+            }
+            for ip in &public_v6 {
+                if let Some(socket) = ep.bound_sockets().iter().find(|s| s.is_ipv6()) {
+                    addrs.push(SocketAddr::new(*ip, socket.port()).to_string());
+                }
             }
             if allow_lan && let Some(ip) = local_ipv4() {
                 addrs.push(SocketAddr::new(IpAddr::V4(ip), port).to_string());
@@ -263,6 +349,25 @@ pub async fn start_self_host(
         .as_ref()
         .and_then(|(_, info)| info.livekit_url.clone());
     let plan = sfu_plan(&reachability, shared_offer.as_deref());
+    let mut voice_reason = if !voice_hosts.is_empty() {
+        format!(
+            "Calls run on this machine. Clients try these addresses and verify the media connection: {}. IPv6 needs inbound firewall access and IPv6 at the caller.",
+            voice_hosts
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    } else {
+        match &reachability {
+            Reachability::LanOnly { reason } => reason.clone(),
+            Reachability::Direct {
+                note: Some(note), ..
+            } => (*note).to_string(),
+            _ => "No usable public voice address was found; local-network calls may still work."
+                .into(),
+        }
+    };
 
     let data_dir = crate::identity::config_dir().join("host-data");
     let creds = livekit_bundle::credentials_or_ephemeral(&data_dir);
@@ -285,6 +390,7 @@ pub async fn start_self_host(
                 }
                 Err(e) => match shared_offer.clone() {
                     Some(url) => {
+                        voice_reason = format!("The local voice server failed to start: {e}");
                         eprintln!(
                             "[host] livekit unavailable ({e}) — calls go through the rendezvous's SFU at {url}"
                         );
@@ -292,6 +398,9 @@ pub async fn start_self_host(
                         (None, Some(url))
                     }
                     None => {
+                        voice_reason = format!(
+                            "The local voice server failed to start: {e}; no rendezvous voice is available."
+                        );
                         eprintln!("[host] livekit unavailable: {e}");
                         tracing::warn!(error = %e, "self-host voice unavailable");
                         (None, None)
@@ -303,8 +412,8 @@ pub async fn start_self_host(
     let voice_bundled = livekit.is_some();
     let shared_sfu_url = explicit_url.clone();
 
-    let rendezvous_minter = match (&explicit_url, rendezvous_state.as_ref()) {
-        (Some(_), Some((_, info))) => info.voice_token_grant.as_ref().map(|grant| {
+    let rendezvous_minter = match rendezvous_state.as_ref() {
+        Some((_, info)) => info.voice_token_grant.as_ref().map(|grant| {
             std::sync::Arc::new(crate::rendezvous::RendezvousMinter::new(
                 &info.rendezvous_base,
                 grant.clone(),
@@ -320,9 +429,21 @@ pub async fn start_self_host(
         api_secret: creds.secret,
         minter: rendezvous_minter
             .clone()
+            .filter(|_| !voice_bundled)
             .map(|m| m as std::sync::Arc<dyn dioxusfun_server::livekit::VoiceTokenMinter>),
+        fallback: if voice_bundled {
+            shared_offer
+                .clone()
+                .zip(rendezvous_minter.clone())
+                .map(|(url, minter)| {
+                    std::sync::Arc::new(dioxusfun_server::livekit::VoiceFallback::new(url, minter))
+                })
+        } else {
+            None
+        },
         lan_host: local_ip_address::local_ip().ok().map(|ip| ip.to_string()),
         public_host: advertise_ip.map(|ip| ip.to_string()),
+        alternate_hosts: voice_hosts,
     };
 
     // Every way a friend can reach this gateway, because a login signed for
@@ -396,6 +517,7 @@ pub async fn start_self_host(
             local_url,
             share,
             voice_bundled,
+            voice_reason,
             shortcode,
             publish_error,
             listed_public,
@@ -412,6 +534,18 @@ pub async fn start_self_host(
     })
 }
 
+pub fn public_address(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => {
+            !crate::protocol::is_private_ip(ip.into())
+                && !ip.is_unspecified()
+                && !ip.is_multicast()
+                && !ip.is_broadcast()
+        }
+        IpAddr::V6(ip) => (ip.segments()[0] & 0xe000) == 0x2000,
+    }
+}
+
 fn local_ipv4() -> Option<Ipv4Addr> {
     match local_ip_address::local_ip().ok()? {
         IpAddr::V4(v4) if !v4.is_loopback() && !v4.is_unspecified() => Some(v4),
@@ -422,6 +556,21 @@ fn local_ipv4() -> Option<Ipv4Addr> {
 #[cfg(test)]
 mod sfu_tests {
     use super::*;
+
+    #[test]
+    fn ipv6_candidates_exclude_local_only_and_multicast_addresses() {
+        for ip in [
+            "::",
+            "::1",
+            "fe80::1",
+            "fd00::1",
+            "ff02::1",
+            "::ffff:192.168.0.1",
+        ] {
+            assert!(!public_address(ip.parse().unwrap()), "{ip}");
+        }
+        assert!(public_address("2800:810::123".parse().unwrap()));
+    }
 
     #[test]
     fn the_host_carries_calls_whenever_friends_can_reach_it() {

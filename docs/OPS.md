@@ -120,9 +120,9 @@ rendezvous entry. The plaintext gateway binds loopback only.
 
 | Setup | You | LAN friend | Friend over the internet |
 |---|---|---|---|
-| Self-host, nothing else | loopback | share string with the LAN address ("Accept direct connections" starts enabled for new hosts) | **unreachable** |
-| + rendezvous | loopback | punched, or carried by the relay | punched by the relay, or carried by it. Calls on the rendezvous's SFU, since nobody outside reaches this machine's |
-| + port mapping (UPnP/NAT-PMP) | loopback | direct | **direct** on the forwarded UDP port. Calls on this machine's SFU, whatever the rendezvous offers |
+| Self-host, nothing else | loopback | share string with the LAN address ("Accept direct connections" starts enabled for new hosts) | direct with global IPv6 and an open firewall; otherwise unreachable |
+| + rendezvous | loopback | punched, or carried by the relay | gateway introduced or relayed; voice tries usable local routes before the shared SFU |
+| + port mapping (UPnP/NAT-PMP/PCP or manual) | loopback | direct | direct on the forwarded QUIC UDP port; voice on this machine's SFU when media ports are usable |
 | Community server | loopback or `wss://` proxy | QUIC by share string | QUIC by share string, or `wss://` through a TLS proxy (`DIOXUSFUN_PUBLIC_HOSTS`) |
 
 Port mapping failure is the normal case and never stops hosting. It also
@@ -133,6 +133,22 @@ successful probe releases that port before starting the bundled SFU.
 SFU readiness requires an authenticated room-list request and a live child,
 not just an open TCP port. Startup failures, including occupied media ports,
 use the existing rendezvous SFU fallback when available.
+
+Automatic mapping tries UPnP-IGD, NAT-PMP and PCP twice, continuing after a
+discovered router refuses or renumbers media ports. PCP retains its mapping
+nonce and renews against the granted lifetime. A partial chat mapping survives
+failed voice attempts. Under "I already forwarded the ports", a public IPv4
+address selects fixed QUIC UDP 9001; the form lists the configured media ports.
+Manual IPv4 still needs the hairpin challenge. Global IPv6 is tried without
+port mapping, but requires the host firewall and the caller's IPv6 connectivity.
+
+Voice tokens offer several addresses of the same local SFU. The client tries
+them until an actual LiveKit connection succeeds. Before any remote caller
+confirms local voice, exhausting those addresses can select the shared SFU
+once for the whole host session, reissuing every caller's tokens. Loopback/LAN
+reports cannot select it; after remote local success, a later failure cannot
+move existing calls. Without a shared offer, local failures remain errors.
+The banner tooltip reports the attempted route or fallback reason.
 
 ## Deploying a box
 

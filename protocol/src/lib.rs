@@ -1822,6 +1822,11 @@ pub enum ClientMessage {
         preferences: Option<VoicePreferences>,
     },
     LeaveVoice,
+    VoiceConnectionReport {
+        channel_id: Id,
+        route_revision: u32,
+        connected: bool,
+    },
     SetVoiceMute {
         muted: bool,
         deafened: bool,
@@ -2008,11 +2013,21 @@ pub enum ServerMessage {
     VoiceToken {
         channel_id: Id,
         livekit_url: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        alternate_urls: Vec<String>,
+        #[serde(default)]
+        route_revision: u32,
         token: String,
+    },
+    VoiceRouteChanged {
+        livekit_url: String,
+        reason: String,
     },
     ScreenToken {
         channel_id: Id,
         livekit_url: String,
+        #[serde(default)]
+        route_revision: u32,
         token: String,
         #[serde(default)]
         audio_token: String,
@@ -2029,6 +2044,16 @@ pub enum ServerMessage {
 #[cfg(test)]
 mod identify_wire_tests {
     use super::ClientMessage;
+
+    #[test]
+    fn older_voice_tokens_have_no_alternatives_and_use_the_initial_route() {
+        let old = serde_json::json!({ "op": "voice_token", "d": {
+            "channel_id": "00000000-0000-0000-0000-000000000001",
+            "livekit_url": "ws://host:7880", "token": "voice" } });
+        let token: super::ServerMessage = serde_json::from_value(old).unwrap();
+        assert!(matches!(token, super::ServerMessage::VoiceToken {
+            alternate_urls, route_revision: 0, .. } if alternate_urls.is_empty()));
+    }
 
     #[test]
     fn legacy_voice_states_have_no_reported_screen_viewers() {

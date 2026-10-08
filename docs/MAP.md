@@ -17,16 +17,16 @@ name instead.
 
 | File | Lines |
 |---|---|
-| `client/src/features/voice.rs` | 4000 |
+| `client/src/features/voice.rs` | 4652 |
 | `server/src/state/mod.rs` | 3124 |
 | `server/tests/owner_controls.rs` | 3036 |
-| `server/src/gateway/connection.rs` | 2855 |
+| `server/src/gateway/connection.rs` | 2944 |
 | `client/src/features/channels.rs` | 1969 |
 | `client/src/features/screenshare.rs` | 2778 |
-| `protocol/src/lib.rs` | 2517 |
-| `client/src/state.rs` | 1927 |
+| `protocol/src/lib.rs` | 2614 |
+| `client/src/state.rs` | 2105 |
 | `client/src/update.rs` | 1226 |
-| `client/src/net.rs` | 1758 |
+| `client/src/net.rs` | 1962 |
 | `client/src/features/chat.rs` | 1192 |
 | `server/src/store.rs` | 1201 |
 | `client/src/features/guild_settings.rs` | 1132 |
@@ -96,7 +96,7 @@ that direction says a file is safe to open when it is not.
 | The soundboard | `client/src/features/soundboard.rs` | `SoundboardPopover` plays (a non-blocking popover; Rust pointer/key events in `WorkspaceView` close it on an outside click or Escape; the popover and toggle stop pointer propagation; a right-click, or `soundboard_adjusting`, swaps the sounds for the volume slider), `SoundSettings` uploads (Manage guild only). A play is decoded by `sound_decode.rs` (symphonia; Opus, which Discord serves, through `opus-rs`), sent as `VoiceCmd::PlaySound` to `soundboard_loop` in `voice.rs`, which publishes a track named `soundboard`; listeners find it with `TrackKind::of` and give it `soundboard_pct`. The gateway only stores the library and relays `SoundPlayed` |
 | Who sees a voice channel | `server/src/state/mod.rs` | `can_see_channel`; the gateway's `send_voice_state`, `viewers_of`, `voice_sight` and `apply_sight_change` carry it out (trap 30). Configured in `client/src/features/channel_access.rs`, opened from the channel menu |
 | Taking someone out of a call | `server/src/gateway/connection.rs` | `DisconnectVoice` (Disconnect from voice permission); every exit calls `evict_from_call` → `livekit::evict`, proven against a real SFU by `client/tests/live_sfu.rs` |
-| Where a self-host's calls go, and what outlives a rendezvous restart | `client/src/host.rs` | `sfu_plan` — bundled unless friends cannot reach the media ports; `portmap::probe_hairpin` binds a temporary responder before LiveKit starts, verifies a random challenge through the mapped TCP port, and releases it before SFU startup; `rendezvous::maintain` re-registers and refreshes the grant, `net::apply_host_update` shows it in the banner. `Mapped::media_note` names the failed voice gate — refused, renumbered or no hairpin — where the banner used to say only "voice via rendezvous" |
+| Where a self-host's calls go, and what outlives a rendezvous restart | `client/src/host.rs`, `client/src/portmap.rs`, `client/src/portmap/pcp.rs`, `client/src/features/voice_endpoints.rs`, `server/src/livekit.rs` | `sfu_plan` prefers usable IPv4 mappings or global IPv6; mapping tries UPnP, NAT-PMP and PCP twice, or a manually forwarded address. `probe_hairpin` challenges IPv4 before SFU startup. Clients retry aliases of the same local SFU; `VoiceFallback` can move the whole session to shared voice before remote local confirmation. Route revisions reject stale tokens. `rendezvous::maintain` refreshes grants; banner tooltips explain the route. |
 | Published name ownership | `rendezvous/src/registry.rs`, `rendezvous/tests/handshake.rs` | `claim_host` reserves the name and session under one lock, including quotas and persistence. Hex key casing does not change ownership; disconnect clears the session/grants, while the signed owner keeps its reservation until `release_name`. Reopen and concurrent claims are tested. |
 | A bot's buttons | `server/src/state/commands.rs` | `invoke_command` — every check a press passes before the bot sees it; `protocol::validate_commands` and `check_args` hold the declaration and the args, and the client form runs the same `check_args`. Drawn by `features/bot_commands.rs`: `BotCommandsSection` on the profile card, `CommandNotes` for private replies under the chat |
 | Closing a secondary session | `server/src/gateway/connection.rs`, `server/tests/voice.rs` | `handle_connection` preserves voice/share while another identified socket remains; the last socket still clears voice and evicts SFU identities |
