@@ -36,11 +36,7 @@ fn initial_state(saved: &ClientSettings) -> AppState {
     s.user_muted = saved.user_muted.iter().cloned().collect();
     s.stream_volumes = saved.stream_volumes.iter().cloned().collect();
     s.stream_muted = saved.stream_muted.iter().cloned().collect();
-    s.voice_bitrate_kbps = match saved.voice_bitrate_kbps {
-        24 => 24,
-        64 => 64,
-        _ => 48,
-    };
+    s.voice_bitrate_kbps = crate::settings::normalize_voice_bitrate(saved.voice_bitrate_kbps);
     s.status = ConnectionStatus::Disconnected;
     s.soundboard_volume = saved.soundboard_volume.min(100) as u32;
     s

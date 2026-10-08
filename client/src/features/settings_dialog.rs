@@ -517,11 +517,9 @@ pub fn SettingsDialog() -> Element {
                                 class: "w-full mt-1 bg-[var(--panel-solid)] text-[var(--text)] border border-[var(--border)] rounded px-2 py-1 text-sm",
                                 value: "{voice_bitrate_kbps}",
                                 onchange: move |e| {
-                                    let kbps = match e.value().as_str() {
-                                        "24" => 24,
-                                        "64" => 64,
-                                        _ => 48,
-                                    };
+                                    let kbps = crate::settings::normalize_voice_bitrate(
+                                        e.value().parse().unwrap_or(48),
+                                    );
                                     let mut next = settings.read().clone();
                                     next.voice_bitrate_kbps = kbps;
                                     settings.set(next.clone());
