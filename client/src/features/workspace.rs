@@ -935,23 +935,34 @@ fn HostBanner() -> Element {
     let listed_public = info.listed_public;
     let has_shortcode = info.shortcode.is_some();
     let reachability = info.reachability.clone();
+    let voice_why = match &reachability {
+        crate::host::Reachability::Direct {
+            note: Some(note), ..
+        } => (*note).to_string(),
+        crate::host::Reachability::LanOnly { reason } => reason.clone(),
+        _ => "friends cannot reach this machine's voice ports".to_string(),
+    };
     let (voice_label, voice_color, voice_title) = if info.livekit_url.is_empty() {
         (
             "voice unavailable",
             "text-[var(--warn)]",
-            "No SFU: the bundled one did not start and the rendezvous offers none.",
+            "No SFU: the bundled one did not start and the rendezvous offers none.".to_string(),
         )
     } else if info.voice_bundled {
         (
             "voice on this machine",
             "text-[var(--success)]",
-            "Calls run through the SFU on this machine, so this machine carries their bandwidth.",
+            "Calls run through the SFU on this machine, so this machine carries their bandwidth."
+                .to_string(),
         )
     } else {
         (
             "voice via rendezvous",
             "text-[var(--success)]",
-            "Friends cannot reach this machine's voice ports, so calls run through the rendezvous's SFU. Let the router map the ports to carry them yourself.",
+            format!(
+                "{voice_why}. Calls run through the rendezvous's SFU — let the router map the \
+                 voice ports to carry them yourself."
+            ),
         )
     };
 
@@ -1021,14 +1032,19 @@ fn HostBanner() -> Element {
 fn Reachability(reachability: crate::host::Reachability) -> Element {
     use crate::host::Reachability as R;
     match reachability {
-        R::Direct { method, media } => {
+        R::Direct {
+            method,
+            media,
+            note,
+        } => {
             let title = if media {
                 format!(
                     "{method} mapped this machine's ports. Friends with the address reach you without any relay, voice included."
                 )
             } else {
                 format!(
-                    "{method} mapped the chat port, but not the voice ports — calls still go through a relay's SFU, or stay on this network."
+                    "{method} mapped the chat port, but not the voice ports: {}. Calls still go through a relay's SFU, or stay on this network.",
+                    note.unwrap_or("the reason was not recorded")
                 )
             };
             rsx! {

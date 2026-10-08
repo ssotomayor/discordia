@@ -9,8 +9,16 @@ use crate::portmap;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reachability {
     LoopbackOnly,
-    LanOnly { reason: String },
-    Direct { method: &'static str, media: bool },
+    LanOnly {
+        reason: String,
+    },
+    Direct {
+        method: &'static str,
+        media: bool,
+        /// Why the voice ports are unusable, when they are. The host banner
+        /// names the failed gate instead of a generic "voice via rendezvous".
+        note: Option<&'static str>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -174,6 +182,7 @@ pub async fn start_self_host(
                     let reach = Reachability::Direct {
                         method: mapped.method,
                         media: mapped.media && mapped.hairpin,
+                        note: mapped.media_note,
                     };
                     (Some(mapped), Some(guard), reach)
                 }
@@ -419,6 +428,7 @@ mod sfu_tests {
         let direct = Reachability::Direct {
             method: "UPnP",
             media: true,
+            note: None,
         };
         assert_eq!(sfu_plan(&direct, Some("ws://shared")), SfuPlan::Bundled);
         assert_eq!(
@@ -441,6 +451,7 @@ mod sfu_tests {
         let chat_only = Reachability::Direct {
             method: "UPnP",
             media: false,
+            note: None,
         };
         assert_eq!(sfu_plan(&chat_only, Some("ws://shared")), shared);
         assert_eq!(

@@ -26,6 +26,9 @@ pub struct Mapped {
     pub media: bool,
     pub quic: bool,
     pub hairpin: bool,
+    /// Why the voice ports are unusable, for the host banner. `None` when they
+    /// are usable.
+    pub media_note: Option<&'static str>,
 }
 
 pub struct MappingGuard {
@@ -79,6 +82,7 @@ async fn finish(
         Err(e) => return Err(format!("the router refused to forward the QUIC port: {e}")),
     };
 
+    let mut media_note = None;
     let media = {
         let mut all_ok = true;
         for (proto, port) in [
@@ -94,10 +98,14 @@ async fn finish(
                         "router renumbered a media port — voice cannot use it"
                     );
                     all_ok = false;
+                    media_note.get_or_insert(
+                        "the router renumbered a voice port, so there is no known port to hand friends",
+                    );
                 }
                 Err(e) => {
                     tracing::warn!(%proto, port, error = %e, "media port not mapped");
                     all_ok = false;
+                    media_note.get_or_insert("the router refused to forward a voice port");
                 }
             }
         }
@@ -111,6 +119,11 @@ async fn finish(
             HAIRPIN_TIMEOUT,
         )
         .await;
+    if media && !hairpin {
+        media_note = Some(
+            "the router forwards the voice ports but won't loop this machine back through them (no hairpin NAT)",
+        );
+    }
 
     let mapped = Mapped {
         method: router.method(),
@@ -118,6 +131,7 @@ async fn finish(
         media,
         quic: quic_ok,
         hairpin,
+        media_note,
     };
     Ok((mapped, keep_alive(router, local_ip, ports)))
 }
