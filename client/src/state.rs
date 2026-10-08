@@ -17,6 +17,8 @@ pub enum SessionMode {
     },
     SelfHost {
         allow_lan: bool,
+        #[serde(default)]
+        manual_ip: Option<std::net::IpAddr>,
         rendezvous_url: Option<String>,
         publish_name: Option<String>,
         description: Option<String>,
@@ -338,6 +340,8 @@ pub struct AppState {
     /// somebody messaging you directly are not the same event.
     pub dm_notify_tick: u64,
     pub screen_token: Option<(String, String)>,
+    pub voice_endpoint: Option<String>,
+    pub voice_route_revision: u32,
     pub screen_audio_token: Option<(String, String)>,
     /// Whether the native side is *actually in*, not merely holding a token:
     /// a failed join must hand playback back to the webview, not go silent.
@@ -464,6 +468,8 @@ impl AppState {
             notify_tick: 0,
             dm_notify_tick: 0,
             screen_token: None,
+            voice_endpoint: None,
+            voice_route_revision: 0,
             screen_audio_token: None,
             screen_video_token: None,
             screen_viewer_token: None,
@@ -536,12 +542,28 @@ impl AppState {
     /// phase is Idle: a token left behind kept the webview's room alive for good.
     /// Everything a call held goes, the media key included: the key in use is
     /// global to the process, so a cached one would never be applied again.
+    pub fn set_voice_endpoint(&mut self, url: String) {
+        self.voice_endpoint = Some(url.clone());
+        for token in [
+            &mut self.screen_token,
+            &mut self.screen_audio_token,
+            &mut self.screen_video_token,
+            &mut self.screen_viewer_token,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            token.0 = url.clone();
+        }
+    }
+
     pub fn end_voice_locally(&mut self) {
         self.voice.phase = VoicePhase::Idle;
         self.voice.channel_id = None;
         self.media_keys.clear();
         self.voice.error = None;
         self.screen_token = None;
+        self.voice_endpoint = None;
         self.screen_audio_token = None;
         self.screen_video_token = None;
         self.screen_viewer_token = None;
@@ -554,6 +576,7 @@ impl AppState {
     }
 
     pub fn clear_server_session(&mut self) {
+        self.voice_route_revision = 0;
         self.status = ConnectionStatus::Disconnected;
         self.self_user = None;
         self.guilds.clear();

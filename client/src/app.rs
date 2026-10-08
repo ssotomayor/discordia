@@ -821,12 +821,13 @@ pub(crate) fn session_key(p: &SessionParams) -> String {
         SessionMode::Remote { server_url } => format!("remote:{server_url}"),
         SessionMode::SelfHost {
             allow_lan,
+            manual_ip,
             rendezvous_url,
             publish_public,
             ..
         } => {
             format!(
-                "selfhost:{allow_lan}:{}:{publish_public}",
+                "selfhost:{allow_lan}:{}:{publish_public}:{manual_ip:?}",
                 rendezvous_url.as_deref().unwrap_or("")
             )
         }

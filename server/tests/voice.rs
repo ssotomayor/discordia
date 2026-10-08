@@ -13,6 +13,157 @@ use livekit_api::access_token::TokenVerifier;
 const API_KEY: &str = "devkey";
 const API_SECRET: &str = "secret-must-be-at-least-32-chars-long";
 
+fn local_with_fallback() -> LiveKitConfig {
+    LiveKitConfig {
+        explicit_url: None,
+        public_host: Some("203.0.113.5".into()),
+        alternate_hosts: vec![
+            "203.0.113.5".parse().unwrap(),
+            "2800:810::123".parse().unwrap(),
+        ],
+        fallback: Some(Arc::new(dioxusfun_server::livekit::VoiceFallback::new(
+            "wss://last-option".into(),
+            Arc::new(ScriptedMinter {
+                fail_when: Box::new(|_| false),
+            }),
+        ))),
+        ..local_signing()
+    }
+}
+
+async fn remote_gateway(cfg: LiveKitConfig) -> (String, dioxusfun_server::ServerHandle) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let mut config = test_config(cfg);
+    config
+        .identities
+        .extend(dioxusfun_server::local_identities(addr.port()));
+    let (router, _shutdown) = dioxusfun_server::build_gateway(config).await.unwrap();
+    let router = router.layer(axum::Extension(axum::extract::ConnectInfo(
+        "198.51.100.9:45000"
+            .parse::<std::net::SocketAddr>()
+            .unwrap(),
+    )));
+    let handle = dioxusfun_server::serve_router(listener, router);
+    (format!("ws://{addr}"), handle)
+}
+
+async fn shared_voice_token(user: &mut Bot, channel: Id) {
+    loop {
+        if let ServerMessage::VoiceToken {
+            channel_id,
+            livekit_url,
+            token,
+            alternate_urls,
+            route_revision,
+        } = next_timeout(user).await
+        {
+            assert_eq!(channel_id, channel);
+            assert_eq!(livekit_url, "wss://last-option");
+            assert_eq!(route_revision, 1);
+            assert!(alternate_urls.is_empty());
+            assert!(token.starts_with("token-for-"));
+            break;
+        }
+    }
+}
+
+#[tokio::test]
+async fn failing_local_routes_moves_all_callers_to_one_shared_sfu() {
+    let cfg = local_with_fallback();
+    let (url, _handle) = remote_gateway(cfg.clone()).await;
+    let mut owner = connect_user(&url, &BotIdentity::generate(), "owner").await;
+    let (guild, channel) = voice_channel(&mut owner).await;
+    let mut friend = connect_user(&url, &BotIdentity::generate(), "friend").await;
+    join_guild(&mut friend, guild).await;
+    for frames in [
+        join_voice(&mut owner, channel).await,
+        join_voice(&mut friend, channel).await,
+    ] {
+        assert!(
+            frames
+                .iter()
+                .any(|frame| matches!(frame, ServerMessage::VoiceToken {
+            route_revision: 0, alternate_urls, .. } if !alternate_urls.is_empty()))
+        );
+    }
+    friend
+        .send(&ClientMessage::VoiceConnectionReport {
+            channel_id: Id::new_v4(),
+            route_revision: 0,
+            connected: false,
+        })
+        .await
+        .unwrap();
+    drain_quiet(&mut friend).await;
+    assert_eq!(
+        cfg.route().1,
+        0,
+        "a report for another channel cannot move voice"
+    );
+    friend
+        .send(&ClientMessage::VoiceConnectionReport {
+            channel_id: channel,
+            route_revision: 0,
+            connected: false,
+        })
+        .await
+        .unwrap();
+    shared_voice_token(&mut owner, channel).await;
+    shared_voice_token(&mut friend, channel).await;
+    assert_eq!(cfg.route().1, 1);
+    let frames = join_voice(&mut friend, channel).await;
+    assert!(frames.iter().any(
+        |f| matches!(f, ServerMessage::VoiceToken { route_revision: 1, livekit_url, .. }
+        if livekit_url == "wss://last-option")
+    ));
+}
+
+#[tokio::test]
+async fn a_working_remote_local_call_is_not_moved_by_another_failure() {
+    let cfg = local_with_fallback();
+    let (url, _handle) = remote_gateway(cfg.clone()).await;
+    let mut owner = connect_user(&url, &BotIdentity::generate(), "owner").await;
+    let (_, channel) = voice_channel(&mut owner).await;
+    join_voice(&mut owner, channel).await;
+    for connected in [true, false] {
+        owner
+            .send(&ClientMessage::VoiceConnectionReport {
+                channel_id: channel,
+                route_revision: 0,
+                connected,
+            })
+            .await
+            .unwrap();
+    }
+    let frames = drain_quiet(&mut owner).await;
+    assert!(
+        !frames
+            .iter()
+            .any(|f| matches!(f, ServerMessage::VoiceRouteChanged { .. }))
+    );
+    assert_eq!(cfg.route().1, 0);
+}
+
+#[tokio::test]
+async fn loopback_report_cannot_choose_a_remote_sfu() {
+    let cfg = local_with_fallback();
+    let (url, _handle) = spawn_gateway(cfg.clone()).await;
+    let mut owner = connect_user(&url, &BotIdentity::generate(), "owner").await;
+    let (_, channel) = voice_channel(&mut owner).await;
+    join_voice(&mut owner, channel).await;
+    owner
+        .send(&ClientMessage::VoiceConnectionReport {
+            channel_id: channel,
+            route_revision: 0,
+            connected: false,
+        })
+        .await
+        .unwrap();
+    drain_quiet(&mut owner).await;
+    assert_eq!(cfg.route().1, 0);
+}
+
 async fn next_timeout(session: &mut Bot) -> ServerMessage {
     tokio::time::timeout(Duration::from_secs(5), session.next_event())
         .await
@@ -43,6 +194,8 @@ fn local_signing() -> LiveKitConfig {
         port: 7880,
         lan_host: None,
         public_host: None,
+        alternate_hosts: Vec::new(),
+        fallback: None,
         api_key: API_KEY.into(),
         api_secret: API_SECRET.into(),
         minter: None,

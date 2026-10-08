@@ -935,13 +935,7 @@ fn HostBanner() -> Element {
     let listed_public = info.listed_public;
     let has_shortcode = info.shortcode.is_some();
     let reachability = info.reachability.clone();
-    let voice_why = match &reachability {
-        crate::host::Reachability::Direct {
-            note: Some(note), ..
-        } => (*note).to_string(),
-        crate::host::Reachability::LanOnly { reason } => reason.clone(),
-        _ => "friends cannot reach this machine's voice ports".to_string(),
-    };
+    let voice_why = info.voice_reason.clone();
     let (voice_label, voice_color, voice_title) = if info.livekit_url.is_empty() {
         (
             "voice unavailable",
@@ -952,8 +946,7 @@ fn HostBanner() -> Element {
         (
             "voice on this machine",
             "text-[var(--success)]",
-            "Calls run through the SFU on this machine, so this machine carries their bandwidth."
-                .to_string(),
+            voice_why.clone(),
         )
     } else {
         (
@@ -961,7 +954,7 @@ fn HostBanner() -> Element {
             "text-[var(--success)]",
             format!(
                 "{voice_why}. Calls run through the rendezvous's SFU — let the router map the \
-                 voice ports to carry them yourself."
+                 voice ports or enable IPv6 to carry them yourself."
             ),
         )
     };
@@ -1038,9 +1031,13 @@ fn Reachability(reachability: crate::host::Reachability) -> Element {
             note,
         } => {
             let title = if media {
-                format!(
-                    "{method} mapped this machine's ports. Friends with the address reach you without any relay, voice included."
-                )
+                if method == "IPv6" {
+                    "Global IPv6 addresses are available. Clients verify voice connectivity when joining; both sides need IPv6 and inbound firewall access.".to_string()
+                } else {
+                    format!(
+                        "{method} opened a path to this machine. Voice clients verify the media connection when joining."
+                    )
+                }
             } else {
                 format!(
                     "{method} mapped the chat port, but not the voice ports: {}. Calls still go through a relay's SFU, or stay on this network.",
@@ -1050,7 +1047,9 @@ fn Reachability(reachability: crate::host::Reachability) -> Element {
             rsx! {
                 span { class: "text-[var(--text-dim)]", "·" }
                 span { class: "text-[var(--success)]", title: "{title}",
-                    if media { "● reachable directly" } else { "● reachable directly (chat only)" }
+                    if method == "IPv6" { "● IPv6 available" }
+                    else if method == "manual forwarding" && !media { "● manual address (voice unverified)" }
+                    else if media { "● reachable directly" } else { "● reachable directly (chat only)" }
                 }
             }
         }

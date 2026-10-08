@@ -12,6 +12,106 @@ use livekit_api::access_token::{AccessToken, VideoGrants};
 const SAMPLE_RATE: u32 = 48_000;
 const CHANNELS: u32 = 1;
 
+#[path = "../src/features/voice_endpoints.rs"]
+mod voice_endpoints;
+
+#[tokio::test]
+#[ignore = "starts the bundled SFU; verifies alternate IPv6 signaling and decoded audio without rendezvous"]
+async fn alternate_ipv6_endpoint_delivers_audio_without_rendezvous() {
+    use futures_util::StreamExt;
+    use livekit::webrtc::audio_stream::native::NativeAudioStream;
+
+    let creds = dioxusfun_server::livekit_bundle::Credentials::generate();
+    let data_dir = std::env::temp_dir().join(format!("discordia-direct-{}", uuid::Uuid::new_v4()));
+    let _sfu = dioxusfun_server::livekit_bundle::spawn_livekit(None, &creds, &data_dir)
+        .await
+        .unwrap();
+    let port = dioxusfun_server::livekit_bundle::ports().ws;
+    let room_name = format!("direct-{}", uuid::Uuid::new_v4());
+    let mint = |identity: &str| {
+        AccessToken::with_api_key(&creds.key, &creds.secret)
+            .with_identity(identity)
+            .with_grants(VideoGrants {
+                room_join: true,
+                room: room_name.clone(),
+                can_publish: true,
+                can_subscribe: true,
+                ..Default::default()
+            })
+            .to_jwt()
+            .unwrap()
+    };
+    let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let unavailable = format!("ws://{}", closed.local_addr().unwrap());
+    drop(closed);
+    let publisher_token = mint("publisher");
+    let v6_url = format!("ws://[::1]:{port}");
+    let mut options = RoomOptions::default();
+    options.join_retries = 0;
+    options.connect_timeout = Duration::from_secs(2);
+    let ((publisher, _events), selected) =
+        voice_endpoints::try_endpoints(unavailable, vec![v6_url.clone()], |url| {
+            let token = publisher_token.clone();
+            let options = options.clone();
+            async move {
+                Room::connect(&url, &token, options)
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+        })
+        .await
+        .unwrap();
+    assert_eq!(selected, v6_url);
+    let (listener, mut events) = Room::connect(
+        &format!("ws://127.0.0.1:{port}"),
+        &mint("listener"),
+        RoomOptions::default(),
+    )
+    .await
+    .unwrap();
+    let source = NativeAudioSource::new(AudioSourceOptions::default(), SAMPLE_RATE, CHANNELS, 1000);
+    let track =
+        LocalAudioTrack::create_audio_track("direct-tone", RtcAudioSource::Native(source.clone()));
+    publisher
+        .local_participant()
+        .publish_track(
+            LocalTrack::Audio(track),
+            TrackPublishOptions {
+                source: TrackSource::Microphone,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let feeder = spawn_tone(source, 0.0, 0.2, None);
+    let ev = wait_for(&mut events, "direct-listener", |ev| {
+        matches!(ev, RoomEvent::TrackSubscribed { .. })
+    })
+    .await;
+    let RoomEvent::TrackSubscribed {
+        track: RemoteTrack::Audio(audio),
+        ..
+    } = ev
+    else {
+        panic!("no audio track");
+    };
+    let mut stream = NativeAudioStream::new(audio.rtc_track(), SAMPLE_RATE as i32, CHANNELS as i32);
+    tokio::time::timeout(Duration::from_secs(8), async {
+        loop {
+            let frame = stream.next().await.expect("audio stream closed");
+            if frame.data.iter().any(|sample| sample.unsigned_abs() > 100) {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("direct audio did not decode");
+    drop(stream);
+    feeder.stop().await;
+    listener.close().await.unwrap();
+    publisher.close().await.unwrap();
+}
+
 fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.into())
 }
@@ -848,6 +948,8 @@ async fn the_server_evicts_every_seat_a_person_holds_in_a_call() {
         port: 7880,
         lan_host: None,
         public_host: None,
+        alternate_hosts: Vec::new(),
+        fallback: None,
         api_key: env_or("LIVEKIT_API_KEY", "devkey"),
         api_secret: env_or(
             "LIVEKIT_API_SECRET",

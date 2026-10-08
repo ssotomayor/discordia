@@ -29,7 +29,7 @@ use parking_lot::Mutex;
 use rubato::{FftFixedIn, Resampler};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
-use crate::protocol::Id;
+use crate::protocol::{ClientMessage, Id};
 use crate::state::{AppState, ConnectionHealth, TrackStats, VoicePhase};
 
 #[cfg(target_os = "windows")]
@@ -137,6 +137,9 @@ pub const DENOISE_ATTEN_LIM_DB_MAX: u32 = 60;
 pub enum VoiceCmd {
     Connect {
         livekit_url: String,
+        alternate_urls: Vec<String>,
+        route_revision: u32,
+        report_tx: UnboundedSender<ClientMessage>,
         token: String,
         channel_id: Id,
     },
@@ -236,6 +239,9 @@ mod audio_audit_tests;
 #[path = "voice_speech_tests.rs"]
 mod speech_audit_tests;
 
+#[path = "voice_endpoints.rs"]
+mod voice_endpoints;
+
 pub fn spawn_voice_service(state: Signal<AppState>) -> UnboundedSender<VoiceCmd> {
     let (tx, rx) = unbounded_channel::<VoiceCmd>();
     spawn(async move {
@@ -264,25 +270,41 @@ async fn service_loop(
         match cmd {
             VoiceCmd::Connect {
                 livekit_url,
+                alternate_urls,
+                route_revision,
+                report_tx,
                 token,
                 channel_id,
             } => {
                 eprintln!("[voice] Connect to {livekit_url} channel={channel_id}");
-                last_connect = Some((livekit_url.clone(), token.clone(), channel_id));
+                last_connect = None;
                 if let Some(prev) = session.take() {
                     eprintln!("[voice] shutting down previous session");
                     prev.shutdown(state).await;
                 }
-                match ActiveVoice::connect(
-                    &livekit_url,
-                    &token,
-                    channel_id,
-                    state,
-                    controls.clone(),
-                )
-                .await
-                {
-                    Ok(active) => {
+                let result = voice_endpoints::try_endpoints(livekit_url, alternate_urls, |url| {
+                    let token = token.clone();
+                    let controls = controls.clone();
+                    async move {
+                        if state.peek().server_voice_channel() != Some(channel_id)
+                            || state.peek().voice_route_revision != route_revision {
+                            return Err("voice join cancelled".into());
+                        }
+                        ActiveVoice::connect(&url, &token, channel_id, state, controls).await
+                    }
+                }).await;
+                if state.peek().server_voice_channel() != Some(channel_id)
+                    || state.peek().voice_route_revision != route_revision {
+                    if let Ok((active, _)) = result { active.shutdown(state).await; }
+                    continue;
+                }
+                let _ = report_tx.send(ClientMessage::VoiceConnectionReport {
+                    channel_id, route_revision, connected: result.is_ok(),
+                });
+                match result {
+                    Ok((active, url)) => {
+                        last_connect = Some((url.clone(), token.clone(), channel_id));
+                        state.write().set_voice_endpoint(url);
                         eprintln!("[voice] connected ok — phase Connected");
                         {
                             let mut s = state.write();
@@ -611,6 +633,8 @@ impl ActiveVoice {
     ) -> Result<Self, String> {
         let mut options = RoomOptions::default();
         options.encryption = crate::e2ee::room_options();
+        options.join_retries = 0;
+        options.connect_timeout = std::time::Duration::from_secs(5);
         let (room, mut events) = Room::connect(livekit_url, token, options)
             .await
             .map_err(|e| format!("livekit connect: {e}"))?;
@@ -621,7 +645,7 @@ impl ActiveVoice {
         let local_audio =
             LocalAudioTrack::create_audio_track("mic", RtcAudioSource::Native(source.clone()));
         let local_audio_for_mute = local_audio.clone();
-        let mic_publication = room
+        let mic_publication = match room
             .local_participant()
             .publish_track(
                 LocalTrack::Audio(local_audio),
@@ -634,7 +658,13 @@ impl ActiveVoice {
                 },
             )
             .await
-            .map_err(|e| format!("publish mic: {e}"))?;
+        {
+            Ok(publication) => publication,
+            Err(error) => {
+                let _ = room.close().await;
+                return Err(format!("publish mic: {error}"));
+            }
+        };
         let encrypted = mic_publication.encryption_type() != livekit::e2ee::EncryptionType::None;
         eprintln!(
             "[voice] mic published: encrypted={encrypted}, red={} (opus in-band FEC unaffected)",
