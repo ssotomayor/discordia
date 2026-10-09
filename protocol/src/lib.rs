@@ -1865,6 +1865,14 @@ pub struct IceServer {
     pub credential: String,
 }
 
+/// The URLs alone, for a log line: the credentials never leave the client.
+pub fn ice_urls(servers: &[IceServer]) -> Vec<&str> {
+    servers
+        .iter()
+        .flat_map(|s| s.urls.iter().map(String::as_str))
+        .collect()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", content = "d", rename_all = "snake_case")]
 pub enum ServerMessage {

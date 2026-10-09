@@ -1544,9 +1544,19 @@ fn apply(
             ice_servers,
         } => {
             eprintln!("[net] VoiceToken channel={channel_id} url={livekit_url}");
-            if route_revision < s.voice_route_revision
-                || s.server_voice_channel() != Some(channel_id)
-            {
+            let stale = route_revision < s.voice_route_revision
+                || s.server_voice_channel() != Some(channel_id);
+            tracing::info!(
+                %channel_id,
+                location = ?voice_location,
+                url = %livekit_url,
+                alternates = ?alternate_urls,
+                revision = route_revision,
+                ice_urls = ?crate::protocol::ice_urls(&ice_servers),
+                ignored = stale,
+                "voice route: grant received"
+            );
+            if stale {
                 return;
             }
             s.voice_route_revision = route_revision;
@@ -1606,6 +1616,7 @@ fn apply(
             livekit_url,
             reason,
         } => {
+            tracing::warn!(url = %livekit_url, %reason, "voice route: server moved the session");
             s.voice_route_revision = 1;
             if let Some(host) = &mut s.host_info {
                 host.voice_bundled = false;

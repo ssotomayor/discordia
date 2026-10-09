@@ -158,6 +158,10 @@ once for the whole host session, reissuing every caller's tokens. Loopback/LAN
 reports cannot select it; after remote local success, a later failure cannot
 move existing calls. Without a shared offer, local failures remain errors.
 The banner tooltip reports the attempted route or fallback reason.
+Release builds log to `<config dir>/logs/discordia.log` (macOS
+`~/Library/Application Support/dioxusfun`, Windows `%APPDATA%\dioxusfun`);
+`grep 'voice route:'` there, on the host and on a caller, shows why a call
+landed where it did. Credentials never appear in those lines.
 
 The workspace shows separate Server and Voice indicators on hosts and guests.
 Server follows the selected QUIC path, including relay-to-direct changes.

@@ -340,6 +340,14 @@ pub async fn start_self_host(
                     "[host] rendezvous registered: shortcode={} livekit_url={:?}",
                     info.shortcode, info.livekit_url
                 );
+                tracing::info!(
+                    shortcode = %info.shortcode,
+                    shared_sfu = ?info.livekit_url,
+                    voice_grant = info.voice_token_grant.is_some(),
+                    turn_urls = ?info.turn.as_ref().map(|t| &t.urls),
+                    turn_expires_in_s = info.turn.as_ref().map(|t| t.expires_unix.saturating_sub(crate::rendezvous::now_unix())),
+                    "voice route: registered with the rendezvous"
+                );
                 rendezvous_state = Some((control, info));
             }
             Err(e) => {
@@ -366,6 +374,20 @@ pub async fn start_self_host(
         (None, Some(stun)) => Advertise::Stun(stun),
         (None, None) => Advertise::Local,
     };
+    tracing::info!(
+        reachability = ?reachability,
+        mapping = ?mapped.as_ref().map(|m| format!(
+            "{} {} quic={} media={} hairpin={}",
+            m.method, m.public_ip, m.quic, m.media, m.hairpin
+        )),
+        public_v6 = ?public_v6,
+        open_to_others,
+        shared_sfu_offered = shared_offer.is_some(),
+        relay_offered = turn.is_some(),
+        plan = ?plan,
+        advertise = ?advertise,
+        "voice route: host plan"
+    );
     let mut voice_reason = if !voice_hosts.is_empty() {
         format!(
             "Calls run on this machine. Clients try these addresses and verify the media connection: {}. IPv6 needs inbound firewall access and IPv6 at the caller.",
@@ -486,6 +508,18 @@ pub async fn start_self_host(
         alternate_hosts: voice_hosts,
         ice_servers: ice_servers.clone(),
     };
+    tracing::info!(
+        bundled = voice_bundled,
+        relayed = voice_relayed,
+        shared_sfu = ?livekit_cfg.explicit_url,
+        lan_host = ?livekit_cfg.lan_host,
+        public_host = ?livekit_cfg.public_host,
+        alternate_hosts = ?livekit_cfg.alternate_hosts,
+        sfu_port = livekit_cfg.port,
+        ice_urls = ?crate::protocol::ice_urls(&livekit_cfg.ice_servers()),
+        fallback_armed = livekit_cfg.fallback.is_some(),
+        "voice route: addresses friends will be offered"
+    );
 
     // Every way a friend can reach this gateway, because a login signed for
     // an address not in this set is refused (see server auth.rs).

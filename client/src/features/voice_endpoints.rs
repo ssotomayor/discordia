@@ -16,9 +16,16 @@ where
     let mut failures = Vec::new();
     for url in urls {
         eprintln!("[voice] trying endpoint {url}");
+        let started = std::time::Instant::now();
         match connect(url.clone()).await {
-            Ok(connected) => return Ok((connected, url)),
-            Err(error) => failures.push(format!("{url}: {error}")),
+            Ok(connected) => {
+                tracing::info!(%url, elapsed_ms = started.elapsed().as_millis() as u64, "voice route: endpoint connected");
+                return Ok((connected, url));
+            }
+            Err(error) => {
+                tracing::warn!(%url, %error, elapsed_ms = started.elapsed().as_millis() as u64, "voice route: endpoint failed");
+                failures.push(format!("{url}: {error}"));
+            }
         }
     }
     Err(format!(
