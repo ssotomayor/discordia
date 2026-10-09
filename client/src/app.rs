@@ -715,7 +715,7 @@ pub fn App() -> Element {
     let last_session = use_signal(|| session::load().ok().flatten());
 
     let mut update = use_signal(|| None::<crate::version::Update>);
-    use_future(move || async move {
+    let mut update_check = use_future(move || async move {
         if let Some(found) = crate::version::check_for_update().await {
             update.set(Some(found));
         }
@@ -799,10 +799,16 @@ pub fn App() -> Element {
                             let _ = session::clear();
                             session.set(None);
                             identity.set(None);
+                            if !quitting() {
+                                update_check.restart();
+                            }
                         },
                         on_disconnect: move |reason: String| {
                             error.set(if reason.is_empty() { None } else { Some(reason) });
                             session.set(None);
+                            if !quitting() {
+                                update_check.restart();
+                            }
                         },
                     }
                     }
