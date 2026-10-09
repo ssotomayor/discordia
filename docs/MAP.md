@@ -17,7 +17,7 @@ name instead.
 
 | File | Lines |
 |---|---|
-| `client/src/features/voice.rs` | 4722 |
+| `client/src/features/voice.rs` | 4738 |
 | `server/src/state/mod.rs` | 3182 |
 | `server/tests/owner_controls.rs` | 3036 |
 | `server/src/gateway/connection.rs` | 2993 |
@@ -87,6 +87,7 @@ that direction says a file is safe to open when it is not.
 | Actual chat and voice connection routes | `client/src/connection_routes.rs`, `client/src/quic.rs`, `client/src/features/workspace.rs` | `watch_route` follows selected QUIC paths; `selected_media_route` follows selected WebRTC pairs, separate from signaling. Click Voice for local and same-channel caller reports. `ConnectionRouteReport` carries labels only; the gateway checks membership and label vocabulary before forwarding. |
 | Choosing the keys folder | `client/src/features/identity_setup.rs` | `FolderSettings` — the cog on the setup screen; `DetectedIdentities` rescans on every render, `rev` forces one |
 | Bringing a Discord server over | `client/src/features/discord_import.rs` | `read_plan` fetches with a bot token, `flatten_channels`/`plan_roles` map, `run_import` replays `CreateGuild`→`SetGuildProfile`→`CreateChannel`→`CreateRole`→`CreateGuildEmoji` one write per 450 ms; opened from the rail via `GuildDialog::ImportDiscord` |
+| CPAL device configuration and callback recovery | `client/src/audio_device.rs` | CPAL 0.18.2 keeps ALSA PCM names and other backends' description names for saved selections; supported PCM defaults remain intact, unsupported ones select a compatible format/rate. Transient underruns, automatic route changes and priority refusal keep streams open. Tests cover integer defaults, Bluetooth rates and fatal/transient errors |
 | A device that stays busy after voice | `client/src/features/voice.rs` | `pick_device`, and the `Drop` impls of `MicCapture` / `PlaybackMixer` (trap 24); `client/src/audio_diag.rs` prints CoreAudio's view in debug builds |
 | Capture audio queues | `client/src/audio_queue.rs`, `client/src/sysaudio/frames.rs`, `client/src/features/voice.rs` | Mic/DSP and system-audio publication use fixed 480-sample blocks, eight-frame bounded queues and nonblocking offers; blocks older than 100 ms are discarded before DSP/publication. `FrameCutter` reuses a fixed partial block and counts dropped blocks for the Windows silence clock. SDK/network buffers are separate |
 | Bundled voice server size and integrity | `server/build.rs`, `server/src/livekit_bundle.rs` | Build compresses the SFU as gzip and emits original size/full SHA-256. `ensure_binary` reuses a verified cached executable or streams bounded decompression into a temporary file, checking size/hash before rename, inside `spawn_blocking`. `wait_for_ready` requires authenticated room listing with bounded requests and checks child liveness; an open TCP port alone cannot establish readiness. `real_sfu_readiness_requires_the_configured_credentials` verifies correct/incorrect credentials and a real UDP bind conflict (ignored). `LIVEKIT_BUNDLE_SKIP` remains an empty bundle |

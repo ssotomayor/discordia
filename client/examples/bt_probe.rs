@@ -33,8 +33,6 @@ async fn pause(secs: u64, what: &str) {
     }
 }
 
-/// The default input, and optionally the default output, on their own
-/// thread: a cpal stream must not cross one.
 fn open_streams(with_output: bool) -> (mpsc::Sender<()>, std::thread::JoinHandle<()>) {
     let (stop_tx, stop_rx) = mpsc::channel::<()>();
     let (ready_tx, ready_rx) = mpsc::channel::<()>();
@@ -43,19 +41,26 @@ fn open_streams(with_output: bool) -> (mpsc::Sender<()>, std::thread::JoinHandle
         let input = host
             .default_input_device()
             .expect("no default input device");
-        eprintln!("input device: {}", input.name().unwrap_or_default());
+        eprintln!(
+            "input device: {}",
+            input
+                .description()
+                .map(|d| d.name().to_owned())
+                .unwrap_or_default()
+        );
         let cfg = input
             .default_input_config()
             .expect("no default input config");
         eprintln!(
             "input format: {:?} {} Hz",
             cfg.sample_format(),
-            cfg.sample_rate().0
+            cfg.sample_rate()
         );
         let mic = input
-            .build_input_stream(
-                &cfg.into(),
-                |_data: &[f32], _| {},
+            .build_input_stream_raw(
+                cfg.config(),
+                cfg.sample_format(),
+                |_data, _| {},
                 |e| eprintln!("mic error: {e}"),
                 None,
             )
@@ -66,13 +71,27 @@ fn open_streams(with_output: bool) -> (mpsc::Sender<()>, std::thread::JoinHandle
             let output = host
                 .default_output_device()
                 .expect("no default output device");
-            eprintln!("output device: {}", output.name().unwrap_or_default());
+            eprintln!(
+                "output device: {}",
+                output
+                    .description()
+                    .map(|d| d.name().to_owned())
+                    .unwrap_or_default()
+            );
             let cfg = output
-                .default_output_config()
-                .expect("no default output config");
+                .supported_output_configs()
+                .expect("output configs")
+                .filter(|config| config.sample_format() == cpal::SampleFormat::F32)
+                .find_map(|config| {
+                    config
+                        .try_with_sample_rate(48_000)
+                        .or_else(|| config.try_with_sample_rate(44_100))
+                        .or_else(|| config.try_with_sample_rate(config.max_sample_rate()))
+                })
+                .expect("float output config");
             let s = output
                 .build_output_stream(
-                    &cfg.into(),
+                    cfg.into(),
                     |data: &mut [f32], _| data.fill(0.0),
                     |e| eprintln!("speaker error: {e}"),
                     None,

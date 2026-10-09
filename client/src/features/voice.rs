@@ -358,9 +358,9 @@ async fn service_loop(
                 let mut outputs = Vec::new();
                 if let Ok(devs) = host.devices() {
                     for d in devs {
-                        if let Ok(name) = d.name() {
-                            let is_input = d.default_input_config().is_ok();
-                            let is_output = d.default_output_config().is_ok();
+                        if let Ok(name) = crate::audio_device::name(&d) {
+                            let is_input = d.supports_input();
+                            let is_output = d.supports_output();
                             if is_input {
                                 inputs.push(name.clone());
                             }
@@ -1381,11 +1381,11 @@ impl ActiveVoice {
             let mut outputs = Vec::new();
             if let Ok(devices) = host.devices() {
                 for device in devices {
-                    if let Ok(name) = device.name() {
-                        if device.default_input_config().is_ok() {
+                    if let Ok(name) = crate::audio_device::name(&device) {
+                        if device.supports_input() {
                             inputs.push(name.clone());
                         }
-                        if device.default_output_config().is_ok() {
+                        if device.supports_output() {
                             outputs.push(name);
                         }
                     }
@@ -2763,8 +2763,7 @@ fn outbound_rates(
     ))
 }
 
-/// The default handle when the chosen name is the default device's, and only
-/// otherwise a handle found by name: cpal 0.15 leaks the latter's stream (trap 24).
+// Prefer the default handle to preserve route following and the historical CoreAudio workaround.
 pub(crate) fn pick_device(
     selected: Option<&str>,
     default: Option<cpal::Device>,
@@ -2773,13 +2772,18 @@ pub(crate) fn pick_device(
     let Some(wanted) = selected else {
         return default;
     };
-    let default_name = default.as_ref().and_then(|d| d.name().ok());
+    let default_name = default
+        .as_ref()
+        .and_then(|d| crate::audio_device::name(d).ok());
     if default_name.as_deref() == Some(wanted) {
         return default;
     }
     all.and_then(|devs| {
-        devs.into_iter()
-            .find(|d| d.name().map(|n| n == wanted).unwrap_or(false))
+        devs.into_iter().find(|d| {
+            crate::audio_device::name(d)
+                .map(|n| n == wanted)
+                .unwrap_or(false)
+        })
     })
     .or(default)
 }
@@ -2951,12 +2955,19 @@ impl MicCapture {
             host.input_devices().ok(),
         )
         .ok_or_else(|| "no default input device".to_string())?;
-        let device_name = device.name().unwrap_or_else(|_| "<unknown>".into());
-        let config = device
-            .default_input_config()
-            .map_err(|e| format!("input config: {e}"))?;
+        let device_name = crate::audio_device::name(&device).unwrap_or_else(|_| "<unknown>".into());
+        let config = crate::audio_device::config(
+            &device,
+            true,
+            &[
+                cpal::SampleFormat::F32,
+                cpal::SampleFormat::I16,
+                cpal::SampleFormat::U16,
+            ],
+        )
+        .map_err(|e| format!("input config: {e}"))?;
         let sample_format = config.sample_format();
-        let device_rate = config.sample_rate().0;
+        let device_rate = config.sample_rate();
         let device_channels = config.channels() as u32;
         eprintln!(
             "[voice] mic: device={device_name} format={sample_format:?} rate={device_rate} ch={device_channels}"
@@ -2975,9 +2986,11 @@ impl MicCapture {
 
         let report_fault = |faults: &UnboundedSender<AudioFault>| {
             let faults = faults.clone();
-            move |e: cpal::StreamError| {
+            move |e: cpal::Error| {
                 eprintln!("mic stream error: {e}");
-                let _ = faults.send(AudioFault::Input);
+                if crate::audio_device::needs_reopen(e.kind()) {
+                    let _ = faults.send(AudioFault::Input);
+                }
             }
         };
         let stream = match sample_format {
@@ -2988,7 +3001,7 @@ impl MicCapture {
                 let mut mono_buf: Vec<f32> = Vec::with_capacity(1024);
                 let mut resampled_buf: Vec<f32> = Vec::with_capacity(1024);
                 device.build_input_stream(
-                    &config.into(),
+                    config.into(),
                     move |data: &[f32], _| {
                         update_peak(&raw_peak_cb, data);
                         let pushed = forward_mic(
@@ -3014,7 +3027,7 @@ impl MicCapture {
                 let mut mono_buf: Vec<f32> = Vec::with_capacity(1024);
                 let mut resampled_buf: Vec<f32> = Vec::with_capacity(1024);
                 device.build_input_stream(
-                    &config.into(),
+                    config.into(),
                     move |data: &[i16], _| {
                         f32_buf.clear();
                         f32_buf.extend(data.iter().map(|s| *s as f32 / i16::MAX as f32));
@@ -3042,7 +3055,7 @@ impl MicCapture {
                 let mut mono_buf: Vec<f32> = Vec::with_capacity(1024);
                 let mut resampled_buf: Vec<f32> = Vec::with_capacity(1024);
                 device.build_input_stream(
-                    &config.into(),
+                    config.into(),
                     move |data: &[u16], _| {
                         f32_buf.clear();
                         f32_buf.extend(data.iter().map(|s| (*s as f32 - 32768.0) / 32768.0));
@@ -3114,8 +3127,6 @@ impl MicCapture {
 impl Drop for MicCapture {
     fn drop(&mut self) {
         self.heartbeat.abort();
-        // Dropping a by-name stream disposes nothing in cpal 0.15 (trap 24);
-        // an explicit stop is what makes the device idle.
         #[allow(irrefutable_let_patterns)]
         if let MicBackend::Cpal { stream } = &self._backend {
             match stream.pause() {
@@ -3538,13 +3549,16 @@ impl PlaybackMixer {
             host.output_devices().ok(),
         )
         .ok_or_else(|| "no default output device".to_string())?;
-        let device_name = device.name().unwrap_or_else(|_| "<unknown>".into());
-        let config = device
-            .default_output_config()
-            .map_err(|e| format!("output config: {e}"))?;
+        let device_name = crate::audio_device::name(&device).unwrap_or_else(|_| "<unknown>".into());
+        let config = crate::audio_device::config(
+            &device,
+            false,
+            &[cpal::SampleFormat::F32, cpal::SampleFormat::I16],
+        )
+        .map_err(|e| format!("output config: {e}"))?;
         let device_channels = config.channels() as usize;
         let sample_format = config.sample_format();
-        let device_rate = config.sample_rate().0;
+        let device_rate = config.sample_rate();
         eprintln!(
             "[voice] playback: device={device_name} format={sample_format:?} rate={device_rate} ch={device_channels}"
         );
@@ -3569,14 +3583,16 @@ impl PlaybackMixer {
 
         let report_fault = |faults: &UnboundedSender<AudioFault>| {
             let faults = faults.clone();
-            move |e: cpal::StreamError| {
+            move |e: cpal::Error| {
                 eprintln!("output stream error: {e}");
-                let _ = faults.send(AudioFault::Output);
+                if crate::audio_device::needs_reopen(e.kind()) {
+                    let _ = faults.send(AudioFault::Output);
+                }
             }
         };
         let stream = match sample_format {
             cpal::SampleFormat::F32 => device.build_output_stream(
-                &config.into(),
+                config.into(),
                 move |data: &mut [f32], _| {
                     cb_counter_cb.fetch_add(1, Ordering::Relaxed);
                     let mut tracks = tracks_cb.lock();
@@ -3614,7 +3630,7 @@ impl PlaybackMixer {
                 None,
             ),
             cpal::SampleFormat::I16 => device.build_output_stream(
-                &config.into(),
+                config.into(),
                 move |data: &mut [i16], _| {
                     cb_counter_cb.fetch_add(1, Ordering::Relaxed);
                     let mut tracks = tracks_cb.lock();

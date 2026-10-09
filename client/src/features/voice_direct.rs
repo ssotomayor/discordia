@@ -373,11 +373,8 @@ mod tests {
             (state, Audio::start(&factory, state).unwrap())
         });
         let track_id = audio.track.id();
-        let device = cpal::default_host()
-            .default_input_device()
-            .unwrap()
-            .name()
-            .unwrap();
+        let device = cpal::default_host().default_input_device().unwrap();
+        let device = crate::audio_device::name(&device).unwrap();
         for (input, bypass) in [
             (Some(device.clone()), false),
             (Some(device), true),
