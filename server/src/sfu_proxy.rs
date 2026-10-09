@@ -17,6 +17,7 @@ use axum::http::{HeaderMap, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::Message as UpstreamMessage;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::protocol::CloseFrame as UpstreamClose;
 
 use crate::AppContext;
@@ -61,25 +62,32 @@ pub async fn proxy(
                 )
                     .into_response();
             };
-            let upstream =
-                match tokio_tungstenite::connect_async(format!("ws://{authority}{path_and_query}"))
-                    .await
-                {
-                    Ok((stream, _)) => stream,
-                    // The SFU refused the handshake, a bad token above all: hand
-                    // the caller its verdict, not a gateway error.
-                    Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
-                        let status = StatusCode::from_u16(response.status().as_u16())
-                            .unwrap_or(StatusCode::BAD_GATEWAY);
-                        tracing::info!(%status, "voice route: SFU refused a tunneled handshake");
-                        return status.into_response();
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "voice route: SFU unreachable for a tunnel");
-                        return (StatusCode::BAD_GATEWAY, "the voice server is not answering")
-                            .into_response();
-                    }
-                };
+            let Ok(mut request) = format!("ws://{authority}{path_and_query}").into_client_request()
+            else {
+                return StatusCode::BAD_GATEWAY.into_response();
+            };
+            // Native SDKs send the token in a header instead of the query string.
+            if let Some(auth) = headers.get(header::AUTHORIZATION) {
+                request
+                    .headers_mut()
+                    .insert(header::AUTHORIZATION, auth.clone());
+            }
+            let upstream = match tokio_tungstenite::connect_async(request).await {
+                Ok((stream, _)) => stream,
+                // The SFU refused the handshake, a bad token above all: hand
+                // the caller its verdict, not a gateway error.
+                Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
+                    let status = StatusCode::from_u16(response.status().as_u16())
+                        .unwrap_or(StatusCode::BAD_GATEWAY);
+                    tracing::info!(%status, "voice route: SFU refused a tunneled handshake");
+                    return status.into_response();
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "voice route: SFU unreachable for a tunnel");
+                    return (StatusCode::BAD_GATEWAY, "the voice server is not answering")
+                        .into_response();
+                }
+            };
             tracing::info!(path = %rest, "voice route: signaling tunnel opened");
             ws.on_upgrade(move |socket| async move {
                 let _permit = permit;

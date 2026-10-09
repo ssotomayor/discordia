@@ -118,6 +118,7 @@ jobs:
         run: |
           cargo test -p dioxusfun-server --lib livekit_bundle::tests -- --ignored --test-threads=1
           cargo test -p dioxusfun --test live_sfu audio_red_survives_end_to_end_encryption -- --ignored --test-threads=1
+          cargo test -p dioxusfun --test live_sfu gateway_signaling_delivers_native_audio_without_rendezvous -- --ignored --test-threads=1
 
       - uses: actions/setup-node@v4
         with:
@@ -162,6 +163,8 @@ jobs:
           cargo test -p dioxusfun-server --lib livekit_bundle::tests -- --ignored --test-threads=1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p dioxusfun --test live_sfu audio_red_survives_end_to_end_encryption -- --ignored --test-threads=1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p dioxusfun --test live_sfu gateway_signaling_delivers_native_audio_without_rendezvous -- --ignored --test-threads=1
       - name: Hardware encoder queue and timing regressions
         shell: pwsh
         run: ./scripts/test-mf-encoder.ps1
@@ -205,6 +208,7 @@ jobs:
         run: |
           cargo test -p dioxusfun-server --lib livekit_bundle::tests -- --ignored --test-threads=1
           cargo test -p dioxusfun --test live_sfu audio_red_survives_end_to_end_encryption -- --ignored --test-threads=1
+          cargo test -p dioxusfun --test live_sfu gateway_signaling_delivers_native_audio_without_rendezvous -- --ignored --test-threads=1
 
   prerelease-linux:
     name: pre-release · server+client (linux · x86_64)

@@ -8,20 +8,25 @@ use std::net::SocketAddr;
 use axum::Router;
 use axum::extract::Query;
 use axum::extract::ws::{Message, WebSocketUpgrade};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use dioxusfun_server::livekit::LiveKitConfig;
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
 #[derive(serde::Deserialize)]
 struct Token {
     access_token: Option<String>,
 }
 
-async fn rtc(ws: WebSocketUpgrade, Query(token): Query<Token>) -> Response {
-    if token.access_token.as_deref() != Some("good") {
+async fn rtc(ws: WebSocketUpgrade, Query(token): Query<Token>, headers: HeaderMap) -> Response {
+    let authorized = match headers.get(header::AUTHORIZATION) {
+        Some(value) => value == "Bearer good",
+        None => token.access_token.as_deref() == Some("good"),
+    };
+    if !authorized {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     ws.on_upgrade(|mut socket| async move {
@@ -111,6 +116,50 @@ async fn signaling_reaches_the_bundled_sfu_through_the_gateway() {
         .unwrap();
     let reply = ws.next().await.unwrap().unwrap();
     assert_eq!(reply, tungstenite::Message::Binary(vec![1, 2, 3]));
+}
+
+#[tokio::test]
+async fn native_bearer_authorization_reaches_the_sfu() {
+    let (sfu_port, _sfu) = fake_sfu().await;
+    let (addr, _gateway) = gateway(bundled(sfu_port)).await;
+
+    for path in ["rtc", "rtc/v1"] {
+        let mut request = format!("ws://{addr}/sfu/{path}")
+            .into_client_request()
+            .unwrap();
+        request
+            .headers_mut()
+            .insert(header::AUTHORIZATION, "Bearer good".parse().unwrap());
+        let (mut ws, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+        ws.send(tungstenite::Message::Text("native".into()))
+            .await
+            .unwrap();
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(5), ws.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(reply, tungstenite::Message::Text("sfu:native".into()));
+        ws.close(None).await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn forged_bearer_authorization_is_rejected_by_the_sfu() {
+    let (sfu_port, _sfu) = fake_sfu().await;
+    let (addr, _gateway) = gateway(bundled(sfu_port)).await;
+    let mut request = format!("ws://{addr}/sfu/rtc?access_token=good")
+        .into_client_request()
+        .unwrap();
+    request
+        .headers_mut()
+        .insert(header::AUTHORIZATION, "Bearer forged".parse().unwrap());
+    match tokio_tungstenite::connect_async(request).await.unwrap_err() {
+        tungstenite::Error::Http(response) => {
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        }
+        other => panic!("expected an HTTP refusal, got {other:?}"),
+    }
 }
 
 #[tokio::test]

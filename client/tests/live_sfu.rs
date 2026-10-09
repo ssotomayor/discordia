@@ -20,16 +20,22 @@ mod voice_endpoints;
 #[tokio::test]
 #[ignore = "starts the bundled SFU; verifies alternate IPv6 signaling and decoded audio without rendezvous"]
 async fn alternate_ipv6_endpoint_delivers_audio_without_rendezvous() {
-    alternate_endpoint_delivers_audio(true).await;
+    alternate_endpoint_delivers_audio(true, false).await;
 }
 
 #[tokio::test]
 #[ignore = "starts the bundled SFU; verifies failed IPv6 signaling selects IPv4 and delivers decoded audio"]
 async fn alternate_ipv4_endpoint_delivers_audio_without_rendezvous() {
-    alternate_endpoint_delivers_audio(false).await;
+    alternate_endpoint_delivers_audio(false, false).await;
 }
 
-async fn alternate_endpoint_delivers_audio(ipv6: bool) {
+#[tokio::test]
+#[ignore = "starts the bundled SFU; verifies native bearer signaling through the gateway and decoded audio"]
+async fn gateway_signaling_delivers_native_audio_without_rendezvous() {
+    alternate_endpoint_delivers_audio(false, true).await;
+}
+
+async fn alternate_endpoint_delivers_audio(ipv6: bool, through_gateway: bool) {
     use futures_util::StreamExt;
     use livekit::webrtc::audio_stream::native::NativeAudioStream;
 
@@ -43,6 +49,28 @@ async fn alternate_endpoint_delivers_audio(ipv6: bool) {
     .await
     .unwrap();
     let port = dioxusfun_server::livekit_bundle::ports().ws;
+    let gateway = if through_gateway {
+        let config = dioxusfun_server::ServerConfig {
+            livekit: dioxusfun_server::livekit::LiveKitConfig {
+                explicit_url: None,
+                port,
+                api_key: creds.key.clone(),
+                api_secret: creds.secret.clone(),
+                ..dioxusfun_server::livekit::LiveKitConfig::from_env(&data_dir)
+            },
+            operators: Default::default(),
+            identities: Default::default(),
+            media_max_bytes: dioxusfun_server::media::DEFAULT_MAX_BYTES,
+            data_dir: data_dir.join("gateway"),
+        };
+        Some(
+            dioxusfun_server::spawn("127.0.0.1:0".parse().unwrap(), 0, config)
+                .await
+                .unwrap(),
+        )
+    } else {
+        None
+    };
     let room_name = format!("direct-{}", uuid::Uuid::new_v4());
     let mint = |identity: &str| {
         AccessToken::with_api_key(&creds.key, &creds.secret)
@@ -63,7 +91,9 @@ async fn alternate_endpoint_delivers_audio(ipv6: bool) {
     let unavailable = format!("ws://{}", closed.local_addr().unwrap());
     drop(closed);
     let publisher_token = mint("publisher");
-    let available = if ipv6 {
+    let available = if let Some(gateway) = &gateway {
+        format!("ws://{}/sfu", gateway.addr)
+    } else if ipv6 {
         format!("ws://[::1]:{port}")
     } else {
         format!("ws://127.0.0.1:{port}")
