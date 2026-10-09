@@ -363,7 +363,7 @@ pub fn renew_at(creds: &TurnCredentials, now_unix: u64) -> Duration {
     Duration::from_secs(creds.expires_unix.saturating_sub(now_unix) / 2)
 }
 
-fn now_unix() -> u64 {
+pub(crate) fn now_unix() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -415,6 +415,12 @@ pub fn maintain(
                             if let Some(sink) = &ice_sink {
                                 apply_turn(sink, &creds);
                             }
+                            tracing::info!(
+                                urls = ?creds.urls,
+                                expires_in_s = creds.expires_unix.saturating_sub(now_unix()),
+                                applied = ice_sink.is_some(),
+                                "voice route: relay credentials renewed"
+                            );
                             renewal =
                                 Some(Box::pin(tokio::time::sleep(renew_at(&creds, now_unix()))));
                         }
@@ -442,12 +448,19 @@ pub fn maintain(
                 .unwrap_or_else(|_| Err("no answer from the rendezvous".to_string()));
                 match again {
                     Ok((info, control)) => {
+                        let voice_grant = info.voice_token_grant.is_some();
                         if let (Some(m), Some(grant)) = (&minter, info.voice_token_grant) {
                             m.set_grant(grant);
                         }
                         if let (Some(sink), Some(creds)) = (&ice_sink, &info.turn) {
                             apply_turn(sink, creds);
                         }
+                        tracing::info!(
+                            turn_urls = ?info.turn.as_ref().map(|t| &t.urls),
+                            applied = ice_sink.is_some() && info.turn.is_some(),
+                            voice_grant,
+                            "voice route: re-registered; a host that started without a relay keeps its old plan"
+                        );
                         turn = info.turn;
                         eprintln!("[rendezvous] registered again as {}", info.shortcode);
                         tracing::info!(shortcode = %info.shortcode, attempt, "rendezvous registration restored");

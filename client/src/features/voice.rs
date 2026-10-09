@@ -663,6 +663,12 @@ impl ActiveVoice {
         options.join_retries = 0;
         options.connect_timeout = std::time::Duration::from_secs(5);
         options.rtc_config = rtc_config(&ice_servers);
+        tracing::info!(
+            url = %livekit_url,
+            %channel_id,
+            ice_urls = ?crate::protocol::ice_urls(&ice_servers),
+            "voice route: dialing the voice room"
+        );
         let (room, mut events) = Room::connect(livekit_url, token, options)
             .await
             .map_err(|e| format!("livekit connect: {e}"))?;
@@ -2628,6 +2634,11 @@ fn spawn_stats_task(
             if state.peek().voice_send_route != routes.0
                 || state.peek().voice_receive_route != routes.1
             {
+                tracing::info!(
+                    send = ?routes.0.as_ref().map(|r| format!("{} {}", r.label(), r.endpoint)),
+                    receive = ?routes.1.as_ref().map(|r| format!("{} {}", r.label(), r.endpoint)),
+                    "voice route: selected media path changed"
+                );
                 let mut s = state.write();
                 s.voice_send_route = routes.0;
                 s.voice_receive_route = routes.1;

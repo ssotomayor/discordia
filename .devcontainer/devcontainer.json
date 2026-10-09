@@ -13,7 +13,8 @@
   "postCreateCommand": "bash .devcontainer/post-create.sh",
   // Not postCreate: iptables rules are per network namespace and do not
   // survive `docker stop`, so the allowlist has to be re-applied every start.
-  "postStartCommand": "sudo /usr/local/bin/init-firewall.sh",
+  // Same for the agent socket: Docker recreates it root-owned on each start.
+  "postStartCommand": "sudo /usr/local/bin/prepare-mounts.sh && sudo /usr/local/bin/init-firewall.sh",
 
   // The gateway and the rendezvous. Not 7880: the bundled SFU is skipped in
   // here (DIOXUSFUN_LIVEKIT_AUTOSPAWN=0), and a forwarded port for a process

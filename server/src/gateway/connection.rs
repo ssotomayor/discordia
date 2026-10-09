@@ -1197,15 +1197,33 @@ pub async fn handle_connection(
                     }
                     ClientMessage::VoiceConnectionReport { channel_id, route_revision, connected } => {
                         let Some(u) = user.as_ref() else { continue };
-                        if !signals.allow() || ctx.state.voice_channel_of(&u.pubkey) != Some(channel_id)
-                            || route_revision != 0 || ctx.livekit.route().1 != 0
-                            || peer.is_some_and(crate::protocol::is_private_ip) { continue; }
+                        let peer_private = peer.is_some_and(crate::protocol::is_private_ip);
+                        let ignored = if !signals.allow() { Some("rate limited") }
+                            else if ctx.state.voice_channel_of(&u.pubkey) != Some(channel_id) { Some("not in that channel") }
+                            else if route_revision != 0 || ctx.livekit.route().1 != 0 { Some("already on the shared route") }
+                            else if peer_private { Some("caller is on the LAN") }
+                            else if ctx.livekit.fallback.is_none() { Some("no shared fallback configured") }
+                            else { None };
+                        tracing::info!(
+                            %channel_id,
+                            user = %short_key(&u.pubkey),
+                            connected,
+                            peer_family = peer.map(|ip| if ip.is_ipv6() { "v6" } else { "v4" }),
+                            peer_private,
+                            ignored,
+                            "voice route: caller reported its local attempt"
+                        );
+                        if ignored.is_some() { continue; }
                         let Some(fallback) = &ctx.livekit.fallback else { continue };
                         if connected {
                             fallback.confirmed_local();
+                            tracing::info!("voice route: a remote caller confirmed local voice; the session stays local");
                         } else if fallback.use_shared() {
+                            tracing::warn!("voice route: first remote caller failed every local address; moving everyone to the shared SFU");
                             let ctx = ctx.clone();
                             tokio::spawn(async move { move_voice_to_shared(ctx).await; });
+                        } else {
+                            tracing::info!("voice route: failure report after the route was already decided; nothing moves");
                         }
                     }
                     ClientMessage::ConnectionRouteReport { channel_id, gateway, voice_send, voice_receive } => {
@@ -2172,8 +2190,10 @@ fn valid_reported_routes(gateway: &str, sent: Option<&str>, received: Option<&st
 async fn move_voice_to_shared(ctx: Arc<AppContext>) {
     let (cfg, revision) = ctx.livekit.route();
     let Some(url) = cfg.explicit_url.clone() else {
+        tracing::warn!("voice route: asked to move to the shared SFU but no URL is set");
         return;
     };
+    tracing::warn!(%url, revision, "voice route: session moved to the shared SFU");
     let reason = "A remote caller could not connect to any local voice address. The session moved to rendezvous voice as its last option.";
     let targets = ctx.state.users.iter().map(|u| u.pubkey.clone()).collect();
     ctx.state.deliver(
@@ -2211,6 +2231,11 @@ async fn move_voice_to_shared(ctx: Arc<AppContext>) {
     }
 }
 
+/// Enough of a hex pubkey to tell callers apart in a log line.
+fn short_key(pubkey: &str) -> &str {
+    pubkey.get(..8).unwrap_or(pubkey)
+}
+
 async fn mint_voice_frames(
     cfg: &livekit::LiveKitConfig,
     pubkey: &str,
@@ -2232,18 +2257,26 @@ async fn mint_voice_frames(
         }
     };
     let ice_servers = cfg.ice_servers();
+    let location = if cfg.minter.is_some() {
+        "rendezvous"
+    } else if cfg.explicit_url.is_none() {
+        "host"
+    } else {
+        "configured"
+    };
+    tracing::info!(
+        %channel_id,
+        user = %short_key(pubkey),
+        location,
+        url = %livekit_url,
+        alternates = ?alternate_urls,
+        revision = route_revision,
+        ice_urls = ?crate::protocol::ice_urls(&ice_servers),
+        "voice route: grant issued"
+    );
     frames.push(ServerMessage::VoiceToken {
         channel_id,
-        voice_location: Some(
-            if cfg.minter.is_some() {
-                "rendezvous"
-            } else if cfg.explicit_url.is_none() {
-                "host"
-            } else {
-                "configured"
-            }
-            .into(),
-        ),
+        voice_location: Some(location.into()),
         livekit_url: livekit_url.clone(),
         alternate_urls,
         route_revision,
