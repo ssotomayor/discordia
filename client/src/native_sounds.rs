@@ -253,7 +253,6 @@ struct AudioOutput {
 
 impl Drop for AudioOutput {
     fn drop(&mut self) {
-        // CPAL 0.15 can retain a CoreAudio stream after drop; pause releases the running audio unit.
         if let Err(error) = self.stream.pause() {
             tracing::warn!(%error, "Couldn't stop notification audio");
         }
@@ -269,10 +268,25 @@ impl AudioOutput {
             host.output_devices().ok(),
         )
         .ok_or("No audio output device available.")?;
-        let supported = device.default_output_config().map_err(|e| e.to_string())?;
+        let supported = crate::audio_device::config(
+            &device,
+            false,
+            &[
+                cpal::SampleFormat::F32,
+                cpal::SampleFormat::F64,
+                cpal::SampleFormat::I8,
+                cpal::SampleFormat::I16,
+                cpal::SampleFormat::I32,
+                cpal::SampleFormat::I64,
+                cpal::SampleFormat::U8,
+                cpal::SampleFormat::U16,
+                cpal::SampleFormat::U32,
+                cpal::SampleFormat::U64,
+            ],
+        )?;
         let format = supported.sample_format();
         let config: cpal::StreamConfig = supported.into();
-        if config.channels == 0 || config.sample_rate.0 == 0 {
+        if config.channels == 0 || config.sample_rate == 0 {
             return Err("Invalid audio output configuration.".into());
         }
         let player = Arc::new(Mutex::new(Player {
@@ -297,7 +311,7 @@ impl AudioOutput {
             stream,
             player,
             failed,
-            rate: config.sample_rate.0,
+            rate: config.sample_rate,
         };
         output.stream.play().map_err(|e| e.to_string())?;
         Ok(output)
@@ -310,13 +324,13 @@ fn build<T: cpal::SizedSample + cpal::FromSample<f32>>(
     player: &Arc<Mutex<Player>>,
     control: &Arc<Control>,
     failed: &Arc<AtomicBool>,
-) -> Result<cpal::Stream, cpal::BuildStreamError> {
+) -> Result<cpal::Stream, cpal::Error> {
     let player = Arc::clone(player);
     let control = Arc::clone(control);
     let failed = Arc::clone(failed);
     let channels = usize::from(config.channels);
     device.build_output_stream(
-        config,
+        *config,
         move |data: &mut [T], _| {
             if let Some(mut player) = player.try_lock() {
                 player.cancel_rings(control.call_ring.load(Ordering::Relaxed));
@@ -327,7 +341,9 @@ fn build<T: cpal::SizedSample + cpal::FromSample<f32>>(
             }
         },
         move |error| {
-            failed.store(true, Ordering::Relaxed);
+            if crate::audio_device::needs_reopen(error.kind()) {
+                failed.store(true, Ordering::Relaxed);
+            }
             tracing::warn!(%error, "Notification audio output failed");
         },
         None,

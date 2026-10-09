@@ -2,6 +2,7 @@
 
 mod agc;
 mod app;
+mod audio_device;
 mod audio_diag;
 mod audio_queue;
 mod chat_image;
