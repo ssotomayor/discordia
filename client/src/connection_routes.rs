@@ -88,6 +88,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn ipv6_and_turn_are_separate_and_single_pc_reception_requires_inbound_stats() {
+        let mut stats: Vec<RtcStats> = serde_json::from_value(serde_json::json!([
+            {"type":"transport", "selectedCandidatePairId":"selected"},
+            {"type":"candidate-pair", "id":"selected", "remoteCandidateId":"remote", "state":"succeeded"},
+            {"type":"remote-candidate", "id":"remote", "address":"2800:810::1", "port":7882, "protocol":"udp", "candidateType":"relay"}
+        ])).unwrap();
+        let (send, receive) = selected_media_routes(&stats, &[]);
+        assert_eq!(send.unwrap().label(), "IPv6 · TURN relay · UDP");
+        assert!(receive.is_none());
+        stats.push(serde_json::from_value(serde_json::json!({"type":"inbound-rtp"})).unwrap());
+        let (send, receive) = selected_media_routes(&stats, &[]);
+        assert_eq!(send, receive);
+        assert_eq!(receive.unwrap().endpoint, "[2800:810::1]:7882");
+        if let RtcStats::CandidatePair(pair) = &mut stats[1] {
+            pair.candidate_pair.state = Some(livekit::webrtc::stats::IceCandidatePairState::Failed);
+        }
+        assert!(selected_media_route(&stats).is_none());
+    }
+
+    #[test]
     fn uses_the_selected_pair_instead_of_an_available_ipv6_candidate() {
         let stats: Vec<RtcStats> = serde_json::from_value(serde_json::json!([
             {"type":"transport", "selectedCandidatePairId":"selected"},
