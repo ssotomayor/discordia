@@ -519,8 +519,13 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
                 if state.peek().soundboard_open { state.write().soundboard_open = false; }
             },
             onkeydown: move |e| {
-                if e.key() == Key::Escape && state.peek().soundboard_open {
-                    state.write().soundboard_open = false;
+                if e.key() == Key::Escape {
+                    if state.peek().soundboard_open {
+                        state.write().soundboard_open = false;
+                    }
+                    if state.peek().voice_menu.is_some() {
+                        state.write().voice_menu = None;
+                    }
                 }
             },
             VoiceSounds {}
@@ -558,6 +563,7 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
             }
             crate::features::settings_dialog::SettingsDialog {}
             crate::features::soundboard::SoundboardPanel {}
+            crate::features::voice_menu::VoiceMenuHost {}
             crate::features::channel_access::ChannelAccessHost {}
             GuildDialogHost {}
             crate::features::guilds::RulesPromptDialog {}

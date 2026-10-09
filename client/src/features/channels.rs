@@ -1182,26 +1182,6 @@ fn VoiceOccupant(
     can_watch_camera: bool,
 ) -> Element {
     let mut state = use_app_state();
-    let voice = use_voice_tx();
-    let gw_disconnect = use_gateway();
-    let mut show_volume = use_signal(|| false);
-    // The server re-checks; this only hides a button that would be refused.
-    let disconnect_in = {
-        let s = state.read();
-        s.voice_states
-            .iter()
-            .find(|v| v.user_pubkey == pubkey)
-            .map(|v| v.guild_id)
-            .filter(|gid| {
-                !is_self
-                    && s.can(*gid, crate::protocol::Permission::DisconnectMembers)
-                    && !s
-                        .guilds
-                        .iter()
-                        .any(|g| g.id == *gid && g.owner_pubkey == pubkey)
-            })
-    };
-    let pk_disconnect = pubkey.clone();
 
     let volume = state
         .read()
@@ -1213,27 +1193,37 @@ fn VoiceOccupant(
     let health = state.read().voice_quality.get(&pubkey).copied();
     let health_label = health.and_then(|h| h.dot(is_self)).map(|(_, label)| label);
     let ring = crate::state::talk_ring(speaking && !locally_muted, health);
-    let apply = {
+    // Volume, local mute and disconnect live in the right-click menu, mounted
+    // at the workspace root (trap 22); the row only shows what is set.
+    let open_menu = {
         let pubkey = pubkey.clone();
-        let voice = voice.clone();
-        move || {
-            let gain = state.read().voice_gain_of(&pubkey);
-            voice.send(crate::features::voice::VoiceCmd::SetUserVolume {
+        let name = name.clone();
+        move |e: MouseEvent| {
+            if is_self {
+                return;
+            }
+            e.prevent_default();
+            e.stop_propagation();
+            let c = e.client_coordinates();
+            state.write().voice_menu = Some(crate::state::VoiceMenu {
                 pubkey: pubkey.clone(),
-                gain,
+                name: name.clone(),
+                x: c.x,
+                y: c.y,
             });
         }
     };
-    let apply_slider = apply.clone();
-    let pk_slider = pubkey.clone();
-    let pk_mute = pubkey.clone();
+    let open_menu_click = open_menu.clone();
     let pk_watch = pubkey.clone();
     let pk_camera = pubkey.clone();
     let is_watching_screen = state.read().screen_viewing.contains(&pubkey);
     let is_watching_camera = state.read().cameras_watching.contains(&pubkey);
 
     rsx! {
-        div { class: "px-2 py-0.5",
+        div {
+            class: "px-2 py-0.5",
+            title: if is_self { "" } else { "Right-click for volume and more" },
+            oncontextmenu: open_menu,
             div { class: "flex items-center gap-1.5 text-xs text-[var(--text-muted)]",
                 span { class: "shrink-0 flex", title: health_label.unwrap_or_default(),
                     crate::features::profiles::Avatar {
@@ -1252,20 +1242,15 @@ fn VoiceOccupant(
                 } else if remote_muted {
                     span { class: "text-[9px] text-[var(--text-dim)] uppercase tracking-wider", "muted" }
                 }
-                if !is_self {
+                if !is_self && (locally_muted || volume != 100) {
                     button {
                         class: if locally_muted {
                             "w-5 h-5 flex items-center justify-center rounded text-[var(--danger)] shrink-0"
-                        } else if volume != 100 {
-                            "w-5 h-5 flex items-center justify-center rounded text-[var(--accent)] shrink-0"
                         } else {
-                            "w-5 h-5 flex items-center justify-center rounded text-[var(--text-dim)] hover:text-[var(--text)] shrink-0"
+                            "w-5 h-5 flex items-center justify-center rounded text-[var(--accent)] shrink-0"
                         },
-                        title: if locally_muted { "Muted for you — click for volume" } else { "Volume (only affects your playback)" },
-                        onclick: move |_| {
-                            let now = !show_volume();
-                            show_volume.set(now);
-                        },
+                        title: if locally_muted { "Muted for you — click for options" } else { "{volume}% for you — click for options" },
+                        onclick: open_menu_click,
                         dangerous_inner_html: if locally_muted {
                             crate::features::icons::SPEAKER_OFF
                         } else {
@@ -1324,55 +1309,6 @@ fn VoiceOccupant(
                             }
                         },
                         dangerous_inner_html: crate::features::icons::CAMERA,
-                    }
-                }
-            }
-            if show_volume() && !is_self {
-                div { class: "flex items-center gap-1.5 mt-1 mb-0.5",
-                    button {
-                        class: if locally_muted {
-                            "text-[9px] uppercase tracking-wider text-[var(--danger)] font-semibold shrink-0"
-                        } else {
-                            "text-[9px] uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--text)] shrink-0"
-                        },
-                        title: "Mute this person for you only",
-                        onclick: move |_| {
-                            let now = !locally_muted;
-                            {
-                                let mut s = state.write();
-                                if now { s.user_muted.insert(pk_mute.clone()); } else { s.user_muted.remove(&pk_mute); }
-                            }
-                            apply();
-                        },
-                        if locally_muted { "unmute" } else { "mute" }
-                    }
-                    input {
-                        r#type: "range",
-                        min: "0",
-                        max: "200",
-                        value: "{volume}",
-                        disabled: locally_muted,
-                        class: "flex-1 accent-[var(--accent)] disabled:opacity-40",
-                        oninput: move |e| {
-                            let val: u32 = e.value().parse().unwrap_or(100).clamp(0, 200);
-                            state.write().user_volumes.insert(pk_slider.clone(), val);
-                            apply_slider();
-                        },
-                    }
-                    span { class: "text-[9px] text-[var(--text-dim)] w-8 text-right shrink-0", "{volume}%" }
-                }
-                if let Some(gid) = disconnect_in {
-                    button {
-                        class: "mb-0.5 text-[9px] uppercase tracking-wider text-[var(--warn)] hover:text-[var(--danger)] font-semibold",
-                        title: "Drops their voice, screen share and camera for everyone. They can join again.",
-                        onclick: move |_| {
-                            gw_disconnect.send(ClientMessage::DisconnectVoice {
-                                guild_id: gid,
-                                user_pubkey: pk_disconnect.clone(),
-                            });
-                            show_volume.set(false);
-                        },
-                        "Disconnect from voice"
                     }
                 }
             }

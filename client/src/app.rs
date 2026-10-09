@@ -322,6 +322,13 @@ button:active:not(:disabled) { transform: scale(0.985); }
 @keyframes dxf-pop-in { from { opacity: 0; transform: scale(0.96); } to { opacity: 1; transform: scale(1); } }
 .dxf-pop-in { animation: dxf-pop-in 0.12s var(--ease) both; }
 
+/* The chat composer is a contenteditable line: it scrolls sideways like an
+   input and shows a custom emoji as its picture. */
+.dxf-composer { white-space: pre; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; outline: none; cursor: text; }
+.dxf-composer::-webkit-scrollbar { display: none; }
+.dxf-composer:empty::before { content: attr(data-placeholder); color: var(--text-dim); pointer-events: none; }
+.dxf-composer img { height: 1.5em; width: auto; display: inline-block; vertical-align: -0.4em; margin: 0 1px; }
+
 /* The connecting screen. Scanlines and a rolling band, because a dial that
    cannot report progress should at least look like it is doing something —
    there is no denominator here, only a wait. */

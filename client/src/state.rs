@@ -268,6 +268,16 @@ pub struct DmInfo {
     pub other_pubkey: String,
 }
 
+/// A right-click on someone in a voice channel. Mounted at the workspace root
+/// like the soundboard (trap 22), so it carries where it was opened.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VoiceMenu {
+    pub pubkey: String,
+    pub name: String,
+    pub x: f64,
+    pub y: f64,
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub status: ConnectionStatus,
@@ -413,6 +423,7 @@ pub struct AppState {
     pub soundboard_anchor: (f64, f64),
     /// Who pressed what, for the few seconds a voice row shows it.
     pub recent_sounds: HashMap<String, (String, std::time::Instant)>,
+    pub voice_menu: Option<VoiceMenu>,
     pub stream_has_audio: crate::stream_audio::Presence,
     pub media_undecryptable: bool,
     pub pending_rekey: bool,
@@ -540,6 +551,7 @@ impl AppState {
             soundboard_adjusting: false,
             soundboard_anchor: (0.0, 0.0),
             recent_sounds: HashMap::new(),
+            voice_menu: None,
             stream_has_audio: crate::stream_audio::Presence::default(),
             media_undecryptable: false,
             pending_rekey: false,
@@ -646,6 +658,7 @@ impl AppState {
         self.soundboard_open = false;
         self.soundboard_adjusting = false;
         self.recent_sounds.clear();
+        self.voice_menu = None;
         self.voice_quality.clear();
         self.voice_stats.clear();
         self.screen_share_stats = None;

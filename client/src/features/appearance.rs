@@ -6,6 +6,42 @@ use crate::settings::{self, ClientSettings};
 
 const MAX_BACKGROUND_BYTES: usize = 4_000_000;
 
+#[derive(Clone, Copy, PartialEq)]
+enum SizeKind {
+    Text,
+    Emoji,
+    Reaction,
+}
+
+impl SizeKind {
+    fn bounds(self) -> (u16, u16) {
+        match self {
+            SizeKind::Text => (80, 140),
+            SizeKind::Emoji | SizeKind::Reaction => (50, 250),
+        }
+    }
+
+    fn get(self, s: &ClientSettings) -> u16 {
+        let (lo, hi) = self.bounds();
+        match self {
+            SizeKind::Text => s.text_size_percent,
+            SizeKind::Emoji => s.emoji_size_percent,
+            SizeKind::Reaction => s.reaction_size_percent,
+        }
+        .clamp(lo, hi)
+    }
+
+    fn set(self, s: &mut ClientSettings, value: u16) {
+        let (lo, hi) = self.bounds();
+        let value = value.clamp(lo, hi);
+        match self {
+            SizeKind::Text => s.text_size_percent = value,
+            SizeKind::Emoji => s.emoji_size_percent = value,
+            SizeKind::Reaction => s.reaction_size_percent = value,
+        }
+    }
+}
+
 pub(crate) const BACKGROUND_TILES: &[(&str, &str, &str)] = &[
     (
         "grid",
@@ -79,19 +115,23 @@ pub fn AppearanceButton() -> Element {
                     onclick: move |e| e.stop_propagation(),
                     h3 { class: "text-sm font-medium text-[var(--accent)] mb-3", "Appearance" }
 
-                    for (label, emoji) in [("Text size", false), ("Chat emoji size", true)] {
+                    for (label, kind) in [
+                        ("Text size", SizeKind::Text),
+                        ("Chat emoji size", SizeKind::Emoji),
+                        ("Reaction emoji size", SizeKind::Reaction),
+                    ] {
                         {
-                            let size = if emoji { current.emoji_size_percent.clamp(50, 250) } else { current.text_size_percent.clamp(80, 140) };
+                            let (lo, hi) = kind.bounds();
+                            let size = kind.get(&current);
                             rsx! {
                                 label { class: "flex items-center gap-2 mb-3 text-xs",
                                     span { class: "flex-1", "{label}" }
                                     input {
-                                        r#type: "range", min: if emoji { "50" } else { "80" },
-                                        max: if emoji { "250" } else { "140" }, step: "10", value: "{size}",
+                                        r#type: "range", min: "{lo}", max: "{hi}", step: "10", value: "{size}",
                                         class: "w-24 accent-[var(--accent)]",
                                         oninput: move |e| {
                                             if let Ok(value) = e.value().parse::<u16>() {
-                                                update(&move |s| if emoji { s.emoji_size_percent = value.clamp(50, 250); } else { s.text_size_percent = value.clamp(80, 140); });
+                                                update(&move |s| kind.set(s, value));
                                             }
                                         },
                                     }
@@ -101,7 +141,7 @@ pub fn AppearanceButton() -> Element {
                         }
                     }
                     button { class: "text-xs text-[var(--accent)] mb-4",
-                        onclick: move |_| update(&|s| { s.text_size_percent = 100; s.emoji_size_percent = 100; }),
+                        onclick: move |_| update(&|s| { s.text_size_percent = 100; s.emoji_size_percent = 100; s.reaction_size_percent = 100; }),
                         "Reset sizes"
                     }
 

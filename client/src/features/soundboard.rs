@@ -1,6 +1,7 @@
 //! Mounted at the workspace root, not in the voice panel: that panel sits in a
 //! grid item, and a raised one traps `position: fixed` children (trap 22).
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use base64::Engine as _;
@@ -15,6 +16,9 @@ use crate::state::{AppState, GatewayTx, VoicePhase, use_app_state, use_gateway};
 
 /// Under the gateway's limit of ten notices per ten seconds.
 const PLAY_COOLDOWN: Duration = Duration::from_millis(1000);
+/// Under the gateway's thirty writes per ten seconds, with room for the
+/// person's other commands.
+const UPLOAD_SPACING: Duration = Duration::from_millis(400);
 const CHIP_SHOWN_FOR: Duration = Duration::from_secs(3);
 
 #[component]
@@ -252,55 +256,140 @@ pub fn SoundChip(pubkey: String) -> Element {
     }
 }
 
-#[derive(Clone, PartialEq)]
+/// Only to this machine, through the app-sound output, at the soundboard
+/// volume: what everyone else would hear, without telling the server.
+fn preview(state: &AppState, pcm: Arc<[f32]>) {
+    let gain = state.soundboard_volume.min(200) as f32 / 100.0;
+    crate::native_sounds::play_clip(pcm, crate::features::voice::SAMPLE_RATE, gain);
+}
+
+fn preview_sound(mut state: Signal<AppState>, sound: GuildSound) {
+    let Some((address, data_url)) = blob_of(&state.peek(), &sound) else {
+        return;
+    };
+    spawn(async move {
+        let decoded =
+            tokio::task::spawn_blocking(move || crate::sound_decode::decoded(&address, &data_url))
+                .await;
+        match decoded {
+            Ok(Ok(pcm)) => preview(&state.peek(), pcm),
+            Ok(Err(e)) => {
+                state.write().error_toast = Some(format!("Couldn't play {}: {e}", sound.name));
+            }
+            Err(_) => {}
+        }
+    });
+}
+
+#[derive(Clone)]
 struct PendingSound {
+    key: u64,
+    name: String,
     data_url: String,
     secs: f32,
+    pcm: Arc<[f32]>,
+}
+
+/// Everything the uploader must know about a file before offering it.
+fn checked(bytes: Vec<u8>) -> Result<(String, f32, Arc<[f32]>), String> {
+    let max_kb = MAX_SOUND_BYTES / 1024;
+    if bytes.len() > MAX_SOUND_BYTES {
+        return Err(format!("over {max_kb} KB"));
+    }
+    let Some((mime, ext)) = crate::sound_decode::sniff(&bytes) else {
+        return Err("not an MP3, OGG or WAV file".into());
+    };
+    let decoded = crate::sound_decode::decode(&bytes, Some(ext))
+        .map_err(|e| format!("couldn't read it: {e}"))?;
+    if decoded.truncated {
+        return Err(format!("longer than {MAX_SOUND_SECS} seconds"));
+    }
+    let secs = decoded.pcm.len() as f32 / crate::features::voice::SAMPLE_RATE as f32;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    Ok((
+        format!("data:{mime};base64,{b64}"),
+        secs,
+        decoded.pcm.into(),
+    ))
+}
+
+fn stem_of(file_name: &str) -> String {
+    file_name
+        .rsplit_once('.')
+        .map_or(file_name, |(stem, _)| stem)
+        .chars()
+        .take(MAX_SOUND_NAME_LEN)
+        .collect()
 }
 
 /// Uploading is gated on Manage guild, not Manage emojis: a guild hands the
 /// emoji grant out more freely, and a sound is played into every call.
 #[component]
 pub fn SoundSettings(guild_id: Id) -> Element {
-    let state = use_app_state();
+    let mut state = use_app_state();
     let gateway = use_gateway();
+    {
+        let gw = gateway.clone();
+        use_effect(move || crate::net::resolve_media(&mut state.write(), &gw.0));
+    }
 
     let sounds = use_memo(move || state.read().sounds_of(guild_id).to_vec());
-    let mut name = use_signal(String::new);
-    let mut pending = use_signal(|| None::<PendingSound>);
-    let mut checking = use_signal(|| false);
+    let mut pending = use_signal(Vec::<PendingSound>::new);
+    let mut next_key = use_signal(|| 0_u64);
+    let mut checking = use_signal(|| 0_usize);
+    let mut adding = use_signal(|| false);
     let mut error = use_signal(|| None::<String>);
     let mut renaming = use_signal(|| None::<Id>);
     let mut rename_draft = use_signal(String::new);
 
     let count = sounds().len();
-    let full = count >= MAX_SOUNDS_PER_GUILD;
+    let room = MAX_SOUNDS_PER_GUILD.saturating_sub(count);
+    let full = room == 0;
     let max_kb = MAX_SOUND_BYTES / 1024;
+    let queued = pending().len();
+    let names_ok = pending()
+        .iter()
+        .all(|p| crate::protocol::sound_name(&p.name).is_ok());
 
-    let submit = {
+    let submit_all = {
         let gateway = gateway.clone();
         move |_| {
-            let Some(sound) = pending() else {
-                error.set(Some("Pick a sound file first.".into()));
-                return;
-            };
-            let clean = match crate::protocol::sound_name(&name()) {
-                Ok(n) => n,
-                Err(_) => {
-                    error.set(Some(format!(
-                        "Name it in 1-{MAX_SOUND_NAME_LEN} characters."
-                    )));
-                    return;
+            let mut sends = Vec::new();
+            for p in pending().iter() {
+                match crate::protocol::sound_name(&p.name) {
+                    Ok(n) => sends.push((p.key, n, p.data_url.clone())),
+                    Err(_) => {
+                        error.set(Some(format!(
+                            "Name every sound in 1-{MAX_SOUND_NAME_LEN} characters."
+                        )));
+                        return;
+                    }
                 }
-            };
+            }
+            if sends.is_empty() {
+                return;
+            }
+            if sends.len() > room {
+                error.set(Some(format!("Only {room} more can be added here.")));
+                return;
+            }
             error.set(None);
-            gateway.send(ClientMessage::CreateGuildSound {
-                guild_id,
-                name: clean,
-                audio: sound.data_url,
+            adding.set(true);
+            let gw = gateway.clone();
+            spawn(async move {
+                for (i, (key, name, audio)) in sends.into_iter().enumerate() {
+                    if i > 0 {
+                        tokio::time::sleep(UPLOAD_SPACING).await;
+                    }
+                    gw.send(ClientMessage::CreateGuildSound {
+                        guild_id,
+                        name,
+                        audio,
+                    });
+                    pending.write().retain(|p| p.key != key);
+                }
+                adding.set(false);
             });
-            name.set(String::new());
-            pending.set(None);
         }
     };
 
@@ -313,102 +402,145 @@ pub fn SoundSettings(guild_id: Id) -> Element {
                 div { class: "text-[10px] text-[var(--text-dim)]", "{count}/{MAX_SOUNDS_PER_GUILD}" }
             }
             div { class: "text-[10px] text-[var(--text-dim)] mb-2",
-                "Anyone in a voice channel here can play these to everyone in it. MP3, OGG or WAV, up to {max_kb} KB and {MAX_SOUND_SECS} seconds. Stored on this server."
+                "Anyone in a voice channel here can play these to everyone in it. MP3, OGG or WAV, up to {max_kb} KB and {MAX_SOUND_SECS} seconds each. Stored on this server."
             }
 
             if !full {
                 div { class: "flex items-center gap-2 mb-2",
                     label {
-                        class: "shrink-0 h-8 px-2 rounded border border-dashed border-[var(--border)] flex items-center justify-center cursor-pointer text-[10px] text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--accent)] transition-colors",
-                        title: "Choose an MP3, OGG or WAV file",
-                        if checking() {
-                            "Checking…"
-                        } else if let Some(p) = pending() {
-                            "{p.secs:.1} s"
+                        class: "shrink-0 h-8 px-3 rounded border border-dashed border-[var(--border)] flex items-center justify-center cursor-pointer text-[10px] text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--accent)] transition-colors",
+                        title: "Choose one or more MP3, OGG or WAV files",
+                        if checking() > 0 {
+                            "Checking {checking()}…"
                         } else {
-                            "Choose file"
+                            "Choose files"
                         }
                         input {
                             r#type: "file",
+                            multiple: true,
                             accept: ".mp3,.ogg,.oga,.opus,.wav,audio/mpeg,audio/ogg,audio/opus,audio/wav",
                             class: "hidden",
                             onchange: move |evt: FormEvent| {
                                 let files = evt.files();
                                 spawn(async move {
-                                    let Some(file) = files.into_iter().next() else { return };
-                                    let file_name = file.name();
-                                    let stem = file_name
-                                        .rsplit_once('.')
-                                        .map_or(file_name.as_str(), |(stem, _)| stem)
-                                        .to_string();
-                                    let bytes = match file.read_bytes().await {
-                                        Ok(b) => b.to_vec(),
-                                        Err(_) => {
-                                            error.set(Some("Couldn't read that file.".into()));
-                                            return;
+                                    let mut skipped: Vec<String> = Vec::new();
+                                    for file in files {
+                                        let file_name = file.name();
+                                        let room_left = MAX_SOUNDS_PER_GUILD
+                                            .saturating_sub(state.peek().sounds_of(guild_id).len())
+                                            .saturating_sub(pending.peek().len());
+                                        if room_left == 0 {
+                                            skipped.push(format!("{file_name}: no room left"));
+                                            continue;
                                         }
-                                    };
-                                    if bytes.len() > MAX_SOUND_BYTES {
-                                        error.set(Some(format!("That file is over {max_kb} KB.")));
-                                        return;
-                                    }
-                                    let Some((mime, ext)) = crate::sound_decode::sniff(&bytes) else {
-                                        error.set(Some("That isn't an MP3, OGG or WAV file.".into()));
-                                        return;
-                                    };
-                                    checking.set(true);
-                                    let probe = bytes.clone();
-                                    let decoded = tokio::task::spawn_blocking(move || {
-                                        crate::sound_decode::decode(&probe, Some(ext))
-                                    })
-                                    .await;
-                                    checking.set(false);
-                                    let decoded = match decoded {
-                                        Ok(Ok(d)) => d,
-                                        Ok(Err(e)) => {
-                                            error.set(Some(format!("Couldn't read that sound: {e}.")));
-                                            return;
+                                        let bytes = match file.read_bytes().await {
+                                            Ok(b) => b.to_vec(),
+                                            Err(_) => {
+                                                skipped.push(format!("{file_name}: couldn't read it"));
+                                                continue;
+                                            }
+                                        };
+                                        checking.with_mut(|n| *n += 1);
+                                        let result =
+                                            tokio::task::spawn_blocking(move || checked(bytes)).await;
+                                        checking.with_mut(|n| *n = n.saturating_sub(1));
+                                        match result {
+                                            Ok(Ok((data_url, secs, pcm))) => {
+                                                let key = next_key();
+                                                next_key.set(key + 1);
+                                                pending.write().push(PendingSound {
+                                                    key,
+                                                    name: stem_of(&file_name),
+                                                    data_url,
+                                                    secs,
+                                                    pcm,
+                                                });
+                                            }
+                                            Ok(Err(why)) => skipped.push(format!("{file_name}: {why}")),
+                                            Err(_) => {}
                                         }
-                                        Err(_) => return,
-                                    };
-                                    if decoded.truncated {
-                                        error.set(Some(format!(
-                                            "That sound is longer than {MAX_SOUND_SECS} seconds. Trim it and try again."
-                                        )));
-                                        return;
                                     }
-                                    let secs = decoded.pcm.len() as f32
-                                        / crate::features::voice::SAMPLE_RATE as f32;
-                                    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-                                    error.set(None);
-                                    if name().trim().is_empty() {
-                                        name.set(stem.chars().take(MAX_SOUND_NAME_LEN).collect());
-                                    }
-                                    pending.set(Some(PendingSound {
-                                        data_url: format!("data:{mime};base64,{b64}"),
-                                        secs,
-                                    }));
+                                    error.set((!skipped.is_empty())
+                                        .then(|| format!("Skipped {}.", skipped.join("; "))));
                                 });
                             },
                         }
                     }
-                    input {
-                        class: "flex-1 min-w-0 bg-transparent border border-[var(--border)] rounded px-2 py-1 text-xs text-[var(--text)] focus:outline-none focus:border-[var(--accent)]",
-                        placeholder: "name",
-                        maxlength: MAX_SOUND_NAME_LEN as i64,
-                        value: "{name}",
-                        oninput: move |e| name.set(e.value()),
-                    }
-                    button {
-                        class: "rounded px-3 py-1 text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors disabled:opacity-40",
-                        disabled: pending().is_none() || name().trim().is_empty(),
-                        onclick: submit,
-                        "Add"
+                    div { class: "text-[10px] text-[var(--text-dim)] flex-1 min-w-0 truncate",
+                        if queued == 0 {
+                            "Pick several at once; each gets a name and a preview before it is added."
+                        } else {
+                            "{queued} ready to add"
+                        }
                     }
                 }
             } else {
                 div { class: "text-[10px] text-[var(--warn)] mb-2",
                     "This guild has reached the sound limit. Remove one to add another."
+                }
+            }
+
+            if queued > 0 {
+                div { class: "mb-2 rounded border border-[var(--border)] px-2 py-1",
+                    for p in pending().iter().cloned() {
+                        {
+                            let key = p.key;
+                            let pcm = p.pcm.clone();
+                            let name_ok = crate::protocol::sound_name(&p.name).is_ok();
+                            rsx! {
+                                div { key: "{key}", class: "flex items-center gap-2 py-1",
+                                    button {
+                                        class: "w-6 h-6 shrink-0 flex items-center justify-center rounded text-[var(--accent)] hover:bg-white/[0.06] transition-colors [&>svg]:w-3.5 [&>svg]:h-3.5",
+                                        title: "Preview — only you hear it",
+                                        onclick: move |_| preview(&state.peek(), pcm.clone()),
+                                        dangerous_inner_html: crate::features::icons::PLAY,
+                                    }
+                                    input {
+                                        class: if name_ok {
+                                            "flex-1 min-w-0 bg-transparent border border-[var(--border)] rounded px-2 py-0.5 text-xs text-[var(--text)] focus:outline-none focus:border-[var(--accent)]"
+                                        } else {
+                                            "flex-1 min-w-0 bg-transparent border border-[var(--danger)] rounded px-2 py-0.5 text-xs text-[var(--text)] focus:outline-none"
+                                        },
+                                        placeholder: "name",
+                                        maxlength: MAX_SOUND_NAME_LEN as i64,
+                                        value: "{p.name}",
+                                        oninput: move |e| {
+                                            if let Some(entry) = pending.write().iter_mut().find(|q| q.key == key) {
+                                                entry.name = e.value();
+                                            }
+                                        },
+                                    }
+                                    span { class: "text-[10px] text-[var(--text-dim)] shrink-0 w-10 text-right", "{p.secs:.1} s" }
+                                    button {
+                                        class: "text-[10px] uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--danger)] transition-colors shrink-0",
+                                        title: "Don't add this one",
+                                        onclick: move |_| pending.write().retain(|q| q.key != key),
+                                        "✕"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    div { class: "flex items-center gap-2 py-1",
+                        button {
+                            class: "rounded px-3 py-1 text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors disabled:opacity-40",
+                            disabled: adding() || !names_ok || queued > room,
+                            onclick: submit_all,
+                            if adding() {
+                                "Adding…"
+                            } else if queued == 1 {
+                                "Add 1 sound"
+                            } else {
+                                "Add {queued} sounds"
+                            }
+                        }
+                        button {
+                            class: "text-[10px] uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--text)] transition-colors disabled:opacity-40",
+                            disabled: adding(),
+                            onclick: move |_| pending.set(Vec::new()),
+                            "Clear"
+                        }
+                    }
                 }
             }
             if let Some(e) = error() {
@@ -425,15 +557,23 @@ pub fn SoundSettings(guild_id: Id) -> Element {
                     let id = sound.id;
                     let current = sound.name.clone();
                     let is_renaming = renaming() == Some(id);
+                    let ready = blob_of(&state.read(), &sound).is_some();
                     let adder = state.read().display_name(&sound.added_by);
                     let provenance = crate::features::guild_settings::provenance(
                         &sound.added_by,
                         &adder,
                         sound.created_ms,
                     );
+                    let to_preview = sound.clone();
                     rsx! {
                         div { key: "{sound.id}", class: "flex items-center gap-2 py-1",
-                            span { class: "block w-4 h-4 shrink-0 text-[var(--text-dim)]", dangerous_inner_html: crate::features::icons::SOUNDBOARD }
+                            button {
+                                class: "w-6 h-6 shrink-0 flex items-center justify-center rounded text-[var(--accent)] hover:bg-white/[0.06] transition-colors disabled:opacity-40 [&>svg]:w-3.5 [&>svg]:h-3.5",
+                                title: if ready { "Preview — only you hear it" } else { "Loading…" },
+                                disabled: !ready,
+                                onclick: move |_| preview_sound(state, to_preview.clone()),
+                                dangerous_inner_html: crate::features::icons::PLAY,
+                            }
                             if is_renaming {
                                 input {
                                     class: "flex-1 min-w-0 bg-transparent border border-[var(--border)] rounded px-2 py-0.5 text-xs text-[var(--text)] focus:outline-none focus:border-[var(--accent)]",
@@ -488,5 +628,34 @@ pub fn SoundSettings(guild_id: Id) -> Element {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_file_is_named_by_its_stem_within_the_limit() {
+        assert_eq!(stem_of("airhorn.mp3"), "airhorn");
+        assert_eq!(stem_of("no_extension"), "no_extension");
+        assert_eq!(
+            stem_of(&format!("{}.wav", "x".repeat(40))).len(),
+            MAX_SOUND_NAME_LEN
+        );
+    }
+
+    #[test]
+    fn checked_rejects_what_the_server_would_store_blindly() {
+        assert!(
+            checked(vec![0; MAX_SOUND_BYTES + 1])
+                .unwrap_err()
+                .contains("KB")
+        );
+        assert!(
+            checked(b"not audio at all".to_vec())
+                .unwrap_err()
+                .contains("MP3")
+        );
     }
 }
