@@ -175,8 +175,19 @@ impl LiveKitConfig {
             hosts.push(lan.clone());
         }
         let prefer_v6 = peer.is_some_and(|ip| ip.is_ipv6());
-        let mut ips = self.alternate_hosts.clone();
-        ips.sort_by_key(|ip| ip.is_ipv6() != prefer_v6);
+        let (mut preferred, mut other): (
+            std::collections::VecDeque<_>,
+            std::collections::VecDeque<_>,
+        ) = self
+            .alternate_hosts
+            .iter()
+            .copied()
+            .partition(|ip| ip.is_ipv6() == prefer_v6);
+        let mut ips = Vec::new();
+        while !preferred.is_empty() || !other.is_empty() {
+            ips.extend(preferred.pop_front());
+            ips.extend(other.pop_front());
+        }
         hosts.extend(ips.into_iter().map(|ip| match ip {
             std::net::IpAddr::V6(ip) => format!("[{ip}]"),
             std::net::IpAddr::V4(ip) => ip.to_string(),
@@ -422,6 +433,27 @@ mod tests {
             !relay
                 .iter()
                 .any(|url| url.contains("127.0.0.1") || url.contains("192.168"))
+        );
+    }
+
+    #[test]
+    fn many_ipv6_addresses_do_not_push_ipv4_to_the_end() {
+        let mut cfg = direct_routes();
+        cfg.alternate_hosts = vec![
+            "2800:810::1".parse().unwrap(),
+            "2800:810::2".parse().unwrap(),
+            "203.0.113.5".parse().unwrap(),
+            "203.0.113.6".parse().unwrap(),
+        ];
+        let urls = cfg.urls_for_client(None, Some("2800:40::9".parse().unwrap()));
+        assert_eq!(
+            urls,
+            [
+                "ws://[2800:810::1]:7880",
+                "ws://203.0.113.5:7880",
+                "ws://[2800:810::2]:7880",
+                "ws://203.0.113.6:7880"
+            ]
         );
     }
 

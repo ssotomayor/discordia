@@ -20,6 +20,16 @@ mod voice_endpoints;
 #[tokio::test]
 #[ignore = "starts the bundled SFU; verifies alternate IPv6 signaling and decoded audio without rendezvous"]
 async fn alternate_ipv6_endpoint_delivers_audio_without_rendezvous() {
+    alternate_endpoint_delivers_audio(true).await;
+}
+
+#[tokio::test]
+#[ignore = "starts the bundled SFU; verifies failed IPv6 signaling selects IPv4 and delivers decoded audio"]
+async fn alternate_ipv4_endpoint_delivers_audio_without_rendezvous() {
+    alternate_endpoint_delivers_audio(false).await;
+}
+
+async fn alternate_endpoint_delivers_audio(ipv6: bool) {
     use futures_util::StreamExt;
     use livekit::webrtc::audio_stream::native::NativeAudioStream;
 
@@ -47,16 +57,22 @@ async fn alternate_ipv6_endpoint_delivers_audio_without_rendezvous() {
             .to_jwt()
             .unwrap()
     };
-    let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let closed = tokio::net::TcpListener::bind(if ipv6 { "127.0.0.1:0" } else { "[::1]:0" })
+        .await
+        .unwrap();
     let unavailable = format!("ws://{}", closed.local_addr().unwrap());
     drop(closed);
     let publisher_token = mint("publisher");
-    let v6_url = format!("ws://[::1]:{port}");
+    let available = if ipv6 {
+        format!("ws://[::1]:{port}")
+    } else {
+        format!("ws://127.0.0.1:{port}")
+    };
     let mut options = RoomOptions::default();
     options.join_retries = 0;
     options.connect_timeout = Duration::from_secs(2);
     let ((publisher, _events), selected) =
-        voice_endpoints::try_endpoints(unavailable, vec![v6_url.clone()], |url| {
+        voice_endpoints::try_endpoints(unavailable, vec![available.clone()], |url| {
             let token = publisher_token.clone();
             let options = options.clone();
             async move {
@@ -67,7 +83,7 @@ async fn alternate_ipv6_endpoint_delivers_audio_without_rendezvous() {
         })
         .await
         .unwrap();
-    assert_eq!(selected, v6_url);
+    assert_eq!(selected, available);
     let (listener, mut events) = Room::connect(
         &format!("ws://127.0.0.1:{port}"),
         &mint("listener"),
