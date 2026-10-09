@@ -25,14 +25,38 @@ pub struct Ports {
 pub struct Mapped {
     pub method: &'static str,
     pub public_ip: IpAddr,
-    pub media: bool,
+    pub media: MediaMapping,
     pub quic: bool,
     pub quic_ip: IpAddr,
     pub quic_port: u16,
     pub hairpin: bool,
-    /// Why the voice ports are unusable, for the host banner. `None` when they
-    /// are usable.
     pub media_note: Option<&'static str>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MediaMapping {
+    pub signaling: bool,
+    pub udp: bool,
+    pub tcp: bool,
+}
+
+impl MediaMapping {
+    pub fn available(self) -> bool {
+        self.udp || self.tcp
+    }
+
+    fn note(self) -> Option<&'static str> {
+        match (self.udp, self.tcp) {
+            (true, true) => Some("UDP and ICE/TCP mapped; callers verify media connectivity"),
+            (true, false) => {
+                Some("UDP mapped; ICE/TCP unavailable; callers verify media connectivity")
+            }
+            (false, true) => {
+                Some("ICE/TCP mapped; UDP unavailable; callers verify media connectivity")
+            }
+            _ => None,
+        }
+    }
 }
 
 pub struct MappingGuard {
@@ -66,12 +90,23 @@ where
         for method in ["UPnP-IGD", "NAT-PMP", "PCP"] {
             let result = attempt(method).await;
             match result {
-                Ok((mapped, mut guard)) => {
+                Ok((mut mapped, mut guard)) => {
                     guards.shutdown.append(&mut guard.shutdown);
+                    if let Some(old) = best
+                        .as_ref()
+                        .filter(|old| old.public_ip == mapped.public_ip)
+                    {
+                        mapped.media.signaling |= old.media.signaling;
+                        mapped.media.udp |= old.media.udp;
+                        mapped.media.tcp |= old.media.tcp;
+                        mapped.hairpin |= old.hairpin;
+                        mapped.media_note = mapped.media.note().or(mapped.media_note);
+                    }
                     if mapped.quic {
                         chat.get_or_insert(SocketAddr::new(mapped.quic_ip, mapped.quic_port));
                     }
-                    let usable = mapped.media && mapped.hairpin;
+                    let usable =
+                        mapped.media.udp && mapped.media.tcp && (mapped.quic || chat.is_some());
                     if best
                         .as_ref()
                         .is_none_or(|old| mapping_rank(&mapped) > mapping_rank(old))
@@ -111,8 +146,13 @@ fn with_chat_mapping(mut mapped: Mapped, chat: Option<SocketAddr>) -> Mapped {
     mapped
 }
 
-fn mapping_rank(mapped: &Mapped) -> (bool, bool, bool) {
-    (mapped.media && mapped.hairpin, mapped.media, mapped.quic)
+fn mapping_rank(mapped: &Mapped) -> (bool, bool, bool, bool) {
+    (
+        mapped.media.udp,
+        mapped.media.tcp,
+        mapped.media.signaling,
+        mapped.quic,
+    )
 }
 
 pub async fn manual(
@@ -130,14 +170,16 @@ pub async fn manual(
     Mapped {
         method: "manual forwarding",
         public_ip,
-        media: hairpin,
+        media: MediaMapping {
+            signaling: true,
+            udp: true,
+            tcp: true,
+        },
         quic: true,
         quic_ip: public_ip,
         quic_port,
         hairpin,
-        media_note: (!hairpin).then_some(
-            "the manually forwarded signaling port did not answer the challenge from this network",
-        ),
+        media_note: Some("manually configured ports; callers verify media connectivity"),
     }
 }
 
@@ -175,15 +217,24 @@ async fn finish(
     };
 
     let mut media_note = None;
-    let media = {
-        let mut all_ok = true;
-        for (proto, port) in [
-            (PortMappingProtocol::TCP, ports.media_tcp),
-            (PortMappingProtocol::TCP, ports.media_tcp_ice),
-            (PortMappingProtocol::UDP, ports.media_udp),
+    let mut media = MediaMapping::default();
+    {
+        for (proto, port, available) in [
+            (
+                PortMappingProtocol::TCP,
+                ports.media_tcp,
+                &mut media.signaling,
+            ),
+            (
+                PortMappingProtocol::TCP,
+                ports.media_tcp_ice,
+                &mut media.tcp,
+            ),
+            (PortMappingProtocol::UDP, ports.media_udp, &mut media.udp),
         ] {
             match router.add(proto, local_ip, port).await {
                 Ok(external) if external == port => {
+                    *available = true;
                     if !owned.contains(&(proto, port, external)) {
                         owned.push((proto, port, external));
                     }
@@ -194,33 +245,26 @@ async fn finish(
                         %proto, wanted = port, granted = external,
                         "router renumbered a media port — voice cannot use it"
                     );
-                    all_ok = false;
                     media_note.get_or_insert(
                         "the router renumbered a voice port, so there is no known port to hand friends",
                     );
                 }
                 Err(e) => {
                     tracing::warn!(%proto, port, error = %e, "media port not mapped");
-                    all_ok = false;
                     media_note.get_or_insert("the router refused to forward a voice port");
                 }
             }
         }
-        all_ok
-    };
+    }
 
-    let hairpin = media
+    let hairpin = media.signaling
         && probe_hairpin(
             SocketAddr::new(IpAddr::V4(local_ip), ports.media_tcp),
             SocketAddr::new(public_ip, ports.media_tcp),
             HAIRPIN_TIMEOUT,
         )
         .await;
-    if media && !hairpin {
-        media_note = Some(
-            "the router forwards the voice ports but won't loop this machine back through them (no hairpin NAT)",
-        );
-    }
+    media_note = media.note().or(media_note);
 
     let mapped = Mapped {
         method: router.method(),
@@ -506,7 +550,11 @@ mod tests {
             Mapped {
                 method,
                 public_ip: "203.0.113.5".parse().unwrap(),
-                media,
+                media: MediaMapping {
+                    signaling: media,
+                    udp: media,
+                    tcp: media,
+                },
                 quic: true,
                 quic_port: 19001,
                 quic_ip: "203.0.113.5".parse().unwrap(),
@@ -561,7 +609,11 @@ mod tests {
                     1 => Ok(mapped(method, false)),
                     2 => {
                         let (mut voice, guard) = mapped(method, voice_works);
-                        voice.media = true;
+                        voice.media = MediaMapping {
+                            signaling: true,
+                            udp: true,
+                            tcp: true,
+                        };
                         voice.quic = false;
                         voice.public_ip = "198.51.100.9".parse().unwrap();
                         voice.quic_ip = voice.public_ip;
@@ -574,7 +626,7 @@ mod tests {
             .await
             .unwrap();
             assert_eq!(result.method, "NAT-PMP");
-            assert!(result.media);
+            assert!(result.media.available());
             assert_eq!(result.hairpin, voice_works);
             assert!(result.quic, "voice success must not discard direct chat");
             assert_eq!(result.quic_ip, "203.0.113.5".parse::<IpAddr>().unwrap());
@@ -591,7 +643,11 @@ mod tests {
             std::future::ready(match count {
                 1 => {
                     let (mut voice, guard) = mapped(method, false);
-                    voice.media = true;
+                    voice.media = MediaMapping {
+                        signaling: true,
+                        udp: true,
+                        tcp: true,
+                    };
                     voice.quic = false;
                     Ok((voice, guard))
                 }
@@ -608,7 +664,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(result.method, "UPnP-IGD");
-        assert!(result.media && !result.hairpin);
+        assert!(result.media.available() && !result.hairpin);
         assert!(result.quic);
         assert_eq!(result.quic_ip, "198.51.100.9".parse::<IpAddr>().unwrap());
         assert_eq!(result.quic_port, 29001);
@@ -630,7 +686,7 @@ mod tests {
         .unwrap();
         assert_eq!(result.method, "UPnP-IGD");
         assert_eq!(result.quic_port, 19001);
-        assert!(!result.media);
+        assert!(!result.media.available());
     }
 
     async fn unused_local_address() -> SocketAddr {

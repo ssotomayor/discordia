@@ -82,8 +82,6 @@ jobs:
   desktop-build:
     name: client compiles (linux)
     runs-on: ubuntu-latest
-    env:
-      LIVEKIT_BUNDLE_SKIP: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -113,6 +111,14 @@ jobs:
       - name: Tests (client + grid-layout)
         run: cargo test -p dioxusfun -p dioxus-grid-layout
 
+      - name: Bundled SFU startup and encrypted audio
+        env:
+          DISCORDIA_LIVEKIT_PORT: "17880"
+          LIVEKIT_URL: "ws://127.0.0.1:17880"
+        run: |
+          cargo test -p dioxusfun-server --lib livekit_bundle::tests -- --ignored --test-threads=1
+          cargo test -p dioxusfun --test live_sfu audio_red_survives_end_to_end_encryption -- --ignored --test-threads=1
+
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -128,7 +134,6 @@ jobs:
     runs-on: windows-latest
     env:
       RUSTFLAGS: "-C target-feature=+crt-static"
-      LIVEKIT_BUNDLE_SKIP: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-windows-nvenc
@@ -149,6 +154,14 @@ jobs:
         run: cargo clippy -p dioxusfun --all-targets -- -D warnings
       - name: Tests (client, Windows-only code)
         run: cargo test -p dioxusfun
+      - name: Bundled SFU startup and encrypted audio
+        env:
+          DISCORDIA_LIVEKIT_PORT: "17880"
+          LIVEKIT_URL: "ws://127.0.0.1:17880"
+        run: |
+          cargo test -p dioxusfun-server --lib livekit_bundle::tests -- --ignored --test-threads=1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p dioxusfun --test live_sfu audio_red_survives_end_to_end_encryption -- --ignored --test-threads=1
       - name: Hardware encoder queue and timing regressions
         shell: pwsh
         run: ./scripts/test-mf-encoder.ps1
@@ -156,10 +169,12 @@ jobs:
   macos-build:
     name: client compiles (macos)
     runs-on: macos-latest
-    env:
-      LIVEKIT_BUNDLE_SKIP: "1"
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+          cache: false
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -182,6 +197,14 @@ jobs:
 
       - name: Native codec capabilities
         run: cargo test -p dioxusfun --bin Discordia native_codec_probe_reports_the_builtin_vp8_encoder
+
+      - name: Bundled SFU startup and encrypted audio
+        env:
+          DISCORDIA_LIVEKIT_PORT: "17880"
+          LIVEKIT_URL: "ws://127.0.0.1:17880"
+        run: |
+          cargo test -p dioxusfun-server --lib livekit_bundle::tests -- --ignored --test-threads=1
+          cargo test -p dioxusfun --test live_sfu audio_red_survives_end_to_end_encryption -- --ignored --test-threads=1
 
   prerelease-linux:
     name: pre-release · server+client (linux · x86_64)
@@ -337,7 +360,7 @@ jobs:
       - uses: cargo-bins/cargo-binstall@main
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version: '1.26.x'
       - name: Verify go
         run: go version
       - name: Install Dioxus CLI

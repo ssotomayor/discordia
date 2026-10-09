@@ -1036,12 +1036,15 @@ fn Reachability(reachability: crate::host::Reachability) -> Element {
                     "Global IPv6 addresses are available. Clients verify voice connectivity when joining; both sides need IPv6 and inbound firewall access.".to_string()
                 } else {
                     format!(
-                        "{method} opened a path to this machine. Voice clients verify the media connection when joining."
+                        "{method}: {}.",
+                        note.unwrap_or(
+                            "voice candidates are available; callers verify media connectivity"
+                        )
                     )
                 }
             } else {
                 format!(
-                    "{method} mapped the chat port, but not the voice ports: {}. Calls still go through a relay's SFU, or stay on this network.",
+                    "{method} mapped the chat port, but not the voice ports: {}. Voice clients can still try local or relay routes.",
                     note.unwrap_or("the reason was not recorded")
                 )
             };
@@ -1049,8 +1052,8 @@ fn Reachability(reachability: crate::host::Reachability) -> Element {
                 span { class: "text-[var(--text-dim)]", "·" }
                 span { class: "text-[var(--success)]", title: "{title}",
                     if method == "IPv6" { "● IPv6 available" }
-                    else if method == "manual forwarding" && !media { "● manual address (voice unverified)" }
-                    else if media { "● reachable directly" } else { "● reachable directly (chat only)" }
+                    else if method == "manual forwarding" { "● manual address (voice unverified)" }
+                    else if media { "● voice candidates available" } else { "● chat port mapped" }
                 }
             }
         }

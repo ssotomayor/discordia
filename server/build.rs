@@ -4,9 +4,8 @@ use std::io::{Cursor, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-// 1.13 is the first release whose config accepts `skip_external_ip_validation`,
-// which `Advertise::Stun` writes; strict parsing makes an unknown key fatal.
-const DEFAULT_VERSION: &str = "1.13.5";
+// Versions before 1.13.6 discard LAN candidates with an explicit node_ip.
+const DEFAULT_VERSION: &str = "1.13.9";
 
 const DIGEST_NAME: &str = "livekit-server.sha";
 
@@ -60,11 +59,20 @@ fn ensure_binary(out_dir: &Path, target_os: &str, bin_path: &Path) {
         return;
     }
 
-    if bin_path.exists() && fs::metadata(bin_path).map(|m| m.len() > 0).unwrap_or(false) {
+    let version = env::var("LIVEKIT_BUNDLE_VERSION").unwrap_or_else(|_| DEFAULT_VERSION.into());
+    let version_path = out_dir.join("livekit-bundle.version");
+    if fs::read_to_string(&version_path).ok().as_deref() == Some(version.as_str())
+        && bin_path.exists()
+        && fs::metadata(bin_path).map(|m| m.len() > 0).unwrap_or(false)
+    {
         return;
     }
 
-    let version = env::var("LIVEKIT_BUNDLE_VERSION").unwrap_or_else(|_| DEFAULT_VERSION.into());
+    // A failed replacement must not leave its bytes certified as the old version.
+    if version_path.exists() {
+        fs::remove_file(&version_path).expect("invalidate bundled LiveKit version");
+    }
+
     let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap();
 
     let result = match target_os {
@@ -88,6 +96,7 @@ fn ensure_binary(out_dir: &Path, target_os: &str, bin_path: &Path) {
         perms.set_mode(0o755);
         fs::set_permissions(bin_path, perms).unwrap();
     }
+    fs::write(version_path, version).expect("record bundled LiveKit version");
 }
 
 fn download_release(

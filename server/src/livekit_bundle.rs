@@ -432,11 +432,13 @@ fn config_yaml(advertise: &Advertise, creds: &Credentials) -> String {
 fn config_yaml_for(advertise: &Advertise, p: LivekitPorts, creds: &Credentials) -> String {
     let addressing = match advertise {
         Advertise::Local => "  use_external_ip: false\n".to_string(),
-        Advertise::Mapped(ip) => format!("  use_external_ip: false\n  node_ip: {ip}\n"),
+        Advertise::Mapped(ip) => {
+            format!("  use_external_ip: false\n  node_ip: {ip}\n  advertise_internal_ip: true\n")
+        }
         // Validation sends a packet to itself through the public address, which
         // needs the hairpin a mapping-less NAT does not have.
         Advertise::Stun(server) => format!(
-            "  use_external_ip: true\n  skip_external_ip_validation: true\n  stun_servers:\n    - {}\n",
+            "  use_external_ip: true\n  advertise_internal_ip: true\n  skip_external_ip_validation: true\n  stun_servers:\n    - {}\n",
             yaml_quote(server)
         ),
     };
