@@ -151,8 +151,13 @@ address selects fixed QUIC UDP 9001; the form lists the configured media ports.
 Manual IPv4 still needs the hairpin challenge. Global IPv6 is tried without
 port mapping, but requires the host firewall and the caller's IPv6 connectivity.
 
-Voice tokens offer several addresses of the same local SFU. The client tries
-them until an actual LiveKit connection succeeds. Before any remote caller
+Voice tokens offer interleaved IPv4/IPv6 addresses of the same local SFU.
+For literal IP endpoints without an HTTP(S) proxy, the client races up to two
+unauthenticated TCP probes, staggered by 250 ms, within a 1.5 s total budget.
+It prefers the first reachable endpoint but keeps every alternative: TCP
+reachability does not prove media connectivity. Authenticated LiveKit joins
+remain sequential to avoid duplicate-identity eviction. DNS endpoints and
+proxy configurations retain the ordinary connection attempts. Before any remote caller
 confirms local voice, exhausting those addresses can select the shared SFU
 once for the whole host session, reissuing every caller's tokens. Loopback/LAN
 reports cannot select it; after remote local success, a later failure cannot
