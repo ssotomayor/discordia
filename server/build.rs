@@ -4,7 +4,9 @@ use std::io::{Cursor, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const DEFAULT_VERSION: &str = "1.12.0";
+// 1.13 is the first release whose config accepts `skip_external_ip_validation`,
+// which `Advertise::Stun` writes; strict parsing makes an unknown key fatal.
+const DEFAULT_VERSION: &str = "1.13.5";
 
 const DIGEST_NAME: &str = "livekit-server.sha";
 
@@ -165,7 +167,8 @@ fn build_from_source(out_dir: &Path, version: &str, bin_path: &Path) -> Result<(
             .to_string()
     })?;
 
-    let src_dir = out_dir.join("livekit-src");
+    // Keyed by version: an existing clone is reused as-is, so a bump must not find the old one.
+    let src_dir = out_dir.join(format!("livekit-src-{version}"));
     if !src_dir.exists() {
         println!("cargo:warning=cloning livekit v{version} source (~50MB, one-time)");
         let status = Command::new(&git)
