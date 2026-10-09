@@ -24,8 +24,10 @@ tokio = { workspace = true, features = ["full"] }
 # services-tokio is RemoveParticipant: evicting from the SFU, not just asking the app to leave.
 livekit-api = { workspace = true, features = ["services-tokio", "rustls-tls-native-roots"] }
 iroh = { workspace = true }
-hyper = { version = "1", features = ["server", "http1"] }
+hyper = { version = "1", features = ["server", "client", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
+# The /sfu proxy dials the bundled SFU as a WebSocket client; the gateway itself speaks axum's.
+tokio-tungstenite = { workspace = true }
 secp256k1 = { workspace = true }
 hex = { workspace = true }
 sha2 = "0.10"

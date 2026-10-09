@@ -19,6 +19,7 @@ pub fn router(ctx: Arc<AppContext>) -> Router {
     Router::new()
         .route("/", get(root))
         .route("/gateway", get(gateway_upgrade))
+        .route("/sfu/*rest", get(crate::sfu_proxy::proxy))
         .with_state(ctx)
         .layer(middleware::from_fn(log_request))
 }

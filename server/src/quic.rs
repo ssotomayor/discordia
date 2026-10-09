@@ -192,7 +192,9 @@ async fn serve_connection(
     }
 }
 
-const MAX_STREAMS_PER_PEER: usize = 8;
+// The gateway socket, a voice room, up to three screen rooms, the webview's
+// room and their validate probes, with headroom for a reconnect in flight.
+const MAX_STREAMS_PER_PEER: usize = 16;
 
 const SECRET_FILE: &str = "quic-secret";
 

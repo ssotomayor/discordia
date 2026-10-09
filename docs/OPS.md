@@ -163,6 +163,11 @@ once for the whole host session, reissuing every caller's tokens. Loopback/LAN
 reports cannot select it; after remote local success, a later failure cannot
 move existing calls. Without a shared offer, local failures remain errors.
 The banner tooltip reports the attempted route or fallback reason.
+A caller none of those addresses are routable from (IPv4-only, say, against an
+IPv6-only host) still reaches the SFU's signaling: the gateway serves it at
+`/sfu/*`, the client dials that through a loopback listener riding its gateway
+connection (direct QUIC or the relay, ciphertext either way), and tries it last.
+Media then goes by ICE, through the rendezvous's TURN when nothing direct works.
 Release builds log to `<config dir>/logs/discordia.log` (macOS
 `~/Library/Application Support/dioxusfun`, Windows `%APPDATA%\dioxusfun`);
 `grep 'voice route:'` there, on the host and on a caller, shows why a call
