@@ -37,4 +37,5 @@ mod stream_viewer;
 pub mod topology;
 mod video_lifecycle;
 pub mod voice;
+pub mod voice_menu;
 pub mod workspace;

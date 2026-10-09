@@ -36,6 +36,12 @@ struct Sound(usize);
 
 enum Command {
     Play(Sound),
+    /// A decoded sound at its own rate and gain: the soundboard preview.
+    Clip {
+        pcm: Arc<[f32]>,
+        rate: u32,
+        gain: f32,
+    },
     Wake,
 }
 
@@ -84,6 +90,22 @@ pub fn play(name: &str) {
     };
     if let Some(service) = service() {
         match service.tx.try_send(Command::Play(Sound(index))) {
+            Ok(()) | Err(mpsc::TrySendError::Full(_)) => {}
+            Err(mpsc::TrySendError::Disconnected(_)) => {
+                tracing::warn!("Notification audio worker stopped");
+            }
+        }
+    }
+}
+
+/// Plays mono PCM once through the app-sound output at `gain`, outside the
+/// app-sound volume and cooldown: the preview has its own slider.
+pub fn play_clip(pcm: Arc<[f32]>, rate: u32, gain: f32) {
+    if pcm.is_empty() || rate == 0 {
+        return;
+    }
+    if let Some(service) = service() {
+        match service.tx.try_send(Command::Clip { pcm, rate, gain }) {
             Ok(()) | Err(mpsc::TrySendError::Full(_)) => {}
             Err(mpsc::TrySendError::Disconnected(_)) => {
                 tracing::warn!("Notification audio worker stopped");
@@ -169,11 +191,14 @@ fn run(rx: mpsc::Receiver<Command>, control: Arc<Control>) {
             output = None;
             selected = wanted;
         }
-        let Command::Play(sound) = command else {
-            continue;
+        let (sound, clip) = match command {
+            Command::Play(sound) => (Some(sound), None),
+            Command::Clip { pcm, rate, gain } => (None, Some((pcm, rate, gain))),
+            Command::Wake => continue,
         };
-        if f32::from_bits(control.volume.load(Ordering::Relaxed)) == 0.0
-            || !cooldowns.accept(sound, origin.elapsed())
+        if let Some(sound) = sound
+            && (f32::from_bits(control.volume.load(Ordering::Relaxed)) == 0.0
+                || !cooldowns.accept(sound, origin.elapsed()))
         {
             continue;
         }
@@ -191,21 +216,55 @@ fn run(rx: mpsc::Receiver<Command>, control: Arc<Control>) {
                 bank = SoundBank::new(output.rate);
             }
             let mut player = output.player.lock();
-            player.push(bank.get(sound));
-            if matches!(sound.0, 15 | 16)
-                && let Some(voice) = player.voices.last_mut()
-            {
-                voice.call_ring = Some(sound.0 as u32 + 1);
+            match (sound, clip) {
+                (Some(sound), _) => {
+                    player.push(bank.get(sound));
+                    if matches!(sound.0, 15 | 16)
+                        && let Some(voice) = player.voices.last_mut()
+                    {
+                        voice.call_ring = Some(sound.0 as u32 + 1);
+                    }
+                    last_play = Instant::now();
+                }
+                (None, Some((pcm, rate, gain))) => {
+                    let samples = resampled(&pcm, rate, output.rate);
+                    // The idle close must wait for the clip, not the push.
+                    let secs = samples.len() as f32 / output.rate as f32;
+                    last_play = Instant::now() + Duration::from_secs_f32(secs);
+                    player.push_clip(samples, gain);
+                }
+                (None, None) => {}
             }
-            last_play = Instant::now();
         }
     }
+}
+
+/// Linear, which is plenty for a preview of a sound that will play through
+/// Opus anyway.
+fn resampled(pcm: &[f32], from: u32, to: u32) -> Arc<[f32]> {
+    if from == to || pcm.is_empty() {
+        return pcm.into();
+    }
+    let ratio = f64::from(from) / f64::from(to);
+    let len = ((pcm.len() as f64) / ratio).ceil() as usize;
+    (0..len)
+        .map(|i| {
+            let at = i as f64 * ratio;
+            let base = at as usize;
+            let frac = (at - base as f64) as f32;
+            let a = pcm[base.min(pcm.len() - 1)];
+            let b = pcm[(base + 1).min(pcm.len() - 1)];
+            a + (b - a) * frac
+        })
+        .collect()
 }
 
 struct Voice {
     samples: Arc<[f32]>,
     position: usize,
     call_ring: Option<u32>,
+    /// Its own gain instead of the live app-sound volume.
+    gain: Option<f32>,
 }
 
 #[derive(Default)]
@@ -220,6 +279,14 @@ impl Player {
     }
 
     fn push(&mut self, samples: Arc<[f32]>) {
+        self.add(samples, None);
+    }
+
+    fn push_clip(&mut self, samples: Arc<[f32]>, gain: f32) {
+        self.add(samples, Some(gain.clamp(0.0, 2.0)));
+    }
+
+    fn add(&mut self, samples: Arc<[f32]>, gain: Option<f32>) {
         if self.voices.len() >= MAX_VOICES {
             self.voices.remove(0);
         }
@@ -227,6 +294,7 @@ impl Player {
             samples,
             position: 0,
             call_ring: None,
+            gain,
         });
     }
 
@@ -234,13 +302,13 @@ impl Player {
         let mut sample = 0.0;
         for voice in &mut self.voices {
             if let Some(value) = voice.samples.get(voice.position) {
-                sample += value;
+                sample += value * voice.gain.unwrap_or(volume);
             }
             voice.position += 1;
         }
         self.voices
             .retain(|voice| voice.position < voice.samples.len());
-        (sample * volume).clamp(-1.0, 1.0)
+        sample.clamp(-1.0, 1.0)
     }
 }
 
@@ -615,6 +683,21 @@ mod tests {
         assert_eq!(player.next(1.0), 1.0);
         assert!(player.voices.is_empty());
         assert_eq!(player.next(1.0), 0.0);
+    }
+
+    #[test]
+    fn a_clip_keeps_its_own_gain_and_is_resampled_to_the_output_rate() {
+        let mut player = Player::default();
+        player.push_clip(vec![0.5, 0.5].into(), 0.5);
+        player.push(vec![0.1, 0.1].into());
+        assert!((player.next(0.0) - 0.25).abs() < 0.00001);
+        assert!((player.next(1.0) - 0.35).abs() < 0.00001);
+        assert!(player.voices.is_empty());
+        let up = resampled(&[0.0, 1.0], 1, 2);
+        assert_eq!(up.len(), 4);
+        assert!((up[1] - 0.5).abs() < 0.00001);
+        assert_eq!(resampled(&[0.0, 0.5, 1.0, 1.0], 4, 2).len(), 2);
+        assert!(resampled(&[], 48_000, 44_100).is_empty());
     }
 
     #[test]

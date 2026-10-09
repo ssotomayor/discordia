@@ -15,6 +15,8 @@ pub struct ClientSettings {
     pub text_size_percent: u16,
     #[serde(default = "default_ui_size")]
     pub emoji_size_percent: u16,
+    #[serde(default = "default_ui_size")]
+    pub reaction_size_percent: u16,
     #[serde(default)]
     pub guild_order: Vec<crate::protocol::Id>,
     #[serde(default)]
@@ -211,6 +213,7 @@ impl Default for ClientSettings {
             theme: "ember".into(),
             text_size_percent: default_ui_size(),
             emoji_size_percent: default_ui_size(),
+            reaction_size_percent: default_ui_size(),
             guild_order: Vec::new(),
             accent: None,
             pattern: default_pattern(),
@@ -476,6 +479,7 @@ mod tests {
         let settings = ClientSettings {
             text_size_percent: 120,
             emoji_size_percent: 200,
+            reaction_size_percent: 70,
             guild_order: vec![uuid::Uuid::new_v4(), uuid::Uuid::new_v4()],
             ..ClientSettings::default()
         };
@@ -504,7 +508,12 @@ mod tests {
     #[test]
     fn a_file_written_before_a_field_existed_still_loads() {
         let mut old = serde_json::to_value(ClientSettings::default()).unwrap();
-        for field in ["text_size_percent", "emoji_size_percent", "guild_order"] {
+        for field in [
+            "text_size_percent",
+            "emoji_size_percent",
+            "reaction_size_percent",
+            "guild_order",
+        ] {
             old.as_object_mut().unwrap().remove(field);
         }
         old.as_object_mut().unwrap().remove("user_volumes");
@@ -517,6 +526,7 @@ mod tests {
         let loaded = parse(&file(old)).expect("loads");
         assert_eq!(loaded.text_size_percent, 100);
         assert_eq!(loaded.emoji_size_percent, 100);
+        assert_eq!(loaded.reaction_size_percent, 100);
         assert!(loaded.guild_order.is_empty());
         assert!(!loaded.auto_gain_control);
         assert!(loaded.user_volumes.is_empty());

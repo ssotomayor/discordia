@@ -4,13 +4,22 @@ use dioxus_grid_layout::NoDrag;
 use serde_json::Value;
 
 use crate::identity::discriminator;
-use crate::protocol::{ClientMessage, Id, Message};
+use crate::protocol::{ClientMessage, GuildEmoji, Id, Message};
 use crate::state::{use_app_state, use_gateway};
 
-const EMOJIS: &[&str] = &[
-    "😀", "😂", "😅", "😍", "😎", "🤔", "😭", "😡", "👍", "👎", "🙏", "🔥", "🎉", "❤️", "💯", "✨",
-    "🚀", "👀", "🙌", "😉", "🥳", "😴", "🤯", "🤝", "👋", "💀", "✅", "❌", "⚡", "🌈", "🍕", "☕",
-    "🎮", "💸", "🐛", "📎", "🖼️", "🤖", "🫡", "😬",
+/// Named so `:fi` can offer 🔥. Names follow the usual shortcode set.
+#[rustfmt::skip]
+const EMOJIS: &[(&str, &str)] = &[
+    ("😀", "grinning"), ("😂", "joy"), ("😅", "sweat_smile"), ("😍", "heart_eyes"),
+    ("😎", "sunglasses"), ("🤔", "thinking"), ("😭", "sob"), ("😡", "rage"),
+    ("👍", "thumbsup"), ("👎", "thumbsdown"), ("🙏", "pray"), ("🔥", "fire"),
+    ("🎉", "tada"), ("❤️", "heart"), ("💯", "100"), ("✨", "sparkles"),
+    ("🚀", "rocket"), ("👀", "eyes"), ("🙌", "raised_hands"), ("😉", "wink"),
+    ("🥳", "partying_face"), ("😴", "sleeping"), ("🤯", "exploding_head"), ("🤝", "handshake"),
+    ("👋", "wave"), ("💀", "skull"), ("✅", "white_check_mark"), ("❌", "x"),
+    ("⚡", "zap"), ("🌈", "rainbow"), ("🍕", "pizza"), ("☕", "coffee"),
+    ("🎮", "video_game"), ("💸", "money_with_wings"), ("🐛", "bug"), ("📎", "paperclip"),
+    ("🖼️", "framed_picture"), ("🤖", "robot"), ("🫡", "saluting_face"), ("😬", "grimacing"),
 ];
 
 const QUICK_REACTIONS: &[&str] = &["👍", "❤️", "😂", "🎉", "🔥", "👀", "🙏", "✅"];
@@ -686,9 +695,9 @@ fn MessageRow(message: Message, grouped: bool) -> Element {
                                 rsx! {
                                     button {
                                         key: "{r.emoji}",
-                                        class: "dxf-pop flex items-center gap-1 px-1.5 h-6 rounded-full border text-xs transition-colors {cls}",
+                                        class: "dxf-pop flex items-center gap-1 px-1.5 min-h-6 py-0.5 rounded-full border text-xs leading-none transition-colors {cls}",
                                         onclick: move |_| g.send(ClientMessage::React { channel_id, message_id, emoji: emoji.clone() }),
-                                        span { EmojiText { text: r.emoji.clone(), guild_id } }
+                                        span { class: "flex items-center", EmojiText { text: r.emoji.clone(), guild_id, reaction: true } }
                                         span { class: "text-[10px]", "{count}" }
                                     }
                                 }
@@ -820,11 +829,18 @@ pub fn ImageViewer() -> Element {
 /// above `1em`; the chat emoji slider scales it.
 const EMOJI_EM: f64 = 1.8;
 
+/// `reaction`: sized by the reaction slider, not the chat one, so a big chat
+/// emoji does not blow up every pill under a message.
 #[component]
-fn EmojiText(text: String, guild_id: Option<Id>) -> Element {
+fn EmojiText(text: String, guild_id: Option<Id>, #[props(default)] reaction: bool) -> Element {
     let state = use_app_state();
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
-    let emoji_scale = f64::from(settings.read().emoji_size_percent.clamp(50, 250)) / 100.0;
+    let percent = if reaction {
+        settings.read().reaction_size_percent
+    } else {
+        settings.read().emoji_size_percent
+    };
+    let emoji_scale = f64::from(percent.clamp(50, 250)) / 100.0;
     let base = EMOJI_EM;
     let parts: Vec<(String, Option<String>)> = {
         let s = state.read();
@@ -934,6 +950,297 @@ fn is_url(w: &str) -> bool {
     w.starts_with("http://") || w.starts_with("https://")
 }
 
+/// The composer is a contenteditable so a custom emoji shows as its picture
+/// while being typed. Listeners sit on the document and find the element by
+/// id on every event, so a composer that is rebuilt (a channel locking and
+/// unlocking) is picked up without rewiring. Serialising walks the children:
+/// an `img[data-code]` is `:code:`, everything else is its text.
+const COMPOSER_JS: &str = r#"
+return (async function () {
+  const id = '__ID__', mine = '__GEN__';
+  window.__dxfComposers = window.__dxfComposers || {};
+  if (window.__dxfComposers[id]) window.__dxfComposers[id].off();
+  const find = () => document.getElementById(id);
+  let suggesting = false, saved = null, alive = true;
+  const serialize = (node) => {
+    let out = '';
+    node.childNodes.forEach(n => {
+      if (n.nodeType === 3) out += n.nodeValue;
+      else if (n.nodeType === 1) {
+        if (n.tagName === 'IMG' && n.dataset.code) out += ':' + n.dataset.code + ':';
+        else if (n.tagName !== 'BR') out += serialize(n);
+      }
+    });
+    return out;
+  };
+  const caretIn = (el) => {
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount) return null;
+    const r = sel.getRangeAt(0);
+    return el.contains(r.startContainer) ? r : null;
+  };
+  const beforeCaret = (el) => {
+    const r = caretIn(el);
+    if (!r) return null;
+    const pre = document.createRange();
+    pre.setStart(el, 0);
+    pre.setEnd(r.startContainer, r.startOffset);
+    return serialize(pre.cloneContents());
+  };
+  const report = () => {
+    const el = find();
+    if (!el || !alive) return;
+    const text = serialize(el);
+    if (text === '' && el.innerHTML !== '') el.innerHTML = '';
+    dioxus.send({ k: 'input', text: text, before: beforeCaret(el) });
+  };
+  const remember = () => {
+    const el = find();
+    const r = el && caretIn(el);
+    if (r) saved = r.cloneRange();
+  };
+  const restore = (el) => {
+    el.focus();
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    if (saved && el.contains(saved.startContainer)) sel.addRange(saved);
+    else { const r = document.createRange(); r.selectNodeContents(el); r.collapse(false); sel.addRange(r); }
+  };
+  const tokenRange = (r) => {
+    const n = r.startContainer;
+    if (n.nodeType !== 3) return r;
+    const m = /(^|\s):([A-Za-z0-9_]*)$/.exec(n.nodeValue.slice(0, r.startOffset));
+    if (!m) return r;
+    const t = document.createRange();
+    t.setStart(n, r.startOffset - m[2].length - 1);
+    t.setEnd(n, r.startOffset);
+    return t;
+  };
+  const insert = (nodes, replaceToken) => {
+    const el = find();
+    if (!el) return;
+    restore(el);
+    const sel = window.getSelection();
+    let r = sel.getRangeAt(0);
+    if (!sel.isCollapsed) { r.deleteContents(); r.collapse(true); }
+    if (replaceToken) { r = tokenRange(r); r.deleteContents(); }
+    let last = null;
+    for (const node of nodes) {
+      if (last) r.setStartAfter(last); else r.collapse(true);
+      r.insertNode(node);
+      last = node;
+    }
+    if (last) { r.setStartAfter(last); r.collapse(true); }
+    sel.removeAllRanges();
+    sel.addRange(r);
+    saved = r.cloneRange();
+    report();
+  };
+  const api = {
+    insertText: (text, replaceToken) => insert([document.createTextNode(text)], replaceToken),
+    insertEmoji: (code, url, replaceToken, space) => {
+      const img = document.createElement('img');
+      img.src = url;
+      img.alt = ':' + code + ':';
+      img.title = ':' + code + ':';
+      img.dataset.code = code;
+      img.draggable = false;
+      img.contentEditable = 'false';
+      insert(space ? [img, document.createTextNode(' ')] : [img], replaceToken);
+    },
+    clear: () => { const el = find(); if (el) { el.innerHTML = ''; saved = null; report(); } },
+    suggest: (on) => { suggesting = !!on; },
+    focus: () => { const el = find(); if (el) restore(el); },
+    off: (gen) => {
+      if (gen && gen !== mine) return;
+      alive = false;
+      document.removeEventListener('input', onInput);
+      document.removeEventListener('keydown', onKey);
+      document.removeEventListener('paste', onPaste);
+      document.removeEventListener('selectionchange', remember);
+      if (window.__dxfComposers[id] === api) delete window.__dxfComposers[id];
+    },
+  };
+  const within = (e) => { const el = find(); return el && e.target && el.contains(e.target) ? el : null; };
+  const onInput = (e) => { if (within(e)) report(); };
+  const onKey = (e) => {
+    if (!within(e) || e.isComposing) return;
+    if (e.key === 'Enter') { e.preventDefault(); dioxus.send({ k: suggesting ? 'pick' : 'submit' }); return; }
+    if (!suggesting) return;
+    if (e.key === 'ArrowUp' || e.key === 'ArrowDown') { e.preventDefault(); dioxus.send({ k: 'move', down: e.key === 'ArrowDown' }); }
+    else if (e.key === 'Tab') { e.preventDefault(); dioxus.send({ k: 'pick' }); }
+    else if (e.key === 'Escape') { e.preventDefault(); dioxus.send({ k: 'dismiss' }); }
+  };
+  const onPaste = (e) => {
+    if (!within(e) || !e.clipboardData) return;
+    for (const it of e.clipboardData.items || []) if (it.kind === 'file') return;
+    e.preventDefault();
+    const text = (e.clipboardData.getData('text/plain') || '').replace(/[\r\n]+/g, ' ');
+    if (text) document.execCommand('insertText', false, text);
+  };
+  document.addEventListener('input', onInput);
+  document.addEventListener('keydown', onKey);
+  document.addEventListener('paste', onPaste);
+  document.addEventListener('selectionchange', remember);
+  window.__dxfComposers[id] = api;
+  try {
+    while (alive) {
+      const m = await new Promise(resolve => dioxus.recv().then(resolve, () => resolve(null)));
+      if (m === null) break;
+    }
+  } finally {
+    api.off();
+  }
+})();
+"#;
+
+fn composer_call(id: &str, method: &str, args: &[Value]) {
+    let args: Vec<String> = args.iter().map(Value::to_string).collect();
+    let _ = document::eval(&format!(
+        "(window.__dxfComposers || {{}})[{}]?.{method}({});",
+        Value::String(id.to_string()),
+        args.join(",")
+    ));
+}
+
+#[derive(Clone, PartialEq)]
+enum EmojiPick {
+    Unicode(&'static str),
+    Custom { code: String, url: String },
+}
+
+#[derive(Clone, PartialEq)]
+struct EmojiSuggestion {
+    name: String,
+    pick: EmojiPick,
+}
+
+const MAX_SUGGESTIONS: usize = 8;
+
+/// The `:ab…` the caret sits at the end of: two or more name characters
+/// after a colon that starts a word, so a URL or a time never opens the list.
+fn active_token(before: &str) -> Option<String> {
+    let colon = before.rfind(':')?;
+    let token = &before[colon + 1..];
+    if token.len() < 2 || !token.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return None;
+    }
+    before[..colon]
+        .chars()
+        .next_back()
+        .is_none_or(char::is_whitespace)
+        .then(|| token.to_ascii_lowercase())
+}
+
+/// Prefix matches before substring ones, this guild's emoji before the
+/// built-in set within each.
+fn emoji_suggestions(
+    token: &str,
+    guild: &[GuildEmoji],
+    urls: &std::collections::HashMap<String, String>,
+) -> Vec<EmojiSuggestion> {
+    let mut out = Vec::new();
+    for prefix in [true, false] {
+        let hit = |name: &str| {
+            if prefix {
+                name.starts_with(token)
+            } else {
+                !name.starts_with(token) && name.contains(token)
+            }
+        };
+        out.extend(
+            guild
+                .iter()
+                .filter(|e| hit(&e.shortcode))
+                .map(|e| EmojiSuggestion {
+                    name: e.shortcode.clone(),
+                    pick: EmojiPick::Custom {
+                        code: e.shortcode.clone(),
+                        url: urls.get(&e.image).cloned().unwrap_or_default(),
+                    },
+                }),
+        );
+        out.extend(
+            EMOJIS
+                .iter()
+                .filter(|(_, name)| hit(name))
+                .map(|(emoji, name)| EmojiSuggestion {
+                    name: (*name).to_string(),
+                    pick: EmojiPick::Unicode(emoji),
+                }),
+        );
+        if out.len() >= MAX_SUGGESTIONS {
+            break;
+        }
+    }
+    out.truncate(MAX_SUGGESTIONS);
+    out
+}
+
+fn guild_emojis_of(
+    s: &crate::state::AppState,
+    channel_id: Id,
+) -> (Vec<GuildEmoji>, std::collections::HashMap<String, String>) {
+    let gid = s
+        .channels
+        .iter()
+        .find(|c| c.id == channel_id)
+        .map(|c| c.guild_id);
+    let list = gid.map(|g| s.emojis_of(g).to_vec()).unwrap_or_default();
+    let urls = list
+        .iter()
+        .filter_map(|e| {
+            s.emoji_images
+                .get(&e.image)
+                .map(|u| (e.image.clone(), u.clone()))
+        })
+        .collect();
+    (list, urls)
+}
+
+fn suggestions_now(
+    s: &crate::state::AppState,
+    channel_id: Id,
+    token: &str,
+) -> Vec<EmojiSuggestion> {
+    let (list, urls) = guild_emojis_of(s, channel_id);
+    emoji_suggestions(token, &list, &urls)
+}
+
+/// Puts the chosen emoji where the `:token` was. A custom emoji whose picture
+/// has not arrived goes in as text, which still renders once sent.
+fn insert_pick(id: &str, pick: &EmojiPick, replace_token: bool, space: bool) {
+    let tail = if space { " " } else { "" };
+    match pick {
+        EmojiPick::Unicode(e) => composer_call(
+            id,
+            "insertText",
+            &[
+                Value::String(format!("{e}{tail}")),
+                Value::Bool(replace_token),
+            ],
+        ),
+        EmojiPick::Custom { code, url } if url.is_empty() => composer_call(
+            id,
+            "insertText",
+            &[
+                Value::String(format!(":{code}:{tail}")),
+                Value::Bool(replace_token),
+            ],
+        ),
+        EmojiPick::Custom { code, url } => composer_call(
+            id,
+            "insertEmoji",
+            &[
+                Value::String(code.clone()),
+                Value::String(url.clone()),
+                Value::Bool(replace_token),
+                Value::Bool(space),
+            ],
+        ),
+    }
+}
+
 #[component]
 fn Composer(
     channel_id: Id,
@@ -952,10 +1259,21 @@ fn Composer(
     let mut pending_image = use_signal::<Option<String>>(|| None);
     let attach_err = use_signal::<Option<String>>(|| None);
     let mut show_emoji = use_signal(|| false);
+    let mut caret_token = use_signal(|| None::<String>);
+    let mut selected = use_signal(|| 0_usize);
     let mut last_typing = use_signal::<Option<std::time::Instant>>(|| None);
     let gateway = use_gateway();
     let gateway_submit = gateway.clone();
     let nostr_submit = use_context::<crate::nostr::service::NostrTx>();
+    let composer_id = format!("dxf-composer-{channel_id}");
+    // Names this mount's script, so a drop that lands after the next mount's
+    // script has started leaves that one alone.
+    let instance = use_hook(|| uuid::Uuid::new_v4().to_string());
+    {
+        let id = composer_id.clone();
+        let instance = instance.clone();
+        use_drop(move || composer_call(&id, "off", &[Value::String(instance)]));
+    }
 
     let mut generation = use_signal(|| 0_u64);
     use_effect(move || {
@@ -973,25 +1291,24 @@ fn Composer(
         }
     });
 
-    let (guild_emojis, emoji_urls) = {
-        let state = use_app_state();
-        let s = state.read();
-        let gid = s
-            .channels
-            .iter()
-            .find(|c| c.id == channel_id)
-            .map(|c| c.guild_id);
-        let list = gid.map(|g| s.emojis_of(g).to_vec()).unwrap_or_default();
-        let urls: std::collections::HashMap<String, String> = list
-            .iter()
-            .filter_map(|e| {
-                s.emoji_images
-                    .get(&e.image)
-                    .map(|u| (e.image.clone(), u.clone()))
-            })
-            .collect();
-        (list, urls)
-    };
+    let (guild_emojis, emoji_urls) = guild_emojis_of(&state.read(), channel_id);
+    let suggestions = caret_token()
+        .as_deref()
+        .map(|t| emoji_suggestions(t, &guild_emojis, &emoji_urls))
+        .unwrap_or_default();
+    let has_suggestions = use_memo(move || {
+        caret_token()
+            .as_deref()
+            .is_some_and(|t| !suggestions_now(&state.read(), channel_id, t).is_empty())
+    });
+    {
+        let id = composer_id.clone();
+        use_effect(move || composer_call(&id, "suggest", &[Value::Bool(has_suggestions())]));
+    }
+    use_effect(move || {
+        let _ = caret_token();
+        selected.set(0);
+    });
 
     let locked = {
         let state = use_app_state();
@@ -1009,11 +1326,12 @@ fn Composer(
         };
     }
 
-    let mut submit = move || {
+    let submit_id = composer_id.clone();
+    let mut submit = move || -> bool {
         let content = draft().trim().to_string();
         let image = pending_image();
         if content.is_empty() && image.is_none() {
-            return;
+            return false;
         }
         tracing::debug!(%channel_id, chars = content.len(), "composer submit");
         let reply_to = replying_to().map(|r| r.message_id);
@@ -1031,12 +1349,12 @@ fn Composer(
                 >= 128
             {
                 state.write().error_toast = Some("Too many messages await delivery. Your draft has been kept; retry a failed message first.".into());
-                return;
+                return false;
             }
             if image.is_some() {
                 state.write().error_toast =
                     Some("Images in DMs are not supported yet — the text was not sent.".into());
-                return;
+                return false;
             }
             let reply_event =
                 reply_to.and_then(|id| state.read().nostr_event_ids.get(&id).cloned());
@@ -1047,13 +1365,13 @@ fn Composer(
             }) {
                 state.write().error_toast =
                     Some("The message service is unavailable. Your draft has been kept.".into());
-                return;
+                return false;
             }
         } else {
             if state.peek().status != crate::state::ConnectionStatus::Ready {
                 state.write().error_toast =
                     Some("The server is reconnecting. Your draft has been kept.".into());
-                return;
+                return false;
             }
             gateway_submit.send(ClientMessage::SendMessage {
                 channel_id,
@@ -1063,16 +1381,19 @@ fn Composer(
             });
         }
         draft.set(String::new());
+        caret_token.set(None);
+        composer_call(&submit_id, "clear", &[]);
         generation.with_mut(|n| *n = n.wrapping_add(1));
         pending_image.set(None);
         show_emoji.set(false);
         if reply_to.is_some() {
             state.write().replying_to = None;
         }
+        true
     };
 
     let gateway_typing = gateway.clone();
-    let mut notify_typing = move || {
+    let notify_typing = move || {
         let now = std::time::Instant::now();
         let send = match *last_typing.peek() {
             Some(t) => now.duration_since(t).as_secs() >= 2,
@@ -1083,6 +1404,80 @@ fn Composer(
             gateway_typing.send(ClientMessage::Typing { channel_id });
         }
     };
+
+    let pick = {
+        let id = composer_id.clone();
+        move |i: usize| {
+            let Some(token) = caret_token.peek().clone() else {
+                return;
+            };
+            let list = suggestions_now(&state.peek(), channel_id, &token);
+            if let Some(s) = list.get(i) {
+                insert_pick(&id, &s.pick, true, true);
+            }
+            caret_token.set(None);
+        }
+    };
+    {
+        let id = composer_id.clone();
+        let instance = instance.clone();
+        let submit = submit.clone();
+        let notify_typing = notify_typing.clone();
+        let pick = pick.clone();
+        use_future(move || {
+            let js = COMPOSER_JS
+                .replace("__ID__", &id)
+                .replace("__GEN__", &instance);
+            let mut submit = submit.clone();
+            let mut notify_typing = notify_typing.clone();
+            let mut pick = pick.clone();
+            async move {
+                let mut eval = document::eval(&js);
+                while let Ok(msg) = eval.recv::<Value>().await {
+                    match msg.get("k").and_then(Value::as_str) {
+                        Some("input") => {
+                            let text = msg.get("text").and_then(Value::as_str).unwrap_or_default();
+                            let token = msg
+                                .get("before")
+                                .and_then(Value::as_str)
+                                .and_then(active_token);
+                            if *draft.peek() != text {
+                                draft.set(text.to_string());
+                                if !text.is_empty() {
+                                    notify_typing();
+                                }
+                            }
+                            if *caret_token.peek() != token {
+                                caret_token.set(token);
+                            }
+                        }
+                        Some("submit") => {
+                            submit();
+                        }
+                        Some("pick") => pick(*selected.peek()),
+                        Some("move") => {
+                            let down = msg.get("down").and_then(Value::as_bool).unwrap_or(true);
+                            let n = caret_token
+                                .peek()
+                                .as_deref()
+                                .map(|t| suggestions_now(&state.peek(), channel_id, t).len())
+                                .unwrap_or(0);
+                            if n > 0 {
+                                let cur = *selected.peek() % n;
+                                selected.set(if down {
+                                    (cur + 1) % n
+                                } else {
+                                    (cur + n - 1) % n
+                                });
+                            }
+                        }
+                        Some("dismiss") => caret_token.set(None),
+                        _ => {}
+                    }
+                }
+            }
+        });
+    }
 
     rsx! {
         div { class: "px-3 pb-3 shrink-0 relative",
@@ -1112,6 +1507,7 @@ fn Composer(
                                 {
                                     let code = e.shortcode.clone();
                                     let url = emoji_urls.get(&e.image).cloned().unwrap_or_default();
+                                    let id = composer_id.clone();
                                     rsx! {
                                         button {
                                             key: "{e.id}",
@@ -1119,7 +1515,7 @@ fn Composer(
                                             class: "w-6 h-6 flex items-center justify-center rounded hover:bg-white/[0.06] text-base leading-none",
                                             title: ":{code}:",
                                             onclick: move |_| {
-                                                draft.write().push_str(&format!(":{code}:"));
+                                                insert_pick(&id, &EmojiPick::Custom { code: code.clone(), url: url.clone() }, false, false);
                                                 show_emoji.set(false);
                                             },
                                             if url.is_empty() {
@@ -1134,15 +1530,60 @@ fn Composer(
                         }
                     }
                     div { class: "grid grid-cols-8 gap-0.5",
-                        for emoji in EMOJIS.iter().copied() {
-                            button {
-                                r#type: "button",
-                                class: "w-6 h-6 flex items-center justify-center rounded hover:bg-white/[0.06] text-base leading-none",
-                                onclick: move |_| {
-                                    draft.write().push_str(emoji);
-                                    show_emoji.set(false);
-                                },
-                                "{emoji}"
+                        for (emoji, name) in EMOJIS.iter().copied() {
+                            {
+                                let id = composer_id.clone();
+                                rsx! {
+                                    button {
+                                        r#type: "button",
+                                        class: "w-6 h-6 flex items-center justify-center rounded hover:bg-white/[0.06] text-base leading-none",
+                                        title: ":{name}:",
+                                        onclick: move |_| {
+                                            insert_pick(&id, &EmojiPick::Unicode(emoji), false, false);
+                                            show_emoji.set(false);
+                                        },
+                                        "{emoji}"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if !suggestions.is_empty() {
+                div {
+                    class: "dxf-pop-in absolute bottom-full left-3 right-3 mb-2 p-1 bg-[var(--panel-solid)] border border-[var(--border)] rounded-md shadow-lg z-30",
+                    div { class: "text-[9px] uppercase tracking-wider text-[var(--text-dim)] px-2 pb-1",
+                        "Emoji — ↑↓ to choose, Enter or Tab to insert"
+                    }
+                    for (i, s) in suggestions.iter().cloned().enumerate() {
+                        {
+                            let is_selected = i == selected() % suggestions.len().max(1);
+                            let mut pick = pick.clone();
+                            rsx! {
+                                button {
+                                    key: "{s.name}",
+                                    r#type: "button",
+                                    class: if is_selected {
+                                        "w-full flex items-center gap-2 px-2 h-7 rounded bg-white/[0.08] text-xs text-[var(--text)] text-left"
+                                    } else {
+                                        "w-full flex items-center gap-2 px-2 h-7 rounded text-xs text-[var(--text-muted)] text-left hover:bg-white/[0.04]"
+                                    },
+                                    onmouseenter: move |_| selected.set(i),
+                                    onmousedown: move |e| e.prevent_default(),
+                                    onclick: move |_| pick(i),
+                                    span { class: "w-6 flex items-center justify-center text-base leading-none shrink-0",
+                                        match &s.pick {
+                                            EmojiPick::Unicode(e) => rsx! { "{e}" },
+                                            EmojiPick::Custom { url, .. } if !url.is_empty() => rsx! {
+                                                img { src: "{url}", style: "height:1.2em;width:auto;" }
+                                            },
+                                            EmojiPick::Custom { .. } => rsx! { span { class: "text-[8px] text-[var(--text-dim)]", "…" } },
+                                        }
+                                    }
+                                    span { class: "truncate", ":{s.name}:" }
+                                }
                             }
                         }
                     }
@@ -1188,14 +1629,18 @@ fn Composer(
                         }
                     }
 
-                    input {
-                        // `min-w-0`: an input's intrinsic width is not zero, so
-                        // without it a narrow composer pushes Send off the row.
-                        class: "flex-1 min-w-0 bg-transparent py-2 text-[14px] text-[var(--text)] focus:outline-none",
-                        r#type: "text",
-                        placeholder: "Message {composer_label}",
-                        value: "{draft}",
-                        oninput: move |e| { draft.set(e.value()); notify_typing(); },
+                    // `min-w-0`: the field's intrinsic width is not zero, so
+                    // without it a narrow composer pushes Send off the row.
+                    // Its children are the webview's (COMPOSER_JS); nothing
+                    // here renders into it.
+                    div {
+                        id: "{composer_id}",
+                        class: "dxf-composer flex-1 min-w-0 py-2 text-[14px] text-[var(--text)]",
+                        contenteditable: "true",
+                        "data-placeholder": "Message {composer_label}",
+                        role: "textbox",
+                        aria_multiline: "false",
+                        aria_label: "Message {composer_label}",
                     }
 
                     button {
@@ -1220,8 +1665,65 @@ fn Composer(
                     // Only what the composer can actually do: the draft is a
                     // single-line input, so Shift+Enter submits like Enter.
                     span { "Enter send" }
+                    span { ":name for emoji" }
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod composer_tests {
+    use super::*;
+
+    fn custom(code: &str) -> GuildEmoji {
+        GuildEmoji {
+            id: uuid::Uuid::new_v4(),
+            guild_id: uuid::Uuid::new_v4(),
+            shortcode: code.into(),
+            image: format!("{code}.png"),
+            added_by: String::new(),
+            created_ms: 0,
+        }
+    }
+
+    #[test]
+    fn a_token_needs_two_name_characters_after_a_word_initial_colon() {
+        assert_eq!(active_token("hi :lp"), Some("lp".into()));
+        assert_eq!(active_token(":LP"), Some("lp".into()));
+        assert_eq!(active_token("a :fire_"), Some("fire_".into()));
+        assert_eq!(active_token("hi :l"), None, "one character is too eager");
+        assert_eq!(active_token("http://x"), None, "no space before the colon");
+        assert_eq!(active_token("at 10:30"), None);
+        assert_eq!(
+            active_token("done :tada: "),
+            None,
+            "a closed code is finished"
+        );
+        assert_eq!(active_token("x :a-b"), None);
+    }
+
+    #[test]
+    fn suggestions_rank_this_guild_and_prefixes_first_and_stay_bounded() {
+        let guild = vec![custom("fireball"), custom("campfire")];
+        let urls =
+            std::collections::HashMap::from([("fireball.png".to_string(), "data:x".to_string())]);
+        let got = emoji_suggestions("fi", &guild, &urls);
+        let names: Vec<&str> = got.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["fireball", "fire", "campfire"]);
+        assert!(matches!(&got[0].pick, EmojiPick::Custom { url, .. } if url == "data:x"));
+        assert!(matches!(&got[2].pick, EmojiPick::Custom { url, .. } if url.is_empty()));
+        assert!(matches!(got[1].pick, EmojiPick::Unicode("🔥")));
+        assert!(emoji_suggestions("zzzz", &guild, &urls).is_empty());
+        assert_eq!(emoji_suggestions("_", &guild, &urls).len(), MAX_SUGGESTIONS);
+    }
+
+    #[test]
+    fn composer_calls_quote_their_arguments_for_the_webview() {
+        // The id and every argument are JSON, so a quote or a backslash in a
+        // shortcode cannot escape the call.
+        let args = [Value::String("a\"b".into()), Value::Bool(true)];
+        let rendered: Vec<String> = args.iter().map(Value::to_string).collect();
+        assert_eq!(rendered.join(","), r#""a\"b",true"#);
     }
 }
