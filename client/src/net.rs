@@ -323,10 +323,36 @@ async fn run(
                     shutdown: shutdown.clone(),
                 };
                 match socket {
-                    Socket::Tcp(ws) => run_session(*ws, params.clone(), origin, state, links).await,
+                    Socket::Tcp(ws) => {
+                        if let Dial::Socket { url, .. } = &dial {
+                            state.write().sfu_tunnel_url = Some(crate::sfu_tunnel::direct_url(url));
+                        }
+                        let outcome = run_session(*ws, params.clone(), origin, state, links).await;
+                        state.write().sfu_tunnel_url = None;
+                        outcome
+                    }
                     Socket::Quic(ws, guard) => {
                         let route_task = guard.watch_route(state);
+                        let tunnel = match crate::sfu_tunnel::SfuTunnel::open(
+                            crate::sfu_tunnel::quic_opener(guard.connection()),
+                        )
+                        .await
+                        {
+                            Ok(tunnel) => {
+                                tracing::info!(url = %tunnel.url(), "voice route: signaling tunnel ready");
+                                state.write().sfu_tunnel_url = Some(tunnel.url().to_string());
+                                Some(tunnel)
+                            }
+                            Err(error) => {
+                                tracing::warn!(%error, "voice route: no signaling tunnel this session");
+                                None
+                            }
+                        };
                         let outcome = run_session(*ws, params.clone(), origin, state, links).await;
+                        if let Some(tunnel) = tunnel {
+                            tunnel.close().await;
+                        }
+                        state.write().sfu_tunnel_url = None;
                         route_task.cancel();
                         if outcome.is_err() {
                             tracing::warn!(close_reason = ?guard.close_reason(), relayed = guard.relayed(), "gateway QUIC session failed");
@@ -1546,6 +1572,16 @@ fn apply(
             eprintln!("[net] VoiceToken channel={channel_id} url={livekit_url}");
             let stale = route_revision < s.voice_route_revision
                 || s.server_voice_channel() != Some(channel_id);
+            // Last, after every address the host offered: direct media beats a
+            // tunnel, and the gateway serves /sfu only for its own SFU.
+            let mut alternate_urls = alternate_urls;
+            if voice_location.as_deref() == Some("host")
+                && let Some(tunnel) = s.sfu_tunnel_url.clone()
+                && tunnel != livekit_url
+                && !alternate_urls.contains(&tunnel)
+            {
+                alternate_urls.push(tunnel);
+            }
             tracing::info!(
                 %channel_id,
                 location = ?voice_location,

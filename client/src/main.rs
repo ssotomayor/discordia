@@ -36,6 +36,7 @@ mod rawmic;
 mod rendezvous;
 mod session;
 mod settings;
+mod sfu_tunnel;
 #[cfg(target_os = "windows")]
 mod single_instance;
 mod sound_decode;

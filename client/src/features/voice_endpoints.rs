@@ -136,8 +136,18 @@ where
             urls.push(url);
         }
     }
+    // A loopback alternate is the signaling tunnel: it always answers a TCP
+    // probe, so it is kept out of the race and stays the last resort.
+    let tunnels: Vec<String> = urls
+        .iter()
+        .skip(1)
+        .filter(|u| direct_address(u).is_some_and(|a| a.ip().is_loopback()))
+        .cloned()
+        .collect();
+    urls.retain(|u| !tunnels.contains(u));
     alternate_families(&mut urls);
     prefer_reachable(&mut urls).await;
+    urls.extend(tunnels);
     let mut failures = Vec::new();
     for url in urls {
         eprintln!("[voice] trying endpoint {url}");
@@ -162,6 +172,26 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn the_loopback_tunnel_is_tried_last_even_though_it_always_answers() {
+        let tunnel = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let tunnel_url = format!("ws://{}/sfu", tunnel.local_addr().unwrap());
+        let mut tried = Vec::new();
+        let failure = try_endpoints(
+            "ws://[2800:810::1]:7880".into(),
+            vec!["ws://203.0.113.5:7880".into(), tunnel_url.clone()],
+            |url| {
+                tried.push(url.clone());
+                std::future::ready(Err::<(), _>("refused".into()))
+            },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(tried.last(), Some(&tunnel_url));
+        assert_eq!(tried.len(), 3);
+        assert!(failure.contains("/sfu: refused"));
+    }
 
     #[tokio::test]
     async fn a_slow_family_does_not_delay_the_other_and_losing_probes_are_cancelled() {

@@ -349,6 +349,9 @@ pub struct AppState {
     pub screen_token: Option<(String, String)>,
     pub voice_endpoint: Option<String>,
     pub voice_location: Option<String>,
+    /// `ws://127.0.0.1:<port>/sfu` while a gateway session is up: the host's
+    /// SFU signaling through that session, tried after every direct address.
+    pub sfu_tunnel_url: Option<String>,
     pub voice_send_route: Option<crate::connection_routes::MediaRoute>,
     pub voice_receive_route: Option<crate::connection_routes::MediaRoute>,
     pub gateway_route: Option<String>,
@@ -484,6 +487,7 @@ impl AppState {
             dm_notify_tick: 0,
             screen_token: None,
             voice_endpoint: None,
+            sfu_tunnel_url: None,
             voice_location: None,
             voice_send_route: None,
             voice_receive_route: None,
@@ -619,6 +623,7 @@ impl AppState {
         self.profiles.clear();
         self.activities.clear();
         self.server_origin = None;
+        self.sfu_tunnel_url = None;
         self.rendezvous_url = None;
         self.host_info = None;
         self.transport = Transport::Loopback;

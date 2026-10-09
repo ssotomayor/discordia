@@ -55,6 +55,10 @@ impl ConnectionGuard {
         })
     }
 
+    pub fn connection(&self) -> iroh::endpoint::Connection {
+        self.conn.clone()
+    }
+
     pub async fn shutdown(&self) {
         self.conn.close(0_u32.into(), b"client leaving");
         self._endpoint.close().await;
