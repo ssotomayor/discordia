@@ -17,20 +17,20 @@ name instead.
 
 | File | Lines |
 |---|---|
-| `client/src/features/voice.rs` | 4680 |
-| `server/src/state/mod.rs` | 3124 |
+| `client/src/features/voice.rs` | 4722 |
+| `server/src/state/mod.rs` | 3182 |
 | `server/tests/owner_controls.rs` | 3036 |
-| `server/src/gateway/connection.rs` | 2990 |
-| `client/src/features/channels.rs` | 1969 |
-| `client/src/features/screenshare.rs` | 2778 |
-| `protocol/src/lib.rs` | 2629 |
-| `client/src/state.rs` | 2125 |
-| `client/src/update.rs` | 1226 |
-| `client/src/net.rs` | 2007 |
-| `client/src/features/chat.rs` | 1192 |
+| `server/src/gateway/connection.rs` | 2993 |
+| `client/src/features/channels.rs` | 1991 |
+| `client/src/features/screenshare.rs` | 3150 |
+| `protocol/src/lib.rs` | 2657 |
+| `client/src/state.rs` | 2129 |
+| `client/src/update.rs` | 1228 |
+| `client/src/net.rs` | 2014 |
+| `client/src/features/chat.rs` | 1227 |
 | `server/src/store.rs` | 1201 |
 | `client/src/features/guild_settings.rs` | 1132 |
-| `client/src/identity.rs` | 1029 |
+| `client/src/identity.rs` | 1123 |
 | `client/src/features/discord_import.rs` | 1127 |
 
 Everything else is small enough that `wc -l` answers faster than a list here
