@@ -15,8 +15,6 @@ pub enum Reachability {
     Direct {
         method: &'static str,
         media: bool,
-        /// Why the voice ports are unusable, when they are. The host banner
-        /// names the failed gate instead of a generic "voice via rendezvous".
         note: Option<&'static str>,
     },
 }
@@ -182,68 +180,78 @@ pub async fn start_self_host(
     } else {
         None
     };
-    let (mut mapped, port_mapping, mut reachability) =
-        if manual.as_ref().is_some_and(|m| m.media && m.hairpin) {
-            (
-                manual.take(),
+    let (mut mapped, port_mapping, mut reachability) = if manual
+        .as_ref()
+        .is_some_and(|m| m.media.available() && m.hairpin)
+    {
+        (
+            manual.take(),
+            None,
+            Reachability::Direct {
+                method: "manual forwarding",
+                media: true,
+                note: None,
+            },
+        )
+    } else {
+        match (allow_lan, local_ipv4(), quic_port) {
+            (false, _, _) => (None, None, Reachability::LoopbackOnly),
+            (true, None, _) => (
                 None,
-                Reachability::Direct {
-                    method: "manual forwarding",
-                    media: true,
-                    note: None,
+                None,
+                Reachability::LanOnly {
+                    reason: "this machine has no IPv4 address on a local network".into(),
                 },
-            )
-        } else {
-            match (allow_lan, local_ipv4(), quic_port) {
-                (false, _, _) => (None, None, Reachability::LoopbackOnly),
-                (true, None, _) => (
-                    None,
-                    None,
-                    Reachability::LanOnly {
-                        reason: "this machine has no IPv4 address on a local network".into(),
-                    },
-                ),
-                (true, _, None) => (
-                    None,
-                    None,
-                    Reachability::LanOnly {
-                        reason: "the QUIC endpoint did not bind, so there is no port to forward"
-                            .into(),
-                    },
-                ),
-                (true, Some(local_ip), Some(quic_udp)) => {
-                    let sfu = livekit_bundle::ports();
-                    let ports = portmap::Ports {
-                        media_tcp: sfu.ws,
-                        media_tcp_ice: sfu.tcp,
-                        media_udp: sfu.udp,
-                        quic_udp,
-                    };
-                    match portmap::request(local_ip, ports).await {
-                        Ok((mapped, guard)) => {
-                            eprintln!(
-                                "[host] {} mapped {} (quic: {}, media: {}, hairpin: {})",
-                                mapped.method,
-                                mapped.public_ip,
-                                mapped.quic,
-                                mapped.media,
-                                mapped.hairpin
-                            );
-                            let reach = Reachability::Direct {
+            ),
+            (true, _, None) => (
+                None,
+                None,
+                Reachability::LanOnly {
+                    reason: "the QUIC endpoint did not bind, so there is no port to forward".into(),
+                },
+            ),
+            (true, Some(local_ip), Some(quic_udp)) => {
+                let sfu = livekit_bundle::ports();
+                let ports = portmap::Ports {
+                    media_tcp: sfu.ws,
+                    media_tcp_ice: sfu.tcp,
+                    media_udp: sfu.udp,
+                    quic_udp,
+                };
+                match portmap::request(local_ip, ports).await {
+                    Ok((mapped, guard)) => {
+                        eprintln!(
+                            "[host] {} mapped {} (quic: {}, media: {:?}, hairpin: {})",
+                            mapped.method,
+                            mapped.public_ip,
+                            mapped.quic,
+                            mapped.media,
+                            mapped.hairpin
+                        );
+                        let reach = if mapped.quic || mapped.media.available() {
+                            Reachability::Direct {
                                 method: mapped.method,
-                                media: mapped.media && mapped.hairpin,
+                                media: mapped.media.available(),
                                 note: mapped.media_note,
-                            };
-                            (Some(mapped), Some(guard), reach)
-                        }
-                        Err(reason) => {
-                            eprintln!("[host] no port mapping: {reason}");
-                            (None, None, Reachability::LanOnly { reason })
-                        }
+                            }
+                        } else {
+                            Reachability::LanOnly {
+                                reason: mapped
+                                    .media_note
+                                    .unwrap_or("no usable ports were mapped")
+                                    .into(),
+                            }
+                        };
+                        (Some(mapped), Some(guard), reach)
+                    }
+                    Err(reason) => {
+                        eprintln!("[host] no port mapping: {reason}");
+                        (None, None, Reachability::LanOnly { reason })
                     }
                 }
             }
-        };
+        }
+    };
 
     apply_manual_mapping(&mut mapped, &mut reachability, manual);
 
@@ -264,15 +272,14 @@ pub async fn start_self_host(
     let mut voice_hosts = public_v6.clone();
     if let Some(ip) = mapped
         .as_ref()
-        .filter(|m| m.media && m.hairpin)
+        .filter(|m| m.media.available())
         .map(|m| m.public_ip)
     {
         voice_hosts.push(ip);
     }
     voice_hosts.sort();
     voice_hosts.dedup();
-    if !voice_hosts.is_empty() && !matches!(reachability, Reachability::Direct { media: true, .. })
-    {
+    if !public_v6.is_empty() && !matches!(reachability, Reachability::Direct { media: true, .. }) {
         reachability = Reachability::Direct {
             method: "IPv6",
             media: true,
@@ -282,7 +289,7 @@ pub async fn start_self_host(
 
     let advertise_ip = mapped
         .as_ref()
-        .filter(|m| m.media && m.hairpin)
+        .filter(|m| m.media.available())
         .map(|m| m.public_ip);
 
     if coordination.is_coordinated()
@@ -377,7 +384,7 @@ pub async fn start_self_host(
     tracing::info!(
         reachability = ?reachability,
         mapping = ?mapped.as_ref().map(|m| format!(
-            "{} {} quic={} media={} hairpin={}",
+            "{} {} quic={} media={:?} hairpin={}",
             m.method, m.public_ip, m.quic, m.media, m.hairpin
         )),
         public_v6 = ?public_v6,
@@ -390,12 +397,16 @@ pub async fn start_self_host(
     );
     let mut voice_reason = if !voice_hosts.is_empty() {
         format!(
-            "Calls run on this machine. Clients try these addresses and verify the media connection: {}. IPv6 needs inbound firewall access and IPv6 at the caller.",
+            "Calls run on this machine. Clients verify media through local and public candidates: {}. {}. IPv6 requires IPv6 at the caller and inbound firewall access.",
             voice_hosts
                 .iter()
                 .map(ToString::to_string)
                 .collect::<Vec<_>>()
-                .join(", ")
+                .join(", "),
+            mapped
+                .as_ref()
+                .and_then(|m| m.media_note)
+                .unwrap_or("Connectivity is verified when joining")
         )
     } else {
         match &reachability {
@@ -618,11 +629,11 @@ fn apply_manual_mapping(
     if let Some(manual) = manual
         && mapped
             .as_ref()
-            .is_none_or(|m| !m.quic && (!m.media || !m.hairpin))
+            .is_none_or(|m| !m.quic && !m.media.available())
     {
         *reachability = Reachability::Direct {
             method: "manual forwarding",
-            media: manual.media && manual.hairpin,
+            media: manual.media.available(),
             note: manual.media_note,
         };
         *mapped = Some(manual);
@@ -656,7 +667,11 @@ mod sfu_tests {
         portmap::Mapped {
             method: "UPnP-IGD",
             public_ip: "203.0.113.5".parse().unwrap(),
-            media,
+            media: portmap::MediaMapping {
+                signaling: media,
+                udp: media,
+                tcp: media,
+            },
             quic,
             quic_port: 19001,
             quic_ip: "203.0.113.5".parse().unwrap(),
@@ -669,7 +684,11 @@ mod sfu_tests {
         portmap::Mapped {
             method: "manual forwarding",
             public_ip: "198.51.100.9".parse().unwrap(),
-            media: false,
+            media: portmap::MediaMapping {
+                signaling: true,
+                udp: true,
+                tcp: true,
+            },
             quic: true,
             quic_port: 9001,
             quic_ip: "198.51.100.9".parse().unwrap(),
@@ -719,7 +738,7 @@ mod sfu_tests {
                 reach,
                 Reachability::Direct {
                     method: "manual forwarding",
-                    media: false,
+                    media: true,
                     ..
                 }
             ));

@@ -63,7 +63,7 @@ retention, not full-band fidelity. Set `DIOXUSFUN_SPEECH_CASE` to a printed case
 name to repeat one configuration.
 
 First run is slow: `server/` fetches or builds `livekit-server` once (macOS
-builds from source, needs `go`). `LIVEKIT_BUNDLE_SKIP=1` opts out.
+builds from source, needs Go 1.26 or newer). `LIVEKIT_BUNDLE_SKIP=1` opts out.
 
 Windows x64 NVENC builds need the CUDA Toolkit driver headers and `cuda.lib`,
 with `CUDA_PATH` pointing to the toolkit root (tested with 12.4).

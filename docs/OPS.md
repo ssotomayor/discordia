@@ -132,23 +132,27 @@ rendezvous entry. The plaintext gateway binds loopback only.
 | Community server | loopback or `wss://` proxy | QUIC by share string | QUIC by share string, or `wss://` through a TLS proxy (`DIOXUSFUN_PUBLIC_HOSTS`) |
 
 Port mapping failure is the normal case and never stops hosting. It also
-measures hairpin NAT, because LiveKit *replaces* its LAN candidate with the
-advertised address rather than adding to it. The hairpin check uses a temporary
+measures hairpin NAT for diagnostics. LiveKit keeps LAN candidates alongside the
+advertised public address, so hairpin is not required. The check uses a temporary
 challenge responder on the mapped media TCP port before LiveKit starts; a
 successful probe releases that port before starting the bundled SFU.
+The bundle pins LiveKit 1.13.9; overriding `LIVEKIT_BUNDLE_VERSION` with a version
+before 1.13.6 loses internal candidates with an explicit public `node_ip`.
 SFU readiness requires an authenticated room-list request and a live child,
 not just an open TCP port. Startup failures, including occupied media ports,
 use the existing rendezvous SFU fallback when available.
 
 Automatic mapping tries UPnP-IGD, NAT-PMP and PCP twice, continuing after a
-discovered router refuses or renumbers media ports. PCP retains its mapping
+discovered router refuses or renumbers media ports. UDP and ICE/TCP grants are
+kept independently; grants on the same public IP combine across methods.
+Signaling can use the gateway if its public port is unavailable. PCP retains its mapping
 nonce and renews against the granted lifetime. The first successful QUIC
 address and granted port survive selection of a voice mapping from another
 method, even when their public IPs differ. An unverified manual address cannot
 replace a router-granted QUIC mapping or usable automatic voice mapping.
 Under "I already forwarded the ports", a public IPv4
 address selects fixed QUIC UDP 9001; the form lists the configured media ports.
-Manual IPv4 still needs the hairpin challenge. Global IPv6 is tried without
+Manual IPv4 is offered as unverified; callers verify media connectivity. Global IPv6 is tried without
 port mapping, but requires the host firewall and the caller's IPv6 connectivity.
 
 Voice tokens offer interleaved IPv4/IPv6 addresses of the same local SFU.

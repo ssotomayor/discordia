@@ -362,6 +362,7 @@ fn spawn_tone(
         let mut noisy = ndarray::Array2::<f32>::zeros((1, FRAME));
         let mut enh = ndarray::Array2::<f32>::zeros((1, FRAME));
         let mut applied = Applied::default();
+        let mut next_frame = Instant::now();
         while !flag.load(std::sync::atomic::Ordering::Relaxed) {
             let mut hop: Vec<f32> = (0..FRAME)
                 .map(|_| {
@@ -410,7 +411,8 @@ fn spawn_tone(
             if rt.block_on(source.capture_frame(&frame)).is_err() {
                 return applied;
             }
-            std::thread::sleep(Duration::from_millis(10));
+            next_frame += Duration::from_secs_f64(FRAME as f64 / SAMPLE_RATE as f64);
+            std::thread::sleep(next_frame.saturating_duration_since(Instant::now()));
         }
         applied
     });
