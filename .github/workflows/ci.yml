@@ -5,9 +5,22 @@ on:
     branches: [main, master]
   pull_request:
 
+# A push to a PR supersedes the run for its previous commit; a master run is
+# never cancelled, since it is publishing a pre-release.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
   DIOXUS_CLI_VERSION: "0.7.10"
+  # Debug info is most of a target dir and nothing here reads it; incremental
+  # artifacts only pay off across edits on one machine. Both shrink the cache.
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  # Caches (`rust-cache` below) are saved from master only, so PR runs cannot
+  # evict them, and one job per OS and profile saves: the repo has 10 GiB, and
+  # a run that saved a cache per job overflowed it before the next run read one.
 
 jobs:
   test:
@@ -35,6 +48,9 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: linux
+          save-if: "false"
 
       - name: Format
         run: cargo fmt --all --check
@@ -52,6 +68,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: linux
+          save-if: "false"
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-audit
@@ -71,6 +90,9 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: linux
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - name: System deps (wry/GTK)
         run: |
           sudo apt-get update
@@ -80,7 +102,10 @@ jobs:
       - name: Clippy (client + grid-layout)
         run: cargo clippy -p dioxusfun -p dioxus-grid-layout --all-targets -- -D warnings
 
+      # A RUSTFLAGS change rebuilds every dependency, so the second profile
+      # costs a full compile; master pays it, a PR does not.
       - name: Clippy (release profile)
+        if: github.event_name == 'push'
         env:
           RUSTFLAGS: "-C debug-assertions=off"
         run: cargo clippy -p dioxusfun -p dioxus-grid-layout --all-targets -- -D warnings
@@ -111,10 +136,14 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - name: Clippy (client, Windows-only code)
         run: cargo clippy -p dioxusfun --all-targets -- -D warnings
 
       - name: Clippy (client, Windows-only code, debug-assertions off)
+        if: github.event_name == 'push'
         env:
           RUSTFLAGS: "-C target-feature=+crt-static -C debug-assertions=off"
         run: cargo clippy -p dioxusfun --all-targets -- -D warnings
@@ -135,13 +164,18 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: macos
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - name: Clippy (client, macOS-only code)
         run: cargo clippy -p dioxusfun --all-targets -- -D warnings
 
       # The other half of the platform: `devlog` and the console handling in
       # `main.rs` change shape with `debug_assertions`, so one profile lints a
       # different tree than the other. Windows has run both since it had them.
+      # Master only: the flag change recompiles every dependency.
       - name: Clippy (client, macOS-only code, debug-assertions off)
+        if: github.event_name == 'push'
         env:
           RUSTFLAGS: "-C debug-assertions=off"
         run: cargo clippy -p dioxusfun --all-targets -- -D warnings
@@ -161,6 +195,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: linux-release
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - name: System deps (wry/GTK)
         run: |
           sudo apt-get update
@@ -212,6 +249,9 @@ jobs:
       - uses: ./.github/actions/setup-windows-nvenc
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows-release
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - uses: cargo-bins/cargo-binstall@main
       - name: Install Dioxus CLI
         env:
@@ -291,6 +331,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: macos-release
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - uses: cargo-bins/cargo-binstall@main
       - uses: actions/setup-go@v5
         with:
