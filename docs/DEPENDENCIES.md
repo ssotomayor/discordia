@@ -54,3 +54,17 @@ percentage reduction in build time; no comparable cold-build timing is claimed.
 
 macOS dependency resolution was checked; native macOS compilation and runtime
 verification require macOS.
+
+## Iroh transport update
+
+| Item | Result |
+|---|---|
+| Workspace Iroh / iroh-relay | 1.0.3 → 1.3.0; requires Rust 1.91+ |
+| Production transport code | Unchanged: keys, ALPN, direct/relay selection, session recovery, SFU signaling tunnel |
+| Isolated stream interoperability | 12 loopback combinations passed: hosts/clients 1.0.3 and 1.3.0, direct or relays 1.0.3 and 1.3.0; does not measure WAN/NAT behavior |
+| Relay recovery regression | IP transports disabled; the same QUIC connection exchanges data before and after the local relay restarts |
+| SFU proxy regression | LiveKit-style WebSocket signaling roundtrips over an authenticated QUIC stream |
+
+Compatibility probes were built separately under ignored `target/iroh-compat`,
+using the pre-update and current lockfiles. Audio, video and UI SDK versions
+remain unchanged; QUIC, DNS and network-discovery dependencies move with Iroh.
