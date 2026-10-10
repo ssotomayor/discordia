@@ -27,7 +27,7 @@ pub fn sources() -> Result<Vec<Source>, String> {
         });
     }
     for window in Window::enumerate().map_err(|e| e.to_string())? {
-        if !window.is_valid() || window.process_id().ok() == Some(std::process::id()) {
+        if !window.is_valid() {
             continue;
         }
         let title = window.title().map_err(|e| e.to_string())?;
@@ -341,6 +341,78 @@ mod tests {
     use livekit::webrtc::video_source::native::NativeVideoSource;
 
     use super::*;
+
+    #[tokio::test]
+    #[ignore = "needs an interactive Windows desktop"]
+    async fn own_window_can_share_video_without_discordia_audio() {
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DestroyWindow, WINDOW_EX_STYLE, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+        };
+        use windows::core::w;
+
+        struct TestWindow(HWND);
+        impl Drop for TestWindow {
+            fn drop(&mut self) {
+                unsafe { DestroyWindow(self.0).expect("destroy test window") };
+            }
+        }
+        let window = TestWindow(unsafe {
+            CreateWindowExW(
+                WINDOW_EX_STYLE::default(),
+                w!("STATIC"),
+                w!("Discordia capture regression"),
+                WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+                20,
+                20,
+                320,
+                240,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("create own window")
+        });
+        let target = Target::WindowsWindow(window.0.0 as isize);
+        assert!(
+            sources()
+                .unwrap()
+                .iter()
+                .any(|source| source.target == target)
+        );
+        assert!(!crate::sysaudio::supported_for(Some(target)));
+        let (audio, _) = crate::audio_queue::channel();
+        let (fatal, _) = tokio::sync::mpsc::unbounded_channel();
+        assert!(crate::sysaudio::start(audio, fatal, Some(target)).is_err());
+
+        let frames = Arc::new(AtomicUsize::new(0));
+        let count = frames.clone();
+        let (fatal, mut failures) = tokio::sync::mpsc::unbounded_channel();
+        let capture = WinVideoCapture::start(
+            target,
+            Settings {
+                width: 320,
+                height: 240,
+                fps: 15,
+                max_bitrate: 1_000_000,
+                adaptive_quality: false,
+                priority: super::super::Priority::Balanced,
+                codec: super::super::Codec::H264,
+                encoder: super::super::Encoder::Auto,
+            },
+            Box::new(move |_| {
+                count.fetch_add(1, Ordering::Relaxed);
+            }),
+            fatal,
+            true,
+        )
+        .expect("capture own window");
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        assert!(failures.try_recv().is_err());
+        assert!(frames.load(Ordering::Relaxed) > 0);
+        drop(capture);
+    }
 
     #[test]
     fn resizing_bgra_ignores_row_padding_and_preserves_colors() {
