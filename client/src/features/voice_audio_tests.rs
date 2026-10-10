@@ -250,6 +250,46 @@ fn deafen_and_gain_updates_cover_voice_stream_and_soundboard() {
 }
 
 #[test]
+fn muting_a_watched_stream_silences_queued_audio_and_restores_its_volume() {
+    let mut state = AppState::empty();
+    state.screen_viewing.insert("alice".into());
+    state.stream_volumes.insert("alice".into(), 50);
+    let controls = AudioControls::from_state(&state);
+    let mut tracks = MixerTracks::default();
+    tracks.buffers.insert(
+        1,
+        TrackBuf {
+            samples: std::collections::VecDeque::from(vec![0.4; 480]),
+            identity: "alice#video".into(),
+            gain: 1.0,
+            kind: TrackKind::Stream,
+        },
+    );
+    state.stream_muted.insert("alice".into());
+    controls.sync_stream_gains(&state);
+    refresh_gains(
+        &mut tracks,
+        &controls.gains,
+        &controls.stream_gains,
+        &controls.soundboard_pct,
+        &controls.deafened,
+    );
+    assert_eq!(next_playback_sample(&mut tracks, 1, usize::MAX, 0), 0.0);
+    assert_eq!(tracks.buffers[&1].samples.len(), 479);
+    assert!(controls.watched_streams.borrow().contains("alice"));
+    state.stream_muted.clear();
+    controls.sync_stream_gains(&state);
+    refresh_gains(
+        &mut tracks,
+        &controls.gains,
+        &controls.stream_gains,
+        &controls.soundboard_pct,
+        &controls.deafened,
+    );
+    assert_eq!(next_playback_sample(&mut tracks, 2, usize::MAX, 0), 0.2);
+}
+
+#[test]
 fn closed_gate_room_tone_does_not_raise_the_next_utterance() {
     let baseline = processed(&[0.05; 600], 100, true, false);
     assert!(baseline.len() > 500);

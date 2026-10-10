@@ -185,6 +185,8 @@ window.dxScreen = window.dxScreen || (function () {
     audioGains[identity] = Math.max(0, Math.min(1, v));
     const t = audioTracks[identity];
     if (t) { try { t.setVolume(audioWanted(identity) ? audioGains[identity] : 0); } catch (e) {} }
+    if (audioGains[identity] === 0) detachAudio(identity);
+    else attachAudio(identity);
   }
   function detachAudio(identity) {
     if (identity) identity = baseIdentity(identity);
@@ -200,15 +202,18 @@ window.dxScreen = window.dxScreen || (function () {
   function attachAudio(identity) {
     identity = baseIdentity(identity);
     if (!audioWanted(identity)) return;
+    const gain = audioGains[identity] === undefined ? 0 : audioGains[identity];
     if (audioElements[identity]) return;
     const t = audioTracks[identity];
     if (!t) { report(identity, false); return; }
+    if (gain === 0) { report(identity, true); return; }
     try {
+      t.setVolume(gain);
       const el = t.attach();
       el.style.display = 'none';
       document.body.appendChild(el);
       audioElements[identity] = el;
-      t.setVolume(audioGains[identity] === undefined ? 0 : audioGains[identity]);
+      t.setVolume(gain);
       applySink();
       if (room && room.canPlaybackAudio === false) room.startAudio().catch(function () {});
       report(identity, true);

@@ -542,17 +542,12 @@ async fn service_loop(
                 }
             }
             VoiceCmd::SetStreamVolume { pubkey, gain } => {
-                let gain = if state.read().screen_viewing.contains(&pubkey) {
-                    gain.clamp(0.0, 2.0)
-                } else {
-                    0.0
-                };
-                crate::dlog!(
-                    "voice SetStreamVolume pubkey={} gain={gain:.2}",
-                    &pubkey[..pubkey.len().min(8)]
-                );
-                controls.stream_gains.lock().insert(pubkey, gain);
                 controls.sync_stream_gains(&state.read());
+                crate::dlog!(
+                    "voice SetStreamVolume pubkey={} requested={gain:.2} applied={:.2}",
+                    &pubkey[..pubkey.len().min(8)],
+                    controls.stream_gains.lock().get(&pubkey).copied().unwrap_or(0.0)
+                );
             }
             VoiceCmd::SyncStreamWatches => controls.sync_stream_gains(&state.read()),
             VoiceCmd::SetUserVolume { pubkey, gain } => {

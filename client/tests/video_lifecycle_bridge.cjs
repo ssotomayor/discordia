@@ -21,6 +21,7 @@ function element(kind) {
 
 function media(f, room, identity) {
   f.bridge.setInlineScreens([identity]);
+  f.bridge.setStreamVolume(1, identity);
   const container = element('div');
   const id = `screenshare-viewer-${identity}`;
   f.containers.set(id, container);

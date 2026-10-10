@@ -7,7 +7,7 @@ const source = readFileSync(new URL('../client/src/features/screenshare.rs', imp
 const bridge = source.split('pub(crate) const SCREEN_JS: &str = r#"')[1].split('"#;')[0];
 
 function fixture() {
-  const subscriptions = [], volumes = [];
+  const subscriptions = [], volumes = [], reports = [];
   let attachments = 0, removals = 0;
   const track = {
     attach() { attachments++; return { style: {}, remove() { removals++; } }; },
@@ -20,13 +20,13 @@ function fixture() {
     audioTracks: { alice: track },
     room: { remoteParticipants: new Map([['alice', participant]]) },
     navigator: {}, document: { body: { appendChild() {} } },
-    window: { postMessage() {} }, console,
+    window: { postMessage(message) { reports.push(message); } }, console,
     refreshViewerSubscriptions() {},
     baseIdentity: id => id.replace(/#(video|audio)$/, ''),
   });
   vm.runInContext(bridge.slice(bridge.indexOf('  let nativeStreamAudio'), bridge.indexOf('  function requestCameraDimensions')), context);
   vm.runInContext(bridge.slice(bridge.indexOf('  function setInlineScreens'), bridge.indexOf('  function setViewerVisibility')), context);
-  return { context, subscriptions, volumes, attachments: () => attachments, removals: () => removals };
+  return { context, subscriptions, volumes, reports, attachments: () => attachments, removals: () => removals };
 }
 
 test('joining without selecting a stream never subscribes or attaches its audio', () => {
@@ -56,12 +56,46 @@ test('stopping a watch detaches audio and stale volume updates remain silent', (
 
 test('a detached watch keeps fallback audio until the watch stops', () => {
   const f = fixture();
+  f.context.setStreamVolume(1, 'alice');
   f.context.setDetachedScreens(['alice']);
   assert.equal(f.attachments(), 1);
   assert.equal(f.subscriptions.at(-1), true);
   f.context.setDetachedScreens([]);
   assert.equal(f.removals(), 1);
   assert.equal(f.subscriptions.at(-1), false);
+});
+
+test('a muted watch never attaches audio across replacement or native fallback', () => {
+  const f = fixture();
+  f.context.setStreamVolume(1, 'alice');
+  f.context.setInlineScreens(['alice']);
+  assert.equal(f.attachments(), 1);
+  f.context.setStreamVolume(0, 'alice#video');
+  assert.equal(f.removals(), 1);
+  f.context.attachWatched();
+  f.context.setDetachedScreens(['alice']);
+  f.context.setInlineScreens([]);
+  f.context.setNativeStreamAudio(true);
+  f.context.setNativeStreamAudio(false);
+  f.context.attachAudio('alice#audio');
+  assert.equal(f.attachments(), 1);
+  assert.equal(f.volumes.at(-1), 0);
+  assert.equal(f.subscriptions.at(-1), true);
+  assert.equal(f.reports.at(-1).present, true);
+  f.context.setStreamVolume(0.5, 'alice');
+  assert.equal(f.attachments(), 2);
+  assert.equal(f.volumes.at(-1), 0.5);
+});
+
+test('watch selection waits for an explicit positive gain before attaching', () => {
+  const f = fixture();
+  f.context.setInlineScreens(['alice']);
+  assert.equal(f.attachments(), 0);
+  f.context.setStreamVolume(0, 'alice');
+  f.context.attachWatched();
+  assert.equal(f.attachments(), 0);
+  f.context.setStreamVolume(0.5, 'alice');
+  assert.equal(f.attachments(), 1);
 });
 
 test('native playback and external viewer rooms never attach WebView audio', () => {
