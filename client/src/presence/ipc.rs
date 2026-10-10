@@ -29,10 +29,15 @@ pub struct RpcActivity {
     pub activity: Option<Activity>,
 }
 
+pub fn discord_compatible_supported() -> bool {
+    // Our partial READY can crash the partner SDK; leave Discord's pipes to its full RPC server.
+    !cfg!(windows)
+}
+
 /// The paths a game already looks in. Ours is the same shape under a different
 /// name, for when squatting Discord's is not wanted.
 pub fn socket_names(discord_compatible: bool) -> Vec<String> {
-    let stem = if discord_compatible {
+    let stem = if discord_compatible && discord_compatible_supported() {
         "discord-ipc"
     } else {
         "dioxusfun-ipc"
@@ -378,7 +383,15 @@ mod tests {
         let ours = socket_names(false);
         let theirs = socket_names(true);
         assert_eq!(ours.len(), SLOTS as usize);
-        assert!(ours.iter().all(|n| !theirs.contains(n)));
-        assert_eq!(theirs[0], "discord-ipc-0");
+        if discord_compatible_supported() {
+            assert!(ours.iter().all(|n| !theirs.contains(n)));
+            assert_eq!(theirs[0], "discord-ipc-0");
+        } else {
+            assert_eq!(
+                ours, theirs,
+                "saved Discord compatibility must not claim Discord's pipes"
+            );
+            assert!(theirs.iter().all(|n| n.starts_with("dioxusfun-ipc-")));
+        }
     }
 }

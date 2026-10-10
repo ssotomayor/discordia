@@ -1320,6 +1320,30 @@ type ScreenBridgeState = (
     crate::sysvideo::Settings,
 );
 
+fn screen_connection_target(s: &crate::state::AppState) -> Option<super::video_lifecycle::Target> {
+    let channel = s.voice.channel_id?;
+    let needed = !crate::sysvideo::supported()
+        || s.screen_share_target.is_some()
+        || s.screen_sharing
+        || !s.screen_viewing.is_empty()
+        || s.camera_on
+        || s.camera_starting
+        || s.voice_states
+            .iter()
+            .any(|v| v.channel_id == Some(channel) && v.camera_on);
+    if !needed {
+        return None;
+    }
+    s.screen_token
+        .as_ref()
+        .map(|(url, token)| super::video_lifecycle::Target {
+            url: url.clone(),
+            token: token.clone(),
+            voice_epoch: s.voice_session_epoch,
+            ice_servers: s.ice_servers.clone(),
+        })
+}
+
 fn capture_settings_for_session(
     previous: Option<&ScreenBridgeState>,
     epoch: u64,
@@ -1442,14 +1466,7 @@ pub fn ScreenShareBridge() -> Element {
     });
     let token = use_memo(move || {
         let s = state.read();
-        s.screen_token
-            .as_ref()
-            .map(|(url, token)| super::video_lifecycle::Target {
-                url: url.clone(),
-                token: token.clone(),
-                voice_epoch: s.voice_session_epoch,
-                ice_servers: s.ice_servers.clone(),
-            })
+        screen_connection_target(&s)
     });
     let targets = lifecycle.0.clone();
     use_effect(move || {
@@ -2859,6 +2876,50 @@ fn ScreenWatchTile(
 
 #[cfg(test)]
 mod js_escaping_tests {
+    #[test]
+    fn voice_only_join_keeps_video_idle_until_capture_or_viewing_needs_it() {
+        let mut state = crate::state::AppState::empty();
+        let channel = uuid::Uuid::new_v4();
+        state.voice.channel_id = Some(channel);
+        state.screen_token = Some(("wss://video.invalid".into(), "token".into()));
+        if !crate::sysvideo::supported() {
+            assert!(super::screen_connection_target(&state).is_some());
+            return;
+        }
+        assert!(super::screen_connection_target(&state).is_none());
+        state.screen_viewing.insert("publisher".into());
+        assert!(super::screen_connection_target(&state).is_some());
+        state.screen_viewing.clear();
+        assert!(super::screen_connection_target(&state).is_none());
+        state.screen_share_target = Some(crate::sysvideo::Target::Display(0));
+        assert!(super::screen_connection_target(&state).is_some());
+        state.screen_share_target = None;
+        state.camera_starting = true;
+        assert!(super::screen_connection_target(&state).is_some());
+        state.camera_starting = false;
+        state.camera_on = true;
+        assert!(super::screen_connection_target(&state).is_some());
+        state.camera_on = false;
+        let peer = crate::protocol::VoiceState {
+            user_pubkey: "peer".into(),
+            guild_id: uuid::Uuid::new_v4(),
+            channel_id: Some(channel),
+            camera_on: true,
+            muted: false,
+            deafened: false,
+            speaking: false,
+            screen_sharing: false,
+            screen_watching: Vec::new(),
+        };
+        state.voice_states.push(peer);
+        assert!(super::screen_connection_target(&state).is_some());
+        state.voice_states[0].channel_id = Some(uuid::Uuid::new_v4());
+        assert!(super::screen_connection_target(&state).is_none());
+        state.voice.channel_id = None;
+        state.camera_on = true;
+        assert!(super::screen_connection_target(&state).is_none());
+    }
+
     #[test]
     fn live_capture_keeps_all_preferences_until_the_next_share() {
         use crate::sysvideo::{Codec, Encoder, Target};
