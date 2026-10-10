@@ -30,6 +30,8 @@ async fn fresh_state() -> AppState {
 
 fn msg(channel_id: Uuid, author: &User, content: &str) -> Message {
     Message {
+        attachment: None,
+        pinned: false,
         id: Uuid::new_v4(),
         channel_id,
         author: author.clone(),
@@ -262,6 +264,8 @@ async fn a_hostile_archive_is_filtered_on_import() {
         username: format!("\u{202E}{}", "x".repeat(80)),
     };
     let archive = GuildArchive {
+        stickers: Vec::new(),
+        file_policy: Default::default(),
         version: ARCHIVE_VERSION,
         guild: Guild {
             id: gid,

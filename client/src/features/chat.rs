@@ -320,6 +320,11 @@ pub fn ChatView() -> Element {
                 }
             }
 
+            if !is_dm {
+                for channel_id in selected_channel.into_iter() {
+                    super::chat_tools::ChatTools { key: "{channel_id}", channel_id }
+                }
+            }
             NoDrag {
                 div { id: "dxf-chat-scroll",
                 style: "overflow-anchor: none;", onmounted: move |_| scroll_mounted += 1, class: "flex-1 overflow-y-auto px-4 py-4 min-h-0",
@@ -500,7 +505,7 @@ fn typing_label(typers: &[String]) -> Option<String> {
 }
 
 #[component]
-fn MessageRow(message: Message, grouped: bool) -> Element {
+pub(super) fn MessageRow(message: Message, grouped: bool) -> Element {
     let mut state = use_app_state();
     let gateway = use_gateway();
     let nostr = use_context::<crate::nostr::service::NostrTx>();
@@ -556,6 +561,12 @@ fn MessageRow(message: Message, grouped: bool) -> Element {
         .find(|c| c.id == channel_id)
         .map(|c| c.guild_id);
 
+    let can_pin = guild_id.is_some_and(|gid| {
+        state
+            .read()
+            .can(gid, crate::protocol::Permission::ManageMessages)
+    });
+    let pinned = message.pinned;
     let can_delete = {
         let s = state.read();
         let is_author = self_pubkey.as_deref() == Some(message.author.pubkey.as_str());
@@ -654,6 +665,10 @@ fn MessageRow(message: Message, grouped: bool) -> Element {
                 } else if let Some(mark) = delivery_mark.clone() {
                     div { class: "mt-0.5", {mark} }
                 }
+                if pinned { div { class: "text-xs text-[var(--text-dim)]", "📌 Pinned" } }
+                if let Some(attachment) = message.attachment.clone() {
+                    super::chat_tools::FileAttachment { attachment }
+                }
                 if let Some(img) = message.image.as_ref() {
                     {
                         let resolved = state.read().media_src(img).map(str::to_string);
@@ -741,6 +756,13 @@ fn MessageRow(message: Message, grouped: bool) -> Element {
                         title: "Add reaction",
                         onclick: move |_| show_react.set(!show_react()),
                         "☺"
+                    }
+                    if can_pin {
+                        button {
+                            title: if pinned { "Unpin message" } else { "Pin message" },
+                            onclick: { let g = gateway.clone(); move |_| g.send(ClientMessage::PinMessage { channel_id, message_id, pinned: !pinned }) },
+                            "📌"
+                        }
                     }
                     if can_delete {
                         button {

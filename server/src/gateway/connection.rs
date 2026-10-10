@@ -116,6 +116,27 @@ pub async fn handle_connection(
                 }
 
                 match client_msg {
+                    command @ (ClientMessage::SendFile { .. } | ClientMessage::PinMessage { .. } | ClientMessage::SearchMessages { .. } | ClientMessage::FetchGuildStickers { .. } | ClientMessage::CreateGuildSticker { .. } | ClientMessage::DeleteGuildSticker { .. } | ClientMessage::SendSticker { .. } | ClientMessage::FetchGuildFilePolicy { .. } | ClientMessage::SetGuildFilePolicy { .. }) => {
+                        let Some(u) = user.as_ref() else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error { message: "identify first".into() }).await;
+                            continue;
+                        };
+                        let file_request = match &command { ClientMessage::SendFile { request_id, .. } => Some(*request_id), _ => None };
+                        let reading = matches!(command, ClientMessage::SearchMessages { .. } | ClientMessage::FetchGuildStickers { .. } | ClientMessage::FetchGuildFilePolicy { .. });
+                        if !(if reading { reads.allow() } else { limiter.allow() }) {
+                            if let Some(request_id) = file_request {
+                                let _ = send(&mut ws_tx, &ServerMessage::FileUploadResult {
+                                    request_id, error: Some("too many requests; retry shortly".into()),
+                                }).await;
+                            } else { reject_rate_limited(&mut ws_tx).await; }
+                            continue;
+                        }
+                        match ctx.state.handle_chat_tool(u, command).await {
+                            Ok(Some(response)) => { if send(&mut ws_tx, &response).await.is_err() { break; } }
+                            Ok(None) => {}
+                            Err(message) => { let response = match file_request { Some(request_id) => ServerMessage::FileUploadResult { request_id, error: Some(message) }, None => ServerMessage::Error { message } }; let _ = send(&mut ws_tx, &response).await; }
+                        }
+                    }
                     ClientMessage::Identify {
                         username,
                         pubkey,
@@ -713,7 +734,12 @@ pub async fn handle_connection(
                         // empty answer means "no such blob" and the client stops
                         // asking, while an absent one is asked for again later.
                         let mut budget = MAX_BLOB_RESPONSE_BYTES;
-                        let blobs: Vec<EmojiBlob> = images
+                        let mut allowed_images = Vec::new();
+                        for image in images.into_iter().take(MAX_EMOJI_FETCH) {
+                            if !crate::media::is_address(&format!("media:{image}")) { continue; }
+                            if !image.ends_with(".bin") || ctx.state.file_available(&user.as_ref().unwrap().pubkey, &format!("media:{image}")).await { allowed_images.push(image); }
+                        }
+                        let blobs: Vec<EmojiBlob> = allowed_images
                             .into_iter()
                             .take(MAX_EMOJI_FETCH)
                             .filter_map(|image| {
@@ -2421,7 +2447,7 @@ const MAX_EMOJI_FETCH: usize = 64;
 const MAX_SOUND_DATA_LEN: usize = crate::protocol::MAX_SOUND_BYTES.div_ceil(3) * 4 + 64;
 /// Four full-size images, so a client asking for message pictures four at a time
 /// is never cut off, and 64 of them cannot be asked for in one frame.
-const MAX_BLOB_RESPONSE_BYTES: usize = 4 * crate::state::MAX_IMAGE_LEN;
+const MAX_BLOB_RESPONSE_BYTES: usize = MAX_FRAME_BYTES - 16_384;
 
 fn broadcast_emojis(state: &crate::state::AppState, guild_id: Id) {
     let targets = state.guild_member_pubkeys(guild_id);

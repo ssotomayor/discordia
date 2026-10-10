@@ -691,6 +691,8 @@ fn insert_message(
     let fresh = s.insert_message(
         cid,
         Message {
+            attachment: None,
+            pinned: false,
             id: mid,
             channel_id: cid,
             author: User {

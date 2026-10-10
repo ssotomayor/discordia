@@ -173,6 +173,8 @@ async fn a_history_page_is_clamped_however_much_is_asked_for() {
         for i in 0..250 {
             store
                 .insert_message(&Message {
+                    attachment: None,
+                    pinned: false,
                     id: Id::new_v4(),
                     channel_id: channel,
                     author: User {

@@ -2484,6 +2484,7 @@ async fn activity_reaches_guild_peers_and_dies_with_the_socket() {
     owner
         .send(&ClientMessage::SetActivity {
             activity: Some(Activity {
+                image: None,
                 kind: ActivityKind::Playing,
                 name: "  Factorio\u{202E}  ".into(),
                 details: Some("Seablock".into()),
@@ -2540,6 +2541,7 @@ async fn activity_reaches_guild_peers_and_dies_with_the_socket() {
     owner
         .send(&ClientMessage::SetActivity {
             activity: Some(Activity {
+                image: None,
                 kind: ActivityKind::Playing,
                 name: "Terraria".into(),
                 details: None,
@@ -2977,6 +2979,7 @@ async fn a_second_session_closing_leaves_the_first_ones_presence_alone() {
     owner
         .send(&ClientMessage::SetActivity {
             activity: Some(Activity {
+                image: None,
                 kind: ActivityKind::Playing,
                 name: "Factorio".into(),
                 details: None,

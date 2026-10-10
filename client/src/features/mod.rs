@@ -7,6 +7,7 @@ pub mod channel_access;
 pub mod channels;
 pub mod chat;
 mod chat_scroll;
+mod chat_tools;
 pub mod connect;
 pub mod discord_import;
 pub mod dm_call;
