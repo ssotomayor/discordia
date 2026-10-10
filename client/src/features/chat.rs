@@ -1595,6 +1595,7 @@ fn Composer(
     let mut pending_image = use_signal::<Option<String>>(|| None);
     let attach_err = use_signal::<Option<String>>(|| None);
     let mut show_emoji = use_signal(|| false);
+    let mut show_file = use_signal(|| false);
     let mut caret_token = use_signal(|| None::<String>);
     let mut selected = use_signal(|| 0_usize);
     let mut last_typing = use_signal::<Option<std::time::Instant>>(|| None);
@@ -1631,6 +1632,18 @@ fn Composer(
     });
 
     let is_dm = state.read().dm_of(channel_id).is_some();
+    let file_guild = state
+        .read()
+        .channels
+        .iter()
+        .find(|channel| channel.id == channel_id)
+        .map(|channel| channel.guild_id)
+        .filter(|guild| {
+            !is_dm
+                && state
+                    .read()
+                    .can(*guild, crate::protocol::Permission::SendMessages)
+        });
     let mut emoji_menu = use_signal(|| None::<EmojiMenuTarget>);
     use_saved_emoji_pictures();
     let (guild_emojis, emoji_urls) = guild_emojis_of(&state.read(), channel_id);
@@ -2000,14 +2013,24 @@ fn Composer(
                 div { class: "mb-2 text-[10px] text-[var(--danger)]", "{err}" }
             }
 
+            if show_file() {
+                if let Some(guild_id) = file_guild {
+                    div { class: "mb-2 text-xs",
+                        button { r#type: "button", onclick: move |_| show_file.set(false), "Close file attachment" }
+                        super::chat_tools::FileSender { guild_id, channel_id }
+                    }
+                }
+            }
+
             form {
                 onsubmit: move |e| { e.prevent_default(); submit(); },
                 div { class: "h-12 border border-[var(--border-strong)] rounded-xl bg-[var(--panel)] flex items-center pl-2 pr-2.5 gap-2 focus-within:border-[var(--accent)] transition-colors",
 
                     label {
                         class: "w-8 h-8 shrink-0 flex items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--panel2)] text-lg leading-none text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors cursor-pointer select-none",
-                        title: "Attach an image",
-                        "+"
+                        style: "width: auto; padding: 0 8px; font-size: 12px;",
+                        title: "Upload an image with a preview in chat",
+                        "🖼 Image"
                         input {
                             r#type: "file",
                             accept: "image/*",
@@ -2017,6 +2040,18 @@ fn Composer(
                                     load_attachment(Some(file.path()), pending_image, attach_err, generation);
                                 }
                             },
+                        }
+                    }
+
+                    if file_guild.is_some() {
+                        button {
+                            r#type: "button",
+                            class: "h-8 shrink-0 flex items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--panel2)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors",
+                            style: "padding: 0 8px; font-size: 12px;",
+                            title: "Upload a downloadable file without a preview",
+                            aria_expanded: show_file(),
+                            onclick: move |_| show_file.toggle(),
+                            "📎 File"
                         }
                     }
 
