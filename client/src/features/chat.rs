@@ -1590,6 +1590,50 @@ fn rank_color(s: &crate::state::AppState, guild_id: Id, pubkey: &str) -> Option<
         .flatten()
 }
 
+/// What a held message draws its emoji with: the blob url once there is one,
+/// else the local picture, whatever its size — it is never sent.
+fn preview_emoji(
+    s: &crate::state::AppState,
+    channel_id: Id,
+    content: &str,
+) -> Vec<(String, String)> {
+    let (list, urls) = guild_emojis_of(s, channel_id);
+    let mut out: Vec<(String, String)> = Vec::new();
+    for piece in crate::emoji::split_shortcodes(content) {
+        let crate::emoji::Piece::Shortcode(code) = piece else {
+            continue;
+        };
+        if out.iter().any(|(c, _)| c == code) {
+            continue;
+        }
+        let Some(e) = list.iter().find(|e| e.shortcode == code) else {
+            continue;
+        };
+        let url = s
+            .saved_emoji_of(&e.image)
+            .and_then(|saved| saved.blossom_url.clone())
+            .or_else(|| urls.get(&e.image).cloned());
+        if let Some(url) = url {
+            out.push((code.to_string(), url));
+        }
+    }
+    out
+}
+
+/// One per conversation, outliving the composer: a send waiting on an upload
+/// still has to go first after the person switches chats.
+fn dm_send_queue(channel_id: Id) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+    static QUEUES: std::sync::OnceLock<
+        parking_lot::Mutex<std::collections::HashMap<Id, std::sync::Arc<tokio::sync::Mutex<()>>>>,
+    > = std::sync::OnceLock::new();
+    QUEUES
+        .get_or_init(Default::default)
+        .lock()
+        .entry(channel_id)
+        .or_default()
+        .clone()
+}
+
 /// Builds the tags and hands the message to the Nostr service. True when it
 /// went; the caller clears the composer.
 fn send_dm(
@@ -1599,6 +1643,7 @@ fn send_dm(
     peer: String,
     content: String,
     reply_event: Option<String>,
+    replaces: Option<String>,
 ) -> bool {
     let (emoji, skipped) = {
         let s = state.read();
@@ -1622,6 +1667,7 @@ fn send_dm(
         text: content,
         reply_to: reply_event,
         emoji,
+        replaces,
     }) {
         state.write().error_toast =
             Some("The message service is unavailable. Your draft has been kept.".into());
@@ -1659,7 +1705,6 @@ fn Composer(
     let nostr_submit = use_context::<crate::nostr::service::NostrTx>();
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let identity = use_context::<crate::identity::Identity>();
-    let mut uploading = use_signal(|| false);
     let composer_id = format!("dxf-composer-{channel_id}");
     // Names this mount's script, so a drop that lands after the next mount's
     // script has started leaves that one alone.
@@ -1813,25 +1858,49 @@ fn Composer(
             // With a blob server, a saved emoji's picture goes up once, on
             // first use, and only then does the message go — the tag needs
             // the url. Without one, or if the upload fails, inline as before.
-            let pending = settings
+            let needed = settings
                 .peek()
                 .emoji_blob_server
                 .clone()
                 .map(|server| (server, uploads_needed(&state.peek(), channel_id, &content)))
                 .filter(|(_, needed)| !needed.is_empty());
-            let Some((server, needed)) = pending else {
-                return send_dm(state, &nostr_submit, channel_id, peer, content, reply_event)
-                    && finish();
-            };
-            if uploading() {
+            let queue = dm_send_queue(channel_id);
+            if needed.is_none()
+                && let Ok(_turn) = queue.try_lock()
+            {
+                return send_dm(
+                    state,
+                    &nostr_submit,
+                    channel_id,
+                    peer,
+                    content,
+                    reply_event,
+                    None,
+                ) && finish();
+            }
+            // Shown now with the clock; anything typed meanwhile queues behind
+            // it, since restamping it later would read as a skewed clock (trap 18).
+            let key = uuid::Uuid::new_v4().to_string();
+            if !nostr_submit.try_send(crate::nostr::service::NostrCmd::Hold {
+                key: key.clone(),
+                peer: peer.clone(),
+                text: content.clone(),
+                reply_to: reply_event.clone(),
+                emoji: preview_emoji(&state.peek(), channel_id, &content),
+            }) {
+                state.write().error_toast =
+                    Some("The message service is unavailable. Your draft has been kept.".into());
                 return false;
             }
-            uploading.set(true);
             let secret = identity.secret_key();
             let nostr = nostr_submit.clone();
-            let mut finish = finish.clone();
-            spawn(async move {
-                for (code, image, data) in needed {
+            dioxus::core::spawn_forever(async move {
+                let _turn = queue.lock().await;
+                for (server, (code, image, data)) in
+                    needed.into_iter().flat_map(|(server, needed)| {
+                        needed.into_iter().map(move |n| (server.clone(), n))
+                    })
+                {
                     let now = chrono::Utc::now().timestamp();
                     match crate::nostr::blossom::upload(&server, &secret, &data, now).await {
                         Ok(url) => {
@@ -1847,12 +1916,17 @@ fn Composer(
                         }
                     }
                 }
-                uploading.set(false);
-                if send_dm(state, &nostr, channel_id, peer, content, reply_event) {
-                    finish();
-                }
+                send_dm(
+                    state,
+                    &nostr,
+                    channel_id,
+                    peer,
+                    content,
+                    reply_event,
+                    Some(key),
+                );
             });
-            return false;
+            return finish();
         } else {
             if state.peek().status != crate::state::ConnectionStatus::Ready {
                 state.write().error_toast =
@@ -2238,9 +2312,6 @@ fn Composer(
                     // single-line input, so Shift+Enter submits like Enter.
                     span { "Enter send" }
                     span { ":name for emoji" }
-                    if uploading() {
-                        span { class: "text-[var(--accent)]", "Uploading emoji…" }
-                    }
                     if file_request().is_some() {
                         span { class: "text-[var(--accent)]", "Uploading file…" }
                     }
