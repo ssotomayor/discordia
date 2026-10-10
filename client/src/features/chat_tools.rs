@@ -150,11 +150,9 @@ pub(super) fn ChatTools(channel_id: Id) -> Element {
                 button { onclick: move |_| panel.set(if panel() == "search" { "" } else { "search" }), "Search" }
                 button { onclick: { let mut search = search.clone(); move |_| { panel.set("pins"); search(0, true); } }, "Pins" }
                 button { onclick: move |_| panel.set(if panel() == "stickers" { "" } else { "stickers" }), "Stickers" }
-                if can_send { button { onclick: move |_| panel.set(if panel() == "file" { "" } else { "file" }), "Attach file" } }
                 if !panel().is_empty() { button { onclick: move |_| panel.set(""), "Close" } }
             }
             if let Some(error) = error() { p { "{error}" } }
-            if panel() == "file" { FileSender { guild_id, channel_id } }
             if panel() == "search" {
                 div { class: "flex flex-wrap gap-2 py-2",
                     input { placeholder: "Search messages", maxlength: 200, value: text(), oninput: move |e| text.set(e.value()) }
@@ -215,7 +213,7 @@ pub(super) fn ChatTools(channel_id: Id) -> Element {
 }
 
 #[component]
-fn FileSender(guild_id: Id, channel_id: Id) -> Element {
+pub(super) fn FileSender(guild_id: Id, channel_id: Id) -> Element {
     let state = use_app_state();
     let gateway = use_gateway();
     let mut file = use_signal(|| None::<(String, String)>);
@@ -246,6 +244,7 @@ fn FileSender(guild_id: Id, channel_id: Id) -> Element {
     });
     rsx! {
         div { class: "py-2 flex flex-wrap gap-2",
+            p { "Send as a downloadable file, without a preview." }
             p { "Limit: {policy.max_bytes / 1000} KB. Files expire after {policy.retention_days} days." }
             button { disabled: reading() || pending().is_some(), onclick: move |_| { spawn(async move {
                 if let Some(selected) = rfd::AsyncFileDialog::new().pick_file().await {
