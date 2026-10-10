@@ -352,7 +352,7 @@ jobs:
   prerelease-macos:
     name: pre-release · server+client (macos · arm64)
     if: github.event_name == 'push'
-    runs-on: macos-latest           # macOS 14 = Apple Silicon (M1)
+    runs-on: macos-latest
     env:
       DISCORDIA_VERSION: v0.1.0-pre.${{ github.run_number }}
     steps:
@@ -362,18 +362,18 @@ jobs:
         with:
           shared-key: macos-release
           save-if: ${{ github.ref == 'refs/heads/master' }}
-      - uses: cargo-bins/cargo-binstall@main
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26.x'
       - name: Verify go
         run: go version
       - name: Install Dioxus CLI
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: cargo binstall dioxus-cli@${{ env.DIOXUS_CLI_VERSION }} --no-confirm --force --locked
+        # Binstall can fall back to Intel binaries linked against Intel Homebrew.
+        run: cargo install dioxus-cli --version "$DIOXUS_CLI_VERSION" --target aarch64-apple-darwin --locked --force
       - name: Verify dx
-        run: dx --version
+        run: |
+          lipo -verify_arch arm64 "$(command -v dx)"
+          dx --version
       - name: Build server (release)
         run: cargo build --release -p dioxusfun-server
       - name: Verify livekit-server is embedded
