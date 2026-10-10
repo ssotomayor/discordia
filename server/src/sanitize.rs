@@ -113,7 +113,10 @@ pub fn role(r: &mut Role) {
 }
 
 pub fn emoji_is_sound(e: &GuildEmoji) -> bool {
-    valid_shortcode(&e.shortcode) && crate::media::is_image_address(&e.image)
+    // Guild emoji store the bare name and stickers the sentinel; requiring the
+    // sentinel dropped every guild emoji on the next start.
+    let name = e.image.strip_prefix("media:").unwrap_or(&e.image);
+    valid_shortcode(&e.shortcode) && crate::media::is_image_address(&format!("media:{name}"))
 }
 
 pub fn sound(s: &mut GuildSound) -> bool {
@@ -253,6 +256,23 @@ pub fn loaded(l: &mut LoadedState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_guild_emoji_survives_loading_with_or_without_the_sentinel() {
+        let hash = "a".repeat(64);
+        let emoji = |image: String| GuildEmoji {
+            id: uuid::Uuid::new_v4(),
+            guild_id: uuid::Uuid::new_v4(),
+            shortcode: "wave".into(),
+            image,
+            added_by: String::new(),
+            created_ms: 0,
+        };
+        assert!(emoji_is_sound(&emoji(format!("{hash}.png"))));
+        assert!(emoji_is_sound(&emoji(format!("media:{hash}.gif"))));
+        assert!(!emoji_is_sound(&emoji(format!("{hash}.bin"))));
+        assert!(!emoji_is_sound(&emoji("https://example.com/a.png".into())));
+    }
 
     #[test]
     fn a_message_is_cut_at_a_character_boundary() {
