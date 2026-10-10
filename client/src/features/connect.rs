@@ -534,6 +534,62 @@ fn TabButton(active: bool, label: &'static str, onclick: EventHandler<()>) -> El
     }
 }
 
+/// Where saved emoji pictures go so a DM can link them. On the account card
+/// because it is the one DM setting with a knob, and DMs live on this screen.
+#[component]
+fn BlobServerField() -> Element {
+    let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
+    let mut draft = use_signal(|| settings.peek().blossom_server.clone().unwrap_or_default());
+    let mut note = use_signal(|| None::<String>);
+    let current = settings.read().blossom_server.clone();
+    rsx! {
+        details { class: "text-[10px] text-[var(--text-dim)]",
+            summary { class: "cursor-pointer hover:text-[var(--text-muted)] transition-colors",
+                if current.is_some() { "Emoji in DMs — blob server set" } else { "Emoji in DMs" }
+            }
+            div { class: "mt-1 text-[var(--text-muted)]",
+                "A Blossom blob server keeps the pictures of your saved emoji so a DM can link them, and other Nostr clients can draw them. Without one, small pictures travel inside the message and large ones go as text."
+            }
+            div { class: "flex gap-1 mt-1.5",
+                input {
+                    class: "flex-1 min-w-0 bg-transparent border border-[var(--border)] rounded px-2 py-1 text-[11px] text-[var(--text)] font-mono focus:outline-none focus:border-[var(--accent)]",
+                    placeholder: "https://blossom.example",
+                    value: "{draft}",
+                    oninput: move |e| draft.set(e.value()),
+                }
+                button {
+                    class: "text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] rounded px-2 hover:border-[var(--accent)] transition-colors",
+                    onclick: move |_| {
+                        let raw = draft();
+                        let next = if raw.trim().is_empty() {
+                            None
+                        } else {
+                            match crate::nostr::blossom::normalize_server(&raw) {
+                                Some(s) => Some(s),
+                                None => {
+                                    note.set(Some("The address must start with https://.".into()));
+                                    return;
+                                }
+                            }
+                        };
+                        draft.set(next.clone().unwrap_or_default());
+                        settings.write().blossom_server = next.clone();
+                        crate::settings::save(&settings.peek());
+                        note.set(Some(match next {
+                            Some(_) => "Saved. Pictures upload the first time you use an emoji in a DM.".into(),
+                            None => "Cleared. Pictures travel inside the message again.".into(),
+                        }));
+                    },
+                    "Save"
+                }
+            }
+            if let Some(n) = note() {
+                div { class: "mt-1 text-[var(--text-muted)]", "{n}" }
+            }
+        }
+    }
+}
+
 #[component]
 pub fn IdentityCard(
     identity: Identity,
@@ -645,6 +701,7 @@ pub fn IdentityCard(
                 "This color signature is derived from your public key. Nobody else has it."
             }
             RecoveryPhrase { phrase }
+            BlobServerField {}
             details { class: "text-[10px] text-[var(--text-dim)]",
                 summary { class: "cursor-pointer hover:text-[var(--text-muted)] transition-colors",
                     "Identity file location"
