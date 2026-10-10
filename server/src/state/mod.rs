@@ -2500,17 +2500,11 @@ impl AppState {
         }
         if img.starts_with("data:image/") {
             if img.len() > MAX_IMAGE_LEN {
-                return Err(format!(
-                    "an image must be under {} MB",
-                    MAX_IMAGE_LEN / 1_000_000
-                ));
+                return Err("an image must be at most 2 MiB (2,097,152 bytes)".into());
             }
             return self.store_upload(by_pubkey, img);
         }
-        Err(format!(
-            "must be an image file (PNG, JPEG, GIF, WebP or AVIF) under {} MB, not a link",
-            MAX_IMAGE_LEN / 1_000_000
-        ))
+        Err("must be an image file (PNG, JPEG, GIF, WebP or AVIF) up to 2 MiB, not a link".into())
     }
 
     pub fn store_upload(&self, by_pubkey: &str, data_url: &str) -> Result<String, String> {

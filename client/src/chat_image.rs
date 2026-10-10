@@ -4,9 +4,9 @@ use std::path::Path;
 use base64::Engine as _;
 use image::{ImageDecoder, ImageEncoder, ImageReader};
 
-pub const MAX_BYTES: usize = 2_000_000;
+pub const MAX_BYTES: usize = crate::protocol::MAX_IMAGE_BYTES;
 const MAX_PIXELS: u64 = 16_000_000;
-const TOO_LARGE: &str = "Image too large (max 2 MB).";
+const TOO_LARGE: &str = "Image too large (max 2 MiB / 2,097,152 bytes).";
 
 pub fn read_file(path: &Path) -> Result<String, String> {
     let file = std::fs::File::open(path).map_err(|_| "Couldn't read that file.")?;

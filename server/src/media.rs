@@ -22,6 +22,7 @@ pub struct SweepReport {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StoreError {
     Unsupported,
+    ImageTooLarge,
     UnsupportedSound,
     UnsupportedFile,
     Full,
@@ -32,6 +33,7 @@ impl std::fmt::Display for StoreError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             StoreError::Unsupported => "unsupported image format (PNG, JPEG, GIF, WebP or AVIF)",
+            StoreError::ImageTooLarge => "image too large (max 2 MiB / 2,097,152 bytes)",
             StoreError::UnsupportedSound => "unsupported sound format (MP3, OGG or WAV)",
             StoreError::UnsupportedFile => "invalid file data",
             StoreError::Full => "this server's media storage is full",
@@ -93,6 +95,9 @@ impl MediaStore {
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(payload)
             .map_err(|_| unsupported)?;
+        if matches!(kind, Kind::Image) && bytes.len() > crate::protocol::MAX_IMAGE_BYTES {
+            return Err(StoreError::ImageTooLarge);
+        }
         if !looks_like(ext, &bytes) {
             return Err(unsupported);
         }
@@ -302,6 +307,27 @@ fn mime_for_name(name: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn image_limit_counts_decoded_bytes_and_includes_exactly_two_mib() {
+        let (media, _dir) = store();
+        let mut bytes = vec![0; crate::protocol::MAX_IMAGE_BYTES];
+        bytes[..6].copy_from_slice(b"GIF89a");
+        let url = |bytes: &[u8]| {
+            format!(
+                "data:image/gif;base64,{}",
+                base64::engine::general_purpose::STANDARD.encode(bytes)
+            )
+        };
+        let input = url(&bytes);
+        let address = media.store_data_url(&input).unwrap();
+        assert_eq!(media.inline(&address).as_deref(), Some(input.as_str()));
+        bytes.push(0);
+        assert_eq!(
+            media.store_data_url(&url(&bytes)),
+            Err(StoreError::ImageTooLarge)
+        );
+    }
 
     #[test]
     fn opaque_files_cannot_be_images_and_expiry_sweeps_only_files() {
