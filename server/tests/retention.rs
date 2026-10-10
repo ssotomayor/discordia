@@ -43,6 +43,7 @@ fn guild(name: &str) -> Guild {
 
 fn channel(guild_id: Id) -> Channel {
     Channel {
+        divider: Default::default(),
         id: Id::new_v4(),
         guild_id,
         name: "general".into(),

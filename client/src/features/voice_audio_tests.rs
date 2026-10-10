@@ -31,7 +31,9 @@ fn processed_controls(
     muted: bool,
 ) -> Vec<crate::audio_queue::Frame<i16>> {
     let (tx, rx) = crate::audio_queue::channel();
-    let (out, mut received) = crate::audio_queue::channel();
+    // Room for every frame: the live queue drops when full, and a loaded test
+    // run starving the reader was enough to lose frames.
+    let (out, mut received) = tokio::sync::mpsc::channel(amplitudes.len().max(1));
     let (_reference, reference_rx) = crate::audio_queue::channel();
     let reader = std::thread::spawn(move || {
         let mut frames = Vec::new();
@@ -57,8 +59,13 @@ fn processed_controls(
                 / SAMPLE_RATE as f32;
             amplitude * phase.sin()
         });
-        tx.blocking_send(crate::audio_queue::Frame::new(samples))
-            .unwrap();
+        // Stamped ahead so waiting behind a busy worker never ages a frame
+        // past `MAX_AGE`; staleness is the device's concern, not the gate's.
+        let frame = crate::audio_queue::Frame {
+            samples,
+            captured: std::time::Instant::now() + std::time::Duration::from_secs(60),
+        };
+        tx.blocking_send(frame).unwrap();
     }
     drop(tx);
     worker.join().unwrap();

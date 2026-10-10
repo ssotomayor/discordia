@@ -88,6 +88,9 @@ pub fn channel(c: &mut Channel) {
         crate::protocol::ChannelKind::Voice => c.access.take().map(access),
         _ => None,
     };
+    if !c.kind.is_divider() {
+        c.divider = Default::default();
+    }
 }
 
 pub fn access(a: crate::protocol::ChannelAccess) -> crate::protocol::ChannelAccess {

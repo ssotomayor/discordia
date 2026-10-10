@@ -255,6 +255,7 @@ impl AppState {
             leveling: Default::default(),
         };
         let general = Channel {
+            divider: Default::default(),
             id: Uuid::new_v4(),
             guild_id: lobby.id,
             name: "general".into(),
@@ -266,6 +267,7 @@ impl AppState {
             access: None,
         };
         let voice = Channel {
+            divider: Default::default(),
             id: Uuid::new_v4(),
             guild_id: lobby.id,
             name: "General Voice".into(),
@@ -847,6 +849,7 @@ impl AppState {
         let mut channels = Vec::new();
         for (pos, (cname, kind, read_only)) in spec.channels.iter().enumerate() {
             channels.push(Channel {
+                divider: Default::default(),
                 id: Uuid::new_v4(),
                 guild_id: gid,
                 name: (*cname).into(),
@@ -1920,6 +1923,7 @@ impl AppState {
         name: &str,
         kind: crate::protocol::ChannelKind,
         topic: Option<String>,
+        divider: crate::protocol::DividerStyle,
         by_pubkey: &str,
     ) -> Result<Channel, String> {
         let _write = self.durable_writes.lock().await;
@@ -1933,13 +1937,18 @@ impl AppState {
             .max()
             .unwrap_or(0);
         let channel = Channel {
+            divider: if kind.is_divider() {
+                divider
+            } else {
+                Default::default()
+            },
             id: Uuid::new_v4(),
             guild_id,
             name,
             kind,
             topic: topic
                 .map(|t| crate::protocol::sanitize_line(&t, 120))
-                .filter(|t| !t.is_empty()),
+                .filter(|t| !t.is_empty() && !kind.is_divider()),
             read_only: false,
             slowmode_secs: 0,
             position: next_pos,
@@ -1997,6 +2006,7 @@ impl AppState {
         read_only: bool,
         position: u32,
         slowmode_secs: u32,
+        divider: Option<crate::protocol::DividerStyle>,
         by_pubkey: &str,
     ) -> Result<Channel, String> {
         let _write = self.durable_writes.lock().await;
@@ -2019,6 +2029,10 @@ impl AppState {
                 read_only && matches!(channel.kind, crate::protocol::ChannelKind::Text);
             channel.slowmode_secs = slowmode_secs.min(21_600);
             channel.position = position;
+            if channel.kind.is_divider() {
+                channel.topic = None;
+                channel.divider = divider.unwrap_or(channel.divider);
+            }
             channel.clone()
         };
         durable(self.store.upsert_channel(&updated).await, "channel update")?;

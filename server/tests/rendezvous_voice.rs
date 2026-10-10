@@ -107,6 +107,7 @@ async fn livekit_url_for_voice(session: &mut Bot) -> String {
     };
     session
         .send(&ClientMessage::CreateChannel {
+            divider: Default::default(),
             guild_id,
             name: "General".into(),
             kind: ChannelKind::Voice,

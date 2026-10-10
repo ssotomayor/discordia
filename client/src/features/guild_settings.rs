@@ -330,6 +330,7 @@ pub fn GuildSettingsDialog(
         MemberSort::Name => ("name", "By name"),
         MemberSort::Level => ("level", "By level"),
         MemberSort::Role => ("role", "By role"),
+        MemberSort::Rank => ("rank", "By rank"),
     };
     let gw_sort = gateway.clone();
 
@@ -679,6 +680,7 @@ pub fn GuildSettingsDialog(
                                                 let next = match e.value().as_str() {
                                                     "level" => MemberSort::Level,
                                                     "role" => MemberSort::Role,
+                                                    "rank" => MemberSort::Rank,
                                                     _ => MemberSort::Name,
                                                 };
                                                 // The draft follows, or Save would send the old order back.
@@ -695,12 +697,13 @@ pub fn GuildSettingsDialog(
                                             option { value: "name", "By name" }
                                             option { value: "level", "By level — most experienced first" }
                                             option { value: "role", "By role — in the order below" }
+                                            option { value: "rank", "By rank — highest first" }
                                         }
                                     } else {
                                         div { class: "text-xs text-[var(--text)]", "{sort_label}" }
                                     }
                                     div { class: "text-[10px] text-[var(--text-dim)] mt-1",
-                                        "Applies at once. Whoever is online or in voice still comes first; by role, each online member is listed under their highest role."
+                                        "Applies at once. Whoever is online or in voice still comes first; by role or by rank, each online member is listed under their highest role or their rank."
                                     }
                                 }
                                 div { class: "border-t border-[var(--border)] pt-3",

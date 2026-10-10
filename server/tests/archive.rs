@@ -284,6 +284,7 @@ async fn a_hostile_archive_is_filtered_on_import() {
             leveling: Default::default(),
         },
         channels: vec![Channel {
+            divider: Default::default(),
             id: chan,
             guild_id: gid,
             name: "general\u{2028}INFO forged".into(),

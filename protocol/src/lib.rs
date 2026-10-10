@@ -240,6 +240,19 @@ pub enum ChannelKind {
     Voice,
     /// A titled separator in the voice list: no messages, no call.
     Category,
+    /// The same in the text list.
+    Divider,
+}
+
+/// How a `Category` or `Divider` draws its name; nothing else reads it.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DividerStyle {
+    /// The name, then a rule to the edge.
+    #[default]
+    Title,
+    /// A rule with the name in the middle.
+    Centered,
 }
 
 impl ChannelKind {
@@ -250,6 +263,14 @@ impl ChannelKind {
 
     pub fn in_voice_list(self) -> bool {
         matches!(self, ChannelKind::Voice | ChannelKind::Category)
+    }
+
+    pub fn in_text_list(self) -> bool {
+        matches!(self, ChannelKind::Text | ChannelKind::Divider)
+    }
+
+    pub fn is_divider(self) -> bool {
+        matches!(self, ChannelKind::Category | ChannelKind::Divider)
     }
 }
 
@@ -269,6 +290,8 @@ pub struct Channel {
     /// `None` is everyone. Only voice channels carry one.
     #[serde(default)]
     pub access: Option<ChannelAccess>,
+    #[serde(default)]
+    pub divider: DividerStyle,
 }
 
 /// An allowlist: these roles and these people see and may join the channel,
@@ -320,6 +343,9 @@ pub struct LevelTier {
     pub name: String,
     #[serde(default)]
     pub color: Option<String>,
+    /// A character, or a guild emoji's `:code:`; drawn beside a member's name.
+    #[serde(default)]
+    pub emoji: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -334,6 +360,9 @@ pub enum MemberSort {
     /// Online members grouped under their highest role, in the guild's role
     /// order; members with no role follow, then everyone offline.
     Role,
+    /// Online members grouped under their rank, highest first; members below
+    /// the first rank follow, then everyone offline.
+    Rank,
 }
 
 /// How a guild turns activity into experience, and what it calls the result.
@@ -399,6 +428,8 @@ pub enum XpAction {
 
 pub const MAX_TIERS: usize = 20;
 pub const MAX_TIER_NAME: usize = 24;
+/// Room for `:` + the longest shortcode + `:`, or a long ZWJ sequence.
+pub const MAX_TIER_EMOJI: usize = 40;
 /// A hundred a message is already absurd; the cap only stops a typo turning
 /// one message into a number the level curve walks for a very long time.
 pub const MAX_XP_PER_ACTION: u32 = 100;
@@ -452,6 +483,10 @@ pub fn sanitize_leveling(mut raw: Leveling) -> Leveling {
                 xp: t.xp,
                 name,
                 color: t.color.filter(|c| is_hex_color(c)),
+                emoji: t
+                    .emoji
+                    .map(|e| sanitize_line(e.trim(), MAX_TIER_EMOJI))
+                    .filter(|e| !e.is_empty()),
             })
         })
         .collect();
@@ -1836,9 +1871,14 @@ pub enum ClientMessage {
         kind: ChannelKind,
         #[serde(default)]
         topic: Option<String>,
+        #[serde(default)]
+        divider: DividerStyle,
     },
     UpdateChannel {
         channel_id: Id,
+        /// `None` keeps the current style.
+        #[serde(default)]
+        divider: Option<DividerStyle>,
         name: String,
         #[serde(default)]
         topic: Option<String>,
@@ -2498,6 +2538,7 @@ mod leveling_tests {
 
     fn tier(xp: u64, name: &str) -> LevelTier {
         LevelTier {
+            emoji: None,
             xp,
             name: name.into(),
             color: None,
@@ -2600,11 +2641,13 @@ mod leveling_tests {
         let l = sanitize_leveling(Leveling {
             tiers: vec![
                 LevelTier {
+                    emoji: None,
                     xp: 0,
                     name: "Fine".into(),
                     color: Some("#abc".into()),
                 },
                 LevelTier {
+                    emoji: None,
                     xp: 10,
                     name: "Bad".into(),
                     color: Some("red; content: evil".into()),

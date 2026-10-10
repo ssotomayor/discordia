@@ -599,6 +599,7 @@ pub async fn run_import(
             done,
         );
         gateway.send(ClientMessage::CreateChannel {
+            divider: Default::default(),
             guild_id: gid,
             name: c.name.clone(),
             kind: c.kind,
@@ -639,6 +640,7 @@ pub async fn run_import(
             done,
         );
         gateway.send(ClientMessage::UpdateChannel {
+            divider: None,
             channel_id: c.id,
             name: c.name.clone(),
             topic: c.topic.clone(),

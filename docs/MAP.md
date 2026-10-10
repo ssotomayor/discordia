@@ -17,21 +17,21 @@ name instead.
 
 | File | Lines |
 |---|---|
-| `client/src/features/voice.rs` | 4894 |
-| `server/src/state/mod.rs` | 3189 |
-| `server/tests/owner_controls.rs` | 3039 |
+| `client/src/features/voice.rs` | 4895 |
+| `server/src/state/mod.rs` | 3205 |
+| `server/tests/owner_controls.rs` | 3117 |
 | `server/src/gateway/connection.rs` | 3078 |
-| `client/src/features/channels.rs` | 1991 |
-| `client/src/features/screenshare.rs` | 3175 |
-| `protocol/src/lib.rs` | 2779 |
-| `client/src/state.rs` | 2281 |
+| `client/src/features/channels.rs` | 2133 |
+| `client/src/features/screenshare.rs` | 3236 |
+| `protocol/src/lib.rs` | 2850 |
+| `client/src/state.rs` | 2293 |
 | `client/src/update.rs` | 1228 |
 | `client/src/net.rs` | 2165 |
-| `client/src/features/chat.rs` | 2290 |
-| `server/src/store.rs` | 1336 |
-| `client/src/features/guild_settings.rs` | 1132 |
+| `client/src/features/chat.rs` | 2378 |
+| `server/src/store.rs` | 1357 |
+| `client/src/features/guild_settings.rs` | 1135 |
 | `client/src/identity.rs` | 1123 |
-| `client/src/features/discord_import.rs` | 1111 |
+| `client/src/features/discord_import.rs` | 1113 |
 
 Everything else is small enough that `wc -l` answers faster than a list here
 could stay true. There used to be rows for "under 300" and "300 to 800": they
@@ -68,7 +68,9 @@ that direction says a file is safe to open when it is not.
 | The first screen | `client/src/features/home.rs` | `HomeView`; the connect form is `connect::ConnectForm` |
 | Public servers on a globe | `client/src/features/globe.rs` | `Globe` — `globe_geometry.rs` generates land dots from `assets/globe-land.bin` and converts geographic coordinates; `assets/globe.js` draws Canvas on demand, animating only for motion/pulses, suspending while hidden and releasing observers/listeners on destroy; `connect::BrowseTab` feeds it `/discover`, and the Create tab reuses it in `pick` mode to place a host's own pin, pre-placed by `tzgeo::guess` from the machine's timezone |
 | Experience, and the two numbers it makes | `server/src/state/mod.rs` | `award_xp` — amount, cooldown, channels and rank names all come from the guild's `Leveling`. The cross-server sum is the client's: `client/src/xp_ledger.rs` adds it up, `nostr/xp.rs` signs and paces it (`Publisher`), `features/leveling.rs` joins the two |
-| What a guild calls its ranks, and who may say | `client/src/features/guild_leveling.rs` | `LevelingEditor` — the draft is the settings dialog's, so it saves with everything else |
+| What a guild calls its ranks, and who may say | `client/src/features/guild_leveling.rs` | `LevelingEditor` — the draft is the settings dialog's, so it saves with everything else. A `LevelTier` has a name, colour and emoji (a character or `:code:`, picked with `channels::TopicEmojiPicker`) |
+| How ranks show | `client/src/features/members.rs`, `client/src/features/chat.rs`, `client/src/state.rs` | The rank emoji sits beside a member's name. `MemberSort::Rank` groups online members under `group_by_rank` headers, highest first, and drops the right-hand rank name; other sorts keep it. In chat, `rank_color` paints a ranked author's name in the rank's colour, else `signature_accent` |
+| Channel dividers | `client/src/features/channels.rs`, `server/src/state/mod.rs` | `Category` divides the voice list and `Divider` the text list (`ChannelKind::is_divider`). Each takes no messages, no call and no topic, and draws its name via `DividerLabel` per `Channel::divider`: `Title` (name, then a rule) or `Centered` (name inside the rule). `UpdateChannel { divider: None }` keeps the style |
 | What someone is playing, and who says so | `client/src/presence/mod.rs` | `PresenceService` owns RPC tasks and `ScanWorker`; `detect.rs` scans every 15 s and observes custom-game edits without restarting. `processes.rs` uses ToolHelp and limited queries on Windows, sysinfo elsewhere. `installed.rs` caches Steam manifests (all platforms), Epic manifests and Ubisoft registry entries (Windows), refreshing every 5 min; helpers/tools are excluded. `ipc.rs::listen` owns connected games; Windows binds only private RPC names. Session teardown cancels listeners and wakes the scanner |
 | Registering additional games | `client/src/features/settings_dialog.rs` | Activity tab shows the published activity and `GameDetectionOverrides`; executable/name pairs persist in `detect_extra`, override the fallback catalogue and update an enabled detector on its next scan |
 | Guild settings, and what its one Save writes | `client/src/features/guild_settings.rs` | `GuildSettingsDialog` — every field is a draft signal; `save_all` sends only the messages whose values moved. `GuildTab` only chooses which drafts are on screen, so one Save covers every tab. Tabs follow permissions: the guild menu's Roles entry opens it on `GuildTab::Roles` (`roles::RolesEditor`, which saves per role) for someone with Manage roles alone. The member-list order is a `Leveling` field but is chosen on the Roles tab and saves at once; `AppState::members_of` sorts by it and `members::group_by_top_role` draws a heading per role. A role's `position` only orders display — `ReorderRoles` grants nothing |

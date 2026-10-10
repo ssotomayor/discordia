@@ -1315,6 +1315,17 @@ impl AppState {
                         .then_with(|| by_name(a, b))
                 });
             }
+            crate::protocol::MemberSort::Rank => {
+                let rules = self.leveling_of(guild_id);
+                let tier = |m: &Member| rules.tiers.iter().rposition(|t| m.xp >= t.xp);
+                v.sort_by(|a, b| {
+                    b.online
+                        .cmp(&a.online)
+                        .then_with(|| tier(b).cmp(&tier(a)))
+                        .then_with(|| b.xp.cmp(&a.xp))
+                        .then_with(|| by_name(a, b))
+                });
+            }
             crate::protocol::MemberSort::Role => {
                 // The id breaks a tie in position, so a role's members stay together.
                 let rank = |m: &Member| {
@@ -1873,6 +1884,7 @@ mod tests {
     fn text_channel(s: &mut AppState, guild_id: Id) -> Id {
         let id = Id::new_v4();
         s.channels.push(Channel {
+            divider: Default::default(),
             id,
             guild_id,
             name: "general".into(),

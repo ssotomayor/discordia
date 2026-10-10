@@ -1644,7 +1644,7 @@ pub async fn handle_connection(
                             }
                         }
                     }
-                    ClientMessage::CreateChannel { guild_id, name, kind, topic } => {
+                    ClientMessage::CreateChannel { guild_id, name, kind, topic, divider } => {
                         let Some(u) = user.as_ref() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
@@ -1655,7 +1655,7 @@ pub async fn handle_connection(
                             reject_rate_limited(&mut ws_tx).await;
                             continue;
                         }
-                        match ctx.state.create_channel(guild_id, &name, kind, topic, &u.pubkey).await {
+                        match ctx.state.create_channel(guild_id, &name, kind, topic, divider, &u.pubkey).await {
                             Ok(channel) => {
                                 tracing::info!(%guild_id, channel = ?channel.name, by = ?u.username, "channel created");
                                 let targets = ctx.state.guild_member_pubkeys(guild_id);
@@ -1738,7 +1738,7 @@ pub async fn handle_connection(
                             }
                         }
                     }
-                    ClientMessage::UpdateChannel { channel_id, name, topic, read_only, position, slowmode_secs } => {
+                    ClientMessage::UpdateChannel { channel_id, name, topic, read_only, position, slowmode_secs, divider } => {
                         let Some(u) = user.as_ref() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
@@ -1749,7 +1749,7 @@ pub async fn handle_connection(
                             reject_rate_limited(&mut ws_tx).await;
                             continue;
                         }
-                        match ctx.state.update_channel(channel_id, &name, topic, read_only, position, slowmode_secs, &u.pubkey).await {
+                        match ctx.state.update_channel(channel_id, &name, topic, read_only, position, slowmode_secs, divider, &u.pubkey).await {
                             Ok(channel) => {
                                 let targets = viewers_of(&ctx.state, &channel);
                                 ctx.state.deliver(targets, ServerMessage::ChannelUpdate(channel));

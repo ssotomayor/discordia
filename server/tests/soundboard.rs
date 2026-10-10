@@ -81,6 +81,7 @@ async fn join_guild(member: &mut Bot, guild_id: Id) -> Vec<GuildSound> {
 async fn create_voice_channel(owner: &mut Bot, guild_id: Id) -> Id {
     owner
         .send(&ClientMessage::CreateChannel {
+            divider: Default::default(),
             guild_id,
             name: "Voice".into(),
             kind: ChannelKind::Voice,

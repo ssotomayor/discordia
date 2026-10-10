@@ -132,7 +132,7 @@ pub fn LevelingEditor(guild_id: Id, draft: Signal<Leveling>) -> Element {
                     }
                 }
 
-                TierEditor { draft }
+                TierEditor { draft, guild_id }
 
             }
         }
@@ -163,7 +163,7 @@ fn AmountRow(label: &'static str, value: u32, onset: EventHandler<u32>) -> Eleme
 /// Rows are held in the order they were added and only sorted on save — sorting
 /// as someone types turns a half-entered threshold into a jump up the list.
 #[component]
-fn TierEditor(draft: Signal<Leveling>) -> Element {
+fn TierEditor(draft: Signal<Leveling>, guild_id: Id) -> Element {
     let tiers = draft.read().tiers.clone();
     let full = tiers.len() >= crate::protocol::MAX_TIERS;
 
@@ -209,6 +209,31 @@ fn TierEditor(draft: Signal<Leveling>) -> Element {
                             }
                         },
                     }
+                    div { class: "relative shrink-0 flex items-center",
+                        crate::features::channels::TopicEmojiPicker {
+                            guild_id,
+                            current: t.emoji.clone(),
+                            title: "Emoji shown beside this rank's members",
+                            on_pick: move |emoji: String| {
+                                if let Some(row) = draft.write().tiers.get_mut(i) {
+                                    row.emoji = Some(emoji);
+                                }
+                            },
+                        }
+                        if t.emoji.is_some() {
+                            button {
+                                r#type: "button",
+                                class: "text-[10px] text-[var(--text-dim)] hover:text-[var(--danger)] transition-colors",
+                                title: "No emoji",
+                                onclick: move |_| {
+                                    if let Some(row) = draft.write().tiers.get_mut(i) {
+                                        row.emoji = None;
+                                    }
+                                },
+                                "✕"
+                            }
+                        }
+                    }
                     input {
                         r#type: "color",
                         class: "w-7 h-7 rounded border border-[var(--border)] bg-transparent cursor-pointer shrink-0",
@@ -245,6 +270,7 @@ fn TierEditor(draft: Signal<Leveling>) -> Element {
                             .map(|m| m + 50)
                             .unwrap_or(0);
                         draft.write().tiers.push(LevelTier {
+                            emoji: None,
                             xp: next_xp,
                             name: String::new(),
                             color: None,

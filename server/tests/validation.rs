@@ -247,6 +247,7 @@ async fn names_and_free_text_come_back_clean_over_the_wire() {
 
     owner
         .send(&ClientMessage::CreateChannel {
+            divider: Default::default(),
             guild_id,
             name: "gen\u{0}eral".into(),
             kind: ChannelKind::Text,
