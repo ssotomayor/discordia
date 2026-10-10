@@ -156,6 +156,7 @@ pub fn Avatar(
 pub fn ProfileCard() -> Element {
     let mut state = use_app_state();
     let nostr = use_context::<crate::nostr::service::NostrTx>();
+    crate::features::chat::use_saved_emoji_pictures();
 
     let snapshot = state.read();
     let Some(pubkey) = snapshot.profile_card.clone() else {
@@ -179,6 +180,22 @@ pub fn ProfileCard() -> Element {
         .as_ref()
         .map(|u| u.pubkey == pubkey)
         .unwrap_or(false);
+    let saved_emoji: Vec<(crate::settings::SavedEmoji, String)> = if is_self {
+        snapshot
+            .saved_emoji
+            .iter()
+            .map(|e| {
+                let url = snapshot
+                    .emoji_images
+                    .get(&e.image)
+                    .cloned()
+                    .unwrap_or_default();
+                (e.clone(), url)
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
     drop(snapshot);
 
     let disc = discriminator(&pubkey);
@@ -308,6 +325,42 @@ pub fn ProfileCard() -> Element {
                                                 style: "color: {color}; border-color: color-mix(in srgb, {color} 45%, transparent); background: color-mix(in srgb, {color} 10%, transparent);",
                                                 span { class: "w-2 h-2 rounded-full shrink-0", style: "background-color: {color};" }
                                                 "{role.name}"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if is_self {
+                        div { class: "mt-3",
+                            div { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-1.5", "Saved emoji" }
+                            if saved_emoji.is_empty() {
+                                div { class: "text-xs text-[var(--text-dim)]",
+                                    "Right-click a guild's emoji in a picker to keep it here. Saved emoji work in DMs."
+                                }
+                            }
+                            div { class: "flex flex-col gap-1 max-h-40 overflow-y-auto",
+                                for (e, url) in saved_emoji.iter().cloned() {
+                                    {
+                                        let image = e.image.clone();
+                                        rsx! {
+                                            div { key: "{e.image}", class: "flex items-center gap-2 text-xs",
+                                                span { class: "w-6 flex items-center justify-center shrink-0",
+                                                    if url.is_empty() {
+                                                        span { class: "text-[8px] text-[var(--text-dim)]", "…" }
+                                                    } else {
+                                                        img { src: "{url}", style: "height:1.4em;width:auto;" }
+                                                    }
+                                                }
+                                                span { class: "font-mono text-[var(--text)] shrink-0", ":{e.shortcode}:" }
+                                                span { class: "text-[var(--text-dim)] truncate flex-1", title: "{e.guild_name}", "{e.guild_name}" }
+                                                button {
+                                                    class: "text-[10px] uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--danger)] transition-colors shrink-0",
+                                                    title: "Remove from my emoji",
+                                                    onclick: move |_| state.write().remove_saved_emoji(&image),
+                                                    "✕"
+                                                }
                                             }
                                         }
                                     }
