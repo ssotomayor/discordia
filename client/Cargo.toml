@@ -52,7 +52,7 @@ tract-pulse = "=0.21.4"
 tract-hir = "=0.21.4"
 ndarray = "0.15"
 
-rubato = "0.16"
+rubato = "=5.0.1"
 symphonia = { version = "0.5", default-features = false, features = ["mp3", "ogg", "vorbis", "wav", "pcm"] }
 # symphonia demuxes Ogg Opus but cannot decode it. A libopus port in Rust, so no
 # second C libopus beside libwebrtc's; `opus-decoder` panicked on a real Discord sound.
@@ -130,6 +130,7 @@ coreaudio-sys = "0.2"
 ignored = ["deep_filter", "tract-core", "tract-onnx", "tract-pulse", "tract-hir", "libwebrtc", "webrtc-sys", "webrtc-sys-build", "livekit-common", "livekit-data-stream", "livekit-protocol", "livekit-datatrack"]
 
 [dev-dependencies]
+rubato-legacy = { package = "rubato", version = "=0.16.2" }
 axum = { workspace = true }
 dioxusfun-rendezvous = { path = "../rendezvous" }
 livekit-api = { workspace = true }

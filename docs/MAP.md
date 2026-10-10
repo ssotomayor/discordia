@@ -17,7 +17,7 @@ name instead.
 
 | File | Lines |
 |---|---|
-| `client/src/features/voice.rs` | 4738 |
+| `client/src/features/voice.rs` | 4774 |
 | `server/src/state/mod.rs` | 3182 |
 | `server/tests/owner_controls.rs` | 3036 |
 | `server/src/gateway/connection.rs` | 2993 |
@@ -55,6 +55,7 @@ that direction says a file is safe to open when it is not.
 | Microphone and activity defaults | `client/src/settings.rs`, `features/account.rs` | AGC, noise cancellation, system processing bypass, game activity sharing, detection and Discord Rich Presence start enabled; missing saved fields use those defaults, explicit disabled preferences remain disabled. System bypass is applied only on supported platforms |
 | Voice preferences on entry | `VoiceSession::join_message`, `net::apply`, `server::state::set_voice_channel` | Optional `JoinVoice.preferences` applies mute/deafen before the first broadcast; the client corrects legacy join echoes without briefly enabling audio |
 | Native voice regression tests | `client/src/features/voice_audio_tests.rs`, `voice_speech_tests.rs` | Gain, mute, deafen, room-tone AGC, buffering and resampling; opt-in human speech through the production worker exports WAV comparisons with noise and double talk |
+| Native sample-rate conversion | `client/src/features/voice.rs`, `features/resampler_tests.rs`, `client/src/sound_decode.rs` | `AudioResampler` uses Rubato 5 fixed-input FFT and borrowed mono adapters at capture/playback/file boundaries; equal rates bypass conversion. Tests compare samples, counts and delay to test-only Rubato 0.16.2 and verify partial-input accumulation and warmed buffer capacities |
 | Stream playback volume | `stream_audio::playback_gains`, `ScreenWatchWindow` | Watch-level volume/mute/deafen drives native and WebView audio even with every tile detached; voice epochs reapply levels. Participant disconnects do not erase the watch-owned gain table |
 | Voice, capture, mixing | `client/src/features/voice.rs` | the largest file in the tree — grep `ScreenAudioRoom`, `NativeVideoRoom`, `ScreenVideoRoom`, `forward_mic` |
 | Audio RED under E2EE | `vendor/livekit/src/rtc_engine/rtc_session.rs`, `vendor/livekit/src/room/participant/local_participant.rs` | A track published without an explicit `red: false` offers opus+RED, so the publisher sends the redundant copy itself and the SFU forwards it rather than synthesizing one (which it cannot do over encrypted frames). E2EE no longer turns RED off, so guild voice keeps the loss resilience plain voice and DM calls have. `audio_red_survives_end_to_end_encryption` (ignored) starts a bundled SFU and checks the encrypted wire carries the extra bytes |
