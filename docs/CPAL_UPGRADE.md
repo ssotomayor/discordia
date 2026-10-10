@@ -59,3 +59,19 @@ unchanged. `bt_probe` accepts the microphone's actual sample format.
 | Device enumeration | Uses `supports_input`/`supports_output`; ALSA capability scans avoid opening plugins |
 | Audio processing | Resampling, channel conversion, queues, mute/deafen, gains, DSP and echo reference unchanged |
 | Local patches | LiveKit, WebRTC and Dioxus patches unchanged; no vendored CPAL patch existed |
+
+## Revalidation on current master
+
+2026-10-09, `master` at `4227605`; CPAL 0.18.2 unchanged.
+
+| Check | Result |
+|---|---|
+| Client tests, locked/offline, `RUST_LOG` unset | 517 passed, 17 ignored, 0 failed |
+| Client/grid Clippy, all targets | Passed with `-D warnings` |
+| Native notification output | Passed at 48 kHz; playback consumed the tone and stopped after drop |
+| DM CPAL/raw/CPAL switches | Passed on Realtek microphone and digital output; DSP frames delivered and track retained |
+| Capture xruns during switching | Observed without stream teardown; expected transient classification |
+| macOS/Linux, Bluetooth and USB reconnect | Not executed on this Windows host; retain existing platform workarounds |
+
+Rubato migration is planned in `RUBATO_UPGRADE.md`; no audio dependency or
+runtime implementation changed during this revalidation.

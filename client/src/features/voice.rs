@@ -29,7 +29,8 @@ use livekit::webrtc::video_source::native::NativeVideoSource;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use livekit::webrtc::video_source::{RtcVideoSource, VideoResolution};
 use parking_lot::Mutex;
-use rubato::{FftFixedIn, Resampler};
+use rubato::audioadapter_buffers::direct::SequentialSlice;
+use rubato::{Fft, FixedSync, Resampler, WindowFunction};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use crate::protocol::{ClientMessage, IceServer, Id};
@@ -3215,26 +3216,38 @@ fn update_peak(peak: &Arc<std::sync::atomic::AtomicI32>, samples: &[f32]) {
 }
 
 pub(crate) struct AudioResampler {
-    inner: FftFixedIn<f32>,
+    inner: Fft<f32>,
     input_accum: Vec<f32>,
     chunk_in: Vec<f32>,
     scratch_out: Vec<f32>,
 }
+
+#[cfg(test)]
+#[path = "resampler_tests.rs"]
+mod resampler_tests;
 
 impl AudioResampler {
     pub(crate) fn new(from_rate: u32, to_rate: u32) -> Option<Self> {
         if from_rate == to_rate {
             return None;
         }
-        let inner =
-            FftFixedIn::<f32>::new(from_rate as usize, to_rate as usize, RESAMPLER_CHUNK, 2, 1)
-                .map_err(|e| eprintln!("[voice] rubato resampler init failed: {e:?}"))
-                .ok()?;
+        let inner = Fft::<f32>::new_custom(
+            from_rate as usize,
+            to_rate as usize,
+            RESAMPLER_CHUNK,
+            2,
+            1,
+            WindowFunction::BlackmanHarris2,
+            FixedSync::Input,
+        )
+        .map_err(|e| eprintln!("[voice] rubato resampler init failed: {e:?}"))
+        .ok()?;
+        let max_in = inner.input_frames_max();
         let max_out = inner.output_frames_max();
         Some(Self {
             inner,
-            input_accum: Vec::with_capacity(RESAMPLER_CHUNK * 2),
-            chunk_in: Vec::with_capacity(RESAMPLER_CHUNK),
+            input_accum: Vec::with_capacity(max_in * 2),
+            chunk_in: Vec::with_capacity(max_in),
             scratch_out: vec![0.0; max_out],
         })
     }
@@ -3250,18 +3263,30 @@ impl AudioResampler {
             scratch_out,
         } = self;
 
-        while input_accum.len() >= RESAMPLER_CHUNK {
+        while input_accum.len() >= inner.input_frames_next() {
+            let needed = inner.input_frames_next();
             chunk_in.clear();
-            chunk_in.extend(input_accum.drain(..RESAMPLER_CHUNK));
+            chunk_in.extend_from_slice(&input_accum[..needed]);
             let need = inner.output_frames_next();
             if scratch_out.len() < need {
                 scratch_out.resize(need, 0.0);
             }
-            let waves_in = [&chunk_in[..]];
-            let mut waves_out = [&mut scratch_out[..]];
+            let waves_in = SequentialSlice::new(&chunk_in[..], 1, needed)
+                .expect("mono input holds the required frames");
+            let mut waves_out = SequentialSlice::new_mut(&mut scratch_out[..], 1, need)
+                .expect("mono output holds the required frames");
             match inner.process_into_buffer(&waves_in, &mut waves_out, None) {
-                Ok((_, produced)) => out.extend_from_slice(&scratch_out[..produced]),
-                Err(e) => eprintln!("[voice] rubato process error: {e:?}"),
+                Ok((consumed, produced)) => {
+                    if consumed == 0 {
+                        break;
+                    }
+                    input_accum.drain(..consumed);
+                    out.extend_from_slice(&scratch_out[..produced]);
+                }
+                Err(e) => {
+                    input_accum.drain(..needed);
+                    eprintln!("[voice] rubato process error: {e:?}");
+                }
             }
         }
     }
