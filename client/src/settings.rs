@@ -8,6 +8,14 @@ fn default_ui_size() -> u16 {
     100
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CatalogEmoji {
+    pub shortcode: String,
+    pub image: String,
+    pub guild_id: crate::protocol::Id,
+    pub guild_name: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ClientSettings {
     pub theme: String,
@@ -48,6 +56,12 @@ pub struct ClientSettings {
     /// the correction has to apply to the history the relays replay first.
     #[serde(default)]
     pub dm_clock_offset: Vec<(String, i64)>,
+
+    /// Every custom emoji seen in a session, so a DM — which has no guild
+    /// and no gateway — can still offer and send them. Pictures stay in the
+    /// disk media cache under `image`.
+    #[serde(default)]
+    pub emoji_catalog: Vec<CatalogEmoji>,
 
     /// Channels and whole guilds that should never ring. Personal and local:
     /// nothing about muting is sent to the server or seen by anyone else.
@@ -223,6 +237,7 @@ impl Default for ClientSettings {
             dm_relays: Vec::new(),
             dm_cleared_at: Vec::new(),
             dm_clock_offset: Vec::new(),
+            emoji_catalog: Vec::new(),
             dm_read_at: Vec::new(),
             muted_channels: Vec::new(),
             muted_guilds: Vec::new(),

@@ -83,6 +83,45 @@ pub fn split_shortcodes(s: &str) -> Vec<Piece<'_>> {
     out
 }
 
+/// One inlined picture may not exceed this many data-URL characters, and all
+/// of a message's together not `DM_INLINE_BUDGET`: the wrap must stay under
+/// NIP-44's 64 KiB with room for the text.
+pub const DM_INLINE_MAX: usize = 16 * 1024;
+pub const DM_INLINE_BUDGET: usize = 40 * 1024;
+
+/// NIP-30 tags for the custom emoji in `content`, each once, in order of first
+/// use, with the codes that had to be left as text — unknown, not a data URL,
+/// or over budget.
+pub fn dm_emoji_tags(
+    content: &str,
+    url_of: impl Fn(&str) -> Option<String>,
+) -> (Vec<(String, String)>, Vec<String>) {
+    let mut tags: Vec<(String, String)> = Vec::new();
+    let mut skipped: Vec<String> = Vec::new();
+    let mut spent = 0;
+    for piece in split_shortcodes(content) {
+        let Piece::Shortcode(code) = piece else {
+            continue;
+        };
+        if tags.iter().any(|(c, _)| c == code) || skipped.iter().any(|c| c == code) {
+            continue;
+        }
+        match url_of(code) {
+            Some(url)
+                if url.starts_with("data:")
+                    && url.len() <= DM_INLINE_MAX
+                    && spent + url.len() <= DM_INLINE_BUDGET =>
+            {
+                spent += url.len();
+                tags.push((code.to_string(), url));
+            }
+            Some(_) => skipped.push(code.to_string()),
+            None => {}
+        }
+    }
+    (tags, skipped)
+}
+
 fn cache_dir() -> PathBuf {
     config_dir().join("emoji")
 }
@@ -163,6 +202,31 @@ mod tests {
         assert!(codes(":a:").is_empty(), "one char is below the minimum");
         assert!(codes(&format!(":{}:", "x".repeat(33))).is_empty());
         assert_eq!(codes(&format!(":{}:", "x".repeat(32))).len(), 1);
+    }
+
+    #[test]
+    fn dm_tags_inline_small_known_emoji_once_and_report_the_rest() {
+        let small = format!("data:image/png;base64,{}", "A".repeat(100));
+        let big = format!("data:image/png;base64,{}", "A".repeat(DM_INLINE_MAX));
+        let url_of = |code: &str| match code {
+            "cat" => Some(small.clone()),
+            "huge" => Some(big.clone()),
+            "http" => Some("https://x/y.png".to_string()),
+            _ => None,
+        };
+        let (tags, skipped) = dm_emoji_tags(":cat: :cat: :huge: :http: :nope: 10:30", url_of);
+        assert_eq!(tags, vec![("cat".to_string(), small.clone())]);
+        assert_eq!(
+            skipped,
+            vec!["huge", "http"],
+            "unknown codes are plain text, not a complaint"
+        );
+
+        let mid = format!("data:image/png;base64,{}", "A".repeat(DM_INLINE_MAX - 100));
+        let three = |_: &str| Some(mid.clone());
+        let (tags, skipped) = dm_emoji_tags(":a1: :b2: :c3:", three);
+        assert_eq!(tags.len(), 2, "the budget holds two of these");
+        assert_eq!(skipped, vec!["c3"]);
     }
 
     #[test]

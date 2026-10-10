@@ -645,7 +645,7 @@ fn MessageRow(message: Message, grouped: bool) -> Element {
                 }
                 if has_text {
                     div { class: "text-sm text-[var(--text)] break-words whitespace-pre-wrap leading-relaxed",
-                        MessageContent { content: message.content.clone(), channel_id }
+                        MessageContent { content: message.content.clone(), channel_id, message_id }
                         if let Some(mark) = delivery_mark.clone() {
                             span { class: "ml-1.5", {mark} }
                         }
@@ -886,8 +886,15 @@ const EMOJI_EM: f64 = 1.8;
 
 /// `reaction`: sized by the reaction slider, not the chat one, so a big chat
 /// emoji does not blow up every pill under a message.
+/// `extra`: what a DM carried for its own shortcodes (NIP-30), consulted
+/// after the guild.
 #[component]
-fn EmojiText(text: String, guild_id: Option<Id>, #[props(default)] reaction: bool) -> Element {
+fn EmojiText(
+    text: String,
+    guild_id: Option<Id>,
+    #[props(default)] reaction: bool,
+    #[props(default)] extra: Vec<(String, String)>,
+) -> Element {
     let state = use_app_state();
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let percent = if reaction {
@@ -906,7 +913,13 @@ fn EmojiText(text: String, guild_id: Option<Id>, #[props(default)] reaction: boo
                 crate::emoji::Piece::Shortcode(code) => {
                     let url = guild_id
                         .and_then(|g| s.emoji_image(g, code))
-                        .map(str::to_string);
+                        .map(str::to_string)
+                        .or_else(|| {
+                            extra
+                                .iter()
+                                .find(|(c, _)| c == code)
+                                .map(|(_, u)| u.clone())
+                        });
                     (code.to_string(), Some(url.unwrap_or_default()))
                 }
             })
@@ -946,7 +959,7 @@ fn UnicodeEmojiText(text: String, scale: f64) -> Element {
 }
 
 #[component]
-fn MessageContent(content: String, channel_id: Id) -> Element {
+fn MessageContent(content: String, channel_id: Id, message_id: Id) -> Element {
     let state = use_app_state();
     let guild_id = state
         .read()
@@ -954,6 +967,12 @@ fn MessageContent(content: String, channel_id: Id) -> Element {
         .iter()
         .find(|c| c.id == channel_id)
         .map(|c| c.guild_id);
+    let extra: Vec<(String, String)> = state
+        .read()
+        .dm_emoji
+        .get(&message_id)
+        .cloned()
+        .unwrap_or_default();
     let lines: Vec<&str> = content.split('\n').collect();
     let last = lines.len().saturating_sub(1);
     rsx! {
@@ -986,7 +1005,7 @@ fn MessageContent(content: String, channel_id: Id) -> Element {
                                     }
                                 }
                             } else if crate::emoji::needs_rendering(&w) {
-                                rsx! { span { EmojiText { text: w.clone(), guild_id } "{trailing}" } }
+                                rsx! { span { EmojiText { text: w.clone(), guild_id, extra: extra.clone() } "{trailing}" } }
                             } else {
                                 rsx! { span { "{w}{trailing}" } }
                             }
@@ -1232,6 +1251,9 @@ fn emoji_suggestions(
     out
 }
 
+/// The emoji a composer may offer: the guild's in a guild channel, and in a
+/// DM every one the account has seen (the catalog), first guild wins a
+/// shortcode. The urls are whatever the media cache holds right now.
 fn guild_emojis_of(
     s: &crate::state::AppState,
     channel_id: Id,
@@ -1241,7 +1263,25 @@ fn guild_emojis_of(
         .iter()
         .find(|c| c.id == channel_id)
         .map(|c| c.guild_id);
-    let list = gid.map(|g| s.emojis_of(g).to_vec()).unwrap_or_default();
+    let list = match gid {
+        Some(g) => s.emojis_of(g).to_vec(),
+        None if s.dm_of(channel_id).is_some() => {
+            let mut seen = std::collections::HashSet::new();
+            s.emoji_catalog
+                .iter()
+                .filter(|e| seen.insert(e.shortcode.clone()))
+                .map(|e| GuildEmoji {
+                    id: e.guild_id,
+                    guild_id: e.guild_id,
+                    shortcode: e.shortcode.clone(),
+                    image: e.image.clone(),
+                    added_by: String::new(),
+                    created_ms: 0,
+                })
+                .collect()
+        }
+        None => Vec::new(),
+    };
     let urls = list
         .iter()
         .filter_map(|e| {
@@ -1346,6 +1386,43 @@ fn Composer(
         }
     });
 
+    let is_dm = state.read().dm_of(channel_id).is_some();
+    // A DM has no gateway to fetch from: the catalog's pictures come off the
+    // disk cache, once, into the same media cache the guild path fills.
+    let mut warmed = use_signal(std::collections::HashSet::<String>::new);
+    use_effect(move || {
+        let s = state.read();
+        if s.dm_of(channel_id).is_none() {
+            return;
+        }
+        let missing: Vec<String> = s
+            .emoji_catalog
+            .iter()
+            .map(|e| e.image.clone())
+            .filter(|image| !s.emoji_images.contains_key(image) && !warmed.peek().contains(image))
+            .collect();
+        drop(s);
+        if missing.is_empty() {
+            return;
+        }
+        warmed.write().extend(missing.iter().cloned());
+        spawn(async move {
+            let loaded = tokio::task::spawn_blocking(move || {
+                missing
+                    .into_iter()
+                    .filter_map(|image| crate::emoji::load_cached(&image).map(|d| (image, d)))
+                    .collect::<Vec<_>>()
+            })
+            .await
+            .unwrap_or_default();
+            if !loaded.is_empty() {
+                let mut s = state.write();
+                for (image, data) in loaded {
+                    s.emoji_images.insert(image, data);
+                }
+            }
+        });
+    });
     let (guild_emojis, emoji_urls) = guild_emojis_of(&state.read(), channel_id);
     let suggestions = caret_token()
         .as_deref()
@@ -1413,10 +1490,27 @@ fn Composer(
             }
             let reply_event =
                 reply_to.and_then(|id| state.read().nostr_event_ids.get(&id).cloned());
+            let (emoji, skipped) = {
+                let s = state.read();
+                let (list, urls) = guild_emojis_of(&s, channel_id);
+                crate::emoji::dm_emoji_tags(&content, |code| {
+                    list.iter()
+                        .find(|e| e.shortcode == code)
+                        .and_then(|e| urls.get(&e.image).cloned())
+                })
+            };
+            if !skipped.is_empty() {
+                let names: Vec<String> = skipped.iter().map(|c| format!(":{c}:")).collect();
+                state.write().error_toast = Some(format!(
+                    "{} too large to send in a DM — sent as text.",
+                    names.join(", ")
+                ));
+            }
             if !nostr_submit.try_send(crate::nostr::service::NostrCmd::Send {
                 peer,
                 text: content,
                 reply_to: reply_event,
+                emoji,
             }) {
                 state.write().error_toast =
                     Some("The message service is unavailable. Your draft has been kept.".into());
@@ -1556,7 +1650,9 @@ fn Composer(
                 div {
                     class: "dxf-pop-in absolute bottom-full right-3 mb-2 p-1.5 bg-[var(--panel-solid)] border border-[var(--border)] rounded-md shadow-lg z-30",
                     if !guild_emojis.is_empty() {
-                        div { class: "text-[9px] uppercase tracking-wider text-[var(--text-dim)] px-1 pb-1", "This guild" }
+                        div { class: "text-[9px] uppercase tracking-wider text-[var(--text-dim)] px-1 pb-1",
+                            if is_dm { "Your emoji" } else { "This guild" }
+                        }
                         div { class: "grid grid-cols-8 gap-0.5 pb-1.5 mb-1.5 border-b border-[var(--border)]",
                             for e in guild_emojis.iter().cloned() {
                                 {
@@ -1565,7 +1661,7 @@ fn Composer(
                                     let id = composer_id.clone();
                                     rsx! {
                                         button {
-                                            key: "{e.id}",
+                                            key: "{e.shortcode}",
                                             r#type: "button",
                                             class: "w-6 h-6 flex items-center justify-center rounded hover:bg-white/[0.06] text-base leading-none",
                                             title: ":{code}:",

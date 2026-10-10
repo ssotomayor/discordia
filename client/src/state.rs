@@ -292,6 +292,12 @@ pub struct AppState {
     pub selected_guild: Option<Id>,
     pub selected_channel: Option<Id>,
     pub dms: Vec<DmInfo>,
+    /// The NIP-30 `emoji` tags a DM carried, by message: `:code:` in its text
+    /// resolves here, since a DM has no guild to ask. Memory only — relays
+    /// replay the tags with the message.
+    pub dm_emoji: HashMap<Id, Vec<(String, String)>>,
+    /// Seeded from settings and written back by `use_emoji_catalog_persistence`.
+    pub emoji_catalog: Vec<crate::settings::CatalogEmoji>,
     pub dm_unread: HashMap<Id, u32>,
     /// Seeded from `ClientSettings::dm_cleared_at`; see it for why a delete is
     /// a watermark. Read on every insert, so replayed history stays hidden.
@@ -465,6 +471,8 @@ impl AppState {
             selected_guild: None,
             selected_channel: None,
             dms: Vec::new(),
+            dm_emoji: HashMap::new(),
+            emoji_catalog: Vec::new(),
             dm_unread: HashMap::new(),
             dm_cleared_at: HashMap::new(),
             dm_clock_offset: HashMap::new(),
@@ -730,6 +738,37 @@ impl AppState {
             .get(image)
             .map(String::as_str)
             .filter(|u| !u.is_empty())
+    }
+
+    /// Replaces the catalog's view of one guild. Returns whether it moved.
+    pub fn remember_emojis(
+        &mut self,
+        guild_id: Id,
+        emojis: &[crate::protocol::GuildEmoji],
+    ) -> bool {
+        let guild_name = self
+            .guilds
+            .iter()
+            .find(|g| g.id == guild_id)
+            .map(|g| g.name.clone())
+            .unwrap_or_default();
+        let mut next: Vec<crate::settings::CatalogEmoji> = self
+            .emoji_catalog
+            .iter()
+            .filter(|e| e.guild_id != guild_id)
+            .cloned()
+            .collect();
+        next.extend(emojis.iter().map(|e| crate::settings::CatalogEmoji {
+            shortcode: e.shortcode.clone(),
+            image: e.image.clone(),
+            guild_id,
+            guild_name: guild_name.clone(),
+        }));
+        if next == self.emoji_catalog {
+            return false;
+        }
+        self.emoji_catalog = next;
+        true
     }
 
     pub fn emojis_of(&self, guild_id: Id) -> &[crate::protocol::GuildEmoji] {
@@ -1344,6 +1383,21 @@ pub fn use_dm_read_persistence(state: Signal<AppState>) {
             settings.set(next.clone());
             crate::settings::save(&next);
         }
+    });
+}
+
+/// Writes the emoji catalog back to disk when a session changed it.
+pub fn use_emoji_catalog_persistence(state: Signal<AppState>) {
+    let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
+    let catalog = use_memo(move || state.read().emoji_catalog.clone());
+    use_effect(move || {
+        let catalog = catalog();
+        // `peek`: writing back what this effect subscribes to is a loop.
+        if settings.peek().emoji_catalog == catalog {
+            return;
+        }
+        settings.write().emoji_catalog = catalog;
+        crate::settings::save(&settings.peek());
     });
 }
 
