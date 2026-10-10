@@ -10,6 +10,7 @@ const MAX_GAMES: usize = 4096;
 pub(super) struct Game {
     root: PathBuf,
     pub name: String,
+    pub steam_app_id: Option<u32>,
 }
 
 impl Game {
@@ -26,6 +27,7 @@ impl Game {
         Some(Self {
             root: normalized(&root),
             name,
+            steam_app_id: None,
         })
     }
 
@@ -36,6 +38,10 @@ impl Game {
 }
 
 pub(super) fn lookup<'a>(games: &'a [Game], exe: &Path) -> Option<&'a str> {
+    find(games, exe).map(|game| game.name.as_str())
+}
+
+pub(super) fn find<'a>(games: &'a [Game], exe: &Path) -> Option<&'a Game> {
     if games.is_empty()
         || exe
             .file_name()
@@ -44,10 +50,7 @@ pub(super) fn lookup<'a>(games: &'a [Game], exe: &Path) -> Option<&'a str> {
         return None;
     }
     let exe = normalized(exe);
-    games
-        .iter()
-        .find(|game| exe.starts_with(&game.root))
-        .map(|game| game.name.as_str())
+    games.iter().find(|game| exe.starts_with(&game.root))
 }
 
 fn normalized(path: &Path) -> PathBuf {
@@ -61,7 +64,7 @@ fn normalized(path: &Path) -> PathBuf {
     }
 }
 
-fn helper(name: &str) -> bool {
+pub(super) fn helper(name: &str) -> bool {
     let name = name.to_ascii_lowercase();
     [
         "launcher",
@@ -92,7 +95,7 @@ fn helper(name: &str) -> bool {
         )
 }
 
-fn read_manifest(path: &Path) -> Option<String> {
+pub(super) fn read_manifest(path: &Path) -> Option<String> {
     let file = std::fs::File::open(path).ok()?;
     if file.metadata().ok()?.len() > MAX_MANIFEST_BYTES {
         return None;
@@ -141,12 +144,18 @@ fn steam_game(library: &Path, manifest: &str) -> Option<Game> {
     {
         return None;
     }
-    Game::new(
+    let mut game = Game::new(
         library
             .join("steamapps/common")
             .join(relative(app.get("installdir")?.as_str()?)?),
         name,
-    )
+    )?;
+    game.steam_app_id = app
+        .get("appid")
+        .and_then(Value::as_str)
+        .and_then(|id| id.parse().ok())
+        .filter(|id| *id > 0);
+    Some(game)
 }
 
 #[cfg(any(windows, test))]
@@ -264,7 +273,7 @@ fn collect_manifests(
     }
 }
 
-fn steam_roots() -> Vec<PathBuf> {
+pub(super) fn steam_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
     #[cfg(windows)]
     {
@@ -509,6 +518,23 @@ mod tests {
             "Avatar's process must match the local Ubisoft installation"
         );
         println!("Local installation matched: {}", matched.unwrap());
+    }
+
+    #[test]
+    fn steam_app_ids_follow_install_metadata_without_being_guessed_from_the_title() {
+        let root = std::env::temp_dir();
+        let game = steam_game(
+            &root,
+            r#""AppState" { "appid" "123456" "name" "Unknown Game" "installdir" "Unknown" }"#,
+        )
+        .unwrap();
+        assert_eq!(game.steam_app_id, Some(123456));
+        let game = steam_game(
+            &root,
+            r#""AppState" { "appid" "../123" "name" "Unknown Game" "installdir" "Unknown" }"#,
+        )
+        .unwrap();
+        assert_eq!(game.steam_app_id, None);
     }
 
     #[test]

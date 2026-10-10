@@ -2088,10 +2088,17 @@ fn Composer(
 
             if let Some(img) = pending_image() {
                 div { class: "mb-2 flex items-center gap-2",
-                    img {
-                        class: "h-16 w-16 object-cover rounded border border-[var(--border-strong)] bg-[var(--panel2)]",
-                        src: "{img}",
-                        alt: "pending attachment",
+                    button {
+                        r#type: "button",
+                        title: "Enlarge image preview",
+                        aria_label: "Enlarge image preview",
+                        style: "cursor:zoom-in;",
+                        onclick: { let full = img.clone(); move |_| state.write().image_viewer = Some(full.clone()) },
+                        img {
+                            class: "h-16 w-16 object-cover rounded border border-[var(--border-strong)] bg-[var(--panel2)]",
+                            src: "{img}",
+                            alt: "pending attachment",
+                        }
                     }
                     button {
                         r#type: "button",

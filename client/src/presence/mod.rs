@@ -9,6 +9,7 @@ pub mod detect;
 mod installed;
 pub mod ipc;
 mod processes;
+mod xbox;
 
 use std::sync::Arc;
 

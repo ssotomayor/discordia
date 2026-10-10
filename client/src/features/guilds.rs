@@ -1,7 +1,7 @@
 use dioxus::prelude::*;
 use dioxus_grid_layout::NoDrag;
 
-use crate::protocol::{ClientMessage, GuildSummary, Id, Permission};
+use crate::protocol::{ClientMessage, Id, Permission};
 use crate::state::{use_app_state, use_gateway};
 
 const HEADER: &str =
@@ -56,18 +56,9 @@ pub fn GuildsSidebar() -> Element {
     let dm_mode = snapshot.dm_mode;
     let dm_unread = snapshot.dm_unread_total() as usize;
     let is_operator = snapshot.is_operator;
-    let available: Vec<GuildSummary> = snapshot
-        .catalog
-        .iter()
-        .filter(|c| !snapshot.guilds.iter().any(|g| g.id == c.id))
-        .cloned()
-        .collect();
-    let catalog_len = snapshot.catalog.len();
-    let catalog_total = snapshot.catalog_total as usize;
     drop(snapshot);
 
     let mut menu = use_signal::<Option<GuildMenu>>(|| None);
-    let mut show_browse = use_signal(|| false);
 
     rsx! {
         nav { class: "panel-hover w-full h-full bg-[var(--panel)] border border-[var(--border)] rounded-xl flex flex-col overflow-hidden",
@@ -194,34 +185,14 @@ pub fn GuildsSidebar() -> Element {
                     }
                 }
 
-                CreateGuild {}
-
                 button {
-                    class: "relative w-11 h-11 rounded-2xl border border-dashed border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] flex items-center justify-center text-[10px] font-semibold tracking-wide leading-none transition-colors",
-                    title: "Import a Discord server",
-                    onclick: move |_| {
-                        state.write().guild_dialog = Some(crate::state::GuildDialog::ImportDiscord);
-                    },
-                    "DC↓"
+                    class: "w-11 h-11 rounded-2xl border border-dashed border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] flex items-center justify-center text-lg leading-none transition-colors",
+                    title: "Add guild",
+                    aria_label: "Add guild",
+                    onclick: move |_| state.write().guild_dialog = Some(crate::state::GuildDialog::AddGuild),
+                    "+"
                 }
 
-                button {
-                    class: "relative w-11 h-11 rounded-2xl border border-dashed border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] flex items-center justify-center text-base leading-none transition-colors",
-                    title: "Browse guilds to join",
-                    onclick: {
-                        let gateway = gateway.clone();
-                        move |_| {
-                            gateway.send(ClientMessage::FetchCatalog { offset: 0, limit: 0 });
-                            show_browse.set(true);
-                        }
-                    },
-                    "🔍"
-                    if !available.is_empty() {
-                        span { class: "dxf-pop absolute -top-1 -right-1 min-w-4 h-4 px-1 rounded-full bg-[var(--accent)] text-[var(--panel-solid)] text-[9px] font-bold flex items-center justify-center",
-                            "{available.len()}"
-                        }
-                    }
-                }
             }
             }
 
@@ -416,116 +387,7 @@ pub fn GuildsSidebar() -> Element {
                 }
             }
 
-            if show_browse() {
-                div {
-                    class: "dxf-backdrop-in fixed inset-0 z-50 flex items-center justify-center bg-black/50",
-                    onclick: move |_| show_browse.set(false),
-                    div {
-                        class: "dxf-modal-in w-80 max-h-[70vh] flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl overflow-hidden",
-                        onclick: move |e| e.stop_propagation(),
-                        div { class: "px-4 py-3 border-b border-[var(--border)] flex items-center",
-                            h3 { class: "text-sm font-medium text-[var(--accent)] flex-1", "Browse guilds" }
-                            button {
-                                class: "text-[var(--text-dim)] hover:text-[var(--text)] text-lg leading-none",
-                                onclick: move |_| show_browse.set(false),
-                                "✕"
-                            }
-                        }
-                        div { class: "flex-1 overflow-y-auto p-2 space-y-1",
-                            if available.is_empty() {
-                                div { class: "px-2 py-6 text-center text-xs text-[var(--text-dim)]",
-                                    "You've joined every guild here. Create one with +."
-                                }
-                            }
-                            for g in available.iter().cloned() {
-                                {
-                                    let gid = g.id;
-                                    let gw = gateway.clone();
-                                    let label = g.icon.clone().unwrap_or_else(|| initials(&g.name));
-                                    rsx! {
-                                        div {
-                                            key: "{gid}",
-                                            class: "flex items-center gap-2 px-2 py-1.5 rounded hover:bg-white/[0.03]",
-                                            span { class: "w-8 h-8 rounded-md border border-[var(--border)] flex items-center justify-center text-xs text-[var(--text-muted)] shrink-0",
-                                                "{label}"
-                                            }
-                                            div { class: "flex-1 min-w-0",
-                                                div { class: "text-sm text-[var(--text)] truncate", "{g.name}" }
-                                                div { class: "text-[10px] text-[var(--text-dim)]",
-                                                    if g.member_count == 1 { "1 member" } else { "{g.member_count} members" }
-                                                }
-                                            }
-                                            button {
-                                                class: "px-3 py-1 rounded text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors",
-                                                onclick: move |_| gw.send(ClientMessage::JoinGuild { guild_id: gid, accept: false, pow_nonce: None }),
-                                                "Join"
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            if catalog_len < catalog_total {
-                                {
-                                    let gw = gateway.clone();
-                                    rsx! {
-                                        div { class: "flex justify-center py-2",
-                                            button {
-                                                class: "text-[11px] uppercase tracking-wider text-[var(--text-muted)] border border-[var(--border)] rounded px-3 py-1 hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors",
-                                                onclick: move |_| {
-                                                    gw.send(ClientMessage::FetchCatalog {
-                                                        offset: catalog_len as u32,
-                                                        limit: 0,
-                                                    });
-                                                },
-                                                "Load more"
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        InviteJoinRow { on_joined: move |_| show_browse.set(false) }
-                    }
-                }
-            }
-        }
-    }
-}
 
-#[component]
-fn InviteJoinRow(on_joined: EventHandler<()>) -> Element {
-    let gateway = use_gateway();
-    let mut code = use_signal(String::new);
-
-    let mut submit = move || {
-        let c = code().trim().to_string();
-        if c.is_empty() {
-            return;
-        }
-        gateway.send(ClientMessage::JoinByInvite {
-            code: c,
-            accept: false,
-            pow_nonce: None,
-        });
-        code.set(String::new());
-        on_joined.call(());
-    };
-
-    rsx! {
-        form {
-            class: "border-t border-[var(--border)] p-2 flex items-center gap-2",
-            onsubmit: move |_| submit(),
-            input {
-                class: "flex-1 bg-transparent border border-[var(--border)] focus:border-[var(--accent)] rounded px-2 py-1 text-xs font-mono text-[var(--text)] outline-none transition-colors",
-                placeholder: "Have an invite code?",
-                value: "{code}",
-                oninput: move |e| code.set(e.value()),
-            }
-            button {
-                r#type: "submit",
-                class: "px-3 py-1 rounded text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors",
-                "Join"
-            }
         }
     }
 }
@@ -546,73 +408,6 @@ fn DmHomeButton(active: bool, count: usize, onclick: EventHandler<()>) -> Elemen
             if count > 0 {
                 span { class: "dxf-pop absolute -top-1 -right-1 min-w-4 h-4 px-1 rounded-full bg-[var(--accent)] text-[var(--panel-solid)] text-[9px] font-bold flex items-center justify-center",
                     "{count}"
-                }
-            }
-        }
-    }
-}
-
-#[component]
-fn CreateGuild() -> Element {
-    let gateway = use_gateway();
-    let mut open = use_signal(|| false);
-    let mut name = use_signal(String::new);
-
-    let mut submit = move || {
-        let trimmed = name().trim().to_string();
-        if !trimmed.is_empty() {
-            gateway.send(ClientMessage::CreateGuild {
-                name: trimmed,
-                template: None,
-            });
-        }
-        name.set(String::new());
-        open.set(false);
-    };
-
-    if !open() {
-        return rsx! {
-            button {
-                class: "w-11 h-11 rounded-2xl border border-dashed border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] flex items-center justify-center text-lg leading-none transition-colors",
-                title: "Create a guild",
-                onclick: move |_| open.set(true),
-                "+"
-            }
-        };
-    }
-
-    rsx! {
-        form {
-            class: "w-full px-1.5 flex flex-col gap-1",
-            onsubmit: move |_| submit(),
-            input {
-                class: "w-full bg-transparent border border-[var(--border)] focus:border-[var(--accent)] rounded px-1.5 py-1 text-[11px] text-[var(--text)] outline-none transition-colors",
-                placeholder: "Name…",
-                value: "{name}",
-                autofocus: true,
-                maxlength: 64,
-                oninput: move |e| name.set(e.value()),
-                onkeydown: move |e| {
-                    if e.key() == Key::Escape {
-                        name.set(String::new());
-                        open.set(false);
-                    }
-                },
-            }
-            div { class: "flex gap-1",
-                button {
-                    r#type: "submit",
-                    class: "flex-1 rounded px-1 py-0.5 text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors",
-                    "Add"
-                }
-                button {
-                    r#type: "button",
-                    class: "rounded px-1 py-0.5 text-[10px] uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--text-muted)] transition-colors",
-                    onclick: move |_| {
-                        name.set(String::new());
-                        open.set(false);
-                    },
-                    "✕"
                 }
             }
         }

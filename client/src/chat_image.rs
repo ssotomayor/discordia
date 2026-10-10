@@ -104,6 +104,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn animated_chat_images_keep_the_original_bytes() {
+        let bytes = include_bytes!("../tests/fixtures/optimized-profile.gif");
+        assert!(bytes.len() < 1_000_000);
+        let url = from_bytes(bytes).unwrap();
+        assert!(url.starts_with("data:image/gif;base64,"));
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(url.split_once(',').unwrap().1)
+                .unwrap(),
+            bytes
+        );
+    }
+
+    #[test]
     fn rejects_non_images_and_oversized_input() {
         assert!(from_bytes(b"not an image").is_err());
         assert_eq!(from_bytes(&vec![0; MAX_BYTES + 1]), Err(TOO_LARGE.into()));

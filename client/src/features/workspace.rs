@@ -1279,8 +1279,8 @@ fn GuildDialogHost() -> Element {
                 on_close: close,
             }
         },
-        Some(crate::state::GuildDialog::ImportDiscord) => rsx! {
-            crate::features::discord_import::DiscordImportDialog { on_close: close }
+        Some(crate::state::GuildDialog::AddGuild) => rsx! {
+            crate::features::guild_hub::AddGuildDialog { on_close: close }
         },
     }
 }

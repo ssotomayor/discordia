@@ -13,6 +13,7 @@ pub mod discord_import;
 pub mod dm_call;
 pub mod globe;
 mod globe_geometry;
+mod guild_hub;
 pub mod guild_leveling;
 pub mod guild_settings;
 pub mod guilds;

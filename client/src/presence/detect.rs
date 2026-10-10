@@ -34,6 +34,7 @@ const CATALOGUE: &[(&str, &str)] = &[
     ("balatro", "Balatro"),
     ("balatro.exe", "Balatro"),
     ("minecraft", "Minecraft"),
+    ("minecraft.windows.exe", "Minecraft"),
     ("terraria", "Terraria"),
     ("terraria.exe", "Terraria"),
 ];
@@ -73,6 +74,8 @@ pub struct Detector {
     catalogue: HashMap<String, String>,
     extra: Vec<(String, String)>,
     installed: Vec<super::installed::Game>,
+    xbox_games: HashMap<std::path::PathBuf, Option<super::xbox::Game>>,
+    steam_roots: Vec<std::path::PathBuf>,
     refreshed: Instant,
     artwork: HashMap<std::path::PathBuf, Option<String>>,
 }
@@ -97,6 +100,8 @@ impl Detector {
             catalogue,
             extra: extra.to_vec(),
             installed: super::installed::discover(),
+            xbox_games: HashMap::new(),
+            steam_roots: super::installed::steam_roots(),
             refreshed: Instant::now(),
             artwork: HashMap::new(),
         }
@@ -125,9 +130,22 @@ impl Detector {
     pub fn scan(&mut self) -> Option<Activity> {
         if self.refreshed.elapsed() >= Duration::from_secs(300) {
             self.installed = super::installed::discover();
+            self.steam_roots = super::installed::steam_roots();
+            self.xbox_games.clear();
+            self.artwork.clear();
             self.refreshed = Instant::now();
         }
         let processes = self.system.scan();
+        if self.xbox_games.len() >= 4096 {
+            self.xbox_games.clear();
+        }
+        for process in &processes {
+            if let Some(path) = &process.exe {
+                self.xbox_games
+                    .entry(path.clone())
+                    .or_insert_with(|| super::xbox::from_executable(path));
+            }
+        }
         let mut best: Option<(u64, String, Option<std::path::PathBuf>)> = None;
         for process in &processes {
             let Some(name) = self.lookup(process) else {
@@ -153,9 +171,19 @@ impl Detector {
                 if self.artwork.len() >= 128 {
                     self.artwork.clear();
                 }
+                let steam_app_id = super::installed::find(&self.installed, &path)
+                    .and_then(|game| game.steam_app_id)
+                    .or_else(|| {
+                        path.file_name()
+                            .filter(|name| name.to_string_lossy().eq_ignore_ascii_case("cod.exe"))
+                            .map(|_| 1938090)
+                    });
+                let xbox = self.xbox_games.get(&path).and_then(Option::as_ref);
                 self.artwork
                     .entry(path.clone())
-                    .or_insert_with(|| super::artwork::from_executable(&path))
+                    .or_insert_with(|| {
+                        super::artwork::for_game(&path, steam_app_id, xbox, &self.steam_roots)
+                    })
                     .clone()
             }),
         })
@@ -180,6 +208,14 @@ impl Detector {
                     .as_deref()
                     .and_then(|path| super::installed::lookup(&self.installed, path))
             })
+            .or_else(|| {
+                process
+                    .exe
+                    .as_ref()
+                    .and_then(|path| self.xbox_games.get(path))
+                    .and_then(Option::as_ref)
+                    .and_then(|game| game.name.as_deref())
+            })
     }
 }
 
@@ -190,6 +226,27 @@ fn oldest(started: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn xbox_titles_are_detected_and_custom_game_names_still_take_priority() {
+        let mut detector = Detector::new(&[]);
+        let exe = std::env::temp_dir().join("discordia-xbox-game.exe");
+        detector.xbox_games.insert(
+            exe.clone(),
+            Some(super::super::xbox::Game {
+                name: Some("Xbox Game".into()),
+                artwork: Vec::new(),
+            }),
+        );
+        let process = Process {
+            name: "discordia-xbox-game.exe".into(),
+            exe: Some(exe),
+            started: 0,
+        };
+        assert_eq!(detector.lookup(&process), Some("Xbox Game"));
+        detector.update_extra(&[(process.name.clone(), "Custom name".into())]);
+        assert_eq!(detector.lookup(&process), Some("Custom name"));
+    }
 
     #[test]
     fn inaccessible_metadata_still_matches_a_catalogued_executable_without_a_fake_start_time() {
