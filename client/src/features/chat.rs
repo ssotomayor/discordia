@@ -1668,7 +1668,13 @@ fn Composer(
     use_effect(move || {
         if let Some(path) = dropped_file() {
             dropped_file.set(None);
-            load_attachment(Some(path), pending_image, pending_file, attach_err, generation);
+            load_attachment(
+                Some(path),
+                pending_image,
+                pending_file,
+                attach_err,
+                generation,
+            );
         }
     });
     use_future(move || async move {

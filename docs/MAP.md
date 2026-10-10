@@ -27,9 +27,9 @@ name instead.
 | `client/src/state.rs` | 2281 |
 | `client/src/update.rs` | 1228 |
 | `client/src/net.rs` | 2165 |
-| `client/src/features/chat.rs` | 2123 |
+| `client/src/features/chat.rs` | 2291 |
 | `server/src/store.rs` | 1336 |
-| `client/src/features/guild_settings.rs` | 1132 |
+| `client/src/features/guild_settings.rs` | 1162 |
 | `client/src/identity.rs` | 1123 |
 | `client/src/features/discord_import.rs` | 1111 |
 
