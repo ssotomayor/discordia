@@ -331,7 +331,10 @@ pub(super) fn FileAttachment(attachment: Attachment) -> Element {
                         let bytes = base64::engine::general_purpose::STANDARD.decode(payload).map_err(|_| "Invalid file data")?;
                         if bytes.len() as u64 != attachment.bytes || bytes.len() > 2_000_000 { return Err("Invalid file size".into()); }
                         let path = selected.path().to_owned();
-                        tokio::task::spawn_blocking(move || save_download(&path, &bytes)).await.map_err(|e| e.to_string())??;
+                        tokio::task::spawn_blocking(move || {
+                            save_download(&path, &bytes)?;
+                            open_download_folder(&path).map_err(|e| format!("The file was saved, but its folder could not be opened: {e}"))
+                        }).await.map_err(|e| e.to_string())??;
                         Ok(())
                     }.await;
                     if let Err(error) = result { state.write().error_toast = Some(error); }
@@ -351,4 +354,86 @@ fn save_download(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
             .map_err(|e| format!("Couldn't mark this download as untrusted: {e}"))?;
     }
     std::fs::write(path, bytes).map_err(|e| e.to_string())
+}
+
+fn download_folder(path: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    let parent = path
+        .parent()
+        .ok_or("The download has no destination folder.")?;
+    let folder = std::path::absolute(parent).map_err(|e| e.to_string())?;
+    if !folder.is_dir() {
+        return Err("The download folder is unavailable.".into());
+    }
+    Ok(folder)
+}
+
+fn open_download_folder(path: &std::path::Path) -> Result<(), String> {
+    let folder = download_folder(path)?;
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows::Win32::System::Com::{
+            COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize,
+        };
+        use windows::Win32::UI::Shell::ShellExecuteW;
+        use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+        use windows::core::{PCWSTR, w};
+        let folder: Vec<u16> = folder.as_os_str().encode_wide().chain(Some(0)).collect();
+        unsafe {
+            let initialized = CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok();
+            let result = ShellExecuteW(
+                None,
+                w!("explore"),
+                PCWSTR(folder.as_ptr()),
+                PCWSTR::null(),
+                PCWSTR::null(),
+                SW_SHOWNORMAL,
+            );
+            if initialized {
+                CoUninitialize();
+            }
+            if result.0 as isize <= 32 {
+                return Err("Windows Explorer could not open the folder.".into());
+            }
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        #[cfg(target_os = "macos")]
+        let mut command = {
+            let mut c = std::process::Command::new("/usr/bin/open");
+            c.arg("--");
+            c
+        };
+        #[cfg(not(target_os = "macos"))]
+        let mut command = std::process::Command::new("xdg-open");
+        let mut child = command.arg(folder).spawn().map_err(|e| e.to_string())?;
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn executable_downloads_only_reveal_their_parent_folder() {
+        let folder =
+            std::env::temp_dir().join(format!("discordia download {}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&folder).unwrap();
+        let file = folder.join("untrusted & payload.exe");
+        assert_eq!(download_folder(&file).unwrap(), folder);
+        std::fs::remove_dir(folder).unwrap();
+    }
+
+    #[test]
+    fn unavailable_download_folders_cannot_be_opened() {
+        let path = std::env::temp_dir()
+            .join(uuid::Uuid::new_v4().to_string())
+            .join("payload.exe");
+        assert!(download_folder(&path).is_err());
+    }
 }
