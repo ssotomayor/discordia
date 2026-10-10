@@ -20,6 +20,51 @@ mod voice_endpoints;
 mod voice_subscriptions;
 
 #[tokio::test]
+async fn initial_signal_budget_covers_a_stalled_websocket_without_waiting_for_validation() {
+    stalled_signal_respects_budget(Duration::from_secs(5)).await;
+}
+
+#[tokio::test]
+async fn initial_signal_budget_also_covers_validation_after_websocket_failure() {
+    stalled_signal_respects_budget(Duration::from_millis(20)).await;
+}
+
+async fn stalled_signal_respects_budget(websocket_timeout: Duration) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("ws://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let (_stream, _) = listener.accept().await.unwrap();
+        std::future::pending::<()>().await;
+    });
+    let token = AccessToken::with_api_key("test-key", "test-secret")
+        .with_identity("timeout-test")
+        .with_grants(VideoGrants {
+            room_join: true,
+            room: "timeout-test".into(),
+            ..Default::default()
+        })
+        .to_jwt()
+        .unwrap();
+    let mut options = RoomOptions::default();
+    options.join_retries = 0;
+    options.connect_timeout = websocket_timeout;
+    options.signal_connect_timeout = Some(Duration::from_millis(100));
+    let started = Instant::now();
+    let error = tokio::time::timeout(Duration::from_secs(2), Room::connect(&url, &token, options))
+        .await
+        .expect("signaling must not wait for the SDK validation timeout")
+        .expect_err("stalled WebSocket must fail");
+    server.abort();
+    assert!(
+        error
+            .to_string()
+            .contains("initial signaling budget exhausted"),
+        "{error}"
+    );
+    assert!(started.elapsed() < Duration::from_secs(2));
+}
+
+#[tokio::test]
 #[ignore = "starts the bundled SFU; verifies alternate IPv6 signaling and decoded audio without rendezvous"]
 async fn alternate_ipv6_endpoint_delivers_audio_without_rendezvous() {
     alternate_endpoint_delivers_audio(true, false, TrackSource::Microphone).await;
@@ -113,6 +158,7 @@ async fn alternate_endpoint_delivers_audio(
     let mut options = RoomOptions::default();
     options.join_retries = 0;
     options.connect_timeout = Duration::from_secs(2);
+    options.signal_connect_timeout = Some(Duration::from_secs(4));
     let ((publisher, _events), selected) =
         voice_endpoints::try_endpoints(unavailable, vec![available.clone()], |url| {
             let token = publisher_token.clone();

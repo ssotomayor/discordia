@@ -414,6 +414,8 @@ pub struct RoomOptions {
     pub single_peer_connection: bool,
     /// Timeout for each individual signal connection attempt
     pub connect_timeout: Duration,
+    /// Total initial signaling timeout, including validation; excludes ICE.
+    pub signal_connect_timeout: Option<Duration>,
 }
 
 impl Default for RoomOptions {
@@ -436,6 +438,7 @@ impl Default for RoomOptions {
             sdk_options: RoomSdkOptions::default(),
             single_peer_connection: true,
             connect_timeout: SIGNAL_CONNECT_TIMEOUT,
+            signal_connect_timeout: None,
         }
     }
 }
@@ -549,6 +552,7 @@ impl Room {
                 signal_options,
                 join_retries: options.join_retries,
                 single_peer_connection: options.single_peer_connection,
+                signal_connect_timeout: options.signal_connect_timeout,
             },
             Some(e2ee_manager.clone()),
         )

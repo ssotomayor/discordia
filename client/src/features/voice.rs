@@ -683,7 +683,8 @@ impl ActiveVoice {
         options.auto_subscribe = false;
         options.encryption = crate::e2ee::room_options();
         options.join_retries = 0;
-        options.connect_timeout = std::time::Duration::from_secs(5);
+        options.connect_timeout = std::time::Duration::from_secs(4);
+        options.signal_connect_timeout = Some(std::time::Duration::from_secs(4));
         options.rtc_config = rtc_config(&ice_servers);
         tracing::info!(
             url = %livekit_url,
