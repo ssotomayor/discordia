@@ -103,6 +103,7 @@ pub enum EngineError {
 
 #[derive(Default, Debug, Clone)]
 pub struct EngineOptions {
+    pub signal_connect_timeout: Option<Duration>,
     pub rtc_config: RtcConfiguration,
     pub signal_options: SignalOptions,
     pub join_retries: u32,

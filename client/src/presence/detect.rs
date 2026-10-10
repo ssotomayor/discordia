@@ -4,13 +4,14 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+use super::processes::{Process, ProcessTable};
 
 use crate::protocol::{Activity, ActivityKind};
 
 /// Executable, as the process table spells it, to the name a person recognises.
 /// Lowercase keys: Windows reports `Factorio.exe`, Linux reports `factorio`.
 const CATALOGUE: &[(&str, &str)] = &[
+    ("cod.exe", "Call of Duty"),
     ("afop.exe", "Avatar: Frontiers of Pandora"),
     ("factorio", "Factorio"),
     ("factorio.exe", "Factorio"),
@@ -68,7 +69,7 @@ pub fn set_override(
 }
 
 pub struct Detector {
-    system: System,
+    system: ProcessTable,
     catalogue: HashMap<String, String>,
     extra: Vec<(String, String)>,
     installed: Vec<super::installed::Game>,
@@ -91,7 +92,7 @@ impl Detector {
             }
         }
         Self {
-            system: System::new(),
+            system: ProcessTable::default(),
             catalogue,
             extra: extra.to_vec(),
             installed: super::installed::discover(),
@@ -124,19 +125,17 @@ impl Detector {
             self.installed = super::installed::discover();
             self.refreshed = Instant::now();
         }
-        self.system.refresh_processes_specifics(
-            ProcessesToUpdate::All,
-            true,
-            ProcessRefreshKind::nothing().with_exe(UpdateKind::OnlyIfNotSet),
-        );
-
+        let processes = self.system.scan();
         let mut best: Option<(u64, &str)> = None;
-        for process in self.system.processes().values() {
+        for process in &processes {
             let Some(name) = self.lookup(process) else {
                 continue;
             };
-            let started = process.start_time();
-            if best.map(|(prev, _)| started < prev).unwrap_or(true) {
+            let started = process.started;
+            if best
+                .map(|(prev, _)| oldest(started) < oldest(prev))
+                .unwrap_or(true)
+            {
                 best = Some((started, name));
             }
         }
@@ -146,33 +145,51 @@ impl Detector {
             name: name.to_string(),
             details: None,
             state: None,
-            started_ms: Some(started as i64 * 1000),
+            started_ms: (started != 0).then_some(started as i64 * 1000),
         })
     }
 
     /// The file name, never the path: two people install the same game in two
     /// places, and only the leaf is the same on both.
-    fn lookup(&self, process: &sysinfo::Process) -> Option<&str> {
+    fn lookup(&self, process: &Process) -> Option<&str> {
         let from_exe = process
-            .exe()
+            .exe
+            .as_deref()
             .and_then(|p| p.file_name())
             .map(|n| n.to_string_lossy().to_ascii_lowercase());
-        let from_name = process.name().to_string_lossy().to_ascii_lowercase();
+        let from_name = process.name.to_ascii_lowercase();
         from_exe
             .and_then(|e| self.catalogue.get(&e))
             .or_else(|| self.catalogue.get(&from_name))
             .map(String::as_str)
             .or_else(|| {
                 process
-                    .exe()
+                    .exe
+                    .as_deref()
                     .and_then(|path| super::installed::lookup(&self.installed, path))
             })
     }
 }
 
+fn oldest(started: u64) -> u64 {
+    if started == 0 { u64::MAX } else { started }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inaccessible_metadata_still_matches_a_catalogued_executable_without_a_fake_start_time() {
+        let detector = Detector::new(&[]);
+        let process = Process {
+            name: "COD.EXE".into(),
+            exe: None,
+            started: 0,
+        };
+        assert_eq!(detector.lookup(&process), Some("Call of Duty"));
+        assert!(oldest(process.started) > oldest(1_700_000_000));
+    }
 
     #[test]
     fn custom_games_update_existing_names_and_reject_paths_or_invalid_titles() {

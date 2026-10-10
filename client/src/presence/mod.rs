@@ -7,6 +7,7 @@
 pub mod detect;
 mod installed;
 pub mod ipc;
+mod processes;
 
 use std::sync::Arc;
 
@@ -121,9 +122,7 @@ struct Config {
 }
 
 /// Mounted inside a session: an activity has nowhere to go without a gateway.
-/// Both halves are off unless asked for — a process list is a fingerprint of
-/// what someone has installed, and a bound socket is visible to every program
-/// on the machine.
+/// Windows uses our private RPC names; the partial protocol cannot serve games' Discord SDKs.
 #[component]
 pub fn PresenceService() -> Element {
     let gateway = use_gateway();

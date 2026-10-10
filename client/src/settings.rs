@@ -153,10 +153,8 @@ pub struct ClientSettings {
     pub share_activity: bool,
     #[serde(default = "default_enabled")]
     pub detect_games: bool,
-    /// Bind `discord-ipc-N` rather than our own names. Free integration with
-    /// every game already shipping Rich Presence, at the cost of taking the
-    /// slot a running Discord wants — first to bind wins.
-    #[serde(default = "default_enabled")]
+    /// Saved for platforms whose legacy Discord RPC integration is supported.
+    #[serde(default = "default_discord_rpc")]
     pub discord_rpc_socket: bool,
     /// Executable to display name, for what the committed catalogue misses.
     #[serde(default)]
@@ -201,6 +199,10 @@ fn default_denoise_atten_lim_db() -> u32 {
 
 fn default_enabled() -> bool {
     true
+}
+
+fn default_discord_rpc() -> bool {
+    crate::presence::ipc::discord_compatible_supported()
 }
 
 fn default_voice_bitrate_kbps() -> u32 {
@@ -282,7 +284,7 @@ impl Default for ClientSettings {
             publish_global_level: true,
             share_activity: default_enabled(),
             detect_games: default_enabled(),
-            discord_rpc_socket: default_enabled(),
+            discord_rpc_socket: default_discord_rpc(),
             detect_extra: Vec::new(),
         }
     }
@@ -472,7 +474,6 @@ mod tests {
             "bypass_system_audio_processing",
             "share_activity",
             "detect_games",
-            "discord_rpc_socket",
         ];
         let defaults = serde_json::to_value(ClientSettings::default()).unwrap();
         let mut legacy = defaults.clone();
@@ -487,6 +488,23 @@ mod tests {
         for field in fields {
             assert_eq!(restored[field], true, "missing {field}");
             assert_eq!(saved[field], false, "saved {field}");
+        }
+    }
+
+    #[test]
+    fn discord_rpc_defaults_follow_platform_support_without_resetting_saved_preferences() {
+        let defaults = serde_json::to_value(ClientSettings::default()).unwrap();
+        assert_eq!(defaults["discord_rpc_socket"], default_discord_rpc());
+        let mut legacy = defaults.clone();
+        legacy.as_object_mut().unwrap().remove("discord_rpc_socket");
+        assert_eq!(
+            parse(&file(legacy)).unwrap().discord_rpc_socket,
+            default_discord_rpc()
+        );
+        for enabled in [false, true] {
+            let mut saved = defaults.clone();
+            saved["discord_rpc_socket"] = enabled.into();
+            assert_eq!(parse(&file(saved)).unwrap().discord_rpc_socket, enabled);
         }
     }
 
