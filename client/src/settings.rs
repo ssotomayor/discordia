@@ -8,12 +8,18 @@ fn default_ui_size() -> u16 {
     100
 }
 
+/// A guild emoji the person chose to keep, under a name of their own, so a DM
+/// can carry it. Its picture is copied to `emoji::saved_dir`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct CatalogEmoji {
+pub struct SavedEmoji {
     pub shortcode: String,
     pub image: String,
     pub guild_id: crate::protocol::Id,
     pub guild_name: String,
+    /// Where a blob server holds the picture, once uploaded; the DM tag
+    /// carries this instead of the bytes.
+    #[serde(default)]
+    pub blossom_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -57,11 +63,10 @@ pub struct ClientSettings {
     #[serde(default)]
     pub dm_clock_offset: Vec<(String, i64)>,
 
-    /// Every custom emoji seen in a session, so a DM — which has no guild
-    /// and no gateway — can still offer and send them. Pictures stay in the
-    /// disk media cache under `image`.
+    /// Chosen by right-click in a picker: what a DM, which has no guild and
+    /// no gateway, may offer and send.
     #[serde(default)]
-    pub emoji_catalog: Vec<CatalogEmoji>,
+    pub saved_emoji: Vec<SavedEmoji>,
 
     /// Channels and whole guilds that should never ring. Personal and local:
     /// nothing about muting is sent to the server or seen by anyone else.
@@ -237,7 +242,7 @@ impl Default for ClientSettings {
             dm_relays: Vec::new(),
             dm_cleared_at: Vec::new(),
             dm_clock_offset: Vec::new(),
-            emoji_catalog: Vec::new(),
+            saved_emoji: Vec::new(),
             dm_read_at: Vec::new(),
             muted_channels: Vec::new(),
             muted_guilds: Vec::new(),

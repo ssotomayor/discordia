@@ -1244,7 +1244,6 @@ fn apply(
             s.roles.insert(guild_id, by_position(roles));
         }
         ServerMessage::GuildEmojis { guild_id, emojis } => {
-            s.remember_emojis(guild_id, &emojis);
             s.guild_emojis.insert(guild_id, emojis);
             resolve_media(&mut s, tx);
         }

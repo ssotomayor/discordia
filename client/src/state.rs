@@ -296,8 +296,8 @@ pub struct AppState {
     /// resolves here, since a DM has no guild to ask. Memory only — relays
     /// replay the tags with the message.
     pub dm_emoji: HashMap<Id, Vec<(String, String)>>,
-    /// Seeded from settings and written back by `use_emoji_catalog_persistence`.
-    pub emoji_catalog: Vec<crate::settings::CatalogEmoji>,
+    /// Seeded from settings and written back by `use_saved_emoji_persistence`.
+    pub saved_emoji: Vec<crate::settings::SavedEmoji>,
     pub dm_unread: HashMap<Id, u32>,
     /// Seeded from `ClientSettings::dm_cleared_at`; see it for why a delete is
     /// a watermark. Read on every insert, so replayed history stays hidden.
@@ -472,7 +472,7 @@ impl AppState {
             selected_channel: None,
             dms: Vec::new(),
             dm_emoji: HashMap::new(),
-            emoji_catalog: Vec::new(),
+            saved_emoji: Vec::new(),
             dm_unread: HashMap::new(),
             dm_cleared_at: HashMap::new(),
             dm_clock_offset: HashMap::new(),
@@ -740,35 +740,62 @@ impl AppState {
             .filter(|u| !u.is_empty())
     }
 
-    /// Replaces the catalog's view of one guild. Returns whether it moved.
-    pub fn remember_emojis(
-        &mut self,
-        guild_id: Id,
-        emojis: &[crate::protocol::GuildEmoji],
-    ) -> bool {
+    pub fn saved_emoji_of(&self, image: &str) -> Option<&crate::settings::SavedEmoji> {
+        self.saved_emoji.iter().find(|e| e.image == image)
+    }
+
+    /// Keeps a guild emoji under `shortcode`, the person's own name for it.
+    /// The same picture saved again is a rename. Needs the picture loaded,
+    /// since the copy is made now, not when the guild is gone.
+    pub fn save_emoji(&mut self, shortcode: &str, image: &str, guild_id: Id) -> Result<(), String> {
+        let code = shortcode.trim().to_ascii_lowercase();
+        if !crate::protocol::valid_shortcode(&code) {
+            return Err(format!(
+                "A name is 2-{} lowercase letters, digits or _.",
+                crate::protocol::MAX_SHORTCODE_LEN
+            ));
+        }
+        if self
+            .saved_emoji
+            .iter()
+            .any(|e| e.shortcode == code && e.image != image)
+        {
+            return Err(format!(
+                ":{code}: is already one of your emoji — pick another name."
+            ));
+        }
+        let Some(data) = self
+            .emoji_images
+            .get(image)
+            .cloned()
+            .filter(|d| !d.is_empty())
+        else {
+            return Err("Its picture has not loaded yet — try again in a moment.".into());
+        };
         let guild_name = self
             .guilds
             .iter()
             .find(|g| g.id == guild_id)
             .map(|g| g.name.clone())
             .unwrap_or_default();
-        let mut next: Vec<crate::settings::CatalogEmoji> = self
-            .emoji_catalog
-            .iter()
-            .filter(|e| e.guild_id != guild_id)
-            .cloned()
-            .collect();
-        next.extend(emojis.iter().map(|e| crate::settings::CatalogEmoji {
-            shortcode: e.shortcode.clone(),
-            image: e.image.clone(),
+        let blossom_url = self
+            .saved_emoji_of(image)
+            .and_then(|e| e.blossom_url.clone());
+        self.saved_emoji.retain(|e| e.image != image);
+        self.saved_emoji.push(crate::settings::SavedEmoji {
+            shortcode: code,
+            image: image.to_string(),
             guild_id,
-            guild_name: guild_name.clone(),
-        }));
-        if next == self.emoji_catalog {
-            return false;
-        }
-        self.emoji_catalog = next;
-        true
+            guild_name,
+            blossom_url,
+        });
+        crate::emoji::store_saved(image, &data);
+        Ok(())
+    }
+
+    pub fn remove_saved_emoji(&mut self, image: &str) {
+        self.saved_emoji.retain(|e| e.image != image);
+        crate::emoji::remove_saved(image);
     }
 
     pub fn emojis_of(&self, guild_id: Id) -> &[crate::protocol::GuildEmoji] {
@@ -1386,17 +1413,17 @@ pub fn use_dm_read_persistence(state: Signal<AppState>) {
     });
 }
 
-/// Writes the emoji catalog back to disk when a session changed it.
-pub fn use_emoji_catalog_persistence(state: Signal<AppState>) {
+/// Writes the saved emoji back to disk when they change.
+pub fn use_saved_emoji_persistence(state: Signal<AppState>) {
     let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
-    let catalog = use_memo(move || state.read().emoji_catalog.clone());
+    let saved = use_memo(move || state.read().saved_emoji.clone());
     use_effect(move || {
-        let catalog = catalog();
+        let saved = saved();
         // `peek`: writing back what this effect subscribes to is a loop.
-        if settings.peek().emoji_catalog == catalog {
+        if settings.peek().saved_emoji == saved {
             return;
         }
-        settings.write().emoji_catalog = catalog;
+        settings.write().saved_emoji = saved;
         crate::settings::save(&settings.peek());
     });
 }
@@ -1485,6 +1512,35 @@ pub fn use_gateway() -> GatewayTx {
 
 #[cfg(test)]
 mod tests {
+
+    /// `short.png` fails `emoji::safe_name`, so nothing touches the disk.
+    #[test]
+    fn saving_an_emoji_needs_its_picture_refuses_a_taken_name_and_renames_itself() {
+        let mut s = AppState::empty();
+        let gid = uuid::Uuid::new_v4();
+        assert!(
+            s.save_emoji("cat", "short.png", gid)
+                .unwrap_err()
+                .contains("not loaded")
+        );
+        s.emoji_images
+            .insert("short.png".into(), "data:image/png;base64,AA==".into());
+        s.emoji_images
+            .insert("other.png".into(), "data:image/png;base64,AA==".into());
+        assert!(s.save_emoji("Bad Name", "short.png", gid).is_err());
+        s.save_emoji(" Cat ", "short.png", gid).unwrap();
+        assert_eq!(s.saved_emoji[0].shortcode, "cat", "trimmed and lowercased");
+        assert!(
+            s.save_emoji("cat", "other.png", gid)
+                .unwrap_err()
+                .contains("already")
+        );
+        s.save_emoji("kitty", "short.png", gid).unwrap();
+        assert_eq!(s.saved_emoji.len(), 1, "the same picture again is a rename");
+        assert_eq!(s.saved_emoji_of("short.png").unwrap().shortcode, "kitty");
+        s.remove_saved_emoji("short.png");
+        assert!(s.saved_emoji.is_empty());
+    }
     use super::*;
     use crate::protocol::{Member, Profile, User};
 

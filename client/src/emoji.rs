@@ -90,8 +90,8 @@ pub const DM_INLINE_MAX: usize = 16 * 1024;
 pub const DM_INLINE_BUDGET: usize = 40 * 1024;
 
 /// NIP-30 tags for the custom emoji in `content`, each once, in order of first
-/// use, with the codes that had to be left as text — unknown, not a data URL,
-/// or over budget.
+/// use, with the codes that had to be left as text — a picture too large to
+/// inline. An `https://` url (a blob server's) costs nothing and always rides.
 pub fn dm_emoji_tags(
     content: &str,
     url_of: impl Fn(&str) -> Option<String>,
@@ -107,6 +107,7 @@ pub fn dm_emoji_tags(
             continue;
         }
         match url_of(code) {
+            Some(url) if url.starts_with("https://") => tags.push((code.to_string(), url)),
             Some(url)
                 if url.starts_with("data:")
                     && url.len() <= DM_INLINE_MAX
@@ -124,6 +125,39 @@ pub fn dm_emoji_tags(
 
 fn cache_dir() -> PathBuf {
     config_dir().join("emoji")
+}
+
+/// Saved emoji keep their own copy: the media cache is a cache, and leaving
+/// the guild or a sweep must not take a picture the person chose to keep.
+fn saved_dir() -> PathBuf {
+    config_dir().join("emoji-saved")
+}
+
+pub fn load_saved(image: &str) -> Option<String> {
+    let name = safe_name(image)?;
+    std::fs::read_to_string(saved_dir().join(name))
+        .ok()
+        .or_else(|| load_cached(image))
+}
+
+pub fn store_saved(image: &str, data_url: &str) {
+    let Some(name) = safe_name(image) else { return };
+    let (path, data) = (saved_dir().join(name), data_url.to_string());
+    std::thread::spawn(move || {
+        if let Some(dir) = path.parent()
+            && std::fs::create_dir_all(dir).is_ok()
+        {
+            let _ = std::fs::write(path, data);
+        }
+    });
+}
+
+pub fn remove_saved(image: &str) {
+    let Some(name) = safe_name(image) else { return };
+    let path = saved_dir().join(name);
+    std::thread::spawn(move || {
+        let _ = std::fs::remove_file(path);
+    });
 }
 
 fn safe_name(image: &str) -> Option<&str> {
@@ -215,10 +249,16 @@ mod tests {
             _ => None,
         };
         let (tags, skipped) = dm_emoji_tags(":cat: :cat: :huge: :http: :nope: 10:30", url_of);
-        assert_eq!(tags, vec![("cat".to_string(), small.clone())]);
+        assert_eq!(
+            tags,
+            vec![
+                ("cat".to_string(), small.clone()),
+                ("http".to_string(), "https://x/y.png".to_string())
+            ]
+        );
         assert_eq!(
             skipped,
-            vec!["huge", "http"],
+            vec!["huge"],
             "unknown codes are plain text, not a complaint"
         );
 

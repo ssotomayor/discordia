@@ -811,31 +811,44 @@ fn MessageRow(message: Message, grouped: bool) -> Element {
 #[component]
 fn GuildReactionPicker(guild_id: Id, on_pick: EventHandler<String>) -> Element {
     let state = use_app_state();
-    let emojis: Vec<(String, String)> = {
+    let mut emoji_menu = use_signal(|| None::<EmojiMenuTarget>);
+    let emojis: Vec<(String, String, String)> = {
         let s = state.read();
         s.emojis_of(guild_id)
             .iter()
             .map(|e| {
                 let url = s.emoji_images.get(&e.image).cloned().unwrap_or_default();
-                (e.shortcode.clone(), url)
+                (e.shortcode.clone(), e.image.clone(), url)
             })
             .collect()
     };
     if emojis.is_empty() {
         return rsx! {};
     }
+    if let Some(target) = emoji_menu() {
+        return rsx! {
+            div { class: "mt-1 pt-1 border-t border-[var(--border)]",
+                EmojiSaveForm { target, on_done: move |_| emoji_menu.set(None) }
+            }
+        };
+    }
     rsx! {
         div { class: "mt-1 pt-1 border-t border-[var(--border)] max-h-32 overflow-y-auto",
             div { class: "grid grid-cols-8 gap-0.5 w-max max-w-[15rem]",
-                for (code, url) in emojis.into_iter() {
+                for (code, image, url) in emojis.into_iter() {
                     {
                         let emoji = format!(":{code}:");
+                        let target = EmojiMenuTarget { shortcode: code.clone(), image, guild_id, url: url.clone() };
                         rsx! {
                             button {
                                 key: "{code}",
                                 class: "w-7 h-7 flex items-center justify-center rounded hover:bg-white/[0.06] text-base leading-none",
-                                title: "{emoji}",
+                                title: "{emoji} — right-click to save or remove",
                                 onclick: move |_| on_pick.call(emoji.clone()),
+                                oncontextmenu: move |ev: MouseEvent| {
+                                    ev.prevent_default();
+                                    emoji_menu.set(Some(target.clone()));
+                                },
                                 if url.is_empty() {
                                     span { class: "text-[8px] text-[var(--text-dim)]", "…" }
                                 } else {
@@ -843,6 +856,144 @@ fn GuildReactionPicker(guild_id: Id, on_pick: EventHandler<String>) -> Element {
                                 }
                             }
                         }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Loads saved emoji pictures off disk into the media cache, once each: a
+/// DM has no gateway to ask, and a guild's picker shows them as saved.
+pub fn use_saved_emoji_pictures() {
+    let mut state = use_app_state();
+    let mut warmed = use_signal(std::collections::HashSet::<String>::new);
+    use_effect(move || {
+        let s = state.read();
+        let missing: Vec<String> = s
+            .saved_emoji
+            .iter()
+            .map(|e| e.image.clone())
+            .filter(|image| !s.emoji_images.contains_key(image) && !warmed.peek().contains(image))
+            .collect();
+        drop(s);
+        if missing.is_empty() {
+            return;
+        }
+        warmed.write().extend(missing.iter().cloned());
+        spawn(async move {
+            let loaded = tokio::task::spawn_blocking(move || {
+                missing
+                    .into_iter()
+                    .filter_map(|image: String| {
+                        crate::emoji::load_saved(&image).map(|d| (image, d))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .await
+            .unwrap_or_default();
+            if !loaded.is_empty() {
+                let mut s = state.write();
+                for (image, data) in loaded {
+                    s.emoji_images.insert(image, data);
+                }
+            }
+        });
+    });
+}
+
+#[derive(Clone, PartialEq)]
+struct EmojiMenuTarget {
+    shortcode: String,
+    image: String,
+    guild_id: Id,
+    url: String,
+}
+
+/// What a right-click on a custom emoji opens, in place of the picker's
+/// grid: save it under a name of your own, or drop it from your saved ones.
+#[component]
+fn EmojiSaveForm(target: EmojiMenuTarget, on_done: EventHandler<()>) -> Element {
+    let mut state = use_app_state();
+    let saved = state.read().saved_emoji_of(&target.image).cloned();
+    let guild_name = state
+        .read()
+        .guilds
+        .iter()
+        .find(|g| g.id == target.guild_id)
+        .map(|g| g.name.clone())
+        .or_else(|| saved.as_ref().map(|s| s.guild_name.clone()))
+        .unwrap_or_default();
+    let mut name = use_signal(|| target.shortcode.clone());
+    let mut error = use_signal(|| None::<String>);
+    let image = target.image.clone();
+    let image_rm = target.image.clone();
+    rsx! {
+        div { class: "w-56 p-1",
+            div { class: "flex items-center gap-2 mb-2",
+                if target.url.is_empty() {
+                    span { class: "text-[8px] text-[var(--text-dim)]", "…" }
+                } else {
+                    img { src: "{target.url}", style: "height:1.6em;width:auto;" }
+                }
+                span { class: "font-mono text-xs text-[var(--text)] truncate", ":{target.shortcode}:" }
+                span { class: "text-[10px] text-[var(--text-dim)] truncate", "{guild_name}" }
+            }
+            if let Some(s) = saved {
+                div { class: "text-[10px] text-[var(--text-dim)] mb-1.5",
+                    "Saved as :{s.shortcode}: — yours to use in DMs."
+                }
+                div { class: "flex gap-2",
+                    button {
+                        r#type: "button",
+                        class: "text-[10px] uppercase tracking-wider text-[var(--danger)] border border-[var(--border)] rounded px-2 py-0.5 hover:border-[var(--danger)] transition-colors",
+                        onclick: move |_| {
+                            state.write().remove_saved_emoji(&image_rm);
+                            on_done.call(());
+                        },
+                        "Remove from my emoji"
+                    }
+                    button {
+                        r#type: "button",
+                        class: "text-[10px] uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--text)] transition-colors",
+                        onclick: move |_| on_done.call(()),
+                        "Back"
+                    }
+                }
+            } else {
+                div { class: "text-[10px] text-[var(--text-dim)] mb-1.5",
+                    "Save it to use in DMs, under a name of your own:"
+                }
+                div { class: "flex items-center gap-0.5 font-mono text-xs",
+                    span { class: "text-[var(--text-dim)]", ":" }
+                    input {
+                        class: "flex-1 min-w-0 bg-transparent border border-[var(--border)] rounded px-1.5 py-0.5 text-xs text-[var(--text)] focus:outline-none focus:border-[var(--accent)]",
+                        maxlength: crate::protocol::MAX_SHORTCODE_LEN as i64,
+                        value: "{name}",
+                        oninput: move |e| name.set(e.value()),
+                    }
+                    span { class: "text-[var(--text-dim)]", ":" }
+                }
+                if let Some(e) = error() {
+                    div { class: "text-[10px] text-[var(--danger)] mt-1", "{e}" }
+                }
+                div { class: "flex gap-2 mt-1.5",
+                    button {
+                        r#type: "button",
+                        class: "text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] rounded px-2 py-0.5 hover:border-[var(--accent)] transition-colors",
+                        onclick: move |_| {
+                            match state.write().save_emoji(&name(), &image, target.guild_id) {
+                                Ok(()) => on_done.call(()),
+                                Err(e) => error.set(Some(e)),
+                            }
+                        },
+                        "Save to my emoji"
+                    }
+                    button {
+                        r#type: "button",
+                        class: "text-[10px] uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--text)] transition-colors",
+                        onclick: move |_| on_done.call(()),
+                        "Back"
                     }
                 }
             }
@@ -1251,9 +1402,9 @@ fn emoji_suggestions(
     out
 }
 
-/// The emoji a composer may offer: the guild's in a guild channel, and in a
-/// DM every one the account has seen (the catalog), first guild wins a
-/// shortcode. The urls are whatever the media cache holds right now.
+/// The emoji a composer may offer: the guild's in a guild channel, the
+/// person's saved ones in a DM. The urls are whatever the media cache holds
+/// right now.
 fn guild_emojis_of(
     s: &crate::state::AppState,
     channel_id: Id,
@@ -1265,21 +1416,18 @@ fn guild_emojis_of(
         .map(|c| c.guild_id);
     let list = match gid {
         Some(g) => s.emojis_of(g).to_vec(),
-        None if s.dm_of(channel_id).is_some() => {
-            let mut seen = std::collections::HashSet::new();
-            s.emoji_catalog
-                .iter()
-                .filter(|e| seen.insert(e.shortcode.clone()))
-                .map(|e| GuildEmoji {
-                    id: e.guild_id,
-                    guild_id: e.guild_id,
-                    shortcode: e.shortcode.clone(),
-                    image: e.image.clone(),
-                    added_by: String::new(),
-                    created_ms: 0,
-                })
-                .collect()
-        }
+        None if s.dm_of(channel_id).is_some() => s
+            .saved_emoji
+            .iter()
+            .map(|e| GuildEmoji {
+                id: e.guild_id,
+                guild_id: e.guild_id,
+                shortcode: e.shortcode.clone(),
+                image: e.image.clone(),
+                added_by: String::new(),
+                created_ms: 0,
+            })
+            .collect(),
         None => Vec::new(),
     };
     let urls = list
@@ -1387,42 +1535,8 @@ fn Composer(
     });
 
     let is_dm = state.read().dm_of(channel_id).is_some();
-    // A DM has no gateway to fetch from: the catalog's pictures come off the
-    // disk cache, once, into the same media cache the guild path fills.
-    let mut warmed = use_signal(std::collections::HashSet::<String>::new);
-    use_effect(move || {
-        let s = state.read();
-        if s.dm_of(channel_id).is_none() {
-            return;
-        }
-        let missing: Vec<String> = s
-            .emoji_catalog
-            .iter()
-            .map(|e| e.image.clone())
-            .filter(|image| !s.emoji_images.contains_key(image) && !warmed.peek().contains(image))
-            .collect();
-        drop(s);
-        if missing.is_empty() {
-            return;
-        }
-        warmed.write().extend(missing.iter().cloned());
-        spawn(async move {
-            let loaded = tokio::task::spawn_blocking(move || {
-                missing
-                    .into_iter()
-                    .filter_map(|image| crate::emoji::load_cached(&image).map(|d| (image, d)))
-                    .collect::<Vec<_>>()
-            })
-            .await
-            .unwrap_or_default();
-            if !loaded.is_empty() {
-                let mut s = state.write();
-                for (image, data) in loaded {
-                    s.emoji_images.insert(image, data);
-                }
-            }
-        });
-    });
+    let mut emoji_menu = use_signal(|| None::<EmojiMenuTarget>);
+    use_saved_emoji_pictures();
     let (guild_emojis, emoji_urls) = guild_emojis_of(&state.read(), channel_id);
     let suggestions = caret_token()
         .as_deref()
@@ -1494,9 +1608,10 @@ fn Composer(
                 let s = state.read();
                 let (list, urls) = guild_emojis_of(&s, channel_id);
                 crate::emoji::dm_emoji_tags(&content, |code| {
-                    list.iter()
-                        .find(|e| e.shortcode == code)
-                        .and_then(|e| urls.get(&e.image).cloned())
+                    let e = list.iter().find(|e| e.shortcode == code)?;
+                    s.saved_emoji_of(&e.image)
+                        .and_then(|saved| saved.blossom_url.clone())
+                        .or_else(|| urls.get(&e.image).cloned())
                 })
             };
             if !skipped.is_empty() {
@@ -1649,6 +1764,9 @@ fn Composer(
             if show_emoji() {
                 div {
                     class: "dxf-pop-in absolute bottom-full right-3 mb-2 p-1.5 bg-[var(--panel-solid)] border border-[var(--border)] rounded-md shadow-lg z-30",
+                    if let Some(target) = emoji_menu() {
+                        EmojiSaveForm { target, on_done: move |_| emoji_menu.set(None) }
+                    } else {
                     if !guild_emojis.is_empty() {
                         div { class: "text-[9px] uppercase tracking-wider text-[var(--text-dim)] px-1 pb-1",
                             if is_dm { "Your emoji" } else { "This guild" }
@@ -1659,15 +1777,20 @@ fn Composer(
                                     let code = e.shortcode.clone();
                                     let url = emoji_urls.get(&e.image).cloned().unwrap_or_default();
                                     let id = composer_id.clone();
+                                    let target = EmojiMenuTarget { shortcode: e.shortcode.clone(), image: e.image.clone(), guild_id: e.guild_id, url: url.clone() };
                                     rsx! {
                                         button {
                                             key: "{e.shortcode}",
                                             r#type: "button",
                                             class: "w-6 h-6 flex items-center justify-center rounded hover:bg-white/[0.06] text-base leading-none",
-                                            title: ":{code}:",
+                                            title: ":{code}: — right-click to save or remove",
                                             onclick: move |_| {
                                                 insert_pick(&id, &EmojiPick::Custom { code: code.clone(), url: url.clone() }, false, false);
                                                 show_emoji.set(false);
+                                            },
+                                            oncontextmenu: move |ev: MouseEvent| {
+                                                ev.prevent_default();
+                                                emoji_menu.set(Some(target.clone()));
                                             },
                                             if url.is_empty() {
                                                 span { class: "text-[8px] text-[var(--text-dim)]", "…" }
@@ -1698,6 +1821,7 @@ fn Composer(
                                 }
                             }
                         }
+                    }
                     }
                 }
             }
