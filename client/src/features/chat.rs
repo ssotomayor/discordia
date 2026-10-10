@@ -1798,7 +1798,7 @@ fn Composer(
             // the url. Without one, or if the upload fails, inline as before.
             let pending = settings
                 .peek()
-                .blossom_server
+                .emoji_blob_server
                 .clone()
                 .map(|server| (server, uploads_needed(&state.peek(), channel_id, &content)))
                 .filter(|(_, needed)| !needed.is_empty());

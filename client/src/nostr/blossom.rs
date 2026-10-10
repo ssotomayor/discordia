@@ -12,6 +12,14 @@ use sha2::{Digest, Sha256};
 use super::event::{self, Event};
 
 pub const KIND_AUTH: u16 = 24242;
+
+/// Offered in the picker. The first is the default: free uploads of images up
+/// to 20 MiB with no expiry, from any key.
+pub const PRESETS: [&str; 3] = [
+    "https://blossom.nostr.build",
+    "https://blossom.primal.net",
+    "https://nostr.download",
+];
 /// Long enough for a slow upload, short enough that a captured header is
 /// worth little.
 pub const AUTH_TTL_SECS: i64 = 300;

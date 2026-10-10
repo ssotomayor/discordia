@@ -539,48 +539,117 @@ fn TabButton(active: bool, label: &'static str, onclick: EventHandler<()>) -> El
 #[component]
 fn BlobServerField() -> Element {
     let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
-    let mut draft = use_signal(|| settings.peek().blossom_server.clone().unwrap_or_default());
+    let mut adding = use_signal(|| false);
+    let mut draft = use_signal(String::new);
     let mut note = use_signal(|| None::<String>);
-    let current = settings.read().blossom_server.clone();
+    let current = settings.read().emoji_blob_server.clone();
+    let choices = settings.read().blob_server_choices();
+    let removable = current
+        .as_ref()
+        .filter(|url| settings.read().blob_servers.contains(url))
+        .cloned();
+    let mut store = move |next: crate::settings::ClientSettings| {
+        settings.set(next.clone());
+        crate::settings::save(&next);
+    };
+    let mut add = move || {
+        let Some(url) = crate::nostr::blossom::normalize_server(&draft()) else {
+            note.set(Some("The address must start with https://.".into()));
+            return;
+        };
+        let mut next = settings.read().clone();
+        next.add_blob_server(url);
+        store(next);
+        draft.set(String::new());
+        adding.set(false);
+        note.set(None);
+    };
+    let summary = match &current {
+        Some(url) => format!("Emoji in DMs — {}", blob_host(url)),
+        None => "Emoji in DMs — off".to_string(),
+    };
     rsx! {
         details { class: "text-[10px] text-[var(--text-dim)]",
-            summary { class: "cursor-pointer hover:text-[var(--text-muted)] transition-colors",
-                if current.is_some() { "Emoji in DMs — blob server set" } else { "Emoji in DMs" }
-            }
+            summary { class: "cursor-pointer hover:text-[var(--text-muted)] transition-colors", "{summary}" }
             div { class: "mt-1 text-[var(--text-muted)]",
-                "A Blossom blob server keeps the pictures of your saved emoji so a DM can link them, and other Nostr clients can draw them. Without one, small pictures travel inside the message and large ones go as text."
+                "Your saved emoji's pictures upload here so a DM can link them. Off: only small pictures fit inside the message; large ones go as text."
             }
-            div { class: "flex gap-1 mt-1.5",
-                input {
-                    class: "flex-1 min-w-0 bg-transparent border border-[var(--border)] rounded px-2 py-1 text-[11px] text-[var(--text)] font-mono focus:outline-none focus:border-[var(--accent)]",
-                    placeholder: "https://blossom.example",
-                    value: "{draft}",
-                    oninput: move |e| draft.set(e.value()),
+            div { class: "flex items-center gap-1 mt-1.5",
+                div { class: "flex-1 min-w-0 relative",
+                    select {
+                        class: "w-full appearance-none rounded border border-[var(--border)] pl-2 py-1 font-mono text-[11px] focus:outline-none focus:border-[var(--accent)] transition-colors",
+                        style: "color: var(--text); background: var(--panel2); padding-right: 1.5rem;",
+                        onchange: move |e| {
+                            let value = e.value();
+                            let mut next = settings.read().clone();
+                            next.emoji_blob_server = (value != BLOB_OFF).then_some(value);
+                            store(next);
+                            note.set(None);
+                        },
+                        for url in choices {
+                            option {
+                                key: "{url}",
+                                value: "{url}",
+                                selected: current.as_deref() == Some(url.as_str()),
+                                style: "color: var(--text); background: var(--panel-solid);",
+                                "{blob_host(&url)}"
+                            }
+                        }
+                        option {
+                            value: BLOB_OFF,
+                            selected: current.is_none(),
+                            style: "color: var(--text); background: var(--panel-solid);",
+                            "Off — inside the message"
+                        }
+                    }
+                    span {
+                        class: "absolute top-1/2 -translate-y-1/2 text-[8px] text-[var(--text-dim)] pointer-events-none",
+                        style: "right: 0.5rem;",
+                        "▼"
+                    }
+                }
+                if let Some(url) = removable {
+                    button {
+                        r#type: "button",
+                        class: "text-[10px] uppercase tracking-wider text-[var(--text-dim)] border border-[var(--border)] rounded px-2 py-1 hover:text-[var(--danger)] transition-colors",
+                        title: "Remove this server from the list",
+                        onclick: move |_| {
+                            let mut next = settings.read().clone();
+                            next.remove_blob_server(&url);
+                            store(next);
+                        },
+                        "Remove"
+                    }
                 }
                 button {
-                    class: "text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] rounded px-2 hover:border-[var(--accent)] transition-colors",
-                    onclick: move |_| {
-                        let raw = draft();
-                        let next = if raw.trim().is_empty() {
-                            None
-                        } else {
-                            match crate::nostr::blossom::normalize_server(&raw) {
-                                Some(s) => Some(s),
-                                None => {
-                                    note.set(Some("The address must start with https://.".into()));
-                                    return;
-                                }
+                    r#type: "button",
+                    class: "text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] rounded px-2 py-1 hover:border-[var(--accent)] transition-colors",
+                    onclick: move |_| { adding.toggle(); note.set(None); },
+                    if adding() { "Cancel" } else { "+ Add" }
+                }
+            }
+            if adding() {
+                div { class: "flex gap-1 mt-1",
+                    input {
+                        class: "flex-1 min-w-0 bg-transparent border border-[var(--border)] rounded px-2 py-1 text-[11px] text-[var(--text)] font-mono focus:outline-none focus:border-[var(--accent)]",
+                        placeholder: "https://blossom.example",
+                        value: "{draft}",
+                        autofocus: true,
+                        oninput: move |e| draft.set(e.value()),
+                        onkeydown: move |e| {
+                            if e.key() == Key::Enter {
+                                add();
+                            } else if e.key() == Key::Escape {
+                                adding.set(false);
                             }
-                        };
-                        draft.set(next.clone().unwrap_or_default());
-                        settings.write().blossom_server = next.clone();
-                        crate::settings::save(&settings.peek());
-                        note.set(Some(match next {
-                            Some(_) => "Saved. Pictures upload the first time you use an emoji in a DM.".into(),
-                            None => "Cleared. Pictures travel inside the message again.".into(),
-                        }));
-                    },
-                    "Save"
+                        },
+                    }
+                    button {
+                        r#type: "button",
+                        class: "text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--border)] rounded px-2 hover:border-[var(--accent)] transition-colors",
+                        onclick: move |_| add(),
+                        "Save"
+                    }
                 }
             }
             if let Some(n) = note() {
@@ -588,6 +657,12 @@ fn BlobServerField() -> Element {
             }
         }
     }
+}
+
+const BLOB_OFF: &str = "off";
+
+fn blob_host(url: &str) -> &str {
+    url.strip_prefix("https://").unwrap_or(url)
 }
 
 #[component]
