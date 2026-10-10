@@ -67,6 +67,10 @@ pub struct ClientSettings {
     /// no gateway, may offer and send.
     #[serde(default)]
     pub saved_emoji: Vec<SavedEmoji>,
+    /// A Blossom blob server (`https://…`) that holds saved emoji pictures so
+    /// a DM links them instead of carrying them. None: inline under budget.
+    #[serde(default)]
+    pub blossom_server: Option<String>,
 
     /// Channels and whole guilds that should never ring. Personal and local:
     /// nothing about muting is sent to the server or seen by anyone else.
@@ -245,6 +249,7 @@ impl Default for ClientSettings {
             dm_cleared_at: Vec::new(),
             dm_clock_offset: Vec::new(),
             saved_emoji: Vec::new(),
+            blossom_server: None,
             dm_read_at: Vec::new(),
             muted_channels: Vec::new(),
             muted_guilds: Vec::new(),

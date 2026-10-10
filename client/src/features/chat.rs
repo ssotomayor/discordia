@@ -1485,6 +1485,76 @@ fn insert_pick(id: &str, pick: &EmojiPick, replace_token: bool, space: bool) {
     }
 }
 
+/// Saved emoji used in `content` whose picture has no blob url yet and is
+/// loaded: `(code, image, data url)`, each once.
+fn uploads_needed(
+    s: &crate::state::AppState,
+    channel_id: Id,
+    content: &str,
+) -> Vec<(String, String, String)> {
+    let (list, urls) = guild_emojis_of(s, channel_id);
+    let mut out: Vec<(String, String, String)> = Vec::new();
+    for piece in crate::emoji::split_shortcodes(content) {
+        let crate::emoji::Piece::Shortcode(code) = piece else {
+            continue;
+        };
+        let Some(e) = list.iter().find(|e| e.shortcode == code) else {
+            continue;
+        };
+        if out.iter().any(|(_, image, _)| image == &e.image) {
+            continue;
+        }
+        let saved = s.saved_emoji_of(&e.image);
+        if saved.is_some_and(|saved| saved.blossom_url.is_some()) {
+            continue;
+        }
+        if let Some(data) = urls.get(&e.image).filter(|d| d.starts_with("data:")) {
+            out.push((code.to_string(), e.image.clone(), data.clone()));
+        }
+    }
+    out
+}
+
+/// Builds the tags and hands the message to the Nostr service. True when it
+/// went; the caller clears the composer.
+fn send_dm(
+    mut state: Signal<crate::state::AppState>,
+    nostr: &crate::nostr::service::NostrTx,
+    channel_id: Id,
+    peer: String,
+    content: String,
+    reply_event: Option<String>,
+) -> bool {
+    let (emoji, skipped) = {
+        let s = state.read();
+        let (list, urls) = guild_emojis_of(&s, channel_id);
+        crate::emoji::dm_emoji_tags(&content, |code| {
+            let e = list.iter().find(|e| e.shortcode == code)?;
+            s.saved_emoji_of(&e.image)
+                .and_then(|saved| saved.blossom_url.clone())
+                .or_else(|| urls.get(&e.image).cloned())
+        })
+    };
+    if !skipped.is_empty() {
+        let names: Vec<String> = skipped.iter().map(|c| format!(":{c}:")).collect();
+        state.write().error_toast = Some(format!(
+            "{} too large to send in a DM — sent as text.",
+            names.join(", ")
+        ));
+    }
+    if !nostr.try_send(crate::nostr::service::NostrCmd::Send {
+        peer,
+        text: content,
+        reply_to: reply_event,
+        emoji,
+    }) {
+        state.write().error_toast =
+            Some("The message service is unavailable. Your draft has been kept.".into());
+        return false;
+    }
+    true
+}
+
 #[component]
 fn Composer(
     channel_id: Id,
@@ -1509,6 +1579,9 @@ fn Composer(
     let gateway = use_gateway();
     let gateway_submit = gateway.clone();
     let nostr_submit = use_context::<crate::nostr::service::NostrTx>();
+    let settings = use_context::<Signal<crate::settings::ClientSettings>>();
+    let identity = use_context::<crate::identity::Identity>();
+    let mut uploading = use_signal(|| false);
     let composer_id = format!("dxf-composer-{channel_id}");
     // Names this mount's script, so a drop that lands after the next mount's
     // script has started leaves that one alone.
@@ -1573,7 +1646,20 @@ fn Composer(
         };
     }
 
-    let submit_id = composer_id.clone();
+    let finish_id = composer_id.clone();
+    let mut finish = move || -> bool {
+        let reply_to = replying_to.peek().as_ref().map(|r| r.message_id);
+        draft.set(String::new());
+        caret_token.set(None);
+        composer_call(&finish_id, "clear", &[]);
+        generation.with_mut(|n| *n = n.wrapping_add(1));
+        pending_image.set(None);
+        show_emoji.set(false);
+        if reply_to.is_some() {
+            state.write().replying_to = None;
+        }
+        true
+    };
     let mut submit = move || -> bool {
         let content = draft().trim().to_string();
         let image = pending_image();
@@ -1605,33 +1691,49 @@ fn Composer(
             }
             let reply_event =
                 reply_to.and_then(|id| state.read().nostr_event_ids.get(&id).cloned());
-            let (emoji, skipped) = {
-                let s = state.read();
-                let (list, urls) = guild_emojis_of(&s, channel_id);
-                crate::emoji::dm_emoji_tags(&content, |code| {
-                    let e = list.iter().find(|e| e.shortcode == code)?;
-                    s.saved_emoji_of(&e.image)
-                        .and_then(|saved| saved.blossom_url.clone())
-                        .or_else(|| urls.get(&e.image).cloned())
-                })
+            // With a blob server, a saved emoji's picture goes up once, on
+            // first use, and only then does the message go — the tag needs
+            // the url. Without one, or if the upload fails, inline as before.
+            let pending = settings
+                .peek()
+                .blossom_server
+                .clone()
+                .map(|server| (server, uploads_needed(&state.peek(), channel_id, &content)))
+                .filter(|(_, needed)| !needed.is_empty());
+            let Some((server, needed)) = pending else {
+                return send_dm(state, &nostr_submit, channel_id, peer, content, reply_event)
+                    && finish();
             };
-            if !skipped.is_empty() {
-                let names: Vec<String> = skipped.iter().map(|c| format!(":{c}:")).collect();
-                state.write().error_toast = Some(format!(
-                    "{} too large to send in a DM — sent as text.",
-                    names.join(", ")
-                ));
-            }
-            if !nostr_submit.try_send(crate::nostr::service::NostrCmd::Send {
-                peer,
-                text: content,
-                reply_to: reply_event,
-                emoji,
-            }) {
-                state.write().error_toast =
-                    Some("The message service is unavailable. Your draft has been kept.".into());
+            if uploading() {
                 return false;
             }
+            uploading.set(true);
+            let secret = identity.secret_key();
+            let nostr = nostr_submit.clone();
+            let mut finish = finish.clone();
+            spawn(async move {
+                for (code, image, data) in needed {
+                    let now = chrono::Utc::now().timestamp();
+                    match crate::nostr::blossom::upload(&server, &secret, &data, now).await {
+                        Ok(url) => {
+                            let mut s = state.write();
+                            if let Some(e) = s.saved_emoji.iter_mut().find(|e| e.image == image) {
+                                e.blossom_url = Some(url);
+                            }
+                        }
+                        Err(why) => {
+                            state.write().error_toast = Some(format!(
+                                "Couldn't upload :{code}: — {why}. Sending it inside the message instead."
+                            ));
+                        }
+                    }
+                }
+                uploading.set(false);
+                if send_dm(state, &nostr, channel_id, peer, content, reply_event) {
+                    finish();
+                }
+            });
+            return false;
         } else {
             if state.peek().status != crate::state::ConnectionStatus::Ready {
                 state.write().error_toast =
@@ -1645,16 +1747,7 @@ fn Composer(
                 reply_to,
             });
         }
-        draft.set(String::new());
-        caret_token.set(None);
-        composer_call(&submit_id, "clear", &[]);
-        generation.with_mut(|n| *n = n.wrapping_add(1));
-        pending_image.set(None);
-        show_emoji.set(false);
-        if reply_to.is_some() {
-            state.write().replying_to = None;
-        }
-        true
+        finish()
     };
 
     let gateway_typing = gateway.clone();
@@ -1942,6 +2035,9 @@ fn Composer(
                     // single-line input, so Shift+Enter submits like Enter.
                     span { "Enter send" }
                     span { ":name for emoji" }
+                    if uploading() {
+                        span { class: "text-[var(--accent)]", "Uploading emoji…" }
+                    }
                 }
             }
         }
