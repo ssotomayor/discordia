@@ -46,6 +46,7 @@ function track() {
     setVolume(value) { this.volume = value; },
   };
 }
+bridge.setInlineScreens(['alice', 'bob']);
 for (const id of ['alice', 'bob']) {
   containers.set(`screenshare-viewer-${id}`, element());
   bridge.testAudioTracks[id] = track();
@@ -99,7 +100,7 @@ console.log('Multiple streams retain independent video, audio, volume and teardo
   assert.equal(aliceVideo.subscribed, false, 'the main window stops receiving a detached video');
   assert.equal(bobVideo.subscribed, true, 'other inline-watched videos stay subscribed');
   assert.equal(aliceCamera.subscribed, null, 'detaching a screen does not interrupt its camera');
-  assert.equal(aliceAudio.subscribed, null, 'audio remains in the main window');
+  assert.equal(aliceAudio.subscribed, true, 'watched audio remains in the main window');
   bridge.setDetachedScreens(['alice', 'bob']);
   bridge.setStreamVolume(0.2, 'alice#video');
   bridge.setStreamVolume(0.6, 'bob#video');
@@ -130,6 +131,7 @@ console.log('Multiple streams retain independent video, audio, volume and teardo
 
 const activeRoom = {};
 bridge.testSetRoom(activeRoom);
+bridge.setInlineScreens(['carol']);
 const unsubscribeActive = bridge.testUnsubscribe(activeRoom);
 const currentVideo = Object.assign(track(), { kind: 'video' });
 const staleVideo = Object.assign(track(), { kind: 'video' });
@@ -200,8 +202,10 @@ console.log('Native camera and screen share one identity and detach independentl
   assert.equal((await bridge.previewStats('bob')).fps, 30);
   assert.equal(await bridge.previewStats('missing'), null);
   const bobAudio = bridge.testAudioTracks.bob;
+  bridge.setInlineScreens(['bob']);
+  const beforeDetach = bobAudio.detached.length;
   bridge.testClearTracks();
-  assert.equal(bobAudio.detached.length, 2);
+  assert.equal(bobAudio.detached.length, beforeDetach + 1);
   console.log('Preview measurements belong to each stream and preserve actual FPS.');
 
   const selfScreen = track();
