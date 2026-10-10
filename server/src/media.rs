@@ -23,6 +23,7 @@ pub struct SweepReport {
 pub enum StoreError {
     Unsupported,
     UnsupportedSound,
+    UnsupportedFile,
     Full,
     Io,
 }
@@ -32,8 +33,9 @@ impl std::fmt::Display for StoreError {
         f.write_str(match self {
             StoreError::Unsupported => "unsupported image format (PNG, JPEG, GIF, WebP or AVIF)",
             StoreError::UnsupportedSound => "unsupported sound format (MP3, OGG or WAV)",
+            StoreError::UnsupportedFile => "invalid file data",
             StoreError::Full => "this server's media storage is full",
-            StoreError::Io => "the server could not store the image",
+            StoreError::Io => "the server could not store the media",
         })
     }
 }
@@ -75,10 +77,15 @@ impl MediaStore {
         self.store_kind(data_url, Kind::Sound)
     }
 
+    pub fn store_file_data_url(&self, data_url: &str) -> Result<String, StoreError> {
+        self.store_kind(data_url, Kind::File)
+    }
+
     fn store_kind(&self, data_url: &str, kind: Kind) -> Result<String, StoreError> {
         let unsupported = match kind {
             Kind::Image => StoreError::Unsupported,
             Kind::Sound => StoreError::UnsupportedSound,
+            Kind::File => StoreError::UnsupportedFile,
         };
         let rest = data_url.strip_prefix("data:").ok_or(unsupported)?;
         let (mime, payload) = rest.split_once(";base64,").ok_or(unsupported)?;
@@ -104,6 +111,15 @@ impl MediaStore {
             ".{name}.{}.tmp",
             TMP.fetch_add(1, Ordering::Relaxed)
         ));
+        #[cfg(windows)]
+        if matches!(kind, Kind::File) {
+            let mut zone = tmp.as_os_str().to_owned();
+            zone.push(":Zone.Identifier");
+            if std::fs::write(zone, b"[ZoneTransfer]\r\nZoneId=3\r\n").is_err() {
+                let _ = std::fs::remove_file(&tmp);
+                return Err(StoreError::Io);
+            }
+        }
         if std::fs::write(&tmp, &bytes).is_err() {
             let _ = std::fs::remove_file(&tmp);
             return Err(StoreError::Io);
@@ -128,6 +144,19 @@ impl MediaStore {
     }
 
     pub fn sweep(&self, referenced: &HashSet<String>, grace: Duration) -> SweepReport {
+        self.sweep_kind(referenced, grace, false)
+    }
+
+    pub fn sweep_files(&self, referenced: &HashSet<String>) -> SweepReport {
+        self.sweep_kind(referenced, Duration::ZERO, true)
+    }
+
+    fn sweep_kind(
+        &self,
+        referenced: &HashSet<String>,
+        grace: Duration,
+        files_only: bool,
+    ) -> SweepReport {
         let mut report = SweepReport::default();
         let Ok(entries) = std::fs::read_dir(&self.dir) else {
             return report;
@@ -135,7 +164,7 @@ impl MediaStore {
         let now = SystemTime::now();
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
-            if name.starts_with('.') {
+            if name.starts_with('.') || (files_only && !name.ends_with(".bin")) {
                 continue;
             }
             if referenced.contains(&name) {
@@ -200,15 +229,26 @@ fn sanitize(name: &str) -> Option<String> {
     }
 }
 
+pub fn is_image_address(raw: &str) -> bool {
+    raw.strip_prefix(SENTINEL)
+        .and_then(sanitize)
+        .is_some_and(|name| {
+            name.rsplit_once('.')
+                .is_some_and(|(_, ext)| matches!(ext, "png" | "jpg" | "gif" | "webp" | "avif"))
+        })
+}
+
 /// Kept apart so a message picture or an avatar can never be stored as audio.
 #[derive(Clone, Copy)]
 enum Kind {
     Image,
     Sound,
+    File,
 }
 
 fn ext_for_mime(mime: &str, kind: Kind) -> Option<&'static str> {
     match (kind, mime) {
+        (Kind::File, "application/octet-stream") => Some("bin"),
         (Kind::Image, "image/png") => Some("png"),
         (Kind::Image, "image/jpeg" | "image/jpg") => Some("jpg"),
         (Kind::Image, "image/gif") => Some("gif"),
@@ -225,6 +265,7 @@ fn ext_for_mime(mime: &str, kind: Kind) -> Option<&'static str> {
 /// `.png` decodes as one and nothing else can be parked here under that name.
 fn looks_like(ext: &str, bytes: &[u8]) -> bool {
     match ext {
+        "bin" => !bytes.is_empty(),
         "png" => bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
         "jpg" => bytes.starts_with(&[0xFF, 0xD8, 0xFF]),
         "gif" => bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a"),
@@ -261,6 +302,33 @@ fn mime_for_name(name: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn opaque_files_cannot_be_images_and_expiry_sweeps_only_files() {
+        let (media, dir) = store();
+        let file = media
+            .store_file_data_url("data:application/octet-stream;base64,TVo=")
+            .unwrap();
+        assert!(!is_image_address(&file));
+        assert!(file.ends_with(".bin"));
+        #[cfg(windows)]
+        {
+            let path = dir.path().join(file.strip_prefix("media:").unwrap());
+            let mut zone = path.as_os_str().to_owned();
+            zone.push(":Zone.Identifier");
+            assert_eq!(
+                std::fs::read_to_string(zone).unwrap(),
+                "[ZoneTransfer]\r\nZoneId=3\r\n"
+            );
+        }
+        let _ = dir;
+        let image = media.store_data_url(PNG).unwrap();
+        assert!(is_image_address(&image));
+        let report = media.sweep_files(&HashSet::new());
+        assert_eq!(report.deleted, 1);
+        assert!(media.inline(&file).is_none());
+        assert!(media.inline(&image).is_some());
+    }
 
     fn store() -> (MediaStore, tempdir::Dir) {
         let dir = tempdir::Dir::new();

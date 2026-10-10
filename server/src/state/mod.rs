@@ -12,6 +12,7 @@ use crate::protocol::{
 };
 use crate::store::Store;
 
+mod chat_tools;
 mod commands;
 
 /// A failed write is logged and ignored: the change survives the session but
@@ -22,7 +23,7 @@ fn persist(res: Result<(), sqlx::Error>, what: &str) {
     }
 }
 
-fn durable(res: Result<(), sqlx::Error>, what: &str) -> Result<(), String> {
+fn durable<T>(res: Result<T, sqlx::Error>, what: &str) -> Result<T, String> {
     res.map_err(|e| {
         tracing::error!(error = %e, what, "durable write failed");
         "The server could not save this change. Please try again.".to_string()
@@ -2162,6 +2163,7 @@ impl AppState {
     /// Runs after the retention sweep, which is what *creates* unreferenced
     /// blobs. A failed query means we do not know what is referenced — so keep.
     pub async fn sweep_media(&self) -> crate::media::SweepReport {
+        let _write = self.durable_writes.lock().await;
         match self.store.referenced_media().await {
             Ok(referenced) => self.media.sweep(&referenced, MEDIA_GRACE),
             Err(e) => {
@@ -2475,6 +2477,9 @@ impl AppState {
     /// A link is refused: every viewer's webview would fetch it, handing the
     /// viewer's IP to whoever set it.
     pub fn image_reference(&self, by_pubkey: &str, img: &str) -> Result<String, String> {
+        if img.starts_with("media:") && !crate::media::is_image_address(img) {
+            return Err("that attachment is not an image".into());
+        }
         if let Some(address) = self.media.existing(img) {
             return Ok(address);
         }
@@ -2588,6 +2593,8 @@ impl AppState {
         reply_to: Option<ReplyRef>,
     ) -> Result<Message, String> {
         let message = Message {
+            attachment: None,
+            pinned: false,
             id: Uuid::new_v4(),
             channel_id,
             author,

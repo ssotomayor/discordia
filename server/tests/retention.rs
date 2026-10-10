@@ -57,6 +57,8 @@ fn channel(guild_id: Id) -> Channel {
 
 fn message(channel_id: Id, at_ms: i64, body: &str) -> Message {
     Message {
+        attachment: None,
+        pinned: false,
         id: Id::new_v4(),
         channel_id,
         author: User {

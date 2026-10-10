@@ -74,6 +74,7 @@ pub struct Detector {
     extra: Vec<(String, String)>,
     installed: Vec<super::installed::Game>,
     refreshed: Instant,
+    artwork: HashMap<std::path::PathBuf, Option<String>>,
 }
 
 impl Detector {
@@ -97,6 +98,7 @@ impl Detector {
             extra: extra.to_vec(),
             installed: super::installed::discover(),
             refreshed: Instant::now(),
+            artwork: HashMap::new(),
         }
     }
 
@@ -126,26 +128,36 @@ impl Detector {
             self.refreshed = Instant::now();
         }
         let processes = self.system.scan();
-        let mut best: Option<(u64, &str)> = None;
+        let mut best: Option<(u64, String, Option<std::path::PathBuf>)> = None;
         for process in &processes {
             let Some(name) = self.lookup(process) else {
                 continue;
             };
             let started = process.started;
             if best
-                .map(|(prev, _)| oldest(started) < oldest(prev))
+                .as_ref()
+                .map(|(prev, _, _)| oldest(started) < oldest(*prev))
                 .unwrap_or(true)
             {
-                best = Some((started, name));
+                best = Some((started, name.to_owned(), process.exe.clone()));
             }
         }
 
-        best.map(|(started, name)| Activity {
+        best.map(|(started, name, exe)| Activity {
             kind: ActivityKind::Playing,
             name: name.to_string(),
             details: None,
             state: None,
             started_ms: (started != 0).then_some(started as i64 * 1000),
+            image: exe.and_then(|path| {
+                if self.artwork.len() >= 128 {
+                    self.artwork.clear();
+                }
+                self.artwork
+                    .entry(path.clone())
+                    .or_insert_with(|| super::artwork::from_executable(&path))
+                    .clone()
+            }),
         })
     }
 

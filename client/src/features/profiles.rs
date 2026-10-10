@@ -27,9 +27,16 @@ fn ActivityCard(activity: crate::protocol::Activity) -> Element {
         .and_then(|start| elapsed_since(start, now_ms()));
 
     rsx! {
-        div { class: "mt-3 rounded-xl border border-[var(--edge)] p-3", style: "background: var(--bg2);",
+        div { class: "mt-3 rounded-xl border border-[var(--edge)] p-3", style: "background-color: var(--bg2); display: flow-root;",
             div { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-1.5",
                 "{activity.kind.verb()}"
+            }
+            div { style: "float: left; width: 48px; height: 48px; margin-right: 10px; border-radius: 8px; overflow: hidden; display: flex; align-items: center; justify-content: center;",
+                if let Some(image) = activity.image.as_deref() {
+                    img { src: "{image}", alt: "{activity.name}", style: "width: 48px; height: 48px; object-fit: cover;" }
+                } else {
+                    span { style: "font-size: 28px;", "🎮" }
+                }
             }
             div { class: "text-sm text-[var(--text)] font-medium break-words", "{activity.name}" }
             if let Some(details) = activity.details.as_deref() {

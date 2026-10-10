@@ -1042,6 +1042,40 @@ fn apply(
             s.merge_history(channel_id, messages);
             resolve_media(&mut s, tx);
         }
+        ServerMessage::GuildFilePolicy { guild_id, policy } => {
+            s.guild_file_policies.insert(guild_id, policy);
+        }
+        ServerMessage::FileUploadResult { request_id, error } => {
+            s.file_upload_result = Some((request_id, error));
+        }
+        ServerMessage::MessageSearchResults {
+            channel_id,
+            request_id,
+            messages,
+        } => {
+            s.message_search = Some((channel_id, request_id, messages));
+        }
+        ServerMessage::GuildStickers { guild_id, stickers } => {
+            s.guild_stickers.insert(guild_id, stickers);
+        }
+        ServerMessage::MessagePin {
+            channel_id,
+            message_id,
+            pinned,
+        } => {
+            if let Some(messages) = s.messages.get_mut(&channel_id) {
+                for message in messages.iter_mut().filter(|m| m.id == message_id) {
+                    message.pinned = pinned;
+                }
+            }
+            if let Some((cid, _, messages)) = &mut s.message_search
+                && *cid == channel_id
+            {
+                for message in messages.iter_mut().filter(|m| m.id == message_id) {
+                    message.pinned = pinned;
+                }
+            }
+        }
         ServerMessage::MessageCreate(m) => {
             let cid = m.channel_id;
             let is_dm = !s.channels.iter().any(|c| c.id == cid);
@@ -1397,6 +1431,11 @@ fn apply(
         } => {
             if let Some(msgs) = s.messages.get_mut(&channel_id) {
                 msgs.retain(|m| m.id != message_id);
+            }
+            if let Some((cid, _, messages)) = &mut s.message_search
+                && *cid == channel_id
+            {
+                messages.retain(|m| m.id != message_id);
             }
         }
         ServerMessage::ScreenShareState {
@@ -1881,6 +1920,8 @@ mod tests {
                     s.messages.insert(
                         channel,
                         vec![crate::protocol::Message {
+                            attachment: None,
+                            pinned: false,
                             id: message_id,
                             channel_id: channel,
                             author: user.clone(),
@@ -1988,6 +2029,8 @@ mod tests {
         s.messages.insert(
             channel,
             vec![crate::protocol::Message {
+                attachment: None,
+                pinned: false,
                 id: Id::new_v4(),
                 channel_id: channel,
                 author: crate::protocol::User {

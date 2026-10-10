@@ -18,17 +18,17 @@ name instead.
 | File | Lines |
 |---|---|
 | `client/src/features/voice.rs` | 4894 |
-| `server/src/state/mod.rs` | 3182 |
-| `server/tests/owner_controls.rs` | 3036 |
-| `server/src/gateway/connection.rs` | 2993 |
+| `server/src/state/mod.rs` | 3189 |
+| `server/tests/owner_controls.rs` | 3039 |
+| `server/src/gateway/connection.rs` | 3078 |
 | `client/src/features/channels.rs` | 1991 |
 | `client/src/features/screenshare.rs` | 3175 |
-| `protocol/src/lib.rs` | 2657 |
-| `client/src/state.rs` | 2147 |
+| `protocol/src/lib.rs` | 2779 |
+| `client/src/state.rs` | 2273 |
 | `client/src/update.rs` | 1228 |
-| `client/src/net.rs` | 2014 |
-| `client/src/features/chat.rs` | 1692 |
-| `server/src/store.rs` | 1201 |
+| `client/src/net.rs` | 2104 |
+| `client/src/features/chat.rs` | 2123 |
+| `server/src/store.rs` | 1336 |
 | `client/src/features/guild_settings.rs` | 1132 |
 | `client/src/identity.rs` | 1123 |
 | `client/src/features/discord_import.rs` | 1127 |
@@ -42,6 +42,10 @@ that direction says a file is safe to open when it is not.
 
 | To find | Open | At |
 |---|---|---|
+| Game image in the profile popup | `client/src/presence/artwork.rs`, `features/profiles.rs` | Windows extracts a cached 64 px executable icon; `Activity.image` carries a bounded inline PNG. Missing art uses a game symbol; no remote image fetch |
+| Animated profile/community images | `client/src/image_edit.rs`, `features/image_editor.rs` | `crop_image` crops composited GIF frames and preserves timing; bounded decode and output apply to avatars, banners and guild icons |
+| Chat files, stickers, pins and search | `client/src/features/chat_tools.rs`, `server/src/state/chat_tools.rs` | `ChatTools` provides author/date/text/attachment filters, pins and sticker management. File uploads require a correlated acknowledgement; download is explicit, never a preview or launch. `FilePolicy` defaults to 2 MB / 7 days; Manage guild can lower the limit or change expiry |
+| File expiration and host storage | `server/src/store.rs`, `server/src/media.rs` | Attachments retain metadata after expiry. `live_file_channels` gates download by membership, visibility and expiry; `sweep_files` reclaims unreferenced `.bin` blobs every minute under `durable_writes`. Windows marks stored and saved files as Internet downloads; no malware scanner |
 | What a `ServerMessage` does to the client | `client/src/net.rs` | `fn apply` — one arm per variant, exhaustive |
 | What the server does with a `ClientMessage` | `server/src/gateway/connection.rs` | `handle_connection`, then ~50 `ClientMessage::` arms |
 | Every wire type | `protocol/src/lib.rs` | grep the variant name; ~70 of them |

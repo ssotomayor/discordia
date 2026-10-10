@@ -123,6 +123,7 @@ async fn build_context(cfg: ServerConfig) -> std::io::Result<(Arc<AppContext>, G
         tick.tick().await;
         loop {
             tick.tick().await;
+            voice_xp_state.sweep_files().await;
             for (guild_id, member) in voice_xp_state.award_voice_minute().await {
                 let targets = voice_xp_state.guild_member_pubkeys(guild_id);
                 voice_xp_state.deliver(

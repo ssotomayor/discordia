@@ -479,6 +479,8 @@ pub fn is_hex_color(s: &str) -> bool {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Activity {
     #[serde(default)]
+    pub image: Option<String>,
+    #[serde(default)]
     pub kind: ActivityKind,
     pub name: String,
     #[serde(default)]
@@ -534,6 +536,9 @@ pub fn sanitize_activity(raw: Activity) -> Option<Activity> {
             .filter(|t| !t.is_empty())
     };
     Some(Activity {
+        image: raw
+            .image
+            .filter(|image| image.len() <= 96_000 && image.starts_with("data:image/png;base64,")),
         kind: raw.kind,
         name,
         details: text(raw.details),
@@ -925,6 +930,10 @@ pub const REPLY_EXCERPT_CHARS: usize = 120;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Message {
+    #[serde(default)]
+    pub attachment: Option<Attachment>,
+    #[serde(default)]
+    pub pinned: bool,
     pub id: Id,
     pub channel_id: Id,
     pub author: User,
@@ -937,6 +946,45 @@ pub struct Message {
     #[serde(default)]
     pub reply_to: Option<ReplyRef>,
     pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Attachment {
+    pub name: String,
+    pub media: String,
+    pub bytes: u64,
+    #[serde(default)]
+    pub expires_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FilePolicy {
+    pub max_bytes: u64,
+    pub retention_days: u32,
+}
+impl Default for FilePolicy {
+    fn default() -> Self {
+        Self {
+            max_bytes: 2_000_000,
+            retention_days: 7,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MessageSearch {
+    #[serde(default)]
+    pub text: String,
+    #[serde(default)]
+    pub author: Option<String>,
+    #[serde(default)]
+    pub after_ms: Option<i64>,
+    #[serde(default)]
+    pub before_ms: Option<i64>,
+    #[serde(default)]
+    pub has_attachment: bool,
+    #[serde(default)]
+    pub pinned_only: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1526,6 +1574,50 @@ pub enum ClientMessage {
         #[serde(default)]
         before_ms: Option<i64>,
     },
+    SendFile {
+        request_id: Id,
+        channel_id: Id,
+        name: String,
+        data_url: String,
+        content: String,
+        #[serde(default)]
+        reply_to: Option<Id>,
+    },
+    PinMessage {
+        channel_id: Id,
+        message_id: Id,
+        pinned: bool,
+    },
+    SearchMessages {
+        channel_id: Id,
+        request_id: Id,
+        query: MessageSearch,
+        #[serde(default)]
+        offset: u32,
+    },
+    FetchGuildStickers {
+        guild_id: Id,
+    },
+    FetchGuildFilePolicy {
+        guild_id: Id,
+    },
+    SetGuildFilePolicy {
+        guild_id: Id,
+        policy: FilePolicy,
+    },
+    CreateGuildSticker {
+        guild_id: Id,
+        name: String,
+        image: String,
+    },
+    DeleteGuildSticker {
+        guild_id: Id,
+        sticker_id: Id,
+    },
+    SendSticker {
+        channel_id: Id,
+        sticker_id: Id,
+    },
     SendMessage {
         channel_id: Id,
         content: String,
@@ -1876,6 +1968,28 @@ pub fn ice_urls(servers: &[IceServer]) -> Vec<&str> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", content = "d", rename_all = "snake_case")]
 pub enum ServerMessage {
+    GuildFilePolicy {
+        guild_id: Id,
+        policy: FilePolicy,
+    },
+    FileUploadResult {
+        request_id: Id,
+        error: Option<String>,
+    },
+    MessagePin {
+        channel_id: Id,
+        message_id: Id,
+        pinned: bool,
+    },
+    MessageSearchResults {
+        channel_id: Id,
+        request_id: Id,
+        messages: Vec<Message>,
+    },
+    GuildStickers {
+        guild_id: Id,
+        stickers: Vec<GuildEmoji>,
+    },
     Hello {
         nonce: String,
     },

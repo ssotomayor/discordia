@@ -20,6 +20,10 @@ pub struct GuildArchive {
     pub emojis: Vec<GuildEmoji>,
     #[serde(default)]
     pub sounds: Vec<GuildSound>,
+    #[serde(default)]
+    pub stickers: Vec<GuildEmoji>,
+    #[serde(default)]
+    pub file_policy: crate::protocol::FilePolicy,
     pub members: Vec<Member>,
     pub bans: Vec<String>,
     pub invite: Option<String>,
@@ -116,6 +120,8 @@ impl Store {
             roles,
             emojis,
             sounds,
+            stickers: self.stickers(guild_id).await?,
+            file_policy: self.file_policy(guild_id).await?,
             members,
             bans,
             invite,
@@ -153,6 +159,14 @@ impl Store {
         let mut guild = archive.guild.clone();
         guild.id = new_guild_id;
         self.upsert_guild(&guild).await?;
+        self.set_file_policy(new_guild_id, &archive.file_policy)
+            .await?;
+        for sticker in &archive.stickers {
+            let mut sticker = sticker.clone();
+            sticker.id = Uuid::new_v4();
+            sticker.guild_id = new_guild_id;
+            self.insert_sticker(&sticker).await?;
+        }
 
         for r in &archive.roles {
             let mut role = r.clone();

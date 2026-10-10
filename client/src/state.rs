@@ -286,6 +286,10 @@ pub struct AppState {
     pub channels: Vec<Channel>,
     pub members: Vec<Member>,
     pub messages: BTreeMap<Id, Vec<Message>>,
+    pub message_search: Option<(Id, Id, Vec<Message>)>,
+    pub file_upload_result: Option<(Id, Option<String>)>,
+    pub guild_file_policies: BTreeMap<Id, crate::protocol::FilePolicy>,
+    pub guild_stickers: BTreeMap<Id, Vec<crate::protocol::GuildEmoji>>,
     pub voice_states: Vec<VoiceState>,
     pub voice: VoiceSession,
     pub voice_session_epoch: u64,
@@ -465,6 +469,10 @@ impl AppState {
             channels: Vec::new(),
             members: Vec::new(),
             messages: BTreeMap::new(),
+            message_search: None,
+            file_upload_result: None,
+            guild_file_policies: BTreeMap::new(),
+            guild_stickers: BTreeMap::new(),
             voice_states: Vec::new(),
             voice: VoiceSession::default(),
             voice_session_epoch: 0,
@@ -642,6 +650,10 @@ impl AppState {
         self.catalog_total = 0;
         self.profiles.clear();
         self.activities.clear();
+        self.message_search = None;
+        self.file_upload_result = None;
+        self.guild_file_policies.clear();
+        self.guild_stickers.clear();
         self.server_origin = None;
         self.sfu_tunnel_url = None;
         self.rendezvous_url = None;
@@ -1680,6 +1692,8 @@ mod tests {
 
     fn at(id: Id, channel_id: Id, secs: i64) -> Message {
         Message {
+            attachment: None,
+            pinned: false,
             id,
             channel_id,
             author: user("abcd"),
@@ -1944,6 +1958,8 @@ mod tests {
         let entry = s.messages.entry(cid).or_default();
         for at in ats {
             entry.push(Message {
+                attachment: None,
+                pinned: false,
                 id: Id::new_v4(),
                 channel_id: cid,
                 author: user(peer),

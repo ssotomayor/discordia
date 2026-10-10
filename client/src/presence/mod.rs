@@ -4,6 +4,7 @@
 //! activity is a claim about a machine it has no view of, exactly like `bot`
 //! and `client_version` in `Identify` (trap 12). Lying costs nobody anything.
 
+mod artwork;
 pub mod detect;
 mod installed;
 pub mod ipc;
@@ -268,6 +269,7 @@ mod tests {
 
     fn named(name: &str) -> Option<Activity> {
         Some(Activity {
+            image: None,
             kind: ActivityKind::Playing,
             name: name.to_string(),
             details: None,

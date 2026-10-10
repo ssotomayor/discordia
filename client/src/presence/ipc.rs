@@ -74,6 +74,7 @@ fn activity_from_frame(args: &Value) -> Option<Activity> {
     let details = text("details").filter(|d| *d != name);
     let state = text("state").filter(|st| *st != name);
     Some(Activity {
+        image: None,
         kind: ActivityKind::Playing,
         name,
         details,

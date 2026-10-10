@@ -76,6 +76,23 @@ peer's IP, and a proxy makes every host the same peer.
 Guild migration: `cargo run -p dioxusfun-server -- export --guild <uuid> f.json`
 then `import f.json` on the target. Fresh ids, pubkeys preserved.
 
+## Community file attachments
+
+| Setting | Default | Where |
+|---|---|---|
+| File size | 2 MB | Chat → Attach file → Save file limits (Manage guild); 1–2000 KB |
+| File lifetime | 7 days | Same controls; 1–365 days, applied to new uploads |
+| Total media storage | 2 GiB | `DIOXUSFUN_MEDIA_MAX_BYTES`; shared by files, pictures and sounds |
+
+Expired files cannot be downloaded; the message retains its name and size. The
+host checks every minute and removes blobs with no live reference, including
+on restart. A live second attachment keeps shared bytes until it expires.
+Files remain opaque `.bin` blobs; neither host nor client opens them. Windows
+marks stored blobs and saved downloads as Internet files. There is no malware
+scanner. Expiry cannot remove copies someone already downloaded. Profile and
+community artwork, stickers and inline chat pictures follow their existing
+reference/retention rules; file expiry applies to **Attach file** uploads.
+
 ## DM voice calls
 
 | Property | Behavior |

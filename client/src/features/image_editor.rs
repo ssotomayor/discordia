@@ -125,8 +125,8 @@ pub fn ImageEditor(
         let image = Arc::clone(&image);
         spawn(async move {
             let result = tokio::task::spawn_blocking(move || {
-                crate::image_edit::crop(
-                    &image.pixels,
+                crate::image_edit::crop_image(
+                    &image,
                     [sx, sy, sw, sh],
                     shape.output(),
                     shape == CropShape::Banner,

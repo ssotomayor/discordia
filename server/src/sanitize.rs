@@ -49,7 +49,7 @@ fn paragraph(v: Option<String>, max: usize) -> Option<String> {
 
 /// Anything else is a link, and a link is a fetch by every viewer.
 fn picture(v: Option<String>) -> Option<String> {
-    v.filter(|p| p.starts_with("media:") || p.starts_with("data:image/"))
+    v.filter(|p| crate::media::is_image_address(p) || p.starts_with("data:image/"))
 }
 
 fn pubkey(raw: &str) -> String {
@@ -113,7 +113,7 @@ pub fn role(r: &mut Role) {
 }
 
 pub fn emoji_is_sound(e: &GuildEmoji) -> bool {
-    valid_shortcode(&e.shortcode) && crate::media::is_address(&e.image)
+    valid_shortcode(&e.shortcode) && crate::media::is_image_address(&e.image)
 }
 
 pub fn sound(s: &mut GuildSound) -> bool {
@@ -154,7 +154,30 @@ pub fn message(m: &mut Message) -> bool {
     }
     m.content = message_content(&m.content);
     m.image = picture(m.image.take());
-    if m.content.is_empty() && m.image.is_none() {
+    m.attachment = m.attachment.take().filter(|a| {
+        a.bytes > 0
+            && a.bytes <= 2_000_000
+            && a.media.starts_with("media:")
+            && crate::media::is_address(&a.media)
+            && a.media.ends_with(".bin")
+            && !a.name.is_empty()
+            && a.name.len() <= 240
+            && !a
+                .name
+                .contains(['/', '\\', ':', '*', '?', '"', '<', '>', '|'])
+            && !a.name.chars().any(char::is_control)
+    });
+    if let Some(attachment) = &mut m.attachment {
+        attachment.name = sanitize_line(&attachment.name, 240);
+        let maximum = chrono::Utc::now().timestamp_millis() + 365 * 86_400_000;
+        attachment.expires_ms = Some(
+            attachment
+                .expires_ms
+                .unwrap_or_else(|| chrono::Utc::now().timestamp_millis() + 7 * 86_400_000)
+                .min(maximum),
+        );
+    }
+    if m.content.is_empty() && m.image.is_none() && m.attachment.is_none() {
         return false;
     }
     m.reactions.retain_mut(|r| {
@@ -188,6 +211,10 @@ pub fn archive(a: &mut GuildArchive) {
     a.channels.iter_mut().for_each(channel);
     a.roles.iter_mut().for_each(role);
     a.emojis.retain(emoji_is_sound);
+    a.stickers.retain(emoji_is_sound);
+    a.stickers.truncate(128);
+    a.file_policy.max_bytes = a.file_policy.max_bytes.clamp(1, 2_000_000);
+    a.file_policy.retention_days = a.file_policy.retention_days.clamp(1, 365);
     a.sounds.retain_mut(sound);
     a.members.retain_mut(|m| user(&mut m.user));
     a.bans = a
@@ -253,7 +280,9 @@ mod tests {
     #[test]
     fn a_picture_is_an_address_or_bytes_never_a_link() {
         assert!(picture(Some("https://example.invalid/a.png".into())).is_none());
-        assert!(picture(Some("media:abc.png".into())).is_some());
+        assert!(picture(Some(format!("media:{}.png", "a".repeat(64)))).is_some());
+        assert!(picture(Some("media:abc.png".into())).is_none());
+        assert!(picture(Some(format!("media:{}.bin", "a".repeat(64)))).is_none());
         assert!(picture(Some("data:image/png;base64,AA==".into())).is_some());
     }
 }

@@ -152,6 +152,8 @@ impl Store {
 
     async fn init_schema(&self) -> Result<()> {
         let ddl = [
+            "CREATE TABLE IF NOT EXISTS guild_file_policies (guild_id TEXT PRIMARY KEY, policy TEXT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS guild_stickers (id TEXT PRIMARY KEY, guild_id TEXT NOT NULL, shortcode TEXT NOT NULL, image TEXT NOT NULL, added_by TEXT NOT NULL, created_ms INTEGER NOT NULL, UNIQUE(guild_id, shortcode))",
             "CREATE TABLE IF NOT EXISTS users (
                 pubkey TEXT PRIMARY KEY, username TEXT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS profiles (
@@ -234,6 +236,8 @@ impl Store {
         }
 
         for stmt in [
+            "ALTER TABLE messages ADD COLUMN attachment TEXT",
+            "ALTER TABLE messages ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE messages ADD COLUMN reply_id TEXT",
             "ALTER TABLE messages ADD COLUMN reply_author_pubkey TEXT",
             "ALTER TABLE messages ADD COLUMN reply_author_username TEXT",
@@ -251,6 +255,8 @@ impl Store {
                 return Err(e);
             }
         }
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_message_file_media ON messages(json_extract(attachment, '$.media')) WHERE attachment IS NOT NULL")
+            .execute(&self.pool).await?;
         Ok(())
     }
 
@@ -532,6 +538,8 @@ impl Store {
             "members",
             "roles",
             "guild_emojis",
+            "guild_stickers",
+            "guild_file_policies",
             "guild_sounds",
             "bans",
             "invites",
@@ -852,8 +860,40 @@ impl Store {
         tx.commit().await
     }
 
+    pub async fn live_file_channels(&self, media: &str, now_ms: i64) -> Result<Vec<Id>> {
+        let rows = sqlx::query("SELECT DISTINCT channel_id FROM messages WHERE attachment IS NOT NULL AND json_extract(attachment, '$.media') = ? AND (json_extract(attachment, '$.expires_ms') IS NULL OR json_extract(attachment, '$.expires_ms') > ?)")
+            .bind(media).bind(now_ms).fetch_all(&self.pool).await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|r| uuid::Uuid::parse_str(&r.get::<String, _>(0)).ok())
+            .collect())
+    }
+
     pub async fn referenced_media(&self) -> Result<HashSet<String>> {
         let mut out = HashSet::new();
+        for r in sqlx::query("SELECT attachment FROM messages WHERE attachment IS NOT NULL")
+            .fetch_all(&self.pool)
+            .await?
+        {
+            let raw: String = r.get(0);
+            if let Ok(attachment) = serde_json::from_str::<crate::protocol::Attachment>(&raw)
+                && attachment
+                    .expires_ms
+                    .is_none_or(|ms| ms > Utc::now().timestamp_millis())
+                && let Some(name) = attachment.media.strip_prefix("media:")
+            {
+                out.insert(name.to_owned());
+            }
+        }
+        for r in sqlx::query("SELECT image FROM guild_stickers")
+            .fetch_all(&self.pool)
+            .await?
+        {
+            let image: String = r.get(0);
+            if let Some(name) = image.strip_prefix("media:") {
+                out.insert(name.to_owned());
+            }
+        }
         for r in sqlx::query("SELECT image FROM messages WHERE image IS NOT NULL")
             .fetch_all(&self.pool)
             .await?
@@ -943,8 +983,8 @@ impl Store {
             "INSERT INTO messages (id, channel_id, author_pubkey, author_username,
                                    content, image, reactions, reply_id,
                                    reply_author_pubkey, reply_author_username,
-                                   reply_excerpt, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                   reply_excerpt, created_at, attachment, pinned)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(m.id.to_string())
         .bind(m.channel_id.to_string())
@@ -958,9 +998,100 @@ impl Store {
         .bind(m.reply_to.as_ref().map(|r| r.author_username.clone()))
         .bind(m.reply_to.as_ref().map(|r| r.excerpt.clone()))
         .bind(m.created_at.timestamp_millis())
+        .bind(
+            m.attachment
+                .as_ref()
+                .map(|a| serde_json::to_string(a).expect("attachment serializes")),
+        )
+        .bind(m.pinned)
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    pub async fn search_messages(
+        &self,
+        channel_id: Id,
+        query: &crate::protocol::MessageSearch,
+        offset: u32,
+    ) -> Result<Vec<Message>> {
+        let rows = sqlx::query("SELECT id, channel_id, author_pubkey, author_username, content, image, reactions, reply_id, reply_author_pubkey, reply_author_username, reply_excerpt, created_at, attachment, pinned FROM messages WHERE channel_id = ? AND instr(lower(content), lower(?)) > 0 AND (? IS NULL OR author_pubkey = ?) AND (? IS NULL OR created_at >= ?) AND (? IS NULL OR created_at < ?) AND (? = 0 OR image IS NOT NULL OR attachment IS NOT NULL) AND (? = 0 OR pinned = 1) ORDER BY created_at DESC, id DESC LIMIT 100 OFFSET ?")
+            .bind(channel_id.to_string()).bind(&query.text)
+            .bind(&query.author).bind(&query.author)
+            .bind(query.after_ms).bind(query.after_ms)
+            .bind(query.before_ms).bind(query.before_ms)
+            .bind(query.has_attachment).bind(query.pinned_only).bind(i64::from(offset.min(10_000)))
+            .fetch_all(&self.pool).await?;
+        Ok(rows.into_iter().map(row_to_message).collect())
+    }
+
+    pub async fn set_message_pin(
+        &self,
+        channel_id: Id,
+        message_id: Id,
+        pinned: bool,
+    ) -> Result<bool> {
+        let result = sqlx::query("UPDATE messages SET pinned = ? WHERE id = ? AND channel_id = ?")
+            .bind(pinned)
+            .bind(message_id.to_string())
+            .bind(channel_id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn file_policy(&self, guild_id: Id) -> Result<crate::protocol::FilePolicy> {
+        let row = sqlx::query("SELECT policy FROM guild_file_policies WHERE guild_id = ?")
+            .bind(guild_id.to_string())
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row
+            .and_then(|r| serde_json::from_str(&r.get::<String, _>(0)).ok())
+            .unwrap_or_default())
+    }
+
+    pub async fn set_file_policy(
+        &self,
+        guild_id: Id,
+        policy: &crate::protocol::FilePolicy,
+    ) -> Result<()> {
+        sqlx::query("INSERT INTO guild_file_policies(guild_id, policy) VALUES (?, ?) ON CONFLICT(guild_id) DO UPDATE SET policy = excluded.policy")
+            .bind(guild_id.to_string()).bind(serde_json::to_string(policy).expect("policy serializes")).execute(&self.pool).await?;
+        Ok(())
+    }
+
+    pub async fn stickers(&self, guild_id: Id) -> Result<Vec<GuildEmoji>> {
+        let rows = sqlx::query("SELECT id, guild_id, shortcode, image, added_by, created_ms FROM guild_stickers WHERE guild_id = ? ORDER BY shortcode")
+            .bind(guild_id.to_string()).fetch_all(&self.pool).await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| GuildEmoji {
+                id: parse_id(&r.get::<String, _>(0)),
+                guild_id: parse_id(&r.get::<String, _>(1)),
+                shortcode: r.get(2),
+                image: r.get(3),
+                added_by: r.get(4),
+                created_ms: r.get(5),
+            })
+            .collect())
+    }
+
+    pub async fn insert_sticker(&self, sticker: &GuildEmoji) -> Result<()> {
+        sqlx::query("INSERT INTO guild_stickers(id, guild_id, shortcode, image, added_by, created_ms) VALUES (?, ?, ?, ?, ?, ?)")
+            .bind(sticker.id.to_string()).bind(sticker.guild_id.to_string()).bind(&sticker.shortcode).bind(&sticker.image).bind(&sticker.added_by).bind(sticker.created_ms).execute(&self.pool).await?;
+        Ok(())
+    }
+
+    pub async fn delete_sticker(&self, guild_id: Id, sticker_id: Id) -> Result<bool> {
+        Ok(
+            sqlx::query("DELETE FROM guild_stickers WHERE id = ? AND guild_id = ?")
+                .bind(sticker_id.to_string())
+                .bind(guild_id.to_string())
+                .execute(&self.pool)
+                .await?
+                .rows_affected()
+                > 0,
+        )
     }
 
     pub async fn reply_ref(&self, channel_id: Id, message_id: Id) -> Result<Option<ReplyRef>> {
@@ -995,7 +1126,7 @@ impl Store {
                 sqlx::query(
                     "SELECT id, channel_id, author_pubkey, author_username, content,
                             image, reactions, reply_id, reply_author_pubkey,
-                            reply_author_username, reply_excerpt, created_at
+                            reply_author_username, reply_excerpt, created_at, attachment, pinned
                      FROM messages WHERE channel_id = ? AND created_at < ?
                      ORDER BY created_at DESC, rowid DESC LIMIT ?",
                 )
@@ -1009,7 +1140,7 @@ impl Store {
                 sqlx::query(
                     "SELECT id, channel_id, author_pubkey, author_username, content,
                             image, reactions, reply_id, reply_author_pubkey,
-                            reply_author_username, reply_excerpt, created_at
+                            reply_author_username, reply_excerpt, created_at, attachment, pinned
                      FROM messages WHERE channel_id = ?
                      ORDER BY created_at DESC, rowid DESC LIMIT ?",
                 )
@@ -1110,6 +1241,10 @@ fn row_to_message(r: sqlx::sqlite::SqliteRow) -> Message {
         })
     });
     Message {
+        attachment: r
+            .get::<Option<String>, _>("attachment")
+            .and_then(|a| serde_json::from_str(&a).ok()),
+        pinned: r.get::<i64, _>("pinned") != 0,
         id: parse_id(&r.get::<String, _>(0)),
         channel_id: parse_id(&r.get::<String, _>(1)),
         author: User {

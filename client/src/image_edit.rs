@@ -1,7 +1,7 @@
 use std::io::Cursor;
 
 use base64::Engine as _;
-use image::{ImageDecoder, ImageReader, RgbaImage};
+use image::{AnimationDecoder, ImageDecoder, ImageReader, RgbaImage};
 
 const MAX_INPUT_BYTES: usize = 15_000_000;
 const MAX_PIXELS: u64 = 16_000_000;
@@ -9,6 +9,7 @@ const MAX_PIXELS: u64 = 16_000_000;
 pub struct DecodedImage {
     pub pixels: RgbaImage,
     pub preview: String,
+    frames: Vec<image::Frame>,
 }
 
 pub fn decode(src: &str) -> Result<DecodedImage, String> {
@@ -24,6 +25,31 @@ pub fn decode(src: &str) -> Result<DecodedImage, String> {
         .map_err(|_| "Invalid image data.")?;
     if bytes.len() > MAX_INPUT_BYTES {
         return Err("That image is too large to edit.".into());
+    }
+    let animated = bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a");
+    let mut frames = Vec::new();
+    if animated {
+        let mut decoder = image::codecs::gif::GifDecoder::new(Cursor::new(&bytes))
+            .map_err(|e| format!("Couldn't open that GIF: {e}"))?;
+        let mut limits = image::Limits::default();
+        limits.max_alloc = Some(MAX_PIXELS * 8);
+        limits.max_image_width = Some(8192);
+        limits.max_image_height = Some(8192);
+        decoder.set_limits(limits).map_err(|e| e.to_string())?;
+        let (width, height) = decoder.dimensions();
+        let frame_pixels = u64::from(width) * u64::from(height);
+        if frame_pixels == 0 || frame_pixels > MAX_PIXELS {
+            return Err("That GIF has too many pixels.".into());
+        }
+        for frame in decoder.into_frames() {
+            if frames.len() >= 180 || frame_pixels * (frames.len() as u64 + 1) > 32_000_000 {
+                return Err(
+                    "That animation is too large to edit (180 frames / 32 million pixels maximum)."
+                        .into(),
+                );
+            }
+            frames.push(frame.map_err(|e| format!("Couldn't decode that GIF: {e}"))?);
+        }
     }
     let mut reader = ImageReader::new(Cursor::new(bytes))
         .with_guessed_format()
@@ -55,7 +81,61 @@ pub fn decode(src: &str) -> Result<DecodedImage, String> {
     } else {
         png_url(&pixels)?
     };
-    Ok(DecodedImage { pixels, preview })
+    let preview = if frames.len() > 1 {
+        src.to_owned()
+    } else {
+        preview
+    };
+    Ok(DecodedImage {
+        pixels,
+        preview,
+        frames,
+    })
+}
+
+pub fn crop_image(
+    image: &DecodedImage,
+    rect: [f64; 4],
+    output: (u32, u32),
+    jpeg: bool,
+) -> Result<String, String> {
+    if image.frames.len() <= 1 {
+        return crop(&image.pixels, rect, output, jpeg);
+    }
+    let mut bytes = Vec::new();
+    {
+        let mut writer = GifOutput(&mut bytes);
+        let mut encoder = image::codecs::gif::GifEncoder::new_with_speed(&mut writer, 10);
+        encoder
+            .set_repeat(image::codecs::gif::Repeat::Infinite)
+            .map_err(|e| e.to_string())?;
+        for frame in &image.frames {
+            let pixels = crop_pixels(frame.buffer(), rect, output)?;
+            encoder
+                .encode_frame(image::Frame::from_parts(pixels, 0, 0, frame.delay()))
+                .map_err(|e| format!("Couldn't export that GIF: {e}"))?;
+        }
+    }
+    if bytes.len() > 2_000_000 {
+        return Err(
+            "That GIF is over 2 MB after cropping. Choose a smaller or shorter animation.".into(),
+        );
+    }
+    Ok(data_url("image/gif", &bytes))
+}
+
+struct GifOutput<'a>(&'a mut Vec<u8>);
+impl std::io::Write for GifOutput<'_> {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        if self.0.len().saturating_add(data.len()) > 2_000_000 {
+            return Err(std::io::Error::other("The cropped GIF exceeds 2 MB."));
+        }
+        self.0.extend_from_slice(data);
+        Ok(data.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 pub fn crop(
@@ -64,6 +144,29 @@ pub fn crop(
     output: (u32, u32),
     jpeg: bool,
 ) -> Result<String, String> {
+    let resized = crop_pixels(pixels, rect, output)?;
+    if !jpeg {
+        return png_url(&resized);
+    }
+    let rgb = image::RgbImage::from_fn(output.0, output.1, |x, y| {
+        let rgba = resized.get_pixel(x, y).0;
+        let alpha = u32::from(rgba[3]);
+        image::Rgb(std::array::from_fn(|i| {
+            ((u32::from(rgba[i]) * alpha + 255 * (255 - alpha) + 127) / 255) as u8
+        }))
+    });
+    let mut bytes = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, 92)
+        .encode_image(&rgb)
+        .map_err(|e| format!("Couldn't export that image: {e}"))?;
+    Ok(data_url("image/jpeg", &bytes))
+}
+
+fn crop_pixels(
+    pixels: &RgbaImage,
+    rect: [f64; 4],
+    output: (u32, u32),
+) -> Result<RgbaImage, String> {
     let [x, y, width, height] = rect;
     if !rect.iter().all(|v| v.is_finite())
         || pixels.width() == 0
@@ -109,21 +212,7 @@ pub fn crop(
                 .min(255) as u8;
         }
     }
-    if !jpeg {
-        return png_url(&resized);
-    }
-    let rgb = image::RgbImage::from_fn(output.0, output.1, |x, y| {
-        let rgba = resized.get_pixel(x, y).0;
-        let alpha = u32::from(rgba[3]);
-        image::Rgb(std::array::from_fn(|i| {
-            ((u32::from(rgba[i]) * alpha + 255 * (255 - alpha) + 127) / 255) as u8
-        }))
-    });
-    let mut bytes = Vec::new();
-    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, 92)
-        .encode_image(&rgb)
-        .map_err(|e| format!("Couldn't export that image: {e}"))?;
-    Ok(data_url("image/jpeg", &bytes))
+    Ok(resized)
 }
 
 fn png_url(pixels: &RgbaImage) -> Result<String, String> {
@@ -144,6 +233,54 @@ fn data_url(mime: &str, bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn animated_profile_crop_keeps_frames_timing_and_selected_region() {
+        let mut input = Vec::new();
+        {
+            let mut encoder = image::codecs::gif::GifEncoder::new(&mut input);
+            encoder
+                .set_repeat(image::codecs::gif::Repeat::Infinite)
+                .unwrap();
+            for (color, delay) in [([255, 0, 0, 255], 100), ([0, 255, 0, 255], 250)] {
+                let pixels = RgbaImage::from_fn(8, 4, |x, _| {
+                    if x < 4 {
+                        image::Rgba(color)
+                    } else {
+                        image::Rgba([0, 0, 255, 255])
+                    }
+                });
+                encoder
+                    .encode_frame(image::Frame::from_parts(
+                        pixels,
+                        0,
+                        0,
+                        image::Delay::from_numer_denom_ms(delay, 1),
+                    ))
+                    .unwrap();
+            }
+        }
+        let source = data_url("image/gif", &input);
+        let decoded = decode(&source).unwrap();
+        assert_eq!(decoded.preview, source);
+        for size in [(32, 32), (96, 32)] {
+            let cropped = crop_image(&decoded, [0.0, 0.0, 4.0, 4.0], size, true).unwrap();
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(cropped.split_once(',').unwrap().1)
+                .unwrap();
+            let frames = image::codecs::gif::GifDecoder::new(Cursor::new(bytes))
+                .unwrap()
+                .into_frames()
+                .collect_frames()
+                .unwrap();
+            assert_eq!(frames.len(), 2);
+            assert_eq!(frames[0].buffer().dimensions(), size);
+            assert_eq!(frames[0].buffer().get_pixel(10, 10).0, [255, 0, 0, 255]);
+            assert_eq!(frames[1].buffer().get_pixel(10, 10).0, [0, 255, 0, 255]);
+            assert_eq!(frames[0].delay().numer_denom_ms(), (100, 1));
+            assert_eq!(frames[1].delay().numer_denom_ms(), (250, 1));
+        }
+    }
 
     fn pixels_from_url(url: &str) -> image::DynamicImage {
         let payload = url.split_once(',').unwrap().1;
