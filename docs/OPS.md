@@ -87,7 +87,8 @@ then `import f.json` on the target. Fresh ids, pubkeys preserved.
 Expired files cannot be downloaded; the message retains its name and size. The
 host checks every minute and removes blobs with no live reference, including
 on restart. A live second attachment keeps shared bytes until it expires.
-Files remain opaque `.bin` blobs; neither host nor client opens them. Windows
+Files remain opaque `.bin` blobs; neither host nor client opens them. After a
+successful download the client opens its destination folder, never the file. Windows
 marks stored blobs and saved downloads as Internet files. There is no malware
 scanner. Expiry cannot remove copies someone already downloaded. Profile and
 community artwork, stickers and inline chat pictures follow their existing
