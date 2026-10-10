@@ -765,25 +765,24 @@ window.dxScreen = window.dxScreen || (function () {
         if (reason && sustained >= 2500) result.qualityReason = reason;
 
         const policy = qualityPolicy.get(track.sid) || { fails: 0, probeAt: 0, probingSince: 0 };
-        if (reason === 'receiver' && sustained >= 2500) {
-          // Pin the stable lower layer; a probe that is reduced inside its window is a failure.
+        if (reason === 'receiver' && sustained >= 2500 &&
+            (policy.probeAt === 0 || (policy.probingSince && now - policy.probingSince >= 12000))) {
           if (policy.probingSince) policy.fails += 1;
           policy.probingSince = 0;
           const lk = LK();
           if (lk && lk.VideoQuality) requestQuality(screenPubs.get(track.sid), lk.VideoQuality.MEDIUM);
           policy.probeAt = now + qualityHoldMs(policy.fails);
-        } else if (reason === '') {
-          if (policy.probingSince) {
-            if (now - policy.probingSince >= 12000) {
-              policy.probingSince = 0;
-              policy.fails = 0;
-              policy.probeAt = 0;
-            }
-          } else if (policy.probeAt > 0 && now >= policy.probeAt && !participantIsPoor(track.sid)) {
-            requestHighQuality(screenPubs.get(track.sid));
-            policy.probingSince = now;
-            policy.probeAt = now + 12000;
-          }
+        }
+        if (reason === '' && policy.probingSince && now - policy.probingSince >= 12000) {
+          policy.probingSince = 0;
+          policy.fails = 0;
+          policy.probeAt = 0;
+        }
+        // Pinning Medium keeps received dimensions low even after the connection recovers.
+        if ((reason === '' || (reason === 'receiver' && sustained >= 2500)) &&
+            !policy.probingSince && policy.probeAt > 0 && now >= policy.probeAt && !participantIsPoor(track.sid)) {
+          requestHighQuality(screenPubs.get(track.sid));
+          policy.probingSince = now;
         }
         qualityPolicy.set(track.sid, policy);
       }
@@ -1919,7 +1918,7 @@ fn ScreenShareDialog(result: Result<Vec<crate::sysvideo::Source>, String>) -> El
                         p { class: "text-xs text-[var(--accent)]", role: "status", "{notice}" }
                     }
                     label { class: "flex items-center gap-2 cursor-pointer select-none",
-                        input { r#type: "checkbox", checked: audio(), disabled: !crate::sysaudio::supported(),
+                        input { r#type: "checkbox", checked: audio() && crate::sysaudio::supported_for(target()), disabled: !crate::sysaudio::supported_for(target()),
                             onchange: move |e| audio.set(e.checked()),
                         }
                         span { class: "text-xs text-[var(--text-muted)]",
@@ -1927,7 +1926,11 @@ fn ScreenShareDialog(result: Result<Vec<crate::sysvideo::Source>, String>) -> El
                             else { "Share computer audio" }
                         }
                     }
-                    if audio() {
+                    if crate::sysaudio::supported() && !crate::sysaudio::supported_for(target()) {
+                        p { class: "text-[10px] text-[var(--text-dim)]",
+                            "This window is shared without audio to prevent Discordia call echoes."
+                        }
+                    } else if audio() {
                         p { class: "text-[10px] text-[var(--text-dim)]",
                             if crate::sysaudio::captures_application(target()) {
                                 "Shares audio from the selected application. Other windows or tabs of that application may be included. Discordia audio is excluded."
@@ -2016,7 +2019,8 @@ fn choose_source(
     settings: Signal<crate::settings::ClientSettings>,
     target: crate::sysvideo::Target,
 ) {
-    let with_audio = settings.read().screenshare_audio;
+    let with_audio =
+        settings.read().screenshare_audio && crate::sysaudio::supported_for(Some(target));
     let (channel, already_sharing) = {
         let s = state.read();
         (s.voice.channel_id, s.screen_sharing)

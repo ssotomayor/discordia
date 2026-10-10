@@ -73,6 +73,21 @@ pub fn supported() -> bool {
     scope() != NativeScope::Never
 }
 
+pub fn supported_for(target: Option<crate::sysvideo::Target>) -> bool {
+    #[cfg(target_os = "windows")]
+    if let Some(crate::sysvideo::Target::WindowsWindow(handle)) = target {
+        let window =
+            windows_capture::window::Window::from_raw_hwnd(handle as *mut std::ffi::c_void);
+        return supported()
+            && window.is_valid()
+            && window
+                .process_id()
+                .is_ok_and(|pid| pid != std::process::id());
+    }
+    let _ = target;
+    supported()
+}
+
 pub fn start(
     tx: crate::audio_queue::AudioSender<f32>,
     fatal: UnboundedSender<String>,

@@ -89,38 +89,49 @@ test('receiver limitation pins the stable layer and only probes High after a bac
   now += 10000;
   receiver(now - 10000);
   await context.previewStats('viewer');
-  assert.deepEqual(calls, [1], 'stays pinned while the reduction lasts');
+  assert.deepEqual(calls, [], 'polling must not re-pin Medium or postpone the probe');
 
-  incoming = primary;
   calls.length = 0;
-  recovered(now);
+  receiver(now - 10000);
   await context.previewStats('viewer');
   assert.equal(calls.length, 0, 'no probe before the hold');
-  now += 30001;
-  recovered(now);
+  now += 20001;
+  receiver(now - 30001);
   await context.previewStats('viewer');
-  assert.deepEqual(calls, [2], 'probes High once the hold elapses');
+  assert.deepEqual(calls, [2], 'probes High while still receiving 720p after the original hold');
 
   calls.length = 0;
   incoming = reduced;
   now += 3000;
   receiver(now - 3000);
   await context.previewStats('viewer');
+  assert.deepEqual(calls, [], 'allow time for the requested High layer to arrive');
+  now += 9001;
+  receiver(now - 12001);
+  await context.previewStats('viewer');
   assert.deepEqual(calls, [1], 're-pins Medium after a failed probe');
 
-  incoming = primary;
   calls.length = 0;
-  recovered(now);
+  receiver(now - 12001);
   await context.previewStats('viewer');
   assert.equal(calls.length, 0, 'no probe yet');
   now += 30001;
-  recovered(now);
+  receiver(now - 42002);
   await context.previewStats('viewer');
   assert.equal(calls.length, 0, 'still inside the doubled hold');
   now += 30000;
-  recovered(now);
+  receiver(now - 72002);
   await context.previewStats('viewer');
   assert.deepEqual(calls, [2], 'probes again after the doubled hold');
+  incoming = primary;
+  now += 1000;
+  recovered(now);
+  await context.previewStats('viewer');
+  now += 12001;
+  recovered(now - 12001);
+  await context.previewStats('viewer');
+  assert.equal(policy.get('screen').fails, 0, 'successful recovery clears the backoff');
+  assert.equal(policy.get('screen').probeAt, 0);
 });
 
 test('a Poor participant blocks the High probe until its connection recovers', async () => {
@@ -131,7 +142,6 @@ test('a Poor participant blocks the High probe until its connection recovers', a
   const calls = [];
   screenPubs.set('screen', { setVideoQuality: (quality) => calls.push(quality) });
   const reduced = { width: 1280, height: 720, fps: 30 };
-  const primary = { width: 2560, height: 1440, fps: 60 };
 
   incoming = reduced;
   reports.set('screen', { status: full, at: now, reason: 'receiver', since: now - 3000 });
@@ -139,9 +149,9 @@ test('a Poor participant blocks the High probe until its connection recovers', a
   assert.deepEqual(calls, [1], 'pins Medium first');
 
   calls.length = 0;
-  incoming = primary;
+  incoming = reduced;
   participants.set('screen', { connectionQuality: 'poor' });
-  reports.set('screen', { status: full, at: now, reason: '', since: now });
+  reports.set('screen', { status: full, at: now, reason: 'receiver', since: now - 3000 });
   now += 30001;
   reports.get('screen').at = now;
   await context.previewStats('viewer');
