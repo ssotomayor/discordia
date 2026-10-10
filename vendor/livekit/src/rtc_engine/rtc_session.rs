@@ -25,7 +25,7 @@ use std::{
 
 use bytes::Bytes;
 use libwebrtc::{prelude::*, stats::RtcStats};
-use livekit_api::signal_client::{SignalClient, SignalEvent, SignalEvents};
+use livekit_api::signal_client::{SignalClient, SignalError, SignalEvent, SignalEvents};
 use livekit_datatrack::backend as dt;
 use livekit_protocol::{self as proto};
 use livekit_runtime::{sleep, JoinHandle};
@@ -522,13 +522,20 @@ impl RtcSession {
             None
         };
 
-        let (signal_client, mut join_response, signal_events) = SignalClient::connect(
+        let signal_connect = SignalClient::connect(
             url,
             token,
             options.signal_options.clone(),
             publisher_offer.clone(),
-        )
-        .await?;
+        );
+        let (signal_client, mut join_response, signal_events) =
+            if let Some(timeout) = options.signal_connect_timeout {
+                livekit_runtime::timeout(timeout, signal_connect)
+                    .await
+                    .map_err(|_| SignalError::Timeout("initial signaling budget exhausted".into()))??
+            } else {
+                signal_connect.await?
+            };
         let signal_client = Arc::new(signal_client);
         log::debug!("received JoinResponse: {:?}", join_response);
         let subscriber_primary = join_response.subscriber_primary;
