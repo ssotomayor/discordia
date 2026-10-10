@@ -17,6 +17,9 @@ pub struct ChatMessage {
     pub content: String,
     pub created_at: i64,
     pub reply_to: Option<String>,
+    /// NIP-30: `:code:` in the content draws `url`. The url is a data URL
+    /// today (see `features::chat::dm_emoji_tags`).
+    pub emoji: Vec<(String, String)>,
 }
 
 pub fn chat_rumor(
@@ -24,6 +27,7 @@ pub fn chat_rumor(
     to_pubkey: &str,
     text: &str,
     reply_to: Option<&str>,
+    emoji: &[(String, String)],
     now: i64,
 ) -> Rumor {
     let mut tags = vec![vec!["p".to_string(), to_pubkey.to_string()]];
@@ -35,7 +39,27 @@ pub fn chat_rumor(
             "reply".to_string(),
         ]);
     }
+    for (code, url) in emoji {
+        tags.push(vec!["emoji".to_string(), code.clone(), url.clone()]);
+    }
     event::rumor(from_pubkey, now, KIND_CHAT, tags, text.to_string())
+}
+
+/// NIP-30 tags, in order, skipping any whose code could not be a shortcode.
+pub fn emoji_tags(rumor: &Rumor) -> Vec<(String, String)> {
+    rumor
+        .tags
+        .iter()
+        .filter(|t| t.first().map(String::as_str) == Some("emoji"))
+        .filter_map(|t| match (t.get(1), t.get(2)) {
+            (Some(code), Some(url))
+                if crate::protocol::valid_shortcode(code) && !url.is_empty() =>
+            {
+                Some((code.clone(), url.clone()))
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 pub fn wrap_both(
@@ -87,6 +111,7 @@ pub fn open_rumor(our_pubkey: &str, rumor: &Rumor) -> Result<ChatMessage, String
         content: rumor.content.clone(),
         created_at: rumor.created_at,
         reply_to,
+        emoji: emoji_tags(rumor),
     })
 }
 
@@ -128,7 +153,7 @@ mod tests {
     fn both_sides_read_the_same_conversation() {
         let (alice, bob) = (key(1), key(2));
         let (a_pub, b_pub) = (xonly_hex(&alice), xonly_hex(&bob));
-        let r = chat_rumor(&a_pub, &b_pub, "are you there?", None, 1_700_000_000);
+        let r = chat_rumor(&a_pub, &b_pub, "are you there?", None, &[], 1_700_000_000);
         let (theirs, ours) = wrap_both(&alice, &b_pub, &r, 1_700_000_000).expect("wrap");
 
         let at_bob = open_chat(&bob, &b_pub, &theirs).expect("bob reads it");
@@ -146,7 +171,7 @@ mod tests {
     fn our_own_copy_is_addressed_to_us() {
         let (alice, bob) = (key(1), key(2));
         let (a_pub, b_pub) = (xonly_hex(&alice), xonly_hex(&bob));
-        let r = chat_rumor(&a_pub, &b_pub, "note to self", None, 1_700_000_000);
+        let r = chat_rumor(&a_pub, &b_pub, "note to self", None, &[], 1_700_000_000);
         let (theirs, ours) = wrap_both(&alice, &b_pub, &r, 1_700_000_000).expect("wrap");
         assert_eq!(ours.tag("p"), Some(a_pub.as_str()));
         assert_eq!(theirs.tag("p"), Some(b_pub.as_str()));
@@ -157,18 +182,43 @@ mod tests {
     fn a_reply_points_at_its_parent() {
         let (alice, bob) = (key(1), key(2));
         let (a_pub, b_pub) = (xonly_hex(&alice), xonly_hex(&bob));
-        let first = chat_rumor(&a_pub, &b_pub, "question", None, 1_700_000_000);
-        let second = chat_rumor(&b_pub, &a_pub, "answer", Some(&first.id), 1_700_000_100);
+        let first = chat_rumor(&a_pub, &b_pub, "question", None, &[], 1_700_000_000);
+        let second = chat_rumor(
+            &b_pub,
+            &a_pub,
+            "answer",
+            Some(&first.id),
+            &[],
+            1_700_000_100,
+        );
         let (to_alice, _) = wrap_both(&bob, &a_pub, &second, 1_700_000_100).expect("wrap");
         let got = open_chat(&alice, &a_pub, &to_alice).expect("open");
         assert_eq!(got.reply_to.as_deref(), Some(first.id.as_str()));
     }
 
     #[test]
+    fn emoji_tags_ride_the_rumor_and_only_valid_codes_come_back() {
+        let (alice, bob) = (key(1), key(2));
+        let (a_pub, b_pub) = (xonly_hex(&alice), xonly_hex(&bob));
+        let tags = vec![
+            (
+                "blobcat".to_string(),
+                "data:image/png;base64,AA==".to_string(),
+            ),
+            ("Bad Code".to_string(), "data:x".to_string()),
+            ("empty".to_string(), String::new()),
+        ];
+        let r = chat_rumor(&a_pub, &b_pub, "hi :blobcat:", None, &tags, 1_700_000_000);
+        assert_eq!(r.tags.iter().filter(|t| t[0] == "emoji").count(), 3);
+        let msg = open_rumor(&b_pub, &r).unwrap();
+        assert_eq!(msg.emoji, vec![tags[0].clone()]);
+    }
+
+    #[test]
     fn a_message_between_other_people_is_refused() {
         let (alice, bob, carol) = (key(1), key(2), key(3));
         let (b_pub, c_pub) = (xonly_hex(&bob), xonly_hex(&carol));
-        let r = chat_rumor(&b_pub, &c_pub, "about alice…", None, 1_700_000_000);
+        let r = chat_rumor(&b_pub, &c_pub, "about alice…", None, &[], 1_700_000_000);
         let to_alice = nip59::wrap(&bob, &xonly_hex(&alice), &r, 1_700_000_000).expect("wrap");
         let err = open_chat(&alice, &xonly_hex(&alice), &to_alice).expect_err("refused");
         assert!(

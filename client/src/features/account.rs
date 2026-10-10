@@ -18,6 +18,7 @@ fn initial_state(saved: &ClientSettings) -> AppState {
     s.dm_cleared_at = saved.dm_cleared_at.iter().cloned().collect();
     s.dm_read_at = saved.dm_read_at.iter().cloned().collect();
     s.dm_clock_offset = saved.dm_clock_offset.iter().cloned().collect();
+    s.saved_emoji = saved.saved_emoji.clone();
     s.muted_channels = saved.muted_channels.iter().copied().collect();
     s.muted_guilds = saved.muted_guilds.iter().copied().collect();
     s.mic_sensitivity = saved.mic_sensitivity.clamp(1, 1000);
@@ -72,6 +73,7 @@ pub fn AccountView(
     provide_context(identity.clone());
     crate::state::use_dm_read_persistence(state);
     crate::state::use_dm_clock_persistence(state);
+    crate::state::use_saved_emoji_persistence(state);
     crate::state::use_volume_persistence(state);
     rsx! {
         super::sounds::MessageSounds {}

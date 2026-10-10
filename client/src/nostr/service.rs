@@ -37,11 +37,13 @@ pub enum NostrCmd {
     Retry {
         message_id: Id,
     },
-    /// Send `text` to `peer`, optionally answering a message.
+    /// Send `text` to `peer`, optionally answering a message. `emoji` are
+    /// the NIP-30 tags for the custom emoji in `text`.
     Send {
         peer: String,
         text: String,
         reply_to: Option<String>,
+        emoji: Vec<(String, String)>,
     },
     /// Make sure a conversation with `peer` exists in the list, and select it.
     Open {
@@ -213,12 +215,12 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
                             state.write().error_toast = Some("Voice call service is unavailable.".into());
                         }
                     }
-                    Some(NostrCmd::Send { peer, text, reply_to }) => {
+                    Some(NostrCmd::Send { peer, text, reply_to, emoji }) => {
                         if outbox.len() >= 128 {
                             state.write().error_toast = Some("Too many messages await delivery. Retry a failed message first.".into());
                             continue;
                         }
-                        if let Some((id, pending)) = send_message(&secret, &our_pubkey, &peer, &text, reply_to, &mut state) {
+                        if let Some((id, pending)) = send_message(&secret, &our_pubkey, &peer, &text, reply_to, emoji, &mut state) {
                             outbox.insert(id, pending);
                             if let Err(error) = super::delivery::persist(&our_pubkey, &outbox).await {
                                 state.write().error_toast = Some(format!("Could not save pending messages: {error}"));
@@ -527,10 +529,11 @@ fn send_message(
     peer: &str,
     text: &str,
     reply_to: Option<String>,
+    emoji: Vec<(String, String)>,
     state: &mut Signal<AppState>,
 ) -> Option<(Id, super::delivery::Pending)> {
     let ts = now();
-    let rumor = nip17::chat_rumor(our_pubkey, peer, text, reply_to.as_deref(), ts);
+    let rumor = nip17::chat_rumor(our_pubkey, peer, text, reply_to.as_deref(), &emoji, ts);
     match nip17::wrap_both(secret, peer, &rumor, ts) {
         Ok((theirs, ours)) => {
             let msg = nip17::ChatMessage {
@@ -540,6 +543,7 @@ fn send_message(
                 content: text.to_string(),
                 created_at: ts,
                 reply_to,
+                emoji,
             };
             insert_message(&msg, our_pubkey, state, Source::Ours, false);
             let id = message_id(&rumor.id);
@@ -680,6 +684,9 @@ fn insert_message(
         });
     }
     s.nostr_event_ids.insert(mid, msg.id.clone());
+    if !msg.emoji.is_empty() {
+        s.dm_emoji.insert(mid, msg.emoji.clone());
+    }
 
     let fresh = s.insert_message(
         cid,
