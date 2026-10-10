@@ -147,6 +147,35 @@ fn load_attachment(
     });
 }
 
+fn pick_file(
+    mut pending: Signal<Option<(String, String)>>,
+    mut image: Signal<Option<String>>,
+    mut error: Signal<Option<String>>,
+    mut generation: Signal<u64>,
+) {
+    spawn(async move {
+        let Some(selected) = rfd::AsyncFileDialog::new().pick_file().await else {
+            return;
+        };
+        let path = selected.path().to_owned();
+        let read = tokio::task::spawn_blocking(move || super::chat_tools::read_file(&path)).await;
+        match read.unwrap_or_else(|e| Err(e.to_string())) {
+            Ok(file) => {
+                generation.with_mut(|n| *n = n.wrapping_add(1));
+                image.set(None);
+                error.set(None);
+                pending.set(Some(file));
+            }
+            Err(message) => error.set(Some(message)),
+        }
+    });
+}
+
+fn file_kb(data_url: &str) -> usize {
+    let encoded = data_url.split_once(',').map_or(0, |(_, b64)| b64.len());
+    (encoded / 4 * 3).div_ceil(1000).max(1)
+}
+
 #[component]
 pub fn ChatView() -> Element {
     let state = use_app_state();
@@ -315,16 +344,16 @@ pub fn ChatView() -> Element {
                 if let Some(topic) = channel_topic {
                     span {
                         class: "min-w-0 truncate pl-3 text-[12.5px] text-[var(--text-dim)] border-l border-[var(--border-strong)]",
-                        EmojiText { text: topic, guild_id: channel_guild }
+                        EmojiText { text: topic, guild_id: channel_guild, compact: true }
+                    }
+                }
+                if !is_dm && state.read().server_chat_tools {
+                    for channel_id in selected_channel.into_iter() {
+                        super::chat_tools::ChatTools { key: "{channel_id}", channel_id }
                     }
                 }
             }
 
-            if !is_dm && state.read().server_chat_tools {
-                for channel_id in selected_channel.into_iter() {
-                    super::chat_tools::ChatTools { key: "{channel_id}", channel_id }
-                }
-            }
             NoDrag {
                 div { id: "dxf-chat-scroll",
                 style: "overflow-anchor: none;", onmounted: move |_| scroll_mounted += 1, class: "flex-1 overflow-y-auto px-4 py-4 min-h-0",
@@ -1058,6 +1087,9 @@ pub fn ImageViewer() -> Element {
 /// 100% emoji size. Emoji glyphs draw smaller than their box, so this sits
 /// above `1em`; the chat emoji slider scales it.
 const EMOJI_EM: f64 = 1.8;
+/// A line of chrome, not a message: the emoji sliders size chat, and a topic
+/// grown by them pushed the channel list apart.
+const COMPACT_EMOJI_EM: f64 = 1.25;
 
 /// `reaction`: sized by the reaction slider, not the chat one, so a big chat
 /// emoji does not blow up every pill under a message.
@@ -1069,6 +1101,7 @@ pub(crate) fn EmojiText(
     guild_id: Option<Id>,
     #[props(default)] reaction: bool,
     #[props(default)] extra: Vec<(String, String)>,
+    #[props(default)] compact: bool,
 ) -> Element {
     let state = use_app_state();
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
@@ -1077,8 +1110,11 @@ pub(crate) fn EmojiText(
     } else {
         settings.read().emoji_size_percent
     };
-    let emoji_scale = f64::from(percent.clamp(50, 250)) / 100.0;
-    let base = EMOJI_EM;
+    let (base, emoji_scale) = if compact {
+        (COMPACT_EMOJI_EM, 1.0)
+    } else {
+        (EMOJI_EM, f64::from(percent.clamp(50, 250)) / 100.0)
+    };
     let parts: Vec<(String, Option<String>)> = {
         let s = state.read();
         crate::emoji::split_shortcodes(&text)
@@ -1113,19 +1149,18 @@ pub(crate) fn EmojiText(
                     }
                 },
                 Some(_) => rsx! { ":{body}:" },
-                None => rsx! { UnicodeEmojiText { text: body, scale: emoji_scale } },
+                None => rsx! { UnicodeEmojiText { text: body, size: base * emoji_scale } },
             }
         }
     }
 }
 
 #[component]
-fn UnicodeEmojiText(text: String, scale: f64) -> Element {
-    let base = EMOJI_EM;
+fn UnicodeEmojiText(text: String, size: f64) -> Element {
     rsx! {
         for (part, emoji) in crate::emoji::unicode_parts(&text) {
             if emoji {
-                span { style: "font-size:calc({base}em * {scale});", "{part}" }
+                span { style: "font-size:{size}em;", "{part}" }
             } else {
                 "{part}"
             }
@@ -1594,9 +1629,11 @@ fn Composer(
     });
     let mut draft = use_signal(String::new);
     let mut pending_image = use_signal::<Option<String>>(|| None);
-    let attach_err = use_signal::<Option<String>>(|| None);
+    let mut attach_err = use_signal::<Option<String>>(|| None);
     let mut show_emoji = use_signal(|| false);
-    let mut show_file = use_signal(|| false);
+    let mut show_attach = use_signal(|| false);
+    let mut pending_file = use_signal::<Option<(String, String)>>(|| None);
+    let mut file_request = use_signal(|| None::<Id>);
     let mut caret_token = use_signal(|| None::<String>);
     let mut selected = use_signal(|| 0_usize);
     let mut last_typing = use_signal::<Option<std::time::Instant>>(|| None);
@@ -1683,6 +1720,12 @@ fn Composer(
         };
     }
 
+    use_effect(move || {
+        if pending_image().is_some() {
+            pending_file.set(None);
+        }
+    });
+
     let finish_id = composer_id.clone();
     let mut finish = move || -> bool {
         let reply_to = replying_to.peek().as_ref().map(|r| r.message_id);
@@ -1691,16 +1734,38 @@ fn Composer(
         composer_call(&finish_id, "clear", &[]);
         generation.with_mut(|n| *n = n.wrapping_add(1));
         pending_image.set(None);
+        pending_file.set(None);
         show_emoji.set(false);
         if reply_to.is_some() {
             state.write().replying_to = None;
         }
         true
     };
+    {
+        let mut finish = finish.clone();
+        use_effect(move || {
+            let result = state.read().file_upload_result.clone();
+            if let Some((id, why)) = result
+                && Some(id) == *file_request.peek()
+            {
+                file_request.set(None);
+                match why {
+                    Some(why) => attach_err.set(Some(why)),
+                    None => {
+                        finish();
+                    }
+                }
+            }
+        });
+    }
     let mut submit = move || -> bool {
         let content = draft().trim().to_string();
         let image = pending_image();
-        if content.is_empty() && image.is_none() {
+        let file = pending_file();
+        if content.is_empty() && image.is_none() && file.is_none() {
+            return false;
+        }
+        if file_request.peek().is_some() {
             return false;
         }
         tracing::debug!(%channel_id, chars = content.len(), "composer submit");
@@ -1775,6 +1840,31 @@ fn Composer(
             if state.peek().status != crate::state::ConnectionStatus::Ready {
                 state.write().error_toast =
                     Some("The server is reconnecting. Your draft has been kept.".into());
+                return false;
+            }
+            // The draft stays until the server takes the file: a refusal
+            // (too large, a lost frame) must not cost the person their message.
+            if let Some((name, data_url)) = file {
+                let request_id = uuid::Uuid::new_v4();
+                file_request.set(Some(request_id));
+                attach_err.set(None);
+                gateway_submit.send(ClientMessage::SendFile {
+                    request_id,
+                    channel_id,
+                    name,
+                    data_url,
+                    content,
+                    reply_to,
+                });
+                spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                    if *file_request.peek() == Some(request_id) {
+                        file_request.set(None);
+                        attach_err.set(Some(
+                            "No upload confirmation. Check the chat before sending again.".into(),
+                        ));
+                    }
+                });
                 return false;
             }
             gateway_submit.send(ClientMessage::SendMessage {
@@ -2015,11 +2105,19 @@ fn Composer(
                 div { class: "mb-2 text-[10px] text-[var(--danger)]", "{err}" }
             }
 
-            if show_file() {
-                if let Some(guild_id) = file_guild {
-                    div { class: "mb-2 text-xs",
-                        button { r#type: "button", onclick: move |_| show_file.set(false), "Close file attachment" }
-                        super::chat_tools::FileSender { guild_id, channel_id }
+            if let Some((name, data_url)) = pending_file() {
+                div { class: "mb-2 flex items-center gap-2",
+                    div { class: "h-10 max-w-xs min-w-0 flex items-center gap-2 px-3 rounded border border-[var(--border-strong)] bg-[var(--panel2)] text-xs text-[var(--text)]",
+                        span { class: "block w-4 h-4 shrink-0 text-[var(--text-dim)]", dangerous_inner_html: super::icons::FILE }
+                        span { class: "truncate", "{name}" }
+                        span { class: "shrink-0 text-[var(--text-dim)]", "{file_kb(&data_url)} KB" }
+                    }
+                    button {
+                        r#type: "button",
+                        class: "text-[10px] uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--danger)] transition-colors",
+                        disabled: file_request().is_some(),
+                        onclick: move |_| pending_file.set(None),
+                        "Remove"
                     }
                 }
             }
@@ -2028,32 +2126,50 @@ fn Composer(
                 onsubmit: move |e| { e.prevent_default(); submit(); },
                 div { class: "h-12 border border-[var(--border-strong)] rounded-xl bg-[var(--panel)] flex items-center pl-2 pr-2.5 gap-2 focus-within:border-[var(--accent)] transition-colors",
 
-                    label {
-                        class: "w-8 h-8 shrink-0 flex items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--panel2)] text-lg leading-none text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors cursor-pointer select-none",
-                        style: "width: auto; padding: 0 8px; font-size: 12px;",
-                        title: "Upload an image with a preview in chat",
-                        "🖼 Image"
-                        input {
-                            r#type: "file",
-                            accept: "image/*",
-                            class: "hidden",
-                            onchange: move |evt: FormEvent| {
-                                if let Some(file) = evt.files().into_iter().next() {
-                                    load_attachment(Some(file.path()), pending_image, attach_err, generation);
-                                }
-                            },
-                        }
-                    }
-
-                    if file_guild.is_some() {
+                    div { class: "relative shrink-0",
                         button {
                             r#type: "button",
-                            class: "h-8 shrink-0 flex items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--panel2)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors",
-                            style: "padding: 0 8px; font-size: 12px;",
-                            title: "Upload a downloadable file without a preview",
-                            aria_expanded: show_file(),
-                            onclick: move |_| show_file.toggle(),
-                            "📎 File"
+                            class: if show_attach() {
+                                "w-8 h-8 flex items-center justify-center rounded-lg border border-[var(--accent)] bg-[var(--panel2)] text-[var(--accent)] transition-colors"
+                            } else {
+                                "w-8 h-8 shrink-0 flex items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--panel2)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors"
+                            },
+                            title: "Attach",
+                            aria_expanded: show_attach(),
+                            onclick: move |_| show_attach.toggle(),
+                            span { class: "block w-4 h-4", dangerous_inner_html: super::icons::PLUS }
+                        }
+                        if show_attach() {
+                            div { class: "fixed inset-0 z-20", onclick: move |_| show_attach.set(false) }
+                            div { style: "width: 9rem;", class: "dxf-pop-in absolute bottom-full left-0 mb-2 p-1 bg-[var(--panel-solid)] border border-[var(--border)] rounded-md shadow-lg z-30 text-xs",
+                                label { class: "w-full flex items-center gap-2 px-2 h-8 rounded text-[var(--text-muted)] hover:bg-white/[0.04] hover:text-[var(--text)] cursor-pointer",
+                                    span { class: "block w-4 h-4 shrink-0", dangerous_inner_html: super::icons::IMAGE }
+                                    "Image"
+                                    input {
+                                        r#type: "file",
+                                        accept: "image/*",
+                                        class: "hidden",
+                                        onchange: move |evt: FormEvent| {
+                                            show_attach.set(false);
+                                            if let Some(file) = evt.files().into_iter().next() {
+                                                load_attachment(Some(file.path()), pending_image, attach_err, generation);
+                                            }
+                                        },
+                                    }
+                                }
+                                if file_guild.is_some() {
+                                    button {
+                                        r#type: "button",
+                                        class: "w-full flex items-center gap-2 px-2 h-8 rounded text-left text-[var(--text-muted)] hover:bg-white/[0.04] hover:text-[var(--text)]",
+                                        onclick: move |_| {
+                                            show_attach.set(false);
+                                            pick_file(pending_file, pending_image, attach_err, generation);
+                                        },
+                                        span { class: "block w-4 h-4 shrink-0", dangerous_inner_html: super::icons::PAPERCLIP }
+                                        "File"
+                                    }
+                                }
+                            }
                         }
                     }
 
@@ -2073,15 +2189,19 @@ fn Composer(
 
                     button {
                         r#type: "button",
-                        class: "px-1.5 text-base leading-none text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors",
+                        class: if show_emoji() {
+                            "w-8 h-8 shrink-0 flex items-center justify-center rounded-lg border border-[var(--accent)] bg-[var(--panel2)] text-[var(--accent)] transition-colors"
+                        } else {
+                            "w-8 h-8 shrink-0 flex items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--panel2)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors"
+                        },
                         title: "Emoji",
                         onclick: move |_| show_emoji.toggle(),
-                        "🙂"
+                        span { class: "block w-4 h-4", dangerous_inner_html: super::icons::SMILE }
                     }
 
                     // Enter already sends; the button is for the pointer, and a
                     // permanently greyed one is a control that never does anything.
-                    if !draft().trim().is_empty() || pending_image().is_some() {
+                    if !draft().trim().is_empty() || pending_image().is_some() || pending_file().is_some() {
                         button {
                             class: "dxf-cta shrink-0 text-xs font-semibold uppercase tracking-wider px-4 py-1.5 rounded-lg transition-all",
                             r#type: "submit",
@@ -2096,6 +2216,9 @@ fn Composer(
                     span { ":name for emoji" }
                     if uploading() {
                         span { class: "text-[var(--accent)]", "Uploading emoji…" }
+                    }
+                    if file_request().is_some() {
+                        span { class: "text-[var(--accent)]", "Uploading file…" }
                     }
                 }
             }

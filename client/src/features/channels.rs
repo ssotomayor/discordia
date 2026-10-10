@@ -988,7 +988,7 @@ fn VoiceChannelRow(
                         span {
                             class: "block truncate text-[11px] leading-tight text-[var(--text-dim)]",
                             title: "{topic}",
-                            crate::features::chat::EmojiText { text: topic.clone(), guild_id: Some(channel.guild_id) }
+                            crate::features::chat::EmojiText { text: topic.clone(), guild_id: Some(channel.guild_id), compact: true }
                         }
                     }
                 }
