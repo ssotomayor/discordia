@@ -98,6 +98,18 @@ async fn state_survives_restart_and_media_is_offloaded() {
                 seen += 1;
             }
         }
+        owner
+            .send(&ClientMessage::CreateGuildEmoji {
+                guild_id,
+                shortcode: "wave".into(),
+                image: TINY_PNG.into(),
+            })
+            .await
+            .unwrap();
+        while !matches!(
+            next_timeout(&mut owner).await,
+            ServerMessage::GuildEmojis { emojis, .. } if !emojis.is_empty()
+        ) {}
         handle.abort();
     }
 
@@ -112,14 +124,20 @@ async fn state_survives_restart_and_media_is_offloaded() {
     let mut owner = Bot::connect_as_user(&url, &owner_id, "Owner")
         .await
         .unwrap();
-    let guilds = loop {
-        if let ServerMessage::Ready { guilds, .. } = next_timeout(&mut owner).await {
-            break guilds;
+    let (guilds, emojis) = loop {
+        if let ServerMessage::Ready { guilds, emojis, .. } = next_timeout(&mut owner).await {
+            break (guilds, emojis);
         }
     };
     assert!(
         guilds.iter().any(|g| g.id == guild_id),
         "owned guild survived the restart (membership rehydrated)"
+    );
+    assert!(
+        emojis
+            .iter()
+            .any(|e| e.guild_id == guild_id && e.shortcode == "wave"),
+        "a guild emoji survived the restart"
     );
 
     owner

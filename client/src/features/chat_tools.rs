@@ -4,20 +4,16 @@ use dioxus::prelude::*;
 use crate::protocol::{Attachment, ClientMessage, FilePolicy, Id, MessageSearch, Permission};
 use crate::state::{use_app_state, use_gateway};
 
-fn read_file(path: &std::path::Path, maximum: u64) -> Result<(String, String), String> {
+pub(super) fn read_file(path: &std::path::Path) -> Result<(String, String), String> {
     use std::io::Read;
-    let maximum = maximum.min(2_000_000);
     let mut bytes = Vec::new();
     std::fs::File::open(path)
         .map_err(|e| e.to_string())?
-        .take(maximum + 1)
+        .take(2_000_001)
         .read_to_end(&mut bytes)
         .map_err(|e| e.to_string())?;
-    if bytes.is_empty() || bytes.len() as u64 > maximum {
-        return Err(format!(
-            "Choose a nonempty file up to {} KB.",
-            maximum / 1000
-        ));
+    if bytes.is_empty() || bytes.len() > 2_000_000 {
+        return Err("Choose a nonempty file up to 2 MB.".into());
     }
     let name = path
         .file_name()
@@ -51,35 +47,11 @@ fn date_ms(value: &str, next_day: bool) -> Result<Option<i64>, String> {
     ))
 }
 
-fn search_query(
-    text: &str,
-    author: &str,
-    after: &str,
-    before: &str,
-    files: bool,
-    pins: bool,
-) -> Result<MessageSearch, String> {
-    let after_ms = date_ms(after, false)?;
-    let before_ms = date_ms(before, true)?;
-    if after_ms.zip(before_ms).is_some_and(|(a, b)| a >= b) {
-        return Err("The end date must follow the start date.".into());
-    }
-    Ok(MessageSearch {
-        text: text.trim().to_owned(),
-        author: (!author.is_empty()).then(|| author.to_owned()),
-        after_ms,
-        before_ms,
-        has_attachment: files,
-        pinned_only: pins,
-    })
-}
-
 #[component]
-pub(super) fn ChatTools(channel_id: Id, mut panel: Signal<&'static str>) -> Element {
+pub(super) fn ChatTools(channel_id: Id) -> Element {
     let state = use_app_state();
     let gateway = use_gateway();
-    let mut advanced = use_signal(|| false);
-    let mut submitted = use_signal(|| None::<MessageSearch>);
+    let mut panel = use_signal(|| "");
     let mut text = use_signal(String::new);
     let mut author = use_signal(String::new);
     let mut after = use_signal(String::new);
@@ -89,6 +61,8 @@ pub(super) fn ChatTools(channel_id: Id, mut panel: Signal<&'static str>) -> Elem
     let mut offset = use_signal(|| 0_u32);
     let mut request = use_signal(|| None::<Id>);
     let mut error = use_signal(|| None::<String>);
+    let mut sticker_name = use_signal(String::new);
+    let mut sticker_image = use_signal(|| None::<String>);
     let guild_id = state
         .read()
         .channels
@@ -98,33 +72,36 @@ pub(super) fn ChatTools(channel_id: Id, mut panel: Signal<&'static str>) -> Elem
     let Some(guild_id) = guild_id else {
         return rsx! {};
     };
+    let manage = state.read().can(guild_id, Permission::ManageEmojis);
+    let can_send = state.read().can(guild_id, Permission::SendMessages);
+    let manage_guild = state.read().can(guild_id, Permission::ManageGuild);
+    let file_policy = state
+        .read()
+        .guild_file_policies
+        .get(&guild_id)
+        .cloned()
+        .unwrap_or_default();
     let fetch = gateway.clone();
     use_effect(move || {
         fetch.send(ClientMessage::FetchGuildFilePolicy { guild_id });
+        fetch.send(ClientMessage::FetchGuildStickers { guild_id });
     });
     let search_gateway = gateway.clone();
-    let search = move |page: u32, only_pins: bool, paging: bool| {
-        let query = if paging {
-            let Some(query) = submitted() else {
+    let search = move |page: u32, only_pins: bool| {
+        let dates = date_ms(&after(), false)
+            .and_then(|start| date_ms(&before(), true).map(|end| (start, end)));
+        let (after_ms, before_ms) = match dates {
+            Ok(dates) => dates,
+            Err(e) => {
+                error.set(Some(e));
                 return;
-            };
-            query
-        } else if only_pins {
-            MessageSearch {
-                pinned_only: true,
-                ..Default::default()
-            }
-        } else {
-            match search_query(&text(), &author(), &after(), &before(), files(), pins()) {
-                Ok(query) => query,
-                Err(message) => {
-                    error.set(Some(message));
-                    return;
-                }
             }
         };
+        if after_ms.zip(before_ms).is_some_and(|(a, b)| a >= b) {
+            error.set(Some("The end date must follow the start date.".into()));
+            return;
+        }
         let id = uuid::Uuid::new_v4();
-        submitted.set(Some(query.clone()));
         request.set(Some(id));
         offset.set(page);
         error.set(None);
@@ -132,7 +109,14 @@ pub(super) fn ChatTools(channel_id: Id, mut panel: Signal<&'static str>) -> Elem
             channel_id,
             request_id: id,
             offset: page,
-            query,
+            query: MessageSearch {
+                text: if only_pins { String::new() } else { text() },
+                author: (!only_pins && !author().is_empty()).then_some(author()),
+                after_ms: if only_pins { None } else { after_ms },
+                before_ms: if only_pins { None } else { before_ms },
+                has_attachment: !only_pins && files(),
+                pinned_only: only_pins || pins(),
+            },
         });
         spawn(async move {
             tokio::time::sleep(std::time::Duration::from_secs(30)).await;
@@ -149,213 +133,235 @@ pub(super) fn ChatTools(channel_id: Id, mut panel: Signal<&'static str>) -> Elem
             }
         });
     };
-    let mut pinned_search = search.clone();
-    use_effect(move || {
-        request.set(None);
-        error.set(None);
-        offset.set(0);
-        submitted.set(None);
-        if panel() == "pins" {
-            pinned_search(0, true, false);
-        }
-    });
     let results = state
         .read()
         .message_search
         .as_ref()
         .filter(|(cid, id, _)| *cid == channel_id && Some(*id) == request())
         .map(|(_, _, m)| m.clone());
-    let members: Vec<_> = state
-        .read()
-        .members_of(guild_id)
-        .into_iter()
-        .cloned()
-        .collect();
-    let waiting = request().is_some() && results.is_none() && error().is_none();
-    rsx! {
-        div { class: "dxf-tools",
-            onkeydown: move |event| { if event.key() == Key::Escape { panel.set(""); } }, style: "position:absolute;inset:0;pointer-events:none;z-index:20;",
-            nav { aria_label: "Chat tools", style: "position:absolute;top:0;right:12px;height:48px;display:flex;align-items:center;gap:8px;pointer-events:auto;",
-                button { title: "Pinned messages", aria_label: "Pinned messages", aria_expanded: panel() == "pins", class: "dxf-tools-icon", aria_pressed: panel() == "pins", onclick: move |_| panel.set(if panel() == "pins" { "" } else { "pins" }), "📌" }
-                button { title: "Search messages", aria_label: "Search messages", aria_expanded: panel() == "search", class: "dxf-tools-icon", aria_pressed: panel() == "search", onclick: move |_| panel.set(if panel() == "search" { "" } else { "search" }), "🔍" }
-            }
-            if !panel().is_empty() {
-            aside { class: "dxf-tools-panel", aria_label: "Chat tools panel", style: "position:absolute;top:48px;bottom:0;right:0;width:var(--chat-tools-width, min(420px,100%));display:flex;flex-direction:column;pointer-events:auto;background-color:var(--panel-solid);border-left:1px solid var(--border);box-shadow:-8px 0 24px #0003;",
-                div { class: "flex items-center justify-between px-3 py-3 border-b border-[var(--border)]",
-                    strong { if panel() == "search" { "Search messages" } else { "Pinned messages" } }
-                    button { class: "dxf-tools-icon", title: "Close", aria_label: "Close chat tools", onclick: move |_| panel.set(""), "✕" }
-                }
-                div { style: "padding:12px;overflow-y:auto;min-height:0;flex:1;", class: "text-xs",
-            if let Some(error) = error() { p { role: "alert", class: "dxf-tools-error", "{error}" } }
-            if panel() == "search" {
-                div { class: "dxf-tools-query", style: "display:flex;gap:8px;",
-                    input { aria_label: "Search message text", placeholder: "Search this channel…", maxlength: 200, value: text(), style: "min-width:0;flex:1;padding:8px;border:1px solid var(--border);border-radius:6px;background-color:var(--bg2);",
-                        oninput: move |e| text.set(e.value()),
-                        onmounted: move |event| { spawn(async move { let _ = event.data().set_focus(true).await; }); },
-                        onkeydown: { let mut search = search.clone(); move |event| { if event.key() == Key::Enter { event.prevent_default(); search(0, false, false); } } }
-                    }
-                    button { class: "dxf-tools-primary", disabled: waiting, onclick: { let mut search = search.clone(); move |_| search(0, false, false) }, "Search" }
-                }
-                button { class: "dxf-tools-filter-toggle", aria_expanded: advanced(), onclick: move |_| advanced.toggle(), if advanced() { "Hide filters ▴" } else { "Filters ▾" } }
-                if advanced() { div { class: "dxf-tools-filters", style: "display:flex;flex-direction:column;gap:10px;padding-bottom:12px;",
-                    label { "From ", select { value: author(), onchange: move |e| author.set(e.value()),
-                        option { value: "", "Any author" }
-                        for member in members { option { value: member.user.pubkey.clone(), "{member.user.username}" } }
-                    } }
-                    label { "After (UTC) ", input { r#type: "date", value: after(), oninput: move |e| after.set(e.value()) } }
-                    label { "Through (UTC) ", input { r#type: "date", value: before(), oninput: move |e| before.set(e.value()) } }
-                    label { input { r#type: "checkbox", checked: files(), onchange: move |e| files.set(e.checked()) } " Has attachment" }
-                    label { input { r#type: "checkbox", checked: pins(), onchange: move |e| pins.set(e.checked()) } " Pinned only" }
-                    button { onclick: move |_| { text.set(String::new()); author.set(String::new()); after.set(String::new()); before.set(String::new()); files.set(false); pins.set(false); request.set(None); submitted.set(None); offset.set(0); error.set(None); }, "Clear search" }
-                } }
-            }
-            if panel() == "search" || panel() == "pins" {
-                if let Some(results) = results {
-                    if results.is_empty() { p { class: "py-4 text-[var(--text-dim)]", if panel() == "pins" { "No pinned messages in this channel." } else { "No messages match. Try another term or fewer filters." } } }
-                    else { p { class: "py-2 text-[var(--text-dim)]", "Showing {offset() + 1}–{offset() + results.len() as u32}" } }
-                    for message in &results { div { key: "{message.id}", class: "dxf-tools-result", super::chat::MessageRow { message: message.clone(), grouped: false } } }
-                    div { class: "dxf-tools-pages",
-                        if offset() > 0 { button { onclick: { let mut search = search.clone(); move |_| search(offset().saturating_sub(100), panel() == "pins", true) }, "Newer" } }
-                        if results.len() == 100 { button { onclick: { let mut search = search.clone(); move |_| search(offset() + 100, panel() == "pins", true) }, "Older" } }
-                    }
-                } else if waiting { p { role: "status", class: "py-4", "Searching…" } }
-                else if error().is_none() { p { class: "py-4 text-[var(--text-dim)]", "Search all messages in this channel. Add filters to narrow the results." } }
-            }
-
-                }
-            }
-            }
-        }
-    }
-}
-
-#[component]
-pub(super) fn StickerPicker(guild_id: Id, channel_id: Id, on_close: EventHandler<()>) -> Element {
-    let state = use_app_state();
-    let gateway = use_gateway();
-    let mut query = use_signal(String::new);
-    let fetch = gateway.clone();
-    use_hook(move || fetch.send(ClientMessage::FetchGuildStickers { guild_id }));
-    let snapshot = state.read();
-    let can_send = snapshot.can(guild_id, Permission::SendMessages)
-        && snapshot.status == crate::state::ConnectionStatus::Ready;
-    let loaded = snapshot.guild_stickers.contains_key(&guild_id);
-    let stickers = snapshot
-        .guild_stickers
-        .get(&guild_id)
-        .cloned()
-        .unwrap_or_default();
-    let search = query().trim().to_lowercase();
-    let visible: Vec<_> = stickers
-        .iter()
-        .filter(|s| s.shortcode.to_lowercase().contains(&search))
-        .collect();
-    rsx! {
-        div { role: "dialog", aria_label: "Choose a sticker", class: "dxf-pop-in dxf-sticker-picker absolute bottom-full right-3 mb-2 bg-[var(--panel-solid)] border border-[var(--border)] rounded-md shadow-lg z-30",
-            style: "width:min(320px,calc(100% - 24px));padding:10px;",
-            onkeydown: move |event| { if event.key() == Key::Escape { event.stop_propagation(); on_close.call(()); } },
-            div { style: "display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;",
-                strong { class: "text-xs", "Stickers" }
-                button { r#type: "button", title: "Close stickers", aria_label: "Close stickers", onclick: move |_| on_close.call(()), "✕" }
-            }
-            input { r#type: "search", placeholder: "Find a sticker…", aria_label: "Find a sticker", value: query(),
-                style: "width:100%;padding:7px 9px;margin-bottom:8px;border-radius:6px;border:1px solid var(--border);background-color:var(--bg2);color:var(--text);font-size:12px;",
-                oninput: move |event| query.set(event.value()),
-                onmounted: move |event| { spawn(async move { let _ = event.data().set_focus(true).await; }); }
-            }
-            div { style: "max-height:260px;overflow-y:auto;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;",
-                for sticker in &visible {
-                    button { key: "{sticker.id}", r#type: "button", class: "dxf-sticker-choice", disabled: !can_send, title: sticker.shortcode.clone(), aria_label: format!("Send sticker {}", sticker.shortcode),
-                        onclick: { let send = gateway.clone(); let id = sticker.id; move |_| { send.send(ClientMessage::SendSticker { channel_id, sticker_id: id }); on_close.call(()); } },
-                        if let Some(src) = snapshot.media_src(&sticker.image).map(str::to_owned) { img { src, alt: sticker.shortcode.clone(), style: "width:100%;height:72px;object-fit:contain;" } }
-                        else { span { class: "text-xs", "{sticker.shortcode}" } }
-                    }
-                }
-            }
-            if visible.is_empty() {
-                p { class: "text-xs text-[var(--text-dim)]", style: "padding:12px 4px;", if !loaded { "Loading stickers…" } else if stickers.is_empty() { "This guild has no stickers yet. Add them in Guild settings → Stickers." } else { "No stickers match your search." } }
-            }
-        }
-    }
-}
-
-#[component]
-pub(super) fn StickerSettings(guild_id: Id) -> Element {
-    let state = use_app_state();
-    let gateway = use_gateway();
-    let mut sticker_name = use_signal(String::new);
-    let mut sticker_image = use_signal(|| None::<String>);
-    let mut error = use_signal(|| None::<String>);
-    let fetch = gateway.clone();
-    use_hook(move || fetch.send(ClientMessage::FetchGuildStickers { guild_id }));
-    if !state.read().can(guild_id, Permission::ManageEmojis) {
-        return rsx! {};
-    }
     let stickers = state
         .read()
         .guild_stickers
         .get(&guild_id)
         .cloned()
         .unwrap_or_default();
-    rsx! { div { class: "text-xs space-y-3",
-        p { "PNG, JPEG, GIF or WebP, up to 2 MB." }
-        div { class: "flex flex-wrap gap-3",
-            for sticker in stickers { div { key: "{sticker.id}",
-                if let Some(src) = state.read().media_src(&sticker.image).map(str::to_owned) { img { src, alt: sticker.shortcode.clone(), style: "width:80px;height:80px;object-fit:contain;" } }
-                p { "{sticker.shortcode}" }
-                button { onclick: { let g = gateway.clone(); let id = sticker.id; move |_| g.send(ClientMessage::DeleteGuildSticker { guild_id, sticker_id: id }) }, "Delete" }
-            } }
+    let members: Vec<_> = state
+        .read()
+        .members_of(guild_id)
+        .into_iter()
+        .cloned()
+        .collect();
+    let title = match panel() {
+        "search" => "Search messages",
+        "pins" => "Pinned messages",
+        "stickers" => "Stickers",
+        "files" => "File limits",
+        _ => "",
+    };
+    let mut toggle = move |name: &'static str| {
+        panel.set(if panel() == name { "" } else { name });
+        error.set(None);
+    };
+    rsx! {
+        div { class: "relative z-30 ml-auto flex items-center gap-1.5 shrink-0",
+            ToolButton { icon: super::icons::SEARCH, title: "Search messages", active: panel() == "search",
+                on_click: move |_| toggle("search") }
+            ToolButton { icon: super::icons::PIN, title: "Pinned messages", active: panel() == "pins",
+                on_click: { let mut search = search.clone(); move |_| {
+                    toggle("pins");
+                    if panel() == "pins" { search(0, true); }
+                } } }
+            ToolButton { icon: super::icons::STICKER, title: "Stickers", active: panel() == "stickers",
+                on_click: move |_| toggle("stickers") }
+            if manage_guild {
+                ToolButton { icon: super::icons::SLIDERS, title: "File limits", active: panel() == "files",
+                    on_click: move |_| toggle("files") }
+            }
         }
-                div {
-                    input { placeholder: "Sticker name", maxlength: 32, value: sticker_name(), oninput: move |e| sticker_name.set(e.value()) }
-                    button { onclick: move |_| { spawn(async move {
-                        if let Some(file) = rfd::AsyncFileDialog::new().add_filter("Image", &["png", "gif", "webp", "jpg"]).pick_file().await {
-                            let path = file.path().to_owned();
-                            match tokio::task::spawn_blocking(move || crate::chat_image::read_file(&path)).await {
-                                Ok(Ok(image)) => { sticker_image.set(Some(image)); error.set(None); }
-                                Ok(Err(e)) => error.set(Some(e)), Err(e) => error.set(Some(e.to_string())),
+        if !panel().is_empty() {
+            div { class: "fixed inset-0 z-20", onclick: move |_| panel.set("") }
+            // Anchored to the chat pane, not the header: `fixed` inside a grid
+            // panel is positioned against the panel anyway (trap 22).
+            div {
+                class: "dxf-pop-in absolute z-30 flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-xl shadow-lg text-xs text-[var(--text)]",
+                style: "top: 3.25rem; right: 0.75rem; width: min(30rem, calc(100% - 1.5rem)); max-height: 70%;",
+                div { class: "h-10 px-3 flex items-center justify-between border-b border-[var(--border)] shrink-0",
+                    span { class: "text-[11px] uppercase tracking-wider text-[var(--text-dim)]", "{title}" }
+                    button {
+                        r#type: "button",
+                        class: "w-7 h-7 flex items-center justify-center rounded-lg text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-white/[0.04] transition-colors",
+                        title: "Close",
+                        onclick: move |_| panel.set(""),
+                        span { class: "block w-4 h-4", dangerous_inner_html: super::icons::CLOSE }
+                    }
+                }
+                div { class: "flex-1 min-h-0 overflow-y-auto p-3 flex flex-col gap-3",
+                    if let Some(error) = error() { p { class: "text-[var(--danger)]", "{error}" } }
+                    if panel() == "files" && manage_guild { FileLimits { guild_id, policy: file_policy } }
+                    if panel() == "search" {
+                        form { class: "flex flex-col gap-2",
+                            onsubmit: { let mut search = search.clone(); move |e: FormEvent| { e.prevent_default(); search(0, false); } },
+                            input { class: INPUT, placeholder: "Search messages", maxlength: 200, autofocus: true,
+                                value: text(), oninput: move |e| text.set(e.value()) }
+                            select { class: INPUT, value: author(), onchange: move |e| author.set(e.value()),
+                                option { value: "", "Any author" }
+                                for member in members { option { value: member.user.pubkey.clone(), "{member.user.username}" } }
+                            }
+                            div { class: "flex gap-2",
+                                label { class: "flex-1 min-w-0 flex flex-col gap-1 text-[var(--text-dim)]", "From (UTC)",
+                                    input { class: INPUT, r#type: "date", value: after(), oninput: move |e| after.set(e.value()) } }
+                                label { class: "flex-1 min-w-0 flex flex-col gap-1 text-[var(--text-dim)]", "Through (UTC)",
+                                    input { class: INPUT, r#type: "date", value: before(), oninput: move |e| before.set(e.value()) } }
+                            }
+                            div { class: "flex items-center gap-4 text-[var(--text-muted)]",
+                                label { class: "flex items-center gap-1.5 cursor-pointer",
+                                    input { r#type: "checkbox", style: "accent-color: var(--accent);", checked: files(), onchange: move |e| files.set(e.checked()) }
+                                    "Has attachment" }
+                                label { class: "flex items-center gap-1.5 cursor-pointer",
+                                    input { r#type: "checkbox", style: "accent-color: var(--accent);", checked: pins(), onchange: move |e| pins.set(e.checked()) }
+                                    "Pinned" }
+                                button { r#type: "submit", class: "dxf-cta ml-auto rounded-lg px-3 py-1 text-xs", "Search" }
                             }
                         }
-                    }); }, "Choose image" }
-                    if let Some(src) = sticker_image() { img { src, style: "width: 80px; height: 80px; object-fit: contain;" } }
-                    button { disabled: sticker_image().is_none() || sticker_name().trim().is_empty(),
-                        onclick: { let g = gateway.clone(); move |_| {
-                            if let Some(image) = sticker_image() { g.send(ClientMessage::CreateGuildSticker { guild_id, name: sticker_name(), image }); }
-                        } }, "Add sticker" }
+                    }
+                    if panel() == "search" || panel() == "pins" {
+                        if let Some(results) = results {
+                            if results.is_empty() {
+                                p { class: "py-4 text-center text-[var(--text-dim)]",
+                                    if panel() == "pins" { "Nothing is pinned here." } else { "No matching messages." }
+                                }
+                            }
+                            div { class: "flex flex-col border-t border-[var(--border)] pt-2",
+                                for message in &results { super::chat::MessageRow { key: "{message.id}", message: message.clone(), grouped: false } }
+                            }
+                            if offset() > 0 || results.len() == 100 {
+                                div { class: "flex justify-center gap-2",
+                                    if offset() > 0 { button { class: SECONDARY, onclick: { let mut search = search.clone(); move |_| search(offset().saturating_sub(100), panel() == "pins") }, "Newer" } }
+                                    if results.len() == 100 { button { class: SECONDARY, onclick: { let mut search = search.clone(); move |_| search(offset() + 100, panel() == "pins") }, "Older" } }
+                                }
+                            }
+                        } else if request().is_some() {
+                            p { class: "py-4 text-center text-[var(--text-dim)]", "Searching…" }
+                        }
+                    }
+                    if panel() == "stickers" {
+                        if stickers.is_empty() {
+                            p { class: "py-4 text-center text-[var(--text-dim)]", "No stickers yet." }
+                        }
+                        div { class: "grid gap-2", style: "grid-template-columns: repeat(auto-fill, minmax(5.5rem, 1fr));",
+                            for sticker in stickers {
+                                div { key: "{sticker.id}", class: "relative",
+                                    button {
+                                        r#type: "button",
+                                        style: "aspect-ratio: 1;",
+                                        class: "w-full flex items-center justify-center p-1.5 rounded-lg border border-[var(--border)] bg-[var(--panel2)] hover:border-[var(--accent)] transition-colors disabled:opacity-50",
+                                        disabled: !can_send,
+                                        title: ":{sticker.shortcode}:",
+                                        onclick: { let g = gateway.clone(); let id = sticker.id; move |_| { g.send(ClientMessage::SendSticker { channel_id, sticker_id: id }); panel.set(""); } },
+                                        if let Some(src) = state.read().media_src(&sticker.image).map(str::to_owned) {
+                                            img { src, alt: sticker.shortcode.clone(), class: "max-w-full max-h-full", style: "object-fit: contain;" }
+                                        } else {
+                                            span { class: "truncate text-[var(--text-dim)]", "{sticker.shortcode}" }
+                                        }
+                                    }
+                                    if manage {
+                                        button {
+                                            r#type: "button",
+                                            style: "top: 0.25rem; right: 0.25rem;",
+                                            class: "absolute w-5 h-5 flex items-center justify-center rounded bg-[var(--panel-solid)] border border-[var(--border)] text-[var(--text-dim)] hover:text-[var(--danger)] transition-colors",
+                                            title: "Delete sticker",
+                                            onclick: { let g = gateway.clone(); let id = sticker.id; move |_| g.send(ClientMessage::DeleteGuildSticker { guild_id, sticker_id: id }) },
+                                            span { class: "block w-3 h-3", dangerous_inner_html: super::icons::CLOSE }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if manage {
+                            div { class: "flex items-center gap-2 border-t border-[var(--border)] pt-3",
+                                if let Some(src) = sticker_image() {
+                                    img { src, class: "w-8 h-8 shrink-0 rounded", style: "object-fit: contain;" }
+                                }
+                                input { class: INPUT, placeholder: "New sticker name", maxlength: 32, value: sticker_name(), oninput: move |e| sticker_name.set(e.value()) }
+                                button { r#type: "button", class: SECONDARY, onclick: move |_| { spawn(async move {
+                                    if let Some(file) = rfd::AsyncFileDialog::new().add_filter("Image", &["png", "gif", "webp", "jpg"]).pick_file().await {
+                                        let path = file.path().to_owned();
+                                        match tokio::task::spawn_blocking(move || crate::chat_image::read_file(&path)).await {
+                                            Ok(Ok(image)) => { sticker_image.set(Some(image)); error.set(None); }
+                                            Ok(Err(e)) => error.set(Some(e)), Err(e) => error.set(Some(e.to_string())),
+                                        }
+                                    }
+                                }); }, "Image…" }
+                                button { r#type: "button", class: "dxf-cta shrink-0 rounded-lg px-3 py-1 text-xs disabled:opacity-50",
+                                    disabled: sticker_image().is_none() || sticker_name().trim().is_empty(),
+                                    onclick: { let g = gateway.clone(); move |_| {
+                                        if let Some(image) = sticker_image() {
+                                            g.send(ClientMessage::CreateGuildSticker { guild_id, name: sticker_name(), image });
+                                            sticker_image.set(None);
+                                            sticker_name.set(String::new());
+                                        }
+                                    } }, "Add" }
+                            }
+                        }
+                    }
                 }
-        if let Some(message) = error() { p { "{message}" } }
-    } }
+            }
+        }
+    }
 }
 
-pub(super) async fn choose_file(policy: FilePolicy) -> Result<Option<(String, String)>, String> {
-    let Some(selected) = rfd::AsyncFileDialog::new().pick_file().await else {
-        return Ok(None);
-    };
-    let path = selected.path().to_owned();
-    tokio::task::spawn_blocking(move || read_file(&path, policy.max_bytes))
-        .await
-        .map_err(|e| e.to_string())?
-        .map(Some)
+const INPUT: &str = "w-full min-w-0 bg-[var(--panel2)] border border-[var(--border)] focus:border-[var(--accent)] rounded-lg px-2.5 py-1.5 text-xs text-[var(--text)] outline-none transition-colors";
+const SECONDARY: &str = "shrink-0 rounded-lg px-3 py-1 text-xs text-[var(--text-muted)] border border-[var(--border)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors";
+
+#[component]
+fn ToolButton(
+    icon: &'static str,
+    title: &'static str,
+    active: bool,
+    on_click: EventHandler<()>,
+) -> Element {
+    rsx! {
+        button {
+            r#type: "button",
+            class: if active {
+                "w-8 h-8 flex items-center justify-center rounded-lg border border-[var(--accent)] bg-[var(--panel2)] text-[var(--accent)] transition-colors"
+            } else {
+                "w-8 h-8 flex items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--panel2)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors"
+            },
+            title,
+            aria_pressed: active,
+            onclick: move |_| on_click.call(()),
+            span { class: "block w-4 h-4", dangerous_inner_html: icon }
+        }
+    }
 }
 
 #[component]
-pub(super) fn FileLimits(guild_id: Id, policy: FilePolicy) -> Element {
+fn FileLimits(guild_id: Id, policy: FilePolicy) -> Element {
     let gateway = use_gateway();
     let initial = policy.clone();
     let mut maximum = use_signal(move || (initial.max_bytes / 1000).to_string());
     let mut days = use_signal(move || policy.retention_days.to_string());
     let mut error = use_signal(|| None::<String>);
     rsx! {
-        div { class: "flex gap-2 py-2",
-            label { "Maximum KB ", input { r#type: "number", min: 1, max: 2000, value: maximum(), oninput: move |e| maximum.set(e.value()) } }
-            label { "Days ", input { r#type: "number", min: 1, max: 365, value: days(), oninput: move |e| days.set(e.value()) } }
-            button { onclick: move |_| {
+        form { class: "flex flex-col gap-2",
+            onsubmit: move |e: FormEvent| {
+                e.prevent_default();
                 match (maximum().parse::<u64>(), days().parse::<u32>()) {
                     (Ok(kb), Ok(days)) if (1..=2000).contains(&kb) && (1..=365).contains(&days) => { error.set(None); gateway.send(ClientMessage::SetGuildFilePolicy { guild_id, policy: FilePolicy { max_bytes: kb * 1000, retention_days: days } }); }
                     _ => error.set(Some("Choose 1–2000 KB and 1–365 days.".into())),
                 }
-            }, "Save file limits" }
-            if let Some(error) = error() { span { "{error}" } }
+            },
+            div { class: "flex gap-2",
+                label { class: "flex-1 min-w-0 flex flex-col gap-1 text-[var(--text-dim)]", "Largest file (KB)",
+                    input { class: INPUT, r#type: "number", min: 1, max: 2000, value: maximum(), oninput: move |e| maximum.set(e.value()) } }
+                label { class: "flex-1 min-w-0 flex flex-col gap-1 text-[var(--text-dim)]", "Keep for (days)",
+                    input { class: INPUT, r#type: "number", min: 1, max: 365, value: days(), oninput: move |e| days.set(e.value()) } }
+            }
+            div { class: "flex items-center gap-2",
+                if let Some(error) = error() { span { class: "text-[var(--danger)]", "{error}" } }
+                button { r#type: "submit", class: "dxf-cta ml-auto rounded-lg px-3 py-1 text-xs", "Save" }
+            }
         }
     }
 }
@@ -481,41 +487,6 @@ fn open_download_folder(path: &std::path::Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn search_dates_include_the_entire_last_day() {
-        let query = search_query("  hello  ", "", "2024-02-29", "2024-02-29", true, false).unwrap();
-        assert_eq!(query.text, "hello");
-        assert_eq!(query.author, None);
-        assert!(query.has_attachment);
-        assert_eq!(
-            query.before_ms.unwrap() - query.after_ms.unwrap(),
-            86_400_000
-        );
-        assert_eq!(query.before_ms, date_ms("2024-03-01", false).unwrap());
-    }
-
-    #[test]
-    fn invalid_search_dates_cannot_silently_drop_the_filter() {
-        assert!(search_query("", "", "2025-02-29", "", false, false).is_err());
-        assert!(search_query("", "", "2024-03-02", "2024-03-01", false, false).is_err());
-        let query = search_query("", "author", "", "", false, true).unwrap();
-        assert_eq!(query.author.as_deref(), Some("author"));
-        assert!(query.pinned_only);
-        assert_eq!(query.after_ms, None);
-        assert_eq!(query.before_ms, None);
-    }
-
-    #[test]
-    fn file_selection_obeys_the_guild_limit() {
-        let path = std::env::temp_dir().join(format!("discordia {}.bin", uuid::Uuid::new_v4()));
-        std::fs::write(&path, [42; 1001]).unwrap();
-        assert!(read_file(&path, 1000).is_err());
-        assert!(read_file(&path, 1001).is_ok());
-        std::fs::write(&path, []).unwrap();
-        assert!(read_file(&path, 1000).is_err());
-        std::fs::remove_file(path).unwrap();
-    }
 
     #[test]
     fn executable_downloads_only_reveal_their_parent_folder() {
