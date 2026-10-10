@@ -156,6 +156,33 @@ fn dm_playback_volume_changes_output_without_changing_microphone_gain() {
     assert!((measure(200, false, false) - 0.2).abs() < 0.001);
 }
 
+#[tokio::test]
+async fn cancelling_remote_playback_discards_its_buffer_before_rewatching() {
+    let controls = AudioControls::from_state(&AppState::empty());
+    let handle = PlaybackHandle {
+        tracks: Arc::new(Mutex::new(MixerTracks::default())),
+        device_rate: Arc::new(AtomicU32::new(48000)),
+        gains: controls.gains.clone(),
+        stream_gains: controls.stream_gains.clone(),
+        soundboard_pct: controls.soundboard_pct.clone(),
+    };
+    let id = handle.add_track("alice#video".into(), TrackKind::Stream);
+    handle.push(id, &[0.5; 480], 9600);
+    let guard = RemotePlaybackGuard(handle.clone(), id);
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn(async move {
+        let _guard = guard;
+        let _ = ready_tx.send(());
+        std::future::pending::<()>().await;
+    });
+    ready_rx.await.unwrap();
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    assert!(handle.tracks.lock().buffers.is_empty());
+    let fresh = handle.add_track("alice#video".into(), TrackKind::Stream);
+    assert!(handle.tracks.lock().buffers[&fresh].samples.is_empty());
+}
+
 #[test]
 fn native_pipeline_limits_hot_microphones_and_recovers() {
     let mut signal = vec![0.02; 300];
