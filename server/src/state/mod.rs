@@ -966,6 +966,7 @@ impl AppState {
         let bot_commands = self.commands_for_guilds(&my_guild_ids);
 
         Ok(ServerMessage::Ready {
+            chat_tools: true,
             user: user.clone(),
             guilds,
             channels,
@@ -2972,6 +2973,7 @@ impl AppState {
         }
 
         ServerMessage::Ready {
+            chat_tools: false,
             user: bot.clone(),
             guilds,
             channels,

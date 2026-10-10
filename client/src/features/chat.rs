@@ -320,7 +320,7 @@ pub fn ChatView() -> Element {
                 }
             }
 
-            if !is_dm {
+            if !is_dm && state.read().server_chat_tools {
                 for channel_id in selected_channel.into_iter() {
                     super::chat_tools::ChatTools { key: "{channel_id}", channel_id }
                 }
@@ -561,11 +561,12 @@ pub(super) fn MessageRow(message: Message, grouped: bool) -> Element {
         .find(|c| c.id == channel_id)
         .map(|c| c.guild_id);
 
-    let can_pin = guild_id.is_some_and(|gid| {
-        state
-            .read()
-            .can(gid, crate::protocol::Permission::ManageMessages)
-    });
+    let can_pin = state.read().server_chat_tools
+        && guild_id.is_some_and(|gid| {
+            state
+                .read()
+                .can(gid, crate::protocol::Permission::ManageMessages)
+        });
     let pinned = message.pinned;
     let can_delete = {
         let s = state.read();
@@ -1640,6 +1641,7 @@ fn Composer(
         .map(|channel| channel.guild_id)
         .filter(|guild| {
             !is_dm
+                && state.read().server_chat_tools
                 && state
                     .read()
                     .can(*guild, crate::protocol::Permission::SendMessages)

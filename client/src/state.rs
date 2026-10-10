@@ -288,6 +288,7 @@ pub struct AppState {
     pub messages: BTreeMap<Id, Vec<Message>>,
     pub message_search: Option<(Id, Id, Vec<Message>)>,
     pub file_upload_result: Option<(Id, Option<String>)>,
+    pub server_chat_tools: bool,
     pub guild_file_policies: BTreeMap<Id, crate::protocol::FilePolicy>,
     pub guild_stickers: BTreeMap<Id, Vec<crate::protocol::GuildEmoji>>,
     pub voice_states: Vec<VoiceState>,
@@ -471,6 +472,7 @@ impl AppState {
             messages: BTreeMap::new(),
             message_search: None,
             file_upload_result: None,
+            server_chat_tools: false,
             guild_file_policies: BTreeMap::new(),
             guild_stickers: BTreeMap::new(),
             voice_states: Vec::new(),
@@ -652,6 +654,7 @@ impl AppState {
         self.activities.clear();
         self.message_search = None;
         self.file_upload_result = None;
+        self.server_chat_tools = false;
         self.guild_file_policies.clear();
         self.guild_stickers.clear();
         self.server_origin = None;

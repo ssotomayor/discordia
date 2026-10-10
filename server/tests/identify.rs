@@ -41,7 +41,15 @@ async fn identify_as(url: &str, username: &str) -> Result<String, String> {
         .await
         .map_err(|e| format!("connect: {e}"))?;
     match tokio::time::timeout(Duration::from_secs(5), session.next_event()).await {
-        Ok(Some(ServerMessage::Ready { user, .. })) => Ok(user.username),
+        Ok(Some(ServerMessage::Ready {
+            user, chat_tools, ..
+        })) => {
+            assert!(
+                chat_tools,
+                "user connections advertise supported chat commands"
+            );
+            Ok(user.username)
+        }
         Ok(Some(ServerMessage::Error { message })) => Err(message),
         Ok(other) => Err(format!("unexpected first frame: {other:?}")),
         Err(_) => Err("timed out waiting for the gateway's verdict".into()),
