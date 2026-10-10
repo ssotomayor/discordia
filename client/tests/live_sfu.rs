@@ -20,22 +20,32 @@ mod voice_endpoints;
 #[tokio::test]
 #[ignore = "starts the bundled SFU; verifies alternate IPv6 signaling and decoded audio without rendezvous"]
 async fn alternate_ipv6_endpoint_delivers_audio_without_rendezvous() {
-    alternate_endpoint_delivers_audio(true, false).await;
+    alternate_endpoint_delivers_audio(true, false, TrackSource::Microphone).await;
 }
 
 #[tokio::test]
 #[ignore = "starts the bundled SFU; verifies failed IPv6 signaling selects IPv4 and delivers decoded audio"]
 async fn alternate_ipv4_endpoint_delivers_audio_without_rendezvous() {
-    alternate_endpoint_delivers_audio(false, false).await;
+    alternate_endpoint_delivers_audio(false, false, TrackSource::Microphone).await;
 }
 
 #[tokio::test]
 #[ignore = "starts the bundled SFU; verifies native bearer signaling through the gateway and decoded audio"]
 async fn gateway_signaling_delivers_native_audio_without_rendezvous() {
-    alternate_endpoint_delivers_audio(false, true).await;
+    alternate_endpoint_delivers_audio(false, true, TrackSource::Microphone).await;
 }
 
-async fn alternate_endpoint_delivers_audio(ipv6: bool, through_gateway: bool) {
+#[tokio::test]
+#[ignore = "starts the bundled SFU; verifies screen audio stays distinct from microphone audio"]
+async fn bundled_sfu_preserves_screen_audio_source() {
+    alternate_endpoint_delivers_audio(false, false, TrackSource::ScreenshareAudio).await;
+}
+
+async fn alternate_endpoint_delivers_audio(
+    ipv6: bool,
+    through_gateway: bool,
+    track_source: TrackSource,
+) {
     use futures_util::StreamExt;
     use livekit::webrtc::audio_stream::native::NativeAudioStream;
 
@@ -129,7 +139,7 @@ async fn alternate_endpoint_delivers_audio(ipv6: bool, through_gateway: bool) {
         .publish_track(
             LocalTrack::Audio(track),
             TrackPublishOptions {
-                source: TrackSource::Microphone,
+                source: track_source,
                 ..Default::default()
             },
         )
@@ -142,11 +152,13 @@ async fn alternate_endpoint_delivers_audio(ipv6: bool, through_gateway: bool) {
     .await;
     let RoomEvent::TrackSubscribed {
         track: RemoteTrack::Audio(audio),
+        publication,
         ..
     } = ev
     else {
         panic!("no audio track");
     };
+    assert_eq!(publication.source(), track_source);
     let mut stream = NativeAudioStream::new(audio.rtc_track(), SAMPLE_RATE as i32, CHANNELS as i32);
     tokio::time::timeout(Duration::from_secs(8), async {
         loop {
@@ -159,14 +171,23 @@ async fn alternate_endpoint_delivers_audio(ipv6: bool, through_gateway: bool) {
     .await
     .expect("direct audio did not decode");
     let published = publisher.get_stats().await.unwrap();
-    let received = listener.get_stats().await.unwrap();
     let send_route = connection_routes::selected_media_route(&published.publisher_stats)
         .expect("publisher must have a selected audio route");
-    let receive_route = connection_routes::selected_media_routes(
-        &received.publisher_stats,
-        &received.subscriber_stats,
-    )
-    .1
+    let receive_route = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let received = listener.get_stats().await.unwrap();
+            if let Some(route) = connection_routes::selected_media_routes(
+                &received.publisher_stats,
+                &received.subscriber_stats,
+            )
+            .1
+            {
+                break route;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
     .expect("listener must have a selected audio route");
     for route in [send_route, receive_route] {
         assert!(!route.relayed);

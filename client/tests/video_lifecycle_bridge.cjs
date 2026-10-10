@@ -20,6 +20,7 @@ function element(kind) {
 }
 
 function media(f, room, identity) {
+  f.bridge.setInlineScreens([identity]);
   const container = element('div');
   const id = `screenshare-viewer-${identity}`;
   f.containers.set(id, container);

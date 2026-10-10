@@ -121,9 +121,9 @@ window.dxScreen = window.dxScreen || (function () {
       });
     });
   }
-  function setViewerTargets(identities) { viewerTargets = identities; refreshViewerSubscriptions(true); }
-  function setInlineScreens(identities) { inlineScreens = identities; refreshViewerSubscriptions(); }
-  function setDetachedScreens(identities) { detachedScreens = identities; refreshViewerSubscriptions(); }
+  function setViewerTargets(identities) { viewerTargets = identities; refreshViewerSubscriptions(true); refreshAudioWatches(); }
+  function setInlineScreens(identities) { inlineScreens = identities; refreshViewerSubscriptions(); refreshAudioWatches(); }
+  function setDetachedScreens(identities) { detachedScreens = identities; refreshViewerSubscriptions(); refreshAudioWatches(); }
   function setViewerVisibility(visible) {
     if (viewerVisible === visible) return;
     viewerVisible = visible;
@@ -142,17 +142,27 @@ window.dxScreen = window.dxScreen || (function () {
   function applyAudioSubscriptions() {
     if (!room || !room.remoteParticipants) return;
     room.remoteParticipants.forEach(function (p) {
-      p.trackPublications.forEach(applyAudioSubscription);
+      p.trackPublications.forEach(function (pub) { applyAudioSubscription(pub, p); });
     });
   }
-  function applyAudioSubscription(pub) {
+  function audioWanted(identity) {
+    identity = baseIdentity(identity);
+    return !nativeStreamAudio && viewerTargets === null &&
+      (inlineScreens.includes(identity) || detachedScreens.includes(identity));
+  }
+  function refreshAudioWatches() {
+    Object.keys(audioElements).forEach(function (identity) {
+      if (!audioWanted(identity)) detachAudio(identity);
+    });
+    applyAudioSubscriptions();
+    attachWatched();
+  }
+  function applyAudioSubscription(pub, participant) {
     if (!pub || pub.kind !== 'audio') return;
-    try { pub.setSubscribed(!nativeStreamAudio); } catch (e) { console.warn('[dxScreen] audio subscribe toggle failed', e); }
+    try { pub.setSubscribed(!!participant && audioWanted(participant.identity)); } catch (e) { console.warn('[dxScreen] audio subscribe toggle failed', e); }
   }
   function attachWatched() {
-    Object.keys(attached).forEach(function (cid) {
-      if (cid.startsWith('screenshare-viewer-')) attachAudio(attached[cid].identity);
-    });
+    new Set([...inlineScreens, ...detachedScreens]).forEach(attachAudio);
   }
   const audioElements = {};
   const audioGains = {};
@@ -174,7 +184,7 @@ window.dxScreen = window.dxScreen || (function () {
     identity = baseIdentity(identity);
     audioGains[identity] = Math.max(0, Math.min(1, v));
     const t = audioTracks[identity];
-    if (t) { try { t.setVolume(audioGains[identity]); } catch (e) {} }
+    if (t) { try { t.setVolume(audioWanted(identity) ? audioGains[identity] : 0); } catch (e) {} }
   }
   function detachAudio(identity) {
     if (identity) identity = baseIdentity(identity);
@@ -189,6 +199,7 @@ window.dxScreen = window.dxScreen || (function () {
   }
   function attachAudio(identity) {
     identity = baseIdentity(identity);
+    if (!audioWanted(identity)) return;
     if (audioElements[identity]) return;
     const t = audioTracks[identity];
     if (!t) { report(identity, false); return; }
@@ -432,7 +443,7 @@ window.dxScreen = window.dxScreen || (function () {
     });
     thisRoom.on(lk.RoomEvent.TrackPublished, function (pub, participant) {
       if (room !== thisRoom) return;
-      applyAudioSubscription(pub);
+      applyAudioSubscription(pub, participant);
       applySelfPreviewSubscription(pub, participant);
       applyViewerSubscription(pub, participant);
     });
@@ -1348,6 +1359,46 @@ pub fn ScreenShareBridge() -> Element {
     let state = use_app_state();
     let gateway = use_gateway();
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
+    let watching = use_memo(move || state.read().screen_viewing.clone());
+    let stream_levels = use_memo(move || {
+        let s = state.read();
+        (s.stream_volumes.clone(), s.stream_muted.clone())
+    });
+    let voice_for_stream = use_voice_tx();
+    let mut last_gains = use_signal(Vec::<(String, f32)>::new);
+    let mut last_gain_epoch = use_signal(|| None::<u64>);
+    use_effect(move || {
+        let watched = watching();
+        let _ = stream_levels();
+        let s = state.read();
+        let epoch = s.voice_session_epoch;
+        let desired = crate::stream_audio::playback_gains(&s, &last_gains.peek());
+        drop(s);
+        if *last_gains.peek() == desired && *last_gain_epoch.peek() == Some(epoch) {
+            return;
+        }
+        crate::dlog!(
+            "watch gains changed watched={:?} gains={:?}",
+            watched,
+            desired
+                .iter()
+                .map(|(p, g)| (&p[..p.len().min(8)], g))
+                .collect::<Vec<_>>()
+        );
+        for (pk, gain) in desired.iter() {
+            voice_for_stream.send(VoiceCmd::SetStreamVolume {
+                pubkey: pk.clone(),
+                gain: *gain,
+            });
+            let _ = document::eval(&format!(
+                "window.dxScreen?.setStreamVolume({gain},{});",
+                js_str(pk)
+            ));
+        }
+        last_gains.set(desired);
+        last_gain_epoch.set(Some(epoch));
+    });
+
     let sharing = use_memo(move || {
         let s = state.read();
         (s.screen_sharing, s.voice.channel_id)
@@ -2519,46 +2570,6 @@ pub fn ScreenWatchWindow() -> Element {
         if *was_fullscreen.peek() {
             close_window.window.set_fullscreen(original_fullscreen);
         }
-    });
-
-    let watching = use_memo(move || state.read().screen_viewing.clone());
-    let stream_levels = use_memo(move || {
-        let s = state.read();
-        (s.stream_volumes.clone(), s.stream_muted.clone())
-    });
-    let voice_for_stream = use_voice_tx();
-    let mut last_gains = use_signal(Vec::<(String, f32)>::new);
-    let mut last_gain_epoch = use_signal(|| None::<u64>);
-    use_effect(move || {
-        let watched = watching();
-        let _ = stream_levels();
-        let s = state.read();
-        let epoch = s.voice_session_epoch;
-        let desired = crate::stream_audio::playback_gains(&s, &last_gains.peek());
-        drop(s);
-        if *last_gains.peek() == desired && *last_gain_epoch.peek() == Some(epoch) {
-            return;
-        }
-        crate::dlog!(
-            "watch gains changed watched={:?} gains={:?}",
-            watched,
-            desired
-                .iter()
-                .map(|(p, g)| (&p[..p.len().min(8)], g))
-                .collect::<Vec<_>>()
-        );
-        for (pk, gain) in desired.iter() {
-            voice_for_stream.send(VoiceCmd::SetStreamVolume {
-                pubkey: pk.clone(),
-                gain: *gain,
-            });
-            let _ = document::eval(&format!(
-                "window.dxScreen?.setStreamVolume({gain},{});",
-                js_str(pk)
-            ));
-        }
-        last_gains.set(desired);
-        last_gain_epoch.set(Some(epoch));
     });
 
     let output_device = use_memo(move || state.read().selected_output_device.clone());

@@ -207,6 +207,7 @@ test('hidden viewers pause video while only inline-watched screens subscribe', (
     ['self', participant('self', 'screen')], ['camera', participant('camera', 'camera')],
   ]) };
   const visibilityContext = vm.createContext({ room, selfPreviewIdentity: 'self',
+    refreshAudioWatches: () => {},
     selfPreviewEnabled: false, applySelfPreviewSubscription: () => {},
     baseIdentity: (identity) => identity, kindOf: (pub) => pub.source,
   });

@@ -94,6 +94,12 @@ struct AudioControls {
 }
 
 impl AudioControls {
+    fn sync_stream_gains(&self, state: &AppState) {
+        *self.stream_gains.lock() = crate::stream_audio::playback_gains(state, &[])
+            .into_iter()
+            .collect();
+    }
+
     fn from_state(s: &AppState) -> Self {
         Self {
             threshold: Arc::new(AtomicI32::new(s.mic_sensitivity as i32)),
@@ -524,7 +530,11 @@ async fn service_loop(
                 }
             }
             VoiceCmd::SetStreamVolume { pubkey, gain } => {
-                let gain = gain.clamp(0.0, 2.0);
+                let gain = if state.read().screen_viewing.contains(&pubkey) {
+                    gain.clamp(0.0, 2.0)
+                } else {
+                    0.0
+                };
                 crate::dlog!(
                     "voice SetStreamVolume pubkey={} gain={gain:.2}",
                     &pubkey[..pubkey.len().min(8)]
@@ -557,6 +567,7 @@ async fn service_loop(
         }
             }
             _ = tick.tick() => {
+                controls.sync_stream_gains(&state.read());
                 if let Some(active) = session.as_mut() {
                     active.maintain(state, &controls).await;
                 }
@@ -762,6 +773,7 @@ impl ActiveVoice {
         crate::audio_diag::log("mic open");
         let meter_task = spawn_meter_task(state, meter);
 
+        controls.sync_stream_gains(&state.read());
         let playback = PlaybackMixer::start(state, controls.clone(), reference_tx, faults.clone());
         let output_error = (!playback.is_open()).then(|| "No output device — retrying".to_string());
         let mixer_handle = playback.handle();
@@ -4561,6 +4573,50 @@ mod tests {
             "alice#video",
             "alice"
         ));
+    }
+
+    #[test]
+    fn rejoining_without_watching_clears_the_previous_stream_gain() {
+        let mut state = AppState::empty();
+        state.screen_viewing.insert("alice".into());
+        state.stream_volumes.insert("alice".into(), 50);
+        let controls = AudioControls::from_state(&state);
+        controls.sync_stream_gains(&state);
+        assert_eq!(
+            track_gain(
+                TrackKind::Stream,
+                "alice#video",
+                &HashMap::new(),
+                &controls.stream_gains.lock(),
+                100
+            ),
+            0.5
+        );
+        state.end_voice_locally();
+        state
+            .screen_shares
+            .insert(uuid::Uuid::new_v4(), vec!["alice".into()]);
+        controls.sync_stream_gains(&state);
+        assert_eq!(
+            track_gain(
+                TrackKind::Stream,
+                "alice#video",
+                &HashMap::new(),
+                &controls.stream_gains.lock(),
+                100
+            ),
+            0.0
+        );
+        assert_eq!(
+            track_gain(
+                TrackKind::Voice,
+                "alice",
+                &HashMap::new(),
+                &controls.stream_gains.lock(),
+                100
+            ),
+            1.0
+        );
     }
 
     #[test]
