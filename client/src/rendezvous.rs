@@ -11,7 +11,7 @@ use crate::protocol::rendezvous::{HostToRendezvous, RendezvousToHost, TurnCreden
 const MINT_TIMEOUT: Duration = Duration::from_secs(8);
 
 /// A registration attempt beyond this is a black hole, not a slow link.
-const REGISTER_TIMEOUT: Duration = Duration::from_secs(20);
+pub(crate) const REGISTER_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[derive(Debug, Clone)]
 pub struct PublishInfo {

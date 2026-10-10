@@ -139,36 +139,52 @@ pub async fn start_self_host(
         .local_addr()
         .map_err(|e| format!("embedded server: {e}"))?;
 
-    let coordination = match rendezvous_url.as_deref() {
-        Some(url) => crate::rendezvous::coordination_offered(url).await,
-        None => dioxusfun_server::quic::Coordination::None,
-    };
-
     let open_to_others = allow_lan || rendezvous_url.is_some();
-    let quic_endpoint = if !open_to_others {
-        eprintln!("[host] nobody but this machine may connect — not opening the QUIC door");
-        None
-    } else {
-        let transport_secret = crate::quic::secret_for(&identity);
-        match dioxusfun_server::quic::bind_quic(
-            Some(transport_secret),
-            &coordination,
-            if manual_ip.is_some() {
-                dioxusfun_server::quic::DEFAULT_PORT
-            } else {
-                dioxusfun_server::quic::RANDOM_PORT
-            },
-        )
-        .await
-        {
-            Ok(ep) => Some(ep),
-            Err(e) => {
-                eprintln!("[host] quic unavailable: {e}");
-                tracing::warn!(error = %e, "quic endpoint not bound");
-                None
-            }
+    // Asking the router needs neither the rendezvous nor the QUIC port, and a
+    // router that ignores every method costs seconds the rest can overlap.
+    let discovery = async {
+        match local_ipv4().filter(|_| allow_lan && manual_ip.is_none()) {
+            Some(ip) => Some(portmap::discover(ip, livekit_bundle::ports().ws).await),
+            None => None,
         }
     };
+    let quic_setup = async {
+        let coordination = match rendezvous_url.as_deref() {
+            Some(url) => crate::rendezvous::coordination_offered(url).await,
+            None => dioxusfun_server::quic::Coordination::None,
+        };
+        let quic_endpoint = if !open_to_others {
+            eprintln!("[host] nobody but this machine may connect — not opening the QUIC door");
+            None
+        } else {
+            let transport_secret = crate::quic::secret_for(&identity);
+            match dioxusfun_server::quic::bind_quic(
+                Some(transport_secret),
+                &coordination,
+                if manual_ip.is_some() {
+                    dioxusfun_server::quic::DEFAULT_PORT
+                } else {
+                    dioxusfun_server::quic::RANDOM_PORT
+                },
+            )
+            .await
+            {
+                Ok(ep) => Some(ep),
+                Err(e) => {
+                    eprintln!("[host] quic unavailable: {e}");
+                    tracing::warn!(error = %e, "quic endpoint not bound");
+                    None
+                }
+            }
+        };
+        if coordination.is_coordinated()
+            && let Some(ep) = quic_endpoint.as_ref()
+        {
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), ep.online()).await;
+        }
+        (coordination, quic_endpoint)
+    };
+    let (mut discovery, (coordination, quic_endpoint)) = tokio::join!(discovery, quic_setup);
     let quic_port = quic_endpoint
         .as_ref()
         .and_then(|ep| ep.bound_sockets().first().map(|s| s.port()));
@@ -218,7 +234,11 @@ pub async fn start_self_host(
                     media_udp: sfu.udp,
                     quic_udp,
                 };
-                match portmap::request(local_ip, ports).await {
+                let discovery = match discovery.take() {
+                    Some(discovery) => discovery,
+                    None => portmap::discover(local_ip, sfu.ws).await,
+                };
+                match portmap::request(discovery, ports).await {
                     Ok((mapped, guard)) => {
                         eprintln!(
                             "[host] {} mapped {} (quic: {}, media: {:?}, hairpin: {})",
@@ -292,12 +312,6 @@ pub async fn start_self_host(
         .filter(|m| m.media.available())
         .map(|m| m.public_ip);
 
-    if coordination.is_coordinated()
-        && let Some(ep) = quic_endpoint.as_ref()
-    {
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), ep.online()).await;
-    }
-
     // Public first, LAN second, relay last: a friend tries them in order.
     let transport_addrs: Vec<String> = match (quic_endpoint.as_ref(), quic_port) {
         (Some(ep), Some(port)) => {
@@ -341,7 +355,13 @@ pub async fn start_self_host(
     let mut publish_error: Option<String> = None;
     let listed_public = publish.publish_public;
     if let Some(url) = rendezvous_url.as_deref() {
-        match crate::rendezvous::register(url, &publish, transport.as_ref(), &identity).await {
+        let registered = tokio::time::timeout(
+            crate::rendezvous::REGISTER_TIMEOUT,
+            crate::rendezvous::register(url, &publish, transport.as_ref(), &identity),
+        )
+        .await
+        .unwrap_or_else(|_| Err("no answer from the rendezvous".to_string()));
+        match registered {
             Ok((info, control)) => {
                 eprintln!(
                     "[host] rendezvous registered: shortcode={} livekit_url={:?}",
