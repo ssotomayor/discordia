@@ -17,12 +17,12 @@ name instead.
 
 | File | Lines |
 |---|---|
-| `client/src/features/voice.rs` | 4899 |
+| `client/src/features/voice.rs` | 4894 |
 | `server/src/state/mod.rs` | 3182 |
 | `server/tests/owner_controls.rs` | 3036 |
 | `server/src/gateway/connection.rs` | 2993 |
 | `client/src/features/channels.rs` | 1991 |
-| `client/src/features/screenshare.rs` | 3170 |
+| `client/src/features/screenshare.rs` | 3175 |
 | `protocol/src/lib.rs` | 2657 |
 | `client/src/state.rs` | 2147 |
 | `client/src/update.rs` | 1228 |
@@ -56,7 +56,7 @@ that direction says a file is safe to open when it is not.
 | Voice preferences on entry | `VoiceSession::join_message`, `net::apply`, `server::state::set_voice_channel` | Optional `JoinVoice.preferences` applies mute/deafen before the first broadcast; the client corrects legacy join echoes without briefly enabling audio |
 | Native voice regression tests | `client/src/features/voice_audio_tests.rs`, `voice_speech_tests.rs` | Gain, mute, deafen, room-tone AGC, buffering and resampling; opt-in human speech through the production worker exports WAV comparisons with noise and double talk |
 | Native sample-rate conversion | `client/src/features/voice.rs`, `features/resampler_tests.rs`, `client/src/sound_decode.rs` | `AudioResampler` uses Rubato 5 fixed-input FFT and borrowed mono adapters at capture/playback/file boundaries; equal rates bypass conversion. Tests compare samples, counts and delay to test-only Rubato 0.16.2 and verify partial-input accumulation and warmed buffer capacities |
-| Stream playback volume | `stream_audio::playback_gains`, `ScreenShareBridge`, `AudioControls::sync_stream_gains`, `features/voice_subscriptions.rs` | Watch-level volume/mute/deafen drives native and WebView audio even with every tile detached. Native rooms opt out of automatic subscriptions; a watch channel updates stream audio immediately while voice/soundboard subscriptions remain independent. Gains refresh before output and every service tick; late commands cannot enable unwatched streams. Unsubscribe cancels decoding and drops its mixer queue (bounded to 200 ms while active). WebView subscribes/attaches only selected inline/detached audio; viewer-only rooms stay silent. `scripts/test-stream-audio.mjs` covers selection/stop; `bundled_sfu_preserves_screen_audio_source` checks opt-in, stop, resume, source and decoded-tone startup timings (ignored; real SFU) |
+| Stream playback volume | `stream_audio::playback_gains`, `ScreenShareBridge`, `AudioControls::sync_stream_gains`, `features/voice_subscriptions.rs` | Watch-level volume/mute/deafen drives native and WebView audio even with every tile detached. Native rooms opt out of automatic subscriptions; a watch channel updates stream audio immediately while voice/soundboard subscriptions remain independent. Gains refresh before output and every service tick; volume commands use current state without first writing their stale gain. Unsubscribe cancels decoding and drops its mixer queue (bounded to 200 ms while active). WebView subscribes only selected inline/detached audio and detaches its output at zero gain; muted watches retain audio availability for unmuting. Viewer-only rooms stay silent. `scripts/test-stream-audio.mjs` covers selection/stop/mute/fallback; `bundled_sfu_preserves_screen_audio_source` checks opt-in, stop, resume, source and decoded-tone startup timings (ignored; real SFU) |
 | Voice, capture, mixing | `client/src/features/voice.rs` | the largest file in the tree — grep `ScreenAudioRoom`, `NativeVideoRoom`, `ScreenVideoRoom`, `forward_mic` |
 | Audio RED under E2EE | `vendor/livekit/src/rtc_engine/rtc_session.rs`, `vendor/livekit/src/room/participant/local_participant.rs` | A track published without an explicit `red: false` offers opus+RED, so the publisher sends the redundant copy itself and the SFU forwards it rather than synthesizing one (which it cannot do over encrypted frames). E2EE no longer turns RED off, so guild voice keeps the loss resilience plain voice and DM calls have. `audio_red_survives_end_to_end_encryption` (ignored) starts a bundled SFU and checks the encrypted wire carries the extra bytes |
 | Native track teardown errors | `vendor/webrtc-sys/src/peer_connection.rs`, `src/peer_connection.cpp`, `include/livekit/peer_connection.h`, `client/src/features/native_teardown.rs` | Removing tracks returns a structured `RtcError` across CXX; the Rust wrapper preserves libwebrtc's `what()` error format without the C++ exception-string callback. Real peer-connection tests cover removal after close and concurrent close/removal |
