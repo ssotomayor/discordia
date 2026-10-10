@@ -102,6 +102,7 @@ pub fn ImageEditor(
     let nat_w = f64::from(image.pixels.width());
     let nat_h = f64::from(image.pixels.height());
     let preview = image.preview.clone();
+    let animated = image.is_animated();
 
     let min_zoom = (vp_w / nat_w).max(vp_h / nat_h);
     let max_zoom = min_zoom * 5.0;
@@ -211,6 +212,11 @@ pub fn ImageEditor(
                 }
                 div { class: "text-[10px] text-[var(--text-dim)] mt-1",
                     "Drag the image to reposition it."
+                }
+                if animated {
+                    div { class: "text-[10px] text-[var(--text-dim)] mt-1",
+                        "GIFs keep their animation; resolution adjusts to fit the 2 MB limit."
+                    }
                 }
                 if let Some(message) = error() {
                     p { class: "text-xs text-[var(--text-dim)] mt-1", "{message}" }

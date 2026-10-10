@@ -733,7 +733,7 @@ const QUIET: &str = "px-3 py-1.5 rounded text-[10px] uppercase tracking-wider te
 const LABEL: &str = "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]";
 
 #[component]
-pub fn DiscordImportDialog(on_close: EventHandler<()>) -> Element {
+pub fn DiscordImportPanel(on_close: EventHandler<()>, mut locked: Signal<bool>) -> Element {
     let mut state = use_app_state();
     let gateway = use_gateway();
     let mut step = use_signal(|| Step::Token);
@@ -742,15 +742,16 @@ pub fn DiscordImportDialog(on_close: EventHandler<()>) -> Element {
     let mut busy = use_signal(|| false);
     let progress = use_signal(|| Progress::Idle);
 
-    let running = matches!(step(), Step::Running)
-        && matches!(progress(), Progress::Working { .. } | Progress::Idle);
-    let close = move |_| {
-        if !running {
-            on_close.call(());
-        }
-    };
+    use_effect(move || {
+        let running = matches!(step(), Step::Running)
+            && matches!(progress(), Progress::Working { .. } | Progress::Idle);
+        locked.set(running);
+    });
 
     let mut find_servers = move || {
+        if busy() {
+            return;
+        }
         let t = token().trim().to_string();
         if t.is_empty() {
             return;
@@ -787,6 +788,7 @@ pub fn DiscordImportDialog(on_close: EventHandler<()>) -> Element {
     let start = {
         let gateway = gateway.clone();
         move |plan: ImportPlan| {
+            locked.set(true);
             step.set(Step::Running);
             let gateway = gateway.clone();
             spawn(async move {
@@ -796,23 +798,7 @@ pub fn DiscordImportDialog(on_close: EventHandler<()>) -> Element {
     };
 
     rsx! {
-        div {
-            class: "dxf-backdrop-in fixed inset-0 z-50 flex items-center justify-center bg-black/50",
-            onclick: close,
-            div {
-                class: "dxf-modal-in w-[30rem] max-h-[85vh] flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-xl overflow-hidden",
-                onclick: move |e| e.stop_propagation(),
-                div { class: "px-4 py-3 border-b border-[var(--border)] flex items-center",
-                    h3 { class: "text-sm font-medium text-[var(--accent)] flex-1", "Import a Discord server" }
-                    if !running {
-                        button {
-                            class: "text-[var(--text-dim)] hover:text-[var(--text)] text-lg leading-none",
-                            onclick: move |_| on_close.call(()),
-                            "✕"
-                        }
-                    }
-                }
-                div { class: "flex-1 overflow-y-auto p-4 space-y-4",
+        div { class: "space-y-4",
                     if let Some(e) = error() {
                         div { class: "text-xs text-[var(--danger)] border border-[var(--danger)]/40 rounded px-3 py-2", "{e}" }
                     }
@@ -993,8 +979,6 @@ pub fn DiscordImportDialog(on_close: EventHandler<()>) -> Element {
                             },
                         },
                     }
-                }
-            }
         }
     }
 }

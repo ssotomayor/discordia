@@ -24,14 +24,14 @@ name instead.
 | `client/src/features/channels.rs` | 1991 |
 | `client/src/features/screenshare.rs` | 3175 |
 | `protocol/src/lib.rs` | 2779 |
-| `client/src/state.rs` | 2273 |
+| `client/src/state.rs` | 2281 |
 | `client/src/update.rs` | 1228 |
-| `client/src/net.rs` | 2104 |
+| `client/src/net.rs` | 2165 |
 | `client/src/features/chat.rs` | 2123 |
 | `server/src/store.rs` | 1336 |
 | `client/src/features/guild_settings.rs` | 1132 |
 | `client/src/identity.rs` | 1123 |
-| `client/src/features/discord_import.rs` | 1127 |
+| `client/src/features/discord_import.rs` | 1111 |
 
 Everything else is small enough that `wc -l` answers faster than a list here
 could stay true. There used to be rows for "under 300" and "300 to 800": they
@@ -42,9 +42,9 @@ that direction says a file is safe to open when it is not.
 
 | To find | Open | At |
 |---|---|---|
-| Game image in the profile popup | `client/src/presence/artwork.rs`, `features/profiles.rs` | Windows extracts a cached 64 px executable icon; `Activity.image` carries a bounded inline PNG. Missing art uses a game symbol; no remote image fetch |
-| Animated profile/community images | `client/src/image_edit.rs`, `features/image_editor.rs` | `crop_image` crops composited GIF frames and preserves timing; bounded decode and output apply to avatars, banners and guild icons |
-| Chat files, stickers, pins and search | `client/src/features/chat.rs`, `client/src/features/chat_tools.rs`, `server/src/state/chat_tools.rs` | `Composer` separates Image (preview) and File (download) buttons; `FileSender` handles file drafts. `ChatTools` provides author/date/text/attachment filters, pins and sticker management. File uploads require a correlated acknowledgement; download is explicit and opens only the destination folder, never the file. `FilePolicy` defaults to 2 MB / 7 days; Manage guild can lower the limit or change expiry |
+| Game image in the profile popup | `client/src/presence/artwork.rs`, `features/profiles.rs` | Windows extracts actual executable icon resources, then tries Xbox GDK/package logos and Steam library cache (legacy and per-app hashed layouts). `xbox.rs` reads bounded local manifests; `detect.rs` caches hits/misses, retries every 5 min. `Activity.image` carries a 64 px PNG; missing art uses a game symbol, with no remote image fetch |
+| Animated profile/community images | `client/src/image_edit.rs`, `features/image_editor.rs` | `crop_image` reuses fitting unchanged GIFs; cropped exports avoid upscaling and reduce resolution to fit 2 MB, preserving frames, timing and repeat count. Bounded decode/output cover avatars, banners and guild images; chat/stickers retain original bytes, emojis have a separate 256 KB cap |
+| Chat files, stickers, pins and search | `client/src/features/chat.rs`, `client/src/features/chat_tools.rs`, `server/src/state/chat_tools.rs` | `Composer` groups Image (preview) and File (download) under the + attachment menu; `Composer` keeps file drafts until acknowledgement. `ChatTools` opens search and pins from header icons; `StickerPicker` opens next to the composer emoji button; its responsive panel uses `client/assets/chat-tools.css`. Search pagination retains the submitted filters. Guild settings own sticker management and file policy. File uploads require a correlated acknowledgement; download is explicit and opens only the destination folder, never the file. `FilePolicy` defaults to 2 MB / 7 days; Manage guild can lower the limit or change expiry |
 | File expiration and host storage | `server/src/store.rs`, `server/src/media.rs` | Attachments retain metadata after expiry. `live_file_channels` gates download by membership, visibility and expiry; `sweep_files` reclaims unreferenced `.bin` blobs every minute under `durable_writes`. Windows marks stored and saved files as Internet downloads; no malware scanner |
 | Chat tools with older hosts | `protocol::ServerMessage::Ready`, `client/src/net.rs`, `features/chat.rs` | `Ready.chat_tools` defaults to false for legacy hosts. User connections advertise support; the client mounts tools and enables file/pin actions only when supported, preventing unknown-command errors on text or voice channel entry |
 | What a `ServerMessage` does to the client | `client/src/net.rs` | `fn apply` — one arm per variant, exhaustive |
@@ -96,7 +96,8 @@ that direction says a file is safe to open when it is not.
 | Seeing the phrase again | `client/src/features/connect.rs` | `RecoveryPhrase` on `IdentityCard` — reveal, confirm, hides after a minute; only the home screen mounts the card |
 | Actual chat and voice connection routes | `client/src/connection_routes.rs`, `client/src/quic.rs`, `client/src/features/workspace.rs` | `watch_route` follows selected QUIC paths; `selected_media_route` follows selected WebRTC pairs, separate from signaling. Click Voice for local and same-channel caller reports. `ConnectionRouteReport` carries labels only; the gateway checks membership and label vocabulary before forwarding. Every decision on the way logs a `voice route:` line (host plan, offered addresses, grant issued/received, each endpoint tried, caller reports, the move to shared voice, the selected ICE pair): `grep 'voice route:' <config dir>/logs/discordia.log` on host and caller follows one call end to end. |
 | Choosing the keys folder | `client/src/features/identity_setup.rs` | `FolderSettings` — the cog on the setup screen; `DetectedIdentities` rescans on every render, `rev` forces one |
-| Bringing a Discord server over | `client/src/features/discord_import.rs` | `read_plan` fetches with a bot token, `flatten_channels`/`plan_roles` map, `run_import` replays `CreateGuild`→`SetGuildProfile`→`CreateChannel`→`CreateRole`→`CreateGuildEmoji` one write per 450 ms; opened from the rail via `GuildDialog::ImportDiscord` |
+| Add a guild | `client/src/features/guild_hub.rs`, `client/assets/guild-hub.css` | One rail + opens root-mounted `AddGuildDialog`; Create / Explore / Discord panels stay mounted to preserve drafts. Creation/join waits for server state; gated joins hand off to root rules dialog. `catalog_revision` marks responses including empty catalogs; `guild_join_confirmation` distinguishes fresh acknowledgements, even for an already joined invite. CSS is embedded with `include_str!`. |
+| Bringing a Discord server over | `client/src/features/discord_import.rs` | `read_plan` fetches with a bot token, `flatten_channels`/`plan_roles` map, `run_import` replays `CreateGuild`→`SetGuildProfile`→`CreateChannel`→`CreateRole`→`CreateGuildEmoji` one write per 450 ms; embedded as `DiscordImportPanel` in `guild_hub::AddGuildDialog` via `GuildDialog::AddGuild` |
 | CPAL device configuration and callback recovery | `client/src/audio_device.rs` | CPAL 0.18.2 keeps ALSA PCM names and other backends' description names for saved selections; supported PCM defaults remain intact, unsupported ones select a compatible format/rate. Transient underruns, automatic route changes and priority refusal keep streams open. Tests cover integer defaults, Bluetooth rates and fatal/transient errors |
 | A device that stays busy after voice | `client/src/features/voice.rs` | `pick_device`, and the `Drop` impls of `MicCapture` / `PlaybackMixer` (trap 24); `client/src/audio_diag.rs` prints CoreAudio's view in debug builds |
 | Capture audio queues | `client/src/audio_queue.rs`, `client/src/sysaudio/frames.rs`, `client/src/features/voice.rs` | Mic/DSP and system-audio publication use fixed 480-sample blocks, eight-frame bounded queues and nonblocking offers; blocks older than 100 ms are discarded before DSP/publication. `FrameCutter` reuses a fixed partial block and counts dropped blocks for the Windows silence clock. SDK/network buffers are separate |

@@ -123,6 +123,7 @@ const PASTE_JS: &str = r#"
 fn load_attachment(
     path: Option<std::path::PathBuf>,
     mut pending: Signal<Option<String>>,
+    mut pending_file: Signal<Option<(String, String)>>,
     mut error: Signal<Option<String>>,
     mut generation: Signal<u64>,
 ) {
@@ -140,6 +141,7 @@ fn load_attachment(
         match result.unwrap_or_else(|e| Err(format!("Couldn't load that image: {e}"))) {
             Ok(url) => {
                 error.set(None);
+                pending_file.set(None);
                 pending.set(Some(url));
             }
             Err(message) => error.set(Some(message)),
@@ -151,6 +153,15 @@ fn load_attachment(
 pub fn ChatView() -> Element {
     let state = use_app_state();
     let gateway = use_gateway();
+    let mut tools_panel = use_signal(|| "");
+    let tools_channel = use_memo(move || {
+        let s = state.read();
+        (s.selected_channel, s.server_chat_tools)
+    });
+    use_effect(move || {
+        let _ = tools_channel();
+        tools_panel.set("");
+    });
     let mut drag_over = use_signal(|| false);
     let mut dropped_file = use_signal::<Option<std::path::PathBuf>>(|| None);
 
@@ -274,7 +285,9 @@ pub fn ChatView() -> Element {
         .unwrap_or_default();
     let pages = page_states.read();
     rsx! {
-        div { id: "{drop_id}", class: "relative flex flex-col h-full min-h-0",
+        document::Style { {include_str!("../../assets/chat-tools.css")} }
+        div { id: "{drop_id}", class: "dxf-chat relative flex flex-col h-full min-h-0",
+            "data-tools-open": !tools_panel().is_empty(),
             ondragover: move |event: DragEvent| {
                 event.prevent_default();
                 if drop_id == "dxf-chat-drop" { drag_over.set(true); }
@@ -298,6 +311,7 @@ pub fn ChatView() -> Element {
             }
 
             header { class: "h-12 px-3.5 flex items-center gap-3 border-b border-[var(--border)] shrink-0",
+                style: if !is_dm && state.read().server_chat_tools { "padding-right:92px;" } else { "" },
                 span { class: "shrink-0 font-mono text-base text-[var(--text-dim)]", if is_dm { "@" } else { "#" } }
                 // The name yields first: a wrapped badge costs a line, a
                 // wrapped key costs nothing you could not read from the list.
@@ -322,9 +336,10 @@ pub fn ChatView() -> Element {
 
             if !is_dm && state.read().server_chat_tools {
                 for channel_id in selected_channel.into_iter() {
-                    super::chat_tools::ChatTools { key: "{channel_id}", channel_id }
+                    super::chat_tools::ChatTools { key: "{channel_id}", channel_id, panel: tools_panel }
                 }
             }
+            div { class: "dxf-chat-main",
             NoDrag {
                 div { id: "dxf-chat-scroll",
                 style: "overflow-anchor: none;", onmounted: move |_| scroll_mounted += 1, class: "flex-1 overflow-y-auto px-4 py-4 min-h-0",
@@ -385,6 +400,7 @@ pub fn ChatView() -> Element {
                 for channel_id in selected_channel {
                     Composer { key: "{channel_id}", channel_id, composer_label: composer_label.clone(), dropped_file }
                 }
+            }
             }
         }
     }
@@ -1594,9 +1610,15 @@ fn Composer(
     });
     let mut draft = use_signal(String::new);
     let mut pending_image = use_signal::<Option<String>>(|| None);
-    let attach_err = use_signal::<Option<String>>(|| None);
+    let mut attach_err = use_signal::<Option<String>>(|| None);
     let mut show_emoji = use_signal(|| false);
-    let mut show_file = use_signal(|| false);
+    let mut show_stickers = use_signal(|| false);
+    let mut show_attachment = use_signal(|| false);
+    let mut pending_file = use_signal(|| None::<(String, String)>);
+    let mut reading_file = use_signal(|| false);
+    let mut file_request = use_signal(|| None::<Id>);
+    let mut sent_file_text = use_signal(String::new);
+    let mut sent_file_reply = use_signal(|| None::<Id>);
     let mut caret_token = use_signal(|| None::<String>);
     let mut selected = use_signal(|| 0_usize);
     let mut last_typing = use_signal::<Option<std::time::Instant>>(|| None);
@@ -1607,6 +1629,32 @@ fn Composer(
     let identity = use_context::<crate::identity::Identity>();
     let mut uploading = use_signal(|| false);
     let composer_id = format!("dxf-composer-{channel_id}");
+    {
+        let id = composer_id.clone();
+        use_effect(move || {
+            let result = state.read().file_upload_result.clone();
+            if let Some((request, error)) = result
+                && Some(request) == file_request()
+            {
+                file_request.set(None);
+                if let Some(error) = error {
+                    attach_err.set(Some(error));
+                } else {
+                    pending_file.set(None);
+                    if sent_file_reply().is_some()
+                        && replying_to().map(|r| r.message_id) == sent_file_reply()
+                    {
+                        state.write().replying_to = None;
+                    }
+                    if *draft.peek() == *sent_file_text.peek() {
+                        draft.set(String::new());
+                        composer_call(&id, "clear", &[]);
+                    }
+                    attach_err.set(None);
+                }
+            }
+        });
+    }
     // Names this mount's script, so a drop that lands after the next mount's
     // script has started leaves that one alone.
     let instance = use_hook(|| uuid::Uuid::new_v4().to_string());
@@ -1620,14 +1668,14 @@ fn Composer(
     use_effect(move || {
         if let Some(path) = dropped_file() {
             dropped_file.set(None);
-            load_attachment(Some(path), pending_image, attach_err, generation);
+            load_attachment(Some(path), pending_image, pending_file, attach_err, generation);
         }
     });
     use_future(move || async move {
         let mut eval = document::eval(PASTE_JS);
         while let Ok(msg) = eval.recv::<Value>().await {
             if msg.get("k").and_then(Value::as_str) == Some("paste") {
-                load_attachment(None, pending_image, attach_err, generation);
+                load_attachment(None, pending_image, pending_file, attach_err, generation);
             }
         }
     });
@@ -1692,19 +1740,58 @@ fn Composer(
         generation.with_mut(|n| *n = n.wrapping_add(1));
         pending_image.set(None);
         show_emoji.set(false);
+        show_stickers.set(false);
+        show_attachment.set(false);
         if reply_to.is_some() {
             state.write().replying_to = None;
         }
         true
     };
     let mut submit = move || -> bool {
+        if reading_file() || file_request().is_some() {
+            return false;
+        }
         let content = draft().trim().to_string();
         let image = pending_image();
-        if content.is_empty() && image.is_none() {
+        if content.is_empty() && image.is_none() && pending_file().is_none() {
             return false;
         }
         tracing::debug!(%channel_id, chars = content.len(), "composer submit");
         let reply_to = replying_to().map(|r| r.message_id);
+        if let Some((name, data_url)) = pending_file() {
+            if file_guild.is_none() || state.peek().status != crate::state::ConnectionStatus::Ready
+            {
+                attach_err.set(Some(
+                    "Reconnect before sending. Your draft has been kept.".into(),
+                ));
+                return false;
+            }
+            if image.is_some() {
+                attach_err.set(Some("Choose either an image or a file attachment.".into()));
+                return false;
+            }
+            let request_id = uuid::Uuid::new_v4();
+            sent_file_text.set(draft());
+            sent_file_reply.set(reply_to);
+            file_request.set(Some(request_id));
+            attach_err.set(None);
+            gateway_submit.send(ClientMessage::SendFile {
+                request_id,
+                channel_id,
+                name,
+                data_url,
+                content,
+                reply_to,
+            });
+            spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                if file_request() == Some(request_id) {
+                    file_request.set(None);
+                    attach_err.set(Some("No upload confirmation. Your draft is kept; check the chat before retrying.".into()));
+                }
+            });
+            return false;
+        }
         let dm_peer = state
             .read()
             .dm_of(channel_id)
@@ -1892,6 +1979,12 @@ fn Composer(
                 }
             }
 
+            if show_stickers() && state.read().server_chat_tools {
+                if let Some(guild_id) = file_guild {
+                    super::chat_tools::StickerPicker { guild_id, channel_id, on_close: { let id = composer_id.clone(); move |_| { show_stickers.set(false); composer_call(&id, "focus", &[]); } } }
+                }
+            }
+
             if show_emoji() {
                 div {
                     class: "dxf-pop-in absolute bottom-full right-3 mb-2 p-1.5 bg-[var(--panel-solid)] border border-[var(--border)] rounded-md shadow-lg z-30",
@@ -1998,10 +2091,17 @@ fn Composer(
 
             if let Some(img) = pending_image() {
                 div { class: "mb-2 flex items-center gap-2",
-                    img {
-                        class: "h-16 w-16 object-cover rounded border border-[var(--border-strong)] bg-[var(--panel2)]",
-                        src: "{img}",
-                        alt: "pending attachment",
+                    button {
+                        r#type: "button",
+                        title: "Enlarge image preview",
+                        aria_label: "Enlarge image preview",
+                        style: "cursor:zoom-in;",
+                        onclick: { let full = img.clone(); move |_| state.write().image_viewer = Some(full.clone()) },
+                        img {
+                            class: "h-16 w-16 object-cover rounded border border-[var(--border-strong)] bg-[var(--panel2)]",
+                            src: "{img}",
+                            alt: "pending attachment",
+                        }
                     }
                     button {
                         r#type: "button",
@@ -2015,12 +2115,11 @@ fn Composer(
                 div { class: "mb-2 text-[10px] text-[var(--danger)]", "{err}" }
             }
 
-            if show_file() {
-                if let Some(guild_id) = file_guild {
-                    div { class: "mb-2 text-xs",
-                        button { r#type: "button", onclick: move |_| show_file.set(false), "Close file attachment" }
-                        super::chat_tools::FileSender { guild_id, channel_id }
-                    }
+            if let Some((name, _)) = pending_file() {
+                div { class: "mb-2 flex items-center gap-2 text-xs",
+                    span { "📎 {name}" }
+                    button { r#type: "button", disabled: file_request().is_some(),
+                        onclick: move |_| pending_file.set(None), "Remove" }
                 }
             }
 
@@ -2028,32 +2127,48 @@ fn Composer(
                 onsubmit: move |e| { e.prevent_default(); submit(); },
                 div { class: "h-12 border border-[var(--border-strong)] rounded-xl bg-[var(--panel)] flex items-center pl-2 pr-2.5 gap-2 focus-within:border-[var(--accent)] transition-colors",
 
-                    label {
-                        class: "w-8 h-8 shrink-0 flex items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--panel2)] text-lg leading-none text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors cursor-pointer select-none",
-                        style: "width: auto; padding: 0 8px; font-size: 12px;",
-                        title: "Upload an image with a preview in chat",
-                        "🖼 Image"
-                        input {
-                            r#type: "file",
-                            accept: "image/*",
-                            class: "hidden",
-                            onchange: move |evt: FormEvent| {
-                                if let Some(file) = evt.files().into_iter().next() {
-                                    load_attachment(Some(file.path()), pending_image, attach_err, generation);
-                                }
-                            },
+                    div { class: "relative shrink-0",
+                        onkeydown: move |event| { if event.key() == Key::Escape { show_attachment.set(false); } },
+                        button { r#type: "button", class: "dxf-attachment-plus", title: "Add attachment", aria_label: "Add attachment", aria_expanded: show_attachment(),
+                            disabled: reading_file() || file_request().is_some(),
+                            onclick: move |_| { show_emoji.set(false); show_stickers.set(false); caret_token.set(None); show_attachment.toggle(); },
+                            "+"
                         }
-                    }
-
-                    if file_guild.is_some() {
-                        button {
-                            r#type: "button",
-                            class: "h-8 shrink-0 flex items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--panel2)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors",
-                            style: "padding: 0 8px; font-size: 12px;",
-                            title: "Upload a downloadable file without a preview",
-                            aria_expanded: show_file(),
-                            onclick: move |_| show_file.toggle(),
-                            "📎 File"
+                        if show_attachment() {
+                            div { class: "dxf-pop-in dxf-attachment-menu", role: "group", aria_label: "Attachment options",
+                                button { r#type: "button", class: "dxf-attachment-option", disabled: reading_file() || file_request().is_some(),
+                                    onclick: move |_| {
+                                        show_attachment.set(false);
+                                        reading_file.set(true);
+                                        spawn(async move {
+                                            let selected = rfd::AsyncFileDialog::new().add_filter("Image", &["png", "jpg", "jpeg", "gif", "webp"]).pick_file().await;
+                                            reading_file.set(false);
+                                            if let Some(file) = selected { load_attachment(Some(file.path().to_owned()), pending_image, pending_file, attach_err, generation); }
+                                        });
+                                    },
+                                    span { "🖼" } span { "Upload image" }
+                                }
+                                if file_guild.is_some() {
+                                    button { r#type: "button", class: "dxf-attachment-option", disabled: reading_file() || file_request().is_some(),
+                                        onclick: move |_| {
+                                            let Some(guild_id) = file_guild else { return };
+                                            show_attachment.set(false);
+                                            reading_file.set(true);
+                                            spawn(async move {
+                                                let policy = state.read().guild_file_policies.get(&guild_id).cloned().unwrap_or_default();
+                                                let result = super::chat_tools::choose_file(policy).await;
+                                                reading_file.set(false);
+                                                match result {
+                                                    Ok(Some(file)) => { generation.with_mut(|n| *n = n.wrapping_add(1)); pending_file.set(Some(file)); pending_image.set(None); attach_err.set(None); }
+                                                    Ok(None) => {}
+                                                    Err(error) => attach_err.set(Some(error)),
+                                                }
+                                            });
+                                        },
+                                        span { "📎" } span { "Upload file" }
+                                    }
+                                }
+                            }
                         }
                     }
 
@@ -2063,6 +2178,7 @@ fn Composer(
                     // here renders into it.
                     div {
                         id: "{composer_id}",
+                        onfocus: move |_| show_attachment.set(false),
                         class: "dxf-composer flex-1 min-w-0 py-2 text-[14px] text-[var(--text)]",
                         contenteditable: "true",
                         "data-placeholder": "Message {composer_label}",
@@ -2075,17 +2191,26 @@ fn Composer(
                         r#type: "button",
                         class: "px-1.5 text-base leading-none text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors",
                         title: "Emoji",
-                        onclick: move |_| show_emoji.toggle(),
+                        onclick: move |_| { show_attachment.set(false); show_stickers.set(false); show_emoji.toggle(); },
                         "🙂"
+                    }
+
+                    if file_guild.is_some() && state.read().server_chat_tools {
+                        button { r#type: "button", class: "px-1.5 text-base leading-none text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors",
+                            title: "Stickers", aria_label: "Stickers", aria_expanded: show_stickers(),
+                            onclick: move |_| { show_attachment.set(false); show_emoji.set(false); caret_token.set(None); show_stickers.toggle(); },
+                            span { dangerous_inner_html: super::icons::STICKER }
+                        }
                     }
 
                     // Enter already sends; the button is for the pointer, and a
                     // permanently greyed one is a control that never does anything.
-                    if !draft().trim().is_empty() || pending_image().is_some() {
+                    if !draft().trim().is_empty() || pending_image().is_some() || pending_file().is_some() {
                         button {
                             class: "dxf-cta shrink-0 text-xs font-semibold uppercase tracking-wider px-4 py-1.5 rounded-lg transition-all",
                             r#type: "submit",
-                            "Send"
+                            disabled: reading_file() || file_request().is_some(),
+                            if file_request().is_some() { "Uploading…" } else { "Send" }
                         }
                     }
                 }

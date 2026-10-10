@@ -1122,6 +1122,11 @@ fn apply(
             voice_states,
         } => {
             let gid = guild.id;
+            let revision = s
+                .guild_join_confirmation
+                .map_or(0, |(revision, _)| revision)
+                .wrapping_add(1);
+            s.guild_join_confirmation = Some((revision, gid));
             if !s.guilds.iter().any(|g| g.id == gid) {
                 s.guilds.push(guild);
             }
@@ -1171,6 +1176,7 @@ fn apply(
                 s.catalog.extend(guilds);
             }
             s.catalog_total = total;
+            s.catalog_revision = s.catalog_revision.wrapping_add(1);
         }
         ServerMessage::GuildDelete { guild_id } => {
             s.guilds.retain(|g| g.id != guild_id);
@@ -1897,6 +1903,56 @@ mod tests {
         assert_eq!(reconnect_delay(3).as_secs(), 8);
         assert_eq!(reconnect_delay(4).as_secs(), 15);
         assert_eq!(reconnect_delay(u32::MAX).as_secs(), 15);
+    }
+
+    #[test]
+    fn guild_hub_observes_empty_catalogs_and_repeated_join_confirmations() {
+        fn harness() -> Element {
+            let mut state = use_signal(AppState::empty);
+            use_hook(move || {
+                let (tx, _) = unbounded_channel();
+                let (voice_tx, _) = unbounded_channel();
+                for revision in 1..=2 {
+                    apply(
+                        &mut state,
+                        ServerMessage::GuildCatalog {
+                            guilds: vec![],
+                            offset: 0,
+                            total: 0,
+                        },
+                        &tx,
+                        &voice_tx,
+                    );
+                    assert_eq!(state.peek().catalog_revision, revision);
+                }
+                let id = Id::new_v4();
+                let guild: crate::protocol::Guild = serde_json::from_value(serde_json::json!({
+                    "id": id, "name": "Home", "icon": null,
+                }))
+                .unwrap();
+                for revision in 1..=2 {
+                    apply(
+                        &mut state,
+                        ServerMessage::GuildJoined {
+                            guild: guild.clone(),
+                            channels: vec![],
+                            members: vec![],
+                            roles: vec![],
+                            emojis: vec![],
+                            sounds: vec![],
+                            voice_states: vec![],
+                        },
+                        &tx,
+                        &voice_tx,
+                    );
+                    assert_eq!(state.peek().guild_join_confirmation, Some((revision, id)));
+                    assert_eq!(state.peek().guilds.len(), 1);
+                }
+            });
+            rsx! {}
+        }
+        let mut dom = VirtualDom::new(harness);
+        dom.rebuild_in_place();
     }
 
     #[tokio::test]

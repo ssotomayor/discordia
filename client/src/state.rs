@@ -205,7 +205,7 @@ pub enum GuildDialog {
     Settings(Id),
     Integrations(Id),
     Roles(Id),
-    ImportDiscord,
+    AddGuild,
 }
 /// The guild is not in `guilds` yet — we have not joined — so the name is
 /// looked up in the catalog and may be absent on an invite-code join.
@@ -337,6 +337,8 @@ pub struct AppState {
     pub dm_pane_open: bool,
     pub catalog: Vec<GuildSummary>,
     pub catalog_total: u32,
+    pub catalog_revision: u64,
+    pub guild_join_confirmation: Option<(u64, Id)>,
     pub profiles: HashMap<String, Profile>,
     /// Self-asserted and never authoritative — see `nostr::xp`. Keyed by the
     /// pubkey that signed it.
@@ -499,6 +501,8 @@ impl AppState {
             dm_pane_open: true,
             catalog: Vec::new(),
             catalog_total: 0,
+            catalog_revision: 0,
+            guild_join_confirmation: None,
             profiles: HashMap::new(),
             global_xp: HashMap::new(),
             server_origin: None,
@@ -650,6 +654,7 @@ impl AppState {
         self.messages.retain(|id, _| dm_channels.contains(id));
         self.catalog.clear();
         self.catalog_total = 0;
+        self.guild_join_confirmation = None;
         self.profiles.clear();
         self.activities.clear();
         self.message_search = None;

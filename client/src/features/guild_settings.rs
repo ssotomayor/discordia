@@ -44,11 +44,15 @@ pub fn GuildSettingsDialog(
         .read()
         .can(guild_id, crate::protocol::Permission::ManageRoles);
     let can_sounds = can_manage;
+    let chat_tools = state.read().server_chat_tools;
 
     {
         let gw = gateway.clone();
         let fetch_bans = can_ban;
         use_hook(move || {
+            if can_manage && chat_tools {
+                gw.send(ClientMessage::FetchGuildFilePolicy { guild_id });
+            }
             gw.send(ClientMessage::CreateInvite {
                 expires_in_secs: None,
                 max_uses: None,
@@ -307,6 +311,14 @@ pub fn GuildSettingsDialog(
             GuildTab::Emoji,
             "Emoji",
             crate::features::icons::SMILE,
+            false,
+        ));
+    }
+    if can_emojis && chat_tools {
+        tabs.push((
+            GuildTab::Stickers,
+            "Stickers",
+            crate::features::icons::STICKER,
             false,
         ));
     }
@@ -602,6 +614,16 @@ pub fn GuildSettingsDialog(
                                 }
                             }
                             if current == GuildTab::Moderation {
+                                if can_manage && chat_tools {
+                                    div { class: "border-b border-[var(--border)] pb-3 mb-3",
+                                        div { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-1.5", "File attachments" }
+                                        if let Some(policy) = state.read().guild_file_policies.get(&guild_id).cloned() {
+                                            crate::features::chat_tools::FileLimits { guild_id, policy }
+                                        } else {
+                                            p { class: "text-xs text-[var(--text-dim)]", "Loading file limits…" }
+                                        }
+                                    }
+                                }
                                 div { class: "border-t border-[var(--edge)] pt-3",
                                     div { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-1.5",
                                         "Message retention"
@@ -710,6 +732,9 @@ pub fn GuildSettingsDialog(
                             if current == GuildTab::Emoji && can_emojis {
                                 EmojiSettings { guild_id }
                             }
+                            if current == GuildTab::Stickers && can_emojis && chat_tools {
+                                crate::features::chat_tools::StickerSettings { guild_id }
+                            }
                             if current == GuildTab::Soundboard && can_sounds {
                                 crate::features::soundboard::SoundSettings { guild_id }
                             }
@@ -751,6 +776,7 @@ pub enum GuildTab {
     Leveling,
     Roles,
     Emoji,
+    Stickers,
     Soundboard,
 }
 
@@ -775,6 +801,10 @@ impl GuildTab {
                 "The order of roles and what each may do. Everything here applies at once — not with Save changes.",
             ),
             GuildTab::Emoji => ("Emoji", "Custom emoji members type as :name:."),
+            GuildTab::Stickers => (
+                "Stickers",
+                "Images members send from this guild's sticker library.",
+            ),
             GuildTab::Soundboard => (
                 "Soundboard",
                 "Sounds anyone in a voice channel here can play to it.",
