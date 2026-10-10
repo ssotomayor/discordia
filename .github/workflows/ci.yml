@@ -372,7 +372,7 @@ jobs:
         run: cargo install dioxus-cli --version "$DIOXUS_CLI_VERSION" --target aarch64-apple-darwin --locked --force
       - name: Verify dx
         run: |
-          lipo -verify_arch arm64 "$(command -v dx)"
+          lipo "$(command -v dx)" -verify_arch arm64
           dx --version
       - name: Build server (release)
         run: cargo build --release -p dioxusfun-server
