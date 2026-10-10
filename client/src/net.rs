@@ -899,6 +899,7 @@ fn apply(
     let mut s = state.write();
     match msg {
         ServerMessage::Ready {
+            chat_tools,
             user,
             guilds,
             channels,
@@ -921,6 +922,7 @@ fn apply(
             let local_channel = s.voice.channel_id;
             s.self_user = Some(user);
             s.is_operator = operator;
+            s.server_chat_tools = chat_tools;
             s.guilds = guilds;
             s.channels = channels;
             s.members = members;
@@ -1911,6 +1913,7 @@ mod tests {
                 {
                     let mut s = state.write();
                     s.status = ConnectionStatus::Reconnecting;
+                    s.server_chat_tools = true;
                     s.dm_mode = true;
                     s.selected_channel = Some(channel);
                     s.dms.push(crate::state::DmInfo {
@@ -1940,6 +1943,7 @@ mod tests {
                 apply(
                     &mut state,
                     ServerMessage::Ready {
+                        chat_tools: false,
                         user,
                         guilds: vec![],
                         channels: vec![],
@@ -1959,6 +1963,7 @@ mod tests {
                 );
                 let s = state.peek();
                 assert_eq!(s.status, ConnectionStatus::Ready);
+                assert!(!s.server_chat_tools);
                 assert!(s.dm_mode);
                 assert_eq!(s.selected_channel, Some(channel));
                 assert_eq!(s.messages[&channel][0].id, message_id);

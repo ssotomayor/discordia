@@ -1994,6 +1994,8 @@ pub enum ServerMessage {
         nonce: String,
     },
     Ready {
+        #[serde(default)]
+        chat_tools: bool,
         user: User,
         guilds: Vec<Guild>,
         channels: Vec<Channel>,
@@ -2216,6 +2218,32 @@ mod identify_wire_tests {
         });
         let state: super::VoiceState = serde_json::from_value(old).unwrap();
         assert!(state.screen_watching.is_empty());
+    }
+
+    #[test]
+    fn ready_negotiates_chat_tools_without_breaking_legacy_hosts() {
+        let mut frame = serde_json::json!({
+            "op": "ready",
+            "d": { "user": { "pubkey": "alice", "username": "Alice" },
+                "guilds": [], "channels": [], "members": [], "voice_states": [] }
+        });
+        let legacy: super::ServerMessage = serde_json::from_value(frame.clone()).unwrap();
+        assert!(matches!(
+            legacy,
+            super::ServerMessage::Ready {
+                chat_tools: false,
+                ..
+            }
+        ));
+        frame["d"]["chat_tools"] = serde_json::json!(true);
+        let current: super::ServerMessage = serde_json::from_value(frame).unwrap();
+        assert!(matches!(
+            current,
+            super::ServerMessage::Ready {
+                chat_tools: true,
+                ..
+            }
+        ));
     }
 
     #[test]
