@@ -2,9 +2,9 @@ use base64::Engine as _;
 use dioxus::prelude::*;
 
 use crate::protocol::{Attachment, ClientMessage, FilePolicy, Id, MessageSearch, Permission};
-use crate::state::{ConnectionStatus, use_app_state, use_gateway};
+use crate::state::{use_app_state, use_gateway};
 
-fn read_file(path: &std::path::Path) -> Result<(String, String), String> {
+pub(super) fn read_file(path: &std::path::Path) -> Result<(String, String), String> {
     use std::io::Read;
     let mut bytes = Vec::new();
     std::fs::File::open(path)
@@ -74,6 +74,13 @@ pub(super) fn ChatTools(channel_id: Id) -> Element {
     };
     let manage = state.read().can(guild_id, Permission::ManageEmojis);
     let can_send = state.read().can(guild_id, Permission::SendMessages);
+    let manage_guild = state.read().can(guild_id, Permission::ManageGuild);
+    let file_policy = state
+        .read()
+        .guild_file_policies
+        .get(&guild_id)
+        .cloned()
+        .unwrap_or_default();
     let fetch = gateway.clone();
     use_effect(move || {
         fetch.send(ClientMessage::FetchGuildFilePolicy { guild_id });
@@ -144,133 +151,188 @@ pub(super) fn ChatTools(channel_id: Id) -> Element {
         .into_iter()
         .cloned()
         .collect();
+    let title = match panel() {
+        "search" => "Search messages",
+        "pins" => "Pinned messages",
+        "stickers" => "Stickers",
+        "files" => "File limits",
+        _ => "",
+    };
+    let mut toggle = move |name: &'static str| {
+        panel.set(if panel() == name { "" } else { name });
+        error.set(None);
+    };
     rsx! {
-        div { class: "px-3 py-2 border-b border-[var(--border)] text-xs", style: "max-height: 45%; overflow-y: auto;",
-            div { class: "flex items-center gap-3",
-                button { onclick: move |_| panel.set(if panel() == "search" { "" } else { "search" }), "Search" }
-                button { onclick: { let mut search = search.clone(); move |_| { panel.set("pins"); search(0, true); } }, "Pins" }
-                button { onclick: move |_| panel.set(if panel() == "stickers" { "" } else { "stickers" }), "Stickers" }
-                if !panel().is_empty() { button { onclick: move |_| panel.set(""), "Close" } }
+        div { class: "relative z-30 ml-auto flex items-center gap-1.5 shrink-0",
+            ToolButton { icon: super::icons::SEARCH, title: "Search messages", active: panel() == "search",
+                on_click: move |_| toggle("search") }
+            ToolButton { icon: super::icons::PIN, title: "Pinned messages", active: panel() == "pins",
+                on_click: { let mut search = search.clone(); move |_| {
+                    toggle("pins");
+                    if panel() == "pins" { search(0, true); }
+                } } }
+            ToolButton { icon: super::icons::STICKER, title: "Stickers", active: panel() == "stickers",
+                on_click: move |_| toggle("stickers") }
+            if manage_guild {
+                ToolButton { icon: super::icons::SLIDERS, title: "File limits", active: panel() == "files",
+                    on_click: move |_| toggle("files") }
             }
-            if let Some(error) = error() { p { "{error}" } }
-            if panel() == "search" {
-                div { class: "flex flex-wrap gap-2 py-2",
-                    input { placeholder: "Search messages", maxlength: 200, value: text(), oninput: move |e| text.set(e.value()) }
-                    select { value: author(), onchange: move |e| author.set(e.value()),
-                        option { value: "", "Any author" }
-                        for member in members { option { value: member.user.pubkey.clone(), "{member.user.username}" } }
-                    }
-                    label { "From (UTC) ", input { r#type: "date", value: after(), oninput: move |e| after.set(e.value()) } }
-                    label { "Through (UTC) ", input { r#type: "date", value: before(), oninput: move |e| before.set(e.value()) } }
-                    label { input { r#type: "checkbox", checked: files(), onchange: move |e| files.set(e.checked()) } "Has attachment" }
-                    label { input { r#type: "checkbox", checked: pins(), onchange: move |e| pins.set(e.checked()) } "Pinned" }
-                    button { onclick: { let mut search = search.clone(); move |_| search(0, false) }, "Search" }
-                }
-            }
-            if panel() == "search" || panel() == "pins" {
-                if let Some(results) = results {
-                    if results.is_empty() { p { "No matching messages." } }
-                    for message in &results { super::chat::MessageRow { key: "{message.id}", message: message.clone(), grouped: false } }
-                    div { class: "flex gap-3",
-                        if offset() > 0 { button { onclick: { let mut search = search.clone(); move |_| search(offset().saturating_sub(100), panel() == "pins") }, "Newer" } }
-                        if results.len() == 100 { button { onclick: { let mut search = search.clone(); move |_| search(offset() + 100, panel() == "pins") }, "Older" } }
-                    }
-                } else if request().is_some() { p { "Searching…" } }
-            }
-            if panel() == "stickers" {
-                div { class: "flex flex-wrap gap-3 py-2",
-                    for sticker in stickers {
-                        div { key: "{sticker.id}",
-                            button { disabled: !can_send, title: sticker.shortcode.clone(),
-                                onclick: { let g = gateway.clone(); let id = sticker.id; move |_| g.send(ClientMessage::SendSticker { channel_id, sticker_id: id }) },
-                                if let Some(src) = state.read().media_src(&sticker.image).map(str::to_owned) { img { src, alt: sticker.shortcode.clone(), style: "width: 80px; height: 80px; object-fit: contain;" } }
-                                else { "{sticker.shortcode}" }
-                            }
-                            if manage { button { title: "Delete sticker", onclick: { let g = gateway.clone(); let id = sticker.id; move |_| g.send(ClientMessage::DeleteGuildSticker { guild_id, sticker_id: id }) }, "Delete" } }
-                        }
+        }
+        if !panel().is_empty() {
+            div { class: "fixed inset-0 z-20", onclick: move |_| panel.set("") }
+            // Anchored to the chat pane, not the header: `fixed` inside a grid
+            // panel is positioned against the panel anyway (trap 22).
+            div {
+                class: "dxf-pop-in absolute z-30 flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-xl shadow-lg text-xs text-[var(--text)]",
+                style: "top: 3.25rem; right: 0.75rem; width: min(30rem, calc(100% - 1.5rem)); max-height: 70%;",
+                div { class: "h-10 px-3 flex items-center justify-between border-b border-[var(--border)] shrink-0",
+                    span { class: "text-[11px] uppercase tracking-wider text-[var(--text-dim)]", "{title}" }
+                    button {
+                        r#type: "button",
+                        class: "w-7 h-7 flex items-center justify-center rounded-lg text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-white/[0.04] transition-colors",
+                        title: "Close",
+                        onclick: move |_| panel.set(""),
+                        span { class: "block w-4 h-4", dangerous_inner_html: super::icons::CLOSE }
                     }
                 }
-                if manage {
-                    input { placeholder: "Sticker name", maxlength: 32, value: sticker_name(), oninput: move |e| sticker_name.set(e.value()) }
-                    button { onclick: move |_| { spawn(async move {
-                        if let Some(file) = rfd::AsyncFileDialog::new().add_filter("Image", &["png", "gif", "webp", "jpg"]).pick_file().await {
-                            let path = file.path().to_owned();
-                            match tokio::task::spawn_blocking(move || crate::chat_image::read_file(&path)).await {
-                                Ok(Ok(image)) => { sticker_image.set(Some(image)); error.set(None); }
-                                Ok(Err(e)) => error.set(Some(e)), Err(e) => error.set(Some(e.to_string())),
+                div { class: "flex-1 min-h-0 overflow-y-auto p-3 flex flex-col gap-3",
+                    if let Some(error) = error() { p { class: "text-[var(--danger)]", "{error}" } }
+                    if panel() == "files" && manage_guild { FileLimits { guild_id, policy: file_policy } }
+                    if panel() == "search" {
+                        form { class: "flex flex-col gap-2",
+                            onsubmit: { let mut search = search.clone(); move |e: FormEvent| { e.prevent_default(); search(0, false); } },
+                            input { class: INPUT, placeholder: "Search messages", maxlength: 200, autofocus: true,
+                                value: text(), oninput: move |e| text.set(e.value()) }
+                            select { class: INPUT, value: author(), onchange: move |e| author.set(e.value()),
+                                option { value: "", "Any author" }
+                                for member in members { option { value: member.user.pubkey.clone(), "{member.user.username}" } }
+                            }
+                            div { class: "flex gap-2",
+                                label { class: "flex-1 min-w-0 flex flex-col gap-1 text-[var(--text-dim)]", "From (UTC)",
+                                    input { class: INPUT, r#type: "date", value: after(), oninput: move |e| after.set(e.value()) } }
+                                label { class: "flex-1 min-w-0 flex flex-col gap-1 text-[var(--text-dim)]", "Through (UTC)",
+                                    input { class: INPUT, r#type: "date", value: before(), oninput: move |e| before.set(e.value()) } }
+                            }
+                            div { class: "flex items-center gap-4 text-[var(--text-muted)]",
+                                label { class: "flex items-center gap-1.5 cursor-pointer",
+                                    input { r#type: "checkbox", style: "accent-color: var(--accent);", checked: files(), onchange: move |e| files.set(e.checked()) }
+                                    "Has attachment" }
+                                label { class: "flex items-center gap-1.5 cursor-pointer",
+                                    input { r#type: "checkbox", style: "accent-color: var(--accent);", checked: pins(), onchange: move |e| pins.set(e.checked()) }
+                                    "Pinned" }
+                                button { r#type: "submit", class: "dxf-cta ml-auto rounded-lg px-3 py-1 text-xs", "Search" }
                             }
                         }
-                    }); }, "Choose image" }
-                    if let Some(src) = sticker_image() { img { src, style: "width: 80px; height: 80px; object-fit: contain;" } }
-                    button { disabled: sticker_image().is_none() || sticker_name().trim().is_empty(),
-                        onclick: { let g = gateway.clone(); move |_| {
-                            if let Some(image) = sticker_image() { g.send(ClientMessage::CreateGuildSticker { guild_id, name: sticker_name(), image }); }
-                        } }, "Add sticker" }
+                    }
+                    if panel() == "search" || panel() == "pins" {
+                        if let Some(results) = results {
+                            if results.is_empty() {
+                                p { class: "py-4 text-center text-[var(--text-dim)]",
+                                    if panel() == "pins" { "Nothing is pinned here." } else { "No matching messages." }
+                                }
+                            }
+                            div { class: "flex flex-col border-t border-[var(--border)] pt-2",
+                                for message in &results { super::chat::MessageRow { key: "{message.id}", message: message.clone(), grouped: false } }
+                            }
+                            if offset() > 0 || results.len() == 100 {
+                                div { class: "flex justify-center gap-2",
+                                    if offset() > 0 { button { class: SECONDARY, onclick: { let mut search = search.clone(); move |_| search(offset().saturating_sub(100), panel() == "pins") }, "Newer" } }
+                                    if results.len() == 100 { button { class: SECONDARY, onclick: { let mut search = search.clone(); move |_| search(offset() + 100, panel() == "pins") }, "Older" } }
+                                }
+                            }
+                        } else if request().is_some() {
+                            p { class: "py-4 text-center text-[var(--text-dim)]", "Searching…" }
+                        }
+                    }
+                    if panel() == "stickers" {
+                        if stickers.is_empty() {
+                            p { class: "py-4 text-center text-[var(--text-dim)]", "No stickers yet." }
+                        }
+                        div { class: "grid gap-2", style: "grid-template-columns: repeat(auto-fill, minmax(5.5rem, 1fr));",
+                            for sticker in stickers {
+                                div { key: "{sticker.id}", class: "relative",
+                                    button {
+                                        r#type: "button",
+                                        style: "aspect-ratio: 1;",
+                                        class: "w-full flex items-center justify-center p-1.5 rounded-lg border border-[var(--border)] bg-[var(--panel2)] hover:border-[var(--accent)] transition-colors disabled:opacity-50",
+                                        disabled: !can_send,
+                                        title: ":{sticker.shortcode}:",
+                                        onclick: { let g = gateway.clone(); let id = sticker.id; move |_| { g.send(ClientMessage::SendSticker { channel_id, sticker_id: id }); panel.set(""); } },
+                                        if let Some(src) = state.read().media_src(&sticker.image).map(str::to_owned) {
+                                            img { src, alt: sticker.shortcode.clone(), class: "max-w-full max-h-full", style: "object-fit: contain;" }
+                                        } else {
+                                            span { class: "truncate text-[var(--text-dim)]", "{sticker.shortcode}" }
+                                        }
+                                    }
+                                    if manage {
+                                        button {
+                                            r#type: "button",
+                                            style: "top: 0.25rem; right: 0.25rem;",
+                                            class: "absolute w-5 h-5 flex items-center justify-center rounded bg-[var(--panel-solid)] border border-[var(--border)] text-[var(--text-dim)] hover:text-[var(--danger)] transition-colors",
+                                            title: "Delete sticker",
+                                            onclick: { let g = gateway.clone(); let id = sticker.id; move |_| g.send(ClientMessage::DeleteGuildSticker { guild_id, sticker_id: id }) },
+                                            span { class: "block w-3 h-3", dangerous_inner_html: super::icons::CLOSE }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if manage {
+                            div { class: "flex items-center gap-2 border-t border-[var(--border)] pt-3",
+                                if let Some(src) = sticker_image() {
+                                    img { src, class: "w-8 h-8 shrink-0 rounded", style: "object-fit: contain;" }
+                                }
+                                input { class: INPUT, placeholder: "New sticker name", maxlength: 32, value: sticker_name(), oninput: move |e| sticker_name.set(e.value()) }
+                                button { r#type: "button", class: SECONDARY, onclick: move |_| { spawn(async move {
+                                    if let Some(file) = rfd::AsyncFileDialog::new().add_filter("Image", &["png", "gif", "webp", "jpg"]).pick_file().await {
+                                        let path = file.path().to_owned();
+                                        match tokio::task::spawn_blocking(move || crate::chat_image::read_file(&path)).await {
+                                            Ok(Ok(image)) => { sticker_image.set(Some(image)); error.set(None); }
+                                            Ok(Err(e)) => error.set(Some(e)), Err(e) => error.set(Some(e.to_string())),
+                                        }
+                                    }
+                                }); }, "Image…" }
+                                button { r#type: "button", class: "dxf-cta shrink-0 rounded-lg px-3 py-1 text-xs disabled:opacity-50",
+                                    disabled: sticker_image().is_none() || sticker_name().trim().is_empty(),
+                                    onclick: { let g = gateway.clone(); move |_| {
+                                        if let Some(image) = sticker_image() {
+                                            g.send(ClientMessage::CreateGuildSticker { guild_id, name: sticker_name(), image });
+                                            sticker_image.set(None);
+                                            sticker_name.set(String::new());
+                                        }
+                                    } }, "Add" }
+                            }
+                        }
+                    }
                 }
             }
         }
     }
 }
 
+const INPUT: &str = "w-full min-w-0 bg-[var(--panel2)] border border-[var(--border)] focus:border-[var(--accent)] rounded-lg px-2.5 py-1.5 text-xs text-[var(--text)] outline-none transition-colors";
+const SECONDARY: &str = "shrink-0 rounded-lg px-3 py-1 text-xs text-[var(--text-muted)] border border-[var(--border)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors";
+
 #[component]
-pub(super) fn FileSender(guild_id: Id, channel_id: Id) -> Element {
-    let state = use_app_state();
-    let gateway = use_gateway();
-    let mut file = use_signal(|| None::<(String, String)>);
-    let mut caption = use_signal(String::new);
-    let mut pending = use_signal(|| None::<Id>);
-    let mut error = use_signal(|| None::<String>);
-    let mut reading = use_signal(|| false);
-    let policy = state
-        .read()
-        .guild_file_policies
-        .get(&guild_id)
-        .cloned()
-        .unwrap_or_default();
-    use_effect(move || {
-        let result = state.read().file_upload_result.clone();
-        if let Some((id, why)) = result
-            && Some(id) == pending()
-        {
-            pending.set(None);
-            if let Some(why) = why {
-                error.set(Some(why));
-            } else {
-                file.set(None);
-                caption.set(String::new());
-                error.set(None);
-            }
-        }
-    });
+fn ToolButton(
+    icon: &'static str,
+    title: &'static str,
+    active: bool,
+    on_click: EventHandler<()>,
+) -> Element {
     rsx! {
-        div { class: "py-2 flex flex-wrap gap-2",
-            p { "Send as a downloadable file, without a preview." }
-            p { "Limit: {policy.max_bytes / 1000} KB. Files expire after {policy.retention_days} days." }
-            button { disabled: reading() || pending().is_some(), onclick: move |_| { spawn(async move {
-                if let Some(selected) = rfd::AsyncFileDialog::new().pick_file().await {
-                    reading.set(true);
-                    let path = selected.path().to_owned();
-                    let result = tokio::task::spawn_blocking(move || read_file(&path)).await;
-                    reading.set(false);
-                    match result { Ok(Ok(value)) => { file.set(Some(value)); error.set(None); }, Ok(Err(e)) => error.set(Some(e)), Err(e) => error.set(Some(e.to_string())) }
-                }
-            }); }, "Choose file" }
-            if let Some((name, _)) = file() { span { "{name}" } }
-            input { placeholder: "Optional message", maxlength: 2000, value: caption(), disabled: pending().is_some(), oninput: move |e| caption.set(e.value()) }
-            button { disabled: file().is_none() || pending().is_some(), onclick: move |_| {
-                if state.read().status != ConnectionStatus::Ready { error.set(Some("Reconnect before sending. Your draft has been kept.".into())); return; }
-                if let Some((name, data_url)) = file() {
-                    let id = uuid::Uuid::new_v4(); pending.set(Some(id)); error.set(None);
-                    gateway.send(ClientMessage::SendFile { request_id: id, channel_id, name, data_url, content: caption(), reply_to: None });
-                    spawn(async move {
-                        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-                        if pending() == Some(id) { pending.set(None); error.set(Some("No upload confirmation. Your draft is kept; check the chat before retrying.".into())); }
-                    });
-                }
-            }, if pending().is_some() { "Uploading…" } else { "Send file" } }
-            if let Some(error) = error() { p { "{error}" } }
+        button {
+            r#type: "button",
+            class: if active {
+                "w-8 h-8 flex items-center justify-center rounded-lg border border-[var(--accent)] bg-[var(--panel2)] text-[var(--accent)] transition-colors"
+            } else {
+                "w-8 h-8 flex items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--panel2)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors"
+            },
+            title,
+            aria_pressed: active,
+            onclick: move |_| on_click.call(()),
+            span { class: "block w-4 h-4", dangerous_inner_html: icon }
         }
-        if state.read().can(guild_id, Permission::ManageGuild) { FileLimits { guild_id, policy } }
     }
 }
 
@@ -282,16 +344,24 @@ fn FileLimits(guild_id: Id, policy: FilePolicy) -> Element {
     let mut days = use_signal(move || policy.retention_days.to_string());
     let mut error = use_signal(|| None::<String>);
     rsx! {
-        div { class: "flex gap-2 py-2",
-            label { "Maximum KB ", input { r#type: "number", min: 1, max: 2000, value: maximum(), oninput: move |e| maximum.set(e.value()) } }
-            label { "Days ", input { r#type: "number", min: 1, max: 365, value: days(), oninput: move |e| days.set(e.value()) } }
-            button { onclick: move |_| {
+        form { class: "flex flex-col gap-2",
+            onsubmit: move |e: FormEvent| {
+                e.prevent_default();
                 match (maximum().parse::<u64>(), days().parse::<u32>()) {
                     (Ok(kb), Ok(days)) if (1..=2000).contains(&kb) && (1..=365).contains(&days) => { error.set(None); gateway.send(ClientMessage::SetGuildFilePolicy { guild_id, policy: FilePolicy { max_bytes: kb * 1000, retention_days: days } }); }
                     _ => error.set(Some("Choose 1–2000 KB and 1–365 days.".into())),
                 }
-            }, "Save file limits" }
-            if let Some(error) = error() { span { "{error}" } }
+            },
+            div { class: "flex gap-2",
+                label { class: "flex-1 min-w-0 flex flex-col gap-1 text-[var(--text-dim)]", "Largest file (KB)",
+                    input { class: INPUT, r#type: "number", min: 1, max: 2000, value: maximum(), oninput: move |e| maximum.set(e.value()) } }
+                label { class: "flex-1 min-w-0 flex flex-col gap-1 text-[var(--text-dim)]", "Keep for (days)",
+                    input { class: INPUT, r#type: "number", min: 1, max: 365, value: days(), oninput: move |e| days.set(e.value()) } }
+            }
+            div { class: "flex items-center gap-2",
+                if let Some(error) = error() { span { class: "text-[var(--danger)]", "{error}" } }
+                button { r#type: "submit", class: "dxf-cta ml-auto rounded-lg px-3 py-1 text-xs", "Save" }
+            }
         }
     }
 }
