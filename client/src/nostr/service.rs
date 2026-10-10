@@ -44,6 +44,17 @@ pub enum NostrCmd {
         text: String,
         reply_to: Option<String>,
         emoji: Vec<(String, String)>,
+        /// The `Hold` this message takes the place of.
+        replaces: Option<String>,
+    },
+    /// Show a message with the pending clock before it can be built: a DM's
+    /// id hashes its emoji tags, and those wait on the pictures' upload.
+    Hold {
+        key: String,
+        peer: String,
+        text: String,
+        reply_to: Option<String>,
+        emoji: Vec<(String, String)>,
     },
     /// Make sure a conversation with `peer` exists in the list, and select it.
     Open {
@@ -215,7 +226,26 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
                             state.write().error_toast = Some("Voice call service is unavailable.".into());
                         }
                     }
-                    Some(NostrCmd::Send { peer, text, reply_to, emoji }) => {
+                    Some(NostrCmd::Hold { key, peer, text, reply_to, emoji }) => {
+                        let held = nip17::ChatMessage {
+                            id: key,
+                            author: our_pubkey.clone(),
+                            peer,
+                            content: text,
+                            created_at: now(),
+                            reply_to,
+                            emoji,
+                        };
+                        insert_message(&held, &our_pubkey, &mut state, Source::Ours, false);
+                        state
+                            .write()
+                            .dm_delivery
+                            .insert(message_id(&held.id), super::delivery::Delivery::Pending);
+                    }
+                    Some(NostrCmd::Send { peer, text, reply_to, emoji, replaces }) => {
+                        if let Some(key) = replaces {
+                            withdraw_held(&mut state, &peer, &key);
+                        }
                         if outbox.len() >= 128 {
                             state.write().error_toast = Some("Too many messages await delivery. Retry a failed message first.".into());
                             continue;
@@ -648,6 +678,17 @@ fn filed_at(created_at: i64, newest_held: Option<i64>, live: bool) -> i64 {
 /// Relays replay stored events in whatever order they like and the same message
 /// arrives from several of them, so this both deduplicates and sorts rather
 /// than appending.
+fn withdraw_held(state: &mut Signal<AppState>, peer: &str, key: &str) {
+    let (cid, mid) = (conversation_id(peer), message_id(key));
+    let mut s = state.write();
+    if let Some(held) = s.messages.get_mut(&cid) {
+        held.retain(|m| m.id != mid);
+    }
+    s.dm_delivery.remove(&mid);
+    s.nostr_event_ids.remove(&mid);
+    s.dm_emoji.remove(&mid);
+}
+
 fn insert_message(
     msg: &nip17::ChatMessage,
     our_pubkey: &str,
@@ -745,6 +786,41 @@ mod tests {
 
     fn key(c: char) -> String {
         c.to_string().repeat(64)
+    }
+
+    #[test]
+    fn a_held_message_waits_with_the_clock_and_leaves_no_trace() {
+        use dioxus::prelude::*;
+        let mut dom = VirtualDom::new(|| rsx! {});
+        dom.rebuild_in_place();
+        dom.in_scope(ScopeId::ROOT, || {
+            let (me, peer) = (key('a'), key('b'));
+            let mut state = Signal::new(AppState::empty());
+            let held = nip17::ChatMessage {
+                id: "held-1".into(),
+                author: me.clone(),
+                peer: peer.clone(),
+                content: "hi :wave:".into(),
+                created_at: now(),
+                reply_to: None,
+                emoji: vec![("wave".into(), "data:image/gif;base64,AA==".into())],
+            };
+            insert_message(&held, &me, &mut state, Source::Ours, false);
+            let mid = message_id("held-1");
+            state
+                .write()
+                .dm_delivery
+                .insert(mid, super::super::delivery::Delivery::Pending);
+            assert_eq!(state.read().messages[&conversation_id(&peer)].len(), 1);
+            assert!(state.read().dm_emoji.contains_key(&mid));
+
+            withdraw_held(&mut state, &peer, "held-1");
+            let s = state.read();
+            assert!(s.messages[&conversation_id(&peer)].is_empty());
+            assert!(!s.dm_delivery.contains_key(&mid));
+            assert!(!s.dm_emoji.contains_key(&mid));
+            assert!(!s.nostr_event_ids.contains_key(&mid));
+        });
     }
 
     fn with_dm(state: &mut AppState, peer: &str) {
