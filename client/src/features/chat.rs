@@ -771,20 +771,75 @@ fn MessageRow(message: Message, grouped: bool) -> Element {
                         }
                     }
                     if show_react() {
-                        div { class: "dxf-pop-in absolute right-0 bottom-full mb-1 z-30 flex gap-1 p-1 bg-[var(--panel-solid)] border border-[var(--border)] rounded-md shadow-lg",
-                            for emoji in QUICK_REACTIONS.iter().copied() {
-                                {
-                                    let g = gateway.clone();
-                                    rsx! {
-                                        button {
-                                            class: "w-7 h-7 flex items-center justify-center rounded hover:bg-white/[0.06] text-base leading-none",
-                                            onclick: move |_| {
-                                                g.send(ClientMessage::React { channel_id, message_id, emoji: emoji.to_string() });
-                                                show_react.set(false);
-                                            },
-                                            "{emoji}"
+                        div { class: "dxf-pop-in absolute right-0 bottom-full mb-1 z-30 p-1 bg-[var(--panel-solid)] border border-[var(--border)] rounded-md shadow-lg",
+                            div { class: "flex gap-1",
+                                for emoji in QUICK_REACTIONS.iter().copied() {
+                                    {
+                                        let g = gateway.clone();
+                                        rsx! {
+                                            button {
+                                                class: "w-7 h-7 flex items-center justify-center rounded hover:bg-white/[0.06] text-base leading-none",
+                                                onclick: move |_| {
+                                                    g.send(ClientMessage::React { channel_id, message_id, emoji: emoji.to_string() });
+                                                    show_react.set(false);
+                                                },
+                                                "{emoji}"
+                                            }
                                         }
                                     }
+                                }
+                            }
+                            if let Some(gid) = guild_id {
+                                GuildReactionPicker {
+                                    guild_id: gid,
+                                    on_pick: move |emoji: String| {
+                                        gateway.send(ClientMessage::React { channel_id, message_id, emoji });
+                                        show_react.set(false);
+                                    },
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// This guild's emoji under the quick row. The server accepts `:code:` only
+/// for an emoji the guild has, so the list is the guild's, not a search.
+#[component]
+fn GuildReactionPicker(guild_id: Id, on_pick: EventHandler<String>) -> Element {
+    let state = use_app_state();
+    let emojis: Vec<(String, String)> = {
+        let s = state.read();
+        s.emojis_of(guild_id)
+            .iter()
+            .map(|e| {
+                let url = s.emoji_images.get(&e.image).cloned().unwrap_or_default();
+                (e.shortcode.clone(), url)
+            })
+            .collect()
+    };
+    if emojis.is_empty() {
+        return rsx! {};
+    }
+    rsx! {
+        div { class: "mt-1 pt-1 border-t border-[var(--border)] max-h-32 overflow-y-auto",
+            div { class: "grid grid-cols-8 gap-0.5 w-max max-w-[15rem]",
+                for (code, url) in emojis.into_iter() {
+                    {
+                        let emoji = format!(":{code}:");
+                        rsx! {
+                            button {
+                                key: "{code}",
+                                class: "w-7 h-7 flex items-center justify-center rounded hover:bg-white/[0.06] text-base leading-none",
+                                title: "{emoji}",
+                                onclick: move |_| on_pick.call(emoji.clone()),
+                                if url.is_empty() {
+                                    span { class: "text-[8px] text-[var(--text-dim)]", "…" }
+                                } else {
+                                    img { src: "{url}", style: "height:1.2em;width:auto;" }
                                 }
                             }
                         }
