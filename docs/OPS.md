@@ -160,8 +160,10 @@ SFU readiness requires an authenticated room-list request and a live child,
 not just an open TCP port. Startup failures, including occupied media ports,
 use the existing rendezvous SFU fallback when available.
 
-Automatic mapping tries UPnP-IGD, NAT-PMP and PCP twice, continuing after a
-discovered router refuses or renumbers media ports. UDP and ICE/TCP grants are
+Automatic mapping asks UPnP-IGD, NAT-PMP and PCP for a router at once, while
+the QUIC endpoint binds, then maps through each router that answered in that
+order, continuing after one refuses or renumbers media ports. Only methods
+whose router answered get a second round. UDP and ICE/TCP grants are
 kept independently; grants on the same public IP combine across methods.
 Signaling can use the gateway if its public port is unavailable. PCP retains its mapping
 nonce and renews against the granted lifetime. The first successful QUIC

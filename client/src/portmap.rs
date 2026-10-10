@@ -63,22 +63,103 @@ pub struct MappingGuard {
     shutdown: Vec<tokio::sync::oneshot::Sender<()>>,
 }
 
-pub async fn request(local_ip: Ipv4Addr, ports: Ports) -> Result<(Mapped, MappingGuard), String> {
-    request_with(|method| async move {
-        let router = match method {
-            "UPnP-IGD" => igd_router(local_ip).await,
-            "NAT-PMP" => natpmp_router().await,
-            _ => pcp_router(local_ip).await,
-        }?;
-        finish(router, local_ip, ports).await
-    })
+const METHODS: [&str; 3] = ["UPnP-IGD", "NAT-PMP", "PCP"];
+
+/// Each method's router and public address, asked of all three at once: a
+/// router that ignores a method costs a timeout, and in turn they added up.
+pub struct Discovery {
+    local_ip: Ipv4Addr,
+    media_tcp: u16,
+    found: Vec<(&'static str, Result<Found, String>)>,
+}
+
+pub async fn discover(local_ip: Ipv4Addr, media_tcp: u16) -> Discovery {
+    let found =
+        futures_util::future::join_all(METHODS.map(|method| async move {
+            (method, discover_one(method, local_ip, media_tcp).await)
+        }))
+        .await;
+    Discovery {
+        local_ip,
+        media_tcp,
+        found,
+    }
+}
+
+pub async fn request(discovery: Discovery, ports: Ports) -> Result<(Mapped, MappingGuard), String> {
+    let Discovery {
+        local_ip,
+        media_tcp,
+        found,
+    } = discovery;
+    request_with(
+        found,
+        |method| discover_one(method, local_ip, media_tcp),
+        |found| finish(found, local_ip, ports),
+    )
     .await
 }
 
-async fn request_with<F, Fut>(mut attempt: F) -> Result<(Mapped, MappingGuard), String>
+/// PCP learns the public address by mapping the voice signaling port, so a
+/// router found but never finished gives that port back.
+struct Found {
+    router: Option<Router>,
+    public_ip: IpAddr,
+    media_tcp: u16,
+}
+
+impl Drop for Found {
+    fn drop(&mut self) {
+        if let Some(Router::Pcp(p)) = self.router.take()
+            && let Ok(runtime) = tokio::runtime::Handle::try_current()
+        {
+            let port = self.media_tcp;
+            runtime.spawn(async move {
+                let _ = p.map(6, port, 0).await;
+            });
+        }
+    }
+}
+
+async fn discover_one(
+    method: &'static str,
+    local_ip: Ipv4Addr,
+    media_tcp: u16,
+) -> Result<Found, String> {
+    let mut router = match method {
+        "UPnP-IGD" => igd_router(local_ip).await,
+        "NAT-PMP" => natpmp_router().await,
+        _ => pcp_router(local_ip).await,
+    }?;
+    let public_ip = router.public_ip(media_tcp).await?;
+    let found = Found {
+        router: Some(router),
+        public_ip,
+        media_tcp,
+    };
+    if is_private(public_ip) {
+        return Err(format!(
+            "your router's own address ({public_ip}) is private, so it is behind \
+             another NAT — usually carrier-grade NAT at your ISP. Nothing this \
+             machine can do opens a path in; you need the relay, or a provider \
+             that gives you a public address."
+        ));
+    }
+    Ok(found)
+}
+
+/// Mapping stays one method at a time, in order: two methods mapping the same
+/// ports at once could race each other, and two hairpin probes cannot share one.
+async fn request_with<D, Disc, DFut, Fin, FFut>(
+    first: Vec<(&'static str, Result<D, String>)>,
+    mut discover: Disc,
+    mut finish: Fin,
+) -> Result<(Mapped, MappingGuard), String>
 where
-    F: FnMut(&'static str) -> Fut,
-    Fut: std::future::Future<Output = Result<(Mapped, MappingGuard), String>>,
+    Disc: FnMut(&'static str) -> DFut,
+    DFut: std::future::Future<Output = Result<D, String>>,
+    Fin: FnMut(D) -> FFut,
+    FFut: std::future::Future<Output = Result<(Mapped, MappingGuard), String>>,
 {
     let mut best: Option<Mapped> = None;
     let mut chat: Option<SocketAddr> = None;
@@ -86,9 +167,17 @@ where
         shutdown: Vec::new(),
     };
     let mut errors = Vec::new();
-    for round in 0..2 {
-        for method in ["UPnP-IGD", "NAT-PMP", "PCP"] {
-            let result = attempt(method).await;
+    let mut round = first;
+    for attempt in 0..2 {
+        let mut answered = Vec::new();
+        for (method, discovered) in round {
+            let result = match discovered {
+                Ok(found) => {
+                    answered.push(method);
+                    finish(found).await
+                }
+                Err(error) => Err(error),
+            };
             match result {
                 Ok((mut mapped, mut guard)) => {
                     guards.shutdown.append(&mut guard.shutdown);
@@ -118,19 +207,30 @@ where
                     }
                 }
                 Err(error) => {
-                    tracing::info!(method, round, %error, "port mapping attempt failed");
+                    tracing::info!(method, attempt, %error, "port mapping attempt failed");
                     errors.push(format!("{method}: {error}"));
                 }
             }
         }
-        if round == 0 {
-            tokio::time::sleep(Duration::from_millis(300)).await;
+        // A method no router answered is not asked twice: a second silence
+        // only doubled the wait before the host started.
+        if attempt == 1 || answered.is_empty() {
+            break;
         }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let retries: Vec<_> = answered
+            .into_iter()
+            .map(|method| {
+                let again = discover(method);
+                async move { (method, again.await) }
+            })
+            .collect();
+        round = futures_util::future::join_all(retries).await;
     }
     match best {
         Some(mapped) => Ok((with_chat_mapping(mapped, chat), guards)),
         None => Err(format!(
-            "automatic port mapping failed after two attempts per method — {}. \
+            "automatic port mapping failed — {}. \
             Try IPv6 or a manually forwarded public address; a timeout alone does not prove carrier-grade NAT.",
             errors.join("; ")
         )),
@@ -184,19 +284,14 @@ pub async fn manual(
 }
 
 async fn finish(
-    mut router: Router,
+    mut found: Found,
     local_ip: Ipv4Addr,
     ports: Ports,
 ) -> Result<(Mapped, MappingGuard), String> {
-    let public_ip = router.public_ip(ports.media_tcp).await?;
-    if is_private(public_ip) {
-        return Err(format!(
-            "your router's own address ({public_ip}) is private, so it is behind \
-             another NAT — usually carrier-grade NAT at your ISP. Nothing this \
-             machine can do opens a path in; you need the relay, or a provider \
-             that gives you a public address."
-        ));
-    }
+    let public_ip = found.public_ip;
+    let Some(router) = found.router.take() else {
+        return Err("router already used".into());
+    };
 
     let mut owned = Vec::new();
     if matches!(&router, Router::Pcp(_)) {
@@ -567,12 +662,65 @@ mod tests {
         )
     }
 
+    async fn attempts<F>(mut attempt: F) -> Result<(Mapped, MappingGuard), String>
+    where
+        F: FnMut(&'static str) -> Result<(Mapped, MappingGuard), String>,
+    {
+        request_with(
+            METHODS.map(|method| (method, Ok(method))).into(),
+            |method| std::future::ready(Ok(method)),
+            |method| std::future::ready(attempt(method)),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn a_method_no_router_answered_is_not_asked_again() {
+        let mut asked = Vec::new();
+        let result = request_with(
+            METHODS
+                .map(|method| (method, Err::<&str, _>(format!("{method} timed out"))))
+                .into(),
+            |method| {
+                asked.push(method);
+                std::future::ready(Ok(method))
+            },
+            |_| std::future::ready(Err("unreachable".to_string())),
+        )
+        .await;
+        assert!(asked.is_empty());
+        let error = result.err().unwrap();
+        for method in METHODS {
+            assert!(error.contains(&format!("{method} timed out")));
+        }
+    }
+
+    #[tokio::test]
+    async fn only_the_methods_that_answered_are_retried() {
+        let mut asked = Vec::new();
+        let result = request_with(
+            vec![
+                ("UPnP-IGD", Err("silent".to_string())),
+                ("NAT-PMP", Ok("NAT-PMP")),
+                ("PCP", Err("silent".to_string())),
+            ],
+            |method| {
+                asked.push(method);
+                std::future::ready(Ok(method))
+            },
+            |method| std::future::ready(Err(format!("{method} refused"))),
+        )
+        .await;
+        assert_eq!(asked, ["NAT-PMP"]);
+        assert!(result.is_err());
+    }
+
     #[tokio::test]
     async fn a_discovered_router_with_failed_media_does_not_skip_the_other_methods() {
         let mut tried = Vec::new();
-        let (result, _) = request_with(|method| {
+        let (result, _) = attempts(|method| {
             tried.push(method);
-            std::future::ready(Ok(mapped(method, method == "NAT-PMP")))
+            Ok(mapped(method, method == "NAT-PMP"))
         })
         .await
         .unwrap();
@@ -581,11 +729,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn discovery_and_mapping_failures_are_retried_and_reported_by_method() {
+    async fn mapping_failures_are_retried_and_reported_by_method() {
         let mut tried = Vec::new();
-        let result = request_with(|method| {
+        let result = attempts(|method| {
             tried.push(method);
-            std::future::ready(Err(format!("{method} refused")))
+            Err(format!("{method} refused"))
         })
         .await;
         assert_eq!(
@@ -603,9 +751,9 @@ mod tests {
     async fn later_voice_success_keeps_the_earlier_chat_address_and_granted_port() {
         for voice_works in [false, true] {
             let mut count = 0;
-            let (result, _) = request_with(|method| {
+            let (result, _) = attempts(|method| {
                 count += 1;
-                std::future::ready(match count {
+                match count {
                     1 => Ok(mapped(method, false)),
                     2 => {
                         let (mut voice, guard) = mapped(method, voice_works);
@@ -621,7 +769,7 @@ mod tests {
                         Ok((voice, guard))
                     }
                     _ => Err("timeout".into()),
-                })
+                }
             })
             .await
             .unwrap();
@@ -638,9 +786,9 @@ mod tests {
     #[tokio::test]
     async fn later_chat_success_is_retained_when_an_earlier_mapping_has_better_media() {
         let mut count = 0;
-        let (result, _) = request_with(|method| {
+        let (result, _) = attempts(|method| {
             count += 1;
-            std::future::ready(match count {
+            match count {
                 1 => {
                     let (mut voice, guard) = mapped(method, false);
                     voice.media = MediaMapping {
@@ -659,7 +807,7 @@ mod tests {
                     Ok((chat, guard))
                 }
                 _ => Err("timeout".into()),
-            })
+            }
         })
         .await
         .unwrap();
@@ -674,13 +822,13 @@ mod tests {
     #[tokio::test]
     async fn a_later_timeout_does_not_discard_the_successful_chat_mapping() {
         let mut count = 0;
-        let (result, _) = request_with(|method| {
+        let (result, _) = attempts(|method| {
             count += 1;
-            std::future::ready(if count == 1 {
+            if count == 1 {
                 Ok(mapped(method, false))
             } else {
                 Err("timeout".into())
-            })
+            }
         })
         .await
         .unwrap();
