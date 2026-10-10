@@ -67,10 +67,14 @@ pub struct ClientSettings {
     /// no gateway, may offer and send.
     #[serde(default)]
     pub saved_emoji: Vec<SavedEmoji>,
-    /// A Blossom blob server (`https://…`) that holds saved emoji pictures so
-    /// a DM links them instead of carrying them. None: inline under budget.
+    /// The Blossom server saved emoji pictures go to, so a DM links them
+    /// instead of carrying them. None: inline under budget. Not `blossom_server`:
+    /// files saved that name as null, which would have hidden this default.
+    #[serde(default = "default_emoji_blob_server")]
+    pub emoji_blob_server: Option<String>,
+    /// Servers the person added beyond `blossom::PRESETS`.
     #[serde(default)]
-    pub blossom_server: Option<String>,
+    pub blob_servers: Vec<String>,
 
     /// Channels and whole guilds that should never ring. Personal and local:
     /// nothing about muting is sent to the server or seen by anyone else.
@@ -228,6 +232,10 @@ pub fn default_rendezvous_url() -> String {
         .unwrap_or_else(|_| "ws://rendezvous.discordia.world:7700".into())
 }
 
+fn default_emoji_blob_server() -> Option<String> {
+    Some(crate::nostr::blossom::PRESETS[0].to_string())
+}
+
 fn default_rendezvous_servers() -> Vec<String> {
     vec![default_rendezvous_url()]
 }
@@ -249,7 +257,8 @@ impl Default for ClientSettings {
             dm_cleared_at: Vec::new(),
             dm_clock_offset: Vec::new(),
             saved_emoji: Vec::new(),
-            blossom_server: None,
+            emoji_blob_server: default_emoji_blob_server(),
+            blob_servers: Vec::new(),
             dm_read_at: Vec::new(),
             muted_channels: Vec::new(),
             muted_guilds: Vec::new(),
@@ -306,6 +315,36 @@ impl ClientSettings {
         self.rendezvous_servers.retain(|s| s != &url);
         self.rendezvous_servers.insert(0, url);
         self.rendezvous_servers.truncate(8);
+    }
+
+    pub fn blob_server_choices(&self) -> Vec<String> {
+        let mut out: Vec<String> = crate::nostr::blossom::PRESETS
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        for url in self.blob_servers.iter().chain(&self.emoji_blob_server) {
+            if !out.contains(url) {
+                out.push(url.clone());
+            }
+        }
+        out
+    }
+
+    /// `url` is already normalized; adding one selects it.
+    pub fn add_blob_server(&mut self, url: String) {
+        let preset = crate::nostr::blossom::PRESETS.contains(&url.as_str());
+        if !preset && !self.blob_servers.contains(&url) {
+            self.blob_servers.push(url.clone());
+            self.blob_servers.truncate(8);
+        }
+        self.emoji_blob_server = Some(url);
+    }
+
+    pub fn remove_blob_server(&mut self, url: &str) {
+        self.blob_servers.retain(|s| s != url);
+        if self.emoji_blob_server.as_deref() == Some(url) {
+            self.emoji_blob_server = default_emoji_blob_server();
+        }
     }
 
     pub fn remove_rendezvous(&mut self, url: &str) {
@@ -446,6 +485,42 @@ pub fn save(settings: &ClientSettings) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn emoji_go_to_a_blob_server_unless_turned_off() {
+        let defaults = serde_json::to_value(ClientSettings::default()).unwrap();
+        let mut old = defaults.clone();
+        let fields = old.as_object_mut().unwrap();
+        fields.remove("emoji_blob_server");
+        fields.insert("blossom_server".into(), serde_json::Value::Null);
+        assert_eq!(
+            parse(&file(old)).unwrap().emoji_blob_server,
+            default_emoji_blob_server()
+        );
+        let mut off = defaults;
+        off["emoji_blob_server"] = serde_json::Value::Null;
+        assert_eq!(parse(&file(off)).unwrap().emoji_blob_server, None);
+    }
+
+    #[test]
+    fn an_added_blob_server_is_offered_selected_and_removable() {
+        let mut s = ClientSettings::default();
+        s.add_blob_server("https://blobs.example".into());
+        assert_eq!(
+            s.emoji_blob_server.as_deref(),
+            Some("https://blobs.example")
+        );
+        assert_eq!(
+            s.blob_server_choices().last().unwrap(),
+            "https://blobs.example"
+        );
+        s.add_blob_server(crate::nostr::blossom::PRESETS[1].into());
+        assert_eq!(s.blob_servers, ["https://blobs.example"]);
+        s.add_blob_server("https://blobs.example".into());
+        s.remove_blob_server("https://blobs.example");
+        assert!(s.blob_servers.is_empty());
+        assert_eq!(s.emoji_blob_server, default_emoji_blob_server());
+    }
 
     #[test]
     fn microphone_defaults_and_legacy_settings_keep_unity_gain() {
