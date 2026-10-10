@@ -724,7 +724,8 @@ pub fn SettingsDialog() -> Element {
                                     input {
                                         r#type: "checkbox",
                                         class: "accent-[var(--accent)]",
-                                        checked: settings.read().discord_rpc_socket,
+                                        disabled: !crate::presence::ipc::discord_compatible_supported(),
+                                        checked: settings.read().discord_rpc_socket && crate::presence::ipc::discord_compatible_supported(),
                                         onchange: move |e| {
                                             let mut next = settings.read().clone();
                                             next.discord_rpc_socket = e.checked();
@@ -735,7 +736,11 @@ pub fn SettingsDialog() -> Element {
                                     span { class: "text-[13px] text-[var(--text)] flex-1", "Accept Discord Rich Presence" }
                                 }
                                 p { class: "mt-1 ml-5 text-[11px] text-[var(--text-dim)]",
-                                    "Listens on the sockets a game already looks for, so anything shipping Rich Presence reports here with no extra work. Whichever of us starts first takes the socket, so a running Discord will stop seeing your games — or we will see none. Restart the app after changing this."
+                                    if crate::presence::ipc::discord_compatible_supported() {
+                                        "Listens on the sockets a game already looks for. Whichever app starts first takes the socket. Restart the app after changing this."
+                                    } else {
+                                        "Unavailable on Windows: this integration can crash Call of Duty's Discord SDK. Running-game detection remains available."
+                                    }
                                 }
                                 GameDetectionOverrides {}
                             }

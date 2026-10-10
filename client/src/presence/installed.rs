@@ -497,24 +497,12 @@ mod tests {
     #[test]
     #[ignore = "requires Avatar running and access to native installation metadata"]
     fn live_game_installation_matches_current_process() {
-        use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
         let games = discover();
-        let mut system = System::new();
-        system.refresh_processes_specifics(
-            ProcessesToUpdate::All,
-            true,
-            ProcessRefreshKind::nothing().with_exe(UpdateKind::OnlyIfNotSet),
-        );
-        let matched = system
-            .processes()
-            .values()
-            .filter(|process| {
-                process
-                    .name()
-                    .to_string_lossy()
-                    .eq_ignore_ascii_case("afop.exe")
-            })
-            .filter_map(|process| process.exe().and_then(|exe| lookup(&games, exe)))
+        let processes = super::super::processes::ProcessTable::default().scan();
+        let matched = processes
+            .iter()
+            .filter(|process| process.name.eq_ignore_ascii_case("afop.exe"))
+            .filter_map(|process| process.exe.as_deref().and_then(|exe| lookup(&games, exe)))
             .next();
         assert!(
             matched.is_some(),
