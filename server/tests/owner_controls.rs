@@ -1425,7 +1425,7 @@ async fn guild_branding() {
         .await
         .unwrap();
     let err = next_error(&mut owner).await;
-    assert!(err.contains("MB"), "got: {err}");
+    assert!(err.contains("2 MiB"), "got: {err}");
 
     member
         .send(&ClientMessage::SetGuildProfile {

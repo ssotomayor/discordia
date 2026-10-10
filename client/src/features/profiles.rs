@@ -82,9 +82,9 @@ pub fn status_color(status: &str) -> &'static str {
 }
 
 pub(crate) const MAX_UPLOAD_BYTES: usize = 15_000_000;
-pub(crate) const EMBED_MAX_BYTES: usize = 2_000_000;
+pub(crate) const EMBED_MAX_BYTES: usize = crate::protocol::MAX_IMAGE_BYTES;
 
-pub(crate) const IMAGE_HELP: &str = "PNG, JPEG, GIF or WebP, under 2 MB once cropped.";
+pub(crate) const IMAGE_HELP: &str = "PNG, JPEG, GIF or WebP, up to 2 MiB once cropped.";
 
 pub(crate) fn check_image(bytes: &[u8], mime: &str) -> Result<(), String> {
     if bytes.is_empty() {
@@ -128,8 +128,7 @@ pub(crate) fn embed_image(cropped: String) -> (Option<String>, Option<String>) {
         return (
             None,
             Some(format!(
-                "This image is {:.1} MB after cropping — pick one under 2 MB.",
-                n as f64 / 1_000_000.0
+                "This image is {n} bytes after cropping — the limit is 2 MiB (2,097,152 bytes)."
             )),
         );
     }

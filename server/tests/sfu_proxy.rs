@@ -93,6 +93,50 @@ fn bundled(port: u16) -> LiveKitConfig {
 }
 
 #[tokio::test]
+async fn sfu_signaling_roundtrips_over_an_authenticated_quic_stream() {
+    tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        use dioxusfun_server::quic;
+        use iroh::endpoint::presets;
+        use iroh::{Endpoint, EndpointAddr, RelayMode, TransportAddr};
+
+        let (sfu_port, sfu) = fake_sfu().await;
+        let router = dioxusfun_server::build_router(test_config(bundled(sfu_port)))
+            .await
+            .unwrap();
+        let gateway = quic::serve_quic(router, None).await.unwrap();
+        let endpoint = Endpoint::builder(presets::Minimal)
+            .relay_mode(RelayMode::Disabled)
+            .bind()
+            .await
+            .unwrap();
+        let addr = EndpointAddr::new(gateway.endpoint_id).with_addrs(
+            quic::dialable_addrs(&gateway.sockets)
+                .into_iter()
+                .map(TransportAddr::Ip),
+        );
+        let conn = endpoint.connect(addr, quic::GATEWAY_ALPN).await.unwrap();
+        let (send, recv) = conn.open_bi().await.unwrap();
+        let (mut ws, _) = tokio_tungstenite::client_async(
+            "ws://gateway.invalid/sfu/rtc?access_token=good",
+            tokio::io::join(recv, send),
+        )
+        .await
+        .unwrap();
+        ws.send(tungstenite::Message::Text("quic signaling".into()))
+            .await
+            .unwrap();
+        let reply = ws.next().await.unwrap().unwrap();
+        assert_eq!(reply.into_text().unwrap(), "sfu:quic signaling");
+        ws.close(None).await.unwrap();
+        endpoint.close().await;
+        gateway.shutdown().await;
+        sfu.abort();
+    })
+    .await
+    .expect("SFU signaling over QUIC exceeded 20 seconds");
+}
+
+#[tokio::test]
 async fn signaling_reaches_the_bundled_sfu_through_the_gateway() {
     let (sfu_port, _sfu) = fake_sfu().await;
     let (addr, _gateway) = gateway(bundled(sfu_port)).await;

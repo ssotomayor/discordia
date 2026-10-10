@@ -31,8 +31,8 @@ bs58 = "0.5"
 secp256k1 = { version = "0.29", default-features = false, features = ["std", "rand-std"] }
 hex = "0.4"
 
-iroh = "1.0"
-iroh-relay = { version = "1.0", default-features = false, features = ["server"] }
+iroh = "1.3"
+iroh-relay = { version = "1.3", default-features = false, features = ["server"] }
 
 # The join proof of work is a million hashes; unoptimised sha2 makes every
 # test that solves one take seconds instead of milliseconds.
