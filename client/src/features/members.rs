@@ -1,7 +1,7 @@
 use dioxus::prelude::*;
 use dioxus_grid_layout::NoDrag;
 
-use crate::protocol::{ClientMessage, Id, Member, Permission, VoiceState};
+use crate::protocol::{ClientMessage, Id, LevelTier, Leveling, Member, Permission, VoiceState};
 use crate::state::{use_app_state, use_gateway};
 
 #[derive(Clone, PartialEq)]
@@ -52,6 +52,22 @@ fn group_by_top_role(
     groups
 }
 
+/// Consecutive runs of the same rank, so `members` must already be in rank
+/// order. `None` is the run below the first rank.
+fn group_by_rank(members: Vec<Member>, rules: &Leveling) -> Vec<(Option<LevelTier>, Vec<Member>)> {
+    let mut groups: Vec<(Option<LevelTier>, Vec<Member>)> = Vec::new();
+    for m in members {
+        let tier = rules.tier_at(m.xp).cloned();
+        match groups.last_mut() {
+            Some((last, run)) if last.as_ref().map(|t| t.xp) == tier.as_ref().map(|t| t.xp) => {
+                run.push(m)
+            }
+            _ => groups.push((tier, vec![m])),
+        }
+    }
+    groups
+}
+
 #[component]
 pub fn MembersPanel() -> Element {
     let state = use_app_state();
@@ -68,9 +84,11 @@ pub fn MembersPanel() -> Element {
         })
         .unwrap_or_default();
     let voice_states: Vec<VoiceState> = snapshot.voice_states.clone();
-    let by_role = guild_id.is_some_and(|gid| {
-        snapshot.leveling_of(gid).member_sort == crate::protocol::MemberSort::Role
-    });
+    let rules = guild_id
+        .map(|gid| snapshot.leveling_of(gid))
+        .unwrap_or_default();
+    let by_role = rules.member_sort == crate::protocol::MemberSort::Role;
+    let by_rank = rules.member_sort == crate::protocol::MemberSort::Rank && rules.enabled;
     let top_roles: std::collections::HashMap<String, (Id, String)> = guild_id
         .filter(|_| by_role)
         .map(|gid| {
@@ -112,14 +130,38 @@ pub fn MembersPanel() -> Element {
     let guild_voice_states = in_call_here(&voice_states, guild_id);
     let (online_members, offline_members): (Vec<Member>, Vec<Member>) =
         members.iter().cloned().partition(|m| m.online);
-    let online_groups: Vec<(String, String, Vec<Member>)> = if by_role {
+    // Key, label, the label's emoji, and the run.
+    let online_groups: Vec<(String, String, Option<String>, Vec<Member>)> = if by_rank {
+        group_by_rank(online_members.clone(), &rules)
+            .into_iter()
+            .map(|(tier, run)| match tier {
+                Some(t) => (
+                    format!("rank-{}", t.xp),
+                    format!("{} — {}", t.name, run.len()),
+                    t.emoji,
+                    run,
+                ),
+                None => (
+                    "online".into(),
+                    format!("Online — {}", run.len()),
+                    None,
+                    run,
+                ),
+            })
+            .collect()
+    } else if by_role {
         group_by_top_role(online_members.clone(), |m| {
             top_roles.get(&m.user.pubkey).cloned()
         })
         .into_iter()
         .map(|(role, run)| match role {
-            Some((id, name)) => (id.to_string(), format!("{name} — {}", run.len()), run),
-            None => ("online".into(), format!("Online — {}", run.len()), run),
+            Some((id, name)) => (id.to_string(), format!("{name} — {}", run.len()), None, run),
+            None => (
+                "online".into(),
+                format!("Online — {}", run.len()),
+                None,
+                run,
+            ),
         })
         .collect()
     } else if online_members.is_empty() {
@@ -128,6 +170,7 @@ pub fn MembersPanel() -> Element {
         vec![(
             "online".into(),
             format!("Online — {}", online_members.len()),
+            None,
             online_members.clone(),
         )]
     };
@@ -165,13 +208,15 @@ pub fn MembersPanel() -> Element {
             }
             NoDrag {
                 div { class: "flex-1 overflow-y-auto py-3 space-y-3",
-                    for (key, label, run) in online_groups.iter().cloned() {
+                    for (key, label, emoji, run) in online_groups.iter().cloned() {
                         Section {
                             key: "{key}",
                             label,
+                            emoji,
                             members: run,
                             voice_states: guild_voice_states.clone(),
                             on_context: on_context.clone(),
+                            rank_as_emoji: by_rank,
                         }
                     }
                     if !offline_members.is_empty() {
@@ -181,6 +226,7 @@ pub fn MembersPanel() -> Element {
                             voice_states: Vec::new(),
                             on_context: on_context.clone(),
                             collapsible: true,
+                            rank_as_emoji: by_rank,
                         }
                     }
                     if members.is_empty() {
@@ -358,11 +404,14 @@ fn MemberMenuPopover(
 #[component]
 fn Section(
     label: String,
+    #[props(default)] emoji: Option<String>,
     members: Vec<Member>,
     voice_states: Vec<VoiceState>,
     on_context: EventHandler<(Member, f64, f64)>,
     #[props(default)] collapsible: bool,
+    #[props(default)] rank_as_emoji: bool,
 ) -> Element {
+    let guild_id = members.first().map(|m| m.guild_id);
     let mut open = use_signal(|| false);
     let show = !collapsible || open();
 
@@ -376,7 +425,12 @@ fn Section(
                     "{label}"
                 }
             } else {
-                div { class: "px-3 pt-2 pb-1.5 font-mono text-[9px] uppercase tracking-[0.18em] text-[var(--text-dim)]",
+                div { class: "px-3 pt-2 pb-1.5 flex items-center gap-1.5 font-mono text-[9px] uppercase tracking-[0.18em] text-[var(--text-dim)]",
+                    if let Some(e) = emoji.clone() {
+                        span { class: "text-[11px]", style: "text-transform: none; letter-spacing: normal;",
+                            crate::features::chat::EmojiText { text: e, guild_id, compact: true }
+                        }
+                    }
                     "{label}"
                 }
             }
@@ -393,6 +447,7 @@ fn Section(
                                 member: m.clone(),
                                 voice: vs,
                                 on_context,
+                                rank_as_emoji,
                             }
                         }
                     }
@@ -407,6 +462,7 @@ fn MemberRow(
     member: Member,
     voice: Option<VoiceState>,
     on_context: EventHandler<(Member, f64, f64)>,
+    #[props(default)] rank_as_emoji: bool,
 ) -> Element {
     let mut state = use_app_state();
     let is_self = state
@@ -451,6 +507,13 @@ fn MemberRow(
             )
         })
     };
+    let rank_emoji = state
+        .read()
+        .leveling_of(member.guild_id)
+        .tier_at(member.xp)
+        .and_then(|t| t.emoji.clone());
+    // Grouped by rank, the header already names it; the row only marks it.
+    let rank = rank.filter(|_| !rank_as_emoji);
     // An activity outranks a custom status on the one line there is room for:
     // it is the fresher fact, and it clears itself when they stop.
     let subtitle = {
@@ -490,7 +553,12 @@ fn MemberRow(
                 span {
                     class: "text-sm truncate flex items-center gap-1 {name_class}",
                     title: "{member.user.pubkey}",
-                    "{member.user.username}"
+                    span { class: "truncate", "{member.user.username}" }
+                    if let Some(e) = rank_emoji.clone() {
+                        span { class: "shrink-0 text-[12px]", title: "Rank",
+                            crate::features::chat::EmojiText { text: e, guild_id: Some(member.guild_id), compact: true }
+                        }
+                    }
                     if member.bot {
                         span {
                             class: "dxf-pop px-1 py-px rounded bg-[var(--accent-soft)] text-[var(--accent)] text-[8px] font-bold uppercase tracking-wider",
@@ -637,6 +705,43 @@ mod tests {
                 (Some("Mods".to_string()), vec!["a", "b"]),
                 (Some("VIPs".to_string()), vec!["c"]),
                 (None, vec!["d"]),
+            ]
+        );
+    }
+
+    #[test]
+    fn online_members_are_grouped_under_their_rank() {
+        let gid = Id::nil();
+        let tier = |xp: u64, name: &str| LevelTier {
+            xp,
+            name: name.into(),
+            color: None,
+            emoji: Some("⭐".into()),
+        };
+        let rules = Leveling {
+            tiers: vec![tier(10, "Regular"), tier(100, "Veteran")],
+            ..Leveling::default()
+        };
+        let at = |pk: &str, xp: u64| Member {
+            xp,
+            ..member(pk, gid, true)
+        };
+        let sorted = vec![at("a", 500), at("b", 100), at("c", 20), at("d", 3)];
+        let shape: Vec<(Option<String>, Vec<String>)> = group_by_rank(sorted, &rules)
+            .into_iter()
+            .map(|(t, run)| {
+                (
+                    t.map(|t| t.name),
+                    run.into_iter().map(|m| m.user.pubkey).collect(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            shape,
+            vec![
+                (Some("Veteran".into()), vec!["a".to_string(), "b".into()]),
+                (Some("Regular".into()), vec!["c".to_string()]),
+                (None, vec!["d".to_string()]),
             ]
         );
     }

@@ -350,6 +350,7 @@ async fn text_channel_of(owner: &mut Bot) -> (Id, Id) {
 async fn create_voice_channel(owner: &mut Bot, guild_id: Id) -> Id {
     owner
         .send(&ClientMessage::CreateChannel {
+            divider: Default::default(),
             guild_id,
             name: "Voice".into(),
             kind: ChannelKind::Voice,
@@ -409,6 +410,7 @@ async fn voice_channel(owner: &mut Bot) -> (Id, Id) {
     };
     owner
         .send(&ClientMessage::CreateChannel {
+            divider: Default::default(),
             guild_id,
             name: "General".into(),
             kind: ChannelKind::Voice,

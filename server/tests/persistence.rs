@@ -110,6 +110,20 @@ async fn state_survives_restart_and_media_is_offloaded() {
             next_timeout(&mut owner).await,
             ServerMessage::GuildEmojis { emojis, .. } if !emojis.is_empty()
         ) {}
+        owner
+            .send(&ClientMessage::CreateChannel {
+                guild_id,
+                name: "games".into(),
+                kind: ChannelKind::Divider,
+                topic: None,
+                divider: dioxusfun_server::protocol::DividerStyle::Centered,
+            })
+            .await
+            .unwrap();
+        while !matches!(
+            next_timeout(&mut owner).await,
+            ServerMessage::ChannelCreate(_)
+        ) {}
         handle.abort();
     }
 
@@ -124,11 +138,22 @@ async fn state_survives_restart_and_media_is_offloaded() {
     let mut owner = Bot::connect_as_user(&url, &owner_id, "Owner")
         .await
         .unwrap();
-    let (guilds, emojis) = loop {
-        if let ServerMessage::Ready { guilds, emojis, .. } = next_timeout(&mut owner).await {
-            break (guilds, emojis);
+    let (guilds, emojis, channels) = loop {
+        if let ServerMessage::Ready {
+            guilds,
+            emojis,
+            channels,
+            ..
+        } = next_timeout(&mut owner).await
+        {
+            break (guilds, emojis, channels);
         }
     };
+    assert!(
+        channels.iter().any(|c| c.kind == ChannelKind::Divider
+            && c.divider == dioxusfun_server::protocol::DividerStyle::Centered),
+        "a divider and its style survived the restart"
+    );
     assert!(
         guilds.iter().any(|g| g.id == guild_id),
         "owned guild survived the restart (membership rehydrated)"
@@ -218,6 +243,7 @@ async fn replies_are_quoted_server_side_and_survive_restart() {
         };
         author
             .send(&ClientMessage::CreateChannel {
+                divider: Default::default(),
                 guild_id,
                 name: "other".into(),
                 kind: ChannelKind::Text,

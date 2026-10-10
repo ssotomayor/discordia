@@ -248,6 +248,7 @@ impl Store {
             "ALTER TABLE invites ADD COLUMN created_by TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE guilds ADD COLUMN leveling TEXT",
             "ALTER TABLE channels ADD COLUMN access TEXT",
+            "ALTER TABLE channels ADD COLUMN divider TEXT",
         ] {
             if let Err(e) = sqlx::query(stmt).execute(&self.pool).await
                 && !e.to_string().contains("duplicate column name")
@@ -328,13 +329,15 @@ impl Store {
             });
         }
         for r in sqlx::query(
-            "SELECT id, guild_id, name, kind, topic, read_only, slowmode_secs, position, access
+            "SELECT id, guild_id, name, kind, topic, read_only, slowmode_secs, position, access,
+                    divider
              FROM channels",
         )
         .fetch_all(&self.pool)
         .await?
         {
             out.channels.push(Channel {
+                divider: parse_divider(r.get::<Option<String>, _>(9).as_deref()),
                 id: parse_id(&r.get::<String, _>(0)),
                 guild_id: parse_id(&r.get::<String, _>(1)),
                 name: r.get(2),
@@ -568,11 +571,12 @@ impl Store {
     ) -> Result<()> {
         sqlx::query(
             "INSERT INTO channels (id, guild_id, name, kind, topic, read_only,
-                                   slowmode_secs, position, access)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                   slowmode_secs, position, access, divider)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(id) DO UPDATE SET name=excluded.name, topic=excluded.topic,
                read_only=excluded.read_only, slowmode_secs=excluded.slowmode_secs,
-               position=excluded.position, access=excluded.access",
+               position=excluded.position, access=excluded.access,
+               divider=excluded.divider",
         )
         .bind(c.id.to_string())
         .bind(c.guild_id.to_string())
@@ -587,6 +591,7 @@ impl Store {
                 .as_ref()
                 .and_then(|a| serde_json::to_string(a).ok()),
         )
+        .bind(divider_str(c.divider))
         .execute(executor)
         .await?;
         Ok(())
@@ -1306,6 +1311,21 @@ fn kind_str(k: ChannelKind) -> &'static str {
         ChannelKind::Text => "text",
         ChannelKind::Voice => "voice",
         ChannelKind::Category => "category",
+        ChannelKind::Divider => "divider",
+    }
+}
+
+fn divider_str(d: crate::protocol::DividerStyle) -> &'static str {
+    match d {
+        crate::protocol::DividerStyle::Title => "title",
+        crate::protocol::DividerStyle::Centered => "centered",
+    }
+}
+
+fn parse_divider(s: Option<&str>) -> crate::protocol::DividerStyle {
+    match s {
+        Some("centered") => crate::protocol::DividerStyle::Centered,
+        _ => crate::protocol::DividerStyle::Title,
     }
 }
 
@@ -1313,6 +1333,7 @@ fn parse_kind(s: &str) -> ChannelKind {
     match s {
         "voice" => ChannelKind::Voice,
         "category" => ChannelKind::Category,
+        "divider" => ChannelKind::Divider,
         _ => ChannelKind::Text,
     }
 }

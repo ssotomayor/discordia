@@ -590,6 +590,9 @@ pub(super) fn MessageRow(message: Message, grouped: bool) -> Element {
         .find(|c| c.id == channel_id)
         .map(|c| c.guild_id);
 
+    let name_color = guild_id
+        .and_then(|gid| rank_color(&state.read(), gid, &message.author.pubkey))
+        .unwrap_or_else(|| crate::identity::signature_accent(&message.author.pubkey));
     let can_pin = state.read().server_chat_tools
         && guild_id.is_some_and(|gid| {
             state
@@ -674,7 +677,7 @@ pub(super) fn MessageRow(message: Message, grouped: bool) -> Element {
                     div { class: "flex items-baseline gap-2",
                         span {
                             class: "text-sm font-semibold",
-                            style: "color: {crate::identity::signature_accent(&message.author.pubkey)};",
+                            style: "color: {name_color};",
                             title: "{message.author.pubkey}",
                             "{message.author.username}"
                             span { class: "text-[var(--text-dim)] font-mono text-[10px] ml-0.5 font-normal",
@@ -1571,6 +1574,20 @@ fn uploads_needed(
         }
     }
     out
+}
+
+/// A ranked member's name wears the rank's colour; the key's own colour is
+/// for everyone the guild has not ranked, or whose rank has none.
+fn rank_color(s: &crate::state::AppState, guild_id: Id, pubkey: &str) -> Option<String> {
+    let rules = s.leveling_of(guild_id);
+    let member = s
+        .members
+        .iter()
+        .find(|m| m.guild_id == guild_id && m.user.pubkey == pubkey)?;
+    rules
+        .enabled
+        .then(|| rules.tier_at(member.xp)?.color.clone())
+        .flatten()
 }
 
 /// Builds the tags and hands the message to the Nostr service. True when it

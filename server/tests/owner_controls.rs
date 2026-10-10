@@ -4,8 +4,8 @@ use std::time::Duration;
 use dioxusfun_bot::{Bot, BotIdentity};
 use dioxusfun_server::livekit::LiveKitConfig;
 use dioxusfun_server::protocol::{
-    Activity, ActivityKind, ChannelKind, ClientMessage, Id, Intent, LevelTier, Leveling,
-    MemberSort, Permission, ServerMessage,
+    Activity, ActivityKind, ChannelKind, ClientMessage, DividerStyle, Id, Intent, LevelTier,
+    Leveling, MemberSort, Permission, ServerMessage,
 };
 
 async fn next_timeout(session: &mut Bot) -> ServerMessage {
@@ -889,6 +889,7 @@ async fn channel_crud_gated_and_broadcast() {
 
     member
         .send(&ClientMessage::CreateChannel {
+            divider: Default::default(),
             guild_id,
             name: "nope".into(),
             kind: ChannelKind::Text,
@@ -901,6 +902,7 @@ async fn channel_crud_gated_and_broadcast() {
 
     owner
         .send(&ClientMessage::CreateChannel {
+            divider: Default::default(),
             guild_id,
             name: "announcements".into(),
             kind: ChannelKind::Text,
@@ -918,6 +920,7 @@ async fn channel_crud_gated_and_broadcast() {
 
     owner
         .send(&ClientMessage::UpdateChannel {
+            divider: None,
             channel_id: created.id,
             name: "news".into(),
             topic: created.topic.clone(),
@@ -961,6 +964,72 @@ async fn channel_crud_gated_and_broadcast() {
 }
 
 #[tokio::test]
+async fn dividers_keep_their_style_and_take_no_messages() {
+    let (url, handle) = spawn_gateway().await;
+    let owner_id = BotIdentity::generate();
+    let (mut owner, _) = connect_user(&url, &owner_id, "Owner").await;
+    let (guild_id, _) = create_guild(&mut owner, "Builders").await;
+
+    let mut create = async |name: &str, kind: ChannelKind| {
+        owner
+            .send(&ClientMessage::CreateChannel {
+                guild_id,
+                name: name.into(),
+                kind,
+                topic: Some("ignored on a divider".into()),
+                divider: DividerStyle::Centered,
+            })
+            .await
+            .unwrap();
+        loop {
+            if let ServerMessage::ChannelCreate(c) = next_timeout(&mut owner).await {
+                break c;
+            }
+        }
+    };
+    let divider = create("🎮 games", ChannelKind::Divider).await;
+    assert_eq!(divider.kind, ChannelKind::Divider);
+    assert_eq!(divider.divider, DividerStyle::Centered);
+    assert_eq!(divider.topic, None);
+    let text = create("chat", ChannelKind::Text).await;
+    assert_eq!(
+        text.divider,
+        DividerStyle::Title,
+        "only a divider has a style"
+    );
+
+    for (style, expected) in [
+        (None, DividerStyle::Centered),
+        (Some(DividerStyle::Title), DividerStyle::Title),
+    ] {
+        owner
+            .send(&ClientMessage::UpdateChannel {
+                divider: style,
+                channel_id: divider.id,
+                name: "games".into(),
+                topic: None,
+                read_only: false,
+                position: divider.position,
+                slowmode_secs: 0,
+            })
+            .await
+            .unwrap();
+        let updated = loop {
+            if let ServerMessage::ChannelUpdate(c) = next_timeout(&mut owner).await {
+                break c;
+            }
+        };
+        assert_eq!(updated.divider, expected);
+    }
+
+    owner.send_message(divider.id, "hello").await.unwrap();
+    let err = next_error(&mut owner).await;
+    assert!(err.contains("can't post"), "got: {err}");
+
+    handle.abort();
+}
+
+#[tokio::test]
 async fn read_only_channel_gates_posting() {
     let (url, handle) = spawn_gateway().await;
 
@@ -989,6 +1058,7 @@ async fn read_only_channel_gates_posting() {
 
     owner
         .send(&ClientMessage::UpdateChannel {
+            divider: None,
             channel_id: text_channel,
             name: "general".into(),
             topic: None,
@@ -1736,6 +1806,7 @@ async fn slowmode_throttles_posting() {
 
     owner
         .send(&ClientMessage::UpdateChannel {
+            divider: None,
             channel_id: text,
             name: "general".into(),
             topic: None,
@@ -1968,6 +2039,7 @@ async fn a_rate_limited_channel_update_is_refused_out_loud() {
     for i in 0..40 {
         owner
             .send(&ClientMessage::UpdateChannel {
+                divider: None,
                 channel_id: text,
                 name: format!("general-{i}"),
                 topic: None,
@@ -2134,6 +2206,7 @@ async fn a_reorder_does_not_overwrite_a_concurrent_edit() {
 
     owner
         .send(&ClientMessage::CreateChannel {
+            divider: Default::default(),
             guild_id,
             name: "second".into(),
             kind: ChannelKind::Text,
@@ -2149,6 +2222,7 @@ async fn a_reorder_does_not_overwrite_a_concurrent_edit() {
 
     owner
         .send(&ClientMessage::UpdateChannel {
+            divider: None,
             channel_id: first,
             name: "general".into(),
             topic: Some("the topic somebody just wrote".into()),
@@ -2205,6 +2279,7 @@ async fn reordering_a_whole_guild_costs_one_rate_limit_hit() {
     for i in 0..12 {
         owner
             .send(&ClientMessage::CreateChannel {
+                divider: Default::default(),
                 guild_id,
                 name: format!("c{i}"),
                 kind: ChannelKind::Text,
@@ -2680,6 +2755,7 @@ async fn a_guild_sets_what_earns_experience_and_where() {
 
     owner
         .send(&ClientMessage::CreateChannel {
+            divider: Default::default(),
             guild_id,
             name: "unpaid".into(),
             kind: ChannelKind::Text,
@@ -2705,11 +2781,13 @@ async fn a_guild_sets_what_earns_experience_and_where() {
                 channels: vec![paid],
                 tiers: vec![
                     LevelTier {
+                        emoji: None,
                         xp: 10,
                         name: "  Regular\u{202E} ".into(),
                         color: Some("#abc".into()),
                     },
                     LevelTier {
+                        emoji: None,
                         xp: 0,
                         name: "Newcomer".into(),
                         color: None,

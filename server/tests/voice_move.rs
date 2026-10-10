@@ -60,6 +60,7 @@ async fn guild_with_voice(owner: &mut Bot, name: &str) -> (Id, Id) {
     };
     owner
         .send(&ClientMessage::CreateChannel {
+            divider: Default::default(),
             guild_id,
             name: "Voice".into(),
             kind: ChannelKind::Voice,
@@ -192,6 +193,7 @@ async fn moving_within_a_guild_also_drops_the_share() {
     let (guild_id, first_voice) = guild_with_voice(&mut mover, "Home").await;
     mover
         .send(&ClientMessage::CreateChannel {
+            divider: Default::default(),
             guild_id,
             name: "Other".into(),
             kind: ChannelKind::Voice,
@@ -429,6 +431,7 @@ async fn a_category_is_a_separator_nobody_can_join_or_post_to() {
 
     owner
         .send(&ClientMessage::CreateChannel {
+            divider: Default::default(),
             guild_id,
             name: "Gaming Rooms".into(),
             kind: ChannelKind::Category,

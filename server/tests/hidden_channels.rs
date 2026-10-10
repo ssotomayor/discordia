@@ -60,6 +60,7 @@ async fn setup(owner: &mut Bot) -> (Id, Id, Id) {
     };
     owner
         .send(&ClientMessage::CreateChannel {
+            divider: Default::default(),
             guild_id,
             name: "Staff room".into(),
             kind: ChannelKind::Voice,
@@ -287,6 +288,7 @@ async fn a_person_can_be_let_in_by_key_and_it_holds_across_a_fresh_connect() {
 
     owner
         .send(&ClientMessage::CreateChannel {
+            divider: Default::default(),
             guild_id,
             name: "general-2".into(),
             kind: ChannelKind::Text,

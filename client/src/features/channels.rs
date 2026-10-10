@@ -3,7 +3,9 @@ use dioxus_grid_layout::NoDrag;
 
 use crate::features::voice::{VoiceCmd, use_voice_tx};
 use crate::identity::discriminator;
-use crate::protocol::{Channel, ChannelKind, ClientMessage, Id, Permission, VoiceState};
+use crate::protocol::{
+    Channel, ChannelKind, ClientMessage, DividerStyle, Id, Permission, VoiceState,
+};
 use crate::state::DmInfo;
 use crate::state::{AppState, GatewayTx, VoicePhase, use_app_state, use_gateway};
 
@@ -189,10 +191,7 @@ pub fn ChannelsColumn() -> Element {
         .map(str::to_string);
     drop(snapshot);
 
-    let text_channels: Vec<&Channel> = channels
-        .iter()
-        .filter(|c| matches!(c.kind, ChannelKind::Text))
-        .collect();
+    let text_channels: Vec<&Channel> = channels.iter().filter(|c| c.kind.in_text_list()).collect();
 
     let voice_channels: Vec<&Channel> =
         channels.iter().filter(|c| c.kind.in_voice_list()).collect();
@@ -376,6 +375,49 @@ pub fn ChannelsColumn() -> Element {
                                 let drop_group = guild_order.clone();
                                 let line = drop_at().filter(|(id, _)| *id == cid).map(|(_, edge)| edge);
                                 let dim = if dragging() == Some(cid) { "opacity-40" } else { "" };
+                                if ch.kind == ChannelKind::Divider {
+                                    let menu_ch = ch.clone();
+                                    rsx! {
+                                        div {
+                                            key: "{cid}",
+                                            class: "relative mt-2.5 mb-0.5 px-2 flex items-center gap-2 select-none {dim}",
+                                            onpointerdown: move |e: PointerEvent| {
+                                                if can_manage_channels
+                                                    && e.held_buttons().contains(
+                                                        dioxus::html::input_data::MouseButton::Primary,
+                                                    )
+                                                {
+                                                    dragging.set(Some(cid));
+                                                    drop_at.set(None);
+                                                }
+                                            },
+                                            onpointerenter: move |_| {
+                                                let Some(moved) = dragging() else { return };
+                                                let next = drop_edge(&drop_group, moved, cid).map(|edge| (cid, edge));
+                                                if *drop_at.peek() != next {
+                                                    drop_at.set(next);
+                                                }
+                                            },
+                                            oncontextmenu: move |e: MouseEvent| {
+                                                if !can_manage_channels {
+                                                    return;
+                                                }
+                                                e.prevent_default();
+                                                let c = e.client_coordinates();
+                                                chan_menu.set(Some(ChanMenu {
+                                                    channel: menu_ch.clone(),
+                                                    x: c.x,
+                                                    y: c.y,
+                                                    mode: ChanMenuMode::Menu,
+                                                }));
+                                            },
+                                            if let Some(edge) = line {
+                                                DropLine { edge }
+                                            }
+                                            DividerLabel { name: ch.name.clone(), style: ch.divider, guild_id: ch.guild_id }
+                                        }
+                                    }
+                                } else {
                                 rsx! {
                                     button {
                                         key: "{cid}",
@@ -426,6 +468,7 @@ pub fn ChannelsColumn() -> Element {
                                             span { class: "text-[10px] text-[var(--text-dim)]", title: "Read-only", "🔒" }
                                         }
                                     }
+                                }
                                 }
                             }
                         }
@@ -491,8 +534,7 @@ pub fn ChannelsColumn() -> Element {
                                             if let Some(edge) = line {
                                                 DropLine { edge }
                                             }
-                                            span { class: "text-[10px] font-semibold uppercase tracking-wider text-[var(--text-dim)] truncate", "{ch.name}" }
-                                            div { class: "flex-1 h-px bg-[var(--border)]" }
+                                            DividerLabel { name: ch.name.clone(), style: ch.divider, guild_id: ch.guild_id }
                                         }
                                     }
                                 } else {
@@ -593,21 +635,30 @@ pub fn ChannelsColumn() -> Element {
 fn CreateChannelForm(guild_id: Id, on_done: EventHandler<()>) -> Element {
     let gateway = use_gateway();
     let mut name = use_signal(String::new);
+    // `Divider` here stands for either list's divider; `in_voice` picks which.
     let mut kind = use_signal(|| ChannelKind::Text);
+    let mut in_voice = use_signal(|| false);
+    let style = use_signal(DividerStyle::default);
 
     let mut submit = move || {
         let n = name().trim().to_string();
         if !n.is_empty() {
+            let kind = match kind() {
+                ChannelKind::Divider if in_voice() => ChannelKind::Category,
+                k => k,
+            };
             gateway.send(ClientMessage::CreateChannel {
+                divider: style(),
                 guild_id,
                 name: n,
-                kind: kind(),
+                kind,
                 topic: None,
             });
         }
         name.set(String::new());
         on_done.call(());
     };
+    let dividing = kind() == ChannelKind::Divider;
 
     rsx! {
         form {
@@ -615,7 +666,7 @@ fn CreateChannelForm(guild_id: Id, on_done: EventHandler<()>) -> Element {
             onsubmit: move |_| submit(),
             input {
                 class: "w-full bg-transparent border border-[var(--border)] focus:border-[var(--accent)] rounded px-2 py-1 text-xs text-[var(--text)] outline-none transition-colors",
-                placeholder: "Channel name…",
+                placeholder: if dividing { "Divider text or emoji…" } else { "Channel name…" },
                 value: "{name}",
                 autofocus: true,
                 maxlength: 64,
@@ -625,18 +676,9 @@ fn CreateChannelForm(guild_id: Id, on_done: EventHandler<()>) -> Element {
                 for (k, label) in [
                     (ChannelKind::Text, "# Text"),
                     (ChannelKind::Voice, "♪ Voice"),
-                    (ChannelKind::Category, "— Category"),
+                    (ChannelKind::Divider, "— Divider"),
                 ] {
-                    button {
-                        r#type: "button",
-                        class: if kind() == k {
-                            "flex-1 rounded px-1 py-0.5 text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--accent)] transition-colors"
-                        } else {
-                            "flex-1 rounded px-1 py-0.5 text-[10px] uppercase tracking-wider text-[var(--text-dim)] border border-[var(--border)] hover:text-[var(--text-muted)] transition-colors"
-                        },
-                        onclick: move |_| kind.set(k),
-                        "{label}"
-                    }
+                    ToggleChip { on: kind() == k, onclick: move |_| kind.set(k), "{label}" }
                 }
                 button {
                     r#type: "submit",
@@ -644,7 +686,61 @@ fn CreateChannelForm(guild_id: Id, on_done: EventHandler<()>) -> Element {
                     "Add"
                 }
             }
+            if dividing {
+                div { class: "flex gap-1",
+                    ToggleChip { on: !in_voice(), onclick: move |_| in_voice.set(false), "Text list" }
+                    ToggleChip { on: in_voice(), onclick: move |_| in_voice.set(true), "Voice list" }
+                }
+                DividerStylePicker { style }
+            }
         }
+    }
+}
+
+#[component]
+fn ToggleChip(on: bool, onclick: EventHandler<MouseEvent>, children: Element) -> Element {
+    rsx! {
+        button {
+            r#type: "button",
+            class: if on {
+                "flex-1 rounded px-1 py-0.5 text-[10px] uppercase tracking-wider text-[var(--accent)] border border-[var(--accent)] transition-colors"
+            } else {
+                "flex-1 rounded px-1 py-0.5 text-[10px] uppercase tracking-wider text-[var(--text-dim)] border border-[var(--border)] hover:text-[var(--text-muted)] transition-colors"
+            },
+            onclick: move |e| onclick.call(e),
+            {children}
+        }
+    }
+}
+
+#[component]
+fn DividerStylePicker(style: Signal<DividerStyle>) -> Element {
+    rsx! {
+        div { class: "flex gap-1",
+            ToggleChip { on: style() == DividerStyle::Title, onclick: move |_| style.set(DividerStyle::Title), "Title ——" }
+            ToggleChip { on: style() == DividerStyle::Centered, onclick: move |_| style.set(DividerStyle::Centered), "—— Line ——" }
+        }
+    }
+}
+
+/// A divider's name as its style draws it; emoji in it are pictures.
+#[component]
+fn DividerLabel(name: String, style: DividerStyle, guild_id: Id) -> Element {
+    let label = rsx! {
+        span { class: "min-w-0 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-dim)] truncate",
+            crate::features::chat::EmojiText { text: name, guild_id: Some(guild_id), compact: true }
+        }
+    };
+    match style {
+        DividerStyle::Title => rsx! {
+            {label}
+            div { class: "flex-1 h-px bg-[var(--border)]" }
+        },
+        DividerStyle::Centered => rsx! {
+            div { class: "flex-1 h-px bg-[var(--border)]" }
+            {label}
+            div { class: "flex-1 h-px bg-[var(--border)]" }
+        },
     }
 }
 
@@ -672,6 +768,7 @@ fn ChannelMenuPopover(
         .map(|i| siblings[i + 1].id);
     let mut name = use_signal(|| ch.name.clone());
     let mut topic = use_signal(|| ch.topic.clone().unwrap_or_default());
+    let style = use_signal(|| ch.divider);
 
     rsx! {
         div {
@@ -727,7 +824,7 @@ fn ChannelMenuPopover(
                                 button {
                                     class: "w-full text-left px-3 py-1.5 rounded text-[var(--text)] hover:bg-white/[0.04] transition-colors",
                                     onclick: move |_| on_mode.call(ChanMenuMode::Edit),
-                                    if ch.kind == ChannelKind::Category { "Rename category" } else { "Edit name & topic" }
+                                    if ch.kind.is_divider() { "Edit divider" } else { "Edit name & topic" }
                                 }
                                 if let Some(above) = move_up {
                                     {
@@ -768,6 +865,7 @@ fn ChannelMenuPopover(
                                         class: "w-full text-left px-3 py-1.5 rounded text-[var(--text)] hover:bg-white/[0.04] transition-colors",
                                         onclick: move |_| {
                                             gw_ro.send(ClientMessage::UpdateChannel {
+                                                divider: None,
                                                 channel_id: ch_ro.id,
                                                 name: ch_ro.name.clone(),
                                                 topic: ch_ro.topic.clone(),
@@ -783,7 +881,7 @@ fn ChannelMenuPopover(
                                 button {
                                     class: "w-full text-left px-3 py-1.5 rounded text-[var(--danger)] hover:bg-[var(--danger)]/10 transition-colors",
                                     onclick: move |_| on_mode.call(ChanMenuMode::ConfirmDelete),
-                                    if ch.kind == ChannelKind::Category { "Delete category" } else { "Delete channel" }
+                                    if ch.kind.is_divider() { "Delete divider" } else { "Delete channel" }
                                 }
                             }
                         }
@@ -799,6 +897,7 @@ fn ChannelMenuPopover(
                                     if !n.is_empty() {
                                         let t = topic().trim().to_string();
                                         gw.send(ClientMessage::UpdateChannel {
+                                            divider: ch2.kind.is_divider().then_some(style()),
                                             channel_id: ch2.id,
                                             name: n,
                                             topic: if t.is_empty() { None } else { Some(t) },
@@ -816,7 +915,9 @@ fn ChannelMenuPopover(
                                     autofocus: true,
                                     oninput: move |e| name.set(e.value()),
                                 }
-                                if ch.kind != ChannelKind::Category {
+                                if ch.kind.is_divider() {
+                                    DividerStylePicker { style }
+                                } else {
                                     div { class: "relative flex items-center gap-1",
                                         input {
                                             class: "flex-1 min-w-0 bg-transparent border border-[var(--border)] focus:border-[var(--accent)] rounded px-2 py-1 text-xs text-[var(--text)] outline-none transition-colors",
@@ -849,7 +950,11 @@ fn ChannelMenuPopover(
                         let cid = ch.id;
                         rsx! {
                             div { class: "px-3 py-1.5 text-xs text-[var(--text-muted)]",
-                                "Delete #{ch.name}? Its messages are gone for good."
+                                if ch.kind.is_divider() {
+                                    "Delete this divider?"
+                                } else {
+                                    "Delete #{ch.name}? Its messages are gone for good."
+                                }
                             }
                             div { class: "flex gap-1 px-1 pb-0.5",
                                 button {
@@ -880,7 +985,14 @@ const TOPIC_MAX_CHARS: usize = 120;
 /// This guild's emoji then the named set, appended to the topic as `:code:` or
 /// the character. `EmojiText` draws either wherever the topic is shown.
 #[component]
-fn TopicEmojiPicker(guild_id: Id, on_pick: EventHandler<String>) -> Element {
+pub(crate) fn TopicEmojiPicker(
+    guild_id: Id,
+    on_pick: EventHandler<String>,
+    /// Drawn on the button in place of 🙂, for a picker that holds one choice.
+    #[props(default)]
+    current: Option<String>,
+    #[props(default = "Add an emoji to the topic".to_string())] title: String,
+) -> Element {
     let state = use_app_state();
     let mut open = use_signal(|| false);
     let guild_emojis: Vec<(String, String)> = {
@@ -897,9 +1009,12 @@ fn TopicEmojiPicker(guild_id: Id, on_pick: EventHandler<String>) -> Element {
         button {
             r#type: "button",
             class: "w-6 h-6 shrink-0 flex items-center justify-center rounded text-sm leading-none hover:bg-white/[0.06] transition-colors",
-            title: "Add an emoji to the topic",
+            title: "{title}",
             onclick: move |_| open.toggle(),
-            "🙂"
+            match current.clone() {
+                Some(text) => rsx! { crate::features::chat::EmojiText { text, guild_id: Some(guild_id), compact: true } },
+                None => rsx! { "🙂" },
+            }
         }
         if open() {
             div {
@@ -1766,6 +1881,7 @@ mod tests {
 
     fn kinded(name: &str, position: u32, kind: ChannelKind) -> Channel {
         Channel {
+            divider: Default::default(),
             id: Id::new_v4(),
             guild_id: Id::nil(),
             name: name.into(),
