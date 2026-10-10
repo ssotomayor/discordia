@@ -9,7 +9,7 @@ use crate::state::{use_app_state, use_gateway};
 
 /// Named so `:fi` can offer 🔥. Names follow the usual shortcode set.
 #[rustfmt::skip]
-const EMOJIS: &[(&str, &str)] = &[
+pub(crate) const EMOJIS: &[(&str, &str)] = &[
     ("😀", "grinning"), ("😂", "joy"), ("😅", "sweat_smile"), ("😍", "heart_eyes"),
     ("😎", "sunglasses"), ("🤔", "thinking"), ("😭", "sob"), ("😡", "rage"),
     ("👍", "thumbsup"), ("👎", "thumbsdown"), ("🙏", "pray"), ("🔥", "fire"),
@@ -184,6 +184,7 @@ pub fn ChatView() -> Element {
         }
     };
     let channel_topic = channel_meta.as_ref().and_then(|c| c.topic.clone());
+    let channel_guild = channel_meta.as_ref().map(|c| c.guild_id);
     let typing_label = typing_label(&typers);
 
     let scroll_key = use_memo(move || {
@@ -314,7 +315,7 @@ pub fn ChatView() -> Element {
                 if let Some(topic) = channel_topic {
                     span {
                         class: "min-w-0 truncate pl-3 text-[12.5px] text-[var(--text-dim)] border-l border-[var(--border-strong)]",
-                        "{topic}"
+                        EmojiText { text: topic, guild_id: channel_guild }
                     }
                 }
             }
@@ -887,7 +888,11 @@ const EMOJI_EM: f64 = 1.8;
 /// `reaction`: sized by the reaction slider, not the chat one, so a big chat
 /// emoji does not blow up every pill under a message.
 #[component]
-fn EmojiText(text: String, guild_id: Option<Id>, #[props(default)] reaction: bool) -> Element {
+pub(crate) fn EmojiText(
+    text: String,
+    guild_id: Option<Id>,
+    #[props(default)] reaction: bool,
+) -> Element {
     let state = use_app_state();
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let percent = if reaction {

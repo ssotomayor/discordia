@@ -251,6 +251,9 @@
   .top-\[58px\] {
     top: 58px;
   }
+  .top-full {
+    top: 100%;
+  }
   .-right-0\.5 {
     right: calc(var(--spacing) * -0.5);
   }
@@ -622,6 +625,9 @@
   }
   .min-h-6 {
     min-height: calc(var(--spacing) * 6);
+  }
+  .min-h-8 {
+    min-height: calc(var(--spacing) * 8);
   }
   .min-h-9 {
     min-height: calc(var(--spacing) * 9);

@@ -817,12 +817,23 @@ fn ChannelMenuPopover(
                                     oninput: move |e| name.set(e.value()),
                                 }
                                 if ch.kind != ChannelKind::Category {
-                                    input {
-                                        class: "w-full bg-transparent border border-[var(--border)] focus:border-[var(--accent)] rounded px-2 py-1 text-xs text-[var(--text)] outline-none transition-colors",
-                                        placeholder: "Topic (optional)",
-                                        value: "{topic}",
-                                        maxlength: 120,
-                                        oninput: move |e| topic.set(e.value()),
+                                    div { class: "relative flex items-center gap-1",
+                                        input {
+                                            class: "flex-1 min-w-0 bg-transparent border border-[var(--border)] focus:border-[var(--accent)] rounded px-2 py-1 text-xs text-[var(--text)] outline-none transition-colors",
+                                            placeholder: "Topic (optional)",
+                                            value: "{topic}",
+                                            maxlength: TOPIC_MAX_CHARS,
+                                            oninput: move |e| topic.set(e.value()),
+                                        }
+                                        TopicEmojiPicker {
+                                            guild_id: ch.guild_id,
+                                            on_pick: move |emoji: String| {
+                                                let mut t = topic.write();
+                                                if t.chars().count() + emoji.chars().count() <= TOPIC_MAX_CHARS {
+                                                    t.push_str(&emoji);
+                                                }
+                                            },
+                                        }
                                     }
                                 }
                                 button {
@@ -863,6 +874,76 @@ fn ChannelMenuPopover(
     }
 }
 
+/// The server's `sanitize::TOPIC`; the form stops where the server would cut.
+const TOPIC_MAX_CHARS: usize = 120;
+
+/// This guild's emoji then the named set, appended to the topic as `:code:` or
+/// the character. `EmojiText` draws either wherever the topic is shown.
+#[component]
+fn TopicEmojiPicker(guild_id: Id, on_pick: EventHandler<String>) -> Element {
+    let state = use_app_state();
+    let mut open = use_signal(|| false);
+    let guild_emojis: Vec<(String, String)> = {
+        let s = state.read();
+        s.emojis_of(guild_id)
+            .iter()
+            .map(|e| {
+                let url = s.emoji_images.get(&e.image).cloned().unwrap_or_default();
+                (e.shortcode.clone(), url)
+            })
+            .collect()
+    };
+    rsx! {
+        button {
+            r#type: "button",
+            class: "w-6 h-6 shrink-0 flex items-center justify-center rounded text-sm leading-none hover:bg-white/[0.06] transition-colors",
+            title: "Add an emoji to the topic",
+            onclick: move |_| open.toggle(),
+            "🙂"
+        }
+        if open() {
+            div {
+                class: "dxf-pop-in absolute right-0 top-full mt-1 z-10 p-1 bg-[var(--panel-solid)] border border-[var(--border)] rounded-md shadow-lg max-h-40 overflow-y-auto",
+                if !guild_emojis.is_empty() {
+                    div { class: "grid grid-cols-8 gap-0.5 pb-1 mb-1 border-b border-[var(--border)]",
+                        for (code, url) in guild_emojis.into_iter() {
+                            {
+                                let emoji = format!(":{code}:");
+                                rsx! {
+                                    button {
+                                        key: "{code}",
+                                        r#type: "button",
+                                        class: "w-6 h-6 flex items-center justify-center rounded hover:bg-white/[0.06] text-base leading-none",
+                                        title: "{emoji}",
+                                        onclick: move |_| { on_pick.call(emoji.clone()); open.set(false); },
+                                        if url.is_empty() {
+                                            span { class: "text-[8px] text-[var(--text-dim)]", "…" }
+                                        } else {
+                                            img { src: "{url}", style: "height:1.2em;width:auto;" }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                div { class: "grid grid-cols-8 gap-0.5",
+                    for (emoji, name) in crate::features::chat::EMOJIS.iter().copied() {
+                        button {
+                            key: "{name}",
+                            r#type: "button",
+                            class: "w-6 h-6 flex items-center justify-center rounded hover:bg-white/[0.06] text-base leading-none",
+                            title: ":{name}:",
+                            onclick: move |_| { on_pick.call(emoji.to_string()); open.set(false); },
+                            "{emoji}"
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[component]
 fn VoiceChannelRow(
     channel: Channel,
@@ -891,7 +972,7 @@ fn VoiceChannelRow(
     rsx! {
         div { class: "rounded",
             button {
-                class: "relative w-full h-8 flex items-center gap-2 px-2.5 rounded-lg text-left text-[13.5px] transition-colors {row_cls}",
+                class: "relative w-full min-h-8 py-1 flex items-center gap-2 px-2.5 rounded-lg text-left text-[13.5px] transition-colors {row_cls}",
                 style: "{row_style}",
                 onclick: move |_| {
                     if connected { on_leave.call(()) } else { on_join.call(()) }
@@ -901,7 +982,16 @@ fn VoiceChannelRow(
                     draggable: false,
                     dangerous_inner_html: crate::features::icons::SPEAKER,
                 }
-                span { class: "truncate flex-1", draggable: false, "{channel.name}" }
+                span { class: "flex-1 min-w-0", draggable: false,
+                    span { class: "block truncate", "{channel.name}" }
+                    if let Some(topic) = channel.topic.clone() {
+                        span {
+                            class: "block truncate text-[11px] leading-tight text-[var(--text-dim)]",
+                            title: "{topic}",
+                            crate::features::chat::EmojiText { text: topic.clone(), guild_id: Some(channel.guild_id) }
+                        }
+                    }
+                }
                 if channel.access.is_some() {
                     span {
                         class: "text-[10px] text-[var(--text-dim)]",
