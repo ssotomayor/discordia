@@ -740,11 +740,17 @@
   .w-full {
     width: 100%;
   }
+  .w-max {
+    width: max-content;
+  }
   .w-screen {
     width: 100vw;
   }
   .max-w-40 {
     max-width: calc(var(--spacing) * 40);
+  }
+  .max-w-\[15rem\] {
+    max-width: 15rem;
   }
   .max-w-\[40\%\] {
     max-width: 40%;

@@ -588,7 +588,12 @@ pub async fn handle_connection(
                             reject_rate_limited(&mut ws_tx).await;
                             continue;
                         }
-                        let emoji: String = emoji.chars().take(8).collect();
+                        let Some(emoji) = reaction_emoji(&ctx.state, channel_id, &emoji) else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "that emoji is not in this guild".into(),
+                            }).await;
+                            continue;
+                        };
                         if let Some(reactions) =
                             ctx.state.toggle_reaction(channel_id, message_id, &emoji, &u.pubkey).await
                         {
@@ -2614,6 +2619,27 @@ fn broadcast_screen_state(state: &crate::state::AppState, guild_id: Id, channel_
             sharers: state.screen_sharers_in(channel_id),
         },
     );
+}
+
+/// A reaction is a short unicode string, cut rather than refused, or
+/// `:code:` naming one of the channel's guild's emoji, refused when it does
+/// not: a stored shortcode nobody can render is a pill of text forever.
+fn reaction_emoji(
+    state: &crate::state::AppState,
+    channel_id: crate::protocol::Id,
+    raw: &str,
+) -> Option<String> {
+    if let Some(code) = raw.strip_prefix(':').and_then(|r| r.strip_suffix(':'))
+        && crate::protocol::valid_shortcode(code)
+    {
+        let gid = state.channel_guild(channel_id)?;
+        return state
+            .emojis_of(gid)
+            .iter()
+            .any(|e| e.shortcode == code)
+            .then(|| raw.to_string());
+    }
+    Some(raw.chars().take(8).collect())
 }
 
 fn channel_audience(
