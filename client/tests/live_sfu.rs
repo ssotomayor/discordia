@@ -16,6 +16,8 @@ const CHANNELS: u32 = 1;
 mod connection_routes;
 #[path = "../src/features/voice_endpoints.rs"]
 mod voice_endpoints;
+#[path = "../src/features/voice_subscriptions.rs"]
+mod voice_subscriptions;
 
 #[tokio::test]
 #[ignore = "starts the bundled SFU; verifies alternate IPv6 signaling and decoded audio without rendezvous"]
@@ -124,10 +126,13 @@ async fn alternate_endpoint_delivers_audio(
         .await
         .unwrap();
     assert_eq!(selected, available);
+    let selective = track_source == TrackSource::ScreenshareAudio;
+    let mut listener_options = RoomOptions::default();
+    listener_options.auto_subscribe = false;
     let (listener, mut events) = Room::connect(
         &format!("ws://127.0.0.1:{port}"),
         &mint("listener"),
-        RoomOptions::default(),
+        listener_options,
     )
     .await
     .unwrap();
@@ -146,10 +151,34 @@ async fn alternate_endpoint_delivers_audio(
         .await
         .unwrap();
     let feeder = spawn_tone(source, 0.0, 0.2, None);
-    let ev = wait_for(&mut events, "direct-listener", |ev| {
-        matches!(ev, RoomEvent::TrackSubscribed { .. })
-    })
-    .await;
+    let (watch_tx, mut watched) = tokio::sync::watch::channel(std::collections::HashSet::new());
+    if selective {
+        let result = tokio::time::timeout(Duration::from_millis(250), async {
+            while let Some(event) = voice_subscriptions::next_event(
+                &listener,
+                "listener",
+                true,
+                &mut watched,
+                &mut events,
+            )
+            .await
+            {
+                assert!(
+                    !matches!(event, RoomEvent::TrackSubscribed { .. }),
+                    "unwatched screen audio was subscribed"
+                );
+            }
+        })
+        .await;
+        assert!(result.is_err());
+        watch_tx.send_replace(std::collections::HashSet::from(["publisher".into()]));
+    }
+    let watch_started = Instant::now();
+    let ev = if selective {
+        selective_audio_event(&listener, &mut watched, &mut events, true, true).await
+    } else {
+        selective_audio_event(&listener, &mut watched, &mut events, false, true).await
+    };
     let RoomEvent::TrackSubscribed {
         track: RemoteTrack::Audio(audio),
         publication,
@@ -170,6 +199,47 @@ async fn alternate_endpoint_delivers_audio(
     })
     .await
     .expect("direct audio did not decode");
+    drop(stream);
+    if selective {
+        println!(
+            "screen audio selection to first decoded tone: {:?}",
+            watch_started.elapsed()
+        );
+        watch_tx.send_replace(Default::default());
+        let stopped = Instant::now();
+        selective_audio_event(&listener, &mut watched, &mut events, true, false).await;
+        assert!(!publication.is_desired());
+        assert!(publication.track().is_none());
+        println!(
+            "screen audio deselection to unsubscribe: {:?}",
+            stopped.elapsed()
+        );
+        watch_tx.send_replace(std::collections::HashSet::from(["publisher".into()]));
+        let restarted = Instant::now();
+        let RoomEvent::TrackSubscribed {
+            track: RemoteTrack::Audio(audio),
+            ..
+        } = selective_audio_event(&listener, &mut watched, &mut events, true, true).await
+        else {
+            panic!("screen audio did not resume")
+        };
+        let mut resumed =
+            NativeAudioStream::new(audio.rtc_track(), SAMPLE_RATE as i32, CHANNELS as i32);
+        tokio::time::timeout(Duration::from_secs(8), async {
+            loop {
+                let frame = resumed.next().await.expect("resumed stream closed");
+                if frame.data.iter().any(|sample| sample.unsigned_abs() > 100) {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("resumed screen audio did not decode");
+        println!(
+            "screen audio reselection to decoded tone: {:?}",
+            restarted.elapsed()
+        );
+    }
     let published = publisher.get_stats().await.unwrap();
     let send_route = connection_routes::selected_media_route(&published.publisher_stats)
         .expect("publisher must have a selected audio route");
@@ -194,10 +264,34 @@ async fn alternate_endpoint_delivers_audio(
         assert_ne!(route.family, "IP unknown");
         assert!(matches!(route.protocol.as_str(), "udp" | "tcp"));
     }
-    drop(stream);
     feeder.stop().await;
     listener.close().await.unwrap();
     publisher.close().await.unwrap();
+}
+
+async fn selective_audio_event(
+    room: &Room,
+    watched: &mut tokio::sync::watch::Receiver<std::collections::HashSet<String>>,
+    events: &mut tokio::sync::mpsc::UnboundedReceiver<RoomEvent>,
+    screen_only: bool,
+    subscribed: bool,
+) -> RoomEvent {
+    tokio::time::timeout(Duration::from_secs(8), async {
+        while let Some(event) =
+            voice_subscriptions::next_event(room, "listener", screen_only, watched, events).await
+        {
+            if matches!(
+                (&event, subscribed),
+                (RoomEvent::TrackSubscribed { .. }, true)
+                    | (RoomEvent::TrackUnsubscribed { .. }, false)
+            ) {
+                return event;
+            }
+        }
+        panic!("screen audio event stream closed")
+    })
+    .await
+    .expect("screen audio selection did not complete")
 }
 
 fn env_or(key: &str, default: &str) -> String {

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
 use std::time::Instant;
@@ -45,6 +45,8 @@ use camera::CameraPublisher;
 pub(crate) const SAMPLE_RATE: u32 = 48_000;
 #[path = "voice_direct.rs"]
 pub mod direct;
+#[path = "voice_subscriptions.rs"]
+mod subscriptions;
 const CHANNELS: u32 = 1;
 const FRAME_MS: u32 = 10;
 const FRAME_SAMPLES: usize = (SAMPLE_RATE / 1000 * FRAME_MS) as usize;
@@ -90,6 +92,7 @@ struct AudioControls {
     /// Absent means **silent**, not unity — a share you have not opted into
     /// should not start playing.
     stream_gains: Arc<Mutex<HashMap<String, f32>>>,
+    watched_streams: tokio::sync::watch::Sender<HashSet<String>>,
     soundboard_pct: Arc<AtomicU32>,
 }
 
@@ -98,6 +101,13 @@ impl AudioControls {
         *self.stream_gains.lock() = crate::stream_audio::playback_gains(state, &[])
             .into_iter()
             .collect();
+        self.watched_streams.send_if_modified(|watched| {
+            if *watched == state.screen_viewing {
+                return false;
+            }
+            watched.clone_from(&state.screen_viewing);
+            true
+        });
     }
 
     fn from_state(s: &AppState) -> Self {
@@ -119,6 +129,7 @@ impl AudioControls {
                     .collect(),
             )),
             stream_gains: Arc::new(Mutex::new(HashMap::new())),
+            watched_streams: tokio::sync::watch::channel(s.screen_viewing.clone()).0,
             soundboard_pct: Arc::new(AtomicU32::new(s.soundboard_volume.min(100))),
         }
     }
@@ -217,6 +228,7 @@ pub enum VoiceCmd {
         pubkey: String,
         gain: f32,
     },
+    SyncStreamWatches,
     SetUserVolume {
         pubkey: String,
         gain: f32,
@@ -482,7 +494,7 @@ async fn service_loop(
             }
             VoiceCmd::SetScreenAudio { room } => {
                 if let Some(active) = session.as_mut() {
-                    active.set_screen_audio(room, state).await;
+                    active.set_screen_audio(room, state, &controls).await;
                 } else if room.is_some() {
                     eprintln!("[voice] SetScreenAudio ignored — no voice session");
                 }
@@ -540,7 +552,9 @@ async fn service_loop(
                     &pubkey[..pubkey.len().min(8)]
                 );
                 controls.stream_gains.lock().insert(pubkey, gain);
+                controls.sync_stream_gains(&state.read());
             }
+            VoiceCmd::SyncStreamWatches => controls.sync_stream_gains(&state.read()),
             VoiceCmd::SetUserVolume { pubkey, gain } => {
                 let gain = gain.clamp(0.0, 2.0);
                 eprintln!(
@@ -671,6 +685,7 @@ impl ActiveVoice {
         controls: AudioControls,
     ) -> Result<Self, String> {
         let mut options = RoomOptions::default();
+        options.auto_subscribe = false;
         options.encryption = crate::e2ee::room_options();
         options.join_retries = 0;
         options.connect_timeout = std::time::Duration::from_secs(5);
@@ -862,10 +877,26 @@ impl ActiveVoice {
             });
         }
 
+        let self_pubkey = state.peek().self_user.as_ref().map(|u| u.pubkey.clone());
+        controls.sync_stream_gains(&state.read());
+        subscriptions::refresh(
+            &room,
+            self_pubkey.as_deref().unwrap_or_default(),
+            false,
+            &controls.watched_streams.borrow(),
+        );
         let event_task = tokio::spawn({
             let mixer_handle = mixer_handle.clone();
+            let room = room.clone();
+            let local = self_pubkey.clone().unwrap_or_default();
+            let mut watched = controls.watched_streams.subscribe();
             async move {
-                while let Some(ev) = events.recv().await {
+                let mut consumers = tokio::task::JoinSet::new();
+                let mut consumer_handles = HashMap::new();
+                while let Some(ev) =
+                    subscriptions::next_event(&room, &local, false, &mut watched, &mut events).await
+                {
+                    while consumers.try_join_next().is_some() {}
                     match &ev {
                         RoomEvent::ParticipantConnected(p) => {
                             crate::dlog!("[voice] participant connected: {}", p.identity().0);
@@ -917,7 +948,14 @@ impl ActiveVoice {
                             participant,
                             publication,
                             ..
+                        }
+                        | RoomEvent::TrackUnpublished {
+                            participant,
+                            publication,
                         } => {
+                            if let Some(task) = consumer_handles.remove(&publication.sid()) {
+                                tokio::task::AbortHandle::abort(&task);
+                            }
                             crate::dlog!(
                                 "[voice] track unsubscribed from {}",
                                 participant.identity().0
@@ -928,6 +966,8 @@ impl ActiveVoice {
                             }
                         }
                         RoomEvent::Disconnected { reason } => {
+                            consumers.abort_all();
+                            consumer_handles.clear();
                             eprintln!("[voice] room disconnected: {reason:?}");
                             let _ = quality_tx.send(QualityMsg::Clear);
                         }
@@ -962,6 +1002,17 @@ impl ActiveVoice {
                     } = ev
                     {
                         let kind = TrackKind::of(publication.source(), &publication.name());
+                        if !subscriptions::wanted(
+                            publication.source(),
+                            &publication.name(),
+                            &participant.identity().0,
+                            &local,
+                            false,
+                            &watched.borrow(),
+                        ) {
+                            publication.set_subscribed(false);
+                            continue;
+                        }
                         if let RemoteTrack::Audio(audio) = track {
                             let stream = NativeAudioStream::new(
                                 audio.rtc_track(),
@@ -974,12 +1025,16 @@ impl ActiveVoice {
                                 let _ =
                                     native_audio_tx.send(StreamAudio::Present(identity.clone()));
                             }
-                            tokio::spawn(consume_remote_track(
+                            let task = consumers.spawn(consume_remote_track(
                                 stream,
                                 mixer_handle,
                                 identity,
                                 kind,
                             ));
+                            if let Some(previous) = consumer_handles.insert(publication.sid(), task)
+                            {
+                                previous.abort();
+                            }
                         }
                     }
                 }
@@ -988,7 +1043,6 @@ impl ActiveVoice {
             }
         });
 
-        let self_pubkey = state.peek().self_user.as_ref().map(|u| u.pubkey.clone());
         let stats_task = spawn_stats_task(
             state,
             room.clone(),
@@ -1297,6 +1351,7 @@ impl ActiveVoice {
         &mut self,
         room: Option<(String, String)>,
         mut state: Signal<AppState>,
+        controls: &AudioControls,
     ) {
         let Some(key) = room else {
             if let Some(prev) = self.screen_audio.take() {
@@ -1339,8 +1394,8 @@ impl ActiveVoice {
             self.mixer.clone(),
             self_pubkey,
             state,
-            key,
             &self.ice_servers,
+            controls.watched_streams.subscribe(),
         )
         .await
         {
@@ -2066,8 +2121,8 @@ impl ScreenAudioRoom {
         mixer: PlaybackHandle,
         self_pubkey: String,
         state: Signal<AppState>,
-        key: (String, String),
         ice_servers: &[IceServer],
+        mut watched: tokio::sync::watch::Receiver<HashSet<String>>,
     ) -> Result<Self, String> {
         let mut options = RoomOptions::default();
         options.auto_subscribe = false;
@@ -2107,42 +2162,38 @@ impl ScreenAudioRoom {
             });
         }
 
-        for (_, participant) in room.remote_participants() {
-            for (_, publication) in participant.track_publications() {
-                if wanted(
-                    &publication.source(),
-                    &participant.identity().0,
-                    &self_pubkey,
-                ) {
-                    publication.set_subscribed(true);
-                }
-            }
-        }
+        subscriptions::refresh(&room, &self_pubkey, true, &watched.borrow());
 
         let alive = Arc::new(AtomicBool::new(true));
         let event_task = tokio::spawn({
             let self_pubkey = self_pubkey.clone();
             let alive = alive.clone();
+            let room = room.clone();
             async move {
-                while let Some(ev) = events.recv().await {
+                let mut consumers = tokio::task::JoinSet::new();
+                let mut consumer_handles = HashMap::new();
+                while let Some(ev) =
+                    subscriptions::next_event(&room, &self_pubkey, true, &mut watched, &mut events)
+                        .await
+                {
+                    while consumers.try_join_next().is_some() {}
                     match ev {
-                        RoomEvent::TrackPublished {
-                            publication,
-                            participant,
-                        } => {
-                            if wanted(
-                                &publication.source(),
-                                &participant.identity().0,
-                                &self_pubkey,
-                            ) {
-                                publication.set_subscribed(true);
-                            }
-                        }
                         RoomEvent::TrackSubscribed {
                             track: RemoteTrack::Audio(audio),
                             participant,
-                            ..
+                            publication,
                         } => {
+                            if !subscriptions::wanted(
+                                publication.source(),
+                                &publication.name(),
+                                &participant.identity().0,
+                                &self_pubkey,
+                                true,
+                                &watched.borrow(),
+                            ) {
+                                publication.set_subscribed(false);
+                                continue;
+                            }
                             let identity = participant.identity().0.clone();
                             let stream = NativeAudioStream::new(
                                 audio.rtc_track(),
@@ -2150,12 +2201,16 @@ impl ScreenAudioRoom {
                                 CHANNELS as i32,
                             );
                             let _ = has_tx.send(StreamAudio::Present(identity.clone()));
-                            tokio::spawn(consume_remote_track(
+                            let task = consumers.spawn(consume_remote_track(
                                 stream,
                                 mixer.clone(),
                                 identity,
                                 TrackKind::Stream,
                             ));
+                            if let Some(previous) = consumer_handles.insert(publication.sid(), task)
+                            {
+                                previous.abort();
+                            }
                         }
                         RoomEvent::TrackUnsubscribed {
                             participant,
@@ -2166,12 +2221,17 @@ impl ScreenAudioRoom {
                             participant,
                             publication,
                         } => {
+                            if let Some(task) = consumer_handles.remove(&publication.sid()) {
+                                tokio::task::AbortHandle::abort(&task);
+                            }
                             if publication.source() == TrackSource::ScreenshareAudio {
                                 let _ = has_tx
                                     .send(StreamAudio::Gone(participant.identity().0.clone()));
                             }
                         }
                         RoomEvent::Disconnected { reason } => {
+                            consumers.abort_all();
+                            consumer_handles.clear();
                             eprintln!("[voice] screen audio room disconnected: {reason:?}");
                             alive.store(false, Ordering::Relaxed);
                             let _ = has_tx.send(StreamAudio::RoomGone);
@@ -2185,7 +2245,7 @@ impl ScreenAudioRoom {
         Ok(Self {
             room,
             event_task,
-            key,
+            key: (url.to_string(), token.to_string()),
             alive,
         })
     }
@@ -2198,11 +2258,6 @@ impl ScreenAudioRoom {
             Err(_) => eprintln!("[voice] screen audio room close timed out, dropping anyway"),
         }
     }
-}
-
-fn wanted(source: &TrackSource, publisher: &str, self_pubkey: &str) -> bool {
-    *source == TrackSource::ScreenshareAudio
-        && crate::stream_audio::identity(publisher) != self_pubkey
 }
 
 fn denoise_gate_loop(
@@ -3774,6 +3829,7 @@ async fn consume_remote_track(
         None => crate::identity::truncate_pubkey(&identity),
     };
     let track_id = handle.add_track(identity, kind);
+    let _cleanup = RemotePlaybackGuard(handle.clone(), track_id);
     let mut cap = (rate / PLAYBACK_CAP_DIVISOR) as usize;
     while let Some(frame) = stream.next().await {
         // The output stream can be reopened at a different native rate mid-call.
@@ -3827,8 +3883,15 @@ async fn consume_remote_track(
             peak_recent = 0;
         }
     }
-    handle.remove_track(track_id);
     eprintln!("[voice] remote-track {who} stream ended after {frames} frames");
+}
+
+struct RemotePlaybackGuard(PlaybackHandle, u64);
+
+impl Drop for RemotePlaybackGuard {
+    fn drop(&mut self) {
+        self.0.remove_track(self.1);
+    }
 }
 
 #[cfg(test)]
@@ -4568,10 +4631,13 @@ mod tests {
             track_gain(TrackKind::Stream, "alice#video", &gains, &streams, 100),
             0.0
         );
-        assert!(!wanted(
-            &TrackSource::ScreenshareAudio,
+        assert!(!subscriptions::wanted(
+            TrackSource::ScreenshareAudio,
+            "screen-audio",
             "alice#video",
-            "alice"
+            "alice",
+            true,
+            &HashSet::from(["alice".into()])
         ));
     }
 
@@ -4581,6 +4647,7 @@ mod tests {
         state.screen_viewing.insert("alice".into());
         state.stream_volumes.insert("alice".into(), 50);
         let controls = AudioControls::from_state(&state);
+        let mut watched = controls.watched_streams.subscribe();
         controls.sync_stream_gains(&state);
         assert_eq!(
             track_gain(
@@ -4597,6 +4664,8 @@ mod tests {
             .screen_shares
             .insert(uuid::Uuid::new_v4(), vec!["alice".into()]);
         controls.sync_stream_gains(&state);
+        assert!(watched.has_changed().unwrap());
+        assert!(watched.borrow_and_update().is_empty());
         assert_eq!(
             track_gain(
                 TrackKind::Stream,

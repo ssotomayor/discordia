@@ -1365,6 +1365,11 @@ pub fn ScreenShareBridge() -> Element {
         (s.stream_volumes.clone(), s.stream_muted.clone())
     });
     let voice_for_stream = use_voice_tx();
+    let voice_for_watches = voice_for_stream.clone();
+    use_effect(move || {
+        let _ = watching();
+        voice_for_watches.send(VoiceCmd::SyncStreamWatches);
+    });
     let mut last_gains = use_signal(Vec::<(String, f32)>::new);
     let mut last_gain_epoch = use_signal(|| None::<u64>);
     use_effect(move || {
