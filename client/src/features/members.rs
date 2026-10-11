@@ -138,7 +138,7 @@ pub fn MembersPanel() -> Element {
                 Some(t) => (
                     format!("rank-{}", t.xp),
                     format!("{} — {}", t.name, run.len()),
-                    t.emoji,
+                    Some(t.emoji),
                     run,
                 ),
                 None => (
@@ -216,7 +216,6 @@ pub fn MembersPanel() -> Element {
                             members: run,
                             voice_states: guild_voice_states.clone(),
                             on_context: on_context.clone(),
-                            rank_as_emoji: by_rank,
                         }
                     }
                     if !offline_members.is_empty() {
@@ -226,7 +225,6 @@ pub fn MembersPanel() -> Element {
                             voice_states: Vec::new(),
                             on_context: on_context.clone(),
                             collapsible: true,
-                            rank_as_emoji: by_rank,
                         }
                     }
                     if members.is_empty() {
@@ -409,7 +407,6 @@ fn Section(
     voice_states: Vec<VoiceState>,
     on_context: EventHandler<(Member, f64, f64)>,
     #[props(default)] collapsible: bool,
-    #[props(default)] rank_as_emoji: bool,
 ) -> Element {
     let guild_id = members.first().map(|m| m.guild_id);
     let mut open = use_signal(|| false);
@@ -447,7 +444,6 @@ fn Section(
                                 member: m.clone(),
                                 voice: vs,
                                 on_context,
-                                rank_as_emoji,
                             }
                         }
                     }
@@ -462,7 +458,6 @@ fn MemberRow(
     member: Member,
     voice: Option<VoiceState>,
     on_context: EventHandler<(Member, f64, f64)>,
-    #[props(default)] rank_as_emoji: bool,
 ) -> Element {
     let mut state = use_app_state();
     let is_self = state
@@ -494,26 +489,16 @@ fn MemberRow(
         (crate::features::profiles::status_color(&status), pulse)
     };
 
-    // A guild that named its ranks gets its names; one that did not gets the
-    // number it always had. `None` is "nothing worth drawing yet".
-    let rank = {
+    // A ranked member wears the rank's emoji by their name, never its name on
+    // the right; the number is only for someone below every rank.
+    let (rank_emoji, level) = {
         let rules = state.read().leveling_of(member.guild_id);
-        let hide = !rules.enabled
-            || (rules.tiers.is_empty() && crate::protocol::level_progress(member.xp).0 <= 1);
-        (!hide).then(|| {
-            (
-                rules.label_at(member.xp),
-                rules.tier_at(member.xp).and_then(|t| t.color.clone()),
-            )
-        })
+        let tier = rules.tier_at(member.xp).filter(|_| rules.enabled);
+        let lv = crate::protocol::level_progress(member.xp).0;
+        let level = (rules.enabled && tier.is_none() && (!rules.tiers.is_empty() || lv > 1))
+            .then(|| format!("Lv{lv}"));
+        (tier.map(|t| (t.emoji.clone(), t.name.clone())), level)
     };
-    let rank_emoji = state
-        .read()
-        .leveling_of(member.guild_id)
-        .tier_at(member.xp)
-        .and_then(|t| t.emoji.clone());
-    // Grouped by rank, the header already names it; the row only marks it.
-    let rank = rank.filter(|_| !rank_as_emoji);
     // An activity outranks a custom status on the one line there is room for:
     // it is the fresher fact, and it clears itself when they stop.
     let subtitle = {
@@ -554,8 +539,8 @@ fn MemberRow(
                     class: "text-sm truncate flex items-center gap-1 {name_class}",
                     title: "{member.user.pubkey}",
                     span { class: "truncate", "{member.user.username}" }
-                    if let Some(e) = rank_emoji.clone() {
-                        span { class: "shrink-0 text-[12px]", title: "Rank",
+                    if let Some((e, rank_name)) = rank_emoji.clone() {
+                        span { class: "shrink-0 text-[12px]", title: "{rank_name}",
                             crate::features::chat::EmojiText { text: e, guild_id: Some(member.guild_id), compact: true }
                         }
                     }
@@ -587,15 +572,10 @@ fn MemberRow(
             // Lv1 is where everyone starts, so on most rows the badge repeats a
             // value that separates nobody from nobody. A named rank is worth
             // drawing from the first one, because the guild chose to name it.
-            if let Some((label, color)) = rank {
+            if let Some(level) = level {
                 span {
-                    class: "text-[10px] font-semibold shrink-0 truncate max-w-40",
-                    style: match color {
-                        Some(c) => format!("color: {c};"),
-                        None => "color: var(--text-dim);".to_string(),
-                    },
-                    title: "{label}",
-                    "{label}"
+                    class: "text-[10px] font-semibold shrink-0 text-[var(--text-dim)]",
+                    "{level}"
                 }
             }
         }
@@ -716,7 +696,7 @@ mod tests {
             xp,
             name: name.into(),
             color: None,
-            emoji: Some("⭐".into()),
+            emoji: "⭐".into(),
         };
         let rules = Leveling {
             tiers: vec![tier(10, "Regular"), tier(100, "Veteran")],

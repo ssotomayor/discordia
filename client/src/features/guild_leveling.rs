@@ -212,26 +212,13 @@ fn TierEditor(draft: Signal<Leveling>, guild_id: Id) -> Element {
                     div { class: "relative shrink-0 flex items-center",
                         crate::features::channels::TopicEmojiPicker {
                             guild_id,
-                            current: t.emoji.clone(),
+                            current: Some(t.emoji.clone()),
                             title: "Emoji shown beside this rank's members",
                             on_pick: move |emoji: String| {
                                 if let Some(row) = draft.write().tiers.get_mut(i) {
-                                    row.emoji = Some(emoji);
+                                    row.emoji = emoji;
                                 }
                             },
-                        }
-                        if t.emoji.is_some() {
-                            button {
-                                r#type: "button",
-                                class: "text-[10px] text-[var(--text-dim)] hover:text-[var(--danger)] transition-colors",
-                                title: "No emoji",
-                                onclick: move |_| {
-                                    if let Some(row) = draft.write().tiers.get_mut(i) {
-                                        row.emoji = None;
-                                    }
-                                },
-                                "✕"
-                            }
                         }
                     }
                     input {
@@ -270,7 +257,7 @@ fn TierEditor(draft: Signal<Leveling>, guild_id: Id) -> Element {
                             .map(|m| m + 50)
                             .unwrap_or(0);
                         draft.write().tiers.push(LevelTier {
-                            emoji: None,
+                            emoji: crate::protocol::DEFAULT_TIER_EMOJI.to_string(),
                             xp: next_xp,
                             name: String::new(),
                             color: None,

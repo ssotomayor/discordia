@@ -345,9 +345,16 @@ pub struct LevelTier {
     pub name: String,
     #[serde(default)]
     pub color: Option<String>,
-    /// A character, or a guild emoji's `:code:`; drawn beside a member's name.
-    #[serde(default)]
-    pub emoji: Option<String>,
+    /// A character, or a guild emoji's `:code:`; drawn beside a member's name
+    /// in place of the rank's name, so every rank has one.
+    #[serde(default = "default_tier_emoji")]
+    pub emoji: String,
+}
+
+pub const DEFAULT_TIER_EMOJI: &str = "🏅";
+
+fn default_tier_emoji() -> String {
+    DEFAULT_TIER_EMOJI.to_string()
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -485,10 +492,9 @@ pub fn sanitize_leveling(mut raw: Leveling) -> Leveling {
                 xp: t.xp,
                 name,
                 color: t.color.filter(|c| is_hex_color(c)),
-                emoji: t
-                    .emoji
-                    .map(|e| sanitize_line(e.trim(), MAX_TIER_EMOJI))
-                    .filter(|e| !e.is_empty()),
+                emoji: Some(sanitize_line(t.emoji.trim(), MAX_TIER_EMOJI))
+                    .filter(|e| !e.is_empty())
+                    .unwrap_or_else(default_tier_emoji),
             })
         })
         .collect();
@@ -2540,11 +2546,36 @@ mod leveling_tests {
 
     fn tier(xp: u64, name: &str) -> LevelTier {
         LevelTier {
-            emoji: None,
+            emoji: default_tier_emoji(),
             xp,
             name: name.into(),
             color: None,
         }
+    }
+
+    #[test]
+    fn every_rank_has_an_emoji() {
+        let saved: LevelTier =
+            serde_json::from_value(serde_json::json!({ "xp": 10, "name": "Regular" })).unwrap();
+        assert_eq!(
+            saved.emoji, DEFAULT_TIER_EMOJI,
+            "a rank saved before emoji had one"
+        );
+        let l = sanitize_leveling(Leveling {
+            tiers: vec![
+                LevelTier {
+                    emoji: "  ".into(),
+                    ..tier(10, "Blank")
+                },
+                LevelTier {
+                    emoji: ":wave:".into(),
+                    ..tier(20, "Waver")
+                },
+            ],
+            ..Leveling::default()
+        });
+        assert_eq!(l.tiers[0].emoji, DEFAULT_TIER_EMOJI);
+        assert_eq!(l.tiers[1].emoji, ":wave:");
     }
 
     #[test]
@@ -2643,13 +2674,13 @@ mod leveling_tests {
         let l = sanitize_leveling(Leveling {
             tiers: vec![
                 LevelTier {
-                    emoji: None,
+                    emoji: default_tier_emoji(),
                     xp: 0,
                     name: "Fine".into(),
                     color: Some("#abc".into()),
                 },
                 LevelTier {
-                    emoji: None,
+                    emoji: default_tier_emoji(),
                     xp: 10,
                     name: "Bad".into(),
                     color: Some("red; content: evil".into()),
