@@ -126,11 +126,13 @@ peer tests use synthesized PCM and real Opus decoding without audio hardware.
 
 | Situation | Rendezvous behavior |
 |---|---|
-| App disconnects or stops answering | Removes the live listing and voice grants; retains the name reservation |
+| Host quits or is killed | Socket closes; live listing and its voice grant go at once |
+| Host loses its link or sleeps | Dropped after 60 s without a pong (pinged every 20 s) |
+| Name not live for 1 day | Reservation expires (`ReservationCaps::ttl_secs`); checked on every claim and by the hourly `sweep`, which also refreshes live names so a restart cannot expire them |
 | Coordinator restarts | Reloads reservations from disk; hosts register again |
-| Same identity reopens a name | Accepted once the earlier session has ended; hexadecimal key casing is ignored |
-| Same identity still connected | `currently in use by another session` |
+| Same identity registers a name it holds | Accepted, even while an earlier session lingers: that one gets `Superseded` and its client stops re-registering. Hexadecimal key casing is ignored |
 | Another identity requests a reserved name | `already taken — reserved by a different identity` |
+| Owner sends signed `ListNames` | Its names, live or with seconds until expiry — the Create tab's "Your names here" |
 | Owner sends signed `ReleaseName` | Removes the reservation only after the live session has ended |
 
 Name-handling fixes require updating the rendezvous service; updating only the

@@ -4,7 +4,9 @@ use std::time::Duration;
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
-use crate::protocol::rendezvous::{HostToRendezvous, RendezvousToHost, TurnCredentials};
+use crate::protocol::rendezvous::{
+    HostToRendezvous, LIST_NAMES, RendezvousToHost, ReservedName, TurnCredentials,
+};
 
 /// A token request beyond this has failed; the server bounds the join too,
 /// but a request left running would pile up behind a dead rendezvous.
@@ -224,52 +226,22 @@ pub async fn register(
     identity: &crate::identity::Identity,
 ) -> Result<(PublishInfo, ControlStream), String> {
     let base = rendezvous_url.trim_end_matches('/').to_string();
-    let control_url = format!("{base}/control");
-
-    let (mut ws, _) = tokio_tungstenite::connect_async(&control_url)
-        .await
-        .map_err(|e| format!("rendezvous control connect: {e}"))?;
-
-    let nonce = loop {
-        let frame = ws
-            .next()
-            .await
-            .ok_or_else(|| "rendezvous closed before challenge".to_string())?
-            .map_err(|e| format!("rendezvous recv: {e}"))?;
-        if let WsMessage::Text(t) = frame {
-            match serde_json::from_str::<RendezvousToHost>(&t) {
-                Ok(RendezvousToHost::Challenge { nonce }) => break nonce,
-                Ok(RendezvousToHost::Error { message }) => return Err(message),
-                _ => continue,
-            }
-        }
-    };
+    let (mut ws, nonce) = open_control(&base).await?;
 
     let (pubkey, signature) = match options.publish_name.as_deref() {
-        Some(name) => {
-            let pubkey = identity.pubkey.clone();
-            let mut msg = Vec::new();
-            msg.extend_from_slice(nonce.as_bytes());
-            msg.extend_from_slice(pubkey.as_bytes());
-            msg.extend_from_slice(name.as_bytes());
-            (Some(pubkey), Some(identity.sign_hex(&msg)))
-        }
+        Some(name) => (
+            Some(identity.pubkey.clone()),
+            Some(sign_for(identity, &nonce, name)),
+        ),
         None => (None, None),
     };
 
     let (transport_key, transport_signature, transport_addrs) = match transport {
-        Some(t) => {
-            let pk = identity.pubkey.clone();
-            let mut msg = Vec::new();
-            msg.extend_from_slice(nonce.as_bytes());
-            msg.extend_from_slice(pk.as_bytes());
-            msg.extend_from_slice(t.key.as_bytes());
-            (
-                Some(t.key.clone()),
-                Some(identity.sign_hex(&msg)),
-                t.addrs.clone(),
-            )
-        }
+        Some(t) => (
+            Some(t.key.clone()),
+            Some(sign_for(identity, &nonce, &t.key)),
+            t.addrs.clone(),
+        ),
         None => (None, None, Vec::new()),
     };
     let pubkey = pubkey.or_else(|| transport.map(|_| identity.pubkey.clone()));
@@ -324,8 +296,106 @@ pub async fn register(
                 eprintln!("[rendezvous] unexpected release confirmation for '{name}'");
                 continue;
             }
-            RendezvousToHost::Challenge { .. } | RendezvousToHost::Turn(_) => continue,
+            RendezvousToHost::Challenge { .. }
+            | RendezvousToHost::Turn(_)
+            | RendezvousToHost::Names { .. }
+            | RendezvousToHost::Superseded {} => continue,
         }
+    }
+}
+
+type ControlWs =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+async fn open_control(base: &str) -> Result<(ControlWs, String), String> {
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!("{base}/control"))
+        .await
+        .map_err(|e| format!("rendezvous control connect: {e}"))?;
+    loop {
+        match next_reply(&mut ws).await? {
+            RendezvousToHost::Challenge { nonce } => return Ok((ws, nonce)),
+            RendezvousToHost::Error { message } => return Err(message),
+            _ => continue,
+        }
+    }
+}
+
+async fn next_reply(ws: &mut ControlWs) -> Result<RendezvousToHost, String> {
+    loop {
+        let frame = ws
+            .next()
+            .await
+            .ok_or_else(|| "the rendezvous closed the connection".to_string())?
+            .map_err(|e| format!("rendezvous recv: {e}"))?;
+        if let WsMessage::Text(t) = frame {
+            return serde_json::from_str(&t).map_err(|e| format!("bad rendezvous frame: {e}"));
+        }
+    }
+}
+
+/// What the rendezvous's `verify_ownership` checks: the challenge, the key,
+/// then the thing claimed.
+fn sign_for(identity: &crate::identity::Identity, nonce: &str, claimed: &str) -> String {
+    let mut msg = Vec::new();
+    msg.extend_from_slice(nonce.as_bytes());
+    msg.extend_from_slice(identity.pubkey.as_bytes());
+    msg.extend_from_slice(claimed.as_bytes());
+    identity.sign_hex(&msg)
+}
+
+async fn one_request(
+    rendezvous_url: &str,
+    frame: impl FnOnce(String) -> HostToRendezvous,
+) -> Result<RendezvousToHost, String> {
+    let base = rendezvous_url.trim().trim_end_matches('/');
+    let (mut ws, nonce) = tokio::time::timeout(REGISTER_TIMEOUT, open_control(base))
+        .await
+        .map_err(|_| "no answer from the rendezvous".to_string())??;
+    let json = serde_json::to_string(&frame(nonce)).map_err(|e| e.to_string())?;
+    ws.send(WsMessage::Text(json))
+        .await
+        .map_err(|e| format!("rendezvous send: {e}"))?;
+    let reply = tokio::time::timeout(REGISTER_TIMEOUT, next_reply(&mut ws))
+        .await
+        .map_err(|_| "no answer from the rendezvous".to_string())??;
+    let _ = ws.close(None).await;
+    match reply {
+        RendezvousToHost::Error { message } => Err(message),
+        other => Ok(other),
+    }
+}
+
+/// The names this key holds on a rendezvous, live or counting down to expiry.
+pub async fn list_names(
+    rendezvous_url: &str,
+    identity: &crate::identity::Identity,
+) -> Result<Vec<ReservedName>, String> {
+    let reply = one_request(rendezvous_url, |nonce| HostToRendezvous::ListNames {
+        pubkey: identity.pubkey.clone(),
+        signature: sign_for(identity, &nonce, LIST_NAMES),
+    })
+    .await?;
+    match reply {
+        RendezvousToHost::Names { names } => Ok(names),
+        other => Err(format!("unexpected answer: {other:?}")),
+    }
+}
+
+/// Refused by the rendezvous while a session holds the name.
+pub async fn release_name(
+    rendezvous_url: &str,
+    identity: &crate::identity::Identity,
+    code: &str,
+) -> Result<(), String> {
+    let reply = one_request(rendezvous_url, |nonce| HostToRendezvous::ReleaseName {
+        name: code.to_string(),
+        pubkey: identity.pubkey.clone(),
+        signature: sign_for(identity, &nonce, code),
+    })
+    .await?;
+    match reply {
+        RendezvousToHost::Released { .. } => Ok(()),
+        other => Err(format!("unexpected answer: {other:?}")),
     }
 }
 
@@ -337,8 +407,15 @@ pub struct ControlStream {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HostUpdate {
-    RendezvousLost { error: String },
-    RendezvousRestored { shortcode: String },
+    Lost {
+        error: String,
+    },
+    Restored {
+        shortcode: String,
+    },
+    /// Final: the key registered the name again elsewhere, so this host stops
+    /// re-registering rather than take it back and start a tug of war.
+    Superseded,
 }
 
 /// Everything a second registration needs; the frame is signed afresh each time.
@@ -409,9 +486,15 @@ pub fn maintain(
                 };
                 match frame {
                     Some(Ok(WsMessage::Text(text))) => {
-                        if let Ok(RendezvousToHost::Turn(creds)) =
-                            serde_json::from_str::<RendezvousToHost>(&text)
-                        {
+                        let reply = serde_json::from_str::<RendezvousToHost>(&text);
+                        if let Ok(RendezvousToHost::Superseded {}) = reply {
+                            tracing::warn!(
+                                "rendezvous: this name was registered again by the same key elsewhere"
+                            );
+                            let _ = updates.send(HostUpdate::Superseded);
+                            return;
+                        }
+                        if let Ok(RendezvousToHost::Turn(creds)) = reply {
                             if let Some(sink) = &ice_sink {
                                 apply_turn(sink, &creds);
                             }
@@ -464,14 +547,14 @@ pub fn maintain(
                         turn = info.turn;
                         eprintln!("[rendezvous] registered again as {}", info.shortcode);
                         tracing::info!(shortcode = %info.shortcode, attempt, "rendezvous registration restored");
-                        let _ = updates.send(HostUpdate::RendezvousRestored {
+                        let _ = updates.send(HostUpdate::Restored {
                             shortcode: info.shortcode,
                         });
                         break control;
                     }
                     Err(error) => {
                         tracing::warn!(%error, attempt, "rendezvous re-registration failed");
-                        let _ = updates.send(HostUpdate::RendezvousLost { error });
+                        let _ = updates.send(HostUpdate::Lost { error });
                     }
                 }
             };
@@ -578,5 +661,97 @@ mod grant_tests {
         assert!(grants_match("not-a-jwt", false).is_err());
         assert!(grants_match("a.!!!.c", false).is_err());
         assert!(grants_match("a.bm90IGpzb24.c", false).is_err());
+    }
+}
+
+#[cfg(test)]
+mod name_tests {
+    use super::*;
+
+    async fn rendezvous() -> String {
+        let ctx = dioxusfun_rendezvous::AppCtx {
+            registry: Arc::new(dioxusfun_rendezvous::registry::Registry::new()),
+            config: Arc::new(dioxusfun_rendezvous::Config::default()),
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, dioxusfun_rendezvous::router(ctx))
+                .await
+                .unwrap();
+        });
+        format!("ws://{addr}")
+    }
+
+    fn named(name: &str) -> PublishOptions {
+        PublishOptions {
+            publish_name: Some(name.into()),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_name_is_listed_after_its_session_and_released_on_request() {
+        let url = rendezvous().await;
+        let me =
+            crate::identity::Identity::restore_from_private_key("44".repeat(32), "me").unwrap();
+        let (info, control) = register(&url, &named("Game Night"), None, &me)
+            .await
+            .unwrap();
+        assert_eq!(info.shortcode, "game-night");
+
+        let live = list_names(&url, &me).await.unwrap();
+        assert_eq!(live.len(), 1);
+        assert_eq!(live[0].expires_in_secs, None);
+        assert!(
+            release_name(&url, &me, "game-night").await.is_err(),
+            "a live name is not released"
+        );
+
+        drop(control);
+        let mut idle = Vec::new();
+        for _ in 0..50 {
+            idle = list_names(&url, &me).await.unwrap();
+            if idle.iter().all(|n| n.expires_in_secs.is_some()) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(idle[0].expires_in_secs.is_some());
+
+        release_name(&url, &me, "game-night").await.unwrap();
+        assert!(list_names(&url, &me).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_second_session_of_the_same_key_supersedes_the_first_for_good() {
+        let url = rendezvous().await;
+        let me =
+            crate::identity::Identity::restore_from_private_key("55".repeat(32), "me").unwrap();
+        let (_, first) = register(&url, &named("Twice"), None, &me).await.unwrap();
+        let (updates, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let task = maintain(
+            first,
+            Registration {
+                url: url.clone(),
+                options: named("Twice"),
+                transport: None,
+                identity: me.clone(),
+            },
+            None,
+            None,
+            updates,
+        );
+
+        let (info, _second) = register(&url, &named("Twice"), None, &me).await.unwrap();
+        assert_eq!(info.shortcode, "twice");
+        let update = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .unwrap();
+        assert_eq!(update, Some(HostUpdate::Superseded));
+        tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .expect("a superseded host stops re-registering")
+            .unwrap();
     }
 }

@@ -2542,6 +2542,7 @@ dependencies = [
  "chrono",
  "serde",
  "serde_json",
+ "unicode-normalization",
  "url",
  "uuid",
 ]
