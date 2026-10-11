@@ -534,6 +534,11 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
             VoiceSounds {}
             VoiceSpeakingBridge {}
             ErrorToast {}
+            if status == ConnectionStatus::Reconnecting {
+                if let Some(report) = state.read().gateway_failure.clone() {
+                    crate::features::connect::ConnectionErrorPanel { message: report }
+                }
+            }
             match leaving() {
                 Some(Leaving::Confirm(_)) => rsx! { StopHostingDialog { leaving } },
                 Some(Leaving::Running(_)) => rsx! {

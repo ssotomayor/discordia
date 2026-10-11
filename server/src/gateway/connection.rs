@@ -22,6 +22,7 @@ pub async fn handle_connection(
     let (conn_id, mut outbound_rx) = match ctx.state.register_conn(peer) {
         Ok(registered) => registered,
         Err(reason) => {
+            tracing::warn!(reason, "gateway admission refused");
             let _ = send(
                 &mut ws_tx,
                 &ServerMessage::Error {
@@ -68,7 +69,14 @@ pub async fn handle_connection(
         watch.finish(&who);
         tokio::select! {
             incoming = ws_rx.next() => {
-                let Some(Ok(msg)) = incoming else { break };
+                let msg = match incoming {
+                    Some(Ok(msg)) => msg,
+                    Some(Err(error)) => {
+                        tracing::warn!(%error, "gateway receive failed");
+                        break;
+                    }
+                    None => break,
+                };
                 last_received = tokio::time::Instant::now();
 
                 // Ahead of the parse and of the frame kinds that skip it: a
@@ -170,6 +178,7 @@ pub async fn handle_connection(
                                 .map(|e| format!("identify rejected: {e}"))
                         };
                         if let Some(message) = refused {
+                            tracing::warn!(reason = %message, "gateway identify refused");
                             let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await;
                             failed_identifies += 1;
                             if failed_identifies >= MAX_IDENTIFY_ATTEMPTS {
@@ -178,6 +187,7 @@ pub async fn handle_connection(
                             continue;
                         }
                         if let Err(message) = ctx.state.identify_conn(conn_id, &pubkey) {
+                            tracing::warn!(reason = %message, "gateway identify refused");
                             let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await;
                             failed_identifies += 1;
                             if failed_identifies >= MAX_IDENTIFY_ATTEMPTS {
@@ -187,6 +197,7 @@ pub async fn handle_connection(
                         }
                         let new_user = User { pubkey: pubkey.clone(), username };
                         if let Err(message) = ctx.state.remember_user(&new_user).await {
+                            tracing::warn!(reason = %message, "gateway user persistence failed");
                             let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await;
                             break;
                         }
@@ -199,6 +210,7 @@ pub async fn handle_connection(
                         let ready = match ready {
                             Ok(ready) => ready,
                             Err(message) => {
+                                tracing::warn!(reason = %message, "gateway snapshot failed");
                                 let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await;
                                 break;
                             }
@@ -2159,13 +2171,13 @@ const IDENTIFY_TIMEOUT: Duration = Duration::from_secs(10);
 /// Each attempt is a Schnorr verification, so an unbounded retry is CPU we hand
 /// to anyone who can open a socket.
 const MAX_IDENTIFY_ATTEMPTS: u32 = 5;
-/// Over `MAX_IMAGE_LEN` so a legal upload always fits, and far under the 64 MiB
-/// tungstenite would otherwise buffer per connection.
-pub const MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;
+/// SetProfile carries two images together, plus JSON and profile text.
+/// Keep the socket bounded while admitting both independently legal uploads.
+pub const MAX_FRAME_BYTES: usize = 2 * crate::state::MAX_IMAGE_LEN + 16_384;
 
 /// The socket enforces the cap and the handler enforces the image size, so a
 /// cap under it would kill the connection before anything could explain why.
-const _: () = assert!(MAX_FRAME_BYTES > crate::state::MAX_IMAGE_LEN);
+const _: () = assert!(MAX_FRAME_BYTES > 2 * crate::state::MAX_IMAGE_LEN);
 const _: () = assert!(MAX_FRAME_BYTES > MAX_SOUND_DATA_LEN);
 /// Under the write bar the write limiter would be dead code, and every burst
 /// would close the socket instead of slowing it.

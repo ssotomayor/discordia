@@ -172,6 +172,41 @@ async fn a_frame_under_the_cap_is_still_read() {
     );
 }
 
+#[tokio::test]
+async fn a_combined_profile_upload_reaches_the_handler() {
+    let (url, _h) = spawn_gateway().await;
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url)
+        .await
+        .expect("connect");
+    let image = "x".repeat(dioxusfun_server::state::MAX_IMAGE_LEN);
+    let profile = ClientMessage::SetProfile {
+        avatar: Some(image.clone()),
+        banner: Some(image),
+        bio: None,
+        status: None,
+        custom_status: None,
+    };
+    ws.send(WsMessage::Text(serde_json::to_string(&profile).unwrap()))
+        .await
+        .expect("send profile");
+    let answered = tokio::time::timeout(Duration::from_secs(5), async {
+        while let Some(Ok(msg)) = ws.next().await {
+            if let WsMessage::Text(text) = msg
+                && text.contains("identify first")
+            {
+                return true;
+            }
+        }
+        false
+    })
+    .await;
+    assert_eq!(
+        answered,
+        Ok(true),
+        "two image fields must reach admission and image validation without closing the socket"
+    );
+}
+
 /// A socket dropped for a full queue leaves through a different door than one
 /// that closed; both have to give the address its slot back, or a LAN behind
 /// one NAT is locked out a socket at a time.

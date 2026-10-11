@@ -78,7 +78,11 @@ pub fn spawn_gateway(
         tracing::warn!(%reason, transport = ?state.peek().transport, "gateway session ended");
         state.write().status = ConnectionStatus::Disconnected;
         let _ = voice_tx.send(VoiceCmd::Disconnect { done: None });
-        on_disconnect(reason);
+        let report = {
+            let s = state.peek();
+            gateway_failure_report(&reason, s.server_origin.as_ref().map(|_| s.transport))
+        };
+        on_disconnect(report);
         done_tx.send_replace(true);
     });
 
@@ -357,6 +361,16 @@ async fn run(
                         if outcome.is_err() {
                             tracing::warn!(close_reason = ?guard.close_reason(), relayed = guard.relayed(), "gateway QUIC session failed");
                         }
+                        let outcome = outcome.map_err(|error| {
+                            format!(
+                                "{error}\nQUIC close: {}\nRelayed: {}",
+                                guard
+                                    .close_reason()
+                                    .map(|reason| reason.to_string())
+                                    .unwrap_or_else(|| "not received".into()),
+                                guard.relayed()
+                            )
+                        });
                         if tokio::time::timeout(std::time::Duration::from_secs(1), guard.shutdown())
                             .await
                             .is_err()
@@ -379,7 +393,13 @@ async fn run(
             failures = 0;
         }
         let reason = outcome.err().unwrap_or_else(|| "connection closed".into());
-        state.write().status = ConnectionStatus::Reconnecting;
+        {
+            let mut s = state.write();
+            s.status = ConnectionStatus::Reconnecting;
+            if s.gateway_failure.is_none() {
+                s.gateway_failure = Some(gateway_failure_report(&reason, Some(s.transport)));
+            }
+        }
         tracing::warn!(%reason, "gateway lost; reconnecting in place");
         let delay = reconnect_delay(failures);
         failures = failures.saturating_add(1);
@@ -524,6 +544,7 @@ where
                 .map_err(|e| format!("bad server frame before Hello: {e}"))?;
             match parsed {
                 ServerMessage::Hello { nonce } => break Ok::<_, String>(nonce),
+                ServerMessage::Error { message } => return Err(format!("gateway admission: {message}")),
                 other => return Err(format!("expected Hello, got {other:?}")),
             }
         }
@@ -544,7 +565,19 @@ where
         client_version: crate::version::VERSION.to_string(),
     };
     let json = serde_json::to_string(&identify).map_err(|e| e.to_string())?;
-    gateway_send(&mut ws_tx, WsMessage::Text(json)).await?;
+    gateway_send(&mut ws_tx, &mut ws_rx, WsMessage::Text(json), "identify").await?;
+
+    // Read an admission refusal before another write can hide it behind QUIC STOP_SENDING.
+    let admitted = tokio::select! {
+        _ = shutdown.wait_for(|requested| *requested) => {
+            close_gateway_socket(&mut ws_tx, &mut ws_rx).await;
+            return Ok(());
+        }
+        admitted = gateway_ready(&mut ws_rx) => admitted.map_err(|reason| format!("gateway admission: {reason}"))?,
+    };
+    while rx.try_recv().is_ok() {}
+    state.write().gateway_failure = None;
+    apply(&mut state, admitted, tx, voice_tx);
 
     // A link saved by an older build would be refused now and take the whole
     // profile with it, so it is dropped here rather than sent.
@@ -565,7 +598,13 @@ where
             custom_status: local.custom_status,
         };
         if let Ok(json) = serde_json::to_string(&set_profile) {
-            gateway_send(&mut ws_tx, WsMessage::Text(json)).await?;
+            gateway_send(
+                &mut ws_tx,
+                &mut ws_rx,
+                WsMessage::Text(json),
+                "profile sync",
+            )
+            .await?;
         }
     }
 
@@ -575,8 +614,6 @@ where
     let mut heartbeat = tokio::time::interval(crate::protocol::GATEWAY_HEARTBEAT_INTERVAL);
     let mut route_tick = tokio::time::interval(std::time::Duration::from_secs(5));
     let mut last_received = tokio::time::Instant::now();
-    let ready_deadline = last_received + crate::protocol::GATEWAY_HEARTBEAT_TIMEOUT;
-    let mut ready = false;
     let media_updates = state.peek().emoji_images.updates();
     loop {
         watch.finish("session");
@@ -601,16 +638,10 @@ where
                 break;
             }
             _ = heartbeat.tick() => {
-                if !ready && tokio::time::Instant::now() >= ready_deadline {
-                    return Err("the host did not accept the session before the deadline".into());
-                }
                 if last_received.elapsed() >= crate::protocol::GATEWAY_HEARTBEAT_TIMEOUT {
                     return Err("the host stopped answering heartbeat probes".into());
                 }
-                tokio::time::timeout(crate::protocol::GATEWAY_HEARTBEAT_INTERVAL,
-                    ws_tx.send(WsMessage::Ping(Vec::new()))).await
-                    .map_err(|_| "gateway heartbeat send timed out".to_string())?
-                    .map_err(|e| format!("gateway heartbeat: {e}"))?;
+                gateway_send(&mut ws_tx, &mut ws_rx, WsMessage::Ping(Vec::new()), "heartbeat").await?;
             }
             update = async {
                 match host_updates.as_mut() {
@@ -626,10 +657,6 @@ where
             }
             outbound = rx.recv() => {
                 let Some(msg) = outbound else { break };
-                if !ready {
-                    state.write().error_toast = Some("The server is reconnecting. Please try this action again once connected.".into());
-                    continue;
-                }
                 let json = serde_json::to_string(&msg).map_err(|e| e.to_string())?;
                 match &msg {
                     ClientMessage::JoinVoice { channel_id, .. } => {
@@ -642,7 +669,8 @@ where
                 }
                 tracing::debug!(op = op_of(&json), "→ gateway");
                 watch.begin(format!("send {}", op_of(&json)));
-                gateway_send(&mut ws_tx, WsMessage::Text(json)).await?;
+                let operation = op_of(&json).to_string();
+                gateway_send(&mut ws_tx, &mut ws_rx, WsMessage::Text(json), &operation).await?;
             }
             _ = media_tick.tick() => {
                 watch.begin("media tick");
@@ -665,7 +693,7 @@ where
                 let text = match frame {
                     WsMessage::Text(t) => t.to_string(),
                     WsMessage::Ping(payload) => {
-                        gateway_send(&mut ws_tx, WsMessage::Pong(payload)).await?;
+                        gateway_send(&mut ws_tx, &mut ws_rx, WsMessage::Pong(payload), "pong").await?;
                         continue;
                     }
                     // A host that stops on purpose says so in the close frame;
@@ -685,10 +713,6 @@ where
                         continue;
                     }
                 };
-                if matches!(parsed, ServerMessage::Ready { .. }) {
-                    while rx.try_recv().is_ok() {}
-                    ready = true;
-                }
                 apply(&mut state, parsed, tx, voice_tx);
             }
         }
@@ -697,6 +721,36 @@ where
     tracing::info!("session loop ended");
 
     Ok(())
+}
+
+async fn gateway_ready<R>(rx: &mut R) -> Result<ServerMessage, String>
+where
+    R: futures_util::Stream<Item = Result<WsMessage, tokio_tungstenite::tungstenite::Error>>
+        + Unpin,
+{
+    tokio::time::timeout(crate::protocol::GATEWAY_HEARTBEAT_TIMEOUT, async {
+        while let Some(frame) = rx.next().await {
+            match frame.map_err(|e| format!("gateway admission: {e}"))? {
+                WsMessage::Text(text) => {
+                    let message: ServerMessage = serde_json::from_str(&text)
+                        .map_err(|e| format!("bad server frame before Ready: {e}"))?;
+                    match message {
+                        ready @ ServerMessage::Ready { .. } => return Ok(ready),
+                        ServerMessage::Error { message } => return Err(message),
+                        other => return Err(format!("expected Ready, got {other:?}")),
+                    }
+                }
+                WsMessage::Close(Some(frame)) if !frame.reason.is_empty() => {
+                    return Err(frame.reason.to_string());
+                }
+                WsMessage::Close(_) => break,
+                _ => {}
+            }
+        }
+        Err("the host closed the connection before accepting the session".into())
+    })
+    .await
+    .map_err(|_| "the host did not accept the session before the deadline".to_string())?
 }
 
 async fn close_gateway_socket<T, R>(tx: &mut T, rx: &mut R)
@@ -729,6 +783,112 @@ where
 mod graceful_shutdown_tests {
     use super::*;
     use tokio_tungstenite::{WebSocketStream, tungstenite::protocol::Role};
+
+    #[tokio::test]
+    async fn gateway_admission_preserves_the_rejection_before_peer_shutdown() {
+        let (client, server) = tokio::io::duplex(4096);
+        let mut client = WebSocketStream::from_raw_socket(client, Role::Client, None).await;
+        let mut server = WebSocketStream::from_raw_socket(server, Role::Server, None).await;
+        let refusal = ServerMessage::Error {
+            message: "identify rejected: wrong origin".into(),
+        };
+        server
+            .send(WsMessage::Text(serde_json::to_string(&refusal).unwrap()))
+            .await
+            .unwrap();
+        server.send(WsMessage::Close(None)).await.unwrap();
+        drop(server);
+        assert_eq!(
+            gateway_ready(&mut client).await.unwrap_err(),
+            "identify rejected: wrong origin"
+        );
+    }
+
+    #[tokio::test]
+    async fn gateway_admission_requires_ready_and_reports_early_disconnect() {
+        let ready: ServerMessage = serde_json::from_value(serde_json::json!({
+            "op": "ready", "d": { "user": {"pubkey": "alice", "username": "Alice"},
+                "guilds": [], "channels": [], "members": [], "voice_states": [] }
+        }))
+        .unwrap();
+        let mut frames = futures_util::stream::iter([Ok(WsMessage::Text(
+            serde_json::to_string(&ready).unwrap(),
+        ))]);
+        assert!(matches!(
+            gateway_ready(&mut frames).await.unwrap(),
+            ServerMessage::Ready { .. }
+        ));
+        let mut frames = futures_util::stream::empty();
+        assert_eq!(
+            gateway_ready(&mut frames).await.unwrap_err(),
+            "the host closed the connection before accepting the session"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_gateway_send_keeps_peer_reasons_and_payload_metadata() {
+        let refusal = ServerMessage::Error {
+            message: "avatar: invalid image".into(),
+        };
+        let frames = [
+            WsMessage::Text(serde_json::to_string(&refusal).unwrap()),
+            WsMessage::Close(Some(tokio_tungstenite::tungstenite::protocol::CloseFrame {
+                code: tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Policy,
+                reason: "server restarting".into(),
+            })),
+        ];
+        for (frame, expected) in frames
+            .into_iter()
+            .zip(["avatar: invalid image", "server restarting"])
+        {
+            let mut sink = Box::pin(futures_util::sink::unfold((), |(), _: WsMessage| async {
+                Err::<(), _>("IO error: sending stopped by peer: error 0")
+            }));
+            let mut inbound = futures_util::stream::iter([Ok(frame)]);
+            let error = gateway_send(
+                &mut sink,
+                &mut inbound,
+                WsMessage::Text("private-image-data".into()),
+                "profile sync",
+            )
+            .await
+            .unwrap_err();
+            assert!(error.contains(expected));
+            assert!(error.contains("Operation: profile sync"));
+            assert!(error.contains("Message size: 18 bytes"));
+            assert!(!error.contains("private-image-data"));
+            let report = gateway_failure_report(&error, Some(Transport::Quic));
+            assert!(report.contains(&format!("Reason reported by the server: {expected}")));
+            assert!(report.contains(crate::version::VERSION));
+            assert!(report.contains("Time (UTC):"));
+            assert!(report.contains("Transport: Quic"));
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_gateway_send_bounds_waiting_for_an_unknown_peer_reason() {
+        let mut sink = Box::pin(futures_util::sink::unfold((), |(), _: WsMessage| async {
+            Err::<(), _>("IO error: sending stopped by peer: error 0")
+        }));
+        let mut inbound = futures_util::stream::pending();
+        let error = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            gateway_send(
+                &mut sink,
+                &mut inbound,
+                WsMessage::Ping(Vec::new()),
+                "heartbeat",
+            ),
+        )
+        .await
+        .expect("peer cannot stall reporting")
+        .unwrap_err();
+        assert!(error.contains("Server reason: not received"));
+        assert!(error.contains("Operation: heartbeat"));
+        let report = gateway_failure_report(&error, Some(Transport::Quic));
+        assert!(report.contains("does not explain why"));
+        assert!(report.contains("No readable server reason was received"));
+    }
 
     #[tokio::test]
     async fn quitting_cancels_both_a_pending_connection_and_reconnect_backoff() {
@@ -809,18 +969,88 @@ mod graceful_shutdown_tests {
     }
 }
 
-async fn gateway_send<S>(sink: &mut S, frame: WsMessage) -> Result<(), String>
+async fn gateway_send<S, R>(
+    sink: &mut S,
+    rx: &mut R,
+    frame: WsMessage,
+    operation: &str,
+) -> Result<(), String>
 where
     S: futures_util::Sink<WsMessage> + Unpin,
     S::Error: std::fmt::Display,
+    R: futures_util::Stream<Item = Result<WsMessage, tokio_tungstenite::tungstenite::Error>>
+        + Unpin,
 {
-    tokio::time::timeout(
+    let bytes = frame.len();
+    let result = tokio::time::timeout(
         crate::protocol::GATEWAY_HEARTBEAT_INTERVAL,
         sink.send(frame),
     )
-    .await
-    .map_err(|_| "gateway send timed out".to_string())?
-    .map_err(|error| format!("gateway send: {error}"))
+    .await;
+    let result = match result {
+        Ok(sent) => sent.map_err(|error| format!("gateway send: {error}")),
+        Err(_) => Err("gateway send timed out".into()),
+    };
+    if let Err(error) = result {
+        // A peer may have sent its refusal just before stopping our writes.
+        let peer_reason = tokio::time::timeout(std::time::Duration::from_millis(300), async {
+            while let Some(Ok(frame)) = rx.next().await {
+                match frame {
+                    WsMessage::Text(text) => {
+                        if let Ok(ServerMessage::Error { message }) = serde_json::from_str(&text) {
+                            return Some(message);
+                        }
+                    }
+                    WsMessage::Close(Some(frame)) if !frame.reason.is_empty() => {
+                        return Some(frame.reason.to_string());
+                    }
+                    WsMessage::Close(_) => break,
+                    _ => {}
+                }
+            }
+            None
+        })
+        .await
+        .ok()
+        .flatten();
+        return Err(format!(
+            "{error}\nOperation: {operation}\nMessage size: {bytes} bytes\nServer reason: {}",
+            peer_reason.as_deref().unwrap_or("not received")
+        ));
+    }
+    Ok(())
+}
+
+fn gateway_failure_report(reason: &str, transport: Option<Transport>) -> String {
+    let server_reason = reason
+        .lines()
+        .find_map(|line| line.strip_prefix("Server reason: "))
+        .filter(|reason| *reason != "not received");
+    let explanation = if let Some(server_reason) = server_reason {
+        format!("The server ended the connection. Reason reported by the server: {server_reason}")
+    } else if let Some(admission) = reason.strip_prefix("gateway admission:") {
+        format!(
+            "The server did not accept the session: {}",
+            admission.lines().next().unwrap_or(admission).trim()
+        )
+    } else if reason.contains("sending stopped by peer") {
+        "The server stopped accepting data and the connection ended. Error 0 is a transport code; it does not explain why. No readable server reason was received. The server owner can check their logs at the time shown below.".into()
+    } else {
+        format!(
+            "The connection to the server ended: {}",
+            reason.lines().next().unwrap_or(reason)
+        )
+    };
+    let transport = transport
+        .map(|transport| format!("{transport:?}"))
+        .unwrap_or_else(|| "not established".into());
+    format!(
+        "{explanation}\n\nCopy these details and send them to the server owner:\nError: {reason}\nDiscordia: {}\nPlatform: {} / {}\nTransport: {transport}\nTime (UTC): {}",
+        crate::version::VERSION,
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        chrono::Utc::now().to_rfc3339()
+    )
 }
 
 /// Stable, so roles written before positions were kept apart stay in the

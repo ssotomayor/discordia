@@ -20,13 +20,13 @@ name instead.
 | `client/src/features/voice.rs` | 4895 |
 | `server/src/state/mod.rs` | 3199 |
 | `server/tests/owner_controls.rs` | 3117 |
-| `server/src/gateway/connection.rs` | 3078 |
+| `server/src/gateway/connection.rs` | 3090 |
 | `client/src/features/channels.rs` | 2153 |
 | `client/src/features/screenshare.rs` | 3236 |
 | `protocol/src/lib.rs` | 2883 |
-| `client/src/state.rs` | 2293 |
+| `client/src/state.rs` | 2296 |
 | `client/src/update.rs` | 1228 |
-| `client/src/net.rs` | 2165 |
+| `client/src/net.rs` | 2395 |
 | `client/src/features/chat.rs` | 2391 |
 | `server/src/store.rs` | 1357 |
 | `client/src/features/guild_settings.rs` | 1135 |
@@ -95,6 +95,7 @@ that direction says a file is safe to open when it is not.
 | Notification and UI sounds | `client/src/native_sounds.rs`, `client/src/features/sounds.rs` | Rust synthesizes/caches 19 tones; a bounded worker owns CPAL output on the selected device, mixes overlapping sounds and closes/pauses after 1.5 s idle. `MessageSounds` tracks DM/channel ticks and volume/output settings on home and workspace; audio callbacks neither allocate nor block. Session-owned `CallAlert` repeats distinct incoming/outgoing DM rings every 3 s, cancels queued/playing rings on phase changes and plays connection/end cues. Audio settings expose separate persisted App sounds/Soundboard controls and a native app-sound preview |
 | Camera capture and publication | `client/src/syscamera.rs`, `client/src/features/voice_camera.rs`, `client/src/features/camera.rs` | Windows camera enumeration/capture uses WebRTC through a small C++ bridge; Rust owns the COM worker, validated I420 copies, first-frame/stall checks and publication. `NativeVideoRoom` shares `#video` with the screen, stopping tracks independently; the WebView renders previews/viewers. macOS/Linux retain browser camera capture |
 | Keys on this machine | `client/src/identity.rs` | `detected` / `sign_in` / `forget`; one file per key under `identities_dir()` (default `config_dir()/identities/`, `identities-dir` overrides), `identity.json` names the active one |
+| Gateway admission and diagnostics | `client/src/net.rs`, `client/src/features/connect.rs`, `client/src/features/workspace.rs`, `server/src/gateway/connection.rs` | `gateway_ready` waits for admission before profile/heartbeat writes. Failed sends recover buffered server reasons; `ConnectionErrorPanel` copies version, platform, UTC time, transport, operation and payload size. Reconnects retain their first failure until Ready. Socket cap admits two image fields; server warnings retain refusals and receive failures |
 | Keys at rest | `client/src/keyvault.rs` | NIP-49 `ncryptsec` under a random passphrase; `seal`/`unseal` hold the phrase's entropy beside it; `backend()` picks keychain or `vault.key` once and `vault.backend` remembers (trap 23) |
 | Seeing the phrase again | `client/src/features/connect.rs` | `RecoveryPhrase` on `IdentityCard` — reveal, confirm, hides after a minute; only the home screen mounts the card |
 | Actual chat and voice connection routes | `client/src/connection_routes.rs`, `client/src/quic.rs`, `client/src/features/workspace.rs` | `watch_route` follows selected QUIC paths; `selected_media_route` follows selected WebRTC pairs, separate from signaling. Click Voice for local and same-channel caller reports. `ConnectionRouteReport` carries labels only; the gateway checks membership and label vocabulary before forwarding. Every decision on the way logs a `voice route:` line (host plan, offered addresses, grant issued/received, each endpoint tried, caller reports, the move to shared voice, the selected ICE pair): `grep 'voice route:' <config dir>/logs/discordia.log` on host and caller follows one call end to end. |
