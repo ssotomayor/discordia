@@ -27,9 +27,10 @@ impl AppState {
             self.channels.get(&id).is_some_and(|channel| {
                 self.is_guild_member(channel.guild_id, pubkey)
                     && self.can_see_channel(pubkey, &channel)
-                    && self
-                        .effective_permissions(channel.guild_id, pubkey)
-                        .contains(&Permission::ReadMessageHistory)
+                    && (self.bot_install(channel.guild_id, pubkey).is_none()
+                        || self
+                            .effective_permissions(channel.guild_id, pubkey)
+                            .contains(&Permission::ReadMessageHistory))
             })
         })
     }
@@ -37,7 +38,7 @@ impl AppState {
         &self,
         channel_id: Id,
         user: &User,
-        permission: Permission,
+        permission: Option<Permission>,
     ) -> Result<Id, String> {
         let channel = self
             .channels
@@ -49,12 +50,21 @@ impl AppState {
         {
             return Err("you don't have access to that channel".into());
         }
-        self.require_permission(channel.guild_id, &user.pubkey, permission)?;
+        if let Some(permission) = permission {
+            self.require_permission(channel.guild_id, &user.pubkey, permission)?;
+        } else if self.bot_install(channel.guild_id, &user.pubkey).is_some() {
+            self.require_permission(channel.guild_id, &user.pubkey, Permission::SendMessages)?;
+        }
         Ok(channel.guild_id)
     }
 
-    fn chat_send_allowed(&self, channel_id: Id, user: &User) -> Result<Id, String> {
-        let gid = self.chat_channel(channel_id, user, Permission::SendMessages)?;
+    fn chat_send_allowed(
+        &self,
+        channel_id: Id,
+        user: &User,
+        permission: Option<Permission>,
+    ) -> Result<Id, String> {
+        let gid = self.chat_channel(channel_id, user, permission)?;
         let perms = self.effective_permissions(gid, &user.pubkey);
         let exempt = perms.contains(&Permission::ManageMessages)
             || perms.contains(&Permission::ManageChannels);
@@ -114,7 +124,7 @@ impl AppState {
                 mut query,
                 offset,
             } => {
-                self.chat_channel(channel_id, user, Permission::ReadMessageHistory)?;
+                self.chat_channel(channel_id, user, Some(Permission::ReadMessageHistory))?;
                 if query.text.len() > 200
                     || query
                         .author
@@ -141,7 +151,7 @@ impl AppState {
                 pinned,
             } => {
                 let _write = self.durable_writes.lock().await;
-                let gid = self.chat_channel(channel_id, user, Permission::ManageMessages)?;
+                let gid = self.chat_channel(channel_id, user, Some(Permission::ManageMessages))?;
                 if pinned {
                     let pins = self
                         .store
@@ -185,7 +195,7 @@ impl AppState {
                 content,
                 reply_to,
             } => {
-                let gid = self.chat_send_allowed(channel_id, user)?;
+                let gid = self.chat_send_allowed(channel_id, user, None)?;
                 let _write = self.durable_writes.lock().await;
                 let policy = self
                     .store
@@ -331,7 +341,8 @@ impl AppState {
                 channel_id,
                 sticker_id,
             } => {
-                let gid = self.chat_send_allowed(channel_id, user)?;
+                let gid =
+                    self.chat_send_allowed(channel_id, user, Some(Permission::SendMessages))?;
                 let sticker = self
                     .store
                     .stickers(gid)

@@ -1762,13 +1762,7 @@ fn Composer(
         .iter()
         .find(|channel| channel.id == channel_id)
         .map(|channel| channel.guild_id)
-        .filter(|guild| {
-            !is_dm
-                && state.read().server_chat_tools
-                && state
-                    .read()
-                    .can(*guild, crate::protocol::Permission::SendMessages)
-        });
+        .filter(|_| !is_dm && state.read().server_chat_tools);
     let mut emoji_menu = use_signal(|| None::<EmojiMenuTarget>);
     use_saved_emoji_pictures();
     let (guild_emojis, emoji_urls) = guild_emojis_of(&state.read(), channel_id);
