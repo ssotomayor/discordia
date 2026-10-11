@@ -2283,10 +2283,10 @@ impl AppState {
     pub fn join_requirements(
         &self,
         guild_id: Id,
-    ) -> Option<(crate::protocol::JoinGate, Option<String>, bool)> {
+    ) -> Option<(String, crate::protocol::JoinGate, Option<String>, bool)> {
         self.guilds
             .get(&guild_id)
-            .map(|g| (g.join_gate, g.rules.clone(), g.panic_mode))
+            .map(|g| (g.name.clone(), g.join_gate, g.rules.clone(), g.panic_mode))
     }
 
     pub async fn note_join_and_maybe_panic(&self, guild_id: Id) -> Option<Guild> {

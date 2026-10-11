@@ -1605,6 +1605,15 @@ fn solve_pow(challenge: &str, bits: u32) -> String {
 
 #[tokio::test]
 async fn rules_gate_requires_accept() {
+    assert_rules_gate_requires_accept(false).await;
+}
+
+#[tokio::test]
+async fn invite_rules_challenge_carries_the_guild_name_and_preserves_the_invite() {
+    assert_rules_gate_requires_accept(true).await;
+}
+
+async fn assert_rules_gate_requires_accept(by_invite: bool) {
     let (url, handle) = spawn_gateway().await;
     let owner_id = BotIdentity::generate();
     let (mut owner, _) = connect_user(&url, &owner_id, "Owner").await;
@@ -1627,34 +1636,60 @@ async fn rules_gate_requires_accept() {
         }
     }
 
+    let invite = if by_invite {
+        owner
+            .send(&ClientMessage::CreateInvite {
+                guild_id,
+                rotate: false,
+                expires_in_secs: None,
+                max_uses: None,
+            })
+            .await
+            .unwrap();
+        Some(loop {
+            if let ServerMessage::GuildInvite { code, .. } = next_timeout(&mut owner).await {
+                break code;
+            }
+        })
+    } else {
+        None
+    };
+    let join = |accept| match &invite {
+        Some(code) => ClientMessage::JoinByInvite {
+            code: code.clone(),
+            accept,
+            pow_nonce: None,
+        },
+        None => ClientMessage::JoinGuild {
+            guild_id,
+            accept,
+            pow_nonce: None,
+        },
+    };
     let joiner_id = BotIdentity::generate();
     let (mut joiner, _) = connect_user(&url, &joiner_id, "Joiner").await;
-    joiner
-        .send(&ClientMessage::JoinGuild {
-            guild_id,
-            accept: false,
-            pow_nonce: None,
-        })
-        .await
-        .unwrap();
+    joiner.send(&join(false)).await.unwrap();
     let challenge = loop {
         match next_timeout(&mut joiner).await {
-            ServerMessage::JoinChallenge { gate, rules, .. } => break (gate, rules),
+            ServerMessage::JoinChallenge {
+                gate,
+                rules,
+                guild_name,
+                invite_code,
+                ..
+            } => {
+                assert_eq!(invite_code, invite);
+                break (gate, rules, guild_name);
+            }
             ServerMessage::GuildJoined { .. } => panic!("joined without accepting"),
             _ => {}
         }
     };
     assert_eq!(challenge.0, JoinGate::Rules);
     assert_eq!(challenge.1.as_deref(), Some("Be nice."));
+    assert_eq!(challenge.2.as_deref(), Some("Gated"));
 
-    joiner
-        .send(&ClientMessage::JoinGuild {
-            guild_id,
-            accept: true,
-            pow_nonce: None,
-        })
-        .await
-        .unwrap();
+    joiner.send(&join(true)).await.unwrap();
     loop {
         if matches!(
             next_timeout(&mut joiner).await,

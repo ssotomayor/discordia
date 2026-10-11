@@ -265,6 +265,9 @@ impl Identity {
             .find(|f| f.pubkey == pubkey)
             .ok_or_else(|| "that identity is no longer on this machine".to_string())?;
         let identity = Self::from_file(&found.path)?;
+        if identity.pubkey != pubkey {
+            return Err("that identity's key changed; select it again".into());
+        }
         identity.save()?;
         Ok(identity)
     }
@@ -402,12 +405,19 @@ fn collect_from(dir: &Path, out: &mut Vec<FoundIdentity>) {
             tracing::warn!(path = %path.display(), reason, "key file skipped");
             continue;
         }
-        if out.iter().any(|f| f.pubkey == stored.pubkey) {
+        let identity = match Identity::from_stored(stored) {
+            Ok(identity) => identity,
+            Err(e) => {
+                tracing::warn!(path = %path.display(), error = %e, "identity key could not be opened");
+                continue;
+            }
+        };
+        if out.iter().any(|f| f.pubkey == identity.pubkey) {
             continue;
         }
         out.push(FoundIdentity {
-            pubkey: stored.pubkey,
-            display_name: stored.display_name,
+            pubkey: identity.pubkey,
+            display_name: identity.display_name,
             path,
         });
     }
@@ -730,6 +740,86 @@ fn derive_nip06(seed: &[u8]) -> Result<SecretKey, String> {
 #[cfg(test)]
 mod store_tests {
     use super::*;
+
+    #[test]
+    fn detected_encrypted_keys_ignore_claimed_pubkeys_and_deduplicate_by_secret() {
+        let root = sandbox("claimed-encrypted-key");
+        let id = Identity::restore_from_private_key("22".repeat(32), "actual").unwrap();
+        id.save().unwrap();
+        sign_out().unwrap();
+        let mut stored: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(id.key_path()).unwrap()).unwrap();
+        stored["pubkey"] = serde_json::json!("ab".repeat(32));
+        std::fs::write(id.key_path(), stored.to_string()).unwrap();
+        stored["pubkey"] = serde_json::json!("cd".repeat(32));
+        std::fs::write(root.join("backup.json"), stored.to_string()).unwrap();
+
+        let found = detected();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].pubkey, id.pubkey);
+        assert_eq!(found[0].path, id.key_path());
+        assert!(Identity::sign_in(&"ab".repeat(32)).is_err());
+        assert_eq!(Identity::sign_in(&found[0].pubkey).unwrap().pubkey, id.pubkey);
+    }
+
+    #[test]
+    fn detected_plaintext_keys_derive_both_nsec_and_phrase_pubkeys() {
+        let root = sandbox("claimed-plaintext-key");
+        let key = Identity::restore_from_private_key("22".repeat(32), "key").unwrap();
+        let phrase_id = Identity::create("phrase").unwrap();
+        let IdentitySource::Phrase(phrase) = &phrase_id.source else {
+            panic!("expected phrase")
+        };
+        for (name, secret) in [
+            ("key", serde_json::json!({"nsec": "22".repeat(32)})),
+            ("phrase", serde_json::json!({"seed_phrase": phrase})),
+        ] {
+            let mut stored = serde_json::json!({
+                "version": 1, "display_name": name, "pubkey": "ab".repeat(32),
+            });
+            stored
+                .as_object_mut()
+                .unwrap()
+                .extend(secret.as_object().unwrap().clone());
+            std::fs::write(root.join(format!("{name}.json")), stored.to_string()).unwrap();
+        }
+        let found = detected();
+        assert_eq!(found.len(), 2);
+        assert!(found.iter().any(|f| f.pubkey == key.pubkey));
+        assert!(found.iter().any(|f| f.pubkey == phrase_id.pubkey));
+        for row in found {
+            assert_eq!(Identity::sign_in(&row.pubkey).unwrap().pubkey, row.pubkey);
+        }
+    }
+
+    #[test]
+    fn unreadable_secrets_cannot_shadow_a_valid_identity() {
+        let root = sandbox("unreadable-key");
+        let id = Identity::restore_from_private_key("22".repeat(32), "valid").unwrap();
+        id.save().unwrap();
+        std::fs::write(
+            root.join("identities/broken.json"),
+            serde_json::json!({
+                "version": 2, "display_name": "broken", "pubkey": id.pubkey,
+                "ncryptsec": "ncryptsec1invalid",
+            })
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("invalid.json"),
+            serde_json::json!({
+                "version": 1, "display_name": "invalid", "pubkey": "ab".repeat(32),
+                "nsec": "00".repeat(32),
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let found = detected();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].pubkey, id.pubkey);
+        assert_eq!(found[0].display_name, "valid");
+    }
 
     /// Every test gets its own config root on its own thread, so the folder
     /// scan sees only what the test put there.

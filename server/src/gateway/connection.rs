@@ -2907,7 +2907,7 @@ fn check_join_gate(
     if state.is_guild_member(guild_id, pubkey) {
         return Gate::Proceed;
     }
-    let Some((gate, rules, panic)) = state.join_requirements(guild_id) else {
+    let Some((guild_name, gate, rules, panic)) = state.join_requirements(guild_id) else {
         return Gate::Proceed; // unknown guild — the join call will 404
     };
     if panic {
@@ -2921,6 +2921,7 @@ fn check_join_gate(
             } else {
                 Gate::Challenge(ServerMessage::JoinChallenge {
                     guild_id,
+                    guild_name: Some(guild_name),
                     gate,
                     rules,
                     pow_challenge: None,
@@ -2939,6 +2940,7 @@ fn check_join_gate(
             } else {
                 Gate::Challenge(ServerMessage::JoinChallenge {
                     guild_id,
+                    guild_name: Some(guild_name),
                     gate,
                     rules: None,
                     pow_challenge: Some(challenge),
@@ -2988,6 +2990,57 @@ mod tests {
         MAX_CLIENT_VERSION_BYTES, RATE_WINDOW, RateLimiter, WRITE_LIMIT, sanitize_client_version,
     };
     use std::time::{Duration, Instant};
+
+    #[tokio::test]
+    async fn invite_challenges_carry_the_guild_name_for_rules_and_pow() {
+        use crate::media::{DEFAULT_MAX_BYTES, MediaStore};
+        use crate::protocol::{JoinGate, ServerMessage, User};
+        use crate::state::AppState;
+        use crate::store::Store;
+
+        let dir =
+            std::env::temp_dir().join(format!("discordia-join-name-{}", uuid::Uuid::new_v4()));
+        let store = Store::open_in(&dir).await.unwrap();
+        let media = MediaStore::open(dir.join("media"), DEFAULT_MAX_BYTES).unwrap();
+        let state = AppState::load_or_seed(store, media, Default::default())
+            .await
+            .unwrap();
+        let owner = User {
+            pubkey: "owner".into(),
+            username: "Owner".into(),
+        };
+        let (guild, _, _, _) = state
+            .create_guild("Private community", None, &owner)
+            .await
+            .unwrap();
+        for gate in [JoinGate::Rules, JoinGate::Pow] {
+            state
+                .set_join_gate(guild.id, gate, Some("Be nice.".into()), &owner.pubkey)
+                .await
+                .unwrap();
+            let super::Gate::Challenge(ServerMessage::JoinChallenge {
+                guild_id,
+                guild_name,
+                invite_code,
+                gate: actual_gate,
+                ..
+            }) = super::check_join_gate(
+                &state,
+                guild.id,
+                "guest",
+                false,
+                None,
+                Some("private-invite".into()),
+                "connection-nonce",
+            ) else {
+                panic!("expected join challenge")
+            };
+            assert_eq!(guild_id, guild.id);
+            assert_eq!(guild_name.as_deref(), Some("Private community"));
+            assert_eq!(invite_code.as_deref(), Some("private-invite"));
+            assert_eq!(actual_gate, gate);
+        }
+    }
 
     #[test]
     fn a_full_window_is_admitted_and_the_next_hit_is_not() {

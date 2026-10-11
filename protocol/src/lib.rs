@@ -2142,6 +2142,8 @@ pub enum ServerMessage {
     },
     JoinChallenge {
         guild_id: Id,
+        #[serde(default)]
+        guild_name: Option<String>,
         gate: JoinGate,
         #[serde(default)]
         rules: Option<String>,
@@ -2247,6 +2249,31 @@ pub enum ServerMessage {
 #[cfg(test)]
 mod identify_wire_tests {
     use super::ClientMessage;
+
+    #[test]
+    fn join_challenges_accept_legacy_messages_and_round_trip_guild_names() {
+        let old = serde_json::json!({ "op": "join_challenge", "d": {
+            "guild_id": "00000000-0000-0000-0000-000000000001",
+            "gate": "rules", "rules": "Be nice.", "invite_code": "private-invite"
+        }});
+        let legacy: super::ServerMessage = serde_json::from_value(old.clone()).unwrap();
+        assert!(matches!(
+            legacy,
+            super::ServerMessage::JoinChallenge {
+                guild_name: None,
+                ..
+            }
+        ));
+        let mut named = old;
+        named["d"]["guild_name"] = serde_json::json!("Private community");
+        let challenge: super::ServerMessage = serde_json::from_value(named.clone()).unwrap();
+        assert!(
+            matches!(&challenge, super::ServerMessage::JoinChallenge { guild_name: Some(name), .. } if name == "Private community")
+        );
+        let encoded = serde_json::to_value(challenge).unwrap();
+        assert_eq!(encoded["d"]["guild_name"], named["d"]["guild_name"]);
+        assert_eq!(encoded["d"]["invite_code"], named["d"]["invite_code"]);
+    }
 
     #[test]
     fn older_voice_tokens_have_no_alternatives_and_use_the_initial_route() {

@@ -247,8 +247,9 @@ pub fn ConnectForm(
                     ConnectionErrorPanel { message: err }
                 }
 
-                div { class: "fade-in",
-                match mode() {
+                for (panel, row_identity) in std::iter::once((mode(), identity_for_rows.clone())) {
+                div { key: "{panel:?}", class: "fade-in",
+                match panel {
                     Mode::Join => rsx! {
                         div { class: "space-y-4",
                             div { class: "space-y-2",
@@ -272,7 +273,7 @@ pub fn ConnectForm(
                                             rendezvous_url: rendezvous_url().trim().to_string(),
                                             code: entry.shortcode,
                                         },
-                                        identity: identity_for_rows.clone(),
+                                        identity: row_identity.clone(),
                                     };
                                     on_connect.call(params);
                                 },
@@ -427,6 +428,7 @@ pub fn ConnectForm(
                             }
                         }
                     },
+                }
                 }
                 }
 

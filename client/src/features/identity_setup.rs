@@ -84,8 +84,9 @@ pub fn IdentitySetupView(on_done: EventHandler<Identity>) -> Element {
                     }
                 }
 
-                div { class: "fade-in flex-1",
-                match step() {
+                for panel in std::iter::once(step()) {
+                div { key: "{panel:?}", class: "fade-in flex-1",
+                match panel {
                     Step::Choose => rsx! {
                         div { class: "space-y-2",
                             DetectedIdentities {
@@ -307,6 +308,7 @@ pub fn IdentitySetupView(on_done: EventHandler<Identity>) -> Element {
                             } }
                         }
                     },
+                }
                 }
                 }
                     }
