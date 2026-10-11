@@ -19,18 +19,18 @@ name instead.
 |---|---|
 | `client/src/features/voice.rs` | 4895 |
 | `server/src/state/mod.rs` | 3199 |
-| `server/tests/owner_controls.rs` | 3117 |
-| `server/src/gateway/connection.rs` | 3090 |
+| `server/tests/owner_controls.rs` | 3152 |
+| `server/src/gateway/connection.rs` | 3143 |
 | `client/src/features/channels.rs` | 2153 |
 | `client/src/features/screenshare.rs` | 3236 |
-| `protocol/src/lib.rs` | 2883 |
+| `protocol/src/lib.rs` | 2910 |
 | `client/src/state.rs` | 2296 |
 | `client/src/update.rs` | 1228 |
-| `client/src/net.rs` | 2395 |
+| `client/src/net.rs` | 2465 |
 | `client/src/features/chat.rs` | 2391 |
 | `server/src/store.rs` | 1357 |
 | `client/src/features/guild_settings.rs` | 1135 |
-| `client/src/identity.rs` | 1123 |
+| `client/src/identity.rs` | 1213 |
 | `client/src/features/discord_import.rs` | 1113 |
 
 Everything else is small enough that `wc -l` answers faster than a list here
@@ -94,7 +94,7 @@ that direction says a file is safe to open when it is not.
 | Attaching chat images | `client/src/chat_image.rs`, `client/src/features/chat.rs` | Native clipboard RGBA becomes bounded PNG; Dioxus drop/file-picker events provide paths for bounded Rust reads and content validation. Workers prepare data URLs under the 2 MiB upload cap; keyed composers and request generations discard stale loads. The WebView only signals image paste and displays previews |
 | Notification and UI sounds | `client/src/native_sounds.rs`, `client/src/features/sounds.rs` | Rust synthesizes/caches 19 tones; a bounded worker owns CPAL output on the selected device, mixes overlapping sounds and closes/pauses after 1.5 s idle. `MessageSounds` tracks DM/channel ticks and volume/output settings on home and workspace; audio callbacks neither allocate nor block. Session-owned `CallAlert` repeats distinct incoming/outgoing DM rings every 3 s, cancels queued/playing rings on phase changes and plays connection/end cues. Audio settings expose separate persisted App sounds/Soundboard controls and a native app-sound preview |
 | Camera capture and publication | `client/src/syscamera.rs`, `client/src/features/voice_camera.rs`, `client/src/features/camera.rs` | Windows camera enumeration/capture uses WebRTC through a small C++ bridge; Rust owns the COM worker, validated I420 copies, first-frame/stall checks and publication. `NativeVideoRoom` shares `#video` with the screen, stopping tracks independently; the WebView renders previews/viewers. macOS/Linux retain browser camera capture |
-| Keys on this machine | `client/src/identity.rs` | `detected` / `sign_in` / `forget`; one file per key under `identities_dir()` (default `config_dir()/identities/`, `identities-dir` overrides), `identity.json` names the active one |
+| Keys on this machine | `client/src/identity.rs` | `detected` derives and deduplicates pubkeys from the secret, skipping unreadable keys; `sign_in` / `forget`; one file per key under `identities_dir()` (default `config_dir()/identities/`, `identities-dir` overrides), `identity.json` names the active one |
 | Gateway admission and diagnostics | `client/src/net.rs`, `client/src/features/connect.rs`, `client/src/features/workspace.rs`, `server/src/gateway/connection.rs` | `gateway_ready` waits for admission before profile/heartbeat writes. Failed sends recover buffered server reasons; `ConnectionErrorPanel` copies version, platform, UTC time, transport, operation and payload size. Reconnects retain their first failure until Ready. Socket cap admits two image fields; server warnings retain refusals and receive failures |
 | Keys at rest | `client/src/keyvault.rs` | NIP-49 `ncryptsec` under a random passphrase; `seal`/`unseal` hold the phrase's entropy beside it; `backend()` picks keychain or `vault.key` once and `vault.backend` remembers (trap 23) |
 | Seeing the phrase again | `client/src/features/connect.rs` | `RecoveryPhrase` on `IdentityCard` — reveal, confirm, hides after a minute; only the home screen mounts the card |

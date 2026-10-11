@@ -1583,6 +1583,7 @@ fn apply(
         }
         ServerMessage::JoinChallenge {
             guild_id,
+            guild_name,
             gate,
             rules,
             pow_challenge,
@@ -1612,11 +1613,12 @@ fn apply(
                 JoinGate::Rules => {
                     s.rules_prompt = Some(crate::state::RulesPrompt {
                         guild_id,
-                        guild_name: s
-                            .catalog
-                            .iter()
-                            .find(|g| g.id == guild_id)
-                            .map(|g| g.name.clone()),
+                        guild_name: guild_name.or_else(|| {
+                            s.catalog
+                                .iter()
+                                .find(|g| g.id == guild_id)
+                                .map(|g| g.name.clone())
+                        }),
                         rules: rules.unwrap_or_default(),
                         invite_code: pending_code,
                     });
@@ -1969,6 +1971,74 @@ fn apply(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rules_prompts_use_the_challenge_name_without_a_catalog_and_fall_back_for_old_hosts() {
+        fn harness() -> Element {
+            let mut state = use_signal(AppState::empty);
+            use_hook(move || {
+                let guild_id = Id::new_v4();
+                let (tx, _messages) = unbounded_channel();
+                let (voice_tx, _native) = unbounded_channel();
+                let challenge = |guild_name| ServerMessage::JoinChallenge {
+                    guild_id,
+                    guild_name,
+                    gate: crate::protocol::JoinGate::Rules,
+                    rules: Some("Be nice.".into()),
+                    invite_code: Some("private-invite".into()),
+                    pow_challenge: None,
+                    pow_difficulty: None,
+                };
+                apply(
+                    &mut state,
+                    challenge(Some("Private community".into())),
+                    &tx,
+                    &voice_tx,
+                );
+                {
+                    let s = state.read();
+                    assert!(s.catalog.is_empty());
+                    let prompt = s.rules_prompt.as_ref().unwrap();
+                    assert_eq!(prompt.guild_name.as_deref(), Some("Private community"));
+                    assert_eq!(prompt.invite_code.as_deref(), Some("private-invite"));
+                    assert_eq!(prompt.rules, "Be nice.");
+                }
+                apply(&mut state, challenge(None), &tx, &voice_tx);
+                assert!(
+                    state
+                        .read()
+                        .rules_prompt
+                        .as_ref()
+                        .unwrap()
+                        .guild_name
+                        .is_none()
+                );
+                state.write().catalog.push(crate::protocol::GuildSummary {
+                    id: guild_id,
+                    name: "Catalog name".into(),
+                    icon: None,
+                    member_count: 0,
+                });
+                apply(&mut state, challenge(None), &tx, &voice_tx);
+                assert_eq!(
+                    state.read().rules_prompt.as_ref().unwrap().guild_name.as_deref(),
+                    Some("Catalog name")
+                );
+                apply(
+                    &mut state,
+                    challenge(Some("Updated name".into())),
+                    &tx,
+                    &voice_tx,
+                );
+                assert_eq!(
+                    state.read().rules_prompt.as_ref().unwrap().guild_name.as_deref(),
+                    Some("Updated name")
+                );
+            });
+            rsx! {}
+        }
+        VirtualDom::new(harness).rebuild_in_place();
+    }
 
     #[test]
     fn late_local_tokens_cannot_restore_an_old_route_and_screen_follows_the_selected_address() {
