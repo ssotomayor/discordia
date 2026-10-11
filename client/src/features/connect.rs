@@ -567,10 +567,10 @@ fn TabButton(active: bool, label: &'static str, onclick: EventHandler<()>) -> El
     }
 }
 
-/// Where saved emoji pictures go so a DM can link them. On the account card
-/// because it is the one DM setting with a knob, and DMs live on this screen.
+/// Where saved emoji pictures go so a DM can link them. On the account card,
+/// where DMs live, and in the profile editor beside the emoji it serves.
 #[component]
-fn BlobServerField() -> Element {
+pub(crate) fn BlobServerField() -> Element {
     let mut settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let mut adding = use_signal(|| false);
     let mut draft = use_signal(String::new);
