@@ -20,17 +20,17 @@ name instead.
 | `client/src/features/voice.rs` | 4895 |
 | `server/src/state/mod.rs` | 3199 |
 | `server/tests/owner_controls.rs` | 3152 |
-| `server/src/gateway/connection.rs` | 3143 |
+| `server/src/gateway/connection.rs` | 3144 |
 | `client/src/features/channels.rs` | 2153 |
 | `client/src/features/screenshare.rs` | 3236 |
 | `protocol/src/lib.rs` | 2910 |
 | `client/src/state.rs` | 2296 |
 | `client/src/update.rs` | 1228 |
-| `client/src/net.rs` | 2465 |
+| `client/src/net.rs` | 2477 |
 | `client/src/features/chat.rs` | 2391 |
 | `server/src/store.rs` | 1357 |
 | `client/src/features/guild_settings.rs` | 1135 |
-| `client/src/identity.rs` | 1213 |
+| `client/src/identity.rs` | 1216 |
 | `client/src/features/discord_import.rs` | 1113 |
 
 Everything else is small enough that `wc -l` answers faster than a list here

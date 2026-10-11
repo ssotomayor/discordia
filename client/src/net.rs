@@ -2021,7 +2021,13 @@ mod tests {
                 });
                 apply(&mut state, challenge(None), &tx, &voice_tx);
                 assert_eq!(
-                    state.read().rules_prompt.as_ref().unwrap().guild_name.as_deref(),
+                    state
+                        .read()
+                        .rules_prompt
+                        .as_ref()
+                        .unwrap()
+                        .guild_name
+                        .as_deref(),
                     Some("Catalog name")
                 );
                 apply(
@@ -2031,7 +2037,13 @@ mod tests {
                     &voice_tx,
                 );
                 assert_eq!(
-                    state.read().rules_prompt.as_ref().unwrap().guild_name.as_deref(),
+                    state
+                        .read()
+                        .rules_prompt
+                        .as_ref()
+                        .unwrap()
+                        .guild_name
+                        .as_deref(),
                     Some("Updated name")
                 );
             });

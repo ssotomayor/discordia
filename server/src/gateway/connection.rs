@@ -3032,7 +3032,8 @@ mod tests {
                 None,
                 Some("private-invite".into()),
                 "connection-nonce",
-            ) else {
+            )
+            else {
                 panic!("expected join challenge")
             };
             assert_eq!(guild_id, guild.id);

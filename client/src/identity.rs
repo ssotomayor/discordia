@@ -759,7 +759,10 @@ mod store_tests {
         assert_eq!(found[0].pubkey, id.pubkey);
         assert_eq!(found[0].path, id.key_path());
         assert!(Identity::sign_in(&"ab".repeat(32)).is_err());
-        assert_eq!(Identity::sign_in(&found[0].pubkey).unwrap().pubkey, id.pubkey);
+        assert_eq!(
+            Identity::sign_in(&found[0].pubkey).unwrap().pubkey,
+            id.pubkey
+        );
     }
 
     #[test]
