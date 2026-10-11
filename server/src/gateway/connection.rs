@@ -111,6 +111,15 @@ pub async fn handle_connection<S>(
                     continue;
                 };
 
+                if matches!(client_msg, ClientMessage::LeaveVoice | ClientMessage::SetVoiceMute { .. }
+                    | ClientMessage::SetSpeaking { .. } | ClientMessage::SetCamera { .. }
+                    | ClientMessage::SetScreenShare { .. } | ClientMessage::SetScreenWatching { .. }
+                    | ClientMessage::ShareMediaKey { .. } | ClientMessage::VoiceConnectionReport { .. }
+                    | ClientMessage::ConnectionRouteReport { .. })
+                    && user.as_ref().is_none_or(|u| !ctx.state.voice_owned_by(&u.pubkey, conn_id)) {
+                    continue;
+                }
+
                 if is_bot
                     && !matches!(
                         client_msg,
@@ -1132,7 +1141,7 @@ pub async fn handle_connection<S>(
                         if !signals.allow() || sharers.len() > 64 {
                             continue;
                         }
-                        if let Some(vs) = ctx.state.update_screen_watching(&u.pubkey, sharers) {
+                        if let Some(vs) = ctx.state.update_owned_voice(&u.pubkey, conn_id, |state| state.update_screen_watching(&u.pubkey, sharers)) {
                             let targets = ctx.state.guild_member_pubkeys(vs.guild_id);
                             send_voice_state(&ctx.state, targets, vs);
                         }
@@ -1142,7 +1151,7 @@ pub async fn handle_connection<S>(
                         if !signals.allow() {
                             continue;
                         }
-                        let Some(vs) = ctx.state.update_screen_share(&u.pubkey, sharing) else {
+                        let Some(vs) = ctx.state.update_owned_voice(&u.pubkey, conn_id, |state| state.update_screen_share(&u.pubkey, sharing)) else {
                             continue;
                         };
                         let targets = ctx.state.guild_member_pubkeys(vs.guild_id);
@@ -1189,7 +1198,7 @@ pub async fn handle_connection<S>(
                             .map(|v| (v.guild_id, v.channel_id));
                         let was_sharing = sharing_in(&ctx.state, &u.pubkey);
                         let new_state =
-                            ctx.state.set_voice_channel(&u.pubkey, guild_id, Some(channel_id), preferences);
+                            ctx.state.set_voice_channel_owned(conn_id, &u.pubkey, guild_id, channel_id, preferences);
                         // A move is a leave and then a join, for everyone including the
                         // mover. The leave goes first: one client can be in both guilds.
                         if let Some((old_guild, Some(old_channel))) = previous
@@ -1234,6 +1243,7 @@ pub async fn handle_connection<S>(
                             )
                             .await;
                             if ctx.state.voice_channel_of(&pubkey) != Some(channel_id)
+                                || !ctx.state.voice_owned_by(&pubkey, conn_id)
                                 || ctx.livekit.route().1 != route_revision {
                                 return;
                             }
@@ -1288,7 +1298,7 @@ pub async fn handle_connection<S>(
                         let Some(u) = user.as_ref() else { continue };
                         let was_sharing = sharing_in(&ctx.state, &u.pubkey);
                         let was_in = ctx.state.voice_channel_of(&u.pubkey);
-                        if let Some(cleared) = ctx.state.clear_voice(&u.pubkey) {
+                        if let Some((_, cleared)) = ctx.state.clear_voice_owned(&u.pubkey, conn_id) {
                             let targets = ctx.state.guild_member_pubkeys(cleared.guild_id);
                             send_voice_state(&ctx.state, targets, cleared);
                         }
@@ -1304,7 +1314,7 @@ pub async fn handle_connection<S>(
                         if !signals.allow() {
                             continue;
                         }
-                        if let Some(state) = ctx.state.update_voice_flags(&u.pubkey, muted, deafened) {
+                        if let Some(state) = ctx.state.update_owned_voice(&u.pubkey, conn_id, |state| state.update_voice_flags(&u.pubkey, muted, deafened)) {
                             let targets = ctx.state.guild_member_pubkeys(state.guild_id);
                             send_voice_state(&ctx.state, targets, state);
                         }
@@ -1314,7 +1324,7 @@ pub async fn handle_connection<S>(
                         if !signals.allow() {
                             continue;
                         }
-                        if let Some(state) = ctx.state.update_speaking(&u.pubkey, speaking) {
+                        if let Some(state) = ctx.state.update_owned_voice(&u.pubkey, conn_id, |state| state.update_speaking(&u.pubkey, speaking)) {
                             let targets = ctx.state.guild_member_pubkeys(state.guild_id);
                             send_voice_state(&ctx.state, targets, state);
                         }
@@ -1354,7 +1364,7 @@ pub async fn handle_connection<S>(
                         if !signals.allow() {
                             continue;
                         }
-                        if let Some(state) = ctx.state.update_camera(&u.pubkey, on) {
+                        if let Some(state) = ctx.state.update_owned_voice(&u.pubkey, conn_id, |state| state.update_camera(&u.pubkey, on)) {
                             let targets = ctx.state.guild_member_pubkeys(state.guild_id);
                             send_voice_state(&ctx.state, targets, state);
                         }
@@ -2038,61 +2048,58 @@ pub async fn handle_connection<S>(
         .unregister_conn(conn_id, user.as_ref().map(|u| u.pubkey.as_str()));
 
     if let Some(u) = user {
-        if !graceful && !ctx.state.has_sessions(&u.pubkey) {
-            let revision = ctx.state.session_revision(&u.pubkey);
-            tokio::time::sleep(Duration::from_secs(3)).await;
-            if ctx.state.session_revision(&u.pubkey) != revision {
-                return;
+        cleanup_session(&ctx, conn_id, u, graceful).await;
+    }
+}
+
+async fn cleanup_session(ctx: &Arc<AppContext>, conn_id: u64, u: User, graceful: bool) {
+    if !graceful
+        && (!ctx.state.has_sessions(&u.pubkey) || ctx.state.voice_owned_by(&u.pubkey, conn_id))
+    {
+        let revision = ctx.state.session_revision(&u.pubkey);
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        if ctx.state.session_revision(&u.pubkey) != revision
+            && !ctx.state.voice_owned_by(&u.pubkey, conn_id)
+        {
+            return;
+        }
+    }
+    if let Some((previous, cleared)) = ctx.state.clear_voice_owned(&u.pubkey, conn_id) {
+        let targets = ctx.state.guild_member_pubkeys(cleared.guild_id);
+        send_voice_state(&ctx.state, targets, cleared);
+        if let Some(channel) = previous.channel_id {
+            evict_from_call(&ctx, &u.pubkey, channel);
+            if previous.screen_sharing {
+                broadcast_screen_state(&ctx.state, previous.guild_id, channel);
             }
         }
-        // Another socket of this key may own the call and its screen share.
-        if ctx.state.has_sessions(&u.pubkey) {
-            tracing::info!(user = ?u.username, "a session closed; others remain");
-            return;
-        }
-        let was_sharing = sharing_in(&ctx.state, &u.pubkey);
-        let was_in = ctx.state.voice_channel_of(&u.pubkey);
-        if let Some(cleared) = ctx.state.clear_voice(&u.pubkey) {
-            let targets = ctx.state.guild_member_pubkeys(cleared.guild_id);
-            send_voice_state(&ctx.state, targets, cleared);
-        }
-        // Only the key's last socket: another device of the same key may be the
-        // one in the call, and the SFU knows them by the same identity (#188).
-        if let Some(channel) = was_in
-            && !ctx.state.has_sessions(&u.pubkey)
-        {
-            evict_from_call(&ctx, &u.pubkey, channel);
-        }
-        if let Some((gid, cid)) = was_sharing {
-            broadcast_screen_state(&ctx.state, gid, cid);
-        }
-        // A key may hold several sockets, and only the last one going says
-        // the person went away (#188).
-        if ctx.state.has_sessions(&u.pubkey) {
-            tracing::info!(user = ?u.username, "a session closed; others remain");
-            return;
-        }
-        if ctx.state.clear_activity(&u.pubkey) {
-            ctx.state.deliver(
-                ctx.state.peers_of(&u.pubkey),
-                ServerMessage::ActivityUpdate(crate::protocol::UserActivity {
-                    pubkey: u.pubkey.clone(),
-                    activity: None,
-                }),
-            );
-        }
-        for (guild_id, user_pubkey) in ctx.state.mark_offline(&u.pubkey) {
-            let targets = ctx.state.guild_member_pubkeys(guild_id);
-            ctx.state.deliver(
-                targets,
-                ServerMessage::MemberLeave {
-                    guild_id,
-                    user_pubkey,
-                },
-            );
-        }
-        tracing::info!(user = ?u.username, "client disconnected");
     }
+    // A key may hold several sockets, and only the last one going says
+    // the person went away (#188).
+    if ctx.state.has_sessions(&u.pubkey) {
+        tracing::info!(user = ?u.username, "a session closed; others remain");
+        return;
+    }
+    if ctx.state.clear_activity(&u.pubkey) {
+        ctx.state.deliver(
+            ctx.state.peers_of(&u.pubkey),
+            ServerMessage::ActivityUpdate(crate::protocol::UserActivity {
+                pubkey: u.pubkey.clone(),
+                activity: None,
+            }),
+        );
+    }
+    for (guild_id, user_pubkey) in ctx.state.mark_offline(&u.pubkey) {
+        let targets = ctx.state.guild_member_pubkeys(guild_id);
+        ctx.state.deliver(
+            targets,
+            ServerMessage::MemberLeave {
+                guild_id,
+                user_pubkey,
+            },
+        );
+    }
+    tracing::info!(user = ?u.username, "client disconnected");
 }
 
 async fn send<S>(tx: &mut S, msg: &ServerMessage) -> Result<(), axum::Error>
@@ -2991,6 +2998,10 @@ impl RateLimiter {
 #[cfg(test)]
 #[path = "handshake_tests.rs"]
 mod handshake_tests;
+
+#[cfg(test)]
+#[path = "voice_ownership_tests.rs"]
+mod voice_ownership_tests;
 
 #[cfg(test)]
 mod tests {

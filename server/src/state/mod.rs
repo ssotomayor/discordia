@@ -88,6 +88,7 @@ pub struct AppState {
     /// reach `store` and must not survive the socket that set it.
     pub activities: DashMap<String, crate::protocol::Activity>,
     pub voice_states: DashMap<String, VoiceState>,
+    voice_owners: std::sync::Mutex<std::collections::HashMap<String, u64>>,
     pub bot_installs: DashMap<String, DashMap<Id, BotInstall>>,
     /// Memory only: a bot declares its commands on every connect.
     pub bot_commands: DashMap<String, Vec<crate::protocol::BotCommand>>,
@@ -144,6 +145,7 @@ impl AppState {
             xp: DashMap::new(),
             xp_cooldown: DashMap::new(),
             voice_states: DashMap::new(),
+            voice_owners: std::sync::Mutex::new(Default::default()),
             operators,
             conns: DashMap::new(),
             conns_by_ip: DashMap::new(),
@@ -2674,6 +2676,52 @@ impl AppState {
         channel_id: Option<Id>,
         preferences: Option<crate::protocol::VoicePreferences>,
     ) -> VoiceState {
+        let mut owners = self.voice_owners.lock().unwrap_or_else(|e| e.into_inner());
+        owners.remove(user_pubkey);
+        self.set_voice_channel_unlocked(user_pubkey, guild_id, channel_id, preferences)
+    }
+
+    pub fn set_voice_channel_owned(
+        &self,
+        conn_id: u64,
+        user_pubkey: &str,
+        guild_id: Id,
+        channel_id: Id,
+        preferences: Option<crate::protocol::VoicePreferences>,
+    ) -> VoiceState {
+        let mut owners = self.voice_owners.lock().unwrap_or_else(|e| e.into_inner());
+        owners.insert(user_pubkey.to_string(), conn_id);
+        self.set_voice_channel_unlocked(user_pubkey, guild_id, Some(channel_id), preferences)
+    }
+
+    pub fn voice_owned_by(&self, user_pubkey: &str, conn_id: u64) -> bool {
+        self.voice_owners
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(user_pubkey)
+            == Some(&conn_id)
+    }
+
+    pub fn update_owned_voice(
+        &self,
+        pubkey: &str,
+        conn_id: u64,
+        update: impl FnOnce(&Self) -> Option<VoiceState>,
+    ) -> Option<VoiceState> {
+        let owners = self.voice_owners.lock().unwrap_or_else(|e| e.into_inner());
+        if owners.get(pubkey) != Some(&conn_id) {
+            return None;
+        }
+        update(self)
+    }
+
+    fn set_voice_channel_unlocked(
+        &self,
+        user_pubkey: &str,
+        guild_id: Id,
+        channel_id: Option<Id>,
+        preferences: Option<crate::protocol::VoicePreferences>,
+    ) -> VoiceState {
         let prev = self.voice_states.get(user_pubkey).map(|v| v.clone());
         let deafened = preferences
             .map(|p| p.deafened)
@@ -2819,6 +2867,27 @@ impl AppState {
     }
 
     pub fn clear_voice(&self, user_pubkey: &str) -> Option<VoiceState> {
+        let mut owners = self.voice_owners.lock().unwrap_or_else(|e| e.into_inner());
+        owners.remove(user_pubkey);
+        self.clear_voice_unlocked(user_pubkey)
+    }
+
+    pub fn clear_voice_owned(
+        &self,
+        user_pubkey: &str,
+        conn_id: u64,
+    ) -> Option<(VoiceState, VoiceState)> {
+        let mut owners = self.voice_owners.lock().unwrap_or_else(|e| e.into_inner());
+        if owners.get(user_pubkey) != Some(&conn_id) {
+            return None;
+        }
+        owners.remove(user_pubkey);
+        let previous = self.voice_states.get(user_pubkey)?.clone();
+        let cleared = self.clear_voice_unlocked(user_pubkey)?;
+        Some((previous, cleared))
+    }
+
+    fn clear_voice_unlocked(&self, user_pubkey: &str) -> Option<VoiceState> {
         let prev = self.voice_states.remove(user_pubkey)?.1;
         Some(VoiceState {
             channel_id: None,
