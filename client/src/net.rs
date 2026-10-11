@@ -1327,7 +1327,9 @@ fn apply(
                 set.remove(&m.author.pubkey);
             }
             let has_image = m.image.is_some();
-            s.messages.entry(cid).or_default().push(m);
+            if !s.insert_message(cid, m) {
+                return;
+            }
             if is_dm && !author_is_self && !viewing {
                 *s.dm_unread.entry(cid).or_insert(0) += 1;
             }
@@ -1424,6 +1426,7 @@ fn apply(
             s.integrations.remove(&guild_id);
             for cid in &removed {
                 s.messages.remove(cid);
+                s.channel_unread.remove(cid);
             }
             if s.selected_guild == Some(guild_id) {
                 let next = s.guilds.first().map(|g| g.id);
@@ -1648,6 +1651,7 @@ fn apply(
             channel_id,
         } => {
             s.channels.retain(|c| c.id != channel_id);
+            s.channel_unread.remove(&channel_id);
             s.messages.remove(&channel_id);
             s.typing.remove(&channel_id);
             s.screen_shares.remove(&channel_id);

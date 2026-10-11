@@ -55,6 +55,11 @@ pub fn GuildsSidebar() -> Element {
     let selected = snapshot.selected_guild;
     let dm_mode = snapshot.dm_mode;
     let dm_unread = snapshot.dm_unread_total() as usize;
+    let unread_guilds: std::collections::HashSet<Id> = guilds
+        .iter()
+        .filter(|guild| snapshot.guild_has_unread(guild.id))
+        .map(|guild| guild.id)
+        .collect();
     let is_operator = snapshot.is_operator;
     drop(snapshot);
 
@@ -149,6 +154,7 @@ pub fn GuildsSidebar() -> Element {
                                 image: guild.icon_image.as_deref().and_then(|i| state.read().media_src(i).map(str::to_string)),
                                 name: guild.name.clone(),
                                 selected: !dm_mode && selected == Some(guild.id),
+                                unread: unread_guilds.contains(&guild.id),
                                 has_menu,
                                 is_mine,
                                 on_select: {
@@ -421,6 +427,7 @@ fn GuildIcon(
     image: Option<String>,
     name: String,
     selected: bool,
+    unread: bool,
     has_menu: bool,
     is_mine: bool,
     on_select: EventHandler<Id>,
@@ -451,6 +458,13 @@ fn GuildIcon(
 
     rsx! {
         div { class: "relative group dxf-tip-host",
+            if unread {
+                span {
+                    title: "Unread messages",
+                    aria_label: "Unread messages",
+                    style: "position:absolute;right:-2px;top:-2px;width:8px;height:8px;border-radius:50%;background:var(--accent);border:2px solid var(--panel-solid);pointer-events:none;z-index:1;",
+                }
+            }
             if selected {
                 span {
                     class: "absolute",
