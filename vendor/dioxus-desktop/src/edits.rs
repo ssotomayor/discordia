@@ -301,28 +301,40 @@ impl EditWebsocket {
         };
 
         // Handle the websocket connection in a separate thread
-        let (edits_outgoing, edits_incoming_rx) = std::sync::mpsc::channel::<MsgPair>();
+        let (edits_outgoing, edits_incoming_rx) = std::sync::mpsc::channel::<EditCommand>();
 
-        {
+        loop {
             let mut connections = connections.write().unwrap();
             match connections.entry(location.webview_id).or_default() {
                 WebviewConnectionState::Pending { pending } => {
                     while let Some(pair) = pending.pop_front() {
-                        _ = edits_outgoing.send(pair);
+                        _ = edits_outgoing.send(EditCommand::Edits(pair));
                     }
                 }
-                WebviewConnectionState::Connected { .. } => {
-                    tracing::warn!(
-                        webview_id = location.webview_id,
-                        "Rejecting duplicate webview edit connection"
-                    );
-                    return;
+                WebviewConnectionState::Connected { edits_outgoing } => {
+                    let (reply, checked) = std::sync::mpsc::channel();
+                    _ = edits_outgoing.send(EditCommand::CheckConnection(reply));
+                    drop(connections);
+                    // The old reader must release its queued edits before we take over.
+                    match checked.recv_timeout(std::time::Duration::from_secs(5)) {
+                        Ok(false) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                            continue;
+                        }
+                        Ok(true) | Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                            tracing::warn!(
+                                webview_id = location.webview_id,
+                                "Rejecting duplicate or busy webview edit connection"
+                            );
+                            return;
+                        }
+                    }
                 }
             }
             connections.insert(
                 location.webview_id,
                 WebviewConnectionState::Connected { edits_outgoing },
             );
+            break;
         }
         tracing::info!(
             webview_id = location.webview_id,
@@ -334,36 +346,27 @@ impl EditWebsocket {
         std::thread::spawn(move || {
             let mut queued_message = None;
             let mut first_applied = false;
+            let mut pending_checks = Vec::new();
             'connection: loop {
-                let msg = match edits_incoming_rx
-                    .recv_timeout(std::time::Duration::from_millis(100))
-                {
-                    Ok(msg) => msg,
-                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
-                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                        // A dead idle socket must release its channel before JS reconnects.
-                        if let Err(error) = websocket.get_ref().set_nonblocking(true) {
-                            tracing::warn!(%error, "Could not inspect idle webview socket");
+                let msg =
+                    match edits_incoming_rx.recv_timeout(std::time::Duration::from_millis(100)) {
+                        Ok(EditCommand::Edits(msg)) => msg,
+                        Ok(EditCommand::CheckConnection(reply)) => {
+                            if Self::check_connection(&mut websocket, location.webview_id) {
+                                _ = reply.send(true);
+                                continue;
+                            }
+                            pending_checks.push(reply);
                             break;
                         }
-                        let incoming = websocket.read();
-                        if let Err(error) = websocket.get_ref().set_nonblocking(false) {
-                            tracing::warn!(%error, "Could not restore webview socket mode");
-                            break;
-                        }
-                        match incoming {
-                            Ok(tungstenite::Message::Close(_)) => break,
-                            Ok(_) => {}
-                            Err(tungstenite::Error::Io(error))
-                                if error.kind() == std::io::ErrorKind::WouldBlock => {}
-                            Err(error) => {
-                                tracing::warn!(webview_id = location.webview_id, %error, "Idle webview edit channel disconnected");
+                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                            if !Self::check_connection(&mut websocket, location.webview_id) {
                                 break;
                             }
+                            continue;
                         }
-                        continue;
-                    }
-                };
+                    };
                 let data = msg.edits.clone();
                 queued_message = Some(msg);
                 // Send the edits to the webview
@@ -413,11 +416,46 @@ impl EditWebsocket {
                 connection.add_message_pair(msg);
             }
             // Hold the map lock so send_edits cannot append to the retired sender.
-            for pair in edits_incoming_rx.try_iter() {
-                connection.add_message_pair(pair);
+            for command in edits_incoming_rx.try_iter() {
+                match command {
+                    EditCommand::Edits(pair) => connection.add_message_pair(pair),
+                    EditCommand::CheckConnection(reply) => pending_checks.push(reply),
+                }
             }
             connections.insert(location.webview_id, connection);
+            drop(connections);
+            for reply in pending_checks {
+                _ = reply.send(false);
+            }
         });
+    }
+
+    fn check_connection(
+        websocket: &mut tungstenite::WebSocket<TcpStream>,
+        webview_id: u32,
+    ) -> bool {
+        if let Err(error) = websocket.get_ref().set_nonblocking(true) {
+            tracing::warn!(%error, "Could not inspect idle webview socket");
+            return false;
+        }
+        let incoming = websocket.read();
+        if let Err(error) = websocket.get_ref().set_nonblocking(false) {
+            tracing::warn!(%error, "Could not restore webview socket mode");
+            return false;
+        }
+        match incoming {
+            Ok(tungstenite::Message::Close(_)) => false,
+            Ok(_) => true,
+            Err(tungstenite::Error::Io(error))
+                if error.kind() == std::io::ErrorKind::WouldBlock =>
+            {
+                true
+            }
+            Err(error) => {
+                tracing::warn!(webview_id, %error, "Idle webview edit channel disconnected");
+                false
+            }
+        }
     }
 
     pub(crate) fn create_queue(&self) -> WryQueue {
@@ -452,7 +490,7 @@ enum WebviewConnectionState {
         pending: VecDeque<MsgPair>,
     },
     Connected {
-        edits_outgoing: std::sync::mpsc::Sender<MsgPair>,
+        edits_outgoing: std::sync::mpsc::Sender<EditCommand>,
     },
 }
 
@@ -485,7 +523,7 @@ impl WebviewConnectionState {
                 queue.push_back(pair);
             }
             WebviewConnectionState::Connected { edits_outgoing } => {
-                _ = edits_outgoing.send(pair);
+                _ = edits_outgoing.send(EditCommand::Edits(pair));
             }
         }
     }
@@ -494,6 +532,11 @@ impl WebviewConnectionState {
 struct MsgPair {
     edits: Vec<u8>,
     response: oneshot::Sender<()>,
+}
+
+enum EditCommand {
+    Edits(MsgPair),
+    CheckConnection(std::sync::mpsc::Sender<bool>),
 }
 
 const KEY_SIZE: usize = 256;
@@ -640,7 +683,7 @@ mod tests {
         }
     }
 
-    fn disconnect_preserves_edits(abrupt: bool) {
+    fn disconnect_preserves_edits(abrupt: bool, wait_for_cleanup: bool) {
         let fixture = Fixture::new();
         let mut first = fixture.enqueue(b"initial DOM");
         let mut socket = fixture.connect();
@@ -653,7 +696,7 @@ mod tests {
             socket.close(None).unwrap();
         }
         let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
+        while wait_for_cleanup {
             assert!(
                 first.try_recv().unwrap().is_none(),
                 "unacknowledged DOM was marked applied"
@@ -696,12 +739,19 @@ mod tests {
 
     #[test]
     fn abrupt_disconnect_replays_unacknowledged_and_queued_edits() {
-        disconnect_preserves_edits(true);
+        disconnect_preserves_edits(true, true);
     }
 
     #[test]
     fn graceful_disconnect_replays_unacknowledged_and_queued_edits() {
-        disconnect_preserves_edits(false);
+        disconnect_preserves_edits(false, true);
+    }
+
+    #[test]
+    fn immediate_reconnect_replays_unacknowledged_and_queued_edits() {
+        for abrupt in [true, false] {
+            disconnect_preserves_edits(abrupt, false);
+        }
     }
 
     #[test]
@@ -720,8 +770,7 @@ mod tests {
         }
     }
 
-    #[test]
-    fn idle_disconnect_allows_a_new_edit_connection() {
+    fn reconnect_idle_socket(wait_for_cleanup: bool) {
         for abrupt in [true, false] {
             let fixture = Fixture::new();
             let mut socket = fixture.connect();
@@ -731,7 +780,7 @@ mod tests {
                 socket.close(None).unwrap();
             }
             let deadline = Instant::now() + Duration::from_secs(5);
-            loop {
+            while wait_for_cleanup {
                 if matches!(
                     fixture.connections.read().unwrap().get(&0),
                     Some(WebviewConnectionState::Pending { .. })
@@ -744,8 +793,8 @@ mod tests {
                 );
                 std::thread::sleep(Duration::from_millis(5));
             }
-            let mut response = fixture.enqueue(b"after idle reconnect");
             let mut socket = fixture.connect();
+            let mut response = fixture.enqueue(b"after idle reconnect");
             assert_eq!(
                 socket.read().unwrap().into_data(),
                 b"after idle reconnect"[..]
@@ -757,5 +806,15 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(5));
             }
         }
+    }
+
+    #[test]
+    fn idle_disconnect_allows_a_new_edit_connection() {
+        reconnect_idle_socket(true);
+    }
+
+    #[test]
+    fn immediate_idle_reconnect_does_not_require_a_second_attempt() {
+        reconnect_idle_socket(false);
     }
 }
