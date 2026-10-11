@@ -39,6 +39,39 @@ const INPUT: &str = "w-full bg-[var(--panel2)] border border-[var(--edge-strong)
 const INPUT_SM: &str = "w-full bg-[var(--panel2)] border border-[var(--edge-strong)] rounded-[10px] px-3 py-2 text-[12.5px] text-[var(--text)] focus:outline-none focus:border-[var(--accent)] transition-colors";
 const LABEL: &str = "text-[11px] uppercase tracking-[0.09em] text-[var(--text-dim)]";
 
+#[component]
+pub(crate) fn ConnectionErrorPanel(message: String) -> Element {
+    let mut copy_result = use_signal(|| None::<(String, bool)>);
+    let result = copy_result()
+        .filter(|(copied, _)| copied == &message)
+        .map(|(_, ok)| ok);
+    let to_copy = message.clone();
+    let (explanation, details) = message.split_once("\n\n").unwrap_or((&message, ""));
+    rsx! {
+        div { role: "alert", class: "text-[12.5px] text-[var(--danger)] border border-[var(--border)] rounded-[11px] px-4 py-3",
+            p { style: "overflow-wrap: anywhere; user-select: text;", "{explanation}" }
+            if !details.is_empty() {
+                details { class: "mt-2 text-[var(--text-muted)]",
+                    summary { "Diagnostic details" }
+                    div { style: "white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; max-height: 20rem; overflow-y: auto;", "{details}" }
+                }
+            }
+            button {
+                r#type: "button",
+                class: "mt-3 text-xs px-3 py-2 rounded-lg border border-[var(--border)] text-[var(--text)] hover:bg-[var(--panel2)]",
+                onclick: move |_| {
+                    let ok = crate::clipboard::copy_text(&to_copy);
+                    copy_result.set(Some((to_copy.clone(), ok)));
+                },
+                if result == Some(true) { "Copied" } else { "Copy diagnostics" }
+            }
+            if result == Some(false) {
+                p { class: "mt-2 text-xs", "Couldn't copy. Select the text above and copy it manually." }
+            }
+        }
+    }
+}
+
 /// Everything about arriving at a server. A panel now, not a screen: the hero
 /// and the identity card moved to `features::home`, which mounts this.
 #[component]
@@ -211,9 +244,7 @@ pub fn ConnectForm(
                 }
 
                 if let Some(err) = error {
-                    div { class: "text-[12.5px] text-[var(--danger)] border border-[var(--border)] rounded-[11px] px-4 py-3",
-                        "{err}"
-                    }
+                    ConnectionErrorPanel { message: err }
                 }
 
                 div { class: "fade-in",

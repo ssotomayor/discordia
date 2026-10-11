@@ -459,6 +459,7 @@ pub struct AppState {
     pub bans: HashMap<Id, Vec<User>>,
     pub invites: HashMap<Id, String>,
     pub error_toast: Option<String>,
+    pub gateway_failure: Option<String>,
     pub is_operator: bool,
     pub audit_logs: HashMap<Id, Vec<crate::protocol::AuditEntry>>,
 }
@@ -592,6 +593,7 @@ impl AppState {
             bans: HashMap::new(),
             invites: HashMap::new(),
             error_toast: None,
+            gateway_failure: None,
             is_operator: false,
             audit_logs: HashMap::new(),
         }
@@ -668,6 +670,7 @@ impl AppState {
         self.host_info = None;
         self.transport = Transport::Loopback;
         self.gateway_route = None;
+        self.gateway_failure = None;
         self.guild_dialog = None;
         self.rules_prompt = None;
         self.audio_settings = false;
