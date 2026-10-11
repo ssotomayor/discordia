@@ -18,12 +18,12 @@ name instead.
 | File | Lines |
 |---|---|
 | `client/src/features/voice.rs` | 4895 |
-| `server/src/state/mod.rs` | 3205 |
+| `server/src/state/mod.rs` | 3199 |
 | `server/tests/owner_controls.rs` | 3117 |
 | `server/src/gateway/connection.rs` | 3078 |
-| `client/src/features/channels.rs` | 2133 |
+| `client/src/features/channels.rs` | 2153 |
 | `client/src/features/screenshare.rs` | 3236 |
-| `protocol/src/lib.rs` | 2850 |
+| `protocol/src/lib.rs` | 2883 |
 | `client/src/state.rs` | 2293 |
 | `client/src/update.rs` | 1228 |
 | `client/src/net.rs` | 2165 |
