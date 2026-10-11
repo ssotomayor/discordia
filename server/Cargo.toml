@@ -13,7 +13,7 @@ sha2 = "0.10"
 
 [dev-dependencies]
 dioxusfun-bot = { path = "../bot-sdk" }
-tokio = { workspace = true, features = ["full"] }
+tokio = { workspace = true, features = ["full", "test-util"] }
 dioxusfun-rendezvous = { path = "../rendezvous" }
 tokio-tungstenite = { workspace = true }
 serde_json = { workspace = true }
