@@ -30,6 +30,8 @@ const image = { kind: 'file', type: 'image/png', getAsFile: () => {
 } };
 assert.equal(paste(false, [image]), false);
 assert.equal(paste(true, [{ kind: 'string', type: 'text/plain' }]), false);
+assert.equal(paste(true, [{ kind: 'file', type: 'application/pdf' }]), false);
+assert.equal(messages.length, 0);
 assert.equal(paste(true, [image, image]), true);
 assert.equal(messages.length, 1);
 assert.equal(JSON.stringify(messages[0]), '{"k":"paste"}');
