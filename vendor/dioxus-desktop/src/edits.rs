@@ -578,6 +578,14 @@ mod tests {
                 loop {
                     match listener.accept() {
                         Ok((stream, _)) => {
+                            // Accepted sockets can inherit nonblocking mode on macOS.
+                            stream.set_nonblocking(false).unwrap();
+                            stream
+                                .set_read_timeout(Some(Duration::from_secs(5)))
+                                .unwrap();
+                            stream
+                                .set_write_timeout(Some(Duration::from_secs(5)))
+                                .unwrap();
                             EditWebsocket::handle_connection(stream, location, connections);
                             return;
                         }
@@ -625,6 +633,13 @@ mod tests {
         }
     }
 
+    fn disconnect_abruptly(socket: &WebSocket<TcpStream>) {
+        if let Err(error) = socket.get_ref().shutdown(Shutdown::Both) {
+            // macOS reports NotConnected when the peer has already closed.
+            assert_eq!(error.kind(), std::io::ErrorKind::NotConnected);
+        }
+    }
+
     fn disconnect_preserves_edits(abrupt: bool) {
         let fixture = Fixture::new();
         let mut first = fixture.enqueue(b"initial DOM");
@@ -633,7 +648,7 @@ mod tests {
         let mut second = fixture.enqueue(b"stylesheet");
         let mut third = fixture.enqueue(b"next render");
         if abrupt {
-            socket.get_mut().shutdown(Shutdown::Both).unwrap();
+            disconnect_abruptly(&socket);
         } else {
             socket.close(None).unwrap();
         }
@@ -711,7 +726,7 @@ mod tests {
             let fixture = Fixture::new();
             let mut socket = fixture.connect();
             if abrupt {
-                socket.get_mut().shutdown(Shutdown::Both).unwrap();
+                disconnect_abruptly(&socket);
             } else {
                 socket.close(None).unwrap();
             }
