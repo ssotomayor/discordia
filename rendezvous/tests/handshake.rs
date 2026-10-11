@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use dioxusfun_protocol::rendezvous::DiscoverEntry;
+use dioxusfun_protocol::rendezvous::{DiscoverEntry, LIST_NAMES};
 use dioxusfun_rendezvous::{AppCtx, Config, registry::Registry, router};
 use futures_util::{SinkExt, StreamExt};
 use secp256k1::{Keypair, Secp256k1, SecretKey};
@@ -177,6 +177,32 @@ async fn signed_name_claim_succeeds_and_becomes_the_shortcode() {
 }
 
 #[tokio::test]
+async fn a_spaced_name_is_listed_as_written_and_joined_by_its_code() {
+    let (base, _registry) = spawn_with(Config::default()).await;
+    let (secret, pubkey) = identity(12);
+
+    let (mut ws, nonce) = connect_control(&base).await;
+    let name = "Friday Game Night";
+    let sig = sign(&secret, &nonce, &pubkey, name);
+    send_register(&mut ws, name, &pubkey, &sig).await;
+    let reply = next_json(&mut ws).await;
+    assert_eq!(reply["op"], "registered", "got {reply}");
+    assert_eq!(reply["d"]["shortcode"], "friday-game-night");
+
+    let http = base.replace("ws://", "http://");
+    for typed in ["friday-game-night", "Friday%20Game%20Night"] {
+        let fetched: DiscoverEntry = reqwest::get(format!("{http}/resolve/{typed}"))
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(fetched.shortcode, "friday-game-night");
+        assert_eq!(fetched.name.as_deref(), Some(name));
+    }
+}
+
+#[tokio::test]
 async fn bad_signature_is_rejected() {
     let base = spawn().await;
     let (_secret, pubkey) = identity(2);
@@ -204,19 +230,6 @@ async fn an_owner_reopens_its_name_after_disconnect_with_a_fresh_challenge() {
     let signature = sign(&secret, &nonce, &owner, "Recko");
     send_register(&mut first, "Recko", &owner, &signature).await;
     assert_eq!(next_json(&mut first).await["op"], "registered");
-
-    let (mut duplicate, nonce) = connect_control(&base).await;
-    let signature = sign(&secret, &nonce, &owner, "recko");
-    send_register(&mut duplicate, "recko", &owner, &signature).await;
-    let reply = next_json(&mut duplicate).await;
-    assert_eq!(reply["op"], "error");
-    assert!(
-        reply["d"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("another session")
-    );
-
     first.close(None).await.unwrap();
     wait_until_unregistered(&registry, "recko").await;
     assert_eq!(
@@ -230,6 +243,76 @@ async fn an_owner_reopens_its_name_after_disconnect_with_a_fresh_challenge() {
     let reply = next_json(&mut reopened).await;
     assert_eq!(reply["op"], "registered", "{reply}");
     assert_eq!(reply["d"]["shortcode"], "recko");
+}
+
+#[tokio::test]
+async fn an_owner_takes_over_its_own_lingering_session_without_waiting() {
+    let (base, registry) = spawn_with(Config::default()).await;
+    let (secret, owner) = identity(43);
+    let (mut stale, nonce) = connect_control(&base).await;
+    let signature = sign(&secret, &nonce, &owner, "Lingering");
+    send_register(&mut stale, "Lingering", &owner, &signature).await;
+    assert_eq!(next_json(&mut stale).await["op"], "registered");
+    let stale_entry = registry.hosts.get("lingering").unwrap().value().clone();
+
+    let (mut fresh, nonce) = connect_control(&base).await;
+    let signature = sign(&secret, &nonce, &owner, "Lingering");
+    send_register(&mut fresh, "Lingering", &owner, &signature).await;
+    let reply = next_json(&mut fresh).await;
+    assert_eq!(reply["op"], "registered", "{reply}");
+    assert_eq!(next_json(&mut stale).await["op"], "superseded");
+
+    // The stale session's cleanup runs after its successor's claim and must
+    // leave the successor listed.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let live = registry.hosts.get("lingering").unwrap().value().clone();
+    assert!(!Arc::ptr_eq(&live, &stale_entry));
+}
+
+#[tokio::test]
+async fn an_owner_lists_its_names_and_nobody_else_can() {
+    let (base, _registry) = spawn_with(Config::default()).await;
+    let (secret, owner) = identity(44);
+    let (stranger_secret, _) = identity(45);
+    let mut live = Vec::new();
+    for name in ["Kept Name", "Live Name"] {
+        let (mut ws, nonce) = connect_control(&base).await;
+        let signature = sign(&secret, &nonce, &owner, name);
+        send_register(&mut ws, name, &owner, &signature).await;
+        assert_eq!(next_json(&mut ws).await["op"], "registered");
+        if name == "Kept Name" {
+            ws.close(None).await.unwrap();
+        } else {
+            live.push(ws);
+        }
+    }
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let list = |secret: SecretKey| {
+        let base = base.clone();
+        let owner = owner.clone();
+        async move {
+            let (mut ws, nonce) = connect_control(&base).await;
+            let signature = sign(&secret, &nonce, &owner, LIST_NAMES);
+            let frame = serde_json::json!({
+                "op": "list_names",
+                "d": { "pubkey": owner, "signature": signature }
+            });
+            ws.send(Message::Text(frame.to_string())).await.unwrap();
+            next_json(&mut ws).await
+        }
+    };
+    let reply = list(secret).await;
+    assert_eq!(reply["op"], "names", "{reply}");
+    let names = reply["d"]["names"].as_array().unwrap();
+    assert_eq!(names.len(), 2);
+    assert_eq!(names[0]["code"], "kept-name");
+    assert!(names[0]["expires_in_secs"].as_u64().unwrap() > 23 * 60 * 60);
+    assert_eq!(names[1]["code"], "live-name");
+    assert!(names[1]["expires_in_secs"].is_null());
+
+    assert_eq!(list(stranger_secret).await["op"], "error");
+    drop(live);
 }
 
 #[tokio::test]

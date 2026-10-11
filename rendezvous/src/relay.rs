@@ -2,7 +2,9 @@ use std::net::IpAddr;
 use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket};
-use dioxusfun_protocol::rendezvous::{HostToRendezvous, RendezvousToHost};
+use dioxusfun_protocol::rendezvous::{
+    HostToRendezvous, LIST_NAMES, MAX_NAME_CHARS, RendezvousToHost,
+};
 use futures_util::{SinkExt, StreamExt};
 
 use crate::Config;
@@ -120,6 +122,15 @@ pub async fn handle_host_control(
                 }
                 return;
             }
+            Ok(HostToRendezvous::ListNames { pubkey, signature }) => {
+                if let Err(e) = verify::verify_ownership(&pubkey, &signature, &nonce, LIST_NAMES) {
+                    send_err(&mut tx, &format!("name listing rejected: {e}")).await;
+                    return;
+                }
+                let names = registry.names_of(&pubkey, crate::registry::now_unix());
+                let _ = send_msg(&mut tx, &RendezvousToHost::Names { names }).await;
+                return;
+            }
             Ok(HostToRendezvous::RenewTurn {}) => {
                 send_err(&mut tx, "register before renewing relay credentials").await;
                 return;
@@ -194,7 +205,8 @@ pub async fn handle_host_control(
                 send_err(&mut tx, &format!("name ownership rejected: {e}")).await;
                 return;
             }
-            (slug, Some(raw.clone()))
+            let display = dioxusfun_protocol::sanitize_line(raw, MAX_NAME_CHARS);
+            (slug, Some(display))
         }
         None => match claim_anonymous_shortcode(&registry).await {
             Some(c) => (c, None),
@@ -212,6 +224,7 @@ pub async fn handle_host_control(
         transport_addrs: transport.map(|(_, a)| a).unwrap_or_default(),
         location,
         last_seen_ms: Default::default(),
+        superseded: Default::default(),
     };
     let owner = name.as_ref().and(pubkey.as_deref());
     let entry = match registry.claim_host(&shortcode, owner, host_entry) {
@@ -246,10 +259,16 @@ pub async fn handle_host_control(
         relay_url: cfg.relay_url.clone(),
         turn: cfg.turn.as_ref().and_then(|issuer| issuer.issue()),
     };
+    let grant = match &registered {
+        RendezvousToHost::Registered {
+            voice_token_grant, ..
+        } => voice_token_grant.clone(),
+        _ => None,
+    };
     if let Ok(json) = serde_json::to_string(&registered)
         && tx.send(Message::Text(json)).await.is_err()
     {
-        registry.release(&shortcode);
+        registry.release(&shortcode, &entry, grant.as_deref());
         return;
     }
 
@@ -279,6 +298,11 @@ pub async fn handle_host_control(
                     }
                 }
             }
+            _ = entry.superseded.notified() => {
+                tracing::info!(%shortcode, "host superseded by a newer session of the same key");
+                let _ = send_msg(&mut tx, &RendezvousToHost::Superseded {}).await;
+                break;
+            }
             _ = heartbeat.tick() => {
                 let idle_ms = entry.idle_ms();
                 if idle_ms >= cfg.host_timeout.as_millis() as i64 {
@@ -292,7 +316,7 @@ pub async fn handle_host_control(
         }
     }
 
-    registry.release(&shortcode);
+    registry.release(&shortcode, &entry, grant.as_deref());
     tracing::info!(%shortcode, "host unregistered");
 }
 

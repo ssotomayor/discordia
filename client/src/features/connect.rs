@@ -158,16 +158,18 @@ pub fn ConnectForm(
         on_connect.call(params);
     };
 
+    let bad_ip = allow_lan()
+        && !manual_ip().trim().is_empty()
+        && manual_ip()
+            .trim()
+            .parse::<std::net::IpAddr>()
+            .ok()
+            .is_none_or(|ip| !ip.is_ipv4() || !crate::host::public_address(ip));
+    let publish_code = crate::protocol::rendezvous::join_code(&publish_name());
+    let bad_name =
+        publish_to_rendezvous() && !publish_name().trim().is_empty() && publish_code.is_none();
     let disabled = match mode() {
-        Mode::Create => {
-            allow_lan()
-                && !manual_ip().trim().is_empty()
-                && manual_ip()
-                    .trim()
-                    .parse::<std::net::IpAddr>()
-                    .ok()
-                    .is_none_or(|ip| !ip.is_ipv4() || !crate::host::public_address(ip))
-        }
+        Mode::Create => bad_ip || bad_name,
         Mode::Join => join_by(&server_url(), &code(), &rendezvous_url()) == JoinBy::Nothing,
     };
     // Going grey says "not yet" without saying why; this names both ways in.
@@ -255,7 +257,7 @@ pub fn ConnectForm(
                             div { class: "space-y-2",
                                 label { class: LABEL, "Code" }
                                 input {
-                                    class: "{INPUT} lowercase",
+                                    class: INPUT,
                                     r#type: "text",
                                     placeholder: "purple-fox-42 or a server name",
                                     value: "{code}",
@@ -343,7 +345,7 @@ pub fn ConnectForm(
                                         value: "{manual_ip}",
                                         oninput: move |e| manual_ip.set(e.value()),
                                     }
-                                    if disabled {
+                                    if bad_ip {
                                         div { class: "text-[var(--warn)]",
                                             "Enter a public IPv4 address, or leave this empty to try automatic detection."
                                         }
@@ -358,15 +360,33 @@ pub fn ConnectForm(
                                     div { class: "space-y-1",
                                         label { class: LABEL, "Server name" }
                                         input {
-                                            class: "{INPUT_SM} lowercase",
+                                            class: INPUT_SM,
                                             r#type: "text",
-                                            placeholder: "my-server",
+                                            placeholder: "Friday Game Night",
+                                            maxlength: crate::protocol::rendezvous::MAX_NAME_CHARS as i64,
                                             value: "{publish_name}",
                                             oninput: move |e| publish_name.set(e.value()),
                                         }
-                                        div { class: "text-[10px] text-[var(--text-dim)]",
-                                            "Becomes your join code, reserved to your key. Letters, digits, '-', '_' and '.'"
+                                        if bad_name {
+                                            div { class: "text-[10px] text-[var(--warn)]",
+                                                "The join code is made from the letters a–z and digits in the name, and this one has none."
+                                            }
+                                        } else if let Some(c) = publish_code.clone() {
+                                            div { class: "text-[10px] text-[var(--text-dim)]",
+                                                "Friends join with the code "
+                                                span { class: "font-mono text-[var(--text-muted)]", "{c}" }
+                                                ", reserved to your key."
+                                            }
+                                        } else {
+                                            div { class: "text-[10px] text-[var(--text-dim)]",
+                                                "Shown in the server list and reserved to your key. Leave it empty for a random code."
+                                            }
                                         }
+                                    }
+                                    ReservedNames {
+                                        rendezvous_url,
+                                        identity: row_identity.clone(),
+                                        on_pick: move |code: String| publish_name.set(code),
                                     }
                                     div { class: "space-y-1",
                                         label { class: LABEL, "Description (optional)" }
@@ -442,7 +462,7 @@ pub fn ConnectForm(
                             Mode::Create => "Launch  →",
                         }}
                     }
-                    if disabled {
+                    if disabled && mode() == Mode::Join {
                         div { class: "mt-2 text-center text-xs text-[var(--text-dim)]", "{hint}" }
                     }
                 }
@@ -687,6 +707,104 @@ pub(crate) fn BlobServerField() -> Element {
             }
             if let Some(n) = note() {
                 div { class: "mt-1 text-[var(--text-muted)]", "{n}" }
+            }
+        }
+    }
+}
+
+/// Every name a host has launched under stays reserved until a day after its
+/// last session, and a key holds only a few: this is where one is let go early.
+#[component]
+fn ReservedNames(
+    rendezvous_url: Signal<String>,
+    identity: Identity,
+    on_pick: EventHandler<String>,
+) -> Element {
+    let mut refresh = use_signal(|| 0u32);
+    let mut releasing = use_signal(std::collections::HashSet::<String>::new);
+    let mut note = use_signal(|| None::<String>);
+    let lister = identity.clone();
+    let names = use_resource(move || {
+        let _ = refresh();
+        let url = rendezvous_url().trim().to_string();
+        let identity = lister.clone();
+        async move {
+            if url.is_empty() {
+                return Ok(Vec::new());
+            }
+            crate::rendezvous::list_names(&url, &identity).await
+        }
+    });
+    let listed = match &*names.read_unchecked() {
+        Some(Ok(list)) => list.clone(),
+        Some(Err(e)) => {
+            return rsx! {
+                div { class: "text-[10px] text-[var(--text-dim)]", "Couldn't list your names here: {e}" }
+            };
+        }
+        None => return rsx! {},
+    };
+    if listed.is_empty() {
+        return rsx! {};
+    }
+    rsx! {
+        div { class: "space-y-1",
+            label { class: LABEL, "Your names here" }
+            for name in listed {
+                {
+                    let pending = releasing.read().contains(&name.code);
+                    let code = name.code.clone();
+                    let freed = name.code.clone();
+                    let identity = identity.clone();
+                    let status = match name.expires_in_secs {
+                        None => "live now".to_string(),
+                        Some(s) if s >= 3600 => format!("free in {}h", s / 3600),
+                        Some(s) => format!("free in {}m", (s / 60).max(1)),
+                    };
+                    rsx! {
+                        div {
+                            key: "{name.code}",
+                            class: "flex items-center gap-2 text-[11px]",
+                            style: if pending { "opacity: .5;" } else { "" },
+                            button {
+                                r#type: "button",
+                                class: "font-mono text-[var(--text)] hover:text-[var(--accent)] truncate transition-colors",
+                                title: "Launch under this name again",
+                                onclick: move |_| on_pick.call(code.clone()),
+                                "{name.code}"
+                            }
+                            span { class: "flex-1 text-[var(--text-dim)] whitespace-nowrap", "{status}" }
+                            if name.expires_in_secs.is_some() {
+                                button {
+                                    r#type: "button",
+                                    class: "text-[10px] uppercase tracking-wider text-[var(--text-dim)] hover:text-[var(--danger)] transition-colors",
+                                    title: "Free this name now, for anyone to take",
+                                    disabled: pending,
+                                    onclick: move |_| {
+                                        let code = freed.clone();
+                                        let identity = identity.clone();
+                                        releasing.write().insert(code.clone());
+                                        note.set(None);
+                                        spawn(async move {
+                                            let url = rendezvous_url().trim().to_string();
+                                            let result = crate::rendezvous::release_name(&url, &identity, &code).await;
+                                            // Kept dimmed on success until the refreshed list drops it.
+                                            if let Err(e) = result {
+                                                note.set(Some(format!("Couldn't release {code}: {e}")));
+                                                releasing.write().remove(&code);
+                                            }
+                                            refresh += 1;
+                                        });
+                                    },
+                                    if pending { "Releasing…" } else { "Release" }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some(n) = note() {
+                div { class: "text-[10px] text-[var(--danger)]", "{n}" }
             }
         }
     }
@@ -945,12 +1063,6 @@ fn initials(name: &str) -> String {
         .to_uppercase()
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BrowseView {
-    Globe,
-    List,
-}
-
 #[component]
 fn BrowseTab(
     rendezvous_url: String,
@@ -959,7 +1071,6 @@ fn BrowseTab(
     picked_shortcode: String,
 ) -> Element {
     let mut refresh_tick = use_signal(|| 0u32);
-    let mut view = use_signal(|| BrowseView::Globe);
     let url_for_fetch = rendezvous_url.clone();
     let entries = use_resource(move || {
         let _ = refresh_tick();
@@ -994,11 +1105,6 @@ fn BrowseTab(
             })
         })
         .collect();
-    let unplaced = list.len() - pins.len();
-    let picked = list
-        .iter()
-        .find(|e| e.shortcode == picked_shortcode)
-        .cloned();
     let pin_list = list.clone();
 
     let status = match &*entries.read_unchecked() {
@@ -1028,10 +1134,6 @@ fn BrowseTab(
         div { class: "space-y-2",
             div { class: "flex items-center gap-2",
                 span { class: "{LABEL} flex-1", "Public servers" }
-                div { class: "flex gap-0.5 p-1 rounded-md bg-[var(--panel2)] border border-[var(--edge)]",
-                    ViewButton { active: view() == BrowseView::Globe, label: "Find a server", onclick: move |_| view.set(BrowseView::Globe) }
-                    ViewButton { active: view() == BrowseView::List, label: "List", onclick: move |_| view.set(BrowseView::List) }
-                }
                 button {
                     r#type: "button",
                     class: "text-[12.5px] font-medium text-[var(--accent)] hover:text-[var(--accent-strong)] transition-colors",
@@ -1039,85 +1141,60 @@ fn BrowseTab(
                     "\u{21bb} Refresh"
                 }
             }
-
-            match view() {
-                BrowseView::Globe => rsx! {
-                    div { class: "space-y-1.5",
-                        div { class: "rounded-xl bg-[var(--panel)] border border-[var(--edge-strong)] overflow-hidden",
-                            Globe {
-                                pins,
-                                selected: (!picked_shortcode.is_empty()).then(|| picked_shortcode.clone()),
-                                pick: false,
-                                place: None::<GeoPoint>,
-                                height: 260,
-                                on_pick: move |code: String| {
-                                    if let Some(e) = pin_list.iter().find(|e| e.shortcode == code) {
-                                        on_pick.call(e.clone());
-                                    }
-                                },
-                                on_place: move |_| {},
-                            }
-                        }
-                        if let Some(st) = status {
-                            {st}
-                        } else if let Some(entry) = picked {
-                            HostRow { entry, selected: true, on_pick, on_enter }
-                        } else {
-                            div { class: "text-[11px] text-[var(--text-dim)] text-center",
-                                "Drag to spin. Click a pin to pick that server."
-                            }
-                        }
-                        if unplaced > 0 {
-                            div { class: "text-[11px] text-[var(--text-dim)] text-center",
-                                if unplaced == 1 { "1 server hasn't said where it is" } else { "{unplaced} servers haven't said where they are" }
-                                " \u{b7} "
-                                button {
-                                    r#type: "button",
-                                    class: "text-[var(--accent)] hover:text-[var(--accent-strong)] transition-colors",
-                                    onclick: move |_| view.set(BrowseView::List),
-                                    "see the list"
-                                }
-                            }
+            if let Some(st) = status {
+                {st}
+            } else {
+                div {
+                    class: "overflow-y-auto space-y-1.5 pr-0.5",
+                    style: "max-height: {HOST_LIST_MAX_HEIGHT};",
+                    for entry in list.iter().cloned() {
+                        HostRow {
+                            key: "{entry.shortcode}",
+                            selected: picked_shortcode == entry.shortcode,
+                            entry,
+                            on_pick,
+                            on_enter,
                         }
                     }
-                },
-                BrowseView::List => rsx! {
-                    div { class: "max-h-64 overflow-y-auto space-y-1.5 pr-0.5",
-                        if let Some(st) = status {
-                            {st}
-                        } else {
-                            for entry in list.iter().cloned() {
-                                HostRow {
-                                    key: "{entry.shortcode}",
-                                    selected: picked_shortcode == entry.shortcode,
-                                    entry,
-                                    on_pick,
-                                    on_enter,
-                                }
-                            }
+                }
+            }
+            div { class: "rounded-xl bg-[var(--panel)] border border-[var(--edge-strong)] overflow-hidden",
+                Globe {
+                    pins,
+                    selected: (!picked_shortcode.is_empty()).then(|| picked_shortcode.clone()),
+                    pick: false,
+                    place: None::<GeoPoint>,
+                    height: 260,
+                    on_pick: move |code: String| {
+                        if let Some(e) = pin_list.iter().find(|e| e.shortcode == code) {
+                            on_pick.call(e.clone());
+                            scroll_to_host(&code);
                         }
-                    }
-                },
+                    },
+                    on_place: move |_| {},
+                }
+            }
+            div { class: "text-[11px] text-[var(--text-dim)] text-center",
+                "Drag to spin. Click a pin to pick that server."
             }
         }
     }
 }
 
-#[component]
-fn ViewButton(active: bool, label: &'static str, onclick: EventHandler<()>) -> Element {
-    let cls = if active {
-        "bg-[var(--panel)] text-[var(--text)] border-[var(--edge-strong)]"
-    } else {
-        "text-[var(--text-dim)] border-transparent hover:text-[var(--text)]"
-    };
-    rsx! {
-        button {
-            r#type: "button",
-            class: "px-2 py-0.5 rounded text-[10.5px] border transition-colors {cls}",
-            onclick: move |_| onclick.call(()),
-            "{label}"
-        }
-    }
+/// Six rows, each `HOST_ROW_HEIGHT`, with the list's 0.375rem gaps between.
+const HOST_LIST_MAX_HEIGHT: &str = "calc(6 * 4.25rem + 5 * 0.375rem)";
+const HOST_ROW_HEIGHT: &str = "4.25rem";
+
+/// A pin can belong to a row scrolled out of the list's six.
+fn scroll_to_host(code: &str) {
+    let id = serde_json::to_string(&host_row_id(code)).unwrap_or_default();
+    document::eval(&format!(
+        "document.getElementById({id})?.scrollIntoView({{block: 'nearest'}});"
+    ));
+}
+
+fn host_row_id(code: &str) -> String {
+    format!("host-row-{code}")
 }
 
 #[component]
@@ -1153,8 +1230,9 @@ fn HostRow(
     let for_enter = entry.clone();
     rsx! {
         div {
+            id: host_row_id(&entry.shortcode),
             class: "flex items-center gap-3 pl-2.5 pr-2.5 py-2 rounded-lg border transition-colors {row_cls}",
-            style: "border-left: 3px solid {stripe};",
+            style: "border-left: 3px solid {stripe}; min-height: {HOST_ROW_HEIGHT};",
             button {
                 r#type: "button",
                 class: "flex-1 min-w-0 flex items-center gap-3 text-left",

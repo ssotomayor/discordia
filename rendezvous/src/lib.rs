@@ -110,7 +110,7 @@ async fn resolve(
         return Err(StatusCode::TOO_MANY_REQUESTS);
     }
     ctx.registry
-        .lookup(&code.to_lowercase())
+        .lookup(&dioxusfun_protocol::rendezvous::join_code(&code).unwrap_or_default())
         .map(|mut entry| {
             entry.relay_url = ctx.config.relay_url.clone();
             Json(entry)

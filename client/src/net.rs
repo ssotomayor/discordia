@@ -216,7 +216,9 @@ async fn resolve_session(
             let with_scheme = ws_scheme(base);
             state.write().rendezvous_url = Some(base.to_string());
             let code = code.trim();
-            let Some(entry) = resolve_host(&with_scheme, code).await else {
+            let typed = crate::protocol::rendezvous::join_code(code);
+            let Some(entry) = resolve_host(&with_scheme, typed.as_deref().unwrap_or(code)).await
+            else {
                 return Err(format!("no host answers to '{code}' at {base}"));
             };
             let Some(key) = entry.transport_key else {
@@ -469,12 +471,17 @@ fn apply_host_update(s: &mut AppState, update: crate::rendezvous::HostUpdate) {
         return;
     };
     match update {
-        HostUpdate::RendezvousLost { error } => {
+        HostUpdate::Lost { error } => {
             info.publish_error = Some(format!("rendezvous link lost, retrying: {error}"));
         }
-        HostUpdate::RendezvousRestored { shortcode } => {
+        HostUpdate::Restored { shortcode } => {
             info.publish_error = None;
             info.shortcode = Some(shortcode);
+        }
+        HostUpdate::Superseded => {
+            info.publish_error =
+                Some("your key is publishing this name from another session now".into());
+            info.shortcode = None;
         }
     }
 }

@@ -39,6 +39,19 @@ pub enum HostToRendezvous {
     },
     /// Asked before the credentials in `Registered` expire; the stream stays up.
     RenewTurn {},
+    /// The signature covers `LIST_NAMES`: the answer names unlisted codes,
+    /// and a code is all it takes to connect.
+    ListNames { pubkey: String, signature: String },
+}
+
+/// What a `ListNames` signature signs in place of a name.
+pub const LIST_NAMES: &str = "dioxusfun:list-names";
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct ReservedName {
+    pub code: String,
+    /// `None` while a session holds it: a live name does not expire.
+    pub expires_in_secs: Option<u64>,
 }
 
 /// Time-limited TURN credentials (the coturn REST scheme: the username is an
@@ -81,6 +94,47 @@ impl GeoPoint {
     }
 }
 
+/// The longest server name a host may claim, counted in characters.
+pub const MAX_NAME_CHARS: usize = 64;
+
+/// ASCII only, so a lookalike letter from another script cannot squat a code:
+/// "Friday Game Night" answers to `friday-game-night`.
+pub fn join_code(name: &str) -> Option<String> {
+    use unicode_normalization::UnicodeNormalization as _;
+    let mut code = String::new();
+    let mut gap = false;
+    for c in name.nfkd() {
+        let spelled = match c {
+            'ß' => "ss",
+            'æ' | 'Æ' => "ae",
+            'œ' | 'Œ' => "oe",
+            'ø' | 'Ø' => "o",
+            'đ' | 'Đ' => "d",
+            'ł' | 'Ł' => "l",
+            'þ' | 'Þ' => "th",
+            _ => "",
+        };
+        if !spelled.is_empty() || c.is_ascii_alphanumeric() || c == '_' || c == '.' {
+            if gap && !code.is_empty() {
+                code.push('-');
+            }
+            gap = false;
+            if spelled.is_empty() {
+                code.push(c.to_ascii_lowercase());
+            } else {
+                code.push_str(spelled);
+            }
+        } else if !matches!(c, '\'' | '\u{2019}' | '\u{2018}')
+            && !unicode_normalization::char::is_combining_mark(c)
+        {
+            gap = true;
+        }
+    }
+    code.truncate(MAX_NAME_CHARS);
+    let code = code.trim_end_matches('-');
+    (!code.is_empty()).then(|| code.to_string())
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct DiscoverEntry {
     pub shortcode: String,
@@ -121,6 +175,12 @@ pub enum RendezvousToHost {
     Released {
         name: String,
     },
+    Names {
+        names: Vec<ReservedName>,
+    },
+    /// The same key registered this name again; this session no longer holds
+    /// it, and registering back would take it from the newer one.
+    Superseded {},
     Error {
         message: String,
     },
@@ -240,5 +300,40 @@ mod tests {
             }
             other => panic!("parsed as {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_server_name_becomes_a_typeable_join_code() {
+        for (name, code) in [
+            ("Friday Game Night", "friday-game-night"),
+            ("Teh's  server!", "tehs-server"),
+            ("  Café Ñandú  ", "cafe-nandu"),
+            ("Straße", "strasse"),
+            ("v1.2_beta", "v1.2_beta"),
+            ("A - B", "a-b"),
+            ("ｗｉｄｅ", "wide"),
+        ] {
+            assert_eq!(join_code(name).as_deref(), Some(code), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_join_code_is_its_own_code() {
+        for code in ["purple-fox-42", "bitcoin-com", "v1.2_beta"] {
+            assert_eq!(join_code(code).as_deref(), Some(code));
+        }
+    }
+
+    #[test]
+    fn a_name_with_nothing_typeable_has_no_code() {
+        assert_eq!(join_code(""), None);
+        assert_eq!(join_code(" -- !! "), None);
+        assert_eq!(join_code("東京"), None);
+    }
+
+    #[test]
+    fn a_long_name_is_cut_without_a_trailing_dash() {
+        let code = join_code(&format!("{} b", "a".repeat(MAX_NAME_CHARS - 1))).unwrap();
+        assert_eq!(code, "a".repeat(MAX_NAME_CHARS - 1));
     }
 }

@@ -4,7 +4,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 
 use dashmap::{DashMap, mapref::entry::Entry};
-use dioxusfun_protocol::rendezvous::{DiscoverEntry, GeoPoint};
+use dioxusfun_protocol::rendezvous::{
+    DiscoverEntry, GeoPoint, MAX_NAME_CHARS, ReservedName, join_code,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::limits::Limits;
@@ -17,6 +19,8 @@ pub struct HostEntry {
     pub transport_addrs: Vec<String>,
     pub location: Option<GeoPoint>,
     pub last_seen_ms: AtomicI64,
+    /// Woken when the same key registers this name from a newer session.
+    pub superseded: tokio::sync::Notify,
 }
 
 impl HostEntry {
@@ -47,12 +51,25 @@ fn now_ms() -> i64 {
 pub struct Reservation {
     pub slug: String,
     pub owner_pubkey: String,
+    /// Wall clock, unlike `last_seen_ms`, because it must survive a restart.
+    /// A file without it counts from when it was loaded rather than expiring at once.
+    #[serde(default = "now_unix")]
+    pub last_live_unix: u64,
+}
+
+pub fn now_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or_default()
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct ReservationCaps {
     pub per_owner: usize,
     pub total: usize,
+    /// How long a name outlives its last session.
+    pub ttl_secs: u64,
 }
 
 impl Default for ReservationCaps {
@@ -60,6 +77,7 @@ impl Default for ReservationCaps {
         Self {
             per_owner: 3,
             total: 10_000,
+            ttl_secs: 24 * 60 * 60,
         }
     }
 }
@@ -91,18 +109,16 @@ pub struct Registry {
     pub limits: Limits,
 }
 
+/// Returns the join code `name` claims; the name itself stays as written,
+/// so a host can be "Friday Game Night" and still be typed.
 pub fn validate_name(name: &str) -> Result<String, String> {
     let name = name.trim();
-    if name.is_empty() || name.len() > 64 {
-        return Err("name must be 1–64 characters".into());
+    if name.is_empty() || name.chars().count() > MAX_NAME_CHARS {
+        return Err(format!(
+            "a server name must be 1–{MAX_NAME_CHARS} characters"
+        ));
     }
-    if !name
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
-    {
-        return Err("name may only contain letters, digits, '-', '_' and '.'".into());
-    }
-    Ok(name.to_lowercase())
+    join_code(name).ok_or_else(|| "a server name needs a letter or digit from a–z or 0–9".into())
 }
 
 impl Default for Registry {
@@ -186,14 +202,21 @@ impl Registry {
     }
 
     pub fn claim_name(&self, slug: &str, owner: &str) -> Result<(), ClaimError> {
+        self.claim_name_at(slug, owner, now_unix())
+    }
+
+    fn claim_name_at(&self, slug: &str, owner: &str, now: u64) -> Result<(), ClaimError> {
         let _registration = self
             .registration_lock
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        self.claim_name_locked(slug, owner)
+        self.claim_name_locked(slug, owner, now)
     }
 
-    fn claim_name_locked(&self, slug: &str, owner: &str) -> Result<(), ClaimError> {
+    /// The owner's own live session is no obstacle: `claim_host` replaces it,
+    /// which is how a host back from a dropped link skips the heartbeat timeout.
+    fn claim_name_locked(&self, slug: &str, owner: &str, now: u64) -> Result<(), ClaimError> {
+        self.expire_locked(now);
         let already_mine = self
             .reservations
             .get(slug)
@@ -201,11 +224,15 @@ impl Registry {
         if already_mine == Some(false) {
             return Err(ClaimError::Taken);
         }
+        if already_mine == Some(true) {
+            if let Some(mut r) = self.reservations.get_mut(slug) {
+                r.last_live_unix = now;
+            }
+            self.persist();
+            return Ok(());
+        }
         if self.hosts.contains_key(slug) {
             return Err(ClaimError::LiveElsewhere);
-        }
-        if already_mine == Some(true) {
-            return Ok(());
         }
         if self.reservations.len() >= self.caps.total {
             return Err(ClaimError::Full);
@@ -223,10 +250,69 @@ impl Registry {
             Reservation {
                 slug: slug.to_string(),
                 owner_pubkey: owner.to_ascii_lowercase(),
+                last_live_unix: now,
             },
         );
         self.persist();
         Ok(())
+    }
+
+    /// A live name never expires, whatever its timestamp says: that is only
+    /// refreshed when a session starts or ends, and by `sweep`.
+    fn expire_locked(&self, now: u64) -> bool {
+        let before = self.reservations.len();
+        let ttl = self.caps.ttl_secs;
+        self.reservations.retain(|slug, r| {
+            self.hosts.contains_key(slug) || now.saturating_sub(r.last_live_unix) < ttl
+        });
+        let expired = self.reservations.len() != before;
+        if expired {
+            self.persist();
+        }
+        expired
+    }
+
+    /// Run periodically. Refreshing live names keeps a restart of this process,
+    /// which forgets every session, from expiring a name its host is about to reclaim.
+    pub fn sweep(&self, now: u64) {
+        let _registration = self
+            .registration_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut refreshed = false;
+        for mut r in self.reservations.iter_mut() {
+            if self.hosts.contains_key(r.key()) {
+                r.last_live_unix = now;
+                refreshed = true;
+            }
+        }
+        if !self.expire_locked(now) && refreshed {
+            self.persist();
+        }
+    }
+
+    pub fn names_of(&self, owner: &str, now: u64) -> Vec<ReservedName> {
+        let ttl = self.caps.ttl_secs;
+        let mut names: Vec<ReservedName> = self
+            .reservations
+            .iter()
+            .filter(|r| r.owner_pubkey.eq_ignore_ascii_case(owner))
+            .filter_map(|r| {
+                if self.hosts.contains_key(r.key()) {
+                    return Some(ReservedName {
+                        code: r.slug.clone(),
+                        expires_in_secs: None,
+                    });
+                }
+                let left = ttl.checked_sub(now.saturating_sub(r.last_live_unix))?;
+                (left > 0).then(|| ReservedName {
+                    code: r.slug.clone(),
+                    expires_in_secs: Some(left),
+                })
+            })
+            .collect();
+        names.sort_by(|a, b| a.code.cmp(&b.code));
+        names
     }
 
     pub fn release_name(&self, slug: &str, owner: &str) -> Result<(), ReleaseError> {
@@ -272,7 +358,7 @@ impl Registry {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some(owner) = owner {
-            self.claim_name_locked(shortcode, owner)?;
+            self.claim_name_locked(shortcode, owner, now_unix())?;
         } else if self.reservations.contains_key(shortcode) {
             return Err(ClaimError::Taken);
         }
@@ -283,17 +369,36 @@ impl Registry {
                 slot.insert(entry.clone());
                 Ok(entry)
             }
+            // Only an owner gets here: `claim_name_locked` refused everyone else.
+            Entry::Occupied(mut slot) if owner.is_some() => {
+                let old = slot.insert(entry.clone());
+                old.superseded.notify_one();
+                Ok(entry)
+            }
             Entry::Occupied(_) => Err(ClaimError::LiveElsewhere),
         }
     }
 
-    pub fn release(&self, shortcode: &str) {
+    /// Ends one session. A superseded session ends after its successor took
+    /// the name, so it removes the listing only if the listing is still its own.
+    pub fn release(&self, shortcode: &str, entry: &Arc<HostEntry>, grant: Option<&str>) {
         let _registration = self
             .registration_lock
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        self.hosts.remove(shortcode);
-        self.voice_grants.retain(|_, sc| sc != shortcode);
+        if let Some(grant) = grant {
+            self.voice_grants.remove(grant);
+        }
+        if self
+            .hosts
+            .remove_if(shortcode, |_, live| Arc::ptr_eq(live, entry))
+            .is_some()
+            && let Some(mut r) = self.reservations.get_mut(shortcode)
+        {
+            r.last_live_unix = now_unix();
+            drop(r);
+            self.persist();
+        }
     }
 
     pub fn discover(&self) -> Vec<DiscoverEntry> {
@@ -344,6 +449,7 @@ mod tests {
             transport_addrs: Vec::new(),
             location: None,
             last_seen_ms: AtomicI64::new(0),
+            superseded: Default::default(),
         }
     }
 
@@ -393,6 +499,7 @@ mod tests {
         let registry = Registry::new().with_caps(ReservationCaps {
             per_owner: 3,
             total: 100,
+            ..Default::default()
         });
         let barrier = std::sync::Barrier::new(16);
         let successes = std::thread::scope(|scope| {
@@ -427,6 +534,7 @@ mod tests {
             serde_json::to_vec(&vec![Reservation {
                 slug: "legacy".to_string(),
                 owner_pubkey: uppercase,
+                last_live_unix: now_unix(),
             }])
             .unwrap(),
         )
@@ -434,6 +542,7 @@ mod tests {
         let registry = Registry::load(path.clone()).with_caps(ReservationCaps {
             per_owner: 1,
             total: 100,
+            ..Default::default()
         });
         assert!(registry.claim_name("legacy", &lowercase).is_ok());
         assert_eq!(
@@ -453,9 +562,11 @@ mod tests {
     fn validate_name_rules() {
         assert_eq!(validate_name("Acme").unwrap(), "acme");
         assert_eq!(validate_name("bitcoin-com").unwrap(), "bitcoin-com");
+        assert_eq!(validate_name("Has Space").unwrap(), "has-space");
+        assert_eq!(validate_name("bad/slash").unwrap(), "bad-slash");
         assert!(validate_name("").is_err());
-        assert!(validate_name("has space").is_err());
-        assert!(validate_name("bad/slash").is_err());
+        assert!(validate_name("?!").is_err());
+        assert!(validate_name(&"a".repeat(MAX_NAME_CHARS + 1)).is_err());
     }
 
     #[test]
@@ -494,6 +605,7 @@ mod tests {
         let reg = Registry::new().with_caps(ReservationCaps {
             per_owner: 10,
             total: 5,
+            ..Default::default()
         });
         for i in 0..5 {
             assert!(reg.claim_name(&format!("n{i}"), &format!("o{i}")).is_ok());
@@ -557,5 +669,61 @@ mod tests {
         let list: Vec<Reservation> = serde_json::from_str(&text).unwrap();
         assert_eq!(list.len(), 2);
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn a_name_expires_a_day_after_its_last_session_and_not_while_live() {
+        let reg = Registry::new();
+        let day = ReservationCaps::default().ttl_secs;
+        reg.claim_name_at("idle", "owner_a", 1_000).unwrap();
+        reg.claim_name_at("busy", "owner_a", 1_000).unwrap();
+        reg.hosts.insert("busy".into(), Arc::new(host_entry()));
+
+        reg.sweep(1_000 + day - 1);
+        assert!(reg.reservation_owner("idle").is_some());
+        reg.sweep(1_000 + day + 1);
+        assert_eq!(reg.reservation_owner("idle"), None);
+        assert!(
+            reg.reservation_owner("busy").is_some(),
+            "a live name never expires"
+        );
+        assert_eq!(
+            reg.names_of("owner_a", 1_000 + day + 1),
+            vec![ReservedName {
+                code: "busy".into(),
+                expires_in_secs: None
+            }]
+        );
+    }
+
+    #[test]
+    fn an_expired_name_frees_its_owners_slot_and_can_be_claimed_by_anyone() {
+        let reg = Registry::new().with_caps(ReservationCaps {
+            per_owner: 1,
+            ..Default::default()
+        });
+        let day = ReservationCaps::default().ttl_secs;
+        reg.claim_name_at("old", "owner_a", 0).unwrap();
+        assert_eq!(
+            reg.claim_name_at("new", "owner_a", day - 1),
+            Err(ClaimError::OwnerLimit)
+        );
+        assert!(reg.claim_name_at("new", "owner_a", day).is_ok());
+        assert!(reg.claim_name_at("old", "owner_b", day).is_ok());
+    }
+
+    #[test]
+    fn a_superseded_session_leaves_its_successor_listed() {
+        let reg = Registry::new();
+        let first = reg
+            .claim_host("mine", Some("owner_a"), host_entry())
+            .unwrap();
+        let second = reg
+            .claim_host("mine", Some("owner_a"), host_entry())
+            .unwrap();
+        reg.release("mine", &first, None);
+        assert!(Arc::ptr_eq(reg.hosts.get("mine").unwrap().value(), &second));
+        reg.release("mine", &second, None);
+        assert!(!reg.hosts.contains_key("mine"));
     }
 }

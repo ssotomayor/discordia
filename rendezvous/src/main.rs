@@ -98,6 +98,14 @@ async fn main() {
         registry: Arc::new(Registry::load(reservations_path)),
         config: Arc::new(config),
     };
+    let sweeper = ctx.registry.clone();
+    tokio::spawn(async move {
+        let mut every = tokio::time::interval(std::time::Duration::from_secs(60 * 60));
+        loop {
+            every.tick().await;
+            sweeper.sweep(dioxusfun_rendezvous::registry::now_unix());
+        }
+    });
 
     let app = router(ctx);
     let listener = match tokio::net::TcpListener::bind(addr).await {
