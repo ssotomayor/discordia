@@ -682,7 +682,7 @@ pub async fn handle_connection(
                             }).await;
                             continue;
                         };
-                        if !image.starts_with("data:image/") || image.len() > MAX_EMOJI_DATA_LEN {
+                        if !valid_emoji_payload(&image) {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "emoji must be an image under 256 KB".into(),
                             }).await;
@@ -1973,13 +1973,10 @@ pub async fn handle_connection(
                         }
                     }
                     ClientMessage::FetchCatalog { offset, limit } => {
-                        const DEFAULT_PAGE: u32 = 100;
                         if !reads.allow() {
                             reject_rate_limited(&mut ws_tx).await;
                             continue;
                         }
-                        const MAX_PAGE: u32 = 500;
-                        let limit = if limit == 0 { DEFAULT_PAGE } else { limit.min(MAX_PAGE) };
                         let (guilds, total) = ctx.state.guild_catalog_page(offset, limit);
                         let _ = send(&mut ws_tx, &ServerMessage::GuildCatalog { guilds, offset, total }).await;
                     }
@@ -2455,6 +2452,9 @@ fn removal_broadcasts(
 }
 
 const MAX_EMOJI_DATA_LEN: usize = 350_000; // ~256 KB of bytes once base64 is undone
+fn valid_emoji_payload(image: &str) -> bool {
+    image.starts_with("data:image/") && image.len() <= MAX_EMOJI_DATA_LEN
+}
 const MAX_EMOJI_FETCH: usize = 64;
 const MAX_SOUND_DATA_LEN: usize = crate::protocol::MAX_SOUND_BYTES.div_ceil(3) * 4 + 64;
 /// Four full-size images, so a client asking for message pictures four at a time
@@ -2986,6 +2986,21 @@ impl RateLimiter {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn emoji_payload_boundaries_and_non_images() {
+        let prefix = "data:image/png;base64,";
+        for len in [super::MAX_EMOJI_DATA_LEN - 1, super::MAX_EMOJI_DATA_LEN] {
+            let image = format!("{prefix}{}", "A".repeat(len - prefix.len()));
+            assert!(super::valid_emoji_payload(&image), "length {len}");
+        }
+        let oversized = format!(
+            "{prefix}{}",
+            "A".repeat(super::MAX_EMOJI_DATA_LEN + 1 - prefix.len())
+        );
+        assert!(!super::valid_emoji_payload(&oversized));
+        assert!(!super::valid_emoji_payload("data:text/html;base64,AAAA"));
+    }
+
     use super::{
         MAX_CLIENT_VERSION_BYTES, RATE_WINDOW, RateLimiter, WRITE_LIMIT, sanitize_client_version,
     };

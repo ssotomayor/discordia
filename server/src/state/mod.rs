@@ -1564,6 +1564,11 @@ impl AppState {
         offset: u32,
         limit: u32,
     ) -> (Vec<crate::protocol::GuildSummary>, u32) {
+        let limit = if limit == 0 {
+            CATALOG_FIRST_PAGE
+        } else {
+            limit.min(500)
+        };
         let mut all = self.guild_catalog();
         all.sort_by(|a, b| {
             b.member_count
