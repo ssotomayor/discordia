@@ -174,6 +174,7 @@ repeated here.
 | Screen-share webview lifecycle | `client/tests/screenshare_bridge.cjs`, `scripts/test-stream-quality.mjs` | `node client/tests/screenshare_bridge.cjs`; simultaneous video/audio, independent volume, teardown, native-audio switching and stale track/room events; includes `video_lifecycle_bridge.cjs` for connection failure/cancellation, overlapping teardown and encryption guards. `node --test scripts/test-stream-quality.mjs` covers quality notices, report expiration, camera dimensions and viewer subscriptions; both run in CI |
 | Native UI bridges | `client/tests/native_ui_bridges.cjs` | `node client/tests/native_ui_bridges.cjs`; scroll races/remount/cleanup and globe geometry handoff, pending setters and teardown |
 | Chat image paste bridge | `client/tests/chat_attachment_bridge.cjs` | `node client/tests/chat_attachment_bridge.cjs`; only image paste in the chat is intercepted, remounts reuse one listener, no image bytes cross the event bridge |
+| Critical bridge mutation checks | `scripts/test-bridge-mutations.cjs`, `.github/workflows/ci.yml` | `node scripts/test-bridge-mutations.cjs`; nine in-memory mutations cover composer keyboard/IME, multiline paste/serialization and attachment targeting/type/remount guards. Baselines must pass; survivors, missing anchors, syntax errors and timeouts fail the dedicated CI job |
 
 ## Architecture
 
