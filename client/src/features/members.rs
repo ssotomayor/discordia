@@ -491,13 +491,11 @@ fn MemberRow(
 
     // A ranked member wears the rank's emoji by their name, never its name on
     // the right; the number is only for someone below every rank.
-    let (rank_emoji, level) = {
+    let level = {
         let rules = state.read().leveling_of(member.guild_id);
-        let tier = rules.tier_at(member.xp).filter(|_| rules.enabled);
+        let ranked = rules.tier_at(member.xp).is_some();
         let lv = crate::protocol::level_progress(member.xp).0;
-        let level = (rules.enabled && tier.is_none() && (!rules.tiers.is_empty() || lv > 1))
-            .then(|| format!("Lv{lv}"));
-        (tier.map(|t| (t.emoji.clone(), t.name.clone())), level)
+        (rules.enabled && !ranked && (!rules.tiers.is_empty() || lv > 1)).then(|| format!("Lv{lv}"))
     };
     // An activity outranks a custom status on the one line there is room for:
     // it is the fresher fact, and it clears itself when they stop.
@@ -539,11 +537,6 @@ fn MemberRow(
                     class: "text-sm truncate flex items-center gap-1 {name_class}",
                     title: "{member.user.pubkey}",
                     span { class: "truncate", "{member.user.username}" }
-                    if let Some((e, rank_name)) = rank_emoji.clone() {
-                        span { class: "shrink-0 text-[12px]", title: "{rank_name}",
-                            crate::features::chat::EmojiText { text: e, guild_id: Some(member.guild_id), compact: true }
-                        }
-                    }
                     if member.bot {
                         span {
                             class: "dxf-pop px-1 py-px rounded bg-[var(--accent-soft)] text-[var(--accent)] text-[8px] font-bold uppercase tracking-wider",
