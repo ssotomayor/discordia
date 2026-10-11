@@ -9,6 +9,37 @@ use sha2::{Digest, Sha256};
 
 const SENTINEL: &str = "media:";
 
+pub fn image_metadata(url: &str, original_name: Option<&str>) -> crate::protocol::ImageMetadata {
+    let name = original_name.and_then(|name| {
+        let basename = name.rsplit(['/', '\\']).next().unwrap_or("");
+        let name = crate::protocol::sanitize_line(basename, 240)
+            .chars()
+            .filter(|c| !matches!(c, ':' | '*' | '?' | '"' | '<' | '>' | '|'))
+            .collect::<String>();
+        let name = name.trim();
+        (!name.is_empty() && !matches!(name, "." | "..")).then(|| name.to_string())
+    });
+    let dimensions = url
+        .split_once(";base64,")
+        .and_then(|(_, payload)| {
+            base64::engine::general_purpose::STANDARD
+                .decode(payload)
+                .ok()
+        })
+        .and_then(|bytes| {
+            image::ImageReader::new(std::io::Cursor::new(bytes))
+                .with_guessed_format()
+                .ok()?
+                .into_dimensions()
+                .ok()
+        });
+    crate::protocol::ImageMetadata {
+        name,
+        width: dimensions.map(|d| d.0),
+        height: dimensions.map(|d| d.1),
+    }
+}
+
 pub const DEFAULT_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

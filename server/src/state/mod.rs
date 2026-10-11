@@ -2473,6 +2473,19 @@ impl AppState {
         image: Option<String>,
         reply_to: Option<Id>,
     ) -> Result<Message, String> {
+        self.push_image_message(channel_id, author, content, image, None, reply_to)
+            .await
+    }
+
+    pub async fn push_image_message(
+        &self,
+        channel_id: Id,
+        author: User,
+        content: String,
+        image: Option<String>,
+        image_name: Option<String>,
+        reply_to: Option<Id>,
+    ) -> Result<Message, String> {
         let author = self.attributed_author(channel_id, author);
         let kind_ok = self
             .channels
@@ -2482,16 +2495,27 @@ impl AppState {
         if !kind_ok {
             return Err("can't post to this channel".into());
         }
-        let image = match image {
-            Some(img) => Some(self.store_upload(&author.pubkey, &img)?),
-            None => None,
+        let (image, image_metadata) = match image {
+            Some(img) => {
+                let stored = self.store_upload(&author.pubkey, &img)?;
+                let metadata = crate::media::image_metadata(&img, image_name.as_deref());
+                (Some(stored), Some(metadata))
+            }
+            None => (None, None),
         };
         let reply_ref = match reply_to {
             Some(id) => self.store.reply_ref(channel_id, id).await.unwrap_or(None),
             None => None,
         };
-        self.append_message(channel_id, author, content, image, reply_ref)
-            .await
+        self.append_message(
+            channel_id,
+            author,
+            content,
+            image,
+            image_metadata,
+            reply_ref,
+        )
+        .await
     }
 
     /// One rule for every picture a client may hand the server. A data URL is
@@ -2606,9 +2630,11 @@ impl AppState {
         author: User,
         content: String,
         image: Option<String>,
+        image_metadata: Option<crate::protocol::ImageMetadata>,
         reply_to: Option<ReplyRef>,
     ) -> Result<Message, String> {
         let message = Message {
+            image_metadata,
             attachment: None,
             pinned: false,
             id: Uuid::new_v4(),

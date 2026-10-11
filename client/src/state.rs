@@ -1714,6 +1714,7 @@ mod tests {
 
     fn at(id: Id, channel_id: Id, secs: i64) -> Message {
         Message {
+            image_metadata: None,
             attachment: None,
             pinned: false,
             id,
@@ -1981,6 +1982,7 @@ mod tests {
         let entry = s.messages.entry(cid).or_default();
         for at in ats {
             entry.push(Message {
+                image_metadata: None,
                 attachment: None,
                 pinned: false,
                 id: Id::new_v4(),

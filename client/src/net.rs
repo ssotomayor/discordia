@@ -2291,6 +2291,7 @@ mod tests {
                     s.messages.insert(
                         channel,
                         vec![crate::protocol::Message {
+                            image_metadata: None,
                             attachment: None,
                             pinned: false,
                             id: message_id,
@@ -2402,6 +2403,7 @@ mod tests {
         s.messages.insert(
             channel,
             vec![crate::protocol::Message {
+                image_metadata: None,
                 attachment: None,
                 pinned: false,
                 id: Id::new_v4(),

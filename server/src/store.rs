@@ -209,7 +209,7 @@ impl Store {
             "CREATE TABLE IF NOT EXISTS messages (
                 id TEXT PRIMARY KEY, channel_id TEXT NOT NULL,
                 author_pubkey TEXT NOT NULL, author_username TEXT NOT NULL,
-                content TEXT NOT NULL, image TEXT,
+                  content TEXT NOT NULL, image TEXT, image_metadata TEXT,
                 reactions TEXT NOT NULL DEFAULT '[]',
                 reply_id TEXT, reply_author_pubkey TEXT,
                 reply_author_username TEXT, reply_excerpt TEXT,
@@ -237,6 +237,7 @@ impl Store {
 
         for stmt in [
             "ALTER TABLE messages ADD COLUMN attachment TEXT",
+            "ALTER TABLE messages ADD COLUMN image_metadata TEXT",
             "ALTER TABLE messages ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE messages ADD COLUMN reply_id TEXT",
             "ALTER TABLE messages ADD COLUMN reply_author_pubkey TEXT",
@@ -988,8 +989,8 @@ impl Store {
             "INSERT INTO messages (id, channel_id, author_pubkey, author_username,
                                    content, image, reactions, reply_id,
                                    reply_author_pubkey, reply_author_username,
-                                   reply_excerpt, created_at, attachment, pinned)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                   reply_excerpt, created_at, attachment, pinned, image_metadata)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(m.id.to_string())
         .bind(m.channel_id.to_string())
@@ -1009,6 +1010,11 @@ impl Store {
                 .map(|a| serde_json::to_string(a).expect("attachment serializes")),
         )
         .bind(m.pinned)
+        .bind(
+            m.image_metadata.as_ref().map(|metadata| {
+                serde_json::to_string(metadata).expect("image metadata serializes")
+            }),
+        )
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -1020,7 +1026,7 @@ impl Store {
         query: &crate::protocol::MessageSearch,
         offset: u32,
     ) -> Result<Vec<Message>> {
-        let rows = sqlx::query("SELECT id, channel_id, author_pubkey, author_username, content, image, reactions, reply_id, reply_author_pubkey, reply_author_username, reply_excerpt, created_at, attachment, pinned FROM messages WHERE channel_id = ? AND instr(lower(content), lower(?)) > 0 AND (? IS NULL OR author_pubkey = ?) AND (? IS NULL OR created_at >= ?) AND (? IS NULL OR created_at < ?) AND (? = 0 OR image IS NOT NULL OR attachment IS NOT NULL) AND (? = 0 OR pinned = 1) ORDER BY created_at DESC, id DESC LIMIT 100 OFFSET ?")
+        let rows = sqlx::query("SELECT id, channel_id, author_pubkey, author_username, content, image, reactions, reply_id, reply_author_pubkey, reply_author_username, reply_excerpt, created_at, attachment, pinned, image_metadata FROM messages WHERE channel_id = ? AND instr(lower(content), lower(?)) > 0 AND (? IS NULL OR author_pubkey = ?) AND (? IS NULL OR created_at >= ?) AND (? IS NULL OR created_at < ?) AND (? = 0 OR image IS NOT NULL OR attachment IS NOT NULL) AND (? = 0 OR pinned = 1) ORDER BY created_at DESC, id DESC LIMIT 100 OFFSET ?")
             .bind(channel_id.to_string()).bind(&query.text)
             .bind(&query.author).bind(&query.author)
             .bind(query.after_ms).bind(query.after_ms)
@@ -1131,7 +1137,7 @@ impl Store {
                 sqlx::query(
                     "SELECT id, channel_id, author_pubkey, author_username, content,
                             image, reactions, reply_id, reply_author_pubkey,
-                            reply_author_username, reply_excerpt, created_at, attachment, pinned
+                            reply_author_username, reply_excerpt, created_at, attachment, pinned, image_metadata
                      FROM messages WHERE channel_id = ? AND created_at < ?
                      ORDER BY created_at DESC, rowid DESC LIMIT ?",
                 )
@@ -1145,7 +1151,7 @@ impl Store {
                 sqlx::query(
                     "SELECT id, channel_id, author_pubkey, author_username, content,
                             image, reactions, reply_id, reply_author_pubkey,
-                            reply_author_username, reply_excerpt, created_at, attachment, pinned
+                            reply_author_username, reply_excerpt, created_at, attachment, pinned, image_metadata
                      FROM messages WHERE channel_id = ?
                      ORDER BY created_at DESC, rowid DESC LIMIT ?",
                 )
@@ -1246,6 +1252,9 @@ fn row_to_message(r: sqlx::sqlite::SqliteRow) -> Message {
         })
     });
     Message {
+        image_metadata: r
+            .get::<Option<String>, _>("image_metadata")
+            .and_then(|raw| serde_json::from_str(&raw).ok()),
         attachment: r
             .get::<Option<String>, _>("attachment")
             .and_then(|a| serde_json::from_str(&a).ok()),

@@ -186,6 +186,7 @@ impl Bot {
 
     pub async fn send_message(&mut self, channel_id: Id, content: &str) -> Result<()> {
         self.send(&ClientMessage::SendMessage {
+            image_name: None,
             channel_id,
             content: content.to_string(),
             image: None,
@@ -201,6 +202,7 @@ impl Bot {
         reply_to: Id,
     ) -> Result<()> {
         self.send(&ClientMessage::SendMessage {
+            image_name: None,
             channel_id,
             content: content.to_string(),
             image: None,

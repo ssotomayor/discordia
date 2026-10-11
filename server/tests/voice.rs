@@ -574,6 +574,7 @@ async fn a_stalled_token_service_does_not_stall_the_socket() {
     .await
     .unwrap();
     user.send(&ClientMessage::SendMessage {
+        image_name: None,
         channel_id: text,
         content: "still here".into(),
         image: None,

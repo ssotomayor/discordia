@@ -30,6 +30,7 @@ async fn fresh_state() -> AppState {
 
 fn msg(channel_id: Uuid, author: &User, content: &str) -> Message {
     Message {
+        image_metadata: None,
         attachment: None,
         pinned: false,
         id: Uuid::new_v4(),

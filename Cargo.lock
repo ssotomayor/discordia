@@ -2593,6 +2593,7 @@ dependencies = [
  "hex",
  "hyper",
  "hyper-util",
+ "image",
  "iroh",
  "livekit-api",
  "local-ip-address",
