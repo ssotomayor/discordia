@@ -213,6 +213,8 @@ CI builds the two images on every push to `master` (`deploy-images` in
 `ghcr.io/<owner>/discordia-{server,rendezvous}`, tagged `latest` and the short
 sha. **Never build on the deployment box**: the server crate needs more RAM than
 a small VPS has, and the OOM killer picks among the containers already running.
+The `buildcache` tag beside them is BuildKit's layer cache, not an image; the
+dependencies are a `cargo-chef` layer, rebuilt only when a manifest changes.
 
 Updating is then a pull, from a directory holding only `docker-compose.yml`,
 `deploy/livekit.yaml` and `.env`:
