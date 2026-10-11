@@ -113,8 +113,8 @@ pub(super) fn for_game(
     xbox: Option<&super::xbox::Game>,
     steam_roots: &[PathBuf],
 ) -> Option<String> {
-    from_executable(exe)
-        .or_else(|| xbox.and_then(|game| game.artwork.iter().find_map(|path| from_file(path))))
+    // Some game executables yield a generic application icon despite having launcher artwork.
+    xbox.and_then(|game| game.artwork.iter().find_map(|path| from_file(path)))
         .or_else(|| {
             super::xbox::package_artwork(exe)
                 .iter()
@@ -127,6 +127,7 @@ pub(super) fn for_game(
                 .flat_map(|root| steam_candidates(root, id))
                 .find_map(|path| from_file(&path))
         })
+        .or_else(|| from_executable(exe))
 }
 
 #[cfg(windows)]
@@ -213,6 +214,35 @@ mod tests {
             .unwrap();
         let image = image::load_from_memory(&bytes).unwrap();
         assert_eq!((image.width(), image.height()), (64, 64));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn launcher_artwork_wins_over_an_existing_executable_icon() {
+        let root =
+            std::env::temp_dir().join(format!("discordia-art-priority-{}", uuid::Uuid::new_v4()));
+        let cache = root.join("appcache/librarycache");
+        std::fs::create_dir_all(&cache).unwrap();
+        let artwork = cache.join("1938090_icon.png");
+        image::RgbaImage::from_pixel(64, 64, image::Rgba([180, 45, 90, 255]))
+            .save(&artwork)
+            .unwrap();
+        let exe = std::env::current_exe().unwrap();
+        let executable = from_executable(&exe).expect("test executable must have an icon");
+        let roots = [root.clone()];
+        let steam = for_game(&exe, Some(1938090), None, &roots).unwrap();
+        assert_eq!(png(&steam).get_pixel(32, 32).0, [180, 45, 90, 255]);
+        assert_ne!(steam, executable);
+        let xbox = super::super::xbox::Game {
+            name: Some("Call of Duty".into()),
+            artwork: vec![artwork.clone()],
+        };
+        assert_eq!(for_game(&exe, None, Some(&xbox), &[]), Some(steam));
+        assert_eq!(for_game(&exe, None, None, &[]), Some(executable));
+        std::fs::remove_file(artwork).unwrap();
+        std::fs::remove_dir(cache).unwrap();
+        std::fs::remove_dir(root.join("appcache")).unwrap();
+        std::fs::remove_dir(root).unwrap();
     }
 
     fn png(source: &str) -> image::RgbaImage {
@@ -302,14 +332,21 @@ mod tests {
     #[test]
     #[ignore = "requires the local Steam Call of Duty image cache"]
     fn live_steam_call_of_duty_artwork() {
-        let source = for_game(
-            &std::env::temp_dir().join("cod.exe"),
-            Some(1938090),
-            None,
-            &super::super::installed::steam_roots(),
-        )
-        .expect("Steam must have a cached Call of Duty image");
+        let exe = std::env::current_exe().unwrap();
+        let roots = super::super::installed::steam_roots();
+        let expected = roots
+            .iter()
+            .flat_map(|root| steam_candidates(root, 1938090))
+            .find_map(|path| from_file(&path))
+            .expect("Steam must have a cached Call of Duty image");
+        let source = for_game(&exe, Some(1938090), None, &roots)
+            .expect("Steam must have a cached Call of Duty image");
+        assert_eq!(source, expected);
         assert!(source.len() <= 96_000);
         assert_eq!(png(&source).dimensions(), (64, 64));
+        let output = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../target/call-of-duty-artwork.png");
+        png(&source).save(&output).unwrap();
+        println!("Call of Duty artwork: {}", output.display());
     }
 }
