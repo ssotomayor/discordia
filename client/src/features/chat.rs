@@ -590,8 +590,10 @@ pub(super) fn MessageRow(message: Message, grouped: bool) -> Element {
         .find(|c| c.id == channel_id)
         .map(|c| c.guild_id);
 
-    let name_color = guild_id
-        .and_then(|gid| rank_color(&state.read(), gid, &message.author.pubkey))
+    let rank = guild_id.and_then(|gid| rank_of(&state.read(), gid, &message.author.pubkey));
+    let name_color = rank
+        .as_ref()
+        .and_then(|r| r.color.clone())
         .unwrap_or_else(|| crate::identity::signature_accent(&message.author.pubkey));
     let can_pin = state.read().server_chat_tools
         && guild_id.is_some_and(|gid| {
@@ -684,7 +686,11 @@ pub(super) fn MessageRow(message: Message, grouped: bool) -> Element {
                                 "#{discriminator(&message.author.pubkey)}"
                             }
                         }
-                        span { class: "text-[var(--up)] text-[10px]", title: "Key verified", "✓" }
+                        if let Some(rank) = rank.clone() {
+                            span { class: "self-center text-[12px]", title: "{rank.name}",
+                                EmojiText { text: rank.emoji, guild_id, compact: true }
+                            }
+                        }
                         span { class: "text-[10px] text-[var(--text-dim)]", "{timestamp}" }
                     }
                 }
@@ -1576,9 +1582,13 @@ fn uploads_needed(
     out
 }
 
-/// A ranked member's name wears the rank's colour; the key's own colour is
-/// for everyone the guild has not ranked, or whose rank has none.
-fn rank_color(s: &crate::state::AppState, guild_id: Id, pubkey: &str) -> Option<String> {
+/// The rank an author has reached here. Their name wears its colour and its
+/// emoji follows the name; the key's own colour is for everyone unranked.
+fn rank_of(
+    s: &crate::state::AppState,
+    guild_id: Id,
+    pubkey: &str,
+) -> Option<crate::protocol::LevelTier> {
     let rules = s.leveling_of(guild_id);
     let member = s
         .members
@@ -1586,7 +1596,7 @@ fn rank_color(s: &crate::state::AppState, guild_id: Id, pubkey: &str) -> Option<
         .find(|m| m.guild_id == guild_id && m.user.pubkey == pubkey)?;
     rules
         .enabled
-        .then(|| rules.tier_at(member.xp)?.color.clone())
+        .then(|| rules.tier_at(member.xp).cloned())
         .flatten()
 }
 

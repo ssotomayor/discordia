@@ -726,7 +726,6 @@ pub fn IdentityCard(
                             span { class: "text-[var(--text-dim)] font-mono text-xs font-normal",
                                 "#{tag}"
                             }
-                            span { class: "text-[var(--up)] text-sm", title: "Key verified", "✓" }
                         }
                     }
                     span { class: "text-[var(--text-dim)] text-[11px] font-mono select-all truncate",

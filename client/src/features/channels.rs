@@ -127,7 +127,6 @@ const SECTION_LABEL: &str =
 pub fn ChannelsColumn() -> Element {
     let mut state = use_app_state();
     let gateway = use_gateway();
-    let voice = use_voice_tx();
 
     let snapshot = state.read();
     let dm_mode = snapshot.dm_mode;
@@ -484,8 +483,6 @@ pub fn ChannelsColumn() -> Element {
                                 let cid = ch.id;
                                 let in_this = self_voice.channel_id == Some(cid);
                                 let g_join = gateway.clone();
-                                let g_leave = gateway.clone();
-                                let v_leave = voice.clone();
                                 let occupants: Vec<VoiceState> = voice_states
                                     .iter()
                                     .filter(|v| v.channel_id == Some(cid))
@@ -590,10 +587,6 @@ pub fn ChannelsColumn() -> Element {
                                                 }
                                                 tracing::debug!(channel_id = %cid, "join voice clicked");
                                                 g_join.send(state.read().voice.join_message(cid));
-                                            },
-                                            on_leave: move |_| {
-                                                g_leave.send(ClientMessage::LeaveVoice);
-                                                v_leave.send(VoiceCmd::Disconnect { done: None });
                                             },
                                         }
                                     }
@@ -1086,7 +1079,6 @@ fn VoiceChannelRow(
     occupants: Vec<VoiceState>,
     self_pubkey: Option<String>,
     on_join: EventHandler<()>,
-    on_leave: EventHandler<()>,
 ) -> Element {
     // Green, not accent: amber already means "the channel you are reading", and
     // being connected here is true at the same time as that, not instead of it.
@@ -1095,8 +1087,10 @@ fn VoiceChannelRow(
     } else {
         "text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-white/[0.03]"
     };
+    // Being in the call already, a click has nothing to do; leaving is the
+    // hang-up button's, and a stray click here used to drop the call.
     let row_style = if connected {
-        "background: color-mix(in srgb, var(--up) 12%, transparent);"
+        "background: color-mix(in srgb, var(--up) 12%, transparent); cursor: default;"
     } else {
         ""
     };
@@ -1110,7 +1104,9 @@ fn VoiceChannelRow(
                 class: "relative w-full min-h-8 py-1 flex items-center gap-2 px-2.5 rounded-lg text-left text-[13.5px] transition-colors {row_cls}",
                 style: "{row_style}",
                 onclick: move |_| {
-                    if connected { on_leave.call(()) } else { on_join.call(()) }
+                    if !connected {
+                        on_join.call(());
+                    }
                 },
                 span {
                     class: "block w-4 h-4 shrink-0 text-[var(--text-dim)]",
@@ -1446,7 +1442,7 @@ fn VoiceOccupant(
 
     rsx! {
         div {
-            class: "px-2 py-0.5",
+            class: if is_self { "px-2 py-0.5" } else { "px-2 py-0.5 rounded cursor-pointer hover:bg-white/[0.03]" },
             title: if is_self { "" } else { "Right-click for volume and more" },
             oncontextmenu: open_menu,
             div { class: "flex items-center gap-1.5 text-xs text-[var(--text-muted)]",

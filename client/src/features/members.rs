@@ -550,8 +550,6 @@ fn MemberRow(
                             title: "Installed bot",
                             "Bot"
                         }
-                    } else {
-                        span { class: "text-[var(--up)] text-xs", title: "Key verified", "✓" }
                     }
                 }
                 if let Some((sub, is_activity)) = subtitle {
