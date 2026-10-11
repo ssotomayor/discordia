@@ -504,6 +504,11 @@ impl WebviewInstance {
         };
         let webview = webview.unwrap();
 
+        #[cfg(target_os = "windows")]
+        crate::windows_diagnostics::install(&webview, window.id());
+
+        tracing::info!(window_id = ?window.id(), size = ?window.inner_size(), "Desktop webview created");
+
         let desktop_context = Rc::from(DesktopService::new(
             webview,
             window,

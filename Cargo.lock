@@ -2099,6 +2099,8 @@ dependencies = [
  "tray-icon",
  "tungstenite 0.29.0",
  "webbrowser",
+ "webview2-com",
+ "windows-core 0.61.2",
  "wry",
 ]
 

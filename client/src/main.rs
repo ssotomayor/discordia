@@ -71,7 +71,11 @@ fn init_logging() {
         .try_init();
     redirect_std_handles();
     install_panic_hook();
-    tracing::info!(version = version::VERSION, "Discordia starting");
+    tracing::info!(
+        version = version::VERSION,
+        pid = std::process::id(),
+        "Discordia starting"
+    );
 }
 
 #[cfg(target_os = "windows")]
@@ -176,7 +180,7 @@ fn default_filter() -> tracing_subscriber::EnvFilter {
     use tracing_subscriber::EnvFilter;
     EnvFilter::try_from_default_env().unwrap_or_else(|_| {
         EnvFilter::new(format!(
-            "warn,{}=info,dioxusfun_server=info",
+            "warn,{}=info,dioxusfun_server=info,dioxus_desktop=info",
             log_crate_root()
         ))
     })
@@ -302,6 +306,7 @@ mod logging_tests {
 
         tracing::subscriber::with_default(subscriber, || {
             tracing::info!(marker = "reachability", "direct path lost to the relay");
+            tracing::info!(target: "dioxus_desktop::edits", "Webview first edit batch acknowledged");
             tracing::debug!("noise that should stay filtered out");
         });
 
@@ -311,6 +316,10 @@ mod logging_tests {
             "nothing was printed — the filter does not match this crate: {printed:?}"
         );
         assert!(!printed.contains("noise that should stay"), "{printed}");
+        assert!(
+            printed.contains("Webview first edit batch acknowledged"),
+            "{printed}"
+        );
     }
 
     #[test]
