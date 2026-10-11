@@ -26,6 +26,8 @@ mod query;
 mod shortcut;
 mod waker;
 mod webview;
+#[cfg(target_os = "windows")]
+mod windows_diagnostics;
 
 // mobile shortcut is only supported on mobile platforms
 #[cfg(any(target_os = "ios", target_os = "android"))]

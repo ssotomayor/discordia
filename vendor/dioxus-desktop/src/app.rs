@@ -294,11 +294,14 @@ impl App {
     pub fn handle_initialize_msg(&mut self, id: WindowId) {
         let view = self.webviews.get_mut(&id).unwrap();
 
+        tracing::info!(window_id = ?id, "Webview initialization IPC received");
+
         view.edits
             .wry_queue
             .with_mutation_state_mut(|f| view.dom.rebuild(f));
 
         view.edits.wry_queue.send_edits();
+        tracing::info!(window_id = ?id, "Webview initial DOM queued");
 
         #[cfg(not(target_os = "linux"))]
         {

@@ -2,7 +2,7 @@
 
 Source: crates.io `dioxus-desktop` 0.7.10, upstream revision
 `57d6794ad60b949e5bd8aa282f6f8c3dc97a365e`, `packages/desktop`.
-Rust and JS sources are upstream except the developer-tool gates below.
+Local changes are listed below; bundled JS remains upstream.
 
 | File | Local change |
 |---|---|
@@ -12,6 +12,8 @@ Rust and JS sources are upstream except the developer-tool gates below.
 | `src/app.rs`, `src/webview.rs` | Gate developer-only toast code, inspector state/actions and imports alongside their callers. |
 | `src/menubar.rs`, `src/desktop_context.rs` | Hide inactive inspector actions and gate the public inspector entry point. |
 | `src/desktop_context.rs`, `src/app.rs` | `DesktopService::set_visible` also hides the wry webview and drops it to WebView2's low memory target, so a window closed to the tray stops rendering. |
+| `src/edits.rs` | A disconnected edit socket never acknowledges unapplied DOM mutations. Requeue its in-flight and queued batches in order; release idle disconnected sockets and reject duplicates without replacing the active channel. Native loopback regressions run in desktop CI. |
+| `src/app.rs`, `src/webview.rs`, `src/windows_diagnostics.rs` | Log webview creation, initialization, first batch acknowledgement per connection and Windows navigation/process failures without socket keys or URLs. |
 
 On upgrades, replace the upstream files, reapply these changes and compare the
 client's Windows/macOS dependency trees. Preserve the bundled JS and `hash.txt`;

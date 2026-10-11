@@ -14,6 +14,7 @@ pub fn gate() {
 
     match ensure() {
         Ok(Outcome::AlreadyPresent(version)) => {
+            tracing::info!(%version, "WebView2 runtime available");
             if installer_mode {
                 tracing::info!("WebView2 runtime {version} already present; nothing to do");
                 std::process::exit(0);

@@ -111,6 +111,9 @@ jobs:
       - name: Tests (client + grid-layout)
         run: cargo test -p dioxusfun -p dioxus-grid-layout
 
+      - name: Desktop edit channel recovery
+        run: cargo test -p dioxus-desktop --lib edits::tests
+
       - name: Bundled SFU startup and encrypted audio
         env:
           DISCORDIA_LIVEKIT_PORT: "17880"
@@ -156,6 +159,8 @@ jobs:
         run: cargo clippy -p dioxusfun --all-targets -- -D warnings
       - name: Tests (client, Windows-only code)
         run: cargo test -p dioxusfun
+      - name: Desktop edit channel recovery
+        run: cargo test -p dioxus-desktop --lib edits::tests
       - name: Bundled SFU startup and encrypted audio
         env:
           DISCORDIA_LIVEKIT_PORT: "17880"
@@ -201,6 +206,9 @@ jobs:
 
       - name: Native codec capabilities
         run: cargo test -p dioxusfun --bin Discordia native_codec_probe_reports_the_builtin_vp8_encoder
+
+      - name: Desktop edit channel recovery
+        run: cargo test -p dioxus-desktop --lib edits::tests
 
       - name: Bundled SFU startup and encrypted audio
         env:
