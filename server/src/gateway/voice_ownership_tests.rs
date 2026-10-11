@@ -36,6 +36,8 @@ async fn fixture() -> (Arc<AppContext>, User, Id, Id, u64, u64) {
 #[tokio::test]
 async fn closing_a_chat_sibling_preserves_the_owners_call_and_share() {
     let (ctx, user, _, channel, owner, sibling) = fixture().await;
+    ctx.state.resume_voice_session(&user.pubkey, sibling);
+    assert!(ctx.state.voice_owned_by(&user.pubkey, owner));
     ctx.state.unregister_conn(sibling, Some(&user.pubkey));
     cleanup_session(&ctx, sibling, user.clone(), false).await;
     assert!(ctx.state.voice_owned_by(&user.pubkey, owner));
@@ -76,7 +78,7 @@ async fn owner_disconnect_expires_after_grace_even_with_a_chat_sibling() {
 
 #[tokio::test]
 async fn reconnect_handoff_survives_late_cleanup_from_the_old_owner() {
-    let (ctx, user, guild, channel, owner, sibling) = fixture().await;
+    let (ctx, user, _, channel, owner, _) = fixture().await;
     ctx.state.unregister_conn(owner, Some(&user.pubkey));
     tokio::time::pause();
     let cleanup = {
@@ -86,12 +88,12 @@ async fn reconnect_handoff_survives_late_cleanup_from_the_old_owner() {
     };
     tokio::task::yield_now().await;
     tokio::time::advance(Duration::from_secs(1)).await;
-    ctx.state
-        .set_voice_channel_owned(sibling, &user.pubkey, guild, channel, None);
-    ctx.state.update_screen_share(&user.pubkey, true);
+    let (replacement, _) = ctx.state.register_conn(None).unwrap();
+    ctx.state.identify_conn(replacement, &user.pubkey).unwrap();
+    ctx.state.resume_voice_session(&user.pubkey, replacement);
     tokio::time::advance(Duration::from_secs(2)).await;
     cleanup.await.unwrap();
-    assert!(ctx.state.voice_owned_by(&user.pubkey, sibling));
+    assert!(ctx.state.voice_owned_by(&user.pubkey, replacement));
     assert!(
         ctx.state
             .voice_states

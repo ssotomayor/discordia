@@ -2720,6 +2720,15 @@ impl AppState {
         self.set_voice_channel_unlocked(user_pubkey, guild_id, Some(channel_id), preferences)
     }
 
+    pub fn resume_voice_session(&self, user_pubkey: &str, conn_id: u64) {
+        let mut owners = self.voice_owners.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(owner) = owners.get_mut(user_pubkey)
+            && !self.conns.contains_key(owner)
+        {
+            *owner = conn_id;
+        }
+    }
+
     pub fn voice_owned_by(&self, user_pubkey: &str, conn_id: u64) -> bool {
         self.voice_owners
             .lock()
