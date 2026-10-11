@@ -928,6 +928,7 @@ fn ChannelMenuPopover(
                                         }
                                         TopicEmojiPicker {
                                             guild_id: ch.guild_id,
+                                            anchor_left: true,
                                             on_pick: move |emoji: String| {
                                                 let mut t = topic.write();
                                                 if t.chars().count() + emoji.chars().count() <= TOPIC_MAX_CHARS {
@@ -992,6 +993,9 @@ pub(crate) fn TopicEmojiPicker(
     #[props(default)]
     current: Option<String>,
     #[props(default = "Add an emoji to the topic".to_string())] title: String,
+    /// Grow rightward, for a picker near the window's left edge.
+    #[props(default)]
+    anchor_left: bool,
 ) -> Element {
     let state = use_app_state();
     let mut open = use_signal(|| false);
@@ -1008,7 +1012,11 @@ pub(crate) fn TopicEmojiPicker(
     rsx! {
         button {
             r#type: "button",
-            class: "w-6 h-6 shrink-0 flex items-center justify-center rounded text-sm leading-none hover:bg-white/[0.06] transition-colors",
+            class: if open() {
+                "w-7 h-7 shrink-0 flex items-center justify-center rounded-lg border border-[var(--accent)] bg-[var(--panel2)] text-base leading-none transition-colors"
+            } else {
+                "w-7 h-7 shrink-0 flex items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--panel2)] text-base leading-none hover:border-[var(--accent)] transition-colors"
+            },
             title: "{title}",
             onclick: move |_| open.toggle(),
             match current.clone() {
@@ -1018,9 +1026,15 @@ pub(crate) fn TopicEmojiPicker(
         }
         if open() {
             div {
-                class: "dxf-pop-in absolute right-0 top-full mt-1 z-10 p-1 bg-[var(--panel-solid)] border border-[var(--border)] rounded-md shadow-lg max-h-40 overflow-y-auto",
+                class: "dxf-pop-in absolute top-full mt-1 z-30 p-2 flex flex-col gap-2 bg-[var(--panel-solid)] border border-[var(--border)] rounded-xl shadow-lg overflow-y-auto",
+                style: if anchor_left {
+                    "left: 0; width: 18rem; max-height: 18rem;"
+                } else {
+                    "right: 0; width: 18rem; max-height: 18rem;"
+                },
                 if !guild_emojis.is_empty() {
-                    div { class: "grid grid-cols-8 gap-0.5 pb-1 mb-1 border-b border-[var(--border)]",
+                    div { class: PICKER_HEADING, "This server" }
+                    div { class: "grid grid-cols-8 gap-1",
                         for (code, url) in guild_emojis.into_iter() {
                             {
                                 let emoji = format!(":{code}:");
@@ -1028,13 +1042,13 @@ pub(crate) fn TopicEmojiPicker(
                                     button {
                                         key: "{code}",
                                         r#type: "button",
-                                        class: "w-6 h-6 flex items-center justify-center rounded hover:bg-white/[0.06] text-base leading-none",
+                                        class: PICKER_TILE,
                                         title: "{emoji}",
                                         onclick: move |_| { on_pick.call(emoji.clone()); open.set(false); },
                                         if url.is_empty() {
-                                            span { class: "text-[8px] text-[var(--text-dim)]", "…" }
+                                            span { class: "text-[10px] text-[var(--text-dim)]", "…" }
                                         } else {
-                                            img { src: "{url}", style: "height:1.2em;width:auto;" }
+                                            img { src: "{url}", style: "height: 1.5rem; width: auto; max-width: 1.75rem; object-fit: contain;" }
                                         }
                                     }
                                 }
@@ -1042,12 +1056,14 @@ pub(crate) fn TopicEmojiPicker(
                         }
                     }
                 }
-                div { class: "grid grid-cols-8 gap-0.5",
+                div { class: PICKER_HEADING, "Standard" }
+                div { class: "grid grid-cols-8 gap-1",
                     for (emoji, name) in crate::features::chat::EMOJIS.iter().copied() {
                         button {
                             key: "{name}",
                             r#type: "button",
-                            class: "w-6 h-6 flex items-center justify-center rounded hover:bg-white/[0.06] text-base leading-none",
+                            class: PICKER_TILE,
+                            style: "font-size: 1.25rem;",
                             title: ":{name}:",
                             onclick: move |_| { on_pick.call(emoji.to_string()); open.set(false); },
                             "{emoji}"
@@ -1058,6 +1074,10 @@ pub(crate) fn TopicEmojiPicker(
         }
     }
 }
+
+const PICKER_HEADING: &str =
+    "px-0.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-dim)]";
+const PICKER_TILE: &str = "w-8 h-8 flex items-center justify-center rounded-lg leading-none hover:bg-white/[0.06] transition-colors";
 
 #[component]
 fn VoiceChannelRow(

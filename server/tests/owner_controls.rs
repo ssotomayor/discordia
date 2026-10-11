@@ -2781,13 +2781,13 @@ async fn a_guild_sets_what_earns_experience_and_where() {
                 channels: vec![paid],
                 tiers: vec![
                     LevelTier {
-                        emoji: None,
+                        emoji: "🏅".into(),
                         xp: 10,
                         name: "  Regular\u{202E} ".into(),
                         color: Some("#abc".into()),
                     },
                     LevelTier {
-                        emoji: None,
+                        emoji: "🏅".into(),
                         xp: 0,
                         name: "Newcomer".into(),
                         color: None,
