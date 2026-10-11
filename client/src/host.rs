@@ -79,6 +79,7 @@ pub struct HostHandle {
     rendezvous_task: Option<tokio::task::JoinHandle<()>>,
     runtime: tokio::runtime::Handle,
     _port_mapping: Option<portmap::MappingGuard>,
+    _data_lease: livekit_bundle::HostLease,
 }
 
 /// How long the QUIC door stays open after the sockets are told to go, so the
@@ -128,6 +129,8 @@ pub async fn start_self_host(
         );
     }
     let operator_pubkey = identity.pubkey.clone();
+    let data_dir = crate::identity::config_dir().join("host-data");
+    let data_lease = livekit_bundle::HostLease::claim(&data_dir)?;
 
     let listener = dioxusfun_server::bind_with_fallback(
         SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 9000),
@@ -439,7 +442,6 @@ pub async fn start_self_host(
         }
     };
 
-    let data_dir = crate::identity::config_dir().join("host-data");
     let creds = livekit_bundle::credentials_or_ephemeral(&data_dir);
 
     let (livekit, explicit_url) = match &plan {
@@ -638,6 +640,7 @@ pub async fn start_self_host(
         rendezvous_task,
         runtime: tokio::runtime::Handle::current(),
         _port_mapping: port_mapping,
+        _data_lease: data_lease,
     })
 }
 

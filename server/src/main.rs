@@ -21,9 +21,16 @@ async fn main() {
         .expect("DIOXUSFUN_ADDR must be host:port");
 
     let data_dir = cli_data_dir();
+    let _data_lease = match dioxusfun_server::livekit_bundle::HostLease::claim(&data_dir) {
+        Ok(lease) => lease,
+        Err(error) => {
+            tracing::error!(%error, "host ownership refused");
+            return;
+        }
+    };
     tracing::info!(data_dir = %data_dir.display(), "durable data directory");
 
-    let livekit_cfg = dioxusfun_server::livekit::LiveKitConfig::from_env(&data_dir);
+    let mut livekit_cfg = dioxusfun_server::livekit::LiveKitConfig::from_env(&data_dir);
 
     let want_autospawn = std::env::var("DIOXUSFUN_LIVEKIT_AUTOSPAWN")
         .map(|v| !matches!(v.as_str(), "0" | "false" | "no"))
@@ -31,6 +38,7 @@ async fn main() {
     let livekit_present = std::env::var("LIVEKIT_URL").is_ok();
 
     let _livekit_handle = if want_autospawn && !livekit_present {
+        livekit_cfg.port = dioxusfun_server::livekit_bundle::ports().ws;
         let creds = dioxusfun_server::livekit_bundle::Credentials {
             key: livekit_cfg.api_key.clone(),
             secret: livekit_cfg.api_secret.clone(),
@@ -43,7 +51,7 @@ async fn main() {
         .await
         {
             Ok(child) => {
-                tracing::info!("bundled livekit-server started on port 7880");
+                tracing::info!(port = livekit_cfg.port, "bundled livekit-server started");
                 Some(child)
             }
             Err(e) => {

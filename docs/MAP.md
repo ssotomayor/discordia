@@ -18,17 +18,17 @@ name instead.
 | File | Lines |
 |---|---|
 | `client/src/features/voice.rs` | 4895 |
-| `server/src/state/mod.rs` | 3199 |
+| `server/src/state/mod.rs` | 3299 |
 | `server/tests/owner_controls.rs` | 3152 |
-| `server/src/gateway/connection.rs` | 3144 |
-| `client/src/features/channels.rs` | 2153 |
+| `server/src/gateway/connection.rs` | 3178 |
+| `client/src/features/channels.rs` | 2169 |
 | `client/src/features/screenshare.rs` | 3236 |
-| `protocol/src/lib.rs` | 2910 |
-| `client/src/state.rs` | 2296 |
+| `protocol/src/lib.rs` | 2924 |
+| `client/src/state.rs` | 2357 |
 | `client/src/update.rs` | 1228 |
-| `client/src/net.rs` | 2477 |
-| `client/src/features/chat.rs` | 2407 |
-| `server/src/store.rs` | 1357 |
+| `client/src/net.rs` | 2483 |
+| `client/src/features/chat.rs` | 2442 |
+| `server/src/store.rs` | 1366 |
 | `client/src/features/guild_settings.rs` | 1135 |
 | `client/src/identity.rs` | 1216 |
 | `client/src/features/discord_import.rs` | 1113 |
@@ -120,6 +120,8 @@ that direction says a file is safe to open when it is not.
 | Published name ownership | `rendezvous/src/registry.rs`, `rendezvous/tests/handshake.rs` | A name is free text (≤ `MAX_NAME_CHARS`), listed as written; what is reserved is `protocol::rendezvous::join_code` of it — ASCII, so another script's lookalike cannot squat a code — and `/resolve` and the client's code box apply the same function to what is typed. A reservation lapses a day after its last session; the owner's own registration replaces a lingering session (`HostEntry::superseded`, `release` only removes its own entry); `connect::ReservedNames` lists and releases over `rendezvous::list_names`/`release_name`. `claim_host` reserves the name and session under one lock, including quotas and persistence. Hex key casing does not change ownership; disconnect clears the session/grants, while the signed owner keeps its reservation until `release_name`. Reopen and concurrent claims are tested. |
 | A bot's buttons | `server/src/state/commands.rs` | `invoke_command` — every check a press passes before the bot sees it; `protocol::validate_commands` and `check_args` hold the declaration and the args, and the client form runs the same `check_args`. Drawn by `features/bot_commands.rs`: `BotCommandsSection` on the profile card, `CommandNotes` for private replies under the chat |
 | Voice session ownership | `server/src/gateway/connection.rs`, `server/src/gateway/voice_ownership_tests.rs` | `set_voice_channel_owned` assigns the call to a connection. Owner cleanup expires after the reconnect grace even with chat siblings; atomic ownership checks preserve a handed-off call and reject sibling publication updates. Presence still follows the last session |
+| Concurrent self-hosts | `server/src/livekit_bundle/ownership.rs`, `client/src/host.rs` | `HostLease` excludes hosts sharing a data directory; each SFU owns its directory and TCP/UDP ports until its subprocess drops. Concurrent hosts use separate configuration directories and disjoint `DISCORDIA_LIVEKIT_PORT` blocks. Scoped executable names prevent stale PID records from reclaiming another directory's SFU; two real SFUs are covered by the existing ignored-test CI step |
+| Guild unread indicators | `client/src/state.rs`, `client/src/features/guilds.rs`, `client/src/features/channels.rs` | `channel_unread` tracks new messages outside the open guild channel, excluding self and duplicates. Guild dots aggregate its channels; opening a channel clears only its dot. History pages do not add unread state; leaving the server clears it |
 | A socket that went quiet | `server/src/watchdog.rs` | `ArmWatch` — both socket loops name the branch they are in; `loop step still running` in the log names the arm that never returned, `gateway send dropped` a client loop that is gone |
 | Leaving a server, quitting, and stopping an embedded one | `client/src/app.rs`, `client/src/features/workspace.rs`, `client/src/net.rs` | `QuitRequest` routes application exit through `Leaving`; notify `LeaveVoice`, close media, then await the bounded WebSocket/QUIC shutdown before `on_disconnect` and window destruction. Windows tray hiding preserves the session (trap 17) |
 | Finding a newly published app release | `client/src/app.rs`, `client/src/version.rs`, `client/src/update.rs` | `App` checks at startup and restarts the check after disconnect or sign-out, except during app exit. `check_for_update` selects a newer release; `UpdateNotice` appears outside server sessions. A failed check preserves an already discovered offer |

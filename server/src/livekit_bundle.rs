@@ -8,6 +8,9 @@ use rand::RngCore;
 use sha2::{Digest, Sha256};
 use tokio::process::{Child, Command};
 
+mod ownership;
+pub use ownership::HostLease;
+
 const LIVEKIT_BIN: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/livekit-server.gz"));
 const LIVEKIT_SHA256: &[u8; 32] =
     include_bytes!(concat!(env!("OUT_DIR"), "/livekit-server.sha256"));
@@ -232,6 +235,7 @@ fn sweep_stale(dir: &Path, keep: &str) {
 pub struct LivekitSubprocess {
     child: Child,
     pid_file: PathBuf,
+    _ownership: ownership::MediaOwnership,
 }
 
 impl Drop for LivekitSubprocess {
@@ -244,9 +248,14 @@ impl Drop for LivekitSubprocess {
     }
 }
 
+#[cfg(test)]
 fn pid_file_name() -> String {
+    pid_file_name_for(ports().ws)
+}
+
+fn pid_file_name_for(port: u16) -> String {
     // The record must survive the Windows helper rename so an older orphan can be reclaimed.
-    format!("{LEGACY_BIN_STEM}-{}.pid", ports().ws)
+    format!("{LEGACY_BIN_STEM}-{port}.pid")
 }
 
 fn bundled_image_name(name: &str) -> bool {
@@ -263,14 +272,21 @@ fn parse_pid_record(contents: &str) -> Option<(u32, &str)> {
     bundled_image_name(image).then_some((pid, image))
 }
 
-fn reclaim_orphan(dir: &Path) {
-    let path = dir.join(pid_file_name());
+fn directory_scope(dir: &Path) -> String {
+    hex::encode(Sha256::digest(dir.to_string_lossy().as_bytes()))[..16].to_string()
+}
+
+fn reclaim_orphan(dir: &Path, port: u16) -> Result<(), String> {
+    let path = dir.join(pid_file_name_for(port));
     let Ok(contents) = fs::read_to_string(&path) else {
-        return;
+        return Ok(());
     };
     if let Some((pid, image)) = parse_pid_record(&contents)
         && process_matches(pid, image)
     {
+        if !image.ends_with(&format!("-{}{LIVEKIT_BIN_EXT}", directory_scope(dir))) {
+            return Err("An older media process is still running; its ownership cannot be verified. Stop that host before restarting it.".into());
+        }
         tracing::warn!(
             pid,
             image,
@@ -279,6 +295,7 @@ fn reclaim_orphan(dir: &Path) {
         kill_pid(pid);
     }
     let _ = fs::remove_file(&path);
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -343,6 +360,15 @@ pub async fn spawn_livekit(
     creds: &Credentials,
     data_dir: &Path,
 ) -> Result<LivekitSubprocess, String> {
+    spawn_livekit_with_ports(advertise, creds, data_dir, ports()).await
+}
+
+pub async fn spawn_livekit_with_ports(
+    advertise: Advertise,
+    creds: &Credentials,
+    data_dir: &Path,
+    p: LivekitPorts,
+) -> Result<LivekitSubprocess, String> {
     if LIVEKIT_BIN.is_empty() {
         return Err("livekit-server binary not bundled in this build".into());
     }
@@ -352,18 +378,20 @@ pub async fn spawn_livekit(
         .map_err(|e| format!("invalid bundled livekit size: {e}"))?;
 
     let dir = data_dir.join("livekit");
+    let ownership = ownership::MediaOwnership::claim(&dir, p)?;
     let bin_name = format!(
-        "{LIVEKIT_BIN_STEM}-{}{LIVEKIT_BIN_EXT}",
-        LIVEKIT_DIGEST.trim()
+        "{LIVEKIT_BIN_STEM}-{}-{}{LIVEKIT_BIN_EXT}",
+        LIVEKIT_DIGEST.trim(),
+        directory_scope(&dir)
     );
-    let config_path = dir.join(format!("livekit-{}.yaml", ports().ws));
-    let config = config_yaml(&advertise, creds);
+    let config_path = dir.join(format!("livekit-{}.yaml", p.ws));
+    let config = config_yaml_for(&advertise, p, creds);
 
     let path = {
         let (dir, bin_name, config_path) = (dir.clone(), bin_name.clone(), config_path.clone());
         tokio::task::spawn_blocking(move || -> Result<PathBuf, String> {
             private_dir(&dir).map_err(|e| format!("livekit dir {}: {e}", dir.display()))?;
-            reclaim_orphan(&dir);
+            reclaim_orphan(&dir, p.ws)?;
             sweep_stale(&dir, &bin_name);
             let path = ensure_binary(&dir, &bin_name, LIVEKIT_BIN, LIVEKIT_SHA256, bundle_size)
                 .map_err(|e| format!("write livekit binary: {e}"))?;
@@ -390,16 +418,20 @@ pub async fn spawn_livekit(
     forward_output(&mut child);
 
     if let Some(pid) = child.id() {
-        let _ = fs::write(dir.join(pid_file_name()), format!("{pid}\n{bin_name}\n"));
+        let _ = fs::write(
+            dir.join(pid_file_name_for(p.ws)),
+            format!("{pid}\n{bin_name}\n"),
+        );
     }
 
-    wait_for_ready(&mut child, ports().ws, creds, Duration::from_secs(10))
+    wait_for_ready(&mut child, p.ws, creds, Duration::from_secs(10))
         .await
         .map_err(|e| format!("livekit not ready: {e}"))?;
 
     Ok(LivekitSubprocess {
         child,
-        pid_file: dir.join(pid_file_name()),
+        pid_file: dir.join(pid_file_name_for(p.ws)),
+        _ownership: ownership,
     })
 }
 
@@ -425,6 +457,7 @@ fn forward_output(child: &mut Child) {
     }
 }
 
+#[cfg(test)]
 fn config_yaml(advertise: &Advertise, creds: &Credentials) -> String {
     config_yaml_for(advertise, ports(), creds)
 }
@@ -518,6 +551,101 @@ async fn authenticated_ready(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn unused_ports() -> LivekitPorts {
+        let ws = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let tcp = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let udp = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        LivekitPorts {
+            ws: ws.local_addr().unwrap().port(),
+            tcp: tcp.local_addr().unwrap().port(),
+            udp: udp.local_addr().unwrap().port(),
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires the bundled SFU and local sockets"]
+    async fn two_owned_sfus_keep_distinct_credentials_and_survive_the_other_hosts_shutdown() {
+        let root = scratch("concurrent-sfus");
+        let first_dir = root.join("first");
+        let second_dir = root.join("second");
+        let _first_lease = HostLease::claim(&first_dir).unwrap();
+        let _second_lease = HostLease::claim(&second_dir).unwrap();
+        let first_creds = credentials(&first_dir).unwrap();
+        let second_creds = credentials(&second_dir).unwrap();
+        assert_ne!(first_creds, second_creds);
+        let first_ports = unused_ports();
+        let first =
+            spawn_livekit_with_ports(Advertise::Local, &first_creds, &first_dir, first_ports)
+                .await
+                .unwrap();
+        let second_ports = unused_ports();
+        let mut second =
+            spawn_livekit_with_ports(Advertise::Local, &second_creds, &second_dir, second_ports)
+                .await
+                .unwrap();
+        assert!(
+            spawn_livekit_with_ports(Advertise::Local, &first_creds, &first_dir, first_ports)
+                .await
+                .is_err()
+        );
+        assert!(
+            wait_for_ready(
+                &mut second.child,
+                second_ports.ws,
+                &first_creds,
+                Duration::from_millis(300)
+            )
+            .await
+            .is_err()
+        );
+        drop(first);
+        assert!(
+            wait_for_ready(
+                &mut second.child,
+                second_ports.ws,
+                &second_creds,
+                Duration::from_secs(2)
+            )
+            .await
+            .is_ok()
+        );
+
+        let third_dir = root.join("third");
+        let third_ports = unused_ports();
+        let third_media = third_dir.join("livekit");
+        private_dir(&third_media).unwrap();
+        let second_image = format!(
+            "{LIVEKIT_BIN_STEM}-{}-{}{LIVEKIT_BIN_EXT}",
+            LIVEKIT_DIGEST.trim(),
+            directory_scope(&second_dir.join("livekit"))
+        );
+        fs::write(
+            third_media.join(pid_file_name_for(third_ports.ws)),
+            format!("{}\n{second_image}\n", second.child.id().unwrap()),
+        )
+        .unwrap();
+        let third_creds = credentials(&third_dir).unwrap();
+        let refused =
+            spawn_livekit_with_ports(Advertise::Local, &third_creds, &third_dir, third_ports)
+                .await
+                .err()
+                .unwrap();
+        assert!(
+            refused.contains("ownership cannot be verified"),
+            "{refused}"
+        );
+        assert!(
+            wait_for_ready(
+                &mut second.child,
+                second_ports.ws,
+                &second_creds,
+                Duration::from_secs(2)
+            )
+            .await
+            .is_ok()
+        );
+    }
 
     #[tokio::test]
     async fn an_open_media_port_is_not_authenticated_readiness() {
@@ -1047,11 +1175,11 @@ mod tests {
             format!("{}\nlivekit-server-deadbeef\n", std::process::id()),
         )
         .expect("write pid file");
-        reclaim_orphan(&dir);
+        reclaim_orphan(&dir, ports().ws).unwrap();
         assert!(!path.exists(), "a consumed record must not survive");
 
         fs::write(&path, "not-a-pid\n").expect("write pid file");
-        reclaim_orphan(&dir);
+        reclaim_orphan(&dir, ports().ws).unwrap();
         assert!(!path.exists());
 
         let _ = fs::remove_dir_all(&dir);
