@@ -27,6 +27,7 @@ turn = "0.17"
 util = { package = "webrtc-util", version = "0.17", default-features = false, features = ["conn", "vnet"] }
 
 [dev-dependencies]
+iroh = { workspace = true }
 tokio-tungstenite = { workspace = true }
 secp256k1 = { workspace = true }
 reqwest = { workspace = true }

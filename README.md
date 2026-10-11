@@ -42,6 +42,8 @@ Server, relay, and guild migration: `docs/OPS.md`.
 
 ## Build and test
 
+Rust 1.91 or newer is required by Iroh.
+
 ```bash
 cargo build --workspace
 cargo test --workspace                  # must stay green and headless

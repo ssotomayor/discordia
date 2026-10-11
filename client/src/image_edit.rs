@@ -5,19 +5,20 @@ use image::{AnimationDecoder, ImageDecoder, ImageReader, RgbaImage};
 
 const MAX_INPUT_BYTES: usize = 15_000_000;
 const MAX_PIXELS: u64 = 16_000_000;
-const MAX_GIF_BYTES: usize = 2_000_000;
+const MAX_GIF_BYTES: usize = crate::protocol::MAX_IMAGE_BYTES;
 
 pub struct DecodedImage {
     pub pixels: RgbaImage,
     pub preview: String,
-    frames: Vec<image::Frame>,
+    gif_bytes: Vec<u8>,
+    animated: bool,
     original_bytes: usize,
     repeat: image::codecs::gif::Repeat,
 }
 
 impl DecodedImage {
     pub fn is_animated(&self) -> bool {
-        self.frames.len() > 1
+        self.animated
     }
 }
 
@@ -36,17 +37,11 @@ pub fn decode(src: &str) -> Result<DecodedImage, String> {
         return Err("That image is too large to edit.".into());
     }
     let original_bytes = bytes.len();
-    let animated = bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a");
-    let mut frames = Vec::new();
+    let is_gif = bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a");
+    let mut animated = false;
     let mut repeat = image::codecs::gif::Repeat::Infinite;
-    if animated {
-        let mut decoder = image::codecs::gif::GifDecoder::new(Cursor::new(&bytes))
-            .map_err(|e| format!("Couldn't open that GIF: {e}"))?;
-        let mut limits = image::Limits::default();
-        limits.max_alloc = Some(MAX_PIXELS * 8);
-        limits.max_image_width = Some(8192);
-        limits.max_image_height = Some(8192);
-        decoder.set_limits(limits).map_err(|e| e.to_string())?;
+    if is_gif {
+        let decoder = gif_decoder(&bytes)?;
         repeat = match decoder.loop_count() {
             image::metadata::LoopCount::Infinite => image::codecs::gif::Repeat::Infinite,
             image::metadata::LoopCount::Finite(n) => {
@@ -58,17 +53,12 @@ pub fn decode(src: &str) -> Result<DecodedImage, String> {
         if frame_pixels == 0 || frame_pixels > MAX_PIXELS {
             return Err("That GIF has too many pixels.".into());
         }
-        for frame in decoder.into_frames() {
-            if frames.len() >= 180 || frame_pixels * (frames.len() as u64 + 1) > 32_000_000 {
-                return Err(
-                    "That animation is too large to edit (180 frames / 32 million pixels maximum)."
-                        .into(),
-                );
-            }
-            frames.push(frame.map_err(|e| format!("Couldn't decode that GIF: {e}"))?);
+        for (index, frame) in decoder.into_frames().enumerate() {
+            frame.map_err(|e| format!("Couldn't decode that GIF: {e}"))?;
+            animated = index > 0;
         }
     }
-    let mut reader = ImageReader::new(Cursor::new(bytes))
+    let mut reader = ImageReader::new(Cursor::new(&bytes))
         .with_guessed_format()
         .map_err(|e| format!("Couldn't identify that image: {e}"))?;
     let mut limits = image::Limits::default();
@@ -98,18 +88,26 @@ pub fn decode(src: &str) -> Result<DecodedImage, String> {
     } else {
         png_url(&pixels)?
     };
-    let preview = if frames.len() > 1 {
-        src.to_owned()
-    } else {
-        preview
-    };
+    let preview = if animated { src.to_owned() } else { preview };
     Ok(DecodedImage {
         pixels,
         preview,
-        frames,
+        gif_bytes: if is_gif { bytes } else { Vec::new() },
+        animated,
         original_bytes,
         repeat,
     })
+}
+
+fn gif_decoder(bytes: &[u8]) -> Result<image::codecs::gif::GifDecoder<Cursor<&[u8]>>, String> {
+    let mut decoder = image::codecs::gif::GifDecoder::new(Cursor::new(bytes))
+        .map_err(|e| format!("Couldn't open that GIF: {e}"))?;
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(MAX_PIXELS * 8);
+    limits.max_image_width = Some(8192);
+    limits.max_image_height = Some(8192);
+    decoder.set_limits(limits).map_err(|e| e.to_string())?;
+    Ok(decoder)
 }
 
 pub fn crop_image(
@@ -143,18 +141,18 @@ pub fn crop_image(
         (f64::from(output.1) * scale).floor().max(1.0) as u32,
     );
     loop {
-        if let Some(bytes) = encode_gif(&image.frames, rect, output, image.repeat)? {
+        if let Some(bytes) = encode_gif(&image.gif_bytes, rect, output, image.repeat)? {
             return Ok(data_url("image/gif", &bytes));
         }
         if output.0.max(output.1) <= 64 {
-            return Err("That animation cannot fit within 2 MB. Choose a shorter GIF.".into());
+            return Err("That animation cannot fit within 2 MiB. Choose a shorter GIF.".into());
         }
         output = ((output.0 * 3 / 4).max(1), (output.1 * 3 / 4).max(1));
     }
 }
 
 fn encode_gif(
-    frames: &[image::Frame],
+    source: &[u8],
     rect: [f64; 4],
     output: (u32, u32),
     repeat: image::codecs::gif::Repeat,
@@ -167,7 +165,9 @@ fn encode_gif(
     let result = (|| {
         let mut encoder = image::codecs::gif::GifEncoder::new_with_speed(&mut writer, 10);
         encoder.set_repeat(repeat).map_err(|e| e.to_string())?;
-        for frame in frames {
+        // Keeping composited frames in memory rejects small, well-compressed GIFs.
+        for frame in gif_decoder(source)?.into_frames() {
+            let frame = frame.map_err(|e| format!("Couldn't decode that GIF: {e}"))?;
             let pixels = crop_pixels(frame.buffer(), rect, output)?;
             encoder
                 .encode_frame(image::Frame::from_parts(pixels, 0, 0, frame.delay()))
@@ -190,7 +190,7 @@ impl std::io::Write for GifOutput<'_> {
     fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
         if self.bytes.len().saturating_add(data.len()) > MAX_GIF_BYTES {
             self.exceeded = true;
-            return Err(std::io::Error::other("The cropped GIF exceeds 2 MB."));
+            return Err(std::io::Error::other("The cropped GIF exceeds 2 MiB."));
         }
         self.bytes.extend_from_slice(data);
         Ok(data.len())
@@ -308,11 +308,99 @@ mod tests {
     const OPTIMIZED_GIF: &[u8] = include_bytes!("../tests/fixtures/optimized-profile.gif");
 
     #[test]
+    fn embedded_image_limit_accepts_two_mib_and_rejects_one_byte_more() {
+        let mut bytes = vec![0; crate::protocol::MAX_IMAGE_BYTES];
+        bytes[..6].copy_from_slice(b"GIF89a");
+        let url = data_url("image/gif", &bytes);
+        assert_eq!(
+            crate::features::profiles::embed_image(url.clone()),
+            (Some(url), None)
+        );
+        bytes.push(0);
+        let (image, error) = crate::features::profiles::embed_image(data_url("image/gif", &bytes));
+        assert!(image.is_none());
+        assert!(error.unwrap().contains("2,097,152 bytes"));
+    }
+
+    #[test]
+    #[ignore = "requires DISCORDIA_TEST_GIF pointing to a local animated GIF"]
+    fn local_gif_works_for_profile_community_logo_and_banner() {
+        let path = std::path::PathBuf::from(std::env::var("DISCORDIA_TEST_GIF").unwrap());
+        let input = std::fs::read(&path).unwrap();
+        crate::features::profiles::check_image(&input, "image/gif").unwrap();
+        let source = data_url("image/gif", &input);
+        assert!(
+            crate::features::profiles::embed_image(source.clone())
+                .1
+                .is_none()
+        );
+        let image = decode(&source).unwrap();
+        assert!(image.is_animated());
+        println!(
+            "Input: {} bytes, {}x{}",
+            input.len(),
+            image.pixels.width(),
+            image.pixels.height()
+        );
+        let width = f64::from(image.pixels.width());
+        let height = f64::from(image.pixels.height());
+        for (name, output, jpeg) in [
+            ("profile", (512, 512), false),
+            ("community-logo", (512, 512), false),
+            ("community-banner", (1024, 341), true),
+        ] {
+            let aspect = f64::from(output.0) / f64::from(output.1);
+            let crop_width = width.min(height * aspect);
+            let crop_height = height.min(width / aspect);
+            let rect = [
+                (width - crop_width) / 2.0,
+                (height - crop_height) / 2.0,
+                crop_width,
+                crop_height,
+            ];
+            let cropped = crop_image(&image, rect, output, jpeg).unwrap();
+            let (embedded, error) = crate::features::profiles::embed_image(cropped.clone());
+            assert!(error.is_none(), "{name}: {error:?}");
+            assert_eq!(embedded.as_deref(), Some(cropped.as_str()));
+            let bytes = crate::features::profiles::data_url_bytes(&cropped);
+            assert!(bytes.len() <= MAX_GIF_BYTES);
+            let decoder = gif_decoder(&bytes).unwrap();
+            match (
+                decoder.loop_count(),
+                gif_decoder(&input).unwrap().loop_count(),
+            ) {
+                (image::metadata::LoopCount::Infinite, image::metadata::LoopCount::Infinite) => {}
+                (
+                    image::metadata::LoopCount::Finite(after),
+                    image::metadata::LoopCount::Finite(before),
+                ) => assert_eq!(after, before),
+                _ => panic!("GIF loop count changed"),
+            }
+            let mut original = gif_decoder(&input).unwrap().into_frames();
+            let mut count = 0;
+            for frame in decoder.into_frames() {
+                let frame = frame.unwrap();
+                assert_eq!(frame.delay(), original.next().unwrap().unwrap().delay());
+                count += 1;
+            }
+            assert!(original.next().is_none());
+            assert!(count > 1);
+            let export_path = path.with_file_name(format!("{name}.gif"));
+            std::fs::write(&export_path, &bytes).unwrap();
+            println!(
+                "{name}: {} bytes, {count} frames, {}",
+                bytes.len(),
+                export_path.display()
+            );
+        }
+    }
+
+    #[test]
     fn an_uncropped_small_gif_keeps_its_original_compression_and_loop_count() {
         assert!(OPTIMIZED_GIF.len() < 1_000_000);
         let source = data_url("image/gif", OPTIMIZED_GIF);
         let image = decode(&source).unwrap();
-        assert_eq!(image.frames.len(), 28);
+        assert!(image.is_animated());
         assert_eq!(
             crop_image(&image, [0.0, 0.0, 384.0, 384.0], (512, 512), false).unwrap(),
             source
@@ -326,7 +414,7 @@ mod tests {
         let image = decode(&data_url("image/gif", OPTIMIZED_GIF)).unwrap();
         let rect = [16.0, 16.0, 352.0, 352.0];
         assert!(
-            encode_gif(&image.frames, rect, (352, 352), image.repeat)
+            encode_gif(&image.gif_bytes, rect, (352, 352), image.repeat)
                 .unwrap()
                 .is_none()
         );
@@ -340,11 +428,16 @@ mod tests {
             matches!(decoder.loop_count(), image::metadata::LoopCount::Finite(n) if n.get() == 2)
         );
         let frames = decoder.into_frames().collect_frames().unwrap();
-        assert_eq!(frames.len(), image.frames.len());
+        let original = gif_decoder(OPTIMIZED_GIF)
+            .unwrap()
+            .into_frames()
+            .collect_frames()
+            .unwrap();
+        assert_eq!(frames.len(), original.len());
         let (width, height) = frames[0].buffer().dimensions();
         assert_eq!(width, height);
         assert!(width < 352);
-        for (before, after) in image.frames.iter().zip(&frames) {
+        for (before, after) in original.iter().zip(&frames) {
             assert_eq!(before.delay(), after.delay());
             assert_eq!(after.buffer().dimensions(), (width, height));
         }
@@ -363,7 +456,7 @@ mod tests {
             .into_frames()
             .collect_frames()
             .unwrap();
-        assert_eq!(frames.len(), image.frames.len());
+        assert_eq!(frames.len(), 28);
         assert!(frames[0].buffer().width() <= 384);
         assert!(frames[0].buffer().height() <= 128);
     }
@@ -381,6 +474,73 @@ mod tests {
         assert!(writer.write_all(&[2]).is_err());
         assert!(writer.exceeded);
         assert_eq!(bytes.len(), MAX_GIF_BYTES);
+    }
+
+    #[test]
+    fn small_gif_exceeding_old_frame_and_pixel_limits_works_for_logo_and_banner() {
+        let mut input = Vec::new();
+        {
+            let mut encoder = image::codecs::gif::GifEncoder::new_with_speed(&mut input, 30);
+            encoder
+                .set_repeat(image::codecs::gif::Repeat::Finite(2))
+                .unwrap();
+            for index in 0..181 {
+                let color = if index % 2 == 0 {
+                    [255, 0, 0, 255]
+                } else {
+                    [0, 255, 0, 255]
+                };
+                let pixels = RgbaImage::from_fn(512, 384, |x, _| {
+                    image::Rgba(if x < 256 { color } else { [0, 0, 255, 255] })
+                });
+                encoder
+                    .encode_frame(image::Frame::from_parts(
+                        pixels,
+                        0,
+                        0,
+                        image::Delay::from_numer_denom_ms(100 + index * 10, 1),
+                    ))
+                    .unwrap();
+            }
+        }
+        assert!(input.len() < MAX_GIF_BYTES);
+        let source = data_url("image/gif", &input);
+        let image = decode(&source).unwrap();
+        assert!(
+            u64::from(image.pixels.width()) * u64::from(image.pixels.height()) * 181 > 32_000_000
+        );
+        assert_eq!(
+            crop_image(&image, [0.0, 0.0, 512.0, 384.0], (512, 384), false).unwrap(),
+            source
+        );
+        for (rect, output, banner) in [
+            ([0.0, 0.0, 128.0, 128.0], (128, 128), false),
+            ([256.0, 128.0, 192.0, 64.0], (192, 64), true),
+        ] {
+            let url = crop_image(&image, rect, output, banner).unwrap();
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(url.split_once(',').unwrap().1)
+                .unwrap();
+            assert!(bytes.len() <= MAX_GIF_BYTES);
+            let decoder = gif_decoder(&bytes).unwrap();
+            assert!(
+                matches!(decoder.loop_count(), image::metadata::LoopCount::Finite(n) if n.get() == 2)
+            );
+            let frames = decoder.into_frames().collect_frames().unwrap();
+            assert_eq!(frames.len(), 181);
+            for (index, frame) in frames.iter().enumerate() {
+                assert_eq!(frame.buffer().dimensions(), output);
+                assert_eq!(frame.delay().numer_denom_ms(), (100 + index as u32 * 10, 1));
+                let color = if banner {
+                    [0, 0, 255, 255]
+                } else if index % 2 == 0 {
+                    [255, 0, 0, 255]
+                } else {
+                    [0, 255, 0, 255]
+                };
+                assert_eq!(frame.buffer().get_pixel(0, 0).0, color);
+            }
+        }
     }
 
     #[test]

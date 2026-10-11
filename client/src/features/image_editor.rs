@@ -215,7 +215,7 @@ pub fn ImageEditor(
                 }
                 if animated {
                     div { class: "text-[10px] text-[var(--text-dim)] mt-1",
-                        "GIFs keep their animation; resolution adjusts to fit the 2 MB limit."
+                        "GIFs keep their animation; resolution adjusts to fit the 2 MiB limit."
                     }
                 }
                 if let Some(message) = error() {

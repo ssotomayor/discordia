@@ -1694,6 +1694,7 @@ fn Composer(
     let mut pending_image = use_signal::<Option<String>>(|| None);
     let mut attach_err = use_signal::<Option<String>>(|| None);
     let mut show_emoji = use_signal(|| false);
+    let mut show_stickers = use_signal(|| false);
     let mut show_attach = use_signal(|| false);
     let mut pending_file = use_signal::<Option<(String, String)>>(|| None);
     let mut file_request = use_signal(|| None::<Id>);
@@ -1798,6 +1799,7 @@ fn Composer(
         pending_image.set(None);
         pending_file.set(None);
         show_emoji.set(false);
+        show_stickers.set(false);
         if reply_to.is_some() {
             state.write().replying_to = None;
         }
@@ -2234,7 +2236,7 @@ fn Composer(
                             },
                             title: "Attach",
                             aria_expanded: show_attach(),
-                            onclick: move |_| show_attach.toggle(),
+                            onclick: move |_| { show_stickers.set(false); show_attach.toggle(); },
                             span { class: "block w-4 h-4", dangerous_inner_html: super::icons::PLUS }
                         }
                         if show_attach() {
@@ -2293,8 +2295,19 @@ fn Composer(
                             "w-8 h-8 shrink-0 flex items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--panel2)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors"
                         },
                         title: "Emoji",
-                        onclick: move |_| show_emoji.toggle(),
+                        onclick: move |_| { show_stickers.set(false); show_emoji.toggle(); },
                         span { class: "block w-4 h-4", dangerous_inner_html: super::icons::SMILE }
+                    }
+
+                    if !is_dm && state.read().server_chat_tools {
+                        if let Some(guild_id) = state.read().channels.iter().find(|channel| channel.id == channel_id).map(|channel| channel.guild_id) {
+                            super::chat_tools::StickerPicker {
+                                channel_id,
+                                guild_id,
+                                open: show_stickers,
+                                on_open: move |_| { show_emoji.set(false); show_attach.set(false); },
+                            }
+                        }
                     }
 
                     // Enter already sends; the button is for the pointer, and a

@@ -61,8 +61,6 @@ pub(super) fn ChatTools(channel_id: Id) -> Element {
     let mut offset = use_signal(|| 0_u32);
     let mut request = use_signal(|| None::<Id>);
     let mut error = use_signal(|| None::<String>);
-    let mut sticker_name = use_signal(String::new);
-    let mut sticker_image = use_signal(|| None::<String>);
     let guild_id = state
         .read()
         .channels
@@ -72,8 +70,6 @@ pub(super) fn ChatTools(channel_id: Id) -> Element {
     let Some(guild_id) = guild_id else {
         return rsx! {};
     };
-    let manage = state.read().can(guild_id, Permission::ManageEmojis);
-    let can_send = state.read().can(guild_id, Permission::SendMessages);
     let manage_guild = state.read().can(guild_id, Permission::ManageGuild);
     let file_policy = state
         .read()
@@ -84,7 +80,6 @@ pub(super) fn ChatTools(channel_id: Id) -> Element {
     let fetch = gateway.clone();
     use_effect(move || {
         fetch.send(ClientMessage::FetchGuildFilePolicy { guild_id });
-        fetch.send(ClientMessage::FetchGuildStickers { guild_id });
     });
     let search_gateway = gateway.clone();
     let search = move |page: u32, only_pins: bool| {
@@ -139,12 +134,6 @@ pub(super) fn ChatTools(channel_id: Id) -> Element {
         .as_ref()
         .filter(|(cid, id, _)| *cid == channel_id && Some(*id) == request())
         .map(|(_, _, m)| m.clone());
-    let stickers = state
-        .read()
-        .guild_stickers
-        .get(&guild_id)
-        .cloned()
-        .unwrap_or_default();
     let members: Vec<_> = state
         .read()
         .members_of(guild_id)
@@ -154,7 +143,6 @@ pub(super) fn ChatTools(channel_id: Id) -> Element {
     let title = match panel() {
         "search" => "Search messages",
         "pins" => "Pinned messages",
-        "stickers" => "Stickers",
         "files" => "File limits",
         _ => "",
     };
@@ -171,8 +159,6 @@ pub(super) fn ChatTools(channel_id: Id) -> Element {
                     toggle("pins");
                     if panel() == "pins" { search(0, true); }
                 } } }
-            ToolButton { icon: super::icons::STICKER, title: "Stickers", active: panel() == "stickers",
-                on_click: move |_| toggle("stickers") }
             if manage_guild {
                 ToolButton { icon: super::icons::SLIDERS, title: "File limits", active: panel() == "files",
                     on_click: move |_| toggle("files") }
@@ -244,64 +230,119 @@ pub(super) fn ChatTools(channel_id: Id) -> Element {
                             p { class: "py-4 text-center text-[var(--text-dim)]", "Searching…" }
                         }
                     }
-                    if panel() == "stickers" {
-                        if stickers.is_empty() {
-                            p { class: "py-4 text-center text-[var(--text-dim)]", "No stickers yet." }
-                        }
-                        div { class: "grid gap-2", style: "grid-template-columns: repeat(auto-fill, minmax(5.5rem, 1fr));",
-                            for sticker in stickers {
-                                div { key: "{sticker.id}", class: "relative",
+                }
+            }
+        }
+    }
+}
+
+#[component]
+pub(super) fn StickerPicker(
+    channel_id: Id,
+    guild_id: Id,
+    mut open: Signal<bool>,
+    on_open: EventHandler<()>,
+) -> Element {
+    let state = use_app_state();
+    let gateway = use_gateway();
+    let mut error = use_signal(|| None::<String>);
+    let mut sticker_name = use_signal(String::new);
+    let mut sticker_image = use_signal(|| None::<String>);
+    let manage = state.read().can(guild_id, Permission::ManageEmojis);
+    let can_send = state.read().can(guild_id, Permission::SendMessages);
+    let fetch = gateway.clone();
+    use_effect(move || {
+        fetch.send(ClientMessage::FetchGuildStickers { guild_id });
+    });
+    let stickers = state
+        .read()
+        .guild_stickers
+        .get(&guild_id)
+        .cloned()
+        .unwrap_or_default();
+    rsx! {
+        ToolButton { icon: super::icons::STICKER, title: "Stickers", active: open(),
+            on_click: move |_| {
+                open.toggle();
+                if open() { on_open.call(()); }
+            }
+        }
+        if open() {
+            div { class: "fixed inset-0 z-20", onclick: move |_| open.set(false) }
+            div {
+                class: "dxf-pop-in absolute bottom-full right-3 mb-2 z-30 flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-xl shadow-lg text-xs text-[var(--text)]",
+                style: "width: min(30rem, calc(100% - 1.5rem)); max-height: 70vh;",
+                div { class: "h-10 px-3 flex items-center justify-between border-b border-[var(--border)] shrink-0",
+                    span { class: "text-[11px] uppercase tracking-wider text-[var(--text-dim)]", "Stickers" }
+                    button {
+                        r#type: "button",
+                        class: "w-7 h-7 flex items-center justify-center rounded-lg text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-white/[0.04] transition-colors",
+                        title: "Close",
+                        onclick: move |_| open.set(false),
+                        span { class: "block w-4 h-4", dangerous_inner_html: super::icons::CLOSE }
+                    }
+                }
+                div { class: "flex-1 min-h-0 overflow-y-auto p-3 flex flex-col gap-3",
+                    if let Some(error) = error() { p { class: "text-[var(--danger)]", "{error}" } }
+                    if stickers.is_empty() {
+                        p { class: "py-4 text-center text-[var(--text-dim)]", "No stickers yet." }
+                    }
+                    div { class: "grid gap-2", style: "grid-template-columns: repeat(auto-fill, minmax(5.5rem, 1fr));",
+                        for sticker in stickers {
+                            div { key: "{sticker.id}", class: "relative",
+                                button {
+                                    r#type: "button",
+                                    style: "aspect-ratio: 1;",
+                                    class: "w-full flex items-center justify-center p-1.5 rounded-lg border border-[var(--border)] bg-[var(--panel2)] hover:border-[var(--accent)] transition-colors disabled:opacity-50",
+                                    disabled: !can_send,
+                                    title: ":{sticker.shortcode}:",
+                                    onclick: { let g = gateway.clone(); let id = sticker.id; move |_| { g.send(ClientMessage::SendSticker { channel_id, sticker_id: id }); open.set(false); } },
+                                    if let Some(src) = state.read().media_src(&sticker.image).map(str::to_owned) {
+                                        img { src, alt: sticker.shortcode.clone(), class: "max-w-full max-h-full", style: "object-fit: contain;" }
+                                    } else {
+                                        span { class: "truncate text-[var(--text-dim)]", "{sticker.shortcode}" }
+                                    }
+                                }
+                                if manage {
                                     button {
                                         r#type: "button",
-                                        style: "aspect-ratio: 1;",
-                                        class: "w-full flex items-center justify-center p-1.5 rounded-lg border border-[var(--border)] bg-[var(--panel2)] hover:border-[var(--accent)] transition-colors disabled:opacity-50",
-                                        disabled: !can_send,
-                                        title: ":{sticker.shortcode}:",
-                                        onclick: { let g = gateway.clone(); let id = sticker.id; move |_| { g.send(ClientMessage::SendSticker { channel_id, sticker_id: id }); panel.set(""); } },
-                                        if let Some(src) = state.read().media_src(&sticker.image).map(str::to_owned) {
-                                            img { src, alt: sticker.shortcode.clone(), class: "max-w-full max-h-full", style: "object-fit: contain;" }
-                                        } else {
-                                            span { class: "truncate text-[var(--text-dim)]", "{sticker.shortcode}" }
-                                        }
-                                    }
-                                    if manage {
-                                        button {
-                                            r#type: "button",
-                                            style: "top: 0.25rem; right: 0.25rem;",
-                                            class: "absolute w-5 h-5 flex items-center justify-center rounded bg-[var(--panel-solid)] border border-[var(--border)] text-[var(--text-dim)] hover:text-[var(--danger)] transition-colors",
-                                            title: "Delete sticker",
-                                            onclick: { let g = gateway.clone(); let id = sticker.id; move |_| g.send(ClientMessage::DeleteGuildSticker { guild_id, sticker_id: id }) },
-                                            span { class: "block w-3 h-3", dangerous_inner_html: super::icons::CLOSE }
-                                        }
+                                        style: "top: 0.25rem; right: 0.25rem;",
+                                        class: "absolute w-5 h-5 flex items-center justify-center rounded bg-[var(--panel-solid)] border border-[var(--border)] text-[var(--text-dim)] hover:text-[var(--danger)] transition-colors",
+                                        title: "Delete sticker",
+                                        onclick: { let g = gateway.clone(); let id = sticker.id; move |_| g.send(ClientMessage::DeleteGuildSticker { guild_id, sticker_id: id }) },
+                                        span { class: "block w-3 h-3", dangerous_inner_html: super::icons::CLOSE }
                                     }
                                 }
                             }
                         }
-                        if manage {
-                            div { class: "flex items-center gap-2 border-t border-[var(--border)] pt-3",
-                                if let Some(src) = sticker_image() {
-                                    img { src, class: "w-8 h-8 shrink-0 rounded", style: "object-fit: contain;" }
-                                }
-                                input { class: INPUT, placeholder: "New sticker name", maxlength: 32, value: sticker_name(), oninput: move |e| sticker_name.set(e.value()) }
-                                button { r#type: "button", class: SECONDARY, onclick: move |_| { spawn(async move {
-                                    if let Some(file) = rfd::AsyncFileDialog::new().add_filter("Image", &["png", "gif", "webp", "jpg"]).pick_file().await {
-                                        let path = file.path().to_owned();
-                                        match tokio::task::spawn_blocking(move || crate::chat_image::read_file(&path)).await {
-                                            Ok(Ok(image)) => { sticker_image.set(Some(image)); error.set(None); }
-                                            Ok(Err(e)) => error.set(Some(e)), Err(e) => error.set(Some(e.to_string())),
-                                        }
-                                    }
-                                }); }, "Image…" }
-                                button { r#type: "button", class: "dxf-cta shrink-0 rounded-lg px-3 py-1 text-xs disabled:opacity-50",
-                                    disabled: sticker_image().is_none() || sticker_name().trim().is_empty(),
-                                    onclick: { let g = gateway.clone(); move |_| {
-                                        if let Some(image) = sticker_image() {
-                                            g.send(ClientMessage::CreateGuildSticker { guild_id, name: sticker_name(), image });
-                                            sticker_image.set(None);
-                                            sticker_name.set(String::new());
-                                        }
-                                    } }, "Add" }
+                    }
+                    if manage {
+                        div { class: "flex items-center gap-2 border-t border-[var(--border)] pt-3",
+                            if let Some(src) = sticker_image() {
+                                img { src, class: "w-8 h-8 shrink-0 rounded", style: "object-fit: contain;" }
                             }
+                            input { class: INPUT, placeholder: "New sticker name", maxlength: 32, value: sticker_name(),
+                            oninput: move |e| sticker_name.set(e.value()),
+                            onkeydown: move |e: KeyboardEvent| { if e.key() == Key::Enter { e.prevent_default(); } },
+                        }
+                            button { r#type: "button", class: SECONDARY, onclick: move |_| { spawn(async move {
+                                if let Some(file) = rfd::AsyncFileDialog::new().add_filter("Image", &["png", "gif", "webp", "jpg"]).pick_file().await {
+                                    let path = file.path().to_owned();
+                                    match tokio::task::spawn_blocking(move || crate::chat_image::read_file(&path)).await {
+                                        Ok(Ok(image)) => { sticker_image.set(Some(image)); error.set(None); }
+                                        Ok(Err(e)) => error.set(Some(e)), Err(e) => error.set(Some(e.to_string())),
+                                    }
+                                }
+                            }); }, "Image…" }
+                            button { r#type: "button", class: "dxf-cta shrink-0 rounded-lg px-3 py-1 text-xs disabled:opacity-50",
+                                disabled: sticker_image().is_none() || sticker_name().trim().is_empty(),
+                                onclick: { let g = gateway.clone(); move |_| {
+                                    if let Some(image) = sticker_image() {
+                                        g.send(ClientMessage::CreateGuildSticker { guild_id, name: sticker_name(), image });
+                                        sticker_image.set(None);
+                                        sticker_name.set(String::new());
+                                    }
+                                } }, "Add" }
                         }
                     }
                 }

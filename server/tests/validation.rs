@@ -131,8 +131,7 @@ async fn an_image_that_is_not_a_data_url_is_refused() {
         .expect("a real data URL still goes through");
 }
 
-/// The cap is on the encoded string, and it is checked before anything decodes
-/// or writes, so this is the only thing between a socket and the disk.
+/// The encoded cap rejects oversized frames before media decoding allocates.
 #[tokio::test]
 async fn an_image_over_the_size_limit_is_refused() {
     let (url, _h) = spawn_gateway().await;
