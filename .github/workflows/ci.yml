@@ -21,6 +21,8 @@ env:
   # Caches (`rust-cache` below) are saved from master only, so PR runs cannot
   # evict them, and one job per OS and profile saves: the repo has 10 GiB, and
   # a run that saved a cache per job overflowed it before the next run read one.
+  # `prune-caches` drops the copy a Cargo.lock change leaves behind; image
+  # layers live in ghcr, outside the budget.
 
 jobs:
   bridge-mutations:
@@ -113,11 +115,13 @@ jobs:
         run: cargo clippy -p dioxusfun -p dioxus-grid-layout --all-targets -- -D warnings
 
       # A RUSTFLAGS change rebuilds every dependency, so the second profile
-      # costs a full compile; master pays it, a PR does not.
+      # costs a full compile; master pays it, a PR does not. Outside `target/`
+      # so the cache does not save a second copy of every dependency.
       - name: Clippy (release profile)
         if: github.event_name == 'push'
         env:
           RUSTFLAGS: "-C debug-assertions=off"
+          CARGO_TARGET_DIR: ${{ runner.temp }}/ndebug-target
         run: cargo clippy -p dioxusfun -p dioxus-grid-layout --all-targets -- -D warnings
 
       - name: Tests (client + grid-layout)
@@ -169,6 +173,7 @@ jobs:
         if: github.event_name == 'push'
         env:
           RUSTFLAGS: "-C target-feature=+crt-static -C debug-assertions=off"
+          CARGO_TARGET_DIR: ${{ runner.temp }}/ndebug-target
         run: cargo clippy -p dioxusfun --all-targets -- -D warnings
       - name: Tests (client, Windows-only code)
         run: cargo test -p dioxusfun
@@ -210,11 +215,13 @@ jobs:
       # The other half of the platform: `devlog` and the console handling in
       # `main.rs` change shape with `debug_assertions`, so one profile lints a
       # different tree than the other. Windows has run both since it had them.
-      # Master only: the flag change recompiles every dependency.
+      # Master only: the flag change recompiles every dependency, into a
+      # directory the cache leaves alone.
       - name: Clippy (client, macOS-only code, debug-assertions off)
         if: github.event_name == 'push'
         env:
           RUSTFLAGS: "-C debug-assertions=off"
+          CARGO_TARGET_DIR: ${{ runner.temp }}/ndebug-target
         run: cargo clippy -p dioxusfun --all-targets -- -D warnings
 
       - name: Native codec capabilities
@@ -253,11 +260,23 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             libwebkit2gtk-4.1-dev libgtk-3-dev libxdo-dev \
             libasound2-dev libssl-dev pkg-config
+      - name: Cached Dioxus CLI
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/dx
+            ~/.cargo/bin/dx.exe
+          key: dx-${{ runner.os }}-${{ runner.arch }}-${{ env.DIOXUS_CLI_VERSION }}
       - uses: cargo-bins/cargo-binstall@main
       - name: Install Dioxus CLI
+        shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: cargo binstall dioxus-cli@${{ env.DIOXUS_CLI_VERSION }} --no-confirm --force --locked
+        run: |
+          if dx --version 2>/dev/null | grep -qF " $DIOXUS_CLI_VERSION"; then
+            echo "dx $DIOXUS_CLI_VERSION already installed"; exit 0
+          fi
+          cargo binstall dioxus-cli@${{ env.DIOXUS_CLI_VERSION }} --no-confirm --force --locked
       - name: Verify dx
         run: dx --version
       - name: Build server (release)
@@ -301,11 +320,23 @@ jobs:
         with:
           shared-key: windows-release
           save-if: ${{ github.ref == 'refs/heads/master' }}
+      - name: Cached Dioxus CLI
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/dx
+            ~/.cargo/bin/dx.exe
+          key: dx-${{ runner.os }}-${{ runner.arch }}-${{ env.DIOXUS_CLI_VERSION }}
       - uses: cargo-bins/cargo-binstall@main
       - name: Install Dioxus CLI
+        shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: cargo binstall dioxus-cli@${{ env.DIOXUS_CLI_VERSION }} --no-confirm --force --locked
+        run: |
+          if dx --version 2>/dev/null | grep -qF " $DIOXUS_CLI_VERSION"; then
+            echo "dx $DIOXUS_CLI_VERSION already installed"; exit 0
+          fi
+          cargo binstall dioxus-cli@${{ env.DIOXUS_CLI_VERSION }} --no-confirm --force --locked
       - name: Verify dx
         run: dx --version
       - name: Build server (release)
@@ -388,9 +419,21 @@ jobs:
           go-version: '1.26.x'
       - name: Verify go
         run: go version
+      - name: Cached Dioxus CLI
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/dx
+            ~/.cargo/bin/dx.exe
+          key: dx-${{ runner.os }}-${{ runner.arch }}-${{ env.DIOXUS_CLI_VERSION }}
       - name: Install Dioxus CLI
         # Binstall can fall back to Intel binaries linked against Intel Homebrew.
-        run: cargo install dioxus-cli --version "$DIOXUS_CLI_VERSION" --target aarch64-apple-darwin --locked --force
+        # Built from source, which took ten minutes a run before the cache above.
+        run: |
+          if dx --version 2>/dev/null | grep -qF " $DIOXUS_CLI_VERSION"; then
+            echo "dx $DIOXUS_CLI_VERSION already installed"; exit 0
+          fi
+          cargo install dioxus-cli --version "$DIOXUS_CLI_VERSION" --target aarch64-apple-darwin --locked --force
       - name: Verify dx
         run: |
           lipo "$(command -v dx)" -verify_arch arm64
@@ -552,9 +595,41 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=${{ matrix.crate }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.crate }}
+          # In ghcr rather than the Actions cache, where these layers took a
+          # fifth of the 10 GiB budget and evicted the Rust caches.
+          cache-from: type=registry,ref=ghcr.io/${{ github.repository_owner }}/discordia-${{ matrix.crate }}:buildcache
+          cache-to: type=registry,ref=ghcr.io/${{ github.repository_owner }}/discordia-${{ matrix.crate }}:buildcache,mode=max,image-manifest=true,oci-mediatypes=true
           # Attestations turn the push into a manifest list, which `docker save`
           # and older daemons handle badly for no gain on a private deployment.
           provenance: false
           sbom: false
+
+  prune-caches:
+    name: prune superseded caches
+    # A rust-cache key ends in the Cargo.lock hash, so every lockfile change
+    # saves another copy per job, and the old one sits in the budget until
+    # GitHub evicts something, often the newest cache of another OS.
+    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/master'
+    needs: [desktop-build, windows-build, macos-build, prerelease-linux, prerelease-windows, prerelease-macos, deploy-images]
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Keep the newest Rust cache per job; drop retired Docker layers
+        run: |
+          gh cache list --limit 500 --json id,key,createdAt > caches.json
+          jq -r '
+            ( map(select(.key | startswith("v0-rust-")))
+              | group_by(.key | sub("-[0-9a-f]+-[0-9a-f]+$"; ""))
+              | map(sort_by(.createdAt) | .[:-1][]) )
+            + map(select(.key | test("^(buildkit-blob-|index-)")))
+            | .[] | "\(.id)\t\(.key)"' caches.json > stale.tsv
+          while IFS=$'\t' read -r id key; do
+            echo "deleting $key"
+            gh cache delete "$id"
+          done < stale.tsv
+          gh cache list --limit 500 --json key,sizeInBytes \
+            -q '"kept \(length) caches, \(map(.sizeInBytes) | add // 0 | . / 1073741824 * 100 | floor / 100) GiB"'

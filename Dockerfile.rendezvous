@@ -1,8 +1,21 @@
 
-FROM rust:1-bookworm AS builder
+# Dependencies get a layer of their own, keyed on the manifests alone, so a
+# source change rebuilds only the workspace crates on top of it.
+FROM rust:1-bookworm AS chef
+RUN cargo install cargo-chef --version 0.1.78 --locked
 WORKDIR /src
+
+FROM chef AS planner
 COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS builder
 ENV LIVEKIT_BUNDLE_SKIP=1
+# The recipe leaves out the `[patch]` crates, which the workspace excludes.
+COPY vendor vendor
+COPY --from=planner /src/recipe.json recipe.json
+RUN cargo chef cook --release -p dioxusfun-rendezvous --recipe-path recipe.json
+COPY . .
 RUN cargo build --release -p dioxusfun-rendezvous
 
 FROM debian:bookworm-slim
