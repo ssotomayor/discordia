@@ -2068,7 +2068,7 @@ async fn cleanup_session(ctx: &Arc<AppContext>, conn_id: u64, u: User, graceful:
         let targets = ctx.state.guild_member_pubkeys(cleared.guild_id);
         send_voice_state(&ctx.state, targets, cleared);
         if let Some(channel) = previous.channel_id {
-            evict_from_call(&ctx, &u.pubkey, channel);
+            evict_from_call(ctx, &u.pubkey, channel);
             if previous.screen_sharing {
                 broadcast_screen_state(&ctx.state, previous.guild_id, channel);
             }
