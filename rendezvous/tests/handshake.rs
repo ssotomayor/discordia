@@ -51,7 +51,12 @@ type Ws =
 
 async fn next_json(ws: &mut Ws) -> serde_json::Value {
     loop {
-        match ws.next().await.unwrap().unwrap() {
+        match tokio::time::timeout(Duration::from_secs(5), ws.next())
+            .await
+            .expect("control reply timed out")
+            .unwrap()
+            .unwrap()
+        {
             Message::Text(t) => return serde_json::from_str(&t).unwrap(),
             _ => continue,
         }
@@ -74,6 +79,77 @@ async fn send_register(ws: &mut Ws, name: &str, pubkey: &str, signature: &str) {
         "d": { "name": name, "pubkey": pubkey, "signature": signature, "publish_public": false }
     });
     ws.send(Message::Text(frame.to_string())).await.unwrap();
+}
+
+#[tokio::test]
+async fn control_challenges_reject_cross_connection_replay_and_bind_name_and_transport() {
+    let (base, registry) = spawn_with(Config::default()).await;
+    let (secret, pubkey) = identity(23);
+    let (mut first, first_nonce) = connect_control(&base).await;
+    let (mut second, second_nonce) = connect_control(&base).await;
+    assert_ne!(first_nonce, second_nonce);
+    assert_eq!(bs58::decode(&first_nonce).into_vec().unwrap().len(), 32);
+    assert_eq!(bs58::decode(&second_nonce).into_vec().unwrap().len(), 32);
+    let transport = "transport-one";
+    let name_sig = sign(&secret, &first_nonce, &pubkey, "Replay");
+    let transport_sig = sign(&secret, &first_nonce, &pubkey, transport);
+    let registration = serde_json::json!({
+        "op": "register", "d": {
+            "name": "Replay", "pubkey": pubkey, "signature": name_sig,
+            "publish_public": false, "transport_key": transport,
+            "transport_signature": transport_sig, "transport_addrs": ["127.0.0.1:41234"]
+        }
+    });
+    second
+        .send(Message::Text(registration.to_string()))
+        .await
+        .unwrap();
+    assert_eq!(next_json(&mut second).await["op"], "error");
+    assert!(registry.lookup("replay").is_none());
+    first
+        .send(Message::Text(registration.to_string()))
+        .await
+        .unwrap();
+    assert_eq!(next_json(&mut first).await["op"], "registered");
+    assert_eq!(
+        registry.lookup("replay").unwrap().transport_key.as_deref(),
+        Some(transport)
+    );
+
+    let (mut renamed, nonce) = connect_control(&base).await;
+    send_register(
+        &mut renamed,
+        "Substituted",
+        &pubkey,
+        &sign(&secret, &nonce, &pubkey, "Original"),
+    )
+    .await;
+    assert_eq!(next_json(&mut renamed).await["op"], "error");
+    assert!(registry.lookup("substituted").is_none());
+
+    for (name, key, signature) in [
+        ("StaleTransport", transport, transport_sig),
+        ("ChangedTransport", "transport-two", String::new()),
+    ] {
+        let (mut ws, nonce) = connect_control(&base).await;
+        let signature = if signature.is_empty() {
+            sign(&secret, &nonce, &pubkey, transport)
+        } else {
+            signature
+        };
+        let frame = serde_json::json!({
+            "op": "register", "d": {
+                "name": name, "pubkey": pubkey, "signature": sign(&secret, &nonce, &pubkey, name),
+                "publish_public": false, "transport_key": key,
+                "transport_signature": signature, "transport_addrs": ["127.0.0.1:41234"]
+            }
+        });
+        ws.send(Message::Text(frame.to_string())).await.unwrap();
+        assert_eq!(next_json(&mut ws).await["op"], "registered");
+        let entry = registry.lookup(&name.to_ascii_lowercase()).unwrap();
+        assert!(entry.transport_key.is_none());
+        assert!(entry.transport_addrs.is_empty());
+    }
 }
 
 #[tokio::test]
