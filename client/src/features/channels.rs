@@ -131,7 +131,8 @@ pub fn ChannelsColumn() -> Element {
     let snapshot = state.read();
     let dm_mode = snapshot.dm_mode;
     let has_dm_call = snapshot.dm_call.is_some();
-    let dms: Vec<DmInfo> = snapshot.dms.clone();
+    let dms: Vec<DmInfo> = snapshot.dms_by_recency();
+    let dm_unread = snapshot.dm_unread.clone();
     // The effective state, not the channel's own flag: a guild muted as a whole
     // is silent, and a row that did not say so would be lying about what the
     // person will hear.
@@ -270,6 +271,7 @@ pub fn ChannelsColumn() -> Element {
                             let disc = discriminator(&dm.other_pubkey);
                             let peer = dm.other_pubkey.clone();
                             let muted = muted_dms.contains(&cid);
+                            let unread = dm_unread.get(&cid).copied().unwrap_or(0);
                             let asking = dm_confirming() == Some(cid);
                             let del_cls = if asking {
                                 "px-1.5 h-4 rounded-full border border-[var(--danger)] text-[9px] font-bold uppercase tracking-wide text-[var(--danger)] flex items-center"
@@ -295,6 +297,11 @@ pub fn ChannelsColumn() -> Element {
                                         span { class: "truncate flex-1",
                                             "{uname}"
                                             span { class: "text-[var(--text-dim)] font-mono text-[10px] ml-0.5", "#{disc}" }
+                                        }
+                                    }
+                                    if unread > 0 && !asking {
+                                        span { class: "shrink-0 min-w-5 h-5 px-1.5 rounded-full bg-[var(--accent)] text-[#1a1206] text-[11.5px] font-bold flex items-center justify-center group-hover:hidden",
+                                            "{unread}"
                                         }
                                     }
                                     if muted && !asking {
