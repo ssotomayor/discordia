@@ -1437,13 +1437,14 @@ fn VoiceOccupant(
     let open_menu_click = open_menu.clone();
     let pk_watch = pubkey.clone();
     let pk_camera = pubkey.clone();
+    let pk_card = pubkey.clone();
     let is_watching_screen = state.read().screen_viewing.contains(&pubkey);
     let is_watching_camera = state.read().cameras_watching.contains(&pubkey);
 
     rsx! {
         div {
-            class: if is_self { "px-2 py-0.5" } else { "px-2 py-0.5 rounded cursor-pointer hover:bg-white/[0.03]" },
-            title: if is_self { "" } else { "Right-click for volume and more" },
+            class: "px-2 py-0.5 rounded cursor-pointer hover:bg-white/[0.03]",
+            onclick: move |_| state.write().profile_card = Some(pk_card.clone()),
             oncontextmenu: open_menu,
             div { class: "flex items-center gap-1.5 text-xs text-[var(--text-muted)]",
                 span { class: "shrink-0 flex", title: health_label.unwrap_or_default(),
@@ -1494,7 +1495,8 @@ fn VoiceOccupant(
                         } else {
                             "Watch their screen"
                         },
-                        onclick: move |_| {
+                        onclick: move |e: MouseEvent| {
+                            e.stop_propagation();
                             if can_watch {
                                 let mut s = state.write();
                                 if !s.screen_viewing.remove(&pk_watch) {
@@ -1520,7 +1522,8 @@ fn VoiceOccupant(
                         } else {
                             "Watch their camera"
                         },
-                        onclick: move |_| {
+                        onclick: move |e: MouseEvent| {
+                            e.stop_propagation();
                             if !can_watch_camera {
                                 return;
                             }
