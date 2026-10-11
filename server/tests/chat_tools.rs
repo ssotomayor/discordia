@@ -42,6 +42,96 @@ fn upload(channel_id: Id, name: &str, bytes: &[u8]) -> ClientMessage {
 }
 
 #[tokio::test]
+async fn ordinary_members_can_upload_and_download_files_without_a_special_role() {
+    let (state, owner, guild_id, channel_id) = fixture().await;
+    let member = User {
+        pubkey: "22".repeat(32),
+        username: "member".into(),
+    };
+    assert!(
+        state
+            .handle_chat_tool(&member, upload(channel_id, "outside.pdf", b"data"))
+            .await
+            .is_err()
+    );
+    state.channels.get_mut(&channel_id).unwrap().slowmode_secs = 60;
+    let joined = state.add_member(guild_id, &member).await.unwrap();
+    assert!(joined.roles.is_empty());
+    let response = state
+        .handle_chat_tool(&member, upload(channel_id, "document.pdf", b"%PDF-test"))
+        .await
+        .unwrap();
+    assert!(matches!(
+        response,
+        Some(ServerMessage::FileUploadResult { error: None, .. })
+    ));
+    let message = state
+        .store
+        .history(channel_id, 10, None)
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert_eq!(message.author.pubkey, member.pubkey);
+    let attachment = message.attachment.unwrap();
+    assert!(
+        state
+            .file_available(&member.pubkey, &attachment.media)
+            .await
+    );
+    assert!(state.file_available(&owner.pubkey, &attachment.media).await);
+    assert!(
+        !state
+            .file_available(&"33".repeat(32), &attachment.media)
+            .await
+    );
+    assert!(matches!(
+        state.snapshot_for(&member).await.unwrap(),
+        ServerMessage::Ready {
+            chat_tools: true,
+            ..
+        }
+    ));
+    let error = state
+        .handle_chat_tool(&member, upload(channel_id, "again.pdf", b"data"))
+        .await
+        .unwrap_err();
+    assert!(error.starts_with("slowmode:"));
+    state.channels.get_mut(&channel_id).unwrap().read_only = true;
+    let error = state
+        .handle_chat_tool(&member, upload(channel_id, "readonly.pdf", b"data"))
+        .await
+        .unwrap_err();
+    assert_eq!(error, "this channel is read-only");
+    {
+        let mut channel = state.channels.get_mut(&channel_id).unwrap();
+        channel.kind = dioxusfun_server::protocol::ChannelKind::Voice;
+        channel.access = Some(dioxusfun_server::protocol::ChannelAccess::default());
+    }
+    assert!(
+        !state
+            .file_available(&member.pubkey, &attachment.media)
+            .await
+    );
+    assert!(state.file_available(&owner.pubkey, &attachment.media).await);
+    assert!(
+        state
+            .handle_chat_tool(&member, upload(channel_id, "hidden.pdf", b"data"))
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        state
+            .store
+            .history(channel_id, 10, None)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
 async fn file_expiry_keeps_the_message_but_revokes_download_and_reclaims_disk() {
     let (state, owner, guild_id, channel_id) = fixture().await;
     state
