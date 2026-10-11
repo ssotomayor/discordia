@@ -329,6 +329,7 @@ fn handle_rpc(
                     if gateway
                         .0
                         .send(ClientMessage::SendMessage {
+                            image_name: None,
                             channel_id,
                             content,
                             image: None,

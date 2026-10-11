@@ -120,15 +120,25 @@ const PASTE_JS: &str = r#"
 })();
 "#;
 
+#[derive(Clone)]
+struct PendingImage {
+    url: String,
+    name: Option<String>,
+}
+
 fn load_attachment(
     path: Option<std::path::PathBuf>,
-    mut pending: Signal<Option<String>>,
+    mut pending: Signal<Option<PendingImage>>,
     mut error: Signal<Option<String>>,
     mut generation: Signal<u64>,
 ) {
     let request = generation.peek().wrapping_add(1);
     generation.set(request);
     spawn(async move {
+        let name = path
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .map(|name| name.to_string_lossy().into_owned());
         let result = tokio::task::spawn_blocking(move || match path {
             Some(path) => crate::chat_image::read_file(&path),
             None => crate::chat_image::read_clipboard(),
@@ -140,7 +150,7 @@ fn load_attachment(
         match result.unwrap_or_else(|e| Err(format!("Couldn't load that image: {e}"))) {
             Ok(url) => {
                 error.set(None);
-                pending.set(Some(url));
+                pending.set(Some(PendingImage { url, name }));
             }
             Err(message) => error.set(Some(message)),
         }
@@ -149,7 +159,7 @@ fn load_attachment(
 
 fn pick_file(
     mut pending: Signal<Option<(String, String)>>,
-    mut image: Signal<Option<String>>,
+    mut image: Signal<Option<PendingImage>>,
     mut error: Signal<Option<String>>,
     mut generation: Signal<u64>,
 ) {
@@ -733,6 +743,18 @@ pub(super) fn MessageRow(message: Message, grouped: bool) -> Element {
                                     "Loading image…"
                                 }
                             },
+                        }
+                    }
+                }
+                if let Some(metadata) = message.image_metadata.as_ref() {
+                    div {
+                        class: "mt-1 text-[10px] text-[var(--text-dim)]",
+                        style: "max-width:20rem;overflow-wrap:anywhere;",
+                        if let Some(name) = metadata.name.as_ref() {
+                            span { "{name}" }
+                        }
+                        if let (Some(width), Some(height)) = (metadata.width, metadata.height) {
+                            span { " · {width} × {height} px" }
                         }
                     }
                 }
@@ -1714,7 +1736,7 @@ fn Composer(
             .filter(|r| r.channel_id == channel_id)
     });
     let mut draft = use_signal(String::new);
-    let mut pending_image = use_signal::<Option<String>>(|| None);
+    let mut pending_image = use_signal::<Option<PendingImage>>(|| None);
     let mut attach_err = use_signal::<Option<String>>(|| None);
     let mut show_emoji = use_signal(|| false);
     let mut show_stickers = use_signal(|| false);
@@ -1841,7 +1863,8 @@ fn Composer(
     }
     let mut submit = move || -> bool {
         let content = draft().trim().to_string();
-        let image = pending_image();
+        let image_name = pending_image().and_then(|image| image.name);
+        let image = pending_image().map(|image| image.url);
         let file = pending_file();
         if content.is_empty() && image.is_none() && file.is_none() {
             return false;
@@ -1978,6 +2001,7 @@ fn Composer(
                 return false;
             }
             gateway_submit.send(ClientMessage::SendMessage {
+                image_name,
                 channel_id,
                 content,
                 image,
@@ -2203,10 +2227,10 @@ fn Composer(
                         title: "Enlarge image preview",
                         aria_label: "Enlarge image preview",
                         style: "cursor:zoom-in;",
-                        onclick: { let full = img.clone(); move |_| state.write().image_viewer = Some(full.clone()) },
+                        onclick: { let full = img.url.clone(); move |_| state.write().image_viewer = Some(full.clone()) },
                         img {
                             class: "h-16 w-16 object-cover rounded border border-[var(--border-strong)] bg-[var(--panel2)]",
-                            src: "{img}",
+                            src: "{img.url}",
                             alt: "pending attachment",
                         }
                     }

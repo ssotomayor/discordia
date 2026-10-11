@@ -87,6 +87,7 @@ const TINY_PNG: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCA
 /// Sends an image and says what came back: the message, or the refusal.
 async fn send_image(bot: &mut Bot, channel_id: Id, image: &str) -> Result<(), String> {
     bot.send(&ClientMessage::SendMessage {
+        image_name: None,
         channel_id,
         content: "look".into(),
         image: Some(image.to_string()),
@@ -172,6 +173,7 @@ async fn a_history_page_is_clamped_however_much_is_asked_for() {
         for i in 0..250 {
             store
                 .insert_message(&Message {
+                    image_metadata: None,
                     attachment: None,
                     pinned: false,
                     id: Id::new_v4(),

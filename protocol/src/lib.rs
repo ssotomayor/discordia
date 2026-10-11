@@ -973,6 +973,8 @@ pub const REPLY_EXCERPT_CHARS: usize = 120;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Message {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_metadata: Option<ImageMetadata>,
     #[serde(default)]
     pub attachment: Option<Attachment>,
     #[serde(default)]
@@ -998,6 +1000,16 @@ pub struct Attachment {
     pub bytes: u64,
     #[serde(default)]
     pub expires_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ImageMetadata {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1662,6 +1674,8 @@ pub enum ClientMessage {
         sticker_id: Id,
     },
     SendMessage {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        image_name: Option<String>,
         channel_id: Id,
         content: String,
         #[serde(default)]

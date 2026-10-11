@@ -85,6 +85,7 @@ async fn state_survives_restart_and_media_is_offloaded() {
             .unwrap();
         owner
             .send(&ClientMessage::SendMessage {
+                image_name: None,
                 channel_id: text_channel,
                 content: "with an image".into(),
                 image: Some(TINY_PNG.into()),
@@ -400,6 +401,7 @@ async fn every_kind_of_blob_reference_is_found() {
 
     session
         .send(&ClientMessage::SendMessage {
+            image_name: None,
             channel_id,
             content: "picture".into(),
             image: Some(TINY_PNG.into()),

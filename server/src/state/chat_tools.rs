@@ -232,6 +232,7 @@ impl AppState {
                     None => None,
                 };
                 let message = Message {
+                    image_metadata: None,
                     id: uuid::Uuid::new_v4(),
                     channel_id,
                     author: user.clone(),

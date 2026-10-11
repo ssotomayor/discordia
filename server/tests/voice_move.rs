@@ -461,6 +461,7 @@ async fn a_category_is_a_separator_nobody_can_join_or_post_to() {
     assert!(next_error(&mut owner).await.contains("not a voice channel"));
     owner
         .send(&ClientMessage::SendMessage {
+            image_name: None,
             channel_id: category.id,
             content: "hello".into(),
             image: None,

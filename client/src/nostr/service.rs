@@ -732,6 +732,7 @@ fn insert_message(
     let fresh = s.insert_message(
         cid,
         Message {
+            image_metadata: None,
             attachment: None,
             pinned: false,
             id: mid,

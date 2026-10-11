@@ -295,7 +295,7 @@ pub async fn handle_connection<S>(
                             break;
                         }
                     }
-                    ClientMessage::SendMessage { channel_id, content, image, reply_to } => {
+                    ClientMessage::SendMessage { channel_id, content, image, image_name, reply_to } => {
                         let Some(author) = user.clone() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
@@ -379,7 +379,7 @@ pub async fn handle_connection<S>(
                                     }).await;
                                     continue;
                                 }
-                            match ctx.state.push_message(channel_id, author, content, image, reply_to).await {
+                            match ctx.state.push_image_message(channel_id, author, content, image, image_name, reply_to).await {
                                 Ok(msg) => {
                                     let author_pk = msg.author.pubkey.clone();
                                     let targets = ctx.state.guild_member_pubkeys(gid);
