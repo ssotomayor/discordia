@@ -133,6 +133,7 @@ pub fn ChannelsColumn() -> Element {
     let has_dm_call = snapshot.dm_call.is_some();
     let dms: Vec<DmInfo> = snapshot.dms_by_recency();
     let dm_unread = snapshot.dm_unread.clone();
+    let channel_unread = snapshot.channel_unread.clone();
     // The effective state, not the channel's own flag: a guild muted as a whole
     // is silent, and a row that did not say so would be lying about what the
     // person will hear.
@@ -467,6 +468,13 @@ pub fn ChannelsColumn() -> Element {
                                         }
                                         span { class: "font-mono text-[13px] opacity-70", draggable: false, "#" }
                                         span { class: "truncate flex-1", draggable: false, "{ch.name}" }
+                                        if channel_unread.contains(&cid) {
+                                            span {
+                                                title: "Unread messages",
+                                                aria_label: "Unread messages",
+                                                style: "width:6px;height:6px;border-radius:50%;background:var(--accent);flex-shrink:0;",
+                                            }
+                                        }
                                         if muted_channels.contains(&ch.id) {
                                             span { class: "text-[10px] text-[var(--text-dim)]", title: "Muted", "🔕" }
                                         }
@@ -1869,6 +1877,8 @@ pub(crate) fn select_text_channel(
     let needs_fetch = {
         let mut s = state.write();
         s.selected_channel = Some(channel_id);
+        s.dm_mode = false;
+        s.mark_channel_read(channel_id);
         !s.messages.contains_key(&channel_id)
     };
     if needs_fetch {

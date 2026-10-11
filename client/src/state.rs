@@ -304,6 +304,7 @@ pub struct AppState {
     /// Seeded from settings and written back by `use_saved_emoji_persistence`.
     pub saved_emoji: Vec<crate::settings::SavedEmoji>,
     pub dm_unread: HashMap<Id, u32>,
+    pub channel_unread: HashSet<Id>,
     /// Seeded from `ClientSettings::dm_cleared_at`; see it for why a delete is
     /// a watermark. Read on every insert, so replayed history stays hidden.
     pub dm_cleared_at: HashMap<String, i64>,
@@ -487,6 +488,7 @@ impl AppState {
             dm_emoji: HashMap::new(),
             saved_emoji: Vec::new(),
             dm_unread: HashMap::new(),
+            channel_unread: HashSet::new(),
             dm_cleared_at: HashMap::new(),
             dm_clock_offset: HashMap::new(),
             dm_read_at: HashMap::new(),
@@ -639,6 +641,7 @@ impl AppState {
     }
 
     pub fn clear_server_session(&mut self) {
+        self.channel_unread.clear();
         self.voice_route_revision = 0;
         self.status = ConnectionStatus::Disconnected;
         self.self_user = None;
@@ -1084,13 +1087,35 @@ impl AppState {
     /// was new. Arriving twice is ordinary here, not exceptional: relays replay
     /// their whole history and a fetched page overlaps what was delivered live.
     pub fn insert_message(&mut self, channel_id: Id, message: Message) -> bool {
-        let held = self.messages.entry(channel_id).or_default();
-        if held.iter().any(|m| m.id == message.id) {
+        if self
+            .messages
+            .get(&channel_id)
+            .is_some_and(|held| held.iter().any(|m| m.id == message.id))
+        {
             return false;
         }
+        let own = self
+            .self_user
+            .as_ref()
+            .is_some_and(|u| u.pubkey == message.author.pubkey);
+        let viewing = !self.dm_mode && self.selected_channel == Some(channel_id);
+        if !own && !viewing && self.channels.iter().any(|channel| channel.id == channel_id) {
+            self.channel_unread.insert(channel_id);
+        }
+        let held = self.messages.entry(channel_id).or_default();
         let index = held.partition_point(|m| m.created_at <= message.created_at);
         held.insert(index, message);
         true
+    }
+
+    pub fn guild_has_unread(&self, guild_id: Id) -> bool {
+        self.channels.iter().any(|channel| {
+            channel.guild_id == guild_id && self.channel_unread.contains(&channel.id)
+        })
+    }
+
+    pub fn mark_channel_read(&mut self, channel_id: Id) {
+        self.channel_unread.remove(&channel_id);
     }
 
     /// What to subtract from `author`'s timestamps to put them on our clock.
@@ -1900,6 +1925,40 @@ mod tests {
             access: None,
         });
         id
+    }
+
+    #[test]
+    fn guild_unread_tracks_other_channels_and_clears_only_the_opened_channel() {
+        let mut s = AppState::empty();
+        s.self_user = Some(user("self"));
+        let guild = Id::new_v4();
+        let first = text_channel(&mut s, guild);
+        let second = text_channel(&mut s, guild);
+        let other_guild = Id::new_v4();
+        let other = text_channel(&mut s, other_guild);
+        s.selected_channel = Some(first);
+        s.dm_mode = false;
+        s.insert_message(first, at(Id::new_v4(), first, 1));
+        assert!(!s.guild_has_unread(guild));
+        let message = at(Id::new_v4(), second, 2);
+        s.insert_message(second, message.clone());
+        s.insert_message(other, at(Id::new_v4(), other, 3));
+        assert!(s.guild_has_unread(guild));
+        assert!(s.guild_has_unread(other_guild));
+        s.mark_channel_read(second);
+        assert!(!s.guild_has_unread(guild));
+        assert!(s.guild_has_unread(other_guild));
+        assert!(!s.insert_message(second, message));
+        assert!(!s.guild_has_unread(guild));
+        let mut own = at(Id::new_v4(), second, 4);
+        own.author = user("self");
+        s.insert_message(second, own);
+        assert!(!s.guild_has_unread(guild));
+        s.dm_mode = true;
+        s.insert_message(first, at(Id::new_v4(), first, 5));
+        assert!(s.channel_unread.contains(&first));
+        s.clear_server_session();
+        assert!(s.channel_unread.is_empty());
     }
 
     /// The whole complaint: an ordinary message used to ring only if it named

@@ -188,7 +188,7 @@ fn file_kb(data_url: &str) -> usize {
 
 #[component]
 pub fn ChatView() -> Element {
-    let state = use_app_state();
+    let mut state = use_app_state();
     let gateway = use_gateway();
     let mut drag_over = use_signal(|| false);
     let mut dropped_file = use_signal::<Option<std::path::PathBuf>>(|| None);
@@ -210,6 +210,17 @@ pub fn ChatView() -> Element {
         .map(|d| snapshot.display_name(&d.other_pubkey))
         .unwrap_or_default();
     drop(snapshot);
+
+    use_effect(move || {
+        let s = state.read();
+        let channel = s
+            .selected_channel
+            .filter(|cid| !s.dm_mode && s.channel_unread.contains(cid));
+        drop(s);
+        if let Some(channel) = channel {
+            state.write().mark_channel_read(channel);
+        }
+    });
 
     let (is_dm, header_name, composer_label) = match &dm {
         Some(_) => (true, dm_name.clone(), format!("@{dm_name}")),
