@@ -327,6 +327,23 @@ button:active:not(:disabled) { transform: scale(0.985); }
 .dxf-composer:empty::before { content: attr(data-placeholder); color: var(--text-dim); pointer-events: none; }
 .dxf-composer img { height: 1.5em; width: auto; display: inline-block; vertical-align: -0.4em; margin: 0 1px; }
 
+.dxf-file-card { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; width: min(100%, 28rem); box-sizing: border-box; margin-top: 8px; padding: 12px; border: 1px solid var(--border); border-radius: 12px; background-color: var(--panel2); }
+.dxf-file-card:focus-within { border-color: var(--accent); }
+.dxf-file-type { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; width: 44px; height: 52px; flex-shrink: 0; border-radius: 8px; background-color: var(--accent-soft); color: var(--accent); }
+.dxf-file-type svg { display: block; width: 22px; height: 22px; }
+.dxf-file-type > span:last-child { font-size: 9px; font-weight: 700; letter-spacing: 0.04em; }
+.dxf-file-info { flex: 1 1 110px; min-width: 0; }
+.dxf-file-name { color: var(--text); font-size: 13px; font-weight: 600; line-height: 1.4; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+.dxf-file-meta { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 4px; color: var(--text-dim); font-size: 11px; }
+.dxf-file-download { display: inline-flex; align-items: center; justify-content: center; gap: 6px; flex-shrink: 0; margin-left: auto; padding: 8px 10px; border: 1px solid var(--border-strong); border-radius: 8px; color: var(--text-muted); background-color: var(--panel); font-size: 11px; font-weight: 600; }
+.dxf-file-download svg { display: block; }
+.dxf-file-download:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.dxf-file-download:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.dxf-file-download:disabled { opacity: 0.55; cursor: default; }
+.dxf-file-card[data-expired=true] .dxf-file-type { color: var(--text-dim); background-color: var(--panel); }
+.dxf-file-expired, .dxf-file-error { color: var(--danger); }
+.dxf-file-error { flex-basis: 100%; margin: 0; font-size: 11px; overflow-wrap: anywhere; }
+
 /* The connecting screen. Scanlines and a rolling band, because a dial that
    cannot report progress should at least look like it is doing something —
    there is no denominator here, only a wait. */

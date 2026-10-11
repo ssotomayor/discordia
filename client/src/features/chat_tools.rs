@@ -411,6 +411,7 @@ fn FileLimits(guild_id: Id, policy: FilePolicy) -> Element {
 pub(super) fn FileAttachment(attachment: Attachment) -> Element {
     let mut state = use_app_state();
     let mut busy = use_signal(|| false);
+    let mut download_error = use_signal(|| None::<String>);
     let mut now = use_signal(|| chrono::Utc::now().timestamp_millis());
     use_future(move || async move {
         loop {
@@ -419,12 +420,62 @@ pub(super) fn FileAttachment(attachment: Attachment) -> Element {
         }
     });
     let expired = attachment.expires_ms.is_some_and(|ms| ms <= now());
+    let file_type = attachment
+        .name
+        .rsplit_once('.')
+        .filter(|(name, extension)| {
+            !name.is_empty()
+                && !extension.is_empty()
+                && extension.len() <= 5
+                && extension.bytes().all(|byte| byte.is_ascii_alphanumeric())
+        })
+        .map(|(_, extension)| extension.to_ascii_uppercase())
+        .unwrap_or_else(|| "FILE".into());
+    let size = if attachment.bytes < 1000 {
+        format!("{} B", attachment.bytes)
+    } else if attachment.bytes < 1_000_000 {
+        format!("{:.1} KB", attachment.bytes as f64 / 1000.0)
+    } else {
+        format!("{:.1} MB", attachment.bytes as f64 / 1_000_000.0)
+    };
+    let expiry = attachment
+        .expires_ms
+        .and_then(chrono::DateTime::from_timestamp_millis)
+        .map(|date| {
+            format!(
+                "Expires {}",
+                date.with_timezone(&chrono::Local).format("%b %d, %Y")
+            )
+        });
     rsx! {
-        div { class: "py-2 text-xs",
-            span { "📎 {attachment.name} ({attachment.bytes / 1000} KB) " }
-            if expired { span { "File expired" } }
-            else { button { disabled: busy(), onclick: move |_| {
+        div {
+            class: "dxf-file-card",
+            "data-expired": expired,
+            role: "group",
+            aria_label: "File attachment: {attachment.name}",
+            div { class: "dxf-file-type", aria_hidden: "true",
+                span { dangerous_inner_html: super::icons::FILE }
+                span { "{file_type}" }
+            }
+            div { class: "dxf-file-info",
+                div { class: "dxf-file-name", title: "{attachment.name}", "{attachment.name}" }
+                div { class: "dxf-file-meta",
+                    span { "{size}" }
+                    if expired { span { class: "dxf-file-expired", "File expired" } }
+                    else if let Some(expiry) = expiry { span { "{expiry}" } }
+                }
+            }
+            button {
+                class: "dxf-file-download",
+                r#type: "button",
+                disabled: busy() || expired,
+                aria_label: "Download {attachment.name}",
+                aria_busy: busy(),
+                title: if expired { "This file has expired" } else { "Save a copy to your computer" },
+                onclick: move |_| {
+                if busy() || expired { return; }
                 busy.set(true);
+                download_error.set(None);
                 let attachment = attachment.clone();
                 spawn(async move {
                     let result = async {
@@ -447,10 +498,19 @@ pub(super) fn FileAttachment(attachment: Attachment) -> Element {
                         }).await.map_err(|e| e.to_string())??;
                         Ok(())
                     }.await;
-                    if let Err(error) = result { state.write().error_toast = Some(error); }
+                    if let Err(error) = result {
+                        download_error.set(Some(error.clone()));
+                        state.write().error_toast = Some(error);
+                    }
                     busy.set(false);
                 });
-            }, if busy() { "Downloading…" } else { "Save file…" } } }
+            },
+                span { aria_hidden: "true", dangerous_inner_html: super::icons::DOWNLOAD }
+                if busy() { "Downloading…" } else { "Download" }
+            }
+            if let Some(error) = download_error() {
+                p { class: "dxf-file-error", role: "alert", "{error}" }
+            }
         }
     }
 }
