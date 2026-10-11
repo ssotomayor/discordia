@@ -202,9 +202,7 @@ impl EditWebsocket {
     ) {
         loop {
             // Accept connections until we hit an error
-            while let Ok((stream, _)) = server.accept() {
-                Self::handle_connection(stream, current_location.clone(), connections.clone());
-            }
+            while Self::accept_connection(&server, &current_location, &connections).is_ok() {}
 
             // Switch ports and reconnect on a different port if the server is killed by the OS. This
             // will happen if an IOS device goes to sleep
@@ -217,6 +215,22 @@ impl EditWebsocket {
             *current_location.lock().unwrap() = location;
             server = new_server;
         }
+    }
+
+    fn accept_connection(
+        server: &TcpListener,
+        current_location: &Arc<Mutex<ServerLocation>>,
+        connections: &Arc<RwLock<HashMap<u32, WebviewConnectionState>>>,
+    ) -> std::io::Result<()> {
+        let (stream, _) = server.accept()?;
+        stream.set_nonblocking(false)?;
+        let current_location = current_location.clone();
+        let connections = connections.clone();
+        // One window's handshake or reconnect wait must not block other windows.
+        std::thread::spawn(move || {
+            Self::handle_connection(stream, current_location, connections);
+        });
+        Ok(())
     }
 
     fn handle_connection(
@@ -640,23 +654,24 @@ mod tests {
                     }
                 }
             });
+            let socket = self.open_socket(0, Duration::from_secs(5));
+            accept.join().unwrap();
+            socket
+        }
+
+        fn open_socket(&self, webview_id: u32, timeout: Duration) -> WebSocket<TcpStream> {
             let addr = self.listener.local_addr().unwrap();
             let key = encode_key_string(&self.location.lock().unwrap().client_key);
             let stream = TcpStream::connect(addr).unwrap();
-            stream
-                .set_read_timeout(Some(Duration::from_secs(5)))
-                .unwrap();
-            stream
-                .set_write_timeout(Some(Duration::from_secs(5)))
-                .unwrap();
+            stream.set_read_timeout(Some(timeout)).unwrap();
+            stream.set_write_timeout(Some(timeout)).unwrap();
             let (mut socket, _) =
-                tungstenite::client(format!("ws://{addr}/0/{key}"), stream).unwrap();
+                tungstenite::client(format!("ws://{addr}/{webview_id}/{key}"), stream).unwrap();
             let authentication = socket.read().unwrap();
             assert_eq!(
                 authentication.into_text().unwrap(),
                 encode_key_string(&self.location.lock().unwrap().server_key)
             );
-            accept.join().unwrap();
             socket
         }
 
@@ -816,5 +831,54 @@ mod tests {
     #[test]
     fn immediate_idle_reconnect_does_not_require_a_second_attempt() {
         reconnect_idle_socket(false);
+    }
+
+    #[test]
+    fn busy_reconnect_does_not_block_another_window_on_the_shared_listener() {
+        let fixture = Fixture::new();
+        let listener = fixture.listener.try_clone().unwrap();
+        let location = fixture.location.clone();
+        let connections = fixture.connections.clone();
+        let accept = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            for _ in 0..3 {
+                loop {
+                    match EditWebsocket::accept_connection(&listener, &location, &connections) {
+                        Ok(()) => break,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(Instant::now() < deadline);
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(error) => panic!("{error}"),
+                    }
+                }
+            }
+        });
+
+        let mut first_applied = fixture.enqueue(b"busy window");
+        let mut first = fixture.open_socket(0, Duration::from_secs(2));
+        assert_eq!(first.read().unwrap().into_data(), b"busy window"[..]);
+        let mut duplicate = fixture.open_socket(0, Duration::from_secs(2));
+
+        let mut other_applied = fixture
+            .connections
+            .write()
+            .unwrap()
+            .entry(1)
+            .or_default()
+            .add_message(b"other window".to_vec());
+        let mut other = fixture.open_socket(1, Duration::from_secs(2));
+        assert_eq!(other.read().unwrap().into_data(), b"other window"[..]);
+        other.send(Message::Binary(Vec::new().into())).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while other_applied.try_recv().unwrap().is_none() {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(first_applied.try_recv().unwrap().is_none());
+
+        first.send(Message::Binary(Vec::new().into())).unwrap();
+        assert!(duplicate.read().is_err());
+        accept.join().unwrap();
     }
 }
