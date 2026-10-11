@@ -12,10 +12,8 @@ pub fn Tooltip(text: String, children: Element) -> Element {
             onmouseleave: move |_| shown.set(false),
             {children}
             if shown() {
-                // Below, not above: the first message's header sits at the top
-                // of a scrolling pane, which would clip anything drawn over it.
                 span {
-                    class: "absolute top-full left-1/2 -translate-x-1/2 mt-1 z-50 px-2 py-1 rounded-md whitespace-nowrap pointer-events-none bg-[var(--panel-solid)] border border-[var(--border)] shadow-lg text-[11px] font-medium text-[var(--text)]",
+                    class: "absolute bottom-full left-1/2 -translate-x-1/2 mb-1 z-50 px-2 py-1 rounded-md whitespace-nowrap pointer-events-none bg-[var(--panel-solid)] border border-[var(--border)] shadow-lg text-[11px] font-medium text-[var(--text)]",
                     "{text}"
                 }
             }

@@ -302,6 +302,9 @@ fn ConnectingOverlay(target: String) -> Element {
 #[component]
 pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>) -> Element {
     let mut state = use_app_state();
+    // A selected DM here is in the chat panel, always on screen; left false by
+    // the last session, every message read here counted as unread.
+    use_effect(move || state.write().dm_pane_open = true);
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let leaving = use_signal(|| None::<Leaving>);
     let quitting = use_context::<crate::app::QuitRequest>().0;
