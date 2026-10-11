@@ -18,9 +18,9 @@ name instead.
 | File | Lines |
 |---|---|
 | `client/src/features/voice.rs` | 4895 |
-| `server/src/state/mod.rs` | 3299 |
+| `server/src/state/mod.rs` | 3308 |
 | `server/tests/owner_controls.rs` | 3152 |
-| `server/src/gateway/connection.rs` | 3178 |
+| `server/src/gateway/connection.rs` | 3179 |
 | `client/src/features/channels.rs` | 2169 |
 | `client/src/features/screenshare.rs` | 3236 |
 | `protocol/src/lib.rs` | 2924 |

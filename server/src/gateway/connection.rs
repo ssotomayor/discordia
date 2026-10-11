@@ -231,6 +231,7 @@ pub async fn handle_connection<S>(
                         if send(&mut ws_tx, &ready).await.is_err() {
                             break;
                         }
+                        ctx.state.resume_voice_session(&new_user.pubkey, conn_id);
                         let joins: Vec<(uuid::Uuid, Member)> = ctx
                             .state
                             .members
