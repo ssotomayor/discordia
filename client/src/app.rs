@@ -322,9 +322,7 @@ button:active:not(:disabled) { transform: scale(0.985); }
 @keyframes dxf-pop-in { from { opacity: 0; transform: scale(0.96); } to { opacity: 1; transform: scale(1); } }
 .dxf-pop-in { animation: dxf-pop-in 0.12s var(--ease) both; }
 
-/* The chat composer is a contenteditable line: it scrolls sideways like an
-   input and shows a custom emoji as its picture. */
-.dxf-composer { white-space: pre; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; outline: none; cursor: text; }
+.dxf-composer { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 10rem; overflow-x: hidden; overflow-y: auto; scrollbar-width: none; outline: none; cursor: text; }
 .dxf-composer::-webkit-scrollbar { display: none; }
 .dxf-composer:empty::before { content: attr(data-placeholder); color: var(--text-dim); pointer-events: none; }
 .dxf-composer img { height: 1.5em; width: auto; display: inline-block; vertical-align: -0.4em; margin: 0 1px; }

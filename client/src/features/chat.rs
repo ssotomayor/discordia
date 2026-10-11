@@ -1248,11 +1248,7 @@ fn is_url(w: &str) -> bool {
     w.starts_with("http://") || w.starts_with("https://")
 }
 
-/// The composer is a contenteditable so a custom emoji shows as its picture
-/// while being typed. Listeners sit on the document and find the element by
-/// id on every event, so a composer that is rebuilt (a channel locking and
-/// unlocking) is picked up without rewiring. Serialising walks the children:
-/// an `img[data-code]` is `:code:`, everything else is its text.
+// Document listeners survive a composer rebuilt when a channel locks or unlocks.
 const COMPOSER_JS: &str = r#"
 return (async function () {
   const id = '__ID__', mine = '__GEN__';
@@ -1260,14 +1256,21 @@ return (async function () {
   if (window.__dxfComposers[id]) window.__dxfComposers[id].off();
   const find = () => document.getElementById(id);
   let suggesting = false, saved = null, alive = true;
-  const serialize = (node) => {
+  const serialize = (node, partial = false) => {
     let out = '';
-    node.childNodes.forEach(n => {
+    let previousBlock = false;
+    node.childNodes.forEach((n, index) => {
+      const block = n.nodeType === 1 && (n.tagName === 'DIV' || n.tagName === 'P');
+      if (index && (block || previousBlock)) out += '\n';
+      const last = index === node.childNodes.length - 1;
       if (n.nodeType === 3) out += n.nodeValue;
       else if (n.nodeType === 1) {
         if (n.tagName === 'IMG' && n.dataset.code) out += ':' + n.dataset.code + ':';
-        else if (n.tagName !== 'BR') out += serialize(n);
+        // Browsers leave a final BR as a caret placeholder, not another line.
+        else if (n.tagName === 'BR') { if (!last || partial) out += '\n'; }
+        else out += serialize(n, partial && last);
       }
+      previousBlock = block;
     });
     return out;
   };
@@ -1283,7 +1286,7 @@ return (async function () {
     const pre = document.createRange();
     pre.setStart(el, 0);
     pre.setEnd(r.startContainer, r.startOffset);
-    return serialize(pre.cloneContents());
+    return serialize(pre.cloneContents(), true);
   };
   const report = () => {
     const el = find();
@@ -1363,7 +1366,12 @@ return (async function () {
   const onInput = (e) => { if (within(e)) report(); };
   const onKey = (e) => {
     if (!within(e) || e.isComposing) return;
-    if (e.key === 'Enter') { e.preventDefault(); dioxus.send({ k: suggesting ? 'pick' : 'submit' }); return; }
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      if (e.shiftKey) document.execCommand('insertLineBreak');
+      else dioxus.send({ k: suggesting ? 'pick' : 'submit' });
+      return;
+    }
     if (!suggesting) return;
     if (e.key === 'ArrowUp' || e.key === 'ArrowDown') { e.preventDefault(); dioxus.send({ k: 'move', down: e.key === 'ArrowDown' }); }
     else if (e.key === 'Tab') { e.preventDefault(); dioxus.send({ k: 'pick' }); }
@@ -1373,7 +1381,7 @@ return (async function () {
     if (!within(e) || !e.clipboardData) return;
     for (const it of e.clipboardData.items || []) if (it.kind === 'file') return;
     e.preventDefault();
-    const text = (e.clipboardData.getData('text/plain') || '').replace(/[\r\n]+/g, ' ');
+    const text = (e.clipboardData.getData('text/plain') || '').replace(/\r\n?/g, '\n');
     if (text) document.execCommand('insertText', false, text);
   };
   document.addEventListener('input', onInput);
@@ -2298,7 +2306,7 @@ fn Composer(
                         contenteditable: "true",
                         "data-placeholder": "Message {composer_label}",
                         role: "textbox",
-                        aria_multiline: "false",
+                        aria_multiline: "true",
                         aria_label: "Message {composer_label}",
                     }
 
@@ -2336,9 +2344,8 @@ fn Composer(
                     }
                 }
                 div { class: "flex gap-3.5 pt-1.5 px-1 font-mono text-[10px] text-[var(--text-dim)]",
-                    // Only what the composer can actually do: the draft is a
-                    // single-line input, so Shift+Enter submits like Enter.
                     span { "Enter send" }
+                    span { "Shift+Enter new line" }
                     span { ":name for emoji" }
                     if file_request().is_some() {
                         span { class: "text-[var(--accent)]", "Uploading file…" }

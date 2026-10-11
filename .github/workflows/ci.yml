@@ -132,6 +132,7 @@ jobs:
           node --test scripts/test-stream-quality.mjs
           node --test scripts/test-stream-audio.mjs
           node client/tests/chat_attachment_bridge.cjs
+          node client/tests/chat_composer.cjs
           node client/tests/native_ui_bridges.cjs
 
   windows-build:
