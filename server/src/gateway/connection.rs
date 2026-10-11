@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use axum::extract::ws::{Message as WsMessage, WebSocket};
+use axum::extract::ws::Message as WsMessage;
 use futures_util::{SinkExt, StreamExt};
 
 use crate::AppContext;
@@ -12,12 +12,16 @@ use crate::protocol::{
     ClientMessage, EmojiBlob, Id, Intent, Member, Permission, ServerMessage, User,
 };
 
-pub async fn handle_connection(
-    socket: WebSocket,
+pub async fn handle_connection<S>(
+    socket: S,
     ctx: Arc<AppContext>,
     client_host: Option<String>,
     peer: Option<std::net::IpAddr>,
-) {
+) where
+    S: futures_util::Stream<Item = Result<WsMessage, axum::Error>>
+        + futures_util::Sink<WsMessage, Error = axum::Error>
+        + Unpin,
+{
     let (mut ws_tx, mut ws_rx) = socket.split();
     let (conn_id, mut outbound_rx) = match ctx.state.register_conn(peer) {
         Ok(registered) => registered,
@@ -2983,6 +2987,10 @@ impl RateLimiter {
         true
     }
 }
+
+#[cfg(test)]
+#[path = "handshake_tests.rs"]
+mod handshake_tests;
 
 #[cfg(test)]
 mod tests {
