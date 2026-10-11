@@ -687,8 +687,10 @@ pub(super) fn MessageRow(message: Message, grouped: bool) -> Element {
                             }
                         }
                         if let Some(rank) = rank.clone() {
-                            span { class: "self-center text-[12px]", title: "{rank.name}",
-                                EmojiText { text: rank.emoji, guild_id, compact: true, tooltip: rank.name.clone() }
+                            span { class: "self-center text-[12px]",
+                                super::tooltip::Tooltip { text: rank.name.clone(),
+                                    EmojiText { text: rank.emoji, guild_id, compact: true, untitled: true }
+                                }
                             }
                         }
                         span { class: "text-[10px] text-[var(--text-dim)]", "{timestamp}" }
@@ -1111,10 +1113,9 @@ pub(crate) fn EmojiText(
     #[props(default)] reaction: bool,
     #[props(default)] extra: Vec<(String, String)>,
     #[props(default)] compact: bool,
-    /// Replaces each picture's own `:code:` tooltip, which would otherwise win
-    /// over a title set on whatever holds it.
+    /// No `:code:` title on the pictures, for a holder that labels them itself.
     #[props(default)]
-    tooltip: Option<String>,
+    untitled: bool,
 ) -> Element {
     let state = use_app_state();
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
@@ -1157,7 +1158,7 @@ pub(crate) fn EmojiText(
                     img {
                         src: "{url}",
                         alt: ":{body}:",
-                        title: tooltip.clone().unwrap_or_else(|| format!(":{body}:")),
+                        title: if untitled { String::new() } else { format!(":{body}:") },
                         style: "height:calc({base}em * {emoji_scale});width:auto;display:inline-block;vertical-align:-0.3em;",
                     }
                 },

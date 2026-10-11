@@ -36,6 +36,7 @@ pub mod soundboard;
 pub mod sounds;
 mod stream_layout;
 mod stream_viewer;
+pub mod tooltip;
 pub mod topology;
 mod video_lifecycle;
 pub mod voice;
