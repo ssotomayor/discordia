@@ -299,7 +299,7 @@ devcontainer up --workspace-folder . --remove-existing-container   # after editi
 | TLS proxy in front of a community server | **readable** by the proxy's operator | encrypted |
 | Host | readable | readable |
 | LAN friend | encrypted | encrypted |
-| Bots | loopback or the TLS proxy only; the SDK has no QUIC | — |
+| Bots | as a client: QUIC by share string, or `ws://` on loopback and `wss://` through the TLS proxy | — |
 
 DMs are in none of these rows: they are Nostr gift wraps on relays, and a relay
 learns only that somebody messaged you.
