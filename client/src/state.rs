@@ -467,6 +467,8 @@ pub struct AppState {
     pub relay_app_manifests: HashMap<String, (i64, String)>,
     /// Activities each guild's host holds a bundle for.
     pub guild_activities: HashMap<Id, Vec<crate::protocol::GuildActivity>>,
+    /// Joinable activities running in each channel we can see.
+    pub activity_instances: HashMap<Id, Vec<crate::protocol::ActivityInstance>>,
     /// By bot pubkey. What each bot's profile card offers to press.
     pub bot_commands: HashMap<String, Vec<crate::protocol::BotCommand>>,
     /// A bot's private answers: never stored anywhere, gone on reconnect.
@@ -612,6 +614,7 @@ impl AppState {
             app_manifest_events: HashMap::new(),
             relay_app_manifests: HashMap::new(),
             guild_activities: HashMap::new(),
+            activity_instances: HashMap::new(),
             bot_commands: HashMap::new(),
             command_notes: Vec::new(),
             guild_emojis: HashMap::new(),

@@ -108,6 +108,11 @@ pub fn reply(key: u64, id: u64, result: Result<Value, String>) {
     evaluate(key, &format!("window.__dxfReply({id},{ok},{value})"));
 }
 
+pub fn emit(key: u64, event: &str, data: &Value) {
+    let name = Value::String(event.to_string());
+    evaluate(key, &format!("window.__dxfEvent({name},{data})"));
+}
+
 fn evaluate(key: u64, js: &str) {
     OPEN.with(|o| {
         if let Some(open) = o.borrow().get(&key)

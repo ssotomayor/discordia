@@ -293,6 +293,22 @@ impl Bot {
         .await
     }
 
+    /// Speaks in an instance of this bot's own activity, as its backend. `to`
+    /// reaches one participant; `None` reaches them all.
+    pub async fn activity_send(
+        &mut self,
+        instance_id: Id,
+        to: Option<&str>,
+        data: &str,
+    ) -> Result<()> {
+        self.send(&ClientMessage::ActivitySend {
+            instance_id,
+            to: to.map(str::to_string),
+            data: data.to_string(),
+        })
+        .await
+    }
+
     pub async fn register_commands(&mut self, commands: Vec<BotCommand>) -> Result<()> {
         self.send(&ClientMessage::RegisterCommands { commands })
             .await

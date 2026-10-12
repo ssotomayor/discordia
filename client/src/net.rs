@@ -1507,6 +1507,36 @@ fn apply(
         } => {
             s.guild_activities.insert(guild_id, activities);
         }
+        ServerMessage::ActivityInstances {
+            channel_id,
+            instances,
+        } => {
+            s.activity_instances.insert(channel_id, instances);
+        }
+        ServerMessage::ActivityStarted { instance } => {
+            s.activity_instances
+                .entry(instance.channel_id)
+                .or_default()
+                .retain(|i| i.id != instance.id);
+            s.activity_instances
+                .entry(instance.channel_id)
+                .or_default()
+                .push(instance.clone());
+            crate::features::activities::inbound(crate::features::activities::Inbound::Started(
+                instance,
+            ));
+        }
+        ServerMessage::ActivityEvent {
+            instance_id,
+            from,
+            data,
+        } => {
+            crate::features::activities::inbound(crate::features::activities::Inbound::Event {
+                instance_id,
+                from,
+                data,
+            });
+        }
         ServerMessage::BotCommands(set) => {
             s.bot_commands.insert(set.bot_pubkey, set.commands);
         }

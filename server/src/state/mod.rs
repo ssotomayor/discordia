@@ -15,6 +15,7 @@ use crate::store::Store;
 mod apps;
 mod chat_tools;
 mod commands;
+mod instances;
 pub use apps::ManifestOutcome;
 
 /// A failed write is logged and ignored: the change survives the session but
@@ -96,6 +97,7 @@ pub struct AppState {
     pub bot_commands: DashMap<String, Vec<crate::protocol::BotCommand>>,
     /// The newest manifest event each bot has handed this host, by version.
     pub app_manifests: DashMap<String, (u64, String)>,
+    activity_instances: instances::Instances,
     invocations: DashMap<Id, commands::Pending>,
     pub roles: DashMap<Id, Vec<Role>>,
     pub emojis: DashMap<Id, Vec<GuildEmoji>>,
@@ -138,6 +140,7 @@ impl AppState {
             bot_installs: DashMap::new(),
             bot_commands: DashMap::new(),
             app_manifests: DashMap::new(),
+            activity_instances: Default::default(),
             invocations: DashMap::new(),
             roles: DashMap::new(),
             emojis: DashMap::new(),
@@ -383,14 +386,19 @@ impl AppState {
     }
 
     /// A full queue drops the socket, since a client that missed state has to
-    /// re-snapshot anyway — except for typing, which nobody needs replayed and
-    /// which a hostile guild could otherwise use to knock members offline.
+    /// re-snapshot anyway — except for typing and activity frames, which nobody
+    /// needs replayed and which a hostile guild could use to knock members offline.
     fn route(&self, conn_id: u64, msg: &ServerMessage) {
         let tx = match self.conns.get(&conn_id) {
             Some(c) => c.tx.clone(),
             None => return,
         };
-        if tx.try_send(msg.clone()).is_err() && !matches!(msg, ServerMessage::TypingUpdate { .. }) {
+        if tx.try_send(msg.clone()).is_err()
+            && !matches!(
+                msg,
+                ServerMessage::TypingUpdate { .. } | ServerMessage::ActivityEvent { .. }
+            )
+        {
             tracing::warn!(conn_id, "outbound queue full — dropping the connection");
             self.drop_conn(conn_id);
         }

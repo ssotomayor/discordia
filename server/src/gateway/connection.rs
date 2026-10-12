@@ -128,6 +128,7 @@ pub async fn handle_connection<S>(
                             | ClientMessage::React { .. }
                             | ClientMessage::RegisterCommands { .. }
                             | ClientMessage::RegisterManifest { .. }
+                            | ClientMessage::ActivitySend { .. }
                             | ClientMessage::RespondToCommand { .. }
                     )
                 {
@@ -1117,6 +1118,81 @@ pub async fn handle_connection<S>(
                         let activities = ctx.state.guild_activities(guild_id);
                         let _ = send(&mut ws_tx, &ServerMessage::GuildActivities { guild_id, activities }).await;
                     }
+                    ClientMessage::ActivityStart { channel_id, app } => {
+                        let Some(u) = user.as_ref() else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "identify first".into(),
+                            }).await;
+                            continue;
+                        };
+                        if !limiter.allow() {
+                            reject_rate_limited(&mut ws_tx).await;
+                            continue;
+                        }
+                        match ctx.state.start_instance(&u.pubkey, channel_id, &app) {
+                            Ok((instance, touched)) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::ActivityStarted { instance }).await;
+                                share_instances(&ctx.state, touched);
+                            }
+                            Err(message) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await;
+                            }
+                        }
+                    }
+                    ClientMessage::ActivityJoin { instance_id, role } => {
+                        let Some(u) = user.as_ref() else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "identify first".into(),
+                            }).await;
+                            continue;
+                        };
+                        if !limiter.allow() {
+                            reject_rate_limited(&mut ws_tx).await;
+                            continue;
+                        }
+                        match ctx.state.join_instance(&u.pubkey, instance_id, role) {
+                            Ok(touched) => share_instances(&ctx.state, touched),
+                            Err(message) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await;
+                            }
+                        }
+                    }
+                    ClientMessage::ActivityLeave { instance_id } => {
+                        let Some(u) = user.as_ref() else { continue };
+                        share_instances(&ctx.state, ctx.state.leave_instance(&u.pubkey, instance_id));
+                    }
+                    ClientMessage::ActivitySend { instance_id, to, data } => {
+                        let Some(u) = user.as_ref() else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "identify first".into(),
+                            }).await;
+                            continue;
+                        };
+                        if !limiter.allow() {
+                            reject_rate_limited(&mut ws_tx).await;
+                            continue;
+                        }
+                        match ctx.state.instance_send(&u.pubkey, instance_id, to.as_deref(), &data) {
+                            Ok(recipients) => ctx.state.deliver(recipients, ServerMessage::ActivityEvent {
+                                instance_id,
+                                from: u.pubkey.clone(),
+                                data,
+                            }),
+                            Err(message) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await;
+                            }
+                        }
+                    }
+                    ClientMessage::FetchActivityInstances { channel_id } => {
+                        let Some(u) = user.as_ref() else { continue };
+                        let visible = ctx.state.channel(channel_id).is_some_and(|c| {
+                            ctx.state.is_guild_member(c.guild_id, &u.pubkey) && ctx.state.can_see_channel(&u.pubkey, &c)
+                        });
+                        if visible {
+                            let instances = ctx.state.instances_in(channel_id);
+                            let _ = send(&mut ws_tx, &ServerMessage::ActivityInstances { channel_id, instances }).await;
+                        }
+                    }
                     ClientMessage::FetchAppManifest { bot_pubkey } => {
                         if user.is_none() {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
@@ -1907,6 +1983,7 @@ pub async fn handle_connection<S>(
                         let seen_by = ctx.state.channel(channel_id).map(|c| viewers_of(&ctx.state, &c));
                         match ctx.state.delete_channel(channel_id, &u.pubkey).await {
                             Ok((guild_id, evicted)) => {
+                                ctx.state.end_channel_instances(channel_id);
                                 tracing::info!(%guild_id, %channel_id, by = ?u.username, "channel deleted");
                                 let targets = ctx.state.guild_member_pubkeys(guild_id);
                                 ctx.state.deliver(
@@ -2188,6 +2265,7 @@ async fn cleanup_session(ctx: &Arc<AppContext>, conn_id: u64, u: User, graceful:
         tracing::info!(user = ?u.username, "a session closed; others remain");
         return;
     }
+    share_instances(&ctx.state, ctx.state.leave_all_instances(&u.pubkey));
     if ctx.state.clear_activity(&u.pubkey) {
         ctx.state.deliver(
             ctx.state.peers_of(&u.pubkey),
@@ -2680,6 +2758,9 @@ fn apply_sight_change(
             );
         }
         if !lost.is_empty() {
+            if state.drop_from_channel_instances(cid, &lost) {
+                share_instances(state, vec![cid]);
+            }
             for vs in &occupants {
                 if lost.contains(&vs.user_pubkey) {
                     let was_sharing = sharing_in(state, &vs.user_pubkey);
@@ -2848,6 +2929,32 @@ fn bot_can(
         .unwrap_or(false)
 }
 
+/// Every channel frame goes to `viewers_of` (trap 30); an app's bot also hears
+/// the instances of its own activity, wherever it can see.
+fn share_instances(state: &crate::state::AppState, channels: Vec<Id>) {
+    for channel_id in channels {
+        let Some(channel) = state.channel(channel_id) else {
+            continue;
+        };
+        let instances = state.instances_in(channel_id);
+        let mut to = viewers_of(state, &channel);
+        to.extend(
+            instances
+                .iter()
+                .filter_map(|i| crate::state::AppState::instance_bot(i).map(str::to_string)),
+        );
+        to.sort_unstable();
+        to.dedup();
+        state.deliver(
+            to,
+            ServerMessage::ActivityInstances {
+                channel_id,
+                instances,
+            },
+        );
+    }
+}
+
 /// Managers see the installs, everyone sees the activities they can open.
 fn share_guild_apps(state: &crate::state::AppState, guild_id: crate::protocol::Id) {
     state.deliver(
@@ -2922,6 +3029,21 @@ fn filter_for_bot(
         ServerMessage::CommandInvoked(inv) => state
             .bot_install(inv.guild_id, bot_pubkey)
             .map(|_| msg.clone()),
+        ServerMessage::ActivityInstances {
+            channel_id,
+            instances,
+        } => {
+            let mine: Vec<_> = instances
+                .iter()
+                .filter(|i| i.app == bot_pubkey)
+                .cloned()
+                .collect();
+            Some(ServerMessage::ActivityInstances {
+                channel_id: *channel_id,
+                instances: mine,
+            })
+        }
+        ServerMessage::ActivityEvent { .. } => Some(msg.clone()),
         ServerMessage::Error { .. } => Some(msg.clone()),
         _ => None,
     }

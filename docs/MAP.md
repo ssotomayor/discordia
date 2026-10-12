@@ -18,15 +18,15 @@ name instead.
 | File | Lines |
 |---|---|
 | `client/src/features/voice.rs` | 4895 |
-| `server/src/state/mod.rs` | 3364 |
+| `server/src/state/mod.rs` | 3372 |
 | `server/tests/owner_controls.rs` | 3157 |
-| `server/src/gateway/connection.rs` | 3304 |
+| `server/src/gateway/connection.rs` | 3426 |
 | `client/src/features/channels.rs` | 2182 |
 | `client/src/features/screenshare.rs` | 3236 |
-| `protocol/src/lib.rs` | 3161 |
-| `client/src/state.rs` | 2604 |
+| `protocol/src/lib.rs` | 3258 |
+| `client/src/state.rs` | 2607 |
 | `client/src/update.rs` | 1228 |
-| `client/src/net.rs` | 2501 |
+| `client/src/net.rs` | 2531 |
 | `client/src/features/chat.rs` | 2449 |
 | `server/src/store.rs` | 1430 |
 | `client/src/features/guild_settings.rs` | 1135 |
@@ -122,6 +122,7 @@ that direction says a file is safe to open when it is not.
 | A bot's buttons | `server/src/state/commands.rs` | `invoke_command` — every check a press passes before the bot sees it; `protocol::validate_commands` and `check_args` hold the declaration and the args, and the client form runs the same `check_args`. Drawn by `features/bot_commands.rs`: `BotCommandsSection` on the profile card, `CommandNotes` for private replies under the chat |
 | An app's manifest and its pin | `server/src/state/apps.rs`, `server/src/auth.rs`, `client/src/features/integrations.rs` | `protocol::AppManifest` is a kind 31990 event (`d` = `discordia-app`) signed by the app key; `verify_manifest_event` checks it on the host, `read_manifest` on the client before the consent screen. `BotInstall::app` is what was approved; `register_manifest` → `apply_newer` applies a newer version that `AppManifest::widens` nothing, else parks it in `pending` for `approve_app_update`. `InstallForm` asks the host (`FetchAppManifest`) and the account's relays (`NostrCmd::FetchAppManifest`) and takes the higher version. SDK: `BotIdentity::sign_manifest`, `Bot::register_manifest` |
 | An app's activity bundle | `server/src/state/apps.rs`, `client/src/activity_bundle.rs`, `client/src/features/activities.rs` | An admin uploads the zip or page (`UploadActivityBundle`, `BundleRow`); the host stores it as `media:<sha>.dxa` only if the hash is the pinned or pending manifest's. `guild_activities` lists the held ones to any member (`FetchGuildActivities`, `GuildActivities`); `FetchEmoji` serves a `.dxa` only through `bundle_available`. The client refuses bytes that do not hash to the manifest (`verified_bytes`) and unpacks with path and size limits (`unpack`) before `activity_window::open` |
+| A shared activity (rock paper scissors) | `server/src/state/instances.rs`, `client/src/features/activities.rs` | `ActivityStart`/`Join`/`Leave`/`Send` → `start_instance` etc.; an instance lives in memory, ends with its last participant, and goes to `viewers_of` its channel via `share_instances` (plus the app's bot, its backend). Spectators never `ActivitySend`; `ActivityEvent` is dropped, not fatal, on a full queue. On the client one coroutine in `ActivityHost` owns the window's calls and the instance's frames: `instance.commit`/`reveal` hash in Rust (`commit_hash`), and a reveal is `valid` only against the commitment this client saw. `Session::backlog` holds frames until the page first calls in. `InstanceCard` offers Join/Watch. `client/tests/activity_rps.cjs` plays a match |
 | Voice session ownership | `server/src/gateway/connection.rs`, `server/src/gateway/voice_ownership_tests.rs` | `set_voice_channel_owned` assigns the call to a connection. Owner cleanup expires after the reconnect grace even with chat siblings; atomic ownership checks preserve a handed-off call and reject sibling publication updates. Presence still follows the last session |
 | Concurrent self-hosts | `server/src/livekit_bundle/ownership.rs`, `client/src/host.rs` | `HostLease` excludes hosts sharing a data directory; each SFU owns its directory and TCP/UDP ports until its subprocess drops. Concurrent hosts use separate configuration directories and disjoint `DISCORDIA_LIVEKIT_PORT` blocks. Scoped executable names prevent stale PID records from reclaiming another directory's SFU; two real SFUs are covered by the existing ignored-test CI step |
 | Guild unread indicators | `client/src/state.rs`, `client/src/features/guilds.rs`, `client/src/features/channels.rs` | `channel_unread` tracks new messages outside the open guild channel, excluding self and duplicates. Guild dots aggregate its channels; opening a channel clears only its dot. History pages do not add unread state; leaving the server clears it |

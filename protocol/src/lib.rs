@@ -1270,6 +1270,64 @@ pub fn looks_like_bundle(bytes: &[u8]) -> bool {
     text.get(start..start + 1) == Some(b"<")
 }
 
+/// Activities every client ships, by id, with how many may play at once.
+/// The host knows them so it can size a game it has no manifest for.
+pub const BUILTIN_ACTIVITIES: &[(&str, u8)] = &[("dice", 1), ("rps", 2)];
+
+pub fn builtin_activity(id: &str) -> String {
+    format!("builtin:{id}")
+}
+
+pub const MAX_ACTIVITY_DATA: usize = 16 * 1024;
+pub const MAX_INSTANCES_PER_CHANNEL: usize = 8;
+pub const MAX_INSTANCE_PARTICIPANTS: usize = 64;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActivityRole {
+    Player,
+    Spectator,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ActivityParticipant {
+    pub pubkey: String,
+    pub role: ActivityRole,
+}
+
+/// A running activity people can join. Memory only, like presence: it ends
+/// when its last participant leaves or disconnects.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ActivityInstance {
+    pub id: Id,
+    pub channel_id: Id,
+    /// `builtin:<id>`, or the key of the app whose activity it is.
+    pub app: String,
+    pub max_players: u8,
+    /// In join order. The first is the host, so leaving hands it on.
+    pub participants: Vec<ActivityParticipant>,
+}
+
+impl ActivityInstance {
+    pub fn host(&self) -> Option<&str> {
+        self.participants.first().map(|p| p.pubkey.as_str())
+    }
+
+    pub fn players(&self) -> usize {
+        self.participants
+            .iter()
+            .filter(|p| p.role == ActivityRole::Player)
+            .count()
+    }
+
+    pub fn role_of(&self, pubkey: &str) -> Option<ActivityRole> {
+        self.participants
+            .iter()
+            .find(|p| p.pubkey == pubkey)
+            .map(|p| p.role)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GuildActivity {
     pub bot_pubkey: String,
@@ -2008,6 +2066,30 @@ pub enum ClientMessage {
     FetchGuildActivities {
         guild_id: Id,
     },
+    /// Starts a joinable instance in a channel. Starting or joining another
+    /// one leaves the instance you were in.
+    ActivityStart {
+        channel_id: Id,
+        app: String,
+    },
+    ActivityJoin {
+        instance_id: Id,
+        role: ActivityRole,
+    },
+    ActivityLeave {
+        instance_id: Id,
+    },
+    /// Players and the app's bot only. `to` reaches one participant; without
+    /// it, everyone in the instance but the sender. `data` is opaque JSON text.
+    ActivitySend {
+        instance_id: Id,
+        #[serde(default)]
+        to: Option<String>,
+        data: String,
+    },
+    FetchActivityInstances {
+        channel_id: Id,
+    },
     UninstallBot {
         guild_id: Id,
         bot_pubkey: String,
@@ -2433,6 +2515,21 @@ pub enum ServerMessage {
     GuildActivities {
         guild_id: Id,
         activities: Vec<GuildActivity>,
+    },
+    /// Every instance running in a channel, to everyone who can see it.
+    ActivityInstances {
+        channel_id: Id,
+        instances: Vec<ActivityInstance>,
+    },
+    /// To the socket that sent `ActivityStart`, so it binds its window to the
+    /// instance it made rather than guessing among a channel's instances.
+    ActivityStarted {
+        instance: ActivityInstance,
+    },
+    ActivityEvent {
+        instance_id: Id,
+        from: String,
+        data: String,
     },
     BotCommands(BotCommandSet),
     CommandInvoked(Invocation),
