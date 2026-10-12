@@ -31,6 +31,7 @@ pub mod profiles;
 pub mod roles;
 mod screen_stats;
 pub mod screenshare;
+pub mod server_rail;
 pub mod settings_dialog;
 mod social_window;
 pub mod soundboard;
