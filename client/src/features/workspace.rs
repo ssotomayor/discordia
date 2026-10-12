@@ -300,13 +300,20 @@ fn ConnectingOverlay(target: String) -> Element {
 }
 
 #[component]
-pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>) -> Element {
+pub fn WorkspaceView(
+    params: SessionParams,
+    on_disconnect: EventHandler<String>,
+    on_switch: EventHandler<super::server_rail::Switch>,
+) -> Element {
     let mut state = use_app_state();
     // A selected DM here is in the chat panel, always on screen; left false by
     // the last session, every message read here counted as unread.
     use_effect(move || state.write().dm_pane_open = true);
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let leaving = use_signal(|| None::<Leaving>);
+    // Set only once the switch is confirmed; the teardown below then ends in
+    // `on_switch` instead of `on_disconnect`.
+    let mut switch_to = use_signal(|| None::<super::server_rail::Switch>);
     let quitting = use_context::<crate::app::QuitRequest>().0;
     use_effect(move || {
         if quitting() && !matches!(*leaving.peek(), Some(Leaving::Running(_))) {
@@ -345,6 +352,8 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
     provide_context(crate::features::voice::VoiceTx(voice_tx.clone()));
     provide_context(state);
     provide_context(params.identity.clone());
+    let rail = super::server_rail::use_server_rail(&params, state);
+    provide_context(rail);
     let popouts = super::stream_viewer::use_popouts(state);
     provide_context(popouts);
     let streams_visible = use_memo(move || {
@@ -459,7 +468,10 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
             {
                 tracing::warn!("gateway teardown timed out; leaving anyway");
             }
-            on_disconnect.call(reason);
+            match switch_to.peek().clone() {
+                Some(target) => on_switch.call(target),
+                None => on_disconnect.call(reason),
+            }
         });
     });
 
@@ -544,10 +556,27 @@ pub fn WorkspaceView(params: SessionParams, on_disconnect: EventHandler<String>)
                 Some(Leaving::Running(_)) => rsx! {
                     div {
                         class: "dxf-backdrop-in fixed inset-0 z-50 flex items-center justify-center bg-black/50",
-                        div { class: "text-sm text-[var(--text-muted)]", "Disconnecting…" }
+                        div { class: "text-sm text-[var(--text-muted)]",
+                            match switch_to() {
+                                Some(target) => rsx! { "Switching to {target.server.label()}…" },
+                                None => rsx! { "Disconnecting…" },
+                            }
+                        }
                     }
                 },
-                None => rsx! { Fragment {} },
+                None => rsx! {
+                    // The host's own confirmation is the rail's dialog, not StopHostingDialog.
+                    super::server_rail::SwitchHost {
+                        on_go: move |target| {
+                            let mut leaving = leaving;
+                            if leaving.peek().is_none() {
+                                switch_to.set(Some(target));
+                                leaving.set(Some(Leaving::Running(String::new())));
+                            }
+                        },
+                    }
+                    super::server_rail::AddServerDialog {}
+                },
             }
             crate::features::activities::ActivityHost {}
             crate::presence::PresenceService {}
@@ -863,6 +892,19 @@ fn VoiceSpeakingBridge() -> Element {
     rsx! { Fragment {} }
 }
 
+pub(crate) fn others_connected(s: &crate::state::AppState) -> usize {
+    let me = s.self_user.as_ref().map(|u| u.pubkey.as_str());
+    let mut online: Vec<&str> = s
+        .members
+        .iter()
+        .filter(|m| m.online && Some(m.user.pubkey.as_str()) != me)
+        .map(|m| m.user.pubkey.as_str())
+        .collect();
+    online.sort_unstable();
+    online.dedup();
+    online.len()
+}
+
 /// What stopping the host actually costs, said before it happens.
 ///
 /// The count is of people the gateway still holds a connection for, which is
@@ -875,16 +917,7 @@ fn StopHostingDialog(leaving: Signal<Option<Leaving>>) -> Element {
 
     let (guilds, others) = {
         let s = state.read();
-        let me = s.self_user.as_ref().map(|u| u.pubkey.as_str());
-        let mut online: Vec<&str> = s
-            .members
-            .iter()
-            .filter(|m| m.online && Some(m.user.pubkey.as_str()) != me)
-            .map(|m| m.user.pubkey.as_str())
-            .collect();
-        online.sort_unstable();
-        online.dedup();
-        (s.guilds.len(), online.len())
+        (s.guilds.len(), others_connected(&s))
     };
     let guilds_label = if guilds == 1 { "guild" } else { "guilds" };
     let people = match others {

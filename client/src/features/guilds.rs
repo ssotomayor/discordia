@@ -4,6 +4,9 @@ use dioxus_grid_layout::NoDrag;
 use crate::protocol::{ClientMessage, Id, Permission};
 use crate::state::{use_app_state, use_gateway};
 
+const SEPARATOR: &str = "w-6 h-px shrink-0 bg-[var(--border)] my-1";
+const SECTION: &str = "w-full flex flex-col items-center gap-2.5";
+
 const HEADER: &str =
     "h-7 px-2 flex items-center justify-center border-b border-[var(--border)] shrink-0";
 
@@ -61,7 +64,18 @@ pub fn GuildsSidebar() -> Element {
         .map(|guild| guild.id)
         .collect();
     let is_operator = snapshot.is_operator;
+    let status = snapshot.status;
     drop(snapshot);
+
+    let rail = use_context::<super::server_rail::ServerRail>();
+    let here = rail.current_server();
+    let (before, after) = {
+        let known = rail.known.read();
+        match known.iter().position(|s| s.key() == here.key()) {
+            Some(i) => (known[..i].to_vec(), known[i + 1..].to_vec()),
+            None => (known.clone(), Vec::new()),
+        }
+    };
 
     let mut menu = use_signal::<Option<GuildMenu>>(|| None);
 
@@ -123,7 +137,16 @@ pub fn GuildsSidebar() -> Element {
                     },
                 }
 
-                div { class: "w-6 h-px bg-[var(--border)] my-1" }
+                div { class: SEPARATOR }
+
+                for server in before {
+                    div { key: "{server.key()}", class: SECTION,
+                        super::server_rail::OtherServer { server }
+                        div { class: SEPARATOR }
+                    }
+                }
+
+                super::server_rail::ServerHeader { server: here, current: Some(status) }
 
                 for guild in guilds.iter().cloned() {
                     {
@@ -193,11 +216,21 @@ pub fn GuildsSidebar() -> Element {
 
                 button {
                     class: "w-11 h-11 rounded-2xl border border-dashed border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] flex items-center justify-center text-lg leading-none transition-colors",
-                    title: "Add guild",
-                    aria_label: "Add guild",
+                    title: "Add a guild on this server",
+                    aria_label: "Add a guild on this server",
                     onclick: move |_| state.write().guild_dialog = Some(crate::state::GuildDialog::AddGuild),
                     "+"
                 }
+
+                for server in after {
+                    div { key: "{server.key()}", class: SECTION,
+                        div { class: SEPARATOR }
+                        super::server_rail::OtherServer { server }
+                    }
+                }
+
+                div { class: SEPARATOR }
+                super::server_rail::AddServerButton {}
 
             }
             }

@@ -488,6 +488,8 @@ pub struct AppState {
     pub bans: HashMap<Id, Vec<User>>,
     pub invites: HashMap<Id, String>,
     pub error_toast: Option<String>,
+    /// Set by a switch from the server rail; the next Ready opens this guild.
+    pub open_guild_on_ready: Option<Id>,
     pub gateway_failure: Option<String>,
     pub is_operator: bool,
     pub audit_logs: HashMap<Id, Vec<crate::protocol::AuditEntry>>,
@@ -633,6 +635,7 @@ impl AppState {
             bans: HashMap::new(),
             invites: HashMap::new(),
             error_toast: None,
+            open_guild_on_ready: None,
             gateway_failure: None,
             is_operator: false,
             audit_logs: HashMap::new(),
