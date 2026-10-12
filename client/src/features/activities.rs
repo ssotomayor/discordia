@@ -385,6 +385,15 @@ fn handle_rpc(
     state: &Signal<AppState>,
     gateway: &GatewayTx,
 ) -> (bool, Value) {
+    if carries_key_material(params) {
+        state.clone().write().error_toast = Some(
+            "An activity tried to send what looks like a private key or recovery phrase. It was stopped — nothing legitimate ever asks for one.".into(),
+        );
+        return (
+            false,
+            json!("refused: that looks like a key or recovery phrase"),
+        );
+    }
     let has = |c: ActivityCapability| caps.contains(&c);
     match method {
         "user.get" if has(ActivityCapability::UserRead) => {
@@ -441,6 +450,51 @@ fn handle_rpc(
         }
         _ => (false, json!("permission denied or unknown method")),
     }
+}
+
+/// With no network, the bridge is an activity's only way out, so a phrase
+/// it phished from the person is stopped here (#306).
+pub fn carries_key_material(value: &Value) -> bool {
+    match value {
+        Value::String(s) => text_carries_key(s),
+        Value::Array(items) => items.iter().any(carries_key_material),
+        Value::Object(map) => map
+            .iter()
+            .any(|(k, v)| text_carries_key(k) || carries_key_material(v)),
+        _ => false,
+    }
+}
+
+fn text_carries_key(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    let bech32 = |prefix: &str, min: usize| {
+        lower.match_indices(prefix).any(|(i, _)| {
+            lower[i + prefix.len()..]
+                .chars()
+                .take_while(|c| "qpzry9x8gf2tvdw0s3jn54khce6mua7l".contains(*c))
+                .count()
+                >= min
+        })
+    };
+    if bech32("nsec1", 50) || bech32("ncryptsec1", 50) {
+        return true;
+    }
+    let words = bip39::Language::English;
+    let mut run = 0;
+    for word in lower
+        .split(|c: char| !c.is_ascii_alphabetic())
+        .filter(|w| !w.is_empty())
+    {
+        run = if words.find_word(word).is_some() {
+            run + 1
+        } else {
+            0
+        };
+        if run >= 12 {
+            return true;
+        }
+    }
+    false
 }
 
 const DICE_HTML: &str = r##"<!doctype html><html><head><meta charset="utf-8"><style>
@@ -511,6 +565,32 @@ const DICE_HTML: &str = r##"<!doctype html><html><head><meta charset="utf-8"><st
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn key_material_is_stopped_at_the_bridge() {
+        let phrase =
+            "abandon ability able about above absent absorb abstract absurd abuse access accident";
+        assert!(carries_key_material(&json!({ "content": phrase })));
+        assert!(carries_key_material(
+            &json!({ "nested": [{ "x": format!("my words: {phrase}!") }] })
+        ));
+        let nsec = format!("nsec1{}", "q".repeat(58));
+        assert!(carries_key_material(
+            &json!({ "content": nsec.to_uppercase() })
+        ));
+        assert!(carries_key_material(
+            &json!({ format!("ncryptsec1{}", "p".repeat(80)): 1 })
+        ));
+
+        assert!(!carries_key_material(
+            &json!({ "content": "🎲 rolled a 6!" })
+        ));
+        assert!(!carries_key_material(
+            &json!({ "content": "nsec1 is what a private key starts with" })
+        ));
+        let eleven = phrase.rsplit_once(' ').unwrap().0;
+        assert!(!carries_key_material(&json!({ "content": eleven })));
+    }
 
     #[tokio::test]
     async fn integration_requires_permission_and_shares_only_to_its_launch_channel() {
