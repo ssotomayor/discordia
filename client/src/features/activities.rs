@@ -275,6 +275,8 @@ fn instance_info(state: &AppState, instance: &ActivityInstance) -> Value {
         "id": instance.id.to_string(),
         "me": me,
         "host": instance.host(),
+        // A page trusts game state only from this key: players can send too.
+        "app": instance.app,
         "max_players": instance.max_players,
         "participants": participants,
     })

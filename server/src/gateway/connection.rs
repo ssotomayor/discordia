@@ -128,6 +128,7 @@ pub async fn handle_connection<S>(
                             | ClientMessage::React { .. }
                             | ClientMessage::RegisterCommands { .. }
                             | ClientMessage::RegisterManifest { .. }
+                            | ClientMessage::OfferActivityBundle { .. }
                             | ClientMessage::ActivitySend { .. }
                             | ClientMessage::InvokeCommand { .. }
                             | ClientMessage::RespondToCommand { .. }
@@ -233,6 +234,9 @@ pub async fn handle_connection<S>(
                         };
                         if send(&mut ws_tx, &ready).await.is_err() {
                             break;
+                        }
+                        if is_bot {
+                            ask_for_bundles(&ctx.state, &new_user.pubkey);
                         }
                         ctx.state.resume_voice_session(&new_user.pubkey, conn_id);
                         let joins: Vec<(uuid::Uuid, Member)> = ctx
@@ -1010,6 +1014,7 @@ pub async fn handle_connection<S>(
                                     guild_id,
                                     bots: ctx.state.guild_installs(guild_id),
                                 }).await;
+                                ask_for_bundles(&ctx.state, &bot_pubkey);
                                 tracing::debug!(perms = ?install.permissions, intents = ?install.intents, "install grants");
                             }
                             Err(e) => {
@@ -1070,6 +1075,7 @@ pub async fn handle_connection<S>(
                                 for guild_id in changed {
                                     share_guild_apps(&ctx.state, guild_id);
                                 }
+                                ask_for_bundles(&ctx.state, &u.pubkey);
                             }
                             Ok(crate::state::ManifestOutcome::Stale) => {}
                             Err(message) => {
@@ -1088,6 +1094,31 @@ pub async fn handle_connection<S>(
                             Ok(()) => {
                                 tracing::info!(%guild_id, bot = ?bot_pubkey, by = ?u.username, "app update approved");
                                 share_guild_apps(&ctx.state, guild_id);
+                                ask_for_bundles(&ctx.state, &bot_pubkey);
+                            }
+                            Err(message) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await;
+                            }
+                        }
+                    }
+                    ClientMessage::OfferActivityBundle { data_url } => {
+                        let Some(u) = user.as_ref() else { continue };
+                        if !is_bot {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "only an app's bot offers its bundle".into(),
+                            }).await;
+                            continue;
+                        }
+                        if !limiter.allow() {
+                            reject_rate_limited(&mut ws_tx).await;
+                            continue;
+                        }
+                        match ctx.state.offer_bundle(&u.pubkey, &data_url) {
+                            Ok(guilds) => {
+                                tracing::info!(bot = %u.pubkey, guilds = guilds.len(), "activity bundle delivered by its app");
+                                for guild_id in guilds {
+                                    share_guild_apps(&ctx.state, guild_id);
+                                }
                             }
                             Err(message) => {
                                 let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await;
@@ -3042,6 +3073,16 @@ fn share_instances(state: &crate::state::AppState, channels: Vec<Id>) {
     }
 }
 
+/// An online app delivers its own bundle, so an admin uploads nothing.
+fn ask_for_bundles(state: &crate::state::AppState, bot_pubkey: &str) {
+    for sha256 in state.bundles_wanted(bot_pubkey) {
+        state.deliver(
+            vec![bot_pubkey.to_string()],
+            ServerMessage::BundleWanted { sha256 },
+        );
+    }
+}
+
 /// Managers see the installs, everyone sees the activities they can open.
 fn share_guild_apps(state: &crate::state::AppState, guild_id: crate::protocol::Id) {
     let (curators, lists) = state.guild_blocklists(guild_id);
@@ -3139,9 +3180,9 @@ fn filter_for_bot(
                 instances: mine,
             })
         }
-        ServerMessage::ActivityEvent { .. } | ServerMessage::CommandResponse { .. } => {
-            Some(msg.clone())
-        }
+        ServerMessage::ActivityEvent { .. }
+        | ServerMessage::CommandResponse { .. }
+        | ServerMessage::BundleWanted { .. } => Some(msg.clone()),
         ServerMessage::Error { .. } => Some(msg.clone()),
         _ => None,
     }

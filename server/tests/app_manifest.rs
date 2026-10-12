@@ -444,3 +444,76 @@ async fn a_followed_blocklist_refuses_an_install_and_only_a_newer_list_replaces_
 
     handle.abort();
 }
+
+#[tokio::test]
+async fn an_app_delivers_its_own_bundle_when_a_guild_wants_it() {
+    let (url, handle) = spawn_gateway().await;
+    let (mut owner, guild_id) = owner_with_guild(&url).await;
+    let page = b"<!doctype html><p>wizards</p>".to_vec();
+    let sha = hex::encode(Sha256::digest(&page));
+    let app = BotIdentity::generate();
+
+    // Not installed anywhere: never asked, and an offer stores nothing.
+    let mut bot = Bot::connect(&url, &app, "Wizards").await.unwrap();
+    while !matches!(next_timeout(&mut bot).await, ServerMessage::Ready { .. }) {}
+    bot.offer_bundle(&page).await.unwrap();
+    assert!(
+        next_error(&mut bot)
+            .await
+            .contains("no guild here has installed")
+    );
+
+    let mut m = manifest(1, vec![]);
+    m.activity.as_mut().unwrap().sha256 = sha.clone();
+    owner
+        .send(&install(guild_id, &app, vec![], app.sign_manifest(&m)))
+        .await
+        .unwrap();
+    let wanted = loop {
+        if let ServerMessage::BundleWanted { sha256 } = next_timeout(&mut bot).await {
+            break sha256;
+        }
+    };
+    assert_eq!(
+        wanted, sha,
+        "the online bot is asked for exactly the approved bytes"
+    );
+
+    bot.offer_bundle(b"<p>something else</p>").await.unwrap();
+    assert!(
+        next_error(&mut bot)
+            .await
+            .contains("isn't the one any guild approved")
+    );
+
+    bot.offer_bundle(&page).await.unwrap();
+    let listed = loop {
+        if let ServerMessage::GuildActivities { activities, .. } = next_timeout(&mut owner).await
+            && !activities.is_empty()
+        {
+            break activities;
+        }
+    };
+    assert_eq!(
+        listed[0].sha256, sha,
+        "members see it with no upload by anyone"
+    );
+
+    drop(bot);
+    let mut again = Bot::connect(&url, &app, "Wizards").await.unwrap();
+    while !matches!(next_timeout(&mut again).await, ServerMessage::Ready { .. }) {}
+    assert!(
+        tokio::time::timeout(Duration::from_millis(400), async {
+            loop {
+                if let Some(ServerMessage::BundleWanted { .. }) = again.next_event().await {
+                    return;
+                }
+            }
+        })
+        .await
+        .is_err(),
+        "a held bundle is not asked for again"
+    );
+
+    handle.abort();
+}

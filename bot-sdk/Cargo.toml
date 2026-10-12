@@ -18,6 +18,13 @@ bs58 = { workspace = true }
 serde_json = { workspace = true }
 url = "2"
 rand = "0.8"
+base64 = "0.22"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
+
+# Its game rules are tested, so `cargo test` runs them like any other.
+[[example]]
+name = "wizards"
+path = "examples/wizards/main.rs"
+test = true

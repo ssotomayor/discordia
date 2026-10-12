@@ -325,6 +325,19 @@ impl Bot {
         .await
     }
 
+    /// Answers `ServerMessage::BundleWanted`: the host keeps the bytes only if
+    /// they hash to what a guild approved.
+    pub async fn offer_bundle(&mut self, bytes: &[u8]) -> Result<()> {
+        use base64::Engine;
+        let data_url = format!(
+            "data:{};base64,{}",
+            protocol::BUNDLE_MIME,
+            base64::engine::general_purpose::STANDARD.encode(bytes)
+        );
+        self.send(&ClientMessage::OfferActivityBundle { data_url })
+            .await
+    }
+
     /// Speaks in an instance of this bot's own activity, as its backend. `to`
     /// reaches one participant; `None` reaches them all.
     pub async fn activity_send(

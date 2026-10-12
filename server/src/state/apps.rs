@@ -134,6 +134,61 @@ impl AppState {
         Ok(())
     }
 
+    /// Bundles some guild approved for this app (or is asked to) that the
+    /// host does not hold, so the bot is asked for exactly those.
+    pub fn bundles_wanted(&self, bot_pubkey: &str) -> Vec<String> {
+        let mut out: Vec<String> = self
+            .bot_guilds(bot_pubkey)
+            .into_iter()
+            .flat_map(|i| [i.app, i.pending])
+            .flatten()
+            .filter_map(|m| m.activity.map(|a| a.sha256))
+            .filter(|sha| {
+                self.media
+                    .existing(&format!("media:{}", bundle_blob(sha)))
+                    .is_none()
+            })
+            .collect();
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+
+    /// The guilds that can now open it. Kept only if it is a bundle a guild
+    /// that installed this app approved, so a bot cannot fill the disk.
+    pub fn offer_bundle(&self, bot_pubkey: &str, data_url: &str) -> Result<Vec<Id>, String> {
+        let wanted: Vec<(Id, String)> = self
+            .bot_guilds(bot_pubkey)
+            .into_iter()
+            .flat_map(|i| {
+                let gid = i.guild_id;
+                [i.app, i.pending]
+                    .into_iter()
+                    .flatten()
+                    .filter_map(move |m| m.activity.map(|a| (gid, bundle_blob(&a.sha256))))
+            })
+            .collect();
+        if wanted.is_empty() {
+            return Err("no guild here has installed this app's activity".into());
+        }
+        let stored = self
+            .media
+            .store_bundle_data_url(data_url)
+            .map_err(|e| e.to_string())?;
+        let name = stored.strip_prefix("media:").unwrap_or(&stored);
+        let mut guilds: Vec<Id> = wanted
+            .into_iter()
+            .filter(|(_, w)| w == name)
+            .map(|(g, _)| g)
+            .collect();
+        if guilds.is_empty() {
+            return Err("that bundle isn't the one any guild approved".into());
+        }
+        guilds.sort_unstable();
+        guilds.dedup();
+        Ok(guilds)
+    }
+
     /// Only bundles the host holds, so a member never sees an activity it
     /// cannot open.
     pub fn guild_activities(&self, guild_id: Id) -> Vec<GuildActivity> {
