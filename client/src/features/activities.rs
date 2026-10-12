@@ -10,7 +10,22 @@ use crate::protocol::{
     ActivityCapability, ActivityInstance, ActivityRole, ClientMessage, GuildActivity, Id,
     bundle_blob,
 };
-use crate::state::{AppState, GatewayTx, use_app_state, use_gateway};
+use crate::state::{AppState, ConnectionStatus, GatewayTx, use_app_state, use_gateway};
+
+fn use_activity_instance_watch(state: Signal<AppState>, gateway: GatewayTx) {
+    // Replies mutate AppState; subscribing to it directly would request another reply.
+    let channel = use_memo(move || {
+        let s = state.read();
+        (s.status == ConnectionStatus::Ready && !s.dm_mode)
+            .then_some(s.selected_channel)
+            .flatten()
+    });
+    use_effect(move || {
+        if let Some(channel_id) = channel() {
+            gateway.send(ClientMessage::FetchActivityInstances { channel_id });
+        }
+    });
+}
 
 pub struct BuiltinDef {
     pub id: &'static str,
@@ -574,15 +589,7 @@ pub fn ActivityHost() -> Element {
         }
     });
 
-    let watch_gw = gateway.clone();
-    // The memo, not `state`, is what the effect reads: the answer writes state,
-    // and an effect subscribed to all of it asked again forever.
-    let selected = use_memo(move || state.read().selected_channel);
-    use_effect(move || {
-        if let Some(channel_id) = selected() {
-            watch_gw.send(ClientMessage::FetchActivityInstances { channel_id });
-        }
-    });
+    use_activity_instance_watch(state, gateway.clone());
 
     let open_window = use_callback(
         move |(p, instance, sha, bundle): (Pending, Option<Id>, String, Bundle)| {
@@ -1239,6 +1246,64 @@ const RPS_HTML: &str = r##"<!doctype html><html><head><meta charset="utf-8"><sty
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn activity_watch_does_not_refetch_on_replies_or_voice_updates() {
+        use std::{cell::RefCell, rc::Rc};
+
+        type Export = Rc<RefCell<Option<Signal<AppState>>>>;
+        let exported: Export = Rc::new(RefCell::new(None));
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut dom = VirtualDom::new_with_props(
+            |(export, gateway): (Export, GatewayTx)| {
+                let state = use_signal(AppState::empty);
+                *export.borrow_mut() = Some(state);
+                use_activity_instance_watch(state, gateway);
+                rsx! {}
+            },
+            (exported.clone(), GatewayTx(tx)),
+        );
+        dom.rebuild_in_place();
+        dom.render_immediate_to_vec();
+        assert!(rx.try_recv().is_err());
+        let mut state = exported.borrow().unwrap();
+        let channel = Id::new_v4();
+        {
+            let mut s = state.write();
+            s.status = ConnectionStatus::Ready;
+            s.selected_channel = Some(channel);
+        }
+        dom.render_immediate_to_vec();
+        assert!(
+            matches!(rx.try_recv().unwrap(), ClientMessage::FetchActivityInstances { channel_id } if channel_id == channel)
+        );
+        for i in 0..400 {
+            {
+                let mut s = state.write();
+                s.activity_instances.insert(channel, Vec::new());
+                s.voice.speaking = i % 2 == 0;
+            }
+            dom.render_immediate_to_vec();
+        }
+        assert!(rx.try_recv().is_err());
+        state.write().status = ConnectionStatus::Reconnecting;
+        dom.render_immediate_to_vec();
+        assert!(rx.try_recv().is_err());
+        state.write().status = ConnectionStatus::Ready;
+        dom.render_immediate_to_vec();
+        assert!(
+            matches!(rx.try_recv().unwrap(), ClientMessage::FetchActivityInstances { channel_id } if channel_id == channel)
+        );
+        let next = Id::new_v4();
+        state.write().selected_channel = Some(next);
+        dom.render_immediate_to_vec();
+        assert!(
+            matches!(rx.try_recv().unwrap(), ClientMessage::FetchActivityInstances { channel_id } if channel_id == next)
+        );
+        state.write().dm_mode = true;
+        dom.render_immediate_to_vec();
+        assert!(rx.try_recv().is_err());
+    }
+
     fn session(instance: Id) -> Session {
         Session::new(vec![ActivityCapability::Instance], None, Some(instance))
     }
@@ -1388,6 +1453,7 @@ mod tests {
             use_context_provider(|| GatewayTx(props.0.clone()));
             let mut state = use_context_provider(|| {
                 let mut s = AppState::empty();
+                s.status = ConnectionStatus::Ready;
                 s.selected_channel = Some(Id::new_v4());
                 Signal::new(s)
             });
