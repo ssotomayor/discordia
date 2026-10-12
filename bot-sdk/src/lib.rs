@@ -1,16 +1,19 @@
-use futures_util::stream::{SplitSink, SplitStream};
-use futures_util::{SinkExt, StreamExt};
+use std::pin::Pin;
+
+use futures_util::{Sink, SinkExt, Stream, StreamExt};
 use rand::RngCore;
 use secp256k1::{Keypair, Message, Secp256k1, SecretKey};
 use sha2::{Digest, Sha256};
-use tokio::net::TcpStream;
-use tokio_tungstenite::tungstenite::Message as WsMessage;
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::tungstenite::{Error as WsError, Message as WsMessage};
 
 pub use dioxusfun_protocol as protocol;
 use protocol::{BotCommand, ClientMessage, Id, Invocation, ServerMessage, User};
 
-type Stream = WebSocketStream<MaybeTlsStream<TcpStream>>;
+mod quic;
+
+type FrameSink = Pin<Box<dyn Sink<WsMessage, Error = WsError> + Send + Sync>>;
+type FrameStream =
+    Pin<Box<dyn Stream<Item = std::result::Result<WsMessage, WsError>> + Send + Sync>>;
 
 #[derive(Debug)]
 pub enum BotError {
@@ -18,6 +21,7 @@ pub enum BotError {
     Ws(String),
     Json(String),
     Handshake(String),
+    Quic(String),
 }
 
 impl std::fmt::Display for BotError {
@@ -27,6 +31,7 @@ impl std::fmt::Display for BotError {
             BotError::Ws(e) => write!(f, "websocket error: {e}"),
             BotError::Json(e) => write!(f, "json error: {e}"),
             BotError::Handshake(e) => write!(f, "handshake error: {e}"),
+            BotError::Quic(e) => write!(f, "quic error: {e}"),
         }
     }
 }
@@ -90,12 +95,41 @@ impl BotIdentity {
 }
 
 pub struct Bot {
-    write: SplitSink<Stream, WsMessage>,
-    read: SplitStream<Stream>,
+    write: FrameSink,
+    read: FrameStream,
+    _quic: Option<quic::Link>,
     pub user: User,
 }
 
+/// The same WebSocket either way: over TCP, or over one QUIC stream to the
+/// host's key, where the origin signed is `quic:<key>` (trap 12).
+async fn open_socket(url: &str) -> Result<(FrameSink, FrameStream, Option<quic::Link>, String)> {
+    if let Some(share) = protocol::parse_quic_share(url) {
+        let (io, link) = quic::dial(&share).await?;
+        let (ws, _) = tokio_tungstenite::client_async(quic::HANDSHAKE_URL, io)
+            .await
+            .map_err(|e| BotError::Ws(format!("websocket over quic: {e}")))?;
+        let (write, read) = ws.split();
+        return Ok((
+            Box::pin(write),
+            Box::pin(read),
+            Some(link),
+            protocol::quic_origin(&share.key),
+        ));
+    }
+    let ws_url = normalize_gateway_url(url)?;
+    let origin = protocol::dial_origin(&ws_url)
+        .ok_or_else(|| BotError::Url("server URL has no host".into()))?;
+    let (ws, _) = tokio_tungstenite::connect_async(&ws_url)
+        .await
+        .map_err(|e| BotError::Ws(format!("connect failed: {e}")))?;
+    let (write, read) = ws.split();
+    Ok((Box::pin(write), Box::pin(read), None, origin))
+}
+
 impl Bot {
+    /// `url` is `ws://`/`wss://`, or a host's `quic://key@addrs` share string: off
+    /// loopback a gateway answers only QUIC (trap 15), unless a TLS proxy fronts it.
     pub async fn connect(url: &str, identity: &BotIdentity, username: &str) -> Result<Bot> {
         Self::connect_declaring(url, identity, username, true).await
     }
@@ -110,13 +144,7 @@ impl Bot {
         username: &str,
         bot: bool,
     ) -> Result<Bot> {
-        let ws_url = normalize_gateway_url(url)?;
-        let origin = dioxusfun_protocol::dial_origin(&ws_url)
-            .ok_or_else(|| BotError::Url("server URL has no host".into()))?;
-        let (stream, _) = tokio_tungstenite::connect_async(&ws_url)
-            .await
-            .map_err(|e| BotError::Ws(format!("connect failed: {e}")))?;
-        let (write, mut read) = stream.split();
+        let (write, mut read, link, origin) = open_socket(url).await?;
 
         let nonce = loop {
             let frame = read
@@ -159,6 +187,7 @@ impl Bot {
         let mut bot = Bot {
             write,
             read,
+            _quic: link,
             user: User {
                 pubkey: identity.pubkey().to_string(),
                 username,

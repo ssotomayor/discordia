@@ -2526,6 +2526,7 @@ dependencies = [
  "dioxusfun-protocol",
  "futures-util",
  "hex",
+ "iroh",
  "rand 0.8.6",
  "secp256k1",
  "serde_json",
