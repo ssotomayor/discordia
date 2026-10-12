@@ -148,6 +148,8 @@ pub struct ClientSettings {
     pub camera_device_id: Option<String>,
     #[serde(default)]
     pub camera_device_label: Option<String>,
+    #[serde(default)]
+    pub camera_quality: crate::camera_quality::CameraQuality,
 
     /// Suppresses a guild's accent, which otherwise wins inside that guild
     /// because it is set on a descendant of the element yours is set on.
@@ -301,6 +303,7 @@ impl Default for ClientSettings {
             stream_muted: Vec::new(),
             camera_device_id: None,
             camera_device_label: None,
+            camera_quality: Default::default(),
             keep_my_accent: false,
             publish_global_level: true,
             share_activity: default_enabled(),

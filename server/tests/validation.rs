@@ -272,6 +272,8 @@ async fn names_and_free_text_come_back_clean_over_the_wire() {
             bio: Some("line one\r\nli\u{202E}ne two".into()),
             status: Some("onl\nine".into()),
             custom_status: Some("busy\u{2028}now".into()),
+            hide_guild_owner: false,
+            hide_operator: false,
         })
         .await
         .unwrap();
@@ -353,6 +355,8 @@ async fn a_profile_picture_may_not_be_a_link() {
         bio: None,
         status: None,
         custom_status: None,
+        hide_guild_owner: false,
+        hide_operator: false,
     })
     .await
     .unwrap();
@@ -371,6 +375,8 @@ async fn a_profile_picture_may_not_be_a_link() {
         bio: None,
         status: None,
         custom_status: None,
+        hide_guild_owner: false,
+        hide_operator: false,
     })
     .await
     .unwrap();
@@ -437,6 +443,8 @@ fn presence(status: &str) -> ClientMessage {
         bio: None,
         status: Some(status.to_string()),
         custom_status: None,
+        hide_guild_owner: false,
+        hide_operator: false,
     }
 }
 

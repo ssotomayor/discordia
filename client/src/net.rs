@@ -595,7 +595,9 @@ where
             || local.banner.is_some()
             || local.bio.is_some()
             || local.status.is_some()
-            || local.custom_status.is_some())
+            || local.custom_status.is_some()
+            || local.hide_guild_owner
+            || local.hide_operator)
     {
         let set_profile = ClientMessage::SetProfile {
             avatar: picture(local.avatar),
@@ -603,6 +605,8 @@ where
             bio: local.bio,
             status: local.status,
             custom_status: local.custom_status,
+            hide_guild_owner: local.hide_guild_owner,
+            hide_operator: local.hide_operator,
         };
         if let Ok(json) = serde_json::to_string(&set_profile) {
             gateway_send(

@@ -6,10 +6,12 @@ use crate::features::screenshare::{Drag, attach_js, detach_js};
 use crate::protocol::ClientMessage;
 use crate::state::{CameraDevice, use_app_state, use_gateway};
 
-const CAM_W: u32 = 1280;
-const CAM_H: u32 = 720;
-const CAM_FPS: u32 = 30;
-const CAM_BITRATE: u32 = 1_200_000;
+#[cfg(target_os = "windows")]
+use crate::camera_quality::CameraQuality;
+
+#[path = "camera_setup.rs"]
+mod setup;
+pub use setup::CameraSourcePicker;
 
 fn start_camera_js(device_id: Option<&str>, w: u32, h: u32, fps: u32, bitrate: u32) -> String {
     let dev = serde_json::to_string(&device_id).unwrap_or_else(|_| "null".into());
@@ -92,12 +94,13 @@ pub fn toggle_camera(
     if crate::syscamera::supported() {
         return;
     }
+    let quality = settings.read().camera_quality.normalized();
     let _ = document::eval(&start_camera_js(
         device.as_deref(),
-        CAM_W,
-        CAM_H,
-        CAM_FPS,
-        CAM_BITRATE,
+        quality.width(),
+        quality.height,
+        quality.fps,
+        quality.bitrate(),
     ));
 }
 
@@ -137,7 +140,8 @@ fn NativeCameraBridge() -> Element {
         state.write().camera_capture_available = true;
     });
     #[allow(clippy::type_complexity)]
-    let mut last = use_signal(|| None::<(u64, Option<(String, String)>, Option<String>)>);
+    let mut last =
+        use_signal(|| None::<(u64, Option<(String, String)>, Option<String>, CameraQuality)>);
     use_effect(move || {
         let s = state.read();
         let cfg = settings.read();
@@ -150,7 +154,12 @@ fn NativeCameraBridge() -> Element {
             cfg.camera_device_id.as_deref(),
             cfg.camera_device_label.as_deref(),
         );
-        let now = (s.voice_session_epoch, room, device);
+        let now = (
+            s.voice_session_epoch,
+            room,
+            device,
+            cfg.camera_quality.normalized(),
+        );
         drop(cfg);
         drop(s);
         if last.peek().as_ref() != Some(&now) {

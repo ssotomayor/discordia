@@ -397,6 +397,8 @@ pub fn ProfileEditor(class: String, children: Element) -> Element {
     let mut bio = use_signal(String::new);
     let mut status = use_signal(|| "online".to_string());
     let mut custom_status = use_signal(String::new);
+    let mut show_crown = use_signal(|| true);
+    let mut show_operator = use_signal(|| true);
     let mut err = use_signal::<Option<String>>(|| None);
     let mut editing_avatar = use_signal(|| None::<String>);
     let mut editing_banner = use_signal(|| None::<String>);
@@ -412,6 +414,8 @@ pub fn ProfileEditor(class: String, children: Element) -> Element {
             bio.set(p.bio.clone().unwrap_or_default());
             status.set(p.status.clone().unwrap_or_else(|| "online".into()));
             custom_status.set(p.custom_status.clone().unwrap_or_default());
+            show_crown.set(!p.hide_guild_owner);
+            show_operator.set(!p.hide_operator);
             return;
         }
         if let Some(local) = crate::profile::load() {
@@ -420,6 +424,8 @@ pub fn ProfileEditor(class: String, children: Element) -> Element {
             bio.set(local.bio.unwrap_or_default());
             status.set(local.status.unwrap_or_else(|| "online".into()));
             custom_status.set(local.custom_status.unwrap_or_default());
+            show_crown.set(!local.hide_guild_owner);
+            show_operator.set(!local.hide_operator);
         }
     };
 
@@ -454,6 +460,8 @@ pub fn ProfileEditor(class: String, children: Element) -> Element {
             bio: bio_opt.clone(),
             status: status_opt.clone(),
             custom_status: custom_opt.clone(),
+            hide_guild_owner: !show_crown(),
+            hide_operator: !show_operator(),
         };
         let kind = |v: &Option<String>| match v {
             None => "none".to_string(),
@@ -472,8 +480,17 @@ pub fn ProfileEditor(class: String, children: Element) -> Element {
             bio: bio_opt,
             status: status_opt,
             custom_status: custom_opt,
+            hide_guild_owner: !show_crown(),
+            hide_operator: !show_operator(),
         });
         open.set(false);
+    };
+
+    let (owns_a_guild, is_operator) = {
+        let s = state.read();
+        let me = s.self_user.as_ref().map(|u| u.pubkey.as_str());
+        let owns = me.is_some_and(|pk| s.guilds.iter().any(|g| g.owner_pubkey == pk));
+        (owns, s.is_operator)
     };
 
     rsx! {
@@ -662,6 +679,31 @@ pub fn ProfileEditor(class: String, children: Element) -> Element {
                         maxlength: 280,
                         value: "{bio}",
                         oninput: move |e| bio.set(e.value()),
+                    }
+
+                    if owns_a_guild || is_operator {
+                        div { class: "mt-2 flex flex-col gap-1.5 text-[11px] text-[var(--text)]",
+                            if owns_a_guild {
+                                label { class: "flex items-center gap-2 cursor-pointer",
+                                    input {
+                                        r#type: "checkbox",
+                                        checked: show_crown(),
+                                        oninput: move |e| show_crown.set(e.value() == "true"),
+                                    }
+                                    "Show a crown on guilds I own"
+                                }
+                            }
+                            if is_operator {
+                                label { class: "flex items-center gap-2 cursor-pointer",
+                                    input {
+                                        r#type: "checkbox",
+                                        checked: show_operator(),
+                                        oninput: move |e| show_operator.set(e.value() == "true"),
+                                    }
+                                    "Show that I run this server"
+                                }
+                            }
+                        }
                     }
 
                     SavedEmojiSection {}

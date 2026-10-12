@@ -510,6 +510,20 @@ fn MemberRow(
             })
     };
 
+    let (crown, operator) = {
+        let s = state.read();
+        let pk = &member.user.pubkey;
+        let profile = s.profile_of(pk);
+        let owner = s
+            .guilds
+            .iter()
+            .any(|g| g.id == member.guild_id && &g.owner_pubkey == pk);
+        (
+            owner && !profile.is_some_and(|p| p.hide_guild_owner),
+            profile.is_some_and(|p| p.operator),
+        )
+    };
+
     let ctx_member = member.clone();
     rsx! {
         div {
@@ -537,6 +551,22 @@ fn MemberRow(
                     class: "text-sm truncate flex items-center gap-1 {name_class}",
                     title: "{member.user.pubkey}",
                     span { class: "truncate", "{member.user.username}" }
+                    if crown {
+                        span {
+                            class: "block w-3 h-3 shrink-0",
+                            style: "color:var(--amber);",
+                            title: "Guild owner",
+                            dangerous_inner_html: crate::features::icons::CROWN,
+                        }
+                    }
+                    if operator {
+                        span {
+                            class: "block w-3 h-3 shrink-0",
+                            style: "color:#5b9cff;",
+                            title: "Runs this server",
+                            dangerous_inner_html: crate::features::icons::SCREEN,
+                        }
+                    }
                     if member.bot {
                         span {
                             class: "dxf-pop px-1 py-px rounded bg-[var(--accent-soft)] text-[var(--accent)] text-[8px] font-bold uppercase tracking-wider",

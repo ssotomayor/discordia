@@ -6,6 +6,7 @@ pub(super) struct CameraPublisher {
     capture: crate::syscamera::Capture,
     fatal_task: Task,
     pub key: Option<String>,
+    pub quality: crate::camera_quality::CameraQuality,
 }
 
 impl CameraPublisher {
@@ -17,16 +18,17 @@ impl CameraPublisher {
         gateway: crate::state::GatewayTx,
     ) -> Result<Self, String> {
         let epoch = state.read().voice_session_epoch;
+        let quality = settings.read().camera_quality.normalized();
         let source = NativeVideoSource::new(
             VideoResolution {
-                width: 1280,
-                height: 720,
+                width: quality.width(),
+                height: quality.height,
             },
             false,
         );
         let (fatal_tx, mut fatal_rx) = unbounded_channel();
         let capture = tokio::select! {
-            capture = crate::syscamera::start(key, source.clone(), fatal_tx) => capture?,
+            capture = crate::syscamera::start(key, source.clone(), quality, fatal_tx) => capture?,
             _ = async {
                 loop {
                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -38,7 +40,7 @@ impl CameraPublisher {
         let track = LocalVideoTrack::create_video_track("camera", RtcVideoSource::Native(source));
         let publication = match room
             .local_participant()
-            .publish_track(LocalTrack::Video(track), options())
+            .publish_track(LocalTrack::Video(track), options(quality))
             .await
         {
             Ok(p) => p,
@@ -90,6 +92,7 @@ impl CameraPublisher {
             capture,
             fatal_task,
             key,
+            quality,
         })
     }
 
@@ -107,15 +110,16 @@ impl CameraPublisher {
     }
 }
 
-pub(super) fn options() -> TrackPublishOptions {
+pub(super) fn options(quality: crate::camera_quality::CameraQuality) -> TrackPublishOptions {
+    let quality = quality.normalized();
     TrackPublishOptions {
         source: TrackSource::Camera,
         video_codec: VideoCodec::H264,
         video_encoder: VideoEncoderBackend::Hardware,
         simulcast: false,
         video_encoding: Some(VideoEncoding {
-            max_framerate: 30.0,
-            max_bitrate: 1_200_000,
+            max_framerate: quality.fps as f64,
+            max_bitrate: u64::from(quality.bitrate()),
         }),
         ..Default::default()
     }
@@ -127,6 +131,19 @@ mod tests {
     use livekit::webrtc::video_frame::I420Buffer;
     use livekit::webrtc::video_stream::native::NativeVideoStream;
     use std::time::Duration;
+
+    #[test]
+    fn camera_publication_uses_selected_quality_and_automatic_budget() {
+        let quality = crate::camera_quality::CameraQuality {
+            height: 1080,
+            fps: 60,
+        };
+        let publish = options(quality);
+        assert_eq!(publish.source, TrackSource::Camera);
+        let encoding = publish.video_encoding.unwrap();
+        assert_eq!(encoding.max_framerate, 60.0);
+        assert_eq!(encoding.max_bitrate, 6_000_000);
+    }
 
     #[tokio::test(flavor = "multi_thread")]
     #[ignore = "starts a bundled SFU and native camera/screen encoders"]
@@ -225,7 +242,10 @@ mod tests {
             LocalVideoTrack::create_video_track("screen", RtcVideoSource::Native(screen.clone()));
         let camera_pub = publisher
             .local_participant()
-            .publish_track(LocalTrack::Video(camera_track.clone()), options())
+            .publish_track(
+                LocalTrack::Video(camera_track.clone()),
+                options(Default::default()),
+            )
             .await
             .unwrap();
         let mut settings = crate::features::screenshare::native_settings("smooth");
@@ -289,7 +309,7 @@ mod tests {
             LocalVideoTrack::create_video_track("camera", RtcVideoSource::Native(camera.clone()));
         let camera_pub = publisher
             .local_participant()
-            .publish_track(LocalTrack::Video(camera_track), options())
+            .publish_track(LocalTrack::Video(camera_track), options(Default::default()))
             .await
             .unwrap();
         pump(vec![camera.clone(), screen]).await;

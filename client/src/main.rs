@@ -7,6 +7,7 @@ mod app;
 mod audio_device;
 mod audio_diag;
 mod audio_queue;
+mod camera_quality;
 mod chat_image;
 mod clipboard;
 mod connection_routes;

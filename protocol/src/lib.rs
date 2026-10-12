@@ -337,6 +337,16 @@ pub struct Profile {
     pub status: Option<String>,
     #[serde(default)]
     pub custom_status: Option<String>,
+    /// Hides the crown only: clients still need `Guild::owner_pubkey` to know
+    /// who holds the guild's permissions.
+    #[serde(default)]
+    pub hide_guild_owner: bool,
+    #[serde(default)]
+    pub hide_operator: bool,
+    /// Stamped by the server on the way out, false while `hide_operator` is
+    /// set, so a hidden operator is not one on the wire either.
+    #[serde(default)]
+    pub operator: bool,
 }
 
 /// A named rank, worn from `xp` until the next tier begins. Guild managers
@@ -1989,6 +1999,10 @@ pub enum ClientMessage {
         status: Option<String>,
         #[serde(default)]
         custom_status: Option<String>,
+        #[serde(default)]
+        hide_guild_owner: bool,
+        #[serde(default)]
+        hide_operator: bool,
     },
     /// Its own message and not a `SetProfile` field: an activity turns over on
     /// every map load, and a profile is edited twice a year.

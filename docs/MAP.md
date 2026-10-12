@@ -17,18 +17,18 @@ name instead.
 
 | File | Lines |
 |---|---|
-| `client/src/features/voice.rs` | 4895 |
-| `server/src/state/mod.rs` | 3379 |
+| `client/src/features/voice.rs` | 4893 |
+| `server/src/state/mod.rs` | 3384 |
 | `server/tests/owner_controls.rs` | 3157 |
-| `server/src/gateway/connection.rs` | 3450 |
-| `client/src/features/channels.rs` | 2182 |
-| `client/src/features/screenshare.rs` | 3236 |
-| `protocol/src/lib.rs` | 3296 |
-| `client/src/state.rs` | 2607 |
+| `server/src/gateway/connection.rs` | 3460 |
+| `client/src/features/channels.rs` | 2181 |
+| `client/src/features/screenshare.rs` | 3273 |
+| `protocol/src/lib.rs` | 3310 |
+| `client/src/state.rs` | 2612 |
 | `client/src/update.rs` | 1228 |
-| `client/src/net.rs` | 2532 |
+| `client/src/net.rs` | 2536 |
 | `client/src/features/chat.rs` | 2449 |
-| `server/src/store.rs` | 1436 |
+| `server/src/store.rs` | 1448 |
 | `client/src/features/guild_settings.rs` | 1135 |
 | `client/src/identity.rs` | 1216 |
 | `client/src/features/discord_import.rs` | 1113 |
@@ -71,6 +71,7 @@ that direction says a file is safe to open when it is not.
 | Experience, and the two numbers it makes | `server/src/state/mod.rs` | `award_xp` — amount, cooldown, channels and rank names all come from the guild's `Leveling`. The cross-server sum is the client's: `client/src/xp_ledger.rs` adds it up, `nostr/xp.rs` signs and paces it (`Publisher`), `features/leveling.rs` joins the two |
 | What a guild calls its ranks, and who may say | `client/src/features/guild_leveling.rs` | `LevelingEditor` — the draft is the settings dialog's, so it saves with everything else. A `LevelTier` has a name, colour and a required emoji (a character or `:code:`, picked with `channels::TopicEmojiPicker`; `sanitize_leveling` fills `DEFAULT_TIER_EMOJI` when blank) |
 | How ranks show | `client/src/features/members.rs`, `client/src/features/chat.rs`, `client/src/state.rs` | A member row draws no rank, only a right-hand `LvN` below every rank; `MemberSort::Rank` groups online members under `group_by_rank` headers (emoji and name), highest first. In chat, `rank_of` paints a ranked author's name in the rank's colour (else `signature_accent`) and puts the rank emoji after it, the rank's name in a `features::tooltip::Tooltip` (instant, styled; never the browser's `title`), the picture's own `:code:` title dropped by `EmojiText { untitled }`. The key-verified ✓ is drawn only in the profile card |
+| Owner and operator badges | `client/src/features/members.rs`, `features/profiles.rs`, `server/src/state/mod.rs` | `MemberRow` draws a crown for the guild's `owner_pubkey` and a blue screen for `Profile::operator`, which only `shown_profile` sets: false under `hide_operator`, so a hidden operator is not one on the wire. `profiles_snapshot` adds a stub for an operator who connected but never saved a profile. `hide_guild_owner` hides only the crown; `owner_pubkey` is still sent. `ProfileEditor` shows each toggle only to an owner or operator; `LocalProfile` carries both to every server |
 | Channel dividers | `client/src/features/channels.rs`, `server/src/state/mod.rs` | `Category` divides the voice list and `Divider` the text list (`ChannelKind::is_divider`). Each takes no messages, no call and no topic, and draws its name via `DividerLabel` per `Channel::divider`: `Title` (name, then a rule) or `Centered` (name inside the rule). `UpdateChannel { divider: None }` keeps the style |
 | What someone is playing, and who says so | `client/src/presence/mod.rs` | `PresenceService` owns RPC tasks and `ScanWorker`; `detect.rs` scans every 15 s and observes custom-game edits without restarting. `processes.rs` uses ToolHelp and limited queries on Windows, sysinfo elsewhere. `installed.rs` caches Steam manifests (all platforms), Epic manifests and Ubisoft registry entries (Windows), refreshing every 5 min; helpers/tools are excluded. `ipc.rs::listen` owns connected games; Windows binds only private RPC names. Session teardown cancels listeners and wakes the scanner |
 | Registering additional games | `client/src/features/settings_dialog.rs` | Activity tab shows the published activity and `GameDetectionOverrides`; executable/name pairs persist in `detect_extra`, override the fallback catalogue and update an enabled detector on its next scan |
@@ -95,7 +96,7 @@ that direction says a file is safe to open when it is not.
 | Typing a message | `client/src/features/chat.rs`, `client/tests/chat_composer.cjs` | `Composer` is a multiline contenteditable whose children belong to `COMPOSER_JS` (trap 34). Enter sends or picks a suggestion; Shift+Enter inserts a newline and text paste preserves line breaks. Custom emoji chips serialize to `:code:`; browser BR/block boundaries and caret prefixes preserve newlines. `active_token` finds `:ab…` at the caret; `emoji_suggestions` ranks guild emoji and named `EMOJIS` (prefix before substring, eight at most). ↑↓, Tab and Escape control suggestions while `suggest(true)` |
 | Attaching chat images | `client/src/chat_image.rs`, `client/src/features/chat.rs` | Native clipboard RGBA becomes bounded PNG; Dioxus drop/file-picker events provide paths for bounded Rust reads and content validation. Workers prepare data URLs under the 2 MiB upload cap; keyed composers and request generations discard stale loads. The WebView only signals image paste and displays previews |
 | Notification and UI sounds | `client/src/native_sounds.rs`, `client/src/features/sounds.rs` | Rust synthesizes/caches 19 tones; a bounded worker owns CPAL output on the selected device, mixes overlapping sounds and closes/pauses after 1.5 s idle. `MessageSounds` tracks DM/channel ticks and volume/output settings on home and workspace; audio callbacks neither allocate nor block. Session-owned `CallAlert` repeats distinct incoming/outgoing DM rings every 3 s, cancels queued/playing rings on phase changes and plays connection/end cues. Audio settings expose separate persisted App sounds/Soundboard controls and a native app-sound preview |
-| Camera capture and publication | `client/src/syscamera.rs`, `client/src/features/voice_camera.rs`, `client/src/features/camera.rs` | Windows camera enumeration/capture uses WebRTC through a small C++ bridge; Rust owns the COM worker, validated I420 copies, first-frame/stall checks and publication. `NativeVideoRoom` shares `#video` with the screen, stopping tracks independently; the WebView renders previews/viewers. macOS/Linux retain browser camera capture |
+| Camera capture and publication | `client/src/syscamera.rs`, `client/src/features/voice_camera.rs`, `client/src/features/camera.rs`, `client/src/features/camera_setup.rs`, `client/src/camera_quality.rs` | The camera button opens a root-mounted local setup preview with device, 480p/720p/1080p and 15/30/60 FPS selection; `CameraQuality` normalizes persisted values and derives the automatic encoding budget. Windows `preview_controller` serializes device changes and acknowledges release before publication, using a one-frame queue and bounded JPEG previews without an SFU track. Native capture and browser publication apply the same quality settings. `NativeVideoRoom` shares `#video` with the screen, stopping tracks independently. `camera_preview_bridge.cjs` covers browser preview cancellation, stale permission results, quality changes and call teardown |
 | Keys on this machine | `client/src/identity.rs` | `detected` derives and deduplicates pubkeys from the secret, skipping unreadable keys; `sign_in` / `forget`; one file per key under `identities_dir()` (default `config_dir()/identities/`, `identities-dir` overrides), `identity.json` names the active one |
 | Gateway admission and diagnostics | `client/src/net.rs`, `client/src/features/connect.rs`, `client/src/features/workspace.rs`, `server/src/gateway/connection.rs` | `gateway_ready` waits for admission before profile/heartbeat writes. Failed sends recover buffered server reasons; `ConnectionErrorPanel` copies version, platform, UTC time, transport, operation and payload size. Reconnects retain their first failure until Ready. Socket cap admits two image fields; server warnings retain refusals and receive failures |
 | Keys at rest | `client/src/keyvault.rs` | NIP-49 `ncryptsec` under a random passphrase; `seal`/`unseal` hold the phrase's entropy beside it; `backend()` picks keychain or `vault.key` once and `vault.backend` remembers (trap 23) |

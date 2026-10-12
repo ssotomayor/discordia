@@ -1760,12 +1760,11 @@ fn UserPanel(self_voice: crate::state::VoiceSession, self_username: Option<Strin
                             } else if camera_on { "Turn your camera off" } else { "Turn your camera on" },
                             // While it is still starting, a press cancels it.
                             onclick: move |_| {
-                                crate::features::camera::toggle_camera(
-                                    state,
-                                    settings,
-                                    &g_for_camera,
-                                    !(camera_on || camera_starting),
-                                );
+                                if camera_on || camera_starting {
+                                    crate::features::camera::toggle_camera(state, settings, &g_for_camera, false);
+                                } else {
+                                    state.write().camera_picker = true;
+                                }
                             },
                             dangerous_inner_html: if camera_on {
                                 crate::features::icons::CAMERA
