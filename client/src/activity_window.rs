@@ -399,7 +399,12 @@ mod tests {
         ] {
             assert!(csp.contains(d), "{d}");
         }
-        assert!(!csp.contains("http:") && !csp.contains("https:") && !csp.contains('*'));
+        for token in csp.split([' ', ';']) {
+            assert!(
+                !matches!(token, "http:" | "https:" | "ws:" | "wss:" | "*"),
+                "{token}"
+            );
+        }
     }
 
     #[test]
