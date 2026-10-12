@@ -249,6 +249,84 @@ fn ws_scheme(base: &str) -> String {
     }
 }
 
+/// What the server rail shows for a server it is not connected to.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Reach {
+    /// `name` is what its rendezvous lists it as, when it went through one.
+    Up {
+        name: Option<String>,
+    },
+    Down(String),
+    /// Runs on this machine, so there is nothing to ask until it is launched.
+    Local,
+}
+
+/// Long enough for a relayed QUIC handshake, short enough to click on.
+const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Reaches the server without signing in: the rendezvous listing for a code,
+/// a QUIC handshake for a share string, a TCP connect for `wss://`.
+pub(crate) async fn probe(mode: &SessionMode) -> Reach {
+    match mode {
+        SessionMode::SelfHost { .. } => Reach::Local,
+        SessionMode::ByCode {
+            rendezvous_url,
+            code,
+        } => {
+            let base = rendezvous_url.trim().trim_end_matches('/');
+            let typed = crate::protocol::rendezvous::join_code(code);
+            match resolve_host(&ws_scheme(base), typed.as_deref().unwrap_or(code.trim())).await {
+                None => Reach::Down(format!("{base} does not list {code} right now")),
+                Some(entry) if entry.transport_key.is_none() => {
+                    Reach::Down("it needs a newer Discordia".into())
+                }
+                Some(entry) => Reach::Up { name: entry.name },
+            }
+        }
+        SessionMode::Remote { server_url } => {
+            let reached = match parse_target(server_url) {
+                Err(e) => Err(e),
+                Ok(Dial::Quic { key, addrs }) => {
+                    tokio::time::timeout(PROBE_TIMEOUT, probe_quic(&key, &addrs))
+                        .await
+                        .unwrap_or_else(|_| Err("no answer".into()))
+                }
+                Ok(Dial::Socket { url, .. }) => {
+                    tokio::time::timeout(PROBE_TIMEOUT, probe_tcp(&url))
+                        .await
+                        .unwrap_or_else(|_| Err("no answer".into()))
+                }
+            };
+            match reached {
+                Ok(()) => Reach::Up { name: None },
+                Err(e) => Reach::Down(e),
+            }
+        }
+    }
+}
+
+async fn probe_quic(key: &str, addrs: &[String]) -> Result<(), String> {
+    let endpoint_id = crate::quic::parse_endpoint_id(key)?;
+    let addrs: Vec<_> = addrs
+        .iter()
+        .filter_map(|a| crate::quic::parse_transport_addr(a))
+        .collect();
+    let coordination = crate::quic::coordination_from(&addrs);
+    let (_, guard) = crate::quic::dial(endpoint_id, &addrs, &coordination).await?;
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(1), guard.shutdown()).await;
+    Ok(())
+}
+
+async fn probe_tcp(url: &str) -> Result<(), String> {
+    let parsed = Url::parse(url).map_err(|e| format!("invalid URL: {e}"))?;
+    let host = parsed.host_str().ok_or("no host")?;
+    let port = parsed.port_or_known_default().ok_or("no port")?;
+    tokio::net::TcpStream::connect((host.trim_matches(['[', ']']), port))
+        .await
+        .map(drop)
+        .map_err(|e| e.to_string())
+}
+
 /// The first rendezvous to answer for `code`. A code is unique only within
 /// one, so a clash goes to whichever replies first.
 pub(crate) async fn find_code(rendezvous: &[String], code: &str) -> Option<String> {
@@ -1276,8 +1354,10 @@ fn apply(
             }
             s.status = ConnectionStatus::Ready;
 
+            let asked = s.open_guild_on_ready.take();
             let chosen = selected_guild
                 .filter(|id| recovering && s.guilds.iter().any(|g| g.id == *id))
+                .or_else(|| asked.filter(|id| s.guilds.iter().any(|g| g.id == *id)))
                 .or_else(|| s.guilds.first().map(|g| g.id));
             if selected_dm {
                 s.selected_guild = chosen;

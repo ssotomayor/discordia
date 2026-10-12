@@ -391,6 +391,9 @@ button:active:not(:disabled) { transform: scale(0.985); }
   opacity: 0; transition: opacity 0.12s var(--ease);
 }
 .dxf-tip-host:hover .dxf-tip { opacity: 1; transition-delay: 2s; }
+/* Server rail strips explain a state, not a picture, so they answer sooner. */
+.dxf-tip-host.dxf-tip-quick:hover .dxf-tip { transition-delay: .4s; }
+.dxf-pending { animation: dxf-ellipsis 1.2s var(--ease) infinite; }
 
 /* The update bar with no denominator: a silent installer reports nothing, so
    this says the process is alive, not how far along it is. */

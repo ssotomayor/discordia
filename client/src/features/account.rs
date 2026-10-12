@@ -1,6 +1,7 @@
 use dioxus::prelude::*;
 
 use crate::identity::Identity;
+use crate::protocol::Id;
 use crate::session::SavedSession;
 use crate::settings::ClientSettings;
 use crate::state::{AppState, ConnectionStatus, SessionParams};
@@ -79,6 +80,7 @@ pub fn AccountView(
     crate::state::use_dm_standing_persistence(state);
     crate::state::use_saved_emoji_persistence(state);
     crate::state::use_volume_persistence(state);
+    let mut fallback = use_signal(|| None::<Fallback>);
     rsx! {
         super::sounds::MessageSounds {}
         super::dm_call::CallAlert {}
@@ -86,10 +88,35 @@ pub fn AccountView(
             for params in std::iter::once(params) {
                 super::workspace::WorkspaceView {
                     key: "{crate::app::session_key(&params)}",
-                    params,
-                    on_disconnect: move |reason| {
+                    params: params.clone(),
+                    on_disconnect: move |reason: String| {
+                        // Only Ready sets `self_user`: without it, this session never got in.
+                        let got_in = state.peek().self_user.is_some();
                         state.write().clear_server_session();
+                        if let Some(back) = undo_switch(fallback.take(), got_in, &reason) {
+                            let why = reason.split("\n\n").next().unwrap_or(&reason).trim().to_string();
+                            let mut s = state.write();
+                            s.open_guild_on_ready = back.guild;
+                            s.error_toast = Some(format!("Couldn't get into {}: {why}. You're back where you were.", back.target));
+                            drop(s);
+                            on_connect.call(back.params);
+                            return;
+                        }
                         on_disconnect.call(reason);
+                    },
+                    on_switch: move |target: super::server_rail::Switch| {
+                        let here = state.peek().selected_guild;
+                        fallback.set(Some(Fallback {
+                            params: params.clone(),
+                            guild: here,
+                            target: target.server.label(),
+                        }));
+                        state.write().clear_server_session();
+                        state.write().open_guild_on_ready = target.guild;
+                        on_connect.call(SessionParams {
+                            mode: target.server.mode,
+                            identity: params.identity.clone(),
+                        });
                     },
                 }
             }
@@ -99,9 +126,31 @@ pub fn AccountView(
     }
 }
 
+/// Where a switch from the server rail came from, to go back to if the
+/// server it went to never lets this client in.
+struct Fallback {
+    params: SessionParams,
+    guild: Option<Id>,
+    target: String,
+}
+
+/// Only a server that never let this client in is undone. An empty reason is
+/// a leave someone asked for, which goes home like any other.
+fn undo_switch<T>(back: Option<T>, got_in: bool, reason: &str) -> Option<T> {
+    back.filter(|_| !got_in && !reason.is_empty())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_switch_is_undone_only_when_the_new_server_never_let_us_in() {
+        assert_eq!(undo_switch(Some(()), false, "no answer"), Some(()));
+        assert_eq!(undo_switch(Some(()), true, "connection closed"), None);
+        assert_eq!(undo_switch(Some(()), false, ""), None);
+        assert_eq!(undo_switch(None::<()>, false, "no answer"), None);
+    }
     use crate::features::dm_call::{CallView, Phase};
     use crate::state::DmInfo;
     use std::{cell::RefCell, rc::Rc};
