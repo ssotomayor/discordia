@@ -401,6 +401,7 @@ pub struct AppState {
 
     pub camera_on: bool,
     pub camera_starting: bool,
+    pub camera_picker: bool,
     pub available_cameras: Vec<CameraDevice>,
     pub cameras_watching: HashSet<String>,
     pub camera_capture_available: bool,
@@ -545,6 +546,7 @@ impl AppState {
             screen_capture_available: false,
             camera_on: false,
             camera_starting: false,
+            camera_picker: false,
             available_cameras: Vec::new(),
             cameras_watching: HashSet::new(),
             camera_capture_available: false,
@@ -637,6 +639,7 @@ impl AppState {
         self.screen_viewing.clear();
         self.camera_on = false;
         self.camera_starting = false;
+        self.camera_picker = false;
         self.cameras_watching.clear();
     }
 
@@ -2161,11 +2164,13 @@ mod tests {
         s.media_keys.insert(channel, (3, [9; 32]));
         s.screen_sharing = true;
         s.camera_on = true;
+        s.camera_picker = true;
         s.screen_token = Some(("url".into(), "tok".into()));
         s.screen_viewer_token = Some(("url".into(), "viewer".into()));
         s.end_voice_locally();
         assert!(s.media_keys.is_empty());
         assert!(!s.screen_sharing && !s.camera_on && s.screen_token.is_none());
+        assert!(!s.camera_picker);
         assert!(s.screen_viewer_token.is_none());
         assert_eq!(s.voice.channel_id, None);
     }

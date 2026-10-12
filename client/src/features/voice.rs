@@ -1323,11 +1323,9 @@ impl ActiveVoice {
             return Ok(());
         };
         let room = self.video_room(key).await?;
-        if room
-            .camera
-            .as_ref()
-            .is_some_and(|camera| camera.key == device)
-        {
+        if room.camera.as_ref().is_some_and(|camera| {
+            camera.key == device && camera.quality == settings.read().camera_quality.normalized()
+        }) {
             return Ok(());
         }
         if let Some(camera) = room.camera.take() {
