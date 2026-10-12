@@ -235,7 +235,7 @@ pub(super) fn SocialPanel(on_close: EventHandler<()>) -> Element {
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let nostr = use_context::<crate::nostr::service::NostrTx>();
     let mut filter = use_signal(String::new);
-    let mut showing_friends = use_signal(|| false);
+    let mut tab = use_signal(|| Tab::Direct);
     // Deleting is not undoable, so the ✕ only arms; the second click acts.
     let mut confirming = use_signal(|| None::<crate::protocol::Id>);
 
@@ -246,8 +246,9 @@ pub(super) fn SocialPanel(on_close: EventHandler<()>) -> Element {
         .as_ref()
         .map(|u| u.pubkey.clone())
         .unwrap_or_default();
+    let requests = snapshot.dm_request_count();
     let rows: Vec<Row> = snapshot
-        .dms_by_recency()
+        .dms_by_recency(crate::state::DmStanding::Inbox)
         .into_iter()
         .map(|dm| {
             let last = snapshot.dm_last_message(dm.channel_id);
@@ -333,25 +334,35 @@ pub(super) fn SocialPanel(on_close: EventHandler<()>) -> Element {
             div { class: "mt-2.5 flex gap-1 p-[3px] rounded-[10px] bg-[var(--panel2)] border border-[var(--edge)]",
                 Chip {
                     label: "Direct".to_string(),
-                    on: !showing_friends(),
+                    on: tab() == Tab::Direct,
                     onclick: move |_| {
                         confirming.set(None);
-                        showing_friends.set(false);
+                        tab.set(Tab::Direct);
                     },
                 }
                 Chip {
                     label: "Friends".to_string(),
-                    on: showing_friends(),
+                    on: tab() == Tab::Friends,
                     onclick: move |_| {
                         confirming.set(None);
-                        showing_friends.set(true);
+                        tab.set(Tab::Friends);
+                    },
+                }
+                Chip {
+                    label: if requests > 0 { format!("Requests {requests}") } else { "Requests".to_string() },
+                    on: tab() == Tab::Requests,
+                    onclick: move |_| {
+                        confirming.set(None);
+                        tab.set(Tab::Requests);
                     },
                 }
             }
         }
 
         div { class: "flex-1 overflow-y-auto px-2.5 pb-4 space-y-0.5 min-h-0",
-            if showing_friends() {
+            if tab() == Tab::Requests {
+                super::dm_requests::RequestList {}
+            } else if tab() == Tab::Friends {
                 if contacts.is_empty() {
                     div { class: "px-2.5 py-3 text-[12.5px] text-[var(--text-dim)] leading-relaxed",
                         "No contacts yet."
@@ -521,6 +532,13 @@ pub(super) fn TalkPane() -> Element {
             }
         }
     }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Tab {
+    Direct,
+    Friends,
+    Requests,
 }
 
 #[component]

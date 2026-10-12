@@ -26,7 +26,7 @@ use dioxus::prelude::*;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 
 use super::relay::{Filter, RelayEvent, RelayPool};
-use super::{metadata, nip02, nip17, nip59, xp};
+use super::{metadata, nip02, nip17, nip51, nip59, xp};
 use crate::identity::Identity;
 use crate::protocol::{Id, Message, User};
 use crate::state::{AppState, DmInfo};
@@ -64,6 +64,11 @@ pub enum NostrCmd {
     SetContact {
         peer: String,
         keep: bool,
+    },
+    /// Block or unblock a key, and publish the whole replaced mute list.
+    SetMute {
+        peer: String,
+        mute: bool,
     },
     /// Republish the cross-server total. Sent when the ledger moves, and
     /// ignored when the number has not actually changed since the last one:
@@ -134,9 +139,13 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
                     ..Default::default()
                 },
                 Filter {
-                    kinds: Some(vec![nip02::KIND_CONTACTS, nip17::KIND_DM_RELAYS]),
+                    kinds: Some(vec![
+                        nip02::KIND_CONTACTS,
+                        nip17::KIND_DM_RELAYS,
+                        nip51::KIND_MUTE_LIST,
+                    ]),
                     authors: Some(vec![our_pubkey.clone()]),
-                    limit: Some(4),
+                    limit: Some(6),
                     ..Default::default()
                 },
                 Filter {
@@ -293,6 +302,13 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
                         state.write().contacts = next;
                         request_names(&pool, &state, &our_pubkey, &mut named);
                     }
+                    Some(NostrCmd::SetMute { peer, mute }) => {
+                        let current = state.read().mutes.clone();
+                        let mut next = if mute { current.with(&peer) } else { current.without(&peer) };
+                        next.created_at = now();
+                        pool.publish(nip51::mute_list_event(&secret, &next, next.created_at));
+                        state.write().set_mutes(next);
+                    }
                     Some(NostrCmd::PublishXp(total)) => {
                         if state.read().global_xp.get(&our_pubkey) != Some(&total) {
                             state.write().global_xp.insert(our_pubkey.clone(), total);
@@ -371,6 +387,14 @@ pub fn spawn_nostr(identity: Identity, relays: Vec<String>, state: Signal<AppSta
                         nip02::KIND_CONTACTS if event.pubkey == our_pubkey => {
                             state.write().contacts = nip02::parse_contact_list(&event);
                             request_names(&pool, &state, &our_pubkey, &mut named);
+                        }
+                        nip51::KIND_MUTE_LIST if event.pubkey == our_pubkey => {
+                            // Relays serve stale copies of a replaceable event too.
+                            if let Some(list) = nip51::parse_mute_list(&event)
+                                && list.created_at > state.peek().mutes.created_at
+                            {
+                                state.write().set_mutes(list);
+                            }
                         }
                         metadata::KIND_METADATA => {
                             // Anyone's, not only the people we asked about: a
@@ -538,10 +562,12 @@ fn request_names(
     );
 }
 
-/// Make sure the conversation exists in the list and select it.
+/// Make sure the conversation exists in the list and select it. Only the
+/// person opens one, so it is accepted, not a request they made themselves.
 fn open_conversation(peer: &str, state: &mut Signal<AppState>) {
     let cid = conversation_id(peer);
     let mut s = state.write();
+    s.dm_accepted.insert(peer.to_string());
     if !s.dms.iter().any(|d| d.channel_id == cid) {
         s.dms.push(DmInfo {
             channel_id: cid,
@@ -696,9 +722,15 @@ fn insert_message(
     source: Source,
     live: bool,
 ) {
+    if state.peek().mutes.contains(&msg.peer) {
+        return;
+    }
     let cid = conversation_id(&msg.peer);
     let mid = message_id(&msg.id);
     let mut s = state.write();
+    if msg.author == our_pubkey {
+        s.dm_accepted.insert(msg.peer.clone());
+    }
 
     // A DM carries the time its sender wrote on it, and nothing keeps two
     // clocks in step: without this a peer running a minute behind has every
@@ -821,6 +853,90 @@ mod tests {
             assert!(!s.dm_delivery.contains_key(&mid));
             assert!(!s.dm_emoji.contains_key(&mid));
             assert!(!s.nostr_event_ids.contains_key(&mid));
+        });
+    }
+
+    fn chat(id: &str, author: &str, peer: &str, at: i64) -> nip17::ChatMessage {
+        nip17::ChatMessage {
+            id: id.into(),
+            author: author.into(),
+            peer: peer.into(),
+            content: "hello".into(),
+            created_at: at,
+            reply_to: None,
+            emoji: Vec::new(),
+        }
+    }
+
+    fn in_scope(f: impl FnOnce()) {
+        use dioxus::prelude::*;
+        let mut dom = VirtualDom::new(|| rsx! {});
+        dom.rebuild_in_place();
+        dom.in_scope(ScopeId::ROOT, f);
+    }
+
+    /// Our self-copies replay too, so a conversation we started stays accepted
+    /// on a fresh device.
+    #[test]
+    fn writing_first_accepts_the_conversation() {
+        in_scope(|| {
+            let (me, peer) = (key('a'), key('b'));
+            let mut state = Signal::new(AppState::empty());
+            insert_message(
+                &chat("q", &me, &peer, 100),
+                &me,
+                &mut state,
+                Source::Relay,
+                false,
+            );
+            insert_message(
+                &chat("r", &peer, &peer, 200),
+                &me,
+                &mut state,
+                Source::Relay,
+                false,
+            );
+            let s = state.read();
+            assert_eq!(s.dm_standing(&peer), crate::state::DmStanding::Inbox);
+            assert_eq!(s.dm_unread.get(&conversation_id(&peer)), Some(&1));
+        });
+    }
+
+    #[test]
+    fn a_stranger_lands_in_requests() {
+        in_scope(|| {
+            let (me, peer) = (key('a'), key('b'));
+            let mut state = Signal::new(AppState::empty());
+            insert_message(
+                &chat("r", &peer, &peer, 200),
+                &me,
+                &mut state,
+                Source::Relay,
+                false,
+            );
+            let s = state.read();
+            assert_eq!(s.dm_request_count(), 1);
+            assert!(s.dm_unread.is_empty());
+            assert_eq!(s.dm_notify_tick, 0);
+        });
+    }
+
+    #[test]
+    fn a_blocked_key_never_opens_a_conversation() {
+        in_scope(|| {
+            let (me, peer) = (key('a'), key('b'));
+            let mut state = Signal::new(AppState::empty());
+            state.write().mutes = nip51::MuteList::default().with(&peer);
+            insert_message(
+                &chat("r", &peer, &peer, 200),
+                &me,
+                &mut state,
+                Source::Relay,
+                false,
+            );
+            let s = state.read();
+            assert!(s.dms.is_empty());
+            assert!(s.messages.is_empty());
         });
     }
 

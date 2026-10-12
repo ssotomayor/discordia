@@ -63,6 +63,15 @@ pub struct ClientSettings {
     #[serde(default)]
     pub dm_clock_offset: Vec<(String, i64)>,
 
+    #[serde(default)]
+    pub dm_accepted: Vec<String>,
+    #[serde(default)]
+    pub dm_ignored: Vec<String>,
+    /// The `p` entries of our kind 10000, so a blocked key stays out while the
+    /// relays replay; the relay copy replaces it once it arrives.
+    #[serde(default)]
+    pub dm_blocked: Vec<String>,
+
     /// Chosen by right-click in a picker: what a DM, which has no guild and
     /// no gateway, may offer and send.
     #[serde(default)]
@@ -256,6 +265,9 @@ impl Default for ClientSettings {
             dm_relays: Vec::new(),
             dm_cleared_at: Vec::new(),
             dm_clock_offset: Vec::new(),
+            dm_accepted: Vec::new(),
+            dm_ignored: Vec::new(),
+            dm_blocked: Vec::new(),
             saved_emoji: Vec::new(),
             emoji_blob_server: default_emoji_blob_server(),
             blob_servers: Vec::new(),

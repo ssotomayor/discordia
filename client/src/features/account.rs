@@ -18,6 +18,9 @@ fn initial_state(saved: &ClientSettings) -> AppState {
     s.dm_cleared_at = saved.dm_cleared_at.iter().cloned().collect();
     s.dm_read_at = saved.dm_read_at.iter().cloned().collect();
     s.dm_clock_offset = saved.dm_clock_offset.iter().cloned().collect();
+    s.dm_accepted = saved.dm_accepted.iter().cloned().collect();
+    s.dm_ignored = saved.dm_ignored.iter().cloned().collect();
+    s.mutes = crate::nostr::nip51::MuteList::from_pubkeys(saved.dm_blocked.iter().cloned());
     s.saved_emoji = saved.saved_emoji.clone();
     s.muted_channels = saved.muted_channels.iter().copied().collect();
     s.muted_guilds = saved.muted_guilds.iter().copied().collect();
@@ -73,6 +76,7 @@ pub fn AccountView(
     provide_context(identity.clone());
     crate::state::use_dm_read_persistence(state);
     crate::state::use_dm_clock_persistence(state);
+    crate::state::use_dm_standing_persistence(state);
     crate::state::use_saved_emoji_persistence(state);
     crate::state::use_volume_persistence(state);
     rsx! {
@@ -101,6 +105,24 @@ mod tests {
     use crate::features::dm_call::{CallView, Phase};
     use crate::state::DmInfo;
     use std::{cell::RefCell, rc::Rc};
+
+    /// What Accept, Ignore and Block leave in the settings file must hold
+    /// before the relays replay, or the next launch reshuffles the lists.
+    #[test]
+    fn request_decisions_survive_a_restart() {
+        let saved = ClientSettings {
+            dm_accepted: vec!["accepted".into()],
+            dm_ignored: vec!["ignored".into()],
+            dm_blocked: vec!["blocked".into()],
+            ..Default::default()
+        };
+        let state = initial_state(&saved);
+        use crate::state::DmStanding::*;
+        assert_eq!(state.dm_standing("accepted"), Inbox);
+        assert_eq!(state.dm_standing("ignored"), Ignored);
+        assert_eq!(state.dm_standing("blocked"), Blocked);
+        assert_eq!(state.dm_standing("anyone"), Request);
+    }
 
     #[test]
     fn preferences_are_restored_before_account_services_start() {

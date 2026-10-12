@@ -131,7 +131,8 @@ pub fn ChannelsColumn() -> Element {
     let snapshot = state.read();
     let dm_mode = snapshot.dm_mode;
     let has_dm_call = snapshot.dm_call.is_some();
-    let dms: Vec<DmInfo> = snapshot.dms_by_recency();
+    let dms: Vec<DmInfo> = snapshot.dms_by_recency(crate::state::DmStanding::Inbox);
+    let requests = snapshot.dm_request_count();
     let dm_unread = snapshot.dm_unread.clone();
     let channel_unread = snapshot.channel_unread.clone();
     // The effective state, not the channel's own flag: a guild muted as a whole
@@ -205,6 +206,7 @@ pub fn ChannelsColumn() -> Element {
     let mut chan_menu = use_signal::<Option<ChanMenu>>(|| None);
     let settings = use_context::<Signal<crate::settings::ClientSettings>>();
     let mut dm_confirming = use_signal::<Option<Id>>(|| None);
+    let mut show_requests = use_signal(|| false);
     let mut show_create = use_signal(|| false);
     let mut dragging = use_signal::<Option<Id>>(|| None);
     let mut drop_at = use_signal::<Option<(Id, Edge)>>(|| None);
@@ -253,6 +255,17 @@ pub fn ChannelsColumn() -> Element {
             if dm_mode {
                 div { class: "flex-1 overflow-y-auto px-2 py-3 space-y-1",
                     StartDmByKey {}
+                    if requests > 0 || show_requests() {
+                        button {
+                            class: "w-full flex items-center gap-2 px-2 py-1 rounded text-sm text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-white/[0.03] transition-colors",
+                            onclick: move |_| show_requests.toggle(),
+                            span { class: "flex-1 text-left", "Requests" }
+                            span { class: "text-[var(--text-dim)] font-mono text-[10px]", "{requests}" }
+                        }
+                    }
+                    if show_requests() {
+                        super::dm_requests::RequestList {}
+                    }
                     if dms.is_empty() {
                         div { class: "px-2 text-xs text-[var(--text-dim)] leading-relaxed",
                             "No conversations yet. Paste someone's npub above, or click a member."
