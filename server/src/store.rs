@@ -254,6 +254,7 @@ impl Store {
             "ALTER TABLE channels ADD COLUMN divider TEXT",
             "ALTER TABLE bot_installs ADD COLUMN app TEXT",
             "ALTER TABLE bot_installs ADD COLUMN pending TEXT",
+            "ALTER TABLE bot_installs ADD COLUMN may_call TEXT",
         ] {
             if let Err(e) = sqlx::query(stmt).execute(&self.pool).await
                 && !e.to_string().contains("duplicate column name")
@@ -432,7 +433,7 @@ impl Store {
             });
         }
         for r in
-            sqlx::query("SELECT guild_id, bot_pubkey, name, permissions, intents, app, pending FROM bot_installs")
+            sqlx::query("SELECT guild_id, bot_pubkey, name, permissions, intents, app, pending, may_call FROM bot_installs")
                 .fetch_all(&self.pool)
                 .await?
         {
@@ -448,6 +449,10 @@ impl Store {
                 pending: r
                     .get::<Option<String>, _>(6)
                     .and_then(|j| serde_json::from_str(&j).ok()),
+                may_call: r
+                    .get::<Option<String>, _>(7)
+                    .and_then(|j| serde_json::from_str(&j).ok())
+                    .unwrap_or_default(),
             });
         }
         Ok(out)
@@ -985,11 +990,11 @@ impl Store {
         i: &BotInstall,
     ) -> Result<()> {
         sqlx::query(
-            "INSERT INTO bot_installs (guild_id, bot_pubkey, name, permissions, intents, app, pending)
-             VALUES (?, ?, ?, ?, ?, ?, ?)
+            "INSERT INTO bot_installs (guild_id, bot_pubkey, name, permissions, intents, app, pending, may_call)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(guild_id, bot_pubkey) DO UPDATE SET name=excluded.name,
                permissions=excluded.permissions, intents=excluded.intents,
-               app=excluded.app, pending=excluded.pending",
+               app=excluded.app, pending=excluded.pending, may_call=excluded.may_call",
         )
         .bind(i.guild_id.to_string())
         .bind(&i.bot_pubkey)
@@ -998,6 +1003,7 @@ impl Store {
         .bind(serde_json::to_string(&i.intents).unwrap_or_else(|_| "[]".into()))
         .bind(i.app.as_ref().and_then(|m| serde_json::to_string(m).ok()))
         .bind(i.pending.as_ref().and_then(|m| serde_json::to_string(m).ok()))
+        .bind(serde_json::to_string(&i.may_call).unwrap_or_else(|_| "[]".into()))
         .execute(executor)
         .await?;
         Ok(())

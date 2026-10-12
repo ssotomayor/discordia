@@ -129,11 +129,12 @@ pub async fn handle_connection<S>(
                             | ClientMessage::RegisterCommands { .. }
                             | ClientMessage::RegisterManifest { .. }
                             | ClientMessage::ActivitySend { .. }
+                            | ClientMessage::InvokeCommand { .. }
                             | ClientMessage::RespondToCommand { .. }
                     )
                 {
                     let _ = send(&mut ws_tx, &ServerMessage::Error {
-                        message: "bots may only fetch history, send messages, react, declare commands and manifests, and answer commands".into(),
+                        message: "bots may only fetch history, send messages, react, declare commands and manifests, call and answer commands, and speak in their activities".into(),
                     }).await;
                     continue;
                 }
@@ -1118,6 +1119,20 @@ pub async fn handle_connection<S>(
                         let activities = ctx.state.guild_activities(guild_id);
                         let _ = send(&mut ws_tx, &ServerMessage::GuildActivities { guild_id, activities }).await;
                     }
+                    ClientMessage::SetAppCalls { guild_id, bot_pubkey, may_call } => {
+                        let Some(u) = user.as_ref() else {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "identify first".into(),
+                            }).await;
+                            continue;
+                        };
+                        match ctx.state.set_app_calls(guild_id, &bot_pubkey, may_call, &u.pubkey).await {
+                            Ok(()) => share_guild_apps(&ctx.state, guild_id),
+                            Err(message) => {
+                                let _ = send(&mut ws_tx, &ServerMessage::Error { message }).await;
+                            }
+                        }
+                    }
                     ClientMessage::ActivityStart { channel_id, app } => {
                         let Some(u) = user.as_ref() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
@@ -1258,7 +1273,7 @@ pub async fn handle_connection<S>(
                             }
                         }
                     }
-                    ClientMessage::InvokeCommand { guild_id, channel_id, bot_pubkey, command, args } => {
+                    ClientMessage::InvokeCommand { guild_id, channel_id, bot_pubkey, command, args, parent } => {
                         let Some(u) = user.as_ref() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
@@ -1269,7 +1284,7 @@ pub async fn handle_connection<S>(
                             reject_rate_limited(&mut ws_tx).await;
                             continue;
                         }
-                        match ctx.state.invoke_command(u, guild_id, channel_id, &bot_pubkey, &command, args) {
+                        match ctx.state.invoke_command(u, guild_id, channel_id, &bot_pubkey, &command, args, parent, is_bot) {
                             Ok(invocation) => {
                                 tracing::debug!(%guild_id, bot = %bot_pubkey, command = ?invocation.command, by = ?u.username, "bot command invoked");
                                 ctx.state.deliver(vec![bot_pubkey], ServerMessage::CommandInvoked(invocation));
@@ -1279,7 +1294,7 @@ pub async fn handle_connection<S>(
                             }
                         }
                     }
-                    ClientMessage::RespondToCommand { invocation_id, content } => {
+                    ClientMessage::RespondToCommand { invocation_id, content, data } => {
                         let Some(u) = user.as_ref() else {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
@@ -1306,6 +1321,12 @@ pub async fn handle_connection<S>(
                             }).await;
                             continue;
                         }
+                        if data.as_ref().is_some_and(|d| d.len() > crate::protocol::MAX_COMMAND_DATA) {
+                            let _ = send(&mut ws_tx, &ServerMessage::Error {
+                                message: "a reply's data is too large".into(),
+                            }).await;
+                            continue;
+                        }
                         match ctx.state.take_invocation(&u.pubkey, invocation_id) {
                             Ok((invoker, channel_id)) => {
                                 ctx.state.deliver(vec![invoker], ServerMessage::CommandResponse {
@@ -1313,6 +1334,7 @@ pub async fn handle_connection<S>(
                                     bot_pubkey: u.pubkey.clone(),
                                     channel_id,
                                     content,
+                                    data,
                                 });
                             }
                             Err(message) => {
@@ -3043,7 +3065,9 @@ fn filter_for_bot(
                 instances: mine,
             })
         }
-        ServerMessage::ActivityEvent { .. } => Some(msg.clone()),
+        ServerMessage::ActivityEvent { .. } | ServerMessage::CommandResponse { .. } => {
+            Some(msg.clone())
+        }
         ServerMessage::Error { .. } => Some(msg.clone()),
         _ => None,
     }

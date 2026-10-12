@@ -319,6 +319,44 @@ impl Bot {
         self.send(&ClientMessage::RespondToCommand {
             invocation_id: invocation.id,
             content: content.to_string(),
+            data: None,
+        })
+        .await
+    }
+
+    /// For an app that called: `data` is JSON text it reads instead of prose.
+    pub async fn respond_with_data(
+        &mut self,
+        invocation: &Invocation,
+        content: &str,
+        data: &str,
+    ) -> Result<()> {
+        self.send(&ClientMessage::RespondToCommand {
+            invocation_id: invocation.id,
+            content: content.to_string(),
+            data: Some(data.to_string()),
+        })
+        .await
+    }
+
+    /// Calls another installed app's command. `parent` is the invocation this
+    /// bot is handling, if any; the guild must allow the pair.
+    pub async fn invoke(
+        &mut self,
+        parent: Option<&Invocation>,
+        guild_id: Id,
+        channel_id: Id,
+        bot_pubkey: &str,
+        command: &str,
+        args: Vec<protocol::CommandArg>,
+    ) -> Result<()> {
+        self.send(&ClientMessage::InvokeCommand {
+            guild_id,
+            channel_id,
+            bot_pubkey: bot_pubkey.to_string(),
+            command: command.to_string(),
+            args,
+            parent: parent.map(|p| p.id),
         })
         .await
     }

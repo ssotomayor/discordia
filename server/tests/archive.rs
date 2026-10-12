@@ -360,6 +360,7 @@ async fn a_hostile_archive_is_filtered_on_import() {
             name: "\u{0}".into(),
             permissions: vec![Permission::SendMessages, Permission::ManageGuild],
             intents: vec![Intent::GuildMessages],
+            may_call: Vec::new(),
             app: None,
             pending: None,
         }],

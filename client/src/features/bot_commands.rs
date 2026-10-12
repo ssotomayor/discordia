@@ -126,6 +126,7 @@ pub fn BotCommandsSection(bot_pubkey: String) -> Element {
                 bot_pubkey: bot_pubkey.clone(),
                 command: cmd.id,
                 args,
+                parent: None,
             });
             state.write().profile_card = None;
         }

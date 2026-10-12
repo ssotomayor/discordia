@@ -196,6 +196,7 @@ fn invoke(w: &World, channel_id: Id, command: &str, args: Vec<CommandArg>) -> Cl
         bot_pubkey: w.bot_id.pubkey().to_string(),
         command: command.into(),
         args,
+        parent: None,
     }
 }
 
@@ -342,7 +343,7 @@ async fn commands_reach_a_late_joiner_and_a_fresh_snapshot() {
 }
 
 #[tokio::test]
-async fn only_bots_declare_and_bots_cannot_press() {
+async fn only_bots_declare_and_a_bot_presses_only_where_allowed() {
     let mut w = world().await;
 
     w.owner.register_commands(commands()).await.unwrap();
@@ -352,7 +353,7 @@ async fn only_bots_declare_and_bots_cannot_press() {
         .send(&invoke(&w, w.text, "ping", vec![]))
         .await
         .unwrap();
-    assert!(next_error(&mut w.bot).await.contains("bots may only"));
+    assert!(next_error(&mut w.bot).await.contains("hasn't allowed"));
 
     w.bot
         .register_commands(vec![BotCommand::new("Bad Id", "x")])

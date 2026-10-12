@@ -110,7 +110,12 @@ pub fn IntegrationsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element {
                             }
                         }
                         for bot in installs.iter().cloned() {
-                            InstalledRow { key: "{bot.bot_pubkey}", guild_id, bot }
+                            InstalledRow {
+                                key: "{bot.bot_pubkey}",
+                                guild_id,
+                                others: installs.iter().filter(|o| o.bot_pubkey != bot.bot_pubkey).cloned().collect::<Vec<_>>(),
+                                bot,
+                            }
                         }
                     }
                     InstallForm { guild_id }
@@ -121,7 +126,7 @@ pub fn IntegrationsDialog(guild_id: Id, on_close: EventHandler<()>) -> Element {
 }
 
 #[component]
-fn InstalledRow(guild_id: Id, bot: BotInstall) -> Element {
+fn InstalledRow(guild_id: Id, bot: BotInstall, others: Vec<BotInstall>) -> Element {
     let gateway = use_gateway();
     let pk = bot.bot_pubkey.clone();
     let approve_pk = bot.bot_pubkey.clone();
@@ -173,6 +178,9 @@ fn InstalledRow(guild_id: Id, bot: BotInstall) -> Element {
             }
             if let Some(activity) = bot.app.as_ref().and_then(|a| a.activity.clone()) {
                 BundleRow { guild_id, bot_pubkey: bot.bot_pubkey.clone(), activity }
+            }
+            if !others.is_empty() {
+                AppCallsRow { guild_id, bot: bot.clone(), others }
             }
             if let Some((version, more)) = update {
                 div { class: "rounded border border-[var(--warn)]/40 bg-[var(--warn)]/15 p-2 space-y-1",
@@ -732,4 +740,57 @@ async fn download_bundle(url: &str) -> Result<Vec<u8>, String> {
         .await
         .map_err(|e| format!("download failed: {e}"))?;
     Ok(bytes.to_vec())
+}
+
+/// Which other apps this one may call. Each call is still held to the
+/// calling app's permissions and to the person who started it.
+#[component]
+fn AppCallsRow(guild_id: Id, bot: BotInstall, others: Vec<BotInstall>) -> Element {
+    let gateway = use_gateway();
+    let mut open = use_signal(|| false);
+    let allowed = bot.may_call.len();
+    rsx! {
+        div { class: "text-[11px]",
+            button {
+                class: "text-[10px] text-[var(--text-dim)] hover:text-[var(--text-muted)]",
+                onclick: move |_| open.set(!open()),
+                if allowed == 0 { "May call no other app" } else { "May call {allowed} other app(s)" }
+                if open() { " ▴" } else { " ▾" }
+            }
+            if open() {
+                div { class: "mt-1 space-y-0.5",
+                    for other in others.iter().cloned() {
+                        label { key: "{other.bot_pubkey}", class: "flex items-center gap-2 text-xs text-[var(--text)] cursor-pointer select-none",
+                            input {
+                                r#type: "checkbox",
+                                checked: bot.may_call.contains(&other.bot_pubkey),
+                                onchange: {
+                                    let gateway = gateway.clone();
+                                    let bot = bot.clone();
+                                    let target = other.bot_pubkey.clone();
+                                    move |_| {
+                                        let mut next = bot.may_call.clone();
+                                        if let Some(i) = next.iter().position(|k| *k == target) {
+                                            next.remove(i);
+                                        } else {
+                                            next.push(target.clone());
+                                        }
+                                        gateway.send(ClientMessage::SetAppCalls {
+                                            guild_id,
+                                            bot_pubkey: bot.bot_pubkey.clone(),
+                                            may_call: next,
+                                        });
+                                    }
+                                },
+                            }
+                            "{other.name}"
+                        }
+                    }
+                    div { class: "text-[10px] text-[var(--text-dim)]",
+                        "A call can't do more than the calling app may, or than the person who started it may."
+                    }
+                }
+            }
+        }
+    }
 }

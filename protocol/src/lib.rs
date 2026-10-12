@@ -1230,6 +1230,9 @@ pub struct BotInstall {
     pub name: String,
     pub permissions: Vec<Permission>,
     pub intents: Vec<Intent>,
+    /// The apps this one may call, as the guild allowed.
+    #[serde(default)]
+    pub may_call: Vec<String>,
     /// The manifest an admin approved. A newer one that asks for more waits in
     /// `pending` until an admin approves that too.
     #[serde(default)]
@@ -1504,6 +1507,9 @@ pub const MAX_COMMAND_DESCRIPTION: usize = 100;
 pub const MAX_COMMAND_TEXT: u16 = 1000;
 pub const MAX_COMMAND_MEMBERS: u8 = 25;
 pub const MAX_COMMAND_REPLY: usize = 2000;
+pub const MAX_COMMAND_DATA: usize = 8 * 1024;
+/// Keys in a call chain, the person who started it included.
+pub const MAX_CALL_DEPTH: usize = 3;
 
 /// A button a bot puts on its profile card. Declared by the bot on every
 /// connect, so it is the bot's code, never the guild's data.
@@ -1519,6 +1525,10 @@ pub struct BotCommand {
     pub permission: Option<Permission>,
     #[serde(default)]
     pub options: Vec<CommandOption>,
+    /// Whether another installed app may call it, where the guild allows the
+    /// pair. Off unless the bot says so.
+    #[serde(default)]
+    pub callable_by_apps: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1582,6 +1592,10 @@ pub struct Invocation {
     /// Every pubkey a `Members` arg names, under the name this guild knows.
     #[serde(default)]
     pub users: Vec<User>,
+    /// Every key the call came through, from whoever started it to the
+    /// invoker: `[person]` for a press, `[person, app]` for an app calling.
+    #[serde(default)]
+    pub via: Vec<String>,
 }
 
 impl Invocation {
@@ -1629,7 +1643,13 @@ impl BotCommand {
             description: String::new(),
             permission: None,
             options: Vec::new(),
+            callable_by_apps: false,
         }
+    }
+
+    pub fn callable_by_apps(mut self) -> Self {
+        self.callable_by_apps = true;
+        self
     }
 
     pub fn description(mut self, text: &str) -> Self {
@@ -1793,6 +1813,7 @@ pub fn validate_commands(raw: Vec<BotCommand>) -> Result<Vec<BotCommand>, String
             id: cmd.id,
             permission: cmd.permission,
             options,
+            callable_by_apps: cmd.callable_by_apps,
         });
     }
     Ok(out)
@@ -2108,11 +2129,24 @@ pub enum ClientMessage {
         command: String,
         #[serde(default)]
         args: Vec<CommandArg>,
+        /// From a bot: the invocation it is handling, which carries the chain
+        /// and the person whose permission the call is also held to.
+        #[serde(default)]
+        parent: Option<Id>,
     },
-    /// Bot only. Reaches the one person who pressed, once, and is never stored.
+    /// Bot only. Reaches whoever invoked, once, and is never stored. `data` is
+    /// JSON text for an app that called, so it need not parse prose.
     RespondToCommand {
         invocation_id: Id,
         content: String,
+        #[serde(default)]
+        data: Option<String>,
+    },
+    /// Manage guild. Which installed apps this one may call.
+    SetAppCalls {
+        guild_id: Id,
+        bot_pubkey: String,
+        may_call: Vec<String>,
     },
     CreateRole {
         guild_id: Id,
@@ -2538,6 +2572,8 @@ pub enum ServerMessage {
         bot_pubkey: String,
         channel_id: Id,
         content: String,
+        #[serde(default)]
+        data: Option<String>,
     },
     ScreenShareState {
         channel_id: Id,
@@ -3232,6 +3268,7 @@ mod command_tests {
                 pubkey: key('a'),
                 username: "ana".into(),
             }],
+            via: vec![key('c')],
         };
         assert_eq!(inv.members("targets")[0].username, "ana");
         assert!(inv.text("targets").is_none());
@@ -3248,6 +3285,7 @@ mod command_tests {
                 id: "n".into(),
                 value: ArgValue::Integer(3),
             }],
+            parent: None,
         })
         .unwrap();
         assert_eq!(json["op"], "invoke_command");

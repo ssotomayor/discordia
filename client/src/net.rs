@@ -1545,6 +1545,7 @@ fn apply(
             bot_pubkey,
             channel_id,
             content,
+            ..
         } => {
             s.command_notes.push(crate::state::CommandNote {
                 invocation_id,

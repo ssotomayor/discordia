@@ -248,6 +248,7 @@ mod tests {
             name: "Game".into(),
             permissions: vec![Permission::SendMessages, Permission::AddReactions],
             intents: vec![Intent::GuildMessages],
+            may_call: Vec::new(),
             app,
             pending: None,
         }

@@ -98,6 +98,8 @@ pub struct AppState {
     /// The newest manifest event each bot has handed this host, by version.
     pub app_manifests: DashMap<String, (u64, String)>,
     activity_instances: instances::Instances,
+    /// Per caller and callee: when the minute started and calls made in it.
+    app_calls: DashMap<(String, String), (std::time::Instant, u32)>,
     invocations: DashMap<Id, commands::Pending>,
     pub roles: DashMap<Id, Vec<Role>>,
     pub emojis: DashMap<Id, Vec<GuildEmoji>>,
@@ -141,6 +143,7 @@ impl AppState {
             bot_commands: DashMap::new(),
             app_manifests: DashMap::new(),
             activity_instances: Default::default(),
+            app_calls: DashMap::new(),
             invocations: DashMap::new(),
             roles: DashMap::new(),
             emojis: DashMap::new(),
@@ -3052,6 +3055,10 @@ impl AppState {
             name: name.clone(),
             permissions: unique(permissions),
             intents: unique(intents),
+            may_call: self
+                .bot_install(guild_id, bot_pubkey)
+                .map(|i| i.may_call)
+                .unwrap_or_default(),
             app: app.as_ref().map(|a| a.manifest.clone()),
             pending: None,
         };
