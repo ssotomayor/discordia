@@ -492,7 +492,7 @@ fn GuildIcon(
                     }
                 },
                 if let Some(src) = image {
-                    img { class: "w-full h-full object-cover", src: "{src}", alt: "{name}", draggable: false }
+                    img { class: "w-full h-full object-cover", src: "{src}", alt: "{name}", draggable: false, "data-gif-hover": "true" }
                 } else {
                     "{label}"
                 }

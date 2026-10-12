@@ -877,6 +877,7 @@ pub(crate) fn AppHead() -> Element {
     rsx! {
         document::Style { {TAILWIND_CSS} }
         document::Script { {LIVEKIT_JS} }
+        document::Script { {include_str!("../assets/gif-playback.js")} }
         document::Script {
             {format!(
                 "window.__dxfE2eeWorkerSrc = {};",
