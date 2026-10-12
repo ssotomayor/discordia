@@ -70,7 +70,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 _ => {}
             },
             ServerMessage::MessageCreate(msg) => {
-                if msg.author.pubkey == bot.user.pubkey {
+                // Another bot's message is never answered, or two bots echo forever.
+                if msg.author_bot || msg.author.pubkey == bot.user.pubkey {
                     continue;
                 }
                 match msg.content.trim() {

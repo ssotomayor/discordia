@@ -1,6 +1,7 @@
 use dioxus::prelude::*;
 use serde_json::{Value, json};
 
+use crate::activity_window::{self, FromActivity};
 use crate::protocol::{ClientMessage, Id};
 use crate::state::{AppState, GatewayTx, use_app_state, use_gateway};
 
@@ -41,6 +42,14 @@ pub const ACTIVITIES: &[ActivityDef] = &[ActivityDef {
     html: DICE_HTML,
 }];
 
+/// One activity window per client; a second launch replaces the first.
+const WINDOW_KEY: u64 = 1;
+
+pub fn bundle_host(html: &str) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(html.as_bytes()))[..32].to_string()
+}
+
 #[component]
 pub fn ActivityHost() -> Element {
     let state = use_app_state();
@@ -50,49 +59,66 @@ pub fn ActivityHost() -> Element {
     let mut consenting = use_signal(|| None::<usize>);
     let mut launched = use_signal(|| None::<Launched>);
 
-    use_future(move || {
-        let gateway = gateway.clone();
-        async move {
-            let mut eval = document::eval(BRIDGE_JS);
-            loop {
-                let Ok(msg) = eval.recv::<Value>().await else {
-                    break;
-                };
-                let open = *launched.peek();
-                let def = open.as_ref().and_then(|l| ACTIVITIES.get(l.idx));
-                let req_id = msg.get("reqId").cloned().unwrap_or(Value::Null);
-                let method = msg.get("method").and_then(|m| m.as_str()).unwrap_or("");
-                let params = msg.get("params").cloned().unwrap_or(Value::Null);
+    use_drop(|| activity_window::close(WINDOW_KEY));
 
-                let (ok, payload) = match def {
-                    Some(def) => handle_rpc(
-                        method,
-                        &params,
-                        def,
-                        open.as_ref().and_then(|l| l.channel),
-                        &state,
-                        &gateway,
-                    ),
-                    None => (false, json!("no activity is open")),
-                };
-                let reply = if ok {
-                    json!({ "__dxf_reply": req_id, "ok": true, "data": payload })
-                } else {
-                    json!({ "__dxf_reply": req_id, "ok": false, "error": payload })
-                };
-                let _ = document::eval(&format!(
-                    "var f=document.getElementById('dxf-activity-frame');\
-                 if(f&&f.contentWindow){{f.contentWindow.postMessage({}, '*');}}",
-                    reply
-                ));
-            }
+    use_effect(move || {
+        let Some(channel) = launched.read().as_ref().and_then(|l| l.channel) else {
+            return;
+        };
+        if !state.read().channels.iter().any(|c| c.id == channel) {
+            activity_window::close(WINDOW_KEY);
+            launched.set(None);
         }
     });
+
+    let mut launch = move |idx: usize| {
+        let Some(def) = ACTIVITIES.get(idx) else {
+            return;
+        };
+        let channel = state.read().selected_channel;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        activity_window::open(activity_window::OpenSpec {
+            key: WINDOW_KEY,
+            title: format!("{} {} — activity", def.icon, def.name),
+            host: bundle_host(def.html),
+            bundle: std::sync::Arc::new(activity_window::Bundle::single_page(def.html)),
+            tx,
+        });
+        launched.set(Some(Launched { idx, channel }));
+        let gateway = gateway.clone();
+        spawn(async move {
+            while let Some(msg) = rx.recv().await {
+                match msg {
+                    FromActivity::Call { id, method, params } => {
+                        let (ok, payload) =
+                            handle_rpc(&method, &params, def, channel, &state, &gateway);
+                        let result = if ok {
+                            Ok(payload)
+                        } else {
+                            Err(payload.as_str().unwrap_or("refused").to_string())
+                        };
+                        activity_window::reply(WINDOW_KEY, id, result);
+                    }
+                    FromActivity::Closed | FromActivity::Failed(_) => {
+                        if launched.peek().as_ref().map(|l| l.idx) == Some(idx) {
+                            launched.set(None);
+                        }
+                        break;
+                    }
+                }
+            }
+        });
+    };
 
     rsx! {
         button {
             class: "fixed bottom-3 left-3 z-40 border border-[var(--border)] rounded px-3 py-1 text-[10px] uppercase tracking-wider bg-[var(--panel)] hover:border-[var(--accent)] text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors",
-            onclick: move |_| picker_open.set(!picker_open()),
+            onclick: move |_| {
+                if launched.peek().is_some() && activity_window::is_open(WINDOW_KEY) {
+                    activity_window::focus(WINDOW_KEY);
+                }
+                picker_open.set(!picker_open());
+            },
             "Activities"
         }
 
@@ -117,8 +143,7 @@ pub fn ActivityHost() -> Element {
                                 idx,
                                 on_cancel: move |_| consenting.set(None),
                                 on_approve: move |i: usize| {
-                                    let channel = state.read().selected_channel;
-                                    launched.set(Some(Launched { idx: i, channel }));
+                                    launch(i);
                                     consenting.set(None);
                                     picker_open.set(false);
                                 },
@@ -142,14 +167,6 @@ pub fn ActivityHost() -> Element {
                             }
                         }
                     }
-                }
-            }
-        }
-
-        if let Some(idx) = launched().map(|l| l.idx) {
-            if let Some(def) = ACTIVITIES.get(idx) {
-                ActivityWindow { def_idx: idx, name: def.name, icon: def.icon, html: def.html,
-                    on_close: move |_| launched.set(None),
                 }
             }
         }
@@ -181,7 +198,7 @@ fn ConsentPanel(
                 }
             }
             div { class: "text-[10px] text-[var(--text-dim)] mb-2",
-                "Runs sandboxed in your client. It can't read your other channels, files, or keys."
+                "Opens in its own window with no internet access. It can't read your other channels, files, or keys."
             }
             div { class: "flex gap-2",
                 button {
@@ -194,83 +211,6 @@ fn ConsentPanel(
                     onclick: move |_| on_cancel.call(()),
                     "Cancel"
                 }
-            }
-        }
-    }
-}
-
-#[derive(Clone, Copy, PartialEq)]
-enum Drag {
-    Move { dx: f64, dy: f64 },
-    Resize { px: f64, py: f64, w0: f64, h0: f64 },
-}
-
-#[component]
-fn ActivityWindow(
-    def_idx: usize,
-    name: &'static str,
-    icon: &'static str,
-    html: &'static str,
-    on_close: EventHandler<()>,
-) -> Element {
-    let _ = def_idx;
-    let mut x = use_signal(|| 220.0_f64);
-    let mut y = use_signal(|| 120.0_f64);
-    let mut w = use_signal(|| 420.0_f64);
-    let mut h = use_signal(|| 460.0_f64);
-    let mut drag = use_signal(|| None::<Drag>);
-
-    rsx! {
-        if drag().is_some() {
-            div {
-                class: "fixed inset-0 z-50",
-                onmousemove: move |e| {
-                    let c = e.client_coordinates();
-                    match drag() {
-                        Some(Drag::Move { dx, dy }) => { x.set(c.x - dx); y.set(c.y - dy); }
-                        Some(Drag::Resize { px, py, w0, h0 }) => {
-                            w.set((w0 + (c.x - px)).max(300.0));
-                            h.set((h0 + (c.y - py)).max(260.0));
-                        }
-                        None => {}
-                    }
-                },
-                onmouseup: move |_| drag.set(None),
-            }
-        }
-        div {
-            class: "fixed z-40 flex flex-col bg-[var(--panel-solid)] border border-[var(--border)] rounded-lg shadow-2xl overflow-hidden dxf-modal-in",
-            style: "left: {x}px; top: {y}px; width: {w}px; height: {h}px;",
-            div {
-                class: "h-9 px-3 flex items-center gap-2 border-b border-[var(--border)] shrink-0 cursor-move select-none",
-                onmousedown: move |e| {
-                    let c = e.client_coordinates();
-                    drag.set(Some(Drag::Move { dx: c.x - x(), dy: c.y - y() }));
-                },
-                span { class: "text-sm", "{icon}" }
-                span { class: "text-sm text-[var(--text)] font-medium truncate flex-1", "{name}" }
-                span { class: "text-[9px] uppercase tracking-wider text-[var(--text-dim)]", "Sandboxed" }
-                button {
-                    class: "text-[var(--text-dim)] hover:text-[var(--text)] text-lg leading-none ml-1",
-                    onmousedown: move |e| e.stop_propagation(),
-                    onclick: move |_| on_close.call(()),
-                    "✕"
-                }
-            }
-            iframe {
-                id: "dxf-activity-frame",
-                class: "flex-1 min-h-0 w-full bg-white border-0",
-                "sandbox": "allow-scripts",
-                "srcdoc": "{html}",
-            }
-            div {
-                class: "absolute bottom-0 right-0 w-4 h-4 cursor-nwse-resize",
-                style: "background: linear-gradient(135deg, transparent 0 50%, var(--border-strong) 50% 100%);",
-                onmousedown: move |e| {
-                    e.stop_propagation();
-                    let c = e.client_coordinates();
-                    drag.set(Some(Drag::Resize { px: c.x, py: c.y, w0: w(), h0: h() }));
-                },
             }
         }
     }
@@ -348,20 +288,6 @@ fn handle_rpc(
     }
 }
 
-const BRIDGE_JS: &str = r#"
-window.__dxfActivitySink = function (m) { try { dioxus.send(m); } catch (err) {} };
-if (!window.__dxfActivityWired) {
-  window.__dxfActivityWired = true;
-  window.addEventListener('message', function (e) {
-    var f = document.getElementById('dxf-activity-frame');
-    if (!f || e.source !== f.contentWindow) return;
-    var d = e.data;
-    if (!d || d.__dxf !== true) return;
-    if (window.__dxfActivitySink) window.__dxfActivitySink(d);
-  });
-}
-"#;
-
 const DICE_HTML: &str = r##"<!doctype html><html><head><meta charset="utf-8"><style>
   body { margin:0; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
     background:#15110d; color:#e8e2da; height:100vh; display:flex; flex-direction:column;
@@ -383,27 +309,11 @@ const DICE_HTML: &str = r##"<!doctype html><html><head><meta charset="utf-8"><st
   </div>
   <div class="who" id="where"></div>
   <script>
-    const dxf = (function () {
-      let n = 0; const pending = {};
-      window.addEventListener('message', function (e) {
-        const d = e.data;
-        if (!d || d.__dxf_reply === undefined) return;
-        const p = pending[d.__dxf_reply]; if (!p) return;
-        delete pending[d.__dxf_reply];
-        d.ok ? p.resolve(d.data) : p.reject(d.error);
-      });
-      function call(method, params) {
-        return new Promise(function (resolve, reject) {
-          const reqId = ++n; pending[reqId] = { resolve: resolve, reject: reject };
-          parent.postMessage({ __dxf: true, reqId: reqId, method: method, params: params || {} }, '*');
-        });
-      }
-      return {
-        getUser: function () { return call('user.get'); },
-        getChannel: function () { return call('channel.get'); },
-        sendMessage: function (content) { return call('message.send', { content: content }); }
-      };
-    })();
+    const dxf = {
+      getUser: function () { return discordia.call('user.get'); },
+      getChannel: function () { return discordia.call('channel.get'); },
+      sendMessage: function (content) { return discordia.call('message.send', { content: content }); }
+    };
 
     const dieEl = document.getElementById('die');
     const rollBtn = document.getElementById('roll');
