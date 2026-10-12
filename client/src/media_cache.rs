@@ -75,6 +75,13 @@ impl MediaCache {
         self.entries.contains_key(address)
     }
 
+    pub fn get_shared(&self, address: &str) -> Option<Arc<String>> {
+        self.get(address)?;
+        self.entries
+            .get(address)
+            .map(|entry| Arc::clone(&entry.data))
+    }
+
     pub fn insert(&mut self, address: String, data: String) {
         if let Some(previous) = self.entries.remove(&address) {
             self.bytes -= previous.data.len();
@@ -218,6 +225,19 @@ pub(crate) fn store(address: &str, data: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn visible_images_share_cached_bytes_and_keep_requests_deduplicated() {
+        let mut cache = MediaCache::with_budget(8);
+        assert!(cache.get_shared("a").is_none());
+        assert!(cache.get_shared("a").is_none());
+        assert_eq!(cache.take_work().1, ["a"]);
+        cache.insert("a".into(), "data".into());
+        let first = cache.get_shared("a").unwrap();
+        let second = cache.get_shared("a").unwrap();
+        assert!(Arc::ptr_eq(&first, &second));
+        assert_eq!(cache.bytes, 4);
+    }
 
     #[test]
     fn budget_evicts_the_least_recently_viewed_image() {

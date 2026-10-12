@@ -1,8 +1,92 @@
 use dioxus::prelude::*;
 use dioxus_grid_layout::NoDrag;
 
-use crate::protocol::{ClientMessage, Id, LevelTier, Leveling, Member, Permission, VoiceState};
+use crate::protocol::VoiceState;
+use crate::protocol::{ClientMessage, Id, LevelTier, Leveling, Member, Permission};
 use crate::state::{use_app_state, use_gateway};
+use std::collections::HashMap;
+
+#[derive(Clone, PartialEq)]
+struct MetadataInputs {
+    members: Vec<Member>,
+    profiles: HashMap<String, (Option<String>, bool, bool)>,
+    guilds: Vec<(Id, String, Leveling)>,
+    self_pubkey: Option<String>,
+}
+
+#[derive(Clone, PartialEq)]
+struct VoiceInputs {
+    states: Vec<crate::protocol::VoiceState>,
+    quality: HashMap<String, crate::state::ConnectionHealth>,
+    channels: Vec<crate::protocol::Channel>,
+}
+
+#[derive(Clone, Copy)]
+struct MemberSources {
+    metadata: Memo<MetadataInputs>,
+    voice: Memo<VoiceInputs>,
+    subtitles: Memo<HashMap<String, (String, bool)>>,
+}
+
+fn use_member_sources() -> MemberSources {
+    let state = use_app_state();
+    let metadata = use_memo(move || {
+        let s = state.read();
+        MetadataInputs {
+            members: s.members.clone(),
+            profiles: s
+                .profiles
+                .iter()
+                .map(|(pk, p)| {
+                    (
+                        pk.clone(),
+                        (p.status.clone(), p.hide_guild_owner, p.operator),
+                    )
+                })
+                .collect(),
+            guilds: s
+                .guilds
+                .iter()
+                .map(|g| (g.id, g.owner_pubkey.clone(), s.leveling_of(g.id)))
+                .collect(),
+            self_pubkey: s.self_user.as_ref().map(|u| u.pubkey.clone()),
+        }
+    });
+    let voice = use_memo(move || {
+        let s = state.read();
+        VoiceInputs {
+            states: s.voice_states.clone(),
+            quality: s.voice_quality.clone(),
+            channels: s.channels.clone(),
+        }
+    });
+    let subtitles = use_memo(move || {
+        let s = state.read();
+        let mut lines: HashMap<_, _> = s
+            .profiles
+            .iter()
+            .filter_map(|(pk, p)| {
+                p.custom_status
+                    .as_ref()
+                    .map(|cs| (pk.clone(), (cs.clone(), false)))
+            })
+            .collect();
+        lines.extend(s.activities.iter().map(|(pk, a)| {
+            (
+                pk.clone(),
+                (crate::features::profiles::activity_line(a), true),
+            )
+        }));
+        lines
+    });
+    let sources = MemberSources {
+        metadata,
+        voice,
+        subtitles,
+    };
+    use_context_provider(move || sources);
+    sources
+}
 
 #[derive(Clone, PartialEq)]
 struct MemberMenu {
@@ -20,14 +104,14 @@ enum ModAction {
     Ban,
 }
 
-/// Who is in a call in this guild. `AppState` keeps every guild's states in
-/// one Vec, and someone in a call elsewhere is only online here.
-fn in_call_here(voice_states: &[VoiceState], guild: Option<Id>) -> Vec<VoiceState> {
+fn voice_here<'a>(
+    voice_states: &'a [VoiceState],
+    guild: Id,
+    pubkey: &str,
+) -> Option<&'a VoiceState> {
     voice_states
         .iter()
-        .filter(|v| Some(v.guild_id) == guild && v.channel_id.is_some())
-        .cloned()
-        .collect()
+        .find(|v| v.guild_id == guild && v.user_pubkey == pubkey && v.channel_id.is_some())
 }
 
 /// A role's id and name, and the online members listed under it.
@@ -70,64 +154,106 @@ fn group_by_rank(members: Vec<Member>, rules: &Leveling) -> Vec<(Option<LevelTie
 
 #[component]
 pub fn MembersPanel() -> Element {
+    #[cfg(test)]
+    tests::record_render("list");
     let state = use_app_state();
-    let snapshot = state.read();
+    use_member_sources();
+    let roster_input = use_memo(move || {
+        let s = state.read();
+        let gid = s.selected_guild;
+        let rules = gid.map(|g| s.leveling_of(g)).unwrap_or_default();
+        let members: Vec<_> = s
+            .members
+            .iter()
+            .filter(|m| Some(m.guild_id) == gid)
+            .cloned()
+            .map(|mut m| {
+                if !matches!(
+                    rules.member_sort,
+                    crate::protocol::MemberSort::Level | crate::protocol::MemberSort::Rank
+                ) {
+                    m.xp = 0;
+                }
+                m
+            })
+            .collect();
+        let roles = gid.map(|g| s.roles_of(g).to_vec()).unwrap_or_default();
+        (gid, members, rules, roles)
+    });
+    let roster = use_memo(move || {
+        #[cfg(test)]
+        tests::record_render("sort");
+        let _input = roster_input.read();
+        let snapshot = state.peek();
 
-    let guild_id = snapshot.selected_guild;
-    let members: Vec<Member> = guild_id
-        .map(|gid| {
-            snapshot
-                .members_of(gid)
-                .into_iter()
-                .cloned()
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    let voice_states: Vec<VoiceState> = snapshot.voice_states.clone();
-    let rules = guild_id
-        .map(|gid| snapshot.leveling_of(gid))
-        .unwrap_or_default();
-    let by_role = rules.member_sort == crate::protocol::MemberSort::Role;
-    let by_rank = rules.member_sort == crate::protocol::MemberSort::Rank && rules.enabled;
-    let top_roles: std::collections::HashMap<String, (Id, String)> = guild_id
-        .filter(|_| by_role)
-        .map(|gid| {
-            members
-                .iter()
-                .filter_map(|m| {
-                    let r = snapshot.top_role(gid, m)?;
-                    Some((m.user.pubkey.clone(), (r.id, r.name.clone())))
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    let (can_kick, can_ban, can_roles, can_disconnect, owner_pk, self_pk) = guild_id
-        .map(|gid| {
-            (
-                snapshot.can(gid, Permission::KickMembers),
-                snapshot.can(gid, Permission::BanMembers),
-                snapshot.can(gid, Permission::ManageRoles),
-                snapshot.can(gid, Permission::DisconnectMembers),
+        let guild_id = snapshot.selected_guild;
+        let members: Vec<Member> = guild_id
+            .map(|gid| {
                 snapshot
-                    .guilds
+                    .members_of(gid)
+                    .into_iter()
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let rules = guild_id
+            .map(|gid| snapshot.leveling_of(gid))
+            .unwrap_or_default();
+        let by_role = rules.member_sort == crate::protocol::MemberSort::Role;
+        let by_rank = rules.member_sort == crate::protocol::MemberSort::Rank && rules.enabled;
+        let top_roles: std::collections::HashMap<String, (Id, String)> = guild_id
+            .filter(|_| by_role)
+            .map(|gid| {
+                members
                     .iter()
-                    .find(|g| g.id == gid)
-                    .map(|g| g.owner_pubkey.clone())
-                    .unwrap_or_default(),
-                snapshot
-                    .self_user
-                    .as_ref()
-                    .map(|u| u.pubkey.clone())
-                    .unwrap_or_default(),
-            )
-        })
-        .unwrap_or((false, false, false, false, String::new(), String::new()));
-    drop(snapshot);
+                    .filter_map(|m| {
+                        let r = snapshot.top_role(gid, m)?;
+                        Some((m.user.pubkey.clone(), (r.id, r.name.clone())))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        (guild_id, members, rules, by_role, by_rank, top_roles)
+    });
+    let (_, members, rules, by_role, by_rank, top_roles) = roster();
+    let permissions = use_memo(move || {
+        let snapshot = state.read();
+        let guild_id = snapshot.selected_guild;
+        let (can_kick, can_ban, can_roles, can_disconnect, owner_pk, self_pk) = guild_id
+            .map(|gid| {
+                (
+                    snapshot.can(gid, Permission::KickMembers),
+                    snapshot.can(gid, Permission::BanMembers),
+                    snapshot.can(gid, Permission::ManageRoles),
+                    snapshot.can(gid, Permission::DisconnectMembers),
+                    snapshot
+                        .guilds
+                        .iter()
+                        .find(|g| g.id == gid)
+                        .map(|g| g.owner_pubkey.clone())
+                        .unwrap_or_default(),
+                    snapshot
+                        .self_user
+                        .as_ref()
+                        .map(|u| u.pubkey.clone())
+                        .unwrap_or_default(),
+                )
+            })
+            .unwrap_or((false, false, false, false, String::new(), String::new()));
+        (
+            can_kick,
+            can_ban,
+            can_roles,
+            can_disconnect,
+            owner_pk,
+            self_pk,
+        )
+    });
+    let (can_kick, can_ban, can_roles, can_disconnect, owner_pk, self_pk) = permissions();
 
     let can_moderate = can_kick || can_ban || can_roles || can_disconnect;
     let mut menu = use_signal::<Option<MemberMenu>>(|| None);
 
-    let guild_voice_states = in_call_here(&voice_states, guild_id);
     let (online_members, offline_members): (Vec<Member>, Vec<Member>) =
         members.iter().cloned().partition(|m| m.online);
     // Key, label, the label's emoji, and the run.
@@ -176,27 +302,23 @@ pub fn MembersPanel() -> Element {
     };
     let online_count = members.iter().filter(|m| m.online).count();
 
-    let on_context = {
-        let owner_pk = owner_pk.clone();
-        let self_pk = self_pk.clone();
-        move |(member, x, y): (Member, f64, f64)| {
-            if !can_moderate
-                || member.bot
-                || member.user.pubkey == self_pk
-                || member.user.pubkey == owner_pk
-            {
-                return;
-            }
-            menu.set(Some(MemberMenu {
-                guild_id: member.guild_id,
-                pubkey: member.user.pubkey.clone(),
-                username: member.user.username.clone(),
-                x,
-                y,
-                confirming: None,
-            }));
+    let on_context = use_callback(move |(member, x, y): (Member, f64, f64)| {
+        if !can_moderate
+            || member.bot
+            || member.user.pubkey == self_pk
+            || member.user.pubkey == owner_pk
+        {
+            return;
         }
-    };
+        menu.set(Some(MemberMenu {
+            guild_id: member.guild_id,
+            pubkey: member.user.pubkey.clone(),
+            username: member.user.username.clone(),
+            x,
+            y,
+            confirming: None,
+        }));
+    });
 
     rsx! {
         aside { class: "panel-hover w-full h-full bg-[var(--panel)] border border-[var(--border)] rounded-xl flex flex-col overflow-hidden",
@@ -214,16 +336,14 @@ pub fn MembersPanel() -> Element {
                             label,
                             emoji,
                             members: run,
-                            voice_states: guild_voice_states.clone(),
-                            on_context: on_context.clone(),
+                            on_context,
                         }
                     }
                     if !offline_members.is_empty() {
                         Section {
                             label: format!("Offline — {}", offline_members.len()),
                             members: offline_members.clone(),
-                            voice_states: Vec::new(),
-                            on_context: on_context.clone(),
+                            on_context,
                             collapsible: true,
                         }
                     }
@@ -404,7 +524,6 @@ fn Section(
     label: String,
     #[props(default)] emoji: Option<String>,
     members: Vec<Member>,
-    voice_states: Vec<VoiceState>,
     on_context: EventHandler<(Member, f64, f64)>,
     #[props(default)] collapsible: bool,
 ) -> Element {
@@ -433,19 +552,10 @@ fn Section(
             }
             if show {
                 for m in members.iter() {
-                    {
-                        let vs = voice_states
-                            .iter()
-                            .find(|v| v.user_pubkey == m.user.pubkey)
-                            .cloned();
-                        rsx! {
-                            MemberRow {
-                                key: "{m.user.pubkey}",
-                                member: m.clone(),
-                                voice: vs,
-                                on_context,
-                            }
-                        }
+                    MemberRow {
+                        key: "{m.guild_id}-{m.user.pubkey}",
+                        member: m.clone(),
+                        on_context,
                     }
                 }
             }
@@ -454,76 +564,100 @@ fn Section(
 }
 
 #[component]
-fn MemberRow(
-    member: Member,
-    voice: Option<VoiceState>,
-    on_context: EventHandler<(Member, f64, f64)>,
-) -> Element {
+fn MemberRow(member: Member, on_context: EventHandler<(Member, f64, f64)>) -> Element {
+    #[cfg(test)]
+    tests::record_render(&format!("row:{}", member.user.pubkey));
     let mut state = use_app_state();
-    let is_self = state
-        .read()
-        .self_user
-        .as_ref()
-        .map(|u| u.pubkey == member.user.pubkey)
-        .unwrap_or(false);
-
-    let name_class = if member.online {
-        "text-[var(--text)]"
-    } else {
-        "text-[var(--text-dim)]"
-    };
-    let speaking = voice.as_ref().map(|v| v.speaking).unwrap_or(false);
-    let health = state.read().voice_quality.get(&member.user.pubkey).copied();
-    let speaking_ring = crate::state::talk_ring(speaking, health);
-
-    let dim = if member.online { "" } else { "opacity-60" };
-    let card_pubkey = member.user.pubkey.clone();
-
-    let (dot_color, pulse) = {
-        let status = state.read().presence_of(&member.user.pubkey).to_string();
-        let pulse = if status == "online" {
-            "dxf-dot-pulse"
-        } else {
-            ""
-        };
-        (crate::features::profiles::status_color(&status), pulse)
-    };
-
-    // A ranked member wears the rank's emoji by their name, never its name on
-    // the right; the number is only for someone below every rank.
-    let level = {
-        let rules = state.read().leveling_of(member.guild_id);
-        let ranked = rules.tier_at(member.xp).is_some();
-        let lv = crate::protocol::level_progress(member.xp).0;
-        (rules.enabled && !ranked && (!rules.tiers.is_empty() || lv > 1)).then(|| format!("Lv{lv}"))
-    };
-    // An activity outranks a custom status on the one line there is room for:
-    // it is the fresher fact, and it clears itself when they stop.
-    let subtitle = {
-        let s = state.read();
-        s.activity_of(&member.user.pubkey)
-            .map(|a| (crate::features::profiles::activity_line(a), true))
-            .or_else(|| {
-                s.profile_of(&member.user.pubkey)
-                    .and_then(|p| p.custom_status.clone())
-                    .map(|cs| (cs, false))
-            })
-    };
-
-    let (crown, operator) = {
-        let s = state.read();
-        let pk = &member.user.pubkey;
-        let profile = s.profile_of(pk);
-        let owner = s
-            .guilds
+    let sources = use_context::<MemberSources>();
+    let metadata = use_memo(use_reactive((&member,), move |(member,)| {
+        let _input = sources.metadata.read();
+        let s = state.peek();
+        let member = s
+            .members
             .iter()
-            .any(|g| g.id == member.guild_id && &g.owner_pubkey == pk);
-        (
-            owner && !profile.is_some_and(|p| p.hide_guild_owner),
-            profile.is_some_and(|p| p.operator),
-        )
-    };
+            .find(|m| m.guild_id == member.guild_id && m.user.pubkey == member.user.pubkey)
+            .cloned()
+            .unwrap_or(member);
+        let is_self = state
+            .peek()
+            .self_user
+            .as_ref()
+            .map(|u| u.pubkey == member.user.pubkey)
+            .unwrap_or(false);
 
+        let name_class = if member.online {
+            "text-[var(--text)]"
+        } else {
+            "text-[var(--text-dim)]"
+        };
+        let dim = if member.online { "" } else { "opacity-60" };
+
+        let (dot_color, pulse) = {
+            let status = state.peek().presence_of(&member.user.pubkey).to_string();
+            let pulse = if status == "online" {
+                "dxf-dot-pulse"
+            } else {
+                ""
+            };
+            (crate::features::profiles::status_color(&status), pulse)
+        };
+
+        // A ranked member wears the rank's emoji by their name, never its name on
+        // the right; the number is only for someone below every rank.
+        let level = {
+            let rules = state.peek().leveling_of(member.guild_id);
+            let ranked = rules.tier_at(member.xp).is_some();
+            let lv = crate::protocol::level_progress(member.xp).0;
+            (rules.enabled && !ranked && (!rules.tiers.is_empty() || lv > 1))
+                .then(|| format!("Lv{lv}"))
+        };
+        let (crown, operator) = {
+            let s = state.peek();
+            let pk = &member.user.pubkey;
+            let profile = s.profile_of(pk);
+            let owner = s
+                .guilds
+                .iter()
+                .any(|g| g.id == member.guild_id && &g.owner_pubkey == pk);
+            (
+                owner && !profile.is_some_and(|p| p.hide_guild_owner),
+                profile.is_some_and(|p| p.operator),
+            )
+        };
+
+        (
+            is_self, name_class, dim, dot_color, pulse, level, crown, operator,
+        )
+    }));
+    let (is_self, name_class, dim, dot_color, pulse, level, crown, operator) = metadata();
+    let subtitle_pk = member.user.pubkey.clone();
+    let subtitle = use_memo(move || sources.subtitles.read().get(&subtitle_pk).cloned());
+    let voice_pk = member.user.pubkey.clone();
+    let voice_guild = member.guild_id;
+    let voice = use_memo(move || {
+        let input = sources.voice.read();
+        let vs = voice_here(&input.states, voice_guild, &voice_pk);
+        let ring = crate::state::talk_ring(
+            vs.is_some_and(|v| v.speaking),
+            input.quality.get(&voice_pk).copied(),
+        );
+        let badges = vs.map(|v| {
+            let place = v
+                .channel_id
+                .and_then(|cid| {
+                    input
+                        .channels
+                        .iter()
+                        .find(|c| c.id == cid)
+                        .map(|c| format!("In voice — {}", c.name))
+                })
+                .unwrap_or_else(|| "In voice".into());
+            (place, v.muted, v.deafened)
+        });
+        (ring, badges)
+    });
+    let (speaking_ring, badges) = voice();
+    let card_pubkey = member.user.pubkey.clone();
     let ctx_member = member.clone();
     rsx! {
         div {
@@ -575,20 +709,15 @@ fn MemberRow(
                         }
                     }
                 }
-                if let Some((sub, is_activity)) = subtitle {
+                if let Some((sub, is_activity)) = subtitle() {
                     span {
-                        class: if is_activity {
-                            "text-[10px] text-[var(--accent)] truncate"
-                        } else {
-                            "text-[10px] text-[var(--text-dim)] truncate"
-                        },
-                        title: "{sub}",
-                        "{sub}"
+                        class: if is_activity { "text-[10px] text-[var(--accent)] truncate" } else { "text-[10px] text-[var(--text-dim)] truncate" },
+                        title: "{sub}", "{sub}"
                     }
                 }
             }
-            if let Some(vs) = voice {
-                VoiceBadges { vs: vs }
+            if let Some((place, muted, deafened)) = badges {
+                VoiceBadges { place, muted, deafened }
             }
             // Lv1 is where everyone starts, so on most rows the badge repeats a
             // value that separates nobody from nobody. A named rank is worth
@@ -604,19 +733,7 @@ fn MemberRow(
 }
 
 #[component]
-fn VoiceBadges(vs: VoiceState) -> Element {
-    let state = use_app_state();
-    let place = vs
-        .channel_id
-        .and_then(|cid| {
-            state
-                .read()
-                .channels
-                .iter()
-                .find(|c| c.id == cid)
-                .map(|c| format!("In voice — {}", c.name))
-        })
-        .unwrap_or_else(|| "In voice".into());
+fn VoiceBadges(place: String, muted: bool, deafened: bool) -> Element {
     rsx! {
         div { class: "flex items-center gap-1 shrink-0 text-[var(--text-dim)]",
             span {
@@ -624,13 +741,13 @@ fn VoiceBadges(vs: VoiceState) -> Element {
                 title: "{place}",
                 dangerous_inner_html: crate::features::icons::SPEAKER,
             }
-            if vs.deafened {
+            if deafened {
                 span {
                     class: "block w-3 h-3",
                     title: "Deafened",
                     dangerous_inner_html: crate::features::icons::HEADPHONES_OFF,
                 }
-            } else if vs.muted {
+            } else if muted {
                 span {
                     class: "block w-3 h-3",
                     title: "Muted",
@@ -645,6 +762,125 @@ fn VoiceBadges(vs: VoiceState) -> Element {
 mod tests {
     use super::*;
     use crate::protocol::User;
+    use crate::state::AppState;
+
+    thread_local! {
+        static RENDERS: std::cell::RefCell<std::collections::HashMap<String, usize>> = Default::default();
+    }
+
+    pub(super) fn record_render(part: &str) {
+        RENDERS.with_borrow_mut(|counts| *counts.entry(part.into()).or_default() += 1);
+    }
+
+    #[tokio::test]
+    async fn selective_member_updates() {
+        use std::{cell::RefCell, rc::Rc};
+        type Export = Rc<RefCell<Option<Signal<AppState>>>>;
+        let exported: Export = Rc::new(RefCell::new(None));
+        RENDERS.with_borrow_mut(|counts| counts.clear());
+        let guild = Id::nil();
+        let mut dom = VirtualDom::new_with_props(
+            |export: Export| {
+                let state = use_signal(|| {
+                    let mut s = AppState::empty();
+                    s.selected_guild = Some(Id::nil());
+                    s.members = vec![
+                        member("alice", Id::nil(), true),
+                        member("bob", Id::nil(), true),
+                    ];
+                    s
+                });
+                provide_context(state);
+                *export.borrow_mut() = Some(state);
+                rsx! { MembersPanel {} }
+            },
+            exported.clone(),
+        );
+        dom.rebuild_in_place();
+        dom.render_immediate_to_vec();
+        let mut state = exported.borrow().unwrap();
+        for i in 0..100 {
+            let mut s = state.write();
+            s.messages.insert(Id::new_v4(), Vec::new());
+            s.voice.speaking = i % 2 == 0;
+            drop(s);
+            dom.render_immediate_to_vec();
+        }
+        RENDERS.with_borrow(|counts| {
+            println!("unrelated updates: {counts:?}");
+            assert!(counts.values().all(|n| *n == 1));
+        });
+        let renders = || RENDERS.with_borrow(Clone::clone);
+        let before = renders();
+        state.write().activities.insert(
+            "alice".into(),
+            crate::protocol::Activity {
+                kind: crate::protocol::ActivityKind::Playing,
+                name: "Factorio".into(),
+                details: None,
+                state: None,
+                started_ms: Some(1000),
+                image: None,
+            },
+        );
+        dom.render_immediate_to_vec();
+        let mut expected = before;
+        *expected.get_mut("row:alice").unwrap() += 1;
+        assert_eq!(renders(), expected);
+        state.write().activities.get_mut("alice").unwrap().details = Some("New map".into());
+        dom.render_immediate_to_vec();
+        assert_eq!(renders(), expected);
+        state.write().activities.remove("alice");
+        dom.render_immediate_to_vec();
+        *expected.get_mut("row:alice").unwrap() += 1;
+        assert_eq!(renders(), expected);
+
+        let channel = Id::new_v4();
+        state
+            .write()
+            .voice_states
+            .push(voice("alice", guild, Some(channel)));
+        dom.render_immediate_to_vec();
+        *expected.get_mut("row:alice").unwrap() += 1;
+        assert_eq!(renders(), expected);
+        state.write().voice_states[0].speaking = true;
+        dom.render_immediate_to_vec();
+        *expected.get_mut("row:alice").unwrap() += 1;
+        assert_eq!(renders(), expected);
+        state.write().voice_states[0].muted = true;
+        dom.render_immediate_to_vec();
+        *expected.get_mut("row:alice").unwrap() += 1;
+        assert_eq!(renders(), expected);
+
+        state.write().members[0].xp = 10_000;
+        dom.render_immediate_to_vec();
+        *expected.get_mut("row:alice").unwrap() += 1;
+        assert_eq!(renders(), expected);
+        state.write().profiles.insert(
+            "alice".into(),
+            crate::protocol::Profile {
+                pubkey: "alice".into(),
+                status: Some("dnd".into()),
+                custom_status: Some("Busy".into()),
+                ..Default::default()
+            },
+        );
+        assert!(!dom.render_immediate_to_vec().edits.is_empty());
+        *expected.get_mut("row:alice").unwrap() += 1;
+        assert_eq!(renders(), expected);
+        state.write().voice_states.clear();
+        assert!(!dom.render_immediate_to_vec().edits.is_empty());
+        *expected.get_mut("row:alice").unwrap() += 1;
+        assert_eq!(renders(), expected);
+        state.write().members[0].user.username = "Zoe".into();
+        dom.render_immediate_to_vec();
+        assert_eq!(renders()["list"], 2);
+        assert_eq!(renders()["row:bob"], 1);
+        assert_eq!(state.read().selected_guild, Some(guild));
+        state.write().selected_guild = Some(Id::new_v4());
+        dom.render_immediate_to_vec();
+        assert_eq!(renders()["list"], 3);
+    }
 
     fn member(pubkey: &str, guild: Id, online: bool) -> Member {
         Member {
@@ -758,11 +994,8 @@ mod tests {
             voice("b", here, Some(Id::new_v4())),
             voice("c", here, None),
         ];
-        let in_call: Vec<String> = in_call_here(&states, Some(here))
-            .into_iter()
-            .map(|v| v.user_pubkey)
-            .collect();
-        assert_eq!(in_call, ["b"]);
-        assert!(in_call_here(&states, None).is_empty());
+        assert!(voice_here(&states, here, "a").is_none());
+        assert_eq!(voice_here(&states, here, "b"), Some(&states[1]));
+        assert!(voice_here(&states, here, "c").is_none());
     }
 }

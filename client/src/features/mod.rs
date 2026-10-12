@@ -39,6 +39,8 @@ mod stream_layout;
 mod stream_viewer;
 pub mod tooltip;
 pub mod topology;
+#[cfg(test)]
+mod ui_update_bench;
 mod video_lifecycle;
 pub mod voice;
 pub mod voice_menu;
