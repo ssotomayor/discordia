@@ -573,8 +573,11 @@ pub fn ActivityHost() -> Element {
     });
 
     let watch_gw = gateway.clone();
+    // The memo, not `state`, is what the effect reads: the answer writes state,
+    // and an effect subscribed to all of it asked again forever.
+    let selected = use_memo(move || state.read().selected_channel);
     use_effect(move || {
-        if let Some(channel_id) = state.read().selected_channel {
+        if let Some(channel_id) = selected() {
             watch_gw.send(ClientMessage::FetchActivityInstances { channel_id });
         }
     });
@@ -1368,6 +1371,54 @@ mod tests {
             rsx! {}
         }
         VirtualDom::new(harness).rebuild_in_place();
+    }
+
+    #[tokio::test]
+    async fn unrelated_state_changes_do_not_refetch_the_channels_activities() {
+        #[derive(Clone)]
+        struct Props(tokio::sync::mpsc::UnboundedSender<ClientMessage>);
+        impl PartialEq for Props {
+            fn eq(&self, _: &Self) -> bool {
+                true
+            }
+        }
+        fn harness(props: Props) -> Element {
+            use_context_provider(|| GatewayTx(props.0.clone()));
+            let mut state = use_context_provider(|| {
+                let mut s = AppState::empty();
+                s.selected_channel = Some(Id::new_v4());
+                Signal::new(s)
+            });
+            use_future(move || async move {
+                for i in 0..20 {
+                    state.write().error_toast = Some(i.to_string());
+                    tokio::task::yield_now().await;
+                }
+            });
+            rsx! { ActivityHost {} }
+        }
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut dom = VirtualDom::new_with_props(harness, Props(tx));
+        dom.rebuild_in_place();
+        for _ in 0..60 {
+            if tokio::time::timeout(std::time::Duration::from_millis(20), dom.wait_for_work())
+                .await
+                .is_err()
+            {
+                break;
+            }
+            dom.render_immediate(&mut dioxus_core::NoOpMutations);
+        }
+        let mut fetches = 0;
+        while let Ok(msg) = rx.try_recv() {
+            if matches!(msg, ClientMessage::FetchActivityInstances { .. }) {
+                fetches += 1;
+            }
+        }
+        assert_eq!(
+            fetches, 1,
+            "one fetch per channel selected, not one per state change"
+        );
     }
 
     #[test]

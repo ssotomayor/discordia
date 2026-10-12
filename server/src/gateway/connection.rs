@@ -1122,6 +1122,10 @@ pub async fn handle_connection<S>(
                             }).await;
                             continue;
                         };
+                        if !reads.allow() {
+                            reject_rate_limited(&mut ws_tx).await;
+                            continue;
+                        }
                         if !ctx.state.is_guild_member(guild_id, &u.pubkey) {
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "you're not a member of this guild".into(),
@@ -1248,6 +1252,10 @@ pub async fn handle_connection<S>(
                     }
                     ClientMessage::FetchActivityInstances { channel_id } => {
                         let Some(u) = user.as_ref() else { continue };
+                        if !reads.allow() {
+                            reject_rate_limited(&mut ws_tx).await;
+                            continue;
+                        }
                         let visible = ctx.state.channel(channel_id).is_some_and(|c| {
                             ctx.state.is_guild_member(c.guild_id, &u.pubkey) && ctx.state.can_see_channel(&u.pubkey, &c)
                         });
@@ -1261,6 +1269,10 @@ pub async fn handle_connection<S>(
                             let _ = send(&mut ws_tx, &ServerMessage::Error {
                                 message: "identify first".into(),
                             }).await;
+                            continue;
+                        }
+                        if !reads.allow() {
+                            reject_rate_limited(&mut ws_tx).await;
                             continue;
                         }
                         let event = ctx.state.app_manifest_event(&bot_pubkey);
